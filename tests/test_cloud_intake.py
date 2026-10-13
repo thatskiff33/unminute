@@ -26,6 +26,7 @@ if HAVE_DEPS:
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+@unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class CloudTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
