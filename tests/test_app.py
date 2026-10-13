@@ -282,6 +282,29 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn(orphan, ids)
         self.assertIsNotNone(ws.store.active_version(mid))
 
+    def test_speaker_names_flow_into_transcript_and_snapshot(self):
+        ws = self.open()
+        mid = self.imported(ws)
+        [a, b] = ws.speakers(mid)["speakers"]
+        ws.rename_speaker(mid, a["label"], "Aroha")
+        items = ws.transcript(mid)["items"]
+        self.assertEqual(items[0]["who"], "Aroha")
+        target = next(i for i in items if i["label"] == b["label"])
+        ws.assign_speaker(mid, target["id"], a["label"])
+        self.assertEqual(next(i for i in ws.transcript(mid)["items"]
+                              if i["id"] == target["id"])["who"], "Aroha")
+        ex = ws.speaker_examples(mid, a["label"])
+        self.assertEqual(len(ex["items"]), 3)
+        ws.confirm_reviewed(mid)
+        self.assertTrue(ws.wait_idle(60))
+        snap = ws.store._one("SELECT text FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
+        self.assertIn("Aroha: ", snap["text"])
+        with self.assertRaises(WorkspaceError):
+            ws.rename_speaker(mid, a["label"], "Late change")
+        ws.confirm_final_saved(mid)
+        self.assertTrue(ws.wait_idle(60))
+        self.assertEqual(ws.store._one("SELECT COUNT(*) AS n FROM speaker_corrections")["n"], 0)
+
     # -- intake ---------------------------------------------------------------------
 
     def test_refused_imports_explain_without_paths(self):

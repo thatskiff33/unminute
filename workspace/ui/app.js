@@ -146,7 +146,8 @@ async function renderReminders() {
 
 // -- one meeting ---------------------------------------------------------------
 function signatureOf(d) {
-  return [d.progress, d.speakers && d.speakers.status, d.model, d.reviewed_at,
+  return [d.progress, d.speakers && d.speakers.status, d.speakers && d.speakers.started_at,
+          d.model, d.reviewed_at,
           d.audio_available].join("|");
 }
 
@@ -234,6 +235,7 @@ function renderSpeakers(d) {
   else if (s && s.status === "interrupted") text = s.error || "Speaker identification was interrupted and will start again from the beginning.";
   else if (s && s.status === "running") text = "Identifying speakers…";
   $("m-speakers").textContent = text;
+  $("m-names").disabled = !canName();
   $("m-rerun").disabled = !d.audio_available || d.stage === "inbox" || !!d.reviewed_at
     || !!d.busy || state.version !== null;
 }
@@ -286,11 +288,100 @@ function transcriptRow(item, audio) {
   text.addEventListener("click", () => startEditing(text));
   text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !text.isContentEditable) { e.preventDefault(); startEditing(text); } });
   const li = el("li", {}, t,
-    item.who ? el("span", { class: "who", textContent: item.who + ":" }) : null,
+    item.who ? whoButton(item) : null,
     text,
     item.overlap ? el("span", { class: "overlap", textContent: "(overlapping speech)" }) : null);
   li.dataset.id = item.id;
   return li;
+}
+
+// -- speaker names (#21) ---------------------------------------------------------
+function canName() {
+  const d = state.detail;
+  return d && !d.reviewed_at && state.version === null && d.speakers && d.speakers.status === "done";
+}
+
+function whoButton(item) {
+  const b = el("button", { type: "button", class: "who", textContent: item.who + ":",
+                           title: "Change the speaker of this passage" });
+  b.addEventListener("click", () => reassign(b, item));
+  return b;
+}
+
+async function reassign(button, item) {
+  if (!canName()) { say("Speakers can be changed only before the review is confirmed."); return; }
+  const list = await attempt(() => call("speakers", state.mid));
+  if (!list) return;
+  const sel = el("select", { "aria-label": "Speaker for this passage" },
+    ...list.speakers.map((s) => el("option", { value: s.label, textContent: s.name,
+                                                 selected: s.label === item.label })),
+    el("option", { value: "new", textContent: "Someone else (new speaker)" }));
+  const done = () => { sel.replaceWith(button); };
+  sel.addEventListener("change", () => attempt(async () => {
+    await call("assign_speaker", state.mid, item.id, sel.value);
+    state.signature = "";
+    done();
+    say("Speaker changed");
+    renderMeeting();
+  }));
+  sel.addEventListener("blur", done);
+  button.replaceWith(sel);
+  sel.focus();
+}
+
+const namesState = { offsets: {} };
+
+async function openNames() {
+  if (!canName()) { say("Speakers can be named once they are identified, and before the review is confirmed."); return; }
+  namesState.offsets = {};
+  await renderNames();
+  $("names").showModal();
+}
+
+async function renderNames() {
+  const data = await attempt(() => call("speakers", state.mid));
+  if (!data) return;
+  $("n-undo").disabled = !data.can_undo;
+  const blocks = [];
+  for (const sp of data.speakers) {
+    const offset = namesState.offsets[sp.label] || 0;
+    const ex = await attempt(() => call("speaker_examples", state.mid, sp.label, offset));
+    const name = el("input", { value: sp.name, maxLength: 80, "aria-label": `Name for ${sp.name}` });
+    name.addEventListener("change", () => attempt(async () => {
+      await call("rename_speaker", state.mid, sp.label, name.value);
+      afterNamesChange();
+    }));
+    const examples = el("ul", { class: "examples" }, ...((ex && ex.items) || []).map((it) =>
+      el("li", {}, el("button", { type: "button", textContent: `▶ ${fmtTime(it.start)}`,
+                                  title: "Play exactly this passage",
+                                  on: { click: () => play(it.start, it.end) } }),
+         el("span", { textContent: it.text }))));
+    const more = ex && ex.total > offset + 3
+      ? el("button", { type: "button", textContent: "More examples",
+                       on: { click: () => { namesState.offsets[sp.label] = offset + 3; renderNames(); } } })
+      : (offset ? el("button", { type: "button", textContent: "First examples",
+                                 on: { click: () => { namesState.offsets[sp.label] = 0; renderNames(); } } }) : null);
+    const others = data.speakers.filter((o) => o.label !== sp.label);
+    const into = el("select", { "aria-label": `Merge ${sp.name} into` },
+      ...others.map((o) => el("option", { value: o.label, textContent: o.name })));
+    const merge = others.length ? el("div", { class: "row" }, "Same person as ", into,
+      el("button", { type: "button", textContent: "Merge",
+                     on: { click: () => attempt(async () => {
+                       await call("merge_speakers", state.mid, sp.label, into.value);
+                       afterNamesChange();
+                     }) } })) : null;
+    blocks.push(el("section", { class: "speaker" },
+      el("div", { class: "row" }, name,
+         el("span", { class: "muted", textContent: `${sp.passages} passage${sp.passages === 1 ? "" : "s"}` })),
+      examples, more, merge));
+  }
+  $("n-list").replaceChildren(...blocks);
+}
+
+function afterNamesChange() {
+  state.signature = "";
+  renderNames();
+  renderMeeting();
 }
 
 async function renderTranscript() {
@@ -502,6 +593,13 @@ function wire() {
   $("m-stop").addEventListener("click", () => attempt(() => call("stop_now", state.mid).then(refresh)));
   $("m-resume").addEventListener("click", () => attempt(() => call("resume", state.mid).then(refresh)));
   $("m-undo").addEventListener("click", undo);
+  $("m-names").addEventListener("click", openNames);
+  $("n-close").addEventListener("click", () => { $("player").pause(); $("names").close(); });
+  $("names").addEventListener("close", () => $("player").pause());
+  $("n-undo").addEventListener("click", () => attempt(async () => {
+    await call("undo_speakers", state.mid);
+    afterNamesChange();
+  }));
   $("m-retranscribe").addEventListener("click", () => confirmDialog({
     title: "Transcribe again with the current model?",
     body: "A new transcript is made from the audio. Your edits stay with the current version, " +
@@ -515,11 +613,21 @@ function wire() {
       say("Transcribing again. The previous version and its edits are kept.");
     }),
   }));
-  $("m-rerun").addEventListener("click", () => attempt(async () => {
+  $("m-rerun").addEventListener("click", () => {
     const v = $("m-count").value.trim();
-    await call("rerun_speakers", state.mid, v ? Number(v) : null);
-    say("Identifying speakers again");
-  }));
+    confirmDialog({
+      title: "Identify speakers again?",
+      body: "The speaker labels start afresh" + (v ? ` for ${v} people` : "") + ". Names and " +
+        "corrections you made stay with the previous identification and are no longer shown. " +
+        "The transcript text is not changed.",
+      check: "Start speaker identification again.",
+      limits: false,
+      onConfirm: () => attempt(async () => {
+        await call("rerun_speakers", state.mid, v ? Number(v) : null);
+        say("Identifying speakers again");
+      }),
+    });
+  });
   let searchTimer;
   $("m-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
   $("m-search").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); nextHit(e.shiftKey ? -1 : 1); } });

@@ -153,6 +153,11 @@ CREATE TABLE IF NOT EXISTS segment_speakers (
     label TEXT,                -- NULL when no speaker overlaps the segment
     overlap INTEGER NOT NULL DEFAULT 0,   -- 1 if more than one person spoke during it
     PRIMARY KEY (run_id, segment_id));
+-- Speaker naming and corrections (#21): an append-only log per speaker run
+-- (kind: name | merge | assign). Meeting-only; removed with the transcript.
+CREATE TABLE IF NOT EXISTS speaker_corrections (
+    id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES speaker_runs(id),
+    kind TEXT NOT NULL, target TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS cleanup_jobs (
     id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, phase TEXT NOT NULL,
     state TEXT NOT NULL, intent_at REAL NOT NULL, last_attempt_at REAL,

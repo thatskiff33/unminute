@@ -5,6 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- Workspace: Name speakers, with three representative clips per speaker, More examples, rename, merge, reassigning a passage and undo. Names are for the current meeting only and are removed with the transcript (#21).
 - Workspace preview (`python -m workspace`): Inbox, Active meetings and Settings. It covers import by dialog or drop, background transcription and speaker identification with pause and resume, searchable timestamped review with clip playback, autosaved edits with undo, holds, and the two cleanup confirmations (#20).
 - Workspace (in development): reasoned retention holds that block cleanup until released and never expire on their own. Releasing a hold needs a fresh cleanup confirmation, and stale holds are listed for review. Completed cleanups leave only a minimal receipt that expires after 30 days (#18).
 - Workspace (in development): explicit two-step cleanup. Confirming the reviewed transcript removes the app's audio copy (and an authorised, unchanged original). Confirming the final deliverable is saved removes the transcript working content, leaving no removed text readable in the database. Cleanup intent survives crashes and is retried (#17).
