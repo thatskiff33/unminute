@@ -47,9 +47,22 @@ def plan_chunks(reader, total, sr=SAMPLE_RATE, target_s=TARGET_S, search_s=SEARC
             for a, b in zip(bounds[:-1], bounds[1:], strict=True)]
 
 
-class MissingWordTimes(ValueError):
-    """An engine returned a long segment without word times, so a sentence
-    crossing a chunk boundary could not be divided safely."""
+def estimated_words(seg):
+    """Word times spread across a segment in proportion to word length, for
+    the rare segment an engine returns without word times (faster-whisper can
+    when alignment fails). Near a boundary this is an approximation of where a
+    word falls, never a loss of the whole sentence tail."""
+    parts = seg.text.split()
+    if not parts:
+        return ()
+    weights = [len(p) + 1 for p in parts]
+    total, t, out = sum(weights), seg.start, []
+    span = max(0.0, seg.end - seg.start)
+    for p, w in zip(parts, weights, strict=True):
+        d = span * w / total
+        out.append((t, t + d, " " + p))
+        t += d
+    return tuple(out)
 
 
 def owned(segments, start, end, total, sr=SAMPLE_RATE):
@@ -62,20 +75,21 @@ def owned(segments, start, end, total, sr=SAMPLE_RATE):
     owns anything before 0, the last anything after the end). A segment that
     crosses a boundary is split there; each side keeps only its own words.
 
-    Segments without word times are owned by their start only if they are
-    short enough (<= CONTEXT_S) that the context guarantees they are whole."""
+    A segment without word times gets estimated word times (estimated_words),
+    so a sentence crossing a boundary is still divided, approximately, rather
+    than lost or failing the meeting."""
     lo = -float("inf") if start == 0 else start / sr
     hi = float("inf") if end >= total else end / sr
     out = []
     for s in segments:
         words = getattr(s, "words", ()) or ()
         if not words:
-            if s.end - s.start > CONTEXT_S and lo <= s.start < hi:
-                raise MissingWordTimes("Engine segment without word times is too long "
-                                       "to place safely at a chunk boundary.")
-            if lo <= s.start < hi:
-                out.append(s)
-            continue
+            if s.end - s.start <= CONTEXT_S:        # short: whole by its start
+                if lo <= s.start < hi:
+                    out.append(s)
+                continue
+            words = estimated_words(s)
+            s = Segment(s.start, s.end, s.text, words)
         mine = tuple(w for w in words if lo <= w[0] < hi)
         if not mine:
             continue

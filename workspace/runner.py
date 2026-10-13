@@ -36,9 +36,10 @@ def _note_error(store, mid, message):
         pass
 
 
-def _finish(store, attempt_id, result):
+def _finish(store, attempt_id, result, engine=None):
     try:
-        store.finish_attempt(attempt_id, result)
+        store.finish_attempt(attempt_id, result, getattr(engine, "device", None),
+                             getattr(engine, "precision", None))
     except StoreError:
         pass
 
@@ -50,7 +51,14 @@ def _shift(s, offset):
 
 def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None):
     """Process pending chunks until done, paused or failed. Returns a RunResult."""
-    hooks = hooks or {}
+    try:
+        return _run(store, mid, vid, reader, engine, on_progress, hooks or {})
+    except StoreError as exc:     # a read failed (e.g. database unavailable)
+        _note_error(store, mid, f"Could not read progress: {exc}")
+        return RunResult.STORE_ERROR
+
+
+def _run(store, mid, vid, reader, engine, on_progress, hooks):
     version = store.version(vid)
     source = store.source(version["source_id"])
     total = source["samples"]
@@ -84,11 +92,11 @@ def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None
                 backend=getattr(engine, "device", None),
                 precision=getattr(engine, "precision", None))
         except StoreError as exc:
-            _finish(store, attempt, "failed")
+            _finish(store, attempt, "failed", engine)
             _note_error(store, mid, f"Could not save progress: {exc}")
             return RunResult.STORE_ERROR
         except Exception as exc:
-            _finish(store, attempt, "failed")
+            _finish(store, attempt, "failed", engine)
             if hooks.get("reraise"):
                 raise
             _note_error(store, mid, f"Transcription failed: {type(exc).__name__}: {exc}"[:300])

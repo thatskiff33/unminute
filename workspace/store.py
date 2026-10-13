@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS attempts (
     started_at REAL NOT NULL,
     backend    TEXT,
     precision  TEXT,
-    result     TEXT NOT NULL DEFAULT 'running'   -- running | committed | failed | stopped
+    result     TEXT NOT NULL DEFAULT 'running'   -- running|committed|failed|stopped|interrupted
 );
 CREATE INDEX IF NOT EXISTS attempts_by_chunk ON attempts(version_id, chunk_idx);
 
@@ -170,6 +170,10 @@ class Store:
                 elif row["v"] > SCHEMA_VERSION:
                     raise SchemaTooNew(f"This workspace was created by a newer version of "
                                        f"the app (schema {row['v']}).")
+                # Attempts still 'running' were cut short by a crash or kill of
+                # the previous session (this process owns the state, #15).
+                db.execute("UPDATE attempts SET result = 'interrupted' "
+                           "WHERE result = 'running'")
         except BaseException:
             self.db.close()          # never leave the file locked on a refused open
             raise
@@ -200,11 +204,17 @@ class Store:
 
     def _one(self, sql, args=()):
         with self._lock:
-            return self.db.execute(sql, args).fetchone()
+            try:
+                return self.db.execute(sql, args).fetchone()
+            except sqlite3.Error as exc:
+                raise StoreError(str(exc)) from exc
 
     def _all(self, sql, args=()):
         with self._lock:
-            return self.db.execute(sql, args).fetchall()
+            try:
+                return self.db.execute(sql, args).fetchall()
+            except sqlite3.Error as exc:
+                raise StoreError(str(exc)) from exc
 
     # -- meetings and sources ----------------------------------------------------
 

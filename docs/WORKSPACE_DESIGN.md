@@ -37,7 +37,9 @@ Boundaries aim for about 45 s of owned audio. Each sits at the quietest 30 ms wi
 
 So each word belongs to the chunk whose owned range contains the word's start time. A sentence crossing a boundary is split there, and each chunk keeps only its own words. Words cut by the edge of a decode range lie outside the owned range, so they are dropped. The first chunk also owns anything starting before 0, and the last chunk anything after the end.
 
-Both engines provide word times: Parakeet from token timestamps, and Whisper with `word_timestamps` enabled in the workspace. A segment without word times is accepted only if it is short enough that the context guarantees it is complete; a longer one stops the run rather than being silently truncated.
+Both engines provide word times: Parakeet from token timestamps, and Whisper with `word_timestamps` enabled in the workspace. faster-whisper can occasionally return a segment without word times. Such a segment gets estimated word times, spread in proportion to word length, so it is still divided at a boundary rather than lost or failing the meeting. Parakeet words are assigned to sentences by token position, not by time, because TDT can give several tokens the same timestamp.
+
+Residual risk: when there is no pause within ±5 s of a boundary, the two neighbouring decodes may time a word on either side of it differently, so one word at that boundary can be duplicated or dropped. Cutting in pauses makes this rare. The real-engine check found no differences on a 15-minute continuous-speech recording.
 
 Repeated phrases are never deduplicated by text, only by time ownership. Word times are stored with each segment for audio-linked review (#20).
 

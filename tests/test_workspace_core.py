@@ -169,13 +169,48 @@ class CoreTests(unittest.TestCase):
                 self.assertFalse(r["start_s"] < b and r["end_s"] > b + 0.45, (r["start_s"], b))
         self.assertTrue(all(r["words_json"] for r in rows))
 
-    def test_long_segment_without_word_times_is_refused_not_truncated(self):
-        mid, _, vid, words, reader, _ = self.new_meeting(200.0)
+    def test_segments_without_word_times_are_divided_approximately_not_lost(self):
+        # faster-whisper can return a segment without words; estimated word
+        # times keep the run going and keep sentence tails (+/- a word or two
+        # at a boundary, where the estimate may place a word on either side).
+        mid, _, vid, words, reader, _ = self.new_meeting(300.0)
         result = runner.run_version(self.store, mid, vid, reader,
                                     FakeEngine(words, group=8, word_times=False))
-        self.assertEqual(result, runner.RunResult.FAILED)
-        self.assertIn("MissingWordTimes", self.store.meeting(mid)["last_error"])
-        self.assertEqual(self.store.chunks(vid, status="done"), [])
+        self.assertEqual(result, runner.RunResult.DONE)
+        got = [w for w in self.spoken(vid) if w != "#garbled#"]
+        truth = [w[2] for w in words]
+        self.assertLessEqual(abs(len(got) - len(truth)), 2 * len(self.store.chunks(vid)))
+        self.assertGreater(len(got), 0.95 * len(truth))
+
+    def test_parakeet_words_follow_tokens_not_shared_timestamps(self):
+        # Review case: TDT gave "it", "." and "The" the same timestamp.
+        from asr_engines import split_sentences
+        tokens = [" We", " did", " it", ".", " The", " end", "."]
+        times = [0, .4, .8, .8, .8, 1.2, 1.5]
+        a, b = split_sentences(10.0, 12.0, tokens, times, "We did it. The end.")
+        self.assertEqual([w[2] for w in a.words], [" We", " did", " it."])
+        self.assertEqual([w[2] for w in b.words], [" The", " end."])
+        for boundary in (10.3, 10.9):
+            mine_a = chunking.owned([a, b], 0, int(boundary * SR), 30 * SR)
+            mine_b = chunking.owned([a, b], int(boundary * SR), 30 * SR, 30 * SR)
+            spoken = " ".join(s.text for s in mine_a + mine_b).split()
+            self.assertEqual(spoken, ["We", "did", "it.", "The", "end."], boundary)
+
+    def test_interrupted_attempts_are_marked_on_reopen(self):
+        mid, _, vid, *_ = self.new_meeting(60.0)
+        self.store.start_attempt(vid, 0)          # process "dies" here
+        self.store.close()
+        self.store = Store(self.db_path)
+        self.assertEqual([a["result"] for a in self.store.attempts(vid, 0)], ["interrupted"])
+
+    def test_read_errors_become_store_error(self):
+        mid, _, vid, words, reader, _ = self.new_meeting(60.0)
+        self.store.close()
+        with self.assertRaises(StoreError):
+            self.store.meeting(mid)
+        self.assertEqual(runner.run_version(self.store, mid, vid, reader, FakeEngine(words)),
+                         runner.RunResult.STORE_ERROR)
+        self.store = Store(self.db_path)
 
     # -- failure injection ---------------------------------------------------------
 

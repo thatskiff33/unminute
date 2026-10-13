@@ -638,8 +638,14 @@ def split_sentences(start, end, tokens, timestamps, text):
         return []
     if not tokens or len(tokens) != len(timestamps):
         return [Segment(start, end, text)]
-    words = _token_words(start, end, tokens, timestamps)
+    words = _token_words(start, end, tokens, timestamps)   # [(first_token_idx, word)]
     out, first, buf = [], 0, []
+
+    def words_in(lo, hi):
+        # By token position, not time: TDT can give several tokens one timestamp,
+        # so a time filter could move a word into the neighbouring sentence.
+        return tuple(w for i, w in words if lo <= i < hi)
+
     for i, tok in enumerate(tokens):
         buf.append(tok)
         nxt = tokens[i + 1] if i + 1 < len(tokens) else None
@@ -647,26 +653,25 @@ def split_sentences(start, end, tokens, timestamps, text):
             seg_end = start + timestamps[i + 1] if nxt is not None else end
             sentence = join_tokens(buf)
             if sentence:
-                s0 = start + timestamps[first]
-                out.append(Segment(s0, min(seg_end, end), sentence,
-                                   tuple(w for w in words if s0 <= w[0] < seg_end)))
+                out.append(Segment(start + timestamps[first], min(seg_end, end), sentence,
+                                   words_in(first, i + 1)))
             first, buf = i + 1, []
     tail = join_tokens(buf)
     if tail:
-        s0 = start + timestamps[first]
-        out.append(Segment(s0, end, tail, tuple(w for w in words if w[0] >= s0)))
+        out.append(Segment(start + timestamps[first], end, tail, words_in(first, len(tokens))))
     return out
 
 
 def _token_words(start, end, tokens, timestamps):
-    """Group tokens into (start, end, text) words: a token beginning with a
-    space starts a new word. A word ends where the next one starts."""
+    """Group tokens into words: a token beginning with a space starts a new
+    word, which ends where the next one starts. Returns
+    [(index of the word's first token, (start, end, text))]."""
     starts = [i for i, t in enumerate(tokens) if i == 0 or t.startswith(" ")]
     words = []
     for n, i in enumerate(starts):
         j = starts[n + 1] if n + 1 < len(starts) else len(tokens)
         w_end = start + timestamps[j] if j < len(tokens) else end
-        words.append((start + timestamps[i], min(w_end, end), "".join(tokens[i:j])))
+        words.append((i, (start + timestamps[i], min(w_end, end), "".join(tokens[i:j]))))
     return words
 
 
