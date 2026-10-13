@@ -168,7 +168,7 @@ Consecutive lines from the same speaker are merged into one paragraph. Timestamp
 
 - Transcription never uses the network. Offline mode is enforced at the library level, so cached models load without any revision or telemetry calls.
 - No usage statistics are sent. pyannote.audio 4.x sends anonymous usage metrics to otel.pyannote.ai by default; the app forces this off (`PYANNOTE_METRICS_ENABLED=false`, `OTEL_SDK_DISABLED=true`), along with Hugging Face and ONNX Runtime telemetry, even if your environment says otherwise.
-- As a backstop, the app process refuses every network connection and DNS lookup except to the local machine, apart from deliberate model downloads. If a library ever tries to phone home, the attempt fails instead of sending anything.
+- As a backstop, the app process refuses Python network connections and DNS lookups to anything other than the local machine (including a proxy running on the local machine), apart from deliberate model downloads. It guards the standard Python socket functions that the app's libraries use; it is not a firewall, and native code opening its own sockets would not be caught. For managed deployments, an outbound firewall rule for the app's Python is the stronger control.
 - The installer goes online to fetch Python, packages and models.
 - The Update / repair button in the app re-runs the installer in a separate window to reinstall packages at their pinned versions and fetch any missing models. It does not pull new code.
 - If you select a model that is not yet downloaded, the app asks before downloading it.

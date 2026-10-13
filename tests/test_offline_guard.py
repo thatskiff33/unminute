@@ -99,6 +99,37 @@ class NetworkGuardTests(unittest.TestCase):
         socket.getaddrinfo(TEST_NET, 443)   # no longer guarded
         self.assertEqual(og.blocked, [])
 
+    def test_legacy_dns_functions_are_guarded(self):
+        for fn in (socket.gethostbyname, socket.gethostbyname_ex, socket.gethostbyaddr):
+            with self.assertRaises(og.NetworkBlockedError):
+                fn("example.com")
+        with self.assertRaises(og.NetworkBlockedError):
+            socket.getnameinfo((TEST_NET, 443), 0)
+        self.assertEqual(socket.gethostbyname("localhost"), "127.0.0.1")
+
+    def test_loopback_proxy_counts_as_remote(self):
+        # A proxy on this machine would forward traffic to the internet.
+        og.uninstall()
+        saved = os.environ.get("HTTPS_PROXY")
+        os.environ["HTTPS_PROXY"] = "http://127.0.0.1:8899"
+        try:
+            og.install()
+            s = socket.socket()
+            try:
+                with self.assertRaises(og.NetworkBlockedError):
+                    s.connect(("127.0.0.1", 8899))
+            finally:
+                s.close()
+            self.assertIn(("127.0.0.1", 8899), og.blocked)
+            with og.permit():           # deliberate downloads may still use the proxy
+                self.assertTrue(og._check("127.0.0.1", 8899))
+            self.assertTrue(og._check("127.0.0.1", 8900))   # other local ports fine
+        finally:
+            if saved is None:
+                os.environ.pop("HTTPS_PROXY", None)
+            else:
+                os.environ["HTTPS_PROXY"] = saved
+
     def test_recorded_attempts_are_bounded(self):
         for i in range(og.MAX_RECORDED + 20):
             with self.assertRaises(og.NetworkBlockedError):

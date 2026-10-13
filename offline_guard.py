@@ -72,8 +72,35 @@ def _is_local(host):
         return False   # a hostname that needs DNS: not local
 
 
+def _local_proxies():
+    """(host, port) of proxies configured on this machine itself. Traffic sent
+    to a loopback proxy would be forwarded to the internet, so outside permit()
+    such a connection counts as remote. Read from the environment and, on
+    Windows, the registry (what requests/httpx/urllib honour by default)."""
+    import urllib.parse
+    import urllib.request
+    found = set()
+    try:
+        proxies = urllib.request.getproxies()
+    except Exception:
+        proxies = {}
+    for url in proxies.values():
+        try:
+            parts = urllib.parse.urlsplit(url if "://" in url else "http://" + url)
+            if parts.hostname and _is_local(parts.hostname):
+                found.add((parts.hostname.lower(), parts.port or 80))
+        except ValueError:
+            continue
+    return found
+
+
+_proxy_endpoints = set()
+
+
 def _check(host, port):
-    if _permits > 0 or _is_local(host):
+    if _permits > 0:
+        return True
+    if _is_local(host) and (str(host).lower(), port) not in _proxy_endpoints:
         return True
     with _lock:
         blocked.append((str(host), port))
@@ -106,18 +133,42 @@ def _guarded_getaddrinfo(host, port, *args, **kwargs):
     return _orig["getaddrinfo"](host, port, *args, **kwargs)
 
 
+def _guard_lookup(name):
+    """Wrap a legacy single-argument DNS function (gethostbyname and friends)."""
+    def guarded(host, *args, **kwargs):
+        if not _check(host, 0):
+            raise _refuse(host, 0)
+        return _orig[name](host, *args, **kwargs)
+    return guarded
+
+
+def _guarded_getnameinfo(sockaddr, flags):
+    if not _check(sockaddr[0], sockaddr[1]):
+        raise _refuse(sockaddr[0], sockaddr[1])
+    return _orig["getnameinfo"](sockaddr, flags)
+
+
+_LOOKUPS = ("gethostbyname", "gethostbyname_ex", "gethostbyaddr")
+
+
 def install():
     """Refuse non-loopback network access from now on (idempotent)."""
-    global _installed
+    global _installed, _proxy_endpoints
     with _lock:
         if _installed:
             return
+        _proxy_endpoints = _local_proxies()
         _orig["connect"] = socket.socket.connect
         _orig["connect_ex"] = socket.socket.connect_ex
         _orig["getaddrinfo"] = socket.getaddrinfo
+        _orig["getnameinfo"] = socket.getnameinfo
+        for name in _LOOKUPS:
+            _orig[name] = getattr(socket, name)
+            setattr(socket, name, _guard_lookup(name))
         socket.socket.connect = _guarded_connect
         socket.socket.connect_ex = _guarded_connect_ex
         socket.getaddrinfo = _guarded_getaddrinfo
+        socket.getnameinfo = _guarded_getnameinfo
         _installed = True
 
 
@@ -130,6 +181,9 @@ def uninstall():
         socket.socket.connect = _orig["connect"]
         socket.socket.connect_ex = _orig["connect_ex"]
         socket.getaddrinfo = _orig["getaddrinfo"]
+        socket.getnameinfo = _orig["getnameinfo"]
+        for name in _LOOKUPS:
+            setattr(socket, name, _orig[name])
         _installed = False
 
 

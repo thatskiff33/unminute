@@ -30,8 +30,8 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q -f *.py tests/*.py
 
-      # Model-free tests (stdlib only). Tests that need the full app stack
-      # skip themselves here; run them locally in the installed environment.
+      # Model-free tests (stdlib only). Any test that needs the full app stack
+      # must skip itself here; run those locally in the installed environment.
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 

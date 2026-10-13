@@ -57,7 +57,9 @@ if not os.environ.get("HF_TOKEN"):
 from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
 
-offline_guard.disable_onnxruntime_telemetry()   # onnxruntime arrives with faster-whisper
+# faster-whisper imports onnxruntime lazily (for its VAD); import it now so its
+# telemetry events are off before first use (costs ~0.2 s at startup).
+offline_guard.disable_onnxruntime_telemetry()
 
 
 @contextlib.contextmanager
