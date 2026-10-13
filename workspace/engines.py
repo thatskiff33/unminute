@@ -82,4 +82,4 @@ def diarize_file(model, cache_dir, audio_path, hint, threads):
                 for t, _, lbl in annotation.itertracks(yield_label=True)]
     turns, excl = as_list(full), as_list(exclusive)
     del pipeline
-    return turns, excl, "cpu"
+    return turns, excl, "cpu"          # pyannote runs in float32 on the CPU here

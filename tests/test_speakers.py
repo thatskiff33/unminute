@@ -114,6 +114,42 @@ class SpeakerTests(unittest.TestCase):
         used = {v[0] for v in self.store.current_speakers(self.vid).values()}
         self.assertEqual(used, {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"})
 
+    def test_failed_rerun_keeps_the_previous_labels(self):
+        self.assertEqual(self.run_speakers(), SpeakerResult.DONE)
+        good = self.store.current_speakers(self.vid)
+        self.assertEqual(self.run_speakers("diarizer_fails", hint=3), SpeakerResult.FAILED)
+        self.assertEqual(self.store.current_speakers(self.vid), good)
+        self.assertEqual([r["status"] for r in self.store.speaker_runs(self.vid)],
+                         ["done", "failed"])
+
+    def test_result_after_content_change_is_refused(self):
+        rid = self.store.start_speaker_run(self.vid)
+        with self.store.tx() as db:                        # e.g. cleanup started (#17)
+            db.execute("UPDATE meetings SET content_epoch = content_epoch + 1")
+        self.assertFalse(self.store.finish_speaker_run(rid, [(0, 60, "A")], [(0, 60, "A")]))
+        self.assertEqual(self.store.current_speakers(self.vid), {})
+
+    def test_handover_is_not_overlap(self):
+        from workspace.store import attribute
+        turns = [(0.0, 10.0, "A"), (10.0, 20.0, "B")]
+        self.assertEqual(attribute(8.0, 12.0, turns, turns), ("A", 0))
+        self.assertEqual(attribute(8.0, 12.0, turns + [(9.0, 11.0, "C")], turns)[1], 1)
+
+    def test_failed_speaker_pass_does_not_break_next_transcription(self):
+        from workspace.worker import diarize
+        self.handle.load(fake("echo"), 1)
+        from workspace.worker import WorkerError
+        with self.assertRaises(WorkerError):
+            diarize(self.handle, fake("diarizer_fails"), self.audio, None, 1)
+        self.handle.load(fake("echo"), 1)                  # must reload, not assume loaded
+        segs, _ = self.handle.transcribe(np.zeros(SR, dtype=np.float32))
+        self.assertTrue(segs)
+
+    def test_error_messages_hide_paths_with_spaces(self):
+        from workspace.worker import safe_message
+        exc = FileNotFoundError(2, "No such file", "C:\\Users\\Jo Doe\\a.f32")
+        self.assertNotIn("Doe", safe_message(exc))
+
     def test_refusals(self):
         self.assertEqual(self.run_speakers(audio=Path(self.tmp.name) / "gone.f32"),
                          SpeakerResult.NO_AUDIO)

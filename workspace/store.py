@@ -118,7 +118,8 @@ CREATE TABLE IF NOT EXISTS speaker_runs (
     id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES versions(id),
     status TEXT NOT NULL,      -- running | done | failed | interrupted | superseded
     hint_count INTEGER, started_at REAL, finished_at REAL, error TEXT,
-    backend TEXT, precision TEXT);
+    backend TEXT, precision TEXT,
+    epoch INTEGER);            -- meeting content epoch at start; a stale finish is refused
 -- exclusive = 0: pyannote's full turns, including overlapped speech (evidence)
 -- exclusive = 1: one speaker at a time, used for attribution
 CREATE TABLE IF NOT EXISTS speaker_turns (
@@ -142,7 +143,7 @@ CREATE TABLE IF NOT EXISTS receipts (
 """
 
 
-OVERLAP_MIN_S = 0.3   # another speaker must talk this long during a segment to count
+OVERLAP_MIN_S = 0.3   # two people must talk at the same time this long to count
 SPEAKER_RESTART_NOTE = (
     "Speaker identification was interrupted. It works on the whole meeting at once, so it "
     "will start again from the beginning; the transcript is unaffected.")
@@ -150,14 +151,22 @@ SPEAKER_RESTART_NOTE = (
 
 def attribute(start, end, turns, exclusive_turns):
     """(label, overlap) for one segment: the exclusive-turn speaker covering
-    most of it, and whether two or more people spoke during it (full turns)."""
+    most of it, and whether different people spoke AT THE SAME TIME within it
+    (from pyannote's full turns) for at least OVERLAP_MIN_S in total. A plain
+    handover from one speaker to the next inside a segment is not overlap."""
     best, best_cover = None, 0.0
     for a, b, lbl in exclusive_turns:
         cover = min(end, b) - max(start, a)
         if cover > best_cover:
             best, best_cover = lbl, cover
-    talkers = {lbl for a, b, lbl in turns if min(end, b) - max(start, a) >= OVERLAP_MIN_S}
-    return best, 1 if len(talkers) > 1 else 0
+    inside = [(max(a, start), min(b, end), lbl) for a, b, lbl in turns
+              if min(b, end) > max(a, start)]
+    together = 0.0
+    for i, (a1, b1, l1) in enumerate(inside):
+        for a2, b2, l2 in inside[i + 1:]:
+            if l1 != l2:
+                together += max(0.0, min(b1, b2) - max(a1, a2))
+    return best, 1 if together >= OVERLAP_MIN_S else 0
 
 
 class StoreError(RuntimeError):
@@ -410,28 +419,44 @@ class Store:
         superseded; transcription is never touched."""
         rid = new_id()
         with self.tx() as db:
+            # Only a pass still running is superseded now; the previous good
+            # labels stay current until this pass actually succeeds.
             db.execute("UPDATE speaker_runs SET status = 'superseded' "
-                       "WHERE version_id = ? AND status IN ('done', 'running')", (vid,))
-            db.execute("INSERT INTO speaker_runs (id, version_id, status, hint_count, started_at)"
-                       " VALUES (?, ?, 'running', ?, ?)", (rid, vid, hint_count, time.time()))
+                       "WHERE version_id = ? AND status = 'running'", (vid,))
+            epoch = db.execute("SELECT m.content_epoch FROM versions v JOIN meetings m "
+                               "ON m.id = v.meeting_id WHERE v.id = ?", (vid,)).fetchone()
+            db.execute("INSERT INTO speaker_runs (id, version_id, status, hint_count, started_at,"
+                       " epoch) VALUES (?, ?, 'running', ?, ?, ?)",
+                       (rid, vid, hint_count, time.time(), epoch[0] if epoch else None))
         return rid
 
     def finish_speaker_run(self, rid, turns, exclusive_turns, backend=None, precision=None):
-        """Atomically store turns and per-segment attribution and mark the run
-        done. Refused (False) if the run is no longer 'running'."""
+        """Atomically store turns and per-segment attribution, mark the run done
+        and supersede earlier completed runs. Refused (False, nothing written)
+        if the run is no longer 'running', its version is no longer active or
+        the meeting's content changed meanwhile (cleanup, #17)."""
+        run = self._one("SELECT * FROM speaker_runs WHERE id = ?", (rid,))
+        if run is None or run["status"] != "running":
+            return False
+        # Attribution is computed outside the write lock (long meetings).
+        segs = self._all("SELECT id, start_s, end_s FROM segments WHERE version_id = ?",
+                         (run["version_id"],))
+        rows = [(rid, s["id"], *attribute(s["start_s"], s["end_s"], turns, exclusive_turns))
+                for s in segs]
         with self.tx() as db:
-            run = db.execute("SELECT * FROM speaker_runs WHERE id = ?", (rid,)).fetchone()
-            if run is None or run["status"] != "running":
+            now = db.execute(
+                "SELECT r.status, v.state, m.content_epoch FROM speaker_runs r "
+                "JOIN versions v ON v.id = r.version_id JOIN meetings m ON m.id = v.meeting_id "
+                "WHERE r.id = ?", (rid,)).fetchone()
+            if (now is None or now["status"] != "running" or now["state"] != "active"
+                    or now["content_epoch"] != run["epoch"]):
                 return False
             db.executemany("INSERT INTO speaker_turns VALUES (?,?,?,?,?)",
                            [(rid, a, b, lbl, 0) for a, b, lbl in turns]
                            + [(rid, a, b, lbl, 1) for a, b, lbl in exclusive_turns])
-            segs = db.execute("SELECT id, start_s, end_s FROM segments WHERE version_id = ?",
-                              (run["version_id"],)).fetchall()
-            db.executemany("INSERT INTO segment_speakers VALUES (?,?,?,?)",
-                           [(rid, s["id"], *attribute(s["start_s"], s["end_s"],
-                                                      turns, exclusive_turns))
-                            for s in segs])
+            db.executemany("INSERT INTO segment_speakers VALUES (?,?,?,?)", rows)
+            db.execute("UPDATE speaker_runs SET status = 'superseded' WHERE version_id = ? "
+                       "AND status = 'done'", (run["version_id"],))
             db.execute("UPDATE speaker_runs SET status = 'done', finished_at = ?, backend = ?, "
                        "precision = ? WHERE id = ?", (time.time(), backend, precision, rid))
         return True

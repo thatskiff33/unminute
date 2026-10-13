@@ -34,7 +34,10 @@ LOAD_TIMEOUT_S = 600.0
 TRANSCRIBE_TIMEOUT_FACTOR = 10.0
 TRANSCRIBE_TIMEOUT_FLOOR_S = 120.0
 
-_PATHS = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp)/)[^\s'\"<>|]*")
+# Quoted paths first (they may contain spaces, e.g. in a user name), then bare ones.
+_PATHS = re.compile(r"'(?:[A-Za-z]:[\\/]|\\\\|/)[^']*'"
+                    r'|"(?:[A-Za-z]:[\\/]|\\\\|/)[^"]*"'
+                    r"|(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp)/)[^\s'\"<>|]*")
 
 
 class WorkerCrashed(RuntimeError):
@@ -293,8 +296,13 @@ def diarize(handle, model, audio_path, hint, threads):
     seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
     timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
     with handle._lock:
-        reply = handle._request(("diarize", model, str(audio_path), hint, threads), timeout)
-        handle._loaded = None            # the speech model was released for this
+        try:
+            reply = handle._request(("diarize", model, str(audio_path), hint, threads),
+                                    timeout)
+        finally:
+            # The worker released the speech model before trying, so the next
+            # transcription must reload it even if speaker separation failed.
+            handle._loaded = None
         return reply[1], reply[2], reply[3], reply[4]
 
 

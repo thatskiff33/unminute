@@ -48,7 +48,8 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
         _end(store, rid, "failed", f"{type(exc).__name__}: {safe_message(exc)}"[:300])
         return SpeakerResult.FAILED
     try:
-        if not store.finish_speaker_run(rid, turns, exclusive, backend=device):
+        if not store.finish_speaker_run(rid, turns, exclusive, backend=device,
+                                        precision="float32"):
             return SpeakerResult.STOPPED    # superseded by a newer run meanwhile
     except StoreError as exc:
         _end(store, rid, "failed", f"Could not save speakers: {exc}"[:300])
