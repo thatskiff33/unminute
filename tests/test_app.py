@@ -305,6 +305,43 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertEqual(ws.store._one("SELECT COUNT(*) AS n FROM speaker_corrections")["n"], 0)
 
+    def test_handoff_copy_and_save_after_review(self):
+        from workspace import clipboard
+        ws = self.open()
+        mid = self.imported(ws)
+        with self.assertRaises(WorkspaceError):
+            ws.handoff_preview(mid, "minutes")               # review first
+        ws.confirm_reviewed(mid)
+        self.assertTrue(ws.wait_idle(60))
+        copied = []
+        real = clipboard.copy_text
+        clipboard.copy_text = copied.append
+        preview = ws.handoff_preview(mid, "minutes")
+        summary = ws.handoff_preview(mid, "summary")
+        try:
+            r = ws.copy_handoff(mid, "minutes", "combined", preview["digests"]["combined"])
+            ws.copy_handoff(mid, "summary", "prompt_only", summary["digests"]["prompt_only"])
+            with self.assertRaisesRegex(WorkspaceError, "changed since the preview"):
+                ws.copy_handoff(mid, "minutes", "combined", "0" * 64)
+        finally:
+            clipboard.copy_text = real
+        self.assertEqual(copied[0], preview["combined"])      # exactly what was previewed
+        self.assertEqual(r["chars"], len(preview["combined"]))
+        self.assertNotIn("sentence", copied[1])
+        md_digest = preview["digests"]["markdown"]
+        out = ws.save_handoff_to(mid, "minutes", str(self.root / "handoff"), md_digest)
+        saved = (self.root / "handoff.md").read_bytes().decode("utf-8")
+        self.assertEqual((out["name"], saved), ("handoff.md", preview["markdown"]))  # LF kept
+        (self.root / "plan v1.2.md").write_text("theirs")
+        with self.assertRaisesRegex(WorkspaceError, "already exists"):
+            ws.save_handoff_to(mid, "minutes", str(self.root / "plan v1.2"), md_digest)
+        self.assertEqual((self.root / "plan v1.2.md").read_text(), "theirs")
+        with self.assertRaises(WorkspaceError):
+            ws.copy_handoff(mid, "minutes", "everything", "x")
+        ws.confirm_final_saved(mid)
+        self.assertTrue(ws.wait_idle(60))
+        self.assertTrue((self.root / "handoff.md").exists())  # the user's file is theirs
+
     # -- intake ---------------------------------------------------------------------
 
     def test_refused_imports_explain_without_paths(self):

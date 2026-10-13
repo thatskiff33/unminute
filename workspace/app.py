@@ -22,7 +22,8 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import cleanup, holds, media, resources, runner, speaker_names, speakers
+from workspace import (cleanup, clipboard, handoff, holds, media, resources, runner,
+                       speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root
@@ -100,6 +101,7 @@ class Workspace:
         self.media = self.root / "media"
         self.store = Store(self.root / "workspace.db")
         self.settings = Settings(self.root / "settings.json")
+        self.templates = handoff.Templates(self.root / "templates.json")
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
@@ -720,6 +722,81 @@ class Workspace:
             self.handle.shutdown()        # the next worker starts with the new priority
         self._wake.set()
         return self.get_settings()
+
+    # -- handoff (#22) ------------------------------------------------------------------
+
+    def _handoff(self, fn, *args):
+        try:
+            return fn(*args)
+        except (handoff.HandoffError, clipboard.ClipboardError) as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def handoff_templates(self):
+        return self.templates.all()
+
+    def save_template(self, tid, title, prompt):
+        if tid is not None and (not isinstance(tid, str) or len(tid) > 40):
+            raise WorkspaceError("That template no longer exists.")
+        if not isinstance(title, str) or not isinstance(prompt, str):
+            raise WorkspaceError("Expected text.")
+        return self._handoff(self.templates.save, tid, title, prompt)
+
+    def reset_template(self, tid):
+        if not isinstance(tid, str):
+            raise WorkspaceError("That template no longer exists.")
+        self.templates.reset(tid)
+
+    def handoff_preview(self, mid, tid):
+        """Exactly what Copy and Save will produce, plus the options in use."""
+        self._meeting(mid)
+        template = self._handoff(self.templates.get, tid)
+        out = self._handoff(handoff.build, self.store, mid, template)
+        return {**out, "options": handoff.options(self.store, mid)}
+
+    def set_handoff_options(self, mid, omitted, redactions):
+        m = self._meeting(mid)
+        if not m["reviewed_at"]:
+            raise WorkspaceError("Confirm the transcript review first.")
+        self._handoff(handoff.set_options, self.store, mid, omitted, redactions)
+
+    def _checked(self, mid, tid, kind, expected):
+        """The handoff text, refused unless it is exactly what was previewed."""
+        out = self.handoff_preview(mid, tid)
+        if not isinstance(expected, str) or out["digests"][kind] != expected:
+            raise WorkspaceError("The handoff changed since the preview. Check the preview "
+                                 "again, then copy or save.")
+        return out
+
+    def copy_handoff(self, mid, tid, kind, expected):
+        if kind not in ("combined", "prompt_only"):
+            raise WorkspaceError("Choose what to copy.")
+        out = self._checked(mid, tid, kind, expected)
+        self._handoff(clipboard.copy_text, out[kind])
+        return {"chars": len(out[kind]), "long": out["long"] and kind == "combined"}
+
+    def save_handoff_to(self, mid, tid, path, expected):
+        """Write the Markdown to a file the user chose in the save dialog. The
+        app keeps no record of it; the user files or deletes it. ".md" is
+        appended (never substituted) when missing, and a file the dialog did
+        not ask about is never overwritten."""
+        from workspace.safe_paths import check_raw
+        out = self._checked(mid, tid, "markdown", expected)
+        try:
+            check_raw(path)
+        except UnsafePathError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        target = Path(path)
+        if target.suffix.lower() != ".md":
+            target = target.with_name(target.name + ".md")
+            if target.exists():
+                raise WorkspaceError(f"{target.name} already exists. Choose another name.")
+        try:
+            with open(target, "w", encoding="utf-8", newline="\n") as f:
+                f.write(out["markdown"])
+        except OSError as exc:
+            reason = exc.strerror or "file error"
+            raise WorkspaceError(f"Could not save the file: {reason}.") from exc
+        return {"chars": len(out["markdown"]), "name": target.name}
 
     # -- holds and cleanup --------------------------------------------------------------
 

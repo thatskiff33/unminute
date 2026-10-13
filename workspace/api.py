@@ -23,7 +23,8 @@ API_METHODS = frozenset({
     "confirm_cleanup", "retry_cleanup", "reminders", "receipts", "settings",
     "set_settings", "import_dialog", "clear_import_errors", "pywebviewEventHandler",
     "speakers", "speaker_examples", "rename_speaker", "merge_speakers", "assign_speaker",
-    "undo_speakers", "speaker_panel",
+    "undo_speakers", "speaker_panel", "handoff_templates", "save_template", "reset_template",
+    "handoff_preview", "set_handoff_options", "copy_handoff", "save_handoff",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -155,6 +156,39 @@ def make_api(ws, get_window=lambda: None):
     def undo_speakers(self, mid):
         return _safe(ws.undo_speakers, mid)
 
+    def handoff_templates(self):
+        return _safe(ws.handoff_templates)
+
+    def save_template(self, tid, title, prompt):
+        return _safe(ws.save_template, tid, title, prompt)
+
+    def reset_template(self, tid):
+        return _safe(ws.reset_template, tid)
+
+    def handoff_preview(self, mid, tid):
+        return _safe(ws.handoff_preview, mid, tid)
+
+    def set_handoff_options(self, mid, omitted, redactions):
+        return _safe(ws.set_handoff_options, mid, omitted, redactions)
+
+    def copy_handoff(self, mid, tid, kind, expected=None):
+        return _safe(ws.copy_handoff, mid, tid, kind, expected)
+
+    def save_handoff(self, mid, tid, expected=None):
+        def run():
+            import webview
+            window = get_window()
+            if window is None:
+                raise WorkspaceError("The save dialog is not available.")
+            name = ws.handoff_preview(mid, tid)["filename"]
+            chosen = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name,
+                                               file_types=("Markdown (*.md)",))
+            if not chosen:
+                return None                       # cancelled
+            path = chosen if isinstance(chosen, str) else chosen[0]
+            return ws.save_handoff_to(mid, tid, path, expected)
+        return _safe(run)
+
     def import_dialog(self):
         def run():
             import webview
@@ -178,7 +212,11 @@ def make_api(ws, get_window=lambda: None):
                  clear_import_errors=clear_import_errors, speakers=speakers,
                  speaker_examples=speaker_examples, rename_speaker=rename_speaker,
                  merge_speakers=merge_speakers, assign_speaker=assign_speaker,
-                 undo_speakers=undo_speakers, speaker_panel=speaker_panel)
+                 undo_speakers=undo_speakers, speaker_panel=speaker_panel,
+                 handoff_templates=handoff_templates,
+                 save_template=save_template, reset_template=reset_template,
+                 handoff_preview=handoff_preview, set_handoff_options=set_handoff_options,
+                 copy_handoff=copy_handoff, save_handoff=save_handoff)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

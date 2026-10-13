@@ -158,6 +158,11 @@ CREATE TABLE IF NOT EXISTS segment_speakers (
 CREATE TABLE IF NOT EXISTS speaker_corrections (
     id INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES speaker_runs(id),
     kind TEXT NOT NULL, target TEXT NOT NULL, value TEXT NOT NULL, at REAL NOT NULL);
+-- Handoff-only omissions and redactions (#22). Meeting content: removed with
+-- the transcript at cleanup.
+CREATE TABLE IF NOT EXISTS handoff_options (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id),
+    omitted TEXT NOT NULL, redactions TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cleanup_jobs (
     id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, phase TEXT NOT NULL,
     state TEXT NOT NULL, intent_at REAL NOT NULL, last_attempt_at REAL,
