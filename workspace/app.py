@@ -112,6 +112,7 @@ class Workspace:
                                    quiet=self.settings["mode"] == resources.QUIET, **kw)
         # Downloads replace model files: the inference worker is unloaded first.
         self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown)
+        self.downloads.after = lambda: self._wake.set()    # resume processing afterwards
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
@@ -313,7 +314,12 @@ class Workspace:
                         self.settings["battery_override"], battery=self._battery):
                     self._status = "Waiting: the computer is on battery power"
                     break
-                self._busy = (mid, kind)
+                with self._lock:
+                    # Never start model work while a model is being replaced (#19).
+                    if kind != "cleanup" and self.downloads.busy():
+                        self._status = "Waiting for the model download to finish"
+                        break
+                    self._busy = (mid, kind)
                 try:
                     self._run(kind, mid, ref)
                 except Exception as exc:       # never let one meeting stop the loop
@@ -830,21 +836,16 @@ class Workspace:
         import os
         if not isinstance(name, str) or name not in asr_engines.MANAGED_MODELS:
             raise WorkspaceError("Unknown model.")
-        if self._busy and self._busy[1] != "cleanup":
-            raise WorkspaceError("Pause processing first: models cannot be replaced while "
-                                 "a meeting is being processed.")
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")
+        on_success = None
         if asr_engines.MANAGED_MODELS[name].gated:
             try:
-                if token:
-                    token = token.strip()
-                    if remember:
-                        credentials.save_token(token)
-                elif use_earlier:
-                    token = os.environ.get("HF_TOKEN") or None
+                if token or use_earlier:
+                    token = (token or "").strip() or os.environ.get("HF_TOKEN") or None
                     if token and remember:
-                        credentials.save_token(token)
+                        # Remembered only once a download has shown it works.
+                        on_success = (lambda t=token: credentials.save_token(t))
                 else:
                     token = credentials.load_token()
             except credentials.CredentialError as exc:
@@ -854,10 +855,28 @@ class Workspace:
                                      "model.")
         else:
             token = None                       # public models never receive a token
-        try:
-            self.downloads.start(name, token)
-        except setup.SetupError as exc:
-            raise WorkspaceError(str(exc)) from exc
+        with self._lock:                       # atomic with the processing thread's start
+            if self._busy and self._busy[1] != "cleanup":
+                raise WorkspaceError("Pause processing first: models cannot be replaced "
+                                     "while a meeting is being processed.")
+            try:
+                self.downloads.start(name, token, on_success)
+            except setup.SetupError as exc:
+                raise WorkspaceError(str(exc)) from exc
+
+    def verify_model(self, name):
+        if not isinstance(name, str):
+            raise WorkspaceError("Unknown model.")
+        with self._lock:
+            if self._busy and self._busy[1] != "cleanup":
+                raise WorkspaceError("Pause processing first.")
+            try:
+                self.downloads.verify(name)
+            except setup.SetupError as exc:
+                raise WorkspaceError(str(exc)) from exc
+
+    def cancel_download(self):
+        return self.downloads.cancel()
 
     def remove_token(self):
         """Forget the remembered token. Downloaded models keep working offline."""
@@ -867,6 +886,9 @@ class Workspace:
             raise WorkspaceError(str(exc)) from exc
 
     def finish_setup(self, speakers):
+        """speakers: the user's choice. Turning them on before the speaker model
+        has finished downloading is fine: separation waits until it is ready
+        (a missing model fails with an explanation and can be rerun)."""
         if not isinstance(speakers, bool):
             raise WorkspaceError("Expected on or off.")
         self.settings.update(onboarded=True, speakers=speakers)

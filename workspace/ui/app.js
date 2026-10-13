@@ -735,11 +735,19 @@ async function renderSetup() {
   $("setup-cards").replaceChildren(...s.cards.map((c) => {
     const dl = c.download;
     const running = dl && dl.state === "running";
-    const action = c.state === "ready" ? null
-      : c.needs_token ? el("span", { class: "muted", textContent: "Download it with the steps below." })
-      : el("button", { type: "button", class: c.recommended ? "primary" : "",
-                       textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
-                       disabled: running, on: { click: () => startDownload(c.name) } });
+    const busy = s.cards.some((x) => x.download && x.download.state === "running");
+    const action = running
+      ? el("button", { type: "button", textContent: "Cancel",
+                       on: { click: () => attempt(() => call("cancel_download").then(renderSetup)) } })
+      : c.state === "ready"
+        ? el("button", { type: "button", textContent: "Check every file", disabled: busy,
+                         title: "Compare every file with its published checksum",
+                         on: { click: () => attempt(() => call("verify_model", c.name).then(renderSetup)) } })
+        : c.needs_token && c.state === "missing"
+          ? el("span", { class: "muted", textContent: "Download it with the steps below." })
+          : el("button", { type: "button", class: c.recommended ? "primary" : "",
+                           textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
+                           disabled: busy, on: { click: () => startDownload(c.name) } });
     return el("li", { class: "card" },
       el("h2", { textContent: c.title }),
       el("p", { textContent: c.about }),
@@ -755,9 +763,10 @@ async function renderSetup() {
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
   $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready";
   $("s-remove-token").hidden = !s.token_remembered;
-  $("s-token-state").textContent = s.token_remembered
-    ? "A token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
+  $("s-token-note").textContent = s.token_remembered
+    ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
+  if (!state.setupChoiceTouched) $("s-speakers-on").checked = s.onboarded ? s.speakers : true;
   $("s-finish").disabled = !s.speech_ready;
   $("s-finish-note").textContent = s.speech_ready
     ? (speaker.state === "ready" ? "Everything is ready." : "You can add speaker identification later from Settings.")
@@ -790,9 +799,9 @@ function wireSetup() {
     say("Token removed. Downloaded models keep working.");
     renderSetup();
   }));
+  $("s-speakers-on").addEventListener("change", () => { state.setupChoiceTouched = true; });
   $("s-finish").addEventListener("click", () => attempt(async () => {
-    const speakers = state.setup.cards.some((c) => c.role === "speakers" && c.state === "ready");
-    await call("finish_setup", speakers);
+    await call("finish_setup", $("s-speakers-on").checked);
     show("inbox");
   }));
   $("s-skip-speakers").addEventListener("click", () => attempt(async () => {

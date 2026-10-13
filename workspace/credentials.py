@@ -82,15 +82,22 @@ def load_token(target=TARGET):
     try:
         c = ptr.contents
         return ctypes.string_at(c.CredentialBlob, c.CredentialBlobSize).decode("utf-16-le")
+    except UnicodeDecodeError as exc:
+        raise CredentialError("The remembered token is damaged. Remove it and enter it "
+                              "again.") from exc
     finally:
         _adv.CredFree(ptr)
 
 
 def has_token(target=TARGET):
-    try:
-        return load_token(target) is not None
-    except CredentialError:
+    """Whether a token is remembered, without reading the secret itself."""
+    if sys.platform != "win32":
         return False
+    ptr = ctypes.POINTER(_CREDENTIAL)()
+    if not _adv.CredReadW(target, CRED_TYPE_GENERIC, 0, ctypes.byref(ptr)):
+        return False
+    _adv.CredFree(ptr)
+    return True
 
 
 def remove_token(target=TARGET):

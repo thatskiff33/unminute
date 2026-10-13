@@ -76,7 +76,7 @@ def checks(window, ws, mid, long_mid, report):
             const page = document.documentElement.outerHTML;
             return {cards, token_field_type: token.type, token_cleared: token.value === '',
                     token_in_page: page.includes('hf_UIcheckNOTreal123'),
-                    remembered_text: document.getElementById('s-token-state').textContent,
+                    remembered_text: document.getElementById('s-token-note').textContent,
                     remove_visible: !document.getElementById('s-remove-token').hidden};""")
         report["setup_vault"] = sorted(VAULT)
         report["lists"] = evaluate(window, WAIT + """

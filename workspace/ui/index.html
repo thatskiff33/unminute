@@ -127,13 +127,16 @@
           <button type="button" id="s-download-speakers" class="primary">Download the speaker model</button>
         </li>
       </ol>
-      <p id="s-token-state" class="muted"></p>
       <div class="row">
         <button type="button" id="s-use-remembered" hidden>Download with the remembered token</button>
         <button type="button" id="s-use-earlier" hidden>Use the token from the earlier version of the app</button>
-        <button type="button" id="s-remove-token" hidden>Remove the remembered token</button>
       </div>
     </section>
+    <div class="row">
+      <p id="s-token-note" class="muted"></p>
+      <button type="button" id="s-remove-token" hidden>Remove the remembered token</button>
+    </div>
+    <label><input type="checkbox" id="s-speakers-on" checked> Identify speakers after transcription (when the speaker model is downloaded)</label>
     <div class="row">
       <button type="button" id="s-finish" class="primary">Finish setup</button>
       <button type="button" id="s-skip-speakers">Skip speaker identification for now</button>

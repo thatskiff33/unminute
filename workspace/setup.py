@@ -96,9 +96,14 @@ def _friendly(exc):
 
 def _download_main(conn, name, cache_dir):
     """Runs in the download process. Network is allowed here only."""
+    import sys
+
     import offline_guard
     offline_guard.disable_telemetry()
     os.environ["HF_HUB_OFFLINE"] = "0"          # this process exists to download
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    if sys.stderr is None or sys.stdout is None:   # pythonw: no console
+        sys.stdout = sys.stderr = open(os.devnull, "w")
     token = conn.recv()                          # via the pipe, never argv/env
     from workspace.worker import safe_message
 
@@ -113,7 +118,8 @@ def _download_main(conn, name, cache_dir):
     try:
         if asr_engines.MANAGED_MODELS[name].gated and not token:
             raise SetupError("The speaker model needs your Hugging Face token to download.")
-        result = asr_engines.install(name, cache_dir, log, download)
+        result = asr_engines.install(name, cache_dir, log, download,
+                                     has_token=bool(token))
         conn.send(("done", result))
     except SetupError as exc:
         conn.send(("error", str(exc)))
@@ -127,24 +133,78 @@ class Downloads:
     def __init__(self, cache_dir, before_install=None, target=None):
         self.cache_dir = str(cache_dir)
         self.target = target or _download_main   # tests: a fake download process
+        self.after = None                        # called when a download or check ends
         self.before_install = before_install     # e.g. unload the inference worker
         self.state = {}                          # name -> {"state", "message", "log"}
         self._lock = threading.Lock()
         self._running = None
 
-    def start(self, name, token=None):
+    def start(self, name, token=None, on_success=None):
+        """on_success runs only after a verified download (e.g. remember the
+        token only once it has been shown to work)."""
         if name not in asr_engines.MANAGED_MODELS:
             raise SetupError("Unknown model.")
         with self._lock:
             if self._running:
-                raise SetupError("Another download is in progress. Wait for it to finish.")
+                raise SetupError("Another download is in progress. Wait for it to finish, "
+                                 "or cancel it.")
             self._running = name
+            self._proc = None
             self.state[name] = {"state": "running", "message": "Starting the download…",
                                 "log": []}
-        threading.Thread(target=self._run, args=(name, token), daemon=True,
+        threading.Thread(target=self._run, args=(name, token, on_success), daemon=True,
                          name="model-download").start()
 
-    def _run(self, name, token):
+    def cancel(self):
+        """Stop a stalled or unwanted download. A later attempt starts again
+        (anything half-downloaded is discarded or verified first)."""
+        proc = getattr(self, "_proc", None)
+        if self._running and proc is not None and proc.is_alive():
+            self._cancelled = True
+            proc.terminate()
+            return True
+        return False
+
+    def verify(self, name):
+        """Full SHA-256 check of an installed model (in the background)."""
+        if name not in asr_engines.MANAGED_MODELS:
+            raise SetupError("Unknown model.")
+        with self._lock:
+            if self._running:
+                raise SetupError("Wait for the current download or check to finish.")
+            self._running = name
+            self.state[name] = {"state": "running", "message": "Checking every file…",
+                                "log": []}
+        threading.Thread(target=self._verify, args=(name,), daemon=True,
+                         name="model-verify").start()
+
+    def _verify(self, name):
+        entry, final = self.state[name], {"state": "failed",
+                                          "message": "The check could not be completed."}
+        try:
+            spec = asr_engines.MANAGED_MODELS[name]
+            if asr_engines.is_parakeet(name):
+                problems = []
+                for s in (spec, asr_engines.SILERO_VAD):
+                    folder = asr_engines.model_dir(s, self.cache_dir)
+                    problems += (asr_engines.check_files(s, folder, full=True)
+                                 if folder.exists() else ["not installed"])
+                ok = not problems
+            else:
+                ok = asr_engines.find_verified(spec, self.cache_dir, full=True) is not None
+            final = ({"state": "ready", "message": "Every file matches its checksum."} if ok
+                     else {"state": "failed", "message": "Some files do not match their "
+                           "checksums. Use Repair to download a fresh copy."})
+        except Exception:
+            pass
+        finally:
+            with self._lock:
+                self._running = None
+            entry.update(final)
+            if self.after:
+                self.after()
+
+    def _run(self, name, token, on_success=None):
         entry = self.state[name]
         final = {"state": "failed", "message": "The download stopped unexpectedly. Try again."}
         try:
@@ -154,7 +214,9 @@ class Downloads:
             parent, child = ctx.Pipe()
             proc = ctx.Process(target=self.target, args=(child, name, self.cache_dir),
                                daemon=True, name="model-download")
+            self._cancelled = False
             proc.start()
+            self._proc = proc
             child.close()
             parent.send(token)
             del token
@@ -171,6 +233,11 @@ class Downloads:
                 if kind == "done":
                     final = {"state": "ready", "message": "Downloaded and verified.",
                              "result": payload}
+                    if on_success:
+                        try:
+                            on_success()
+                        except Exception as exc:     # e.g. could not remember the token
+                            final["message"] += f" {exc}"
                 else:
                     final = {"state": "failed", "message": payload}
                 break
@@ -178,10 +245,15 @@ class Downloads:
         except (EOFError, OSError):
             pass                              # reported as "stopped unexpectedly"
         finally:
+            if getattr(self, "_cancelled", False):
+                final = {"state": "failed", "message": "Download cancelled. Start it again "
+                                                         "when you are ready."}
             # Free the slot first, so the finished state never refuses a retry.
             with self._lock:
                 self._running = None
             entry.update(final)
+            if self.after:
+                self.after()
 
     def busy(self):
         return self._running is not None

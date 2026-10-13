@@ -83,9 +83,9 @@ class SetupTests(unittest.TestCase):
         received = {}
         real = setup.Downloads._run
 
-        def spy(downloads, n, token):
+        def spy(downloads, n, token, on_success=None):
             received["token"] = token
-            return real(downloads, n, token)
+            return real(downloads, n, token, on_success)
         setup.Downloads._run = spy
         try:
             self.ws.download_model(name, SECRET, remember=True)
@@ -110,6 +110,61 @@ class SetupTests(unittest.TestCase):
         st = wait_for(d, asr_engines.SPEAKER_MODEL.name)
         result.update(st["result"])
         self.assertEqual(result, {"token_received": True, "in_argv": False, "in_env": False})
+
+    def test_token_is_remembered_only_after_a_successful_download(self):
+        self.ws.downloads.target = fake_worker_engines.fake_download_fails
+        name = asr_engines.SPEAKER_MODEL.name
+        self.ws.download_model(name, SECRET, remember=True)
+        self.assertEqual(wait_for(self.ws.downloads, name)["state"], "failed")
+        self.assertEqual(self.vault, {})                      # a mistyped token is not kept
+
+    def test_gated_install_needs_no_environment_token(self):
+        saved = os.environ.pop("HF_TOKEN", None)
+        try:
+            calls = []
+            spec = asr_engines.SPEAKER_MODEL
+            with self.assertRaises(asr_engines.ModelLoadError):
+                asr_engines.install_model(spec, self.root / "m", log=lambda m: None,
+                                          download=lambda sp, d: calls.append(d),
+                                          has_token=True)      # fails verification, but...
+            self.assertEqual(len(calls), 1)                    # ...it did try to download
+            with self.assertRaisesRegex(asr_engines.ModelLoadError, "token"):
+                asr_engines.install_model(spec, self.root / "m2", log=lambda m: None,
+                                          download=lambda sp, d: calls.append(d),
+                                          has_token=False)
+            self.assertEqual(len(calls), 1)
+        finally:
+            if saved is not None:
+                os.environ["HF_TOKEN"] = saved
+
+    def test_processing_waits_while_a_model_is_replaced(self):
+        import wave
+
+        import numpy as np
+        rec = self.root / "q.wav"
+        with wave.open(str(rec), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(np.zeros(16000 * 10, dtype="<i2").tobytes())
+        self.ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
+        self.ws._import_one(rec)
+        self.ws.downloads._running = "x"                      # a download in progress
+        self.ws.start()
+        time.sleep(1.5)
+        self.assertEqual(self.ws.meetings()[0]["progress"], 0)   # queued, not started
+        self.ws.downloads._running = None
+        self.ws.downloads.after()                             # the download ends
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertEqual(self.ws.meetings()[0]["progress"], 100)
+
+    def test_cancel_and_full_check(self):
+        name = asr_engines.RECOMMENDED_PARAKEET
+        self.assertFalse(self.ws.cancel_download())
+        self.ws.verify_model(name)
+        st = wait_for(self.ws.downloads, name)
+        self.assertEqual(st["state"], "failed")               # nothing installed here
+        self.assertIn("Repair", st["message"])
 
     def test_not_remembering_uses_the_token_once(self):
         self.ws.download_model(asr_engines.SPEAKER_MODEL.name, SECRET, remember=False)
