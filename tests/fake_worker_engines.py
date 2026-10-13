@@ -57,6 +57,28 @@ def load_fails(threads):
     raise RuntimeError("model files failed verification")
 
 
+# -- fake diarizers: diarize_file("test:fake_worker_engines:<name>", ...) --------
+
+def fake_diarizer(audio, hint):
+    """Speakers alternate every 10 s (A, B, A, ...); with a hint of 3 they
+    rotate A, B, C. 25-27 s also has B talking over A (overlap evidence)."""
+    labels = ["SPEAKER_00", "SPEAKER_01", "SPEAKER_02"][: (hint or 2)]
+    dur = len(audio) / SR
+    exclusive = [(t, min(t + 10.0, dur), labels[int(t // 10) % len(labels)])
+                 for t in range(0, int(dur), 10)]
+    turns = list(exclusive) + [(25.0, 27.0, labels[1])]
+    return turns, exclusive, "cpu"
+
+
+def diarizer_fails(audio, hint):
+    raise RuntimeError("speaker model failed verification")
+
+
+def diarizer_sleepy(audio, hint):
+    time.sleep(30)
+    return [], [], "cpu"
+
+
 def network(threads):
     def run(a):
         try:

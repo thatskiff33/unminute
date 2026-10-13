@@ -34,7 +34,10 @@ LOAD_TIMEOUT_S = 600.0
 TRANSCRIBE_TIMEOUT_FACTOR = 10.0
 TRANSCRIBE_TIMEOUT_FLOOR_S = 120.0
 
-_PATHS = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp)/)[^\s'\"<>|]*")
+# Quoted paths first (they may contain spaces, e.g. in a user name), then bare ones.
+_PATHS = re.compile(r"'(?:[A-Za-z]:[\\/]|\\\\|/)[^']*'"
+                    r'|"(?:[A-Za-z]:[\\/]|\\\\|/)[^"]*"'
+                    r"|(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp)/)[^\s'\"<>|]*")
 
 
 class WorkerCrashed(RuntimeError):
@@ -92,6 +95,18 @@ def _worker_main(conn, cache_dir, quiet):
                 conn.send(("ok", [(s.start, s.end, s.text,
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
+            elif op == "diarize":
+                _, model, audio_path, hint, threads = msg
+                # One heavy model at a time: release the speech model first.
+                had_asr = engine is not None
+                engine, loaded = None, None
+                import gc
+                gc.collect()
+                from workspace.engines import diarize_file
+                turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
+                                                        threads)
+                gc.collect()
+                conn.send(("ok", turns, exclusive, device, had_asr))
             elif op == "exit":
                 conn.send(("ok",))
                 return
@@ -267,6 +282,28 @@ class WorkerHandle:
             reply = self._request(("transcribe", audio), timeout)
         return [Segment(a, b, t, tuple(tuple(w) for w in ws)) for a, b, t, ws in reply[1]], \
             reply[2]
+
+
+DIARIZE_TIMEOUT_FACTOR = 3.0      # x audio length, plus a floor: generous for slow CPUs
+DIARIZE_TIMEOUT_FLOOR_S = 600.0
+
+
+def diarize(handle, model, audio_path, hint, threads):
+    """Whole-meeting speaker separation in the worker. Returns
+    (turns, exclusive_turns, device, asr_was_loaded_before). A stop or a hang
+    ends the pass (it restarts from the beginning next time)."""
+    from pathlib import Path
+    seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
+    timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
+    with handle._lock:
+        try:
+            reply = handle._request(("diarize", model, str(audio_path), hint, threads),
+                                    timeout)
+        finally:
+            # The worker released the speech model before trying, so the next
+            # transcription must reload it even if speaker separation failed.
+            handle._loaded = None
+        return reply[1], reply[2], reply[3], reply[4]
 
 
 class WorkerEngine:
