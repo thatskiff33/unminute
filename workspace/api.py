@@ -171,10 +171,10 @@ def make_api(ws, get_window=lambda: None):
     def set_handoff_options(self, mid, omitted, redactions):
         return _safe(ws.set_handoff_options, mid, omitted, redactions)
 
-    def copy_handoff(self, mid, tid, kind):
-        return _safe(ws.copy_handoff, mid, tid, kind)
+    def copy_handoff(self, mid, tid, kind, expected=None):
+        return _safe(ws.copy_handoff, mid, tid, kind, expected)
 
-    def save_handoff(self, mid, tid):
+    def save_handoff(self, mid, tid, expected=None):
         def run():
             import webview
             window = get_window()
@@ -186,7 +186,7 @@ def make_api(ws, get_window=lambda: None):
             if not chosen:
                 return None                       # cancelled
             path = chosen if isinstance(chosen, str) else chosen[0]
-            return ws.save_handoff_to(mid, tid, path)
+            return ws.save_handoff_to(mid, tid, path, expected)
         return _safe(run)
 
     def import_dialog(self):

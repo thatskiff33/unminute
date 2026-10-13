@@ -178,7 +178,7 @@ def checks(window, ws, mid, long_mid, report):
             const status = document.getElementById('ho-status').textContent
                 || document.getElementById('status').textContent;
             document.getElementById('ho-close').click();
-            return {has_markers: before.includes('\\nBEGIN TRANSCRIPT\\n'),
+            return {has_markers: before.includes('\\nBEGIN TRANSCRIPT '),
                     named_before: before.includes('Aroha'), named_after: after.includes('Aroha'),
                     redacted: after.includes('[redacted]'),
                     left_out: after.includes('1 passage was left out'),

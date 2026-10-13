@@ -759,26 +759,43 @@ class Workspace:
             raise WorkspaceError("Confirm the transcript review first.")
         self._handoff(handoff.set_options, self.store, mid, omitted, redactions)
 
-    def copy_handoff(self, mid, tid, kind):
+    def _checked(self, mid, tid, kind, expected):
+        """The handoff text, refused unless it is exactly what was previewed."""
+        out = self.handoff_preview(mid, tid)
+        if not isinstance(expected, str) or out["digests"][kind] != expected:
+            raise WorkspaceError("The handoff changed since the preview. Check the preview "
+                                 "again, then copy or save.")
+        return out
+
+    def copy_handoff(self, mid, tid, kind, expected):
         if kind not in ("combined", "prompt_only"):
             raise WorkspaceError("Choose what to copy.")
-        out = self.handoff_preview(mid, tid)
+        out = self._checked(mid, tid, kind, expected)
         self._handoff(clipboard.copy_text, out[kind])
         return {"chars": len(out[kind]), "long": out["long"] and kind == "combined"}
 
-    def save_handoff_to(self, mid, tid, path):
+    def save_handoff_to(self, mid, tid, path, expected):
         """Write the Markdown to a file the user chose in the save dialog. The
-        app keeps no record of it; the user files or deletes it."""
+        app keeps no record of it; the user files or deletes it. ".md" is
+        appended (never substituted) when missing, and a file the dialog did
+        not ask about is never overwritten."""
         from workspace.safe_paths import check_raw
-        out = self.handoff_preview(mid, tid)
+        out = self._checked(mid, tid, "markdown", expected)
         try:
             check_raw(path)
         except UnsafePathError as exc:
             raise WorkspaceError(str(exc)) from exc
         target = Path(path)
         if target.suffix.lower() != ".md":
-            target = target.with_suffix(".md")
-        target.write_text(out["markdown"], encoding="utf-8")
+            target = target.with_name(target.name + ".md")
+            if target.exists():
+                raise WorkspaceError(f"{target.name} already exists. Choose another name.")
+        try:
+            with open(target, "w", encoding="utf-8", newline="\n") as f:
+                f.write(out["markdown"])
+        except OSError as exc:
+            reason = exc.strerror or "file error"
+            raise WorkspaceError(f"Could not save the file: {reason}.") from exc
         return {"chars": len(out["markdown"]), "name": target.name}
 
     # -- holds and cleanup --------------------------------------------------------------

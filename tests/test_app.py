@@ -316,20 +316,28 @@ class WorkspaceTests(unittest.TestCase):
         copied = []
         real = clipboard.copy_text
         clipboard.copy_text = copied.append
+        preview = ws.handoff_preview(mid, "minutes")
+        summary = ws.handoff_preview(mid, "summary")
         try:
-            r = ws.copy_handoff(mid, "minutes", "combined")
-            ws.copy_handoff(mid, "summary", "prompt_only")
+            r = ws.copy_handoff(mid, "minutes", "combined", preview["digests"]["combined"])
+            ws.copy_handoff(mid, "summary", "prompt_only", summary["digests"]["prompt_only"])
+            with self.assertRaisesRegex(WorkspaceError, "changed since the preview"):
+                ws.copy_handoff(mid, "minutes", "combined", "0" * 64)
         finally:
             clipboard.copy_text = real
-        preview = ws.handoff_preview(mid, "minutes")
         self.assertEqual(copied[0], preview["combined"])      # exactly what was previewed
         self.assertEqual(r["chars"], len(preview["combined"]))
         self.assertNotIn("sentence", copied[1])
-        out = ws.save_handoff_to(mid, "minutes", str(self.root / "handoff"))
-        saved = (self.root / "handoff.md").read_text(encoding="utf-8")
-        self.assertEqual((out["name"], saved), ("handoff.md", preview["markdown"]))
+        md_digest = preview["digests"]["markdown"]
+        out = ws.save_handoff_to(mid, "minutes", str(self.root / "handoff"), md_digest)
+        saved = (self.root / "handoff.md").read_bytes().decode("utf-8")
+        self.assertEqual((out["name"], saved), ("handoff.md", preview["markdown"]))  # LF kept
+        (self.root / "plan v1.2.md").write_text("theirs")
+        with self.assertRaisesRegex(WorkspaceError, "already exists"):
+            ws.save_handoff_to(mid, "minutes", str(self.root / "plan v1.2"), md_digest)
+        self.assertEqual((self.root / "plan v1.2.md").read_text(), "theirs")
         with self.assertRaises(WorkspaceError):
-            ws.copy_handoff(mid, "minutes", "everything")
+            ws.copy_handoff(mid, "minutes", "everything", "x")
         ws.confirm_final_saved(mid)
         self.assertTrue(ws.wait_idle(60))
         self.assertTrue((self.root / "handoff.md").exists())  # the user's file is theirs

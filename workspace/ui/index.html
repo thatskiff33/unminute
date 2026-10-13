@@ -166,6 +166,12 @@
     <button type="button" id="ho-apply">Apply</button>
   </details>
   <p id="ho-info" class="muted"></p>
+  <p id="ho-dirty" class="banner" hidden>You changed what is left out or redacted. Select Apply to update the preview before copying or saving.</p>
+  <label>Preview <select id="ho-show">
+    <option value="combined">Prompt and transcript (Copy prompt and transcript)</option>
+    <option value="prompt_only">Prompt only (Copy prompt only)</option>
+    <option value="markdown">Markdown file (Save Markdown)</option>
+  </select></label>
   <p id="ho-long" class="banner" hidden>This handoff is long. It is never shortened, but some assistants cut off long pasted text: prefer Save Markdown, attach the file and use Copy prompt only.</p>
   <pre id="ho-preview" class="preview" tabindex="0" aria-label="Exact preview of what is copied"></pre>
   <div class="row">
