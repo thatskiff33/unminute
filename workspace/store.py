@@ -4,14 +4,20 @@
 #
 # Atomic boundaries:
 #   - commit_chunk(): a chunk's segments and its "done" status in ONE
-#     transaction, so a crash leaves either all of it or none of it.
+#     transaction, so a crash leaves either all of it or none of it. It also
+#     refuses results for a superseded version or a stale content epoch, so a
+#     late result can never recreate content after a change or cleanup (#17).
 #   - edits are written only by save_edit(); nothing that writes generated
 #     segments touches them.
+# Threads: the UI bridge and the processing thread share this object, so
+# every operation holds one lock (a single connection cannot nest
+# transactions, and readers must not see another thread's uncommitted writes).
 
 import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -53,12 +59,14 @@ CREATE TABLE IF NOT EXISTS versions (
     engine         TEXT NOT NULL,
     model          TEXT NOT NULL,
     model_revision TEXT NOT NULL,
-    precision      TEXT NOT NULL,
+    precision      TEXT NOT NULL,   -- the requested output contract; actual per attempt below
     config_json    TEXT NOT NULL,
     config_hash    TEXT NOT NULL,
     state          TEXT NOT NULL DEFAULT 'active',  -- active | superseded
     created_at     REAL NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_version
+    ON versions(meeting_id) WHERE state = 'active';
 
 CREATE TABLE IF NOT EXISTS chunks (
     version_id   TEXT NOT NULL REFERENCES versions(id),
@@ -68,12 +76,22 @@ CREATE TABLE IF NOT EXISTS chunks (
     ctx_start    INTEGER NOT NULL,   -- decode range, samples
     ctx_end      INTEGER NOT NULL,
     status       TEXT NOT NULL DEFAULT 'pending',   -- pending | done
-    attempts     INTEGER NOT NULL DEFAULT 0,
-    backend      TEXT,
-    precision    TEXT,
+    failures     INTEGER NOT NULL DEFAULT 0,
     committed_at REAL,
     PRIMARY KEY (version_id, idx)
 );
+
+-- One row per attempt, with the backend/precision the engine actually used.
+CREATE TABLE IF NOT EXISTS attempts (
+    id         INTEGER PRIMARY KEY,
+    version_id TEXT NOT NULL REFERENCES versions(id),
+    chunk_idx  INTEGER NOT NULL,
+    started_at REAL NOT NULL,
+    backend    TEXT,
+    precision  TEXT,
+    result     TEXT NOT NULL DEFAULT 'running'   -- running | committed | failed | stopped
+);
+CREATE INDEX IF NOT EXISTS attempts_by_chunk ON attempts(version_id, chunk_idx);
 
 CREATE TABLE IF NOT EXISTS segments (
     id         INTEGER PRIMARY KEY,
@@ -81,7 +99,8 @@ CREATE TABLE IF NOT EXISTS segments (
     chunk_idx  INTEGER NOT NULL,
     start_s    REAL NOT NULL,
     end_s      REAL NOT NULL,
-    text       TEXT NOT NULL
+    text       TEXT NOT NULL,
+    words_json TEXT              -- [[start, end, text], ...] when the engine provides them
 );
 CREATE INDEX IF NOT EXISTS segments_by_time ON segments(version_id, start_s);
 
@@ -114,6 +133,10 @@ class StoreError(RuntimeError):
     """A database operation failed (e.g. disk full). Nothing partial was saved."""
 
 
+class SchemaTooNew(StoreError):
+    """The database was written by a newer version of the app."""
+
+
 def default_root():
     return Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper" / "workspace"
 
@@ -130,39 +153,58 @@ class Store:
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         # isolation_level=None: we issue BEGIN/COMMIT ourselves (explicit transactions).
         self.db = sqlite3.connect(str(self.path), isolation_level=None, timeout=30,
                                   check_same_thread=False)
         self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.executescript(SCHEMA)
-        row = self.db.execute("SELECT version FROM schema_version").fetchone()
-        if row is None:
-            self.db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+        try:
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=FULL")
+            self.db.execute("PRAGMA foreign_keys=ON")
+            self.db.executescript(SCHEMA)       # outside any transaction; idempotent
+            with self.tx() as db:
+                row = db.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
+                if row["v"] is None:
+                    db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+                elif row["v"] > SCHEMA_VERSION:
+                    raise SchemaTooNew(f"This workspace was created by a newer version of "
+                                       f"the app (schema {row['v']}).")
+        except BaseException:
+            self.db.close()          # never leave the file locked on a refused open
+            raise
 
     def close(self):
-        self.db.close()
+        with self._lock:
+            self.db.close()
 
     @contextmanager
     def tx(self):
         """One atomic transaction; any database error rolls everything back."""
-        try:
-            self.db.execute("BEGIN IMMEDIATE")
-        except sqlite3.Error as exc:
-            raise StoreError(str(exc)) from exc
-        try:
-            yield self.db
-            self.db.execute("COMMIT")
-        except BaseException as exc:
+        with self._lock:
             try:
-                self.db.execute("ROLLBACK")
-            except sqlite3.Error:
-                pass
-            if isinstance(exc, sqlite3.Error):
+                self.db.execute("BEGIN IMMEDIATE")
+            except sqlite3.Error as exc:
                 raise StoreError(str(exc)) from exc
-            raise
+            try:
+                yield self.db
+                self.db.execute("COMMIT")
+            except BaseException as exc:
+                try:
+                    self.db.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                if isinstance(exc, sqlite3.Error):
+                    raise StoreError(str(exc)) from exc
+                raise
+
+    def _one(self, sql, args=()):
+        with self._lock:
+            return self.db.execute(sql, args).fetchone()
+
+    def _all(self, sql, args=()):
+        with self._lock:
+            return self.db.execute(sql, args).fetchall()
 
     # -- meetings and sources ----------------------------------------------------
 
@@ -173,8 +215,15 @@ class Store:
                        "VALUES (?, ?, ?, ?)", (mid, title, now, now))
         return mid
 
+    def delete_new_meeting(self, mid):
+        """Remove a meeting that never got a source (e.g. a failed import)."""
+        with self.tx() as db:
+            if db.execute("SELECT 1 FROM sources WHERE meeting_id = ?", (mid,)).fetchone():
+                raise StoreError("Meeting has content; use cleanup (#17).")
+            db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+
     def meeting(self, mid):
-        return self.db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
+        return self._one("SELECT * FROM meetings WHERE id = ?", (mid,))
 
     def add_source(self, mid, *, original_path, original_sha256, original_size,
                    original_mtime_ns, audio_sha256, samples, sample_rate):
@@ -186,7 +235,7 @@ class Store:
         return sid
 
     def source(self, sid):
-        return self.db.execute("SELECT * FROM sources WHERE id = ?", (sid,)).fetchone()
+        return self._one("SELECT * FROM sources WHERE id = ?", (sid,))
 
     def set_paused(self, mid, paused):
         with self.tx() as db:
@@ -203,18 +252,19 @@ class Store:
     def ensure_version(self, mid, sid, *, engine, model, model_revision, precision,
                        config, chunk_plan):
         """Return the active version for exactly these inputs, creating it (and
-        superseding any other active version) if anything differs. chunk_plan is
-        a list of (start, end, ctx_start, ctx_end) in samples."""
+        superseding any other active version) if anything differs. The check
+        and the creation are one transaction. chunk_plan is a list of
+        (start, end, ctx_start, ctx_end) in samples."""
         chash = config_hash(config)
-        row = self.db.execute(
-            "SELECT id FROM versions WHERE meeting_id = ? AND state = 'active' AND "
-            "source_id = ? AND engine = ? AND model = ? AND model_revision = ? AND "
-            "precision = ? AND config_hash = ?",
-            (mid, sid, engine, model, model_revision, precision, chash)).fetchone()
-        if row:
-            return row["id"]
-        vid = new_id()
         with self.tx() as db:
+            row = db.execute(
+                "SELECT id FROM versions WHERE meeting_id = ? AND state = 'active' AND "
+                "source_id = ? AND engine = ? AND model = ? AND model_revision = ? AND "
+                "precision = ? AND config_hash = ?",
+                (mid, sid, engine, model, model_revision, precision, chash)).fetchone()
+            if row:
+                return row["id"]
+            vid = new_id()
             db.execute("UPDATE versions SET state = 'superseded' "
                        "WHERE meeting_id = ? AND state = 'active'", (mid,))
             db.execute("INSERT INTO versions (id, meeting_id, source_id, engine, model, "
@@ -228,54 +278,80 @@ class Store:
         return vid
 
     def version(self, vid):
-        return self.db.execute("SELECT * FROM versions WHERE id = ?", (vid,)).fetchone()
+        return self._one("SELECT * FROM versions WHERE id = ?", (vid,))
 
     def chunks(self, vid, status=None):
-        q = "SELECT * FROM chunks WHERE version_id = ?"
-        args = [vid]
+        q, args = "SELECT * FROM chunks WHERE version_id = ?", [vid]
         if status:
             q += " AND status = ?"
             args.append(status)
-        return self.db.execute(q + " ORDER BY idx", args).fetchall()
+        return self._all(q + " ORDER BY idx", args)
 
     def progress(self, vid):
         """(committed samples, total samples) from committed chunks only."""
-        row = self.db.execute(
+        row = self._one(
             "SELECT COALESCE(SUM(CASE WHEN status = 'done' THEN end_sample - start_sample END), 0)"
             " AS done, COALESCE(SUM(end_sample - start_sample), 0) AS total "
-            "FROM chunks WHERE version_id = ?",
-            (vid,)).fetchone()
+            "FROM chunks WHERE version_id = ?", (vid,))
         return row["done"], row["total"]
 
-    def note_attempt(self, vid, idx, backend, precision):
+    def start_attempt(self, vid, idx):
         with self.tx() as db:
-            db.execute("UPDATE chunks SET attempts = attempts + 1, backend = ?, precision = ? "
-                       "WHERE version_id = ? AND idx = ?", (backend, precision, vid, idx))
+            cur = db.execute("INSERT INTO attempts (version_id, chunk_idx, started_at) "
+                             "VALUES (?,?,?)", (vid, idx, time.time()))
+            return cur.lastrowid
 
-    def commit_chunk(self, vid, idx, segments):
-        """Atomically store a chunk's segments and mark it done. Refuses to
-        commit a chunk twice (a stale or repeated result is dropped)."""
+    def finish_attempt(self, attempt_id, result, backend=None, precision=None):
+        """Record how an attempt ended and the backend/precision actually used.
+        A failure also counts against the chunk; pauses/stops do not."""
         with self.tx() as db:
-            row = db.execute("SELECT status FROM chunks WHERE version_id = ? AND idx = ?",
-                             (vid, idx)).fetchone()
-            if row is None or row["status"] == "done":
+            db.execute("UPDATE attempts SET result = ?, backend = COALESCE(?, backend), "
+                       "precision = COALESCE(?, precision) WHERE id = ?",
+                       (result, backend, precision, attempt_id))
+            if result == "failed":
+                db.execute("UPDATE chunks SET failures = failures + 1 WHERE (version_id, idx) = "
+                           "(SELECT version_id, chunk_idx FROM attempts WHERE id = ?)",
+                           (attempt_id,))
+
+    def attempts(self, vid, idx):
+        return self._all("SELECT * FROM attempts WHERE version_id = ? AND chunk_idx = ? "
+                         "ORDER BY id", (vid, idx))
+
+    def commit_chunk(self, vid, idx, segments, *, epoch=None, attempt_id=None,
+                     backend=None, precision=None):
+        """Atomically store a chunk's segments and mark it done. Refused (returns
+        False, nothing written) if the chunk is already done, the version is no
+        longer active, or `epoch` no longer matches the meeting's content epoch."""
+        with self.tx() as db:
+            row = db.execute(
+                "SELECT c.status, v.state, m.content_epoch FROM chunks c "
+                "JOIN versions v ON v.id = c.version_id JOIN meetings m ON m.id = v.meeting_id "
+                "WHERE c.version_id = ? AND c.idx = ?", (vid, idx)).fetchone()
+            if (row is None or row["status"] == "done" or row["state"] != "active"
+                    or (epoch is not None and epoch != row["content_epoch"])):
                 return False
-            db.executemany("INSERT INTO segments (version_id, chunk_idx, start_s, end_s, text) "
-                           "VALUES (?,?,?,?,?)",
-                           [(vid, idx, s.start, s.end, s.text) for s in segments])
+            db.executemany(
+                "INSERT INTO segments (version_id, chunk_idx, start_s, end_s, text, words_json) "
+                "VALUES (?,?,?,?,?,?)",
+                [(vid, idx, s.start, s.end, s.text,
+                  json.dumps([list(w) for w in s.words]) if getattr(s, "words", ()) else None)
+                 for s in segments])
             db.execute("UPDATE chunks SET status = 'done', committed_at = ? "
                        "WHERE version_id = ? AND idx = ?", (time.time(), vid, idx))
+            if attempt_id is not None:
+                db.execute("UPDATE attempts SET result = 'committed', backend = ?, precision = ? "
+                           "WHERE id = ?", (backend, precision, attempt_id))
         return True
 
     # -- transcript and edits ----------------------------------------------------
 
     def transcript(self, vid):
         """Segments in time order, with any human edit applied on top."""
-        return self.db.execute(
+        return self._all(
             "SELECT s.id, s.start_s, s.end_s, COALESCE(e.text, s.text) AS text, "
-            "s.text AS generated, e.text IS NOT NULL AS edited "
+            "s.text AS generated, e.text IS NOT NULL AS edited, s.words_json "
             "FROM segments s LEFT JOIN edits e ON e.segment_id = s.id "
-            "WHERE s.version_id = ? ORDER BY s.start_s, s.id", (vid,)).fetchall()
+            "WHERE s.version_id = ? ORDER BY s.start_s, s.id", (vid,))
 
     def save_edit(self, segment_id, text):
         with self.tx() as db:

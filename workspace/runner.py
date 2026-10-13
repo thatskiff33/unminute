@@ -6,26 +6,26 @@
 #   - a chunk's segments and its completion are committed together, so an
 #     interruption before the commit leaves nothing partial, and after the
 #     commit the chunk is finished;
+#   - each attempt is recorded with the backend/precision the engine reports;
 #   - an explicit pause is persisted on the meeting and honoured between
 #     chunks; reported progress comes from committed chunks only;
+#   - the decoded audio is checked against its recorded identity before a
+#     run, so changed audio is never transcribed into an existing version;
 #   - a database error (e.g. disk full) rolls the chunk back and stops the run.
 #
 # The engine is anything with transcribe(waveform) -> (segments, duration)
 # (asr_engines.WhisperEngine / ParakeetEngine). #15 runs it in a worker process.
 
-from dataclasses import dataclass
-
+from asr_engines import Segment
 from workspace import chunking
 from workspace.store import StoreError
 
 SAMPLE_RATE = 16000
 
 
-@dataclass(frozen=True)
-class Seg:
-    start: float
-    end: float
-    text: str
+class RunResult:
+    DONE, PAUSED, FAILED, STORE_ERROR, SOURCE_CHANGED, SUPERSEDED = (
+        "done", "paused", "failed", "store_error", "source_changed", "superseded")
 
 
 def _note_error(store, mid, message):
@@ -36,42 +36,82 @@ def _note_error(store, mid, message):
         pass
 
 
-class RunResult:
-    DONE, PAUSED, FAILED, STORE_ERROR = "done", "paused", "failed", "store_error"
+def _finish(store, attempt_id, result):
+    try:
+        store.finish_attempt(attempt_id, result)
+    except StoreError:
+        pass
 
 
-def run_version(store, mid, vid, reader, engine, *, backend="cpu", precision="int8",
-                on_progress=None, hooks=None):
+def _shift(s, offset):
+    words = tuple((a + offset, b + offset, t) for a, b, t in (getattr(s, "words", ()) or ()))
+    return Segment(s.start + offset, s.end + offset, s.text, words)
+
+
+def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None):
     """Process pending chunks until done, paused or failed. Returns a RunResult."""
     hooks = hooks or {}
-    total = store.source(store.version(vid)["source_id"])["samples"]
+    version = store.version(vid)
+    source = store.source(version["source_id"])
+    total = source["samples"]
+    if version["state"] != "active":
+        return RunResult.SUPERSEDED
+    if not _audio_matches(reader, source):
+        _note_error(store, mid, "The meeting audio has changed or is damaged; it was not "
+                                "transcribed. Import the recording again.")
+        return RunResult.SOURCE_CHANGED
+    epoch = store.meeting(mid)["content_epoch"]
     store.set_phase(mid, "transcribing")
     for chunk in store.chunks(vid, status="pending"):
         if store.meeting(mid)["paused"]:
             return RunResult.PAUSED
         idx = chunk["idx"]
         try:
-            store.note_attempt(vid, idx, backend, precision)
-            audio = reader.read(chunk["ctx_start"], chunk["ctx_end"])
-            segments, _ = engine.transcribe(audio)
-            offset = chunk["ctx_start"] / SAMPLE_RATE
-            absolute = [Seg(s.start + offset, s.end + offset, s.text) for s in segments
-                        if s.text.strip()]
-            mine = chunking.owned(absolute, chunk["start_sample"], chunk["end_sample"], total)
-            if "before_commit" in hooks:
-                hooks["before_commit"](idx)
-            store.commit_chunk(vid, idx, mine)
+            attempt = store.start_attempt(vid, idx)
         except StoreError as exc:
             _note_error(store, mid, f"Could not save progress: {exc}")
             return RunResult.STORE_ERROR
+        try:
+            audio = reader.read(chunk["ctx_start"], chunk["ctx_end"])
+            segments, _ = engine.transcribe(audio)
+            offset = chunk["ctx_start"] / SAMPLE_RATE
+            absolute = [_shift(s, offset) for s in segments if s.text.strip()]
+            mine = chunking.owned(absolute, chunk["start_sample"], chunk["end_sample"], total)
+            if "before_commit" in hooks:
+                hooks["before_commit"](idx)
+            committed = store.commit_chunk(
+                vid, idx, mine, epoch=epoch, attempt_id=attempt,
+                backend=getattr(engine, "device", None),
+                precision=getattr(engine, "precision", None))
+        except StoreError as exc:
+            _finish(store, attempt, "failed")
+            _note_error(store, mid, f"Could not save progress: {exc}")
+            return RunResult.STORE_ERROR
         except Exception as exc:
+            _finish(store, attempt, "failed")
             if hooks.get("reraise"):
                 raise
-            _note_error(store, mid, f"Transcription failed: {type(exc).__name__}")
+            _note_error(store, mid, f"Transcription failed: {type(exc).__name__}: {exc}"[:300])
             return RunResult.FAILED
+        if not committed:
+            # The version was superseded or its content cleaned while this
+            # chunk ran: the result is dropped and must not be retried.
+            _finish(store, attempt, "stopped")
+            return RunResult.SUPERSEDED
         if "after_commit" in hooks:
             hooks["after_commit"](idx)
         if on_progress:
             on_progress(*store.progress(vid))
     store.set_phase(mid, "transcribed")
     return RunResult.DONE
+
+
+def _audio_matches(reader, source):
+    """Length always; full SHA-256 when the reader is backed by a file."""
+    if len(reader) != source["samples"]:
+        return False
+    path = getattr(reader, "path", None)
+    if path is None:
+        return True
+    from workspace.media import sha256_file
+    return sha256_file(path) == source["audio_sha256"]

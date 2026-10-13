@@ -1,15 +1,16 @@
 # Durable core (#14): chunk planning, ownership, atomic commits and recovery.
 # Uses a synthetic "recording" with known words at known times and a fake
 # engine that hears exactly the words fully inside the slice it is given (and
-# garbles words cut by the slice edge), so the committed transcript can be
-# checked against the truth for missing or duplicated speech.
+# garbles words cut by the slice edge). Like real engines, it can return
+# sentence-length segments with word timings (group > 1), which is what exposes
+# boundary loss if ownership were decided per segment.
 # Needs numpy (installed in CI for this job).
 #   python -m unittest discover -s tests -v
 
 import importlib.util
-import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -21,8 +22,9 @@ SR = 16000
 if HAVE_NUMPY:
     import numpy as np
 
+    from asr_engines import Segment
     from workspace import chunking, runner
-    from workspace.store import Store, StoreError
+    from workspace.store import SchemaTooNew, Store, StoreError
 
     class Tagged(np.ndarray):
         """An audio slice that remembers where it came from (test-only)."""
@@ -45,22 +47,33 @@ if HAVE_NUMPY:
             return out
 
     class FakeEngine:
-        """Hears words fully inside the slice; garbles words cut by its edges."""
+        """Hears words fully inside the slice and garbles words cut by its
+        edges. group=N returns N-word "sentences" with word timings, like
+        Parakeet/Whisper; word_times=False drops the word timings."""
 
-        def __init__(self, words, fail_at_offset=None):
+        device, precision = "cpu", "int8"
+
+        def __init__(self, words, fail_at_offset=None, group=1, word_times=True):
             self.words, self.calls, self.fail_at_offset = words, [], fail_at_offset
+            self.group, self.word_times = group, word_times
 
         def transcribe(self, audio):
             off, dur = audio.offset, len(audio) / SR
             self.calls.append(round(off, 3))
             if self.fail_at_offset is not None and abs(off - self.fail_at_offset) < 1e-6:
                 raise RuntimeError("engine crashed")
-            segs = []
+            heard = []
             for t, d, text in self.words:
                 if t >= off and t + d <= off + dur:
-                    segs.append(runner.Seg(t - off, t - off + d, text))
+                    heard.append((t - off, t - off + d, " " + text))
                 elif t < off + dur and t + d > off:      # cut by the slice edge
-                    segs.append(runner.Seg(max(0.0, t - off), min(dur, t + d - off), "#garbled#"))
+                    heard.append((max(0.0, t - off), min(dur, t + d - off), " #garbled#"))
+            segs = []
+            for i in range(0, len(heard), self.group):
+                ws = heard[i:i + self.group]
+                text = "".join(w[2] for w in ws).strip()
+                segs.append(Segment(ws[0][0], ws[-1][1], text,
+                                    tuple(ws) if self.word_times else ()))
             return segs, dur
 
 
@@ -99,8 +112,12 @@ class CoreTests(unittest.TestCase):
                                         precision="int8", config={"beam": 1}, chunk_plan=plan)
         return mid, sid, vid, words, reader, plan
 
-    def texts(self, vid, store=None):
-        return [r["text"] for r in (store or self.store).transcript(vid)]
+    def spoken(self, vid, store=None):
+        """All committed words in time order (segments may hold several)."""
+        return " ".join(r["text"] for r in (store or self.store).transcript(vid)).split()
+
+    def assertMatchesTruth(self, vid, words, store=None):
+        self.assertEqual(self.spoken(vid, store), [w[2] for w in words])
 
     # -- planning and ownership ------------------------------------------------
 
@@ -117,29 +134,48 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(reader.audio[b], 0.0)         # boundary in silence
         self.assertGreater(len(plan), 4)
 
-    def test_full_run_matches_truth_including_repeats(self):
-        mid, _, vid, words, reader, _ = self.new_meeting(300.0)
-        eng = FakeEngine(words)
-        self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
-                         runner.RunResult.DONE)
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
-        self.assertNotIn("#garbled#", self.texts(vid))
-        self.assertEqual(self.store.meeting(mid)["phase"], "transcribed")
+    def test_full_run_matches_truth_word_and_sentence_segments(self):
+        # group=8: ~6 s "sentences" with word times. Ownership per segment
+        # would lose sentence tails at boundaries (found in review); per word
+        # it must not.
+        for group in (1, 8, 20):
+            with self.subTest(group=group):
+                mid, _, vid, words, reader, _ = self.new_meeting(300.0)
+                self.assertEqual(runner.run_version(self.store, mid, vid, reader,
+                                                    FakeEngine(words, group=group)),
+                                 runner.RunResult.DONE)
+                self.assertMatchesTruth(vid, words)
+                self.assertNotIn("#garbled#", self.spoken(vid))
+                self.assertEqual(self.store.meeting(mid)["phase"], "transcribed")
 
-    def test_continuous_speech_without_pauses(self):
-        # No pause longer than 0.05 s: boundaries must still not lose or repeat words.
-        mid, _, vid, words, reader, _ = self.new_meeting(200.0, gap=0.05, pause=0.05)
-        runner.run_version(self.store, mid, vid, reader, FakeEngine(words))
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+    def test_continuous_speech_and_no_silence_with_sentences(self):
+        for kw in ({"gap": 0.05, "pause": 0.05}, {"gap": 0.0, "pause": 0.0}):
+            for group in (1, 8):
+                with self.subTest(**kw, group=group):
+                    mid, _, vid, words, reader, plan = self.new_meeting(200.0, **kw)
+                    runner.run_version(self.store, mid, vid, reader,
+                                       FakeEngine(words, group=group))
+                    self.assertMatchesTruth(vid, words)
 
-    def test_no_silence_at_all_cuts_mid_word_without_loss(self):
-        # Words back to back: every boundary falls inside a word. The word is
-        # owned by the chunk where it starts, which hears it whole in context.
-        mid, _, vid, words, reader, plan = self.new_meeting(200.0, gap=0.0, pause=0.0)
-        inside = [any(t < b / SR < t + d for t, d, _ in words) for _, b, _, _ in plan[:-1]]
-        self.assertTrue(any(inside))
-        runner.run_version(self.store, mid, vid, reader, FakeEngine(words))
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+    def test_boundary_sentence_is_split_between_chunks(self):
+        mid, _, vid, words, reader, plan = self.new_meeting(200.0, gap=0.05, pause=0.05)
+        runner.run_version(self.store, mid, vid, reader, FakeEngine(words, group=20))
+        rows = self.store.transcript(vid)
+        boundaries = [p[1] / SR for p in plan[:-1]]
+        # No committed segment runs across an owned boundary by more than the
+        # length of the one word that starts just before it (0.4 s here).
+        for r in rows:
+            for b in boundaries:
+                self.assertFalse(r["start_s"] < b and r["end_s"] > b + 0.45, (r["start_s"], b))
+        self.assertTrue(all(r["words_json"] for r in rows))
+
+    def test_long_segment_without_word_times_is_refused_not_truncated(self):
+        mid, _, vid, words, reader, _ = self.new_meeting(200.0)
+        result = runner.run_version(self.store, mid, vid, reader,
+                                    FakeEngine(words, group=8, word_times=False))
+        self.assertEqual(result, runner.RunResult.FAILED)
+        self.assertIn("MissingWordTimes", self.store.meeting(mid)["last_error"])
+        self.assertEqual(self.store.chunks(vid, status="done"), [])
 
     # -- failure injection ---------------------------------------------------------
 
@@ -152,21 +188,19 @@ class CoreTests(unittest.TestCase):
         def boom(idx):
             if idx == 3:
                 raise Crash()
-        eng = FakeEngine(words)
         with self.assertRaises(Crash):
-            runner.run_version(self.store, mid, vid, reader, eng,
+            runner.run_version(self.store, mid, vid, reader, FakeEngine(words, group=8),
                                hooks={"before_commit": boom, "reraise": True})
         self.assertEqual([c["status"] for c in self.store.chunks(vid)][:4],
                          ["done", "done", "done", "pending"])
-        # "Restart": new store connection and engine.
         self.store.close()
-        self.store = Store(self.db_path)
-        eng2 = FakeEngine(words)
+        self.store = Store(self.db_path)                      # restart
+        eng2 = FakeEngine(words, group=8)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng2),
                          runner.RunResult.DONE)
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+        self.assertMatchesTruth(vid, words)
         done_before = {round(plan[i][2] / SR, 3) for i in range(3)}
-        self.assertFalse(done_before & set(eng2.calls))         # committed chunks not re-run
+        self.assertFalse(done_before & set(eng2.calls))        # committed chunks not re-run
 
     def test_crash_after_commit_does_not_redo_the_chunk(self):
         mid, _, vid, words, reader, plan = self.new_meeting(300.0)
@@ -183,48 +217,74 @@ class CoreTests(unittest.TestCase):
         eng2 = FakeEngine(words)
         runner.run_version(self.store, mid, vid, reader, eng2)
         self.assertNotIn(round(plan[2][2] / SR, 3), eng2.calls)
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+        self.assertMatchesTruth(vid, words)
 
-    def test_engine_failure_leaves_chunk_pending_and_reports_error(self):
+    def test_each_attempt_is_recorded_with_the_engine_backend(self):
         mid, _, vid, words, reader, plan = self.new_meeting(200.0)
         eng = FakeEngine(words, fail_at_offset=plan[1][2] / SR)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
                          runner.RunResult.FAILED)
         self.assertEqual(self.store.chunks(vid)[1]["status"], "pending")
+        self.assertEqual(self.store.chunks(vid)[1]["failures"], 1)
         self.assertEqual(self.store.meeting(mid)["phase"], "error")
         runner.run_version(self.store, mid, vid, reader, FakeEngine(words))
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+        self.assertMatchesTruth(vid, words)
+        att = self.store.attempts(vid, 1)
+        self.assertEqual([a["result"] for a in att], ["failed", "committed"])
+        self.assertEqual((att[1]["backend"], att[1]["precision"]), ("cpu", "int8"))
 
-    def test_commit_is_refused_twice(self):
-        mid, _, vid, words, reader, _ = self.new_meeting(100.0)
-        seg = [runner.Seg(1.0, 1.4, "x")]
+    def test_commit_refused_twice_after_supersede_and_after_cleanup_epoch(self):
+        mid, sid, vid, words, reader, plan = self.new_meeting(100.0)
+        seg = [Segment(1.0, 1.4, "x")]
         self.assertTrue(self.store.commit_chunk(vid, 0, seg))
-        self.assertFalse(self.store.commit_chunk(vid, 0, seg))   # stale/repeated result dropped
-        self.assertEqual(self.texts(vid), ["x"])
+        self.assertFalse(self.store.commit_chunk(vid, 0, seg))      # repeated result dropped
+        self.assertFalse(self.store.commit_chunk(vid, 1, seg, epoch=99))   # stale epoch
+        new = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                        model_revision="2", precision="int8",
+                                        config={"beam": 1}, chunk_plan=plan)
+        self.assertNotEqual(new, vid)
+        self.assertFalse(self.store.commit_chunk(vid, 1, seg))      # superseded version
+        self.assertEqual(self.spoken(vid), ["x"])
+
+    def test_only_one_active_version_per_meeting(self):
+        mid, sid, vid, *_ = self.new_meeting(60.0)
+        with self.assertRaises(StoreError):
+            with self.store.tx() as db:
+                db.execute("INSERT INTO versions (id, meeting_id, source_id, engine, model, "
+                           "model_revision, precision, config_json, config_hash, created_at) "
+                           "VALUES ('x', ?, ?, 'e', 'm', 'r', 'p', '{}', 'h', 0)", (mid, sid))
 
     def test_disk_full_rolls_back_and_resumes(self):
         mid, _, vid, words, reader, _ = self.new_meeting(300.0)
-        runner.run_version(self.store, mid, vid, reader, FakeEngine(words),
-                           hooks={"after_commit": lambda idx: idx == 0 and self.fill_disk()})
+        result = runner.run_version(self.store, mid, vid, reader, FakeEngine(words, group=8),
+                                    hooks={"after_commit": lambda idx: idx == 0 and
+                                           self.fill_disk()})
+        self.assertEqual(result, runner.RunResult.STORE_ERROR)
         chunks = self.store.chunks(vid)
-        done = [c["status"] for c in chunks].count("done")
-        self.assertLess(done, len(chunks))
-        # No partial chunk: every committed chunk has its segments, pending ones none.
-        for c in chunks:
+        self.assertLess([c["status"] for c in chunks].count("done"), len(chunks))
+        for c in chunks:                # no partial chunk
             n = self.store.db.execute("SELECT COUNT(*) FROM segments WHERE version_id = ? AND "
                                       "chunk_idx = ?", (vid, c["idx"])).fetchone()[0]
-            if c["status"] == "pending":
-                self.assertEqual(n, 0)
+            self.assertEqual(n == 0, c["status"] == "pending")
         self.store.db.execute("PRAGMA max_page_count = 1000000")
-        self.assertEqual(runner.run_version(self.store, mid, vid, reader, FakeEngine(words)),
+        self.assertEqual(runner.run_version(self.store, mid, vid, reader,
+                                            FakeEngine(words, group=8)),
                          runner.RunResult.DONE)
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+        self.assertMatchesTruth(vid, words)
 
     def fill_disk(self):
         pages = self.store.db.execute("PRAGMA page_count").fetchone()[0]
         self.store.db.execute(f"PRAGMA max_page_count = {pages}")
 
-    # -- pause, versions, edits --------------------------------------------------
+    def test_changed_audio_is_not_transcribed(self):
+        mid, _, vid, words, reader, _ = self.new_meeting(100.0)
+        shorter = FakeReader(words, 90.0)
+        self.assertEqual(runner.run_version(self.store, mid, vid, shorter, FakeEngine(words)),
+                         runner.RunResult.SOURCE_CHANGED)
+        self.assertEqual(self.store.chunks(vid, status="done"), [])
+        self.assertIn("changed", self.store.meeting(mid)["last_error"])
+
+    # -- pause, versions, edits, threads ---------------------------------------
 
     def test_explicit_pause_survives_restart(self):
         mid, _, vid, words, reader, _ = self.new_meeting(300.0)
@@ -232,9 +292,9 @@ class CoreTests(unittest.TestCase):
                            hooks={"after_commit": lambda idx: idx == 1 and
                                   self.store.set_paused(mid, True)})
         done, total = self.store.progress(vid)
-        self.assertTrue(0 < done < total)                     # truthful: committed only
+        self.assertTrue(0 < done < total)                      # truthful: committed only
         self.store.close()
-        self.store = Store(self.db_path)                      # restart
+        self.store = Store(self.db_path)                       # restart
         self.assertEqual(self.store.meeting(mid)["paused"], 1)
         eng = FakeEngine(words)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
@@ -242,9 +302,9 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(eng.calls, [])
         self.store.set_paused(mid, False)
         runner.run_version(self.store, mid, vid, reader, FakeEngine(words))
-        self.assertEqual(self.texts(vid), [w[2] for w in words])
+        self.assertMatchesTruth(vid, words)
 
-    def test_changed_settings_make_a_new_version_and_keep_the_old(self):
+    def test_changed_settings_or_source_make_a_new_version_and_keep_the_old(self):
         mid, sid, vid, words, reader, plan = self.new_meeting(100.0)
         runner.run_version(self.store, mid, vid, reader, FakeEngine(words))
         first = self.store.transcript(vid)[0]
@@ -253,13 +313,20 @@ class CoreTests(unittest.TestCase):
                                          model_revision="1", precision="int8",
                                          config={"beam": 1}, chunk_plan=plan)
         self.assertEqual(same, vid)
-        new = self.store.ensure_version(mid, sid, engine="fake", model="fake",
-                                        model_revision="2", precision="int8",
-                                        config={"beam": 1}, chunk_plan=plan)
-        self.assertNotEqual(new, vid)
+        new_settings = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                                 model_revision="1", precision="int8",
+                                                 config={"beam": 5}, chunk_plan=plan)
+        self.assertNotEqual(new_settings, vid)
+        sid2 = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
+                                     original_size=2, original_mtime_ns=1, audio_sha256="d" * 64,
+                                     samples=reader.total, sample_rate=SR)
+        new_source = self.store.ensure_version(mid, sid2, engine="fake", model="fake",
+                                               model_revision="1", precision="int8",
+                                               config={"beam": 5}, chunk_plan=plan)
+        self.assertNotIn(new_source, (vid, new_settings))
         self.assertEqual(self.store.version(vid)["state"], "superseded")
         self.assertEqual(self.store.transcript(vid)[0]["text"], "Edited by a person")
-        self.assertEqual(self.store.transcript(new), [])
+        self.assertEqual(self.store.transcript(new_source), [])
 
     def test_generated_output_never_overwrites_edits(self):
         mid, _, vid, words, reader, _ = self.new_meeting(300.0)
@@ -273,48 +340,113 @@ class CoreTests(unittest.TestCase):
         rows = self.store.transcript(vid)
         self.assertEqual(rows[0]["text"], "Corrected")
         self.assertEqual(rows[0]["generated"], seg["generated"])
-        self.assertEqual([r["text"] for r in rows[1:]], [w[2] for w in words[1:]])
+        self.assertEqual(" ".join(r["text"] for r in rows[1:]).split(),
+                         [w[2] for w in words[1:]])
 
-    def test_store_errors_are_wrapped(self):
+    def test_ui_thread_can_edit_and_pause_while_a_run_commits(self):
+        mid, _, vid, words, reader, _ = self.new_meeting(300.0)
+        errors, stop = [], threading.Event()
+
+        def ui():
+            while not stop.is_set():
+                try:
+                    self.store.set_paused(mid, False)
+                    rows = self.store.transcript(vid)
+                    if rows:
+                        self.store.save_edit(rows[0]["id"], "edited")
+                except Exception as exc:     # any StoreError here is the bug
+                    errors.append(exc)
+        t = threading.Thread(target=ui)
+        t.start()
+        try:
+            result = runner.run_version(self.store, mid, vid, reader, FakeEngine(words, group=8))
+        finally:
+            stop.set()
+            t.join()
+        self.assertEqual((result, errors), (runner.RunResult.DONE, []))
+
+    def test_store_errors_are_wrapped_and_newer_schema_refused(self):
         self.store.db.execute("PRAGMA query_only = ON")
         with self.assertRaises(StoreError):
             self.store.create_meeting("x")
         self.store.db.execute("PRAGMA query_only = OFF")
-        self.assertIsInstance(sqlite3.sqlite_version, str)
+        self.store.db.execute("UPDATE schema_version SET version = 999")
+        self.store.close()
+        with self.assertRaises(SchemaTooNew):
+            Store(self.db_path)
+        self.store = Store.__new__(Store)            # tearDown-safe dummy
+        self.store.close = lambda: None
 
 
 @unittest.skipUnless(HAVE_NUMPY and importlib.util.find_spec("av"), "numpy/PyAV not installed")
 class MediaTests(unittest.TestCase):
-    def test_import_streams_to_disk_and_reads_slices(self):
-        import wave
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = Store(self.root / "db.sqlite")
 
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def tone(self, name="tone.wav", seconds=5):
+        import wave
+        src = self.root / name
+        t = np.arange(SR * seconds) / SR
+        pcm = (0.3 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2")
+        with wave.open(str(src), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SR)
+            w.writeframes(pcm.tobytes())
+        return src
+
+    def test_import_streams_to_disk_and_reads_slices(self):
         from workspace import media
-        with tempfile.TemporaryDirectory() as tmp:
-            src = Path(tmp) / "tone.wav"
-            t = np.arange(SR * 5) / SR
-            pcm = (0.3 * np.sin(2 * np.pi * 440 * t) * 32767).astype("<i2")
-            with wave.open(str(src), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(SR)
-                w.writeframes(pcm.tobytes())
-            store = Store(Path(tmp) / "db.sqlite")
-            try:
-                mid, sid = media.import_recording(store, Path(tmp) / "media", src, "Tone")
-                row = store.source(sid)
-                self.assertEqual(row["samples"], SR * 5)
-                self.assertEqual(row["original_sha256"], media.sha256_file(src))
-                path = media.audio_path(Path(tmp) / "media", mid)
-                self.assertEqual(path.stat().st_size, SR * 5 * 4)
-                self.assertNotIn("tone", str(path).lower())   # no source name in app paths
-                reader = media.AudioReader(path)
-                part = reader.read(SR, SR * 2)
-                self.assertEqual(len(part), SR)
-                self.assertNotIsInstance(part, np.memmap)       # a copy of the slice only
-                self.assertAlmostEqual(float(np.abs(part).max()), 0.3, places=2)
-                reader.close()
-            finally:
-                store.close()
+        src = self.tone()
+        mid, sid = media.import_recording(self.store, self.root / "media", src, "Tone")
+        row = self.store.source(sid)
+        self.assertEqual(row["samples"], SR * 5)
+        self.assertEqual(row["original_sha256"], media.sha256_file(src))
+        path = media.audio_path(self.root / "media", mid)
+        self.assertEqual(path.stat().st_size, SR * 5 * 4)
+        self.assertNotIn("tone", str(path).lower())        # no source name in app paths
+        reader = media.AudioReader(path)
+        part = reader.read(SR, SR * 2)
+        self.assertEqual(len(part), SR)
+        self.assertNotIsInstance(part, np.memmap)          # a copy of the slice only
+        self.assertAlmostEqual(float(np.abs(part).max()), 0.3, places=2)
+        reader.close()
+
+    def test_failed_import_leaves_nothing_behind(self):
+        from workspace import media
+        bad = self.root / "broken.wav"
+        bad.write_bytes(b"RIFF" + b"\x00" * 200)
+        with self.assertRaises((OSError, ValueError)):     # PyAV's decode errors
+            media.import_recording(self.store, self.root / "media", bad, "Broken")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM meetings").fetchone()[0], 0)
+        media_dir = self.root / "media"
+        self.assertEqual(list(media_dir.iterdir()) if media_dir.exists() else [], [])
+
+    def test_damaged_audio_file_is_detected_before_a_run(self):
+        from workspace import media
+        mid, sid = media.import_recording(self.store, self.root / "media", self.tone(), "Tone")
+        path = media.audio_path(self.root / "media", mid)
+        reader = media.AudioReader(path)
+        plan = chunking.plan_chunks(reader, len(reader))
+        vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                        model_revision="1", precision="int8", config={},
+                                        chunk_plan=plan)
+        reader.close()
+        data = bytearray(path.read_bytes())
+        data[100:104] = b"\x00\x00\x80\x7f"                   # same length, different bytes
+        path.write_bytes(bytes(data))
+        reader = media.AudioReader(path)
+        try:
+            self.assertEqual(runner.run_version(self.store, mid, vid, reader, object()),
+                             runner.RunResult.SOURCE_CHANGED)
+        finally:
+            reader.close()
 
 
 if __name__ == "__main__":

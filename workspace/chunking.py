@@ -5,10 +5,13 @@
 # 30 ms window within +/- SEARCH_S of its nominal position, so it normally
 # falls in a pause. The engine decodes the owned range plus CONTEXT_S each
 # side; a segment is kept only by the chunk whose owned range contains its
-# start time. Text is never deduplicated by content (repeated phrases are
-# real speech); ownership is purely by time.
+# start time - at word level, so a sentence crossing a boundary is divided
+# between the two chunks rather than lost. Text is never deduplicated by
+# content (repeated phrases are real speech); ownership is purely by time.
 
 import numpy as np
+
+from asr_engines import Segment, join_tokens
 
 SAMPLE_RATE = 16000
 TARGET_S = 45.0
@@ -44,10 +47,40 @@ def plan_chunks(reader, total, sr=SAMPLE_RATE, target_s=TARGET_S, search_s=SEARC
             for a, b in zip(bounds[:-1], bounds[1:], strict=True)]
 
 
+class MissingWordTimes(ValueError):
+    """An engine returned a long segment without word times, so a sentence
+    crossing a chunk boundary could not be divided safely."""
+
+
 def owned(segments, start, end, total, sr=SAMPLE_RATE):
-    """Keep the segments (absolute seconds) whose start lies in [start, end).
-    The first chunk also owns anything starting before 0 and the last chunk
-    anything starting at or after the end."""
+    """The part of each segment (absolute seconds) that this chunk owns.
+
+    Ownership is by WORD start time: real engines return sentence-length
+    segments, and a sentence can run past the chunk's context, so owning
+    whole segments by their start would drop sentence tails. Each word belongs
+    to the chunk whose owned range contains its start (the first chunk also
+    owns anything before 0, the last anything after the end). A segment that
+    crosses a boundary is split there; each side keeps only its own words.
+
+    Segments without word times are owned by their start only if they are
+    short enough (<= CONTEXT_S) that the context guarantees they are whole."""
     lo = -float("inf") if start == 0 else start / sr
     hi = float("inf") if end >= total else end / sr
-    return [s for s in segments if lo <= s.start < hi]
+    out = []
+    for s in segments:
+        words = getattr(s, "words", ()) or ()
+        if not words:
+            if s.end - s.start > CONTEXT_S and lo <= s.start < hi:
+                raise MissingWordTimes("Engine segment without word times is too long "
+                                       "to place safely at a chunk boundary.")
+            if lo <= s.start < hi:
+                out.append(s)
+            continue
+        mine = tuple(w for w in words if lo <= w[0] < hi)
+        if not mine:
+            continue
+        if len(mine) == len(words):
+            out.append(s)
+        else:
+            out.append(Segment(mine[0][0], mine[-1][1], join_tokens([w[2] for w in mine]), mine))
+    return out

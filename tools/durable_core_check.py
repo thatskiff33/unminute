@@ -97,7 +97,21 @@ def main():
     if not same:
         import difflib
         print("\n".join(list(difflib.unified_diff(straight, resumed, lineterm=""))[:40]))
-    ok = same and r1 == r2 == "done" and calls2 == n_chunks + 1
+
+    # Chunked vs whole-recording: catches speech lost or repeated at chunk
+    # boundaries (comparing two chunked runs cannot). Small differences can be
+    # legitimate (different context); boundary loss shows as deletions.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from compare_engines import edit_distance, normalise
+    whole_audio = decode_audio(str(src), sampling_rate=16000)
+    whole_segs, _ = engine.transcribe(whole_audio)
+    whole = normalise(" ".join(s.text for s in whole_segs))
+    chunked = normalise(" ".join(straight))
+    dist = edit_distance(whole, chunked)
+    print(f"chunked vs whole recording: {len(chunked)} vs {len(whole)} words, "
+          f"{dist} edits ({100 * dist / max(1, len(whole)):.2f}%)")
+    ok = (same and r1 == r2 == "done" and calls2 == n_chunks + 1
+          and len(chunked) >= len(whole) - 2 and dist <= max(2, len(whole) // 200))
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
