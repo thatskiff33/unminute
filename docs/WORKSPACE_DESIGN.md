@@ -155,6 +155,35 @@ Holds (#18) are checked before an attempt, again in the transaction that bumps t
 
 Failure reasons are stored without file paths.
 
+## Holds and receipts (#18)
+
+`workspace/holds.py`.
+
+### Holds
+
+- **Placing a hold.** Any user can hold a meeting's audio, its transcript or everything, with a reason. No approval is needed.
+- **No expiry.** Holds are stored in the database and never expire.
+- **What a hold blocks:**
+  - An audio or "everything" hold blocks audio cleanup.
+  - Any hold blocks transcript cleanup, because transcript cleanup removes everything that remains.
+- **Releasing a hold never deletes anything by itself.**
+  - The pending or failed jobs that the hold covered move to `awaiting_confirmation`.
+  - They run only after the user confirms again, either with `confirm_pending_cleanup` or by repeating the original confirmation.
+  - Job updates never overwrite `awaiting_confirmation`.
+- **Review reminders.** `due_for_review` lists holds that have not been reviewed for 30 days. The app shows them while it is open. A closed app sends no reminders.
+- **Unfinished work.** `unfinished_work` lists each meeting's age and next action. Ordinary unfinished work gets no scheduled reminders.
+
+### Receipts
+
+- A successful cleanup job is replaced in the same transaction by a receipt.
+- A receipt holds only:
+  - a fresh random id;
+  - the time cleanup was requested and the time it completed;
+  - a result such as "audio removed; Original kept: the file changed since it was imported".
+- A receipt holds no meeting id, names, file names or hashes.
+- `purge_expired_receipts` removes receipts 30 days after completion. The app calls it at startup and periodically while it is open.
+- A failed job keeps its row, with a reason that contains no file paths, only until a retry succeeds.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |

@@ -14,7 +14,8 @@
 # (resume_pending) instead of being forgotten. Before removing anything the
 # worker is stopped and file handles released, and the meeting's content
 # epoch is bumped so a late worker result cannot recreate removed content.
-# Holds (#18) are checked before every attempt.
+# Holds (#18) are checked before every attempt; a finished job leaves only a
+# minimal receipt (workspace.holds).
 
 import hashlib
 import os
@@ -24,6 +25,7 @@ import time
 from pathlib import Path
 
 from workspace import safe_paths
+from workspace.holds import record_receipt
 from workspace.media import sha256_file
 from workspace.store import StoreError, new_id
 
@@ -85,8 +87,13 @@ def confirm_final_saved(store, mid):
 
 def _add_job(db, mid, phase):
     existing = db.execute("SELECT id FROM cleanup_jobs WHERE meeting_id = ? AND phase = ? AND "
-                          "state IN ('pending', 'failed')", (mid, phase)).fetchone()
+                          "state IN ('pending', 'failed', 'awaiting_confirmation')",
+                          (mid, phase)).fetchone()
     if existing:
+        # Confirming the same checkpoint again is the explicit confirmation a
+        # job needs after its hold was released (#18).
+        db.execute("UPDATE cleanup_jobs SET state = 'pending', error = NULL WHERE id = ? "
+                   "AND state = 'awaiting_confirmation'", (existing["id"],))
         return existing["id"]
     jid = new_id()
     db.execute("INSERT INTO cleanup_jobs (id, meeting_id, phase, state, intent_at) "
@@ -122,8 +129,8 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
     from (deletion authority, #24). Returns a JobResult; a failure leaves the
     job 'failed' with its reason, to be retried."""
     job = store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
-    if job is None or job["state"] == "done":
-        return JobResult.NOTHING_PENDING
+    if job is None or job["state"] not in ("pending", "failed"):
+        return JobResult.NOTHING_PENDING     # finished, or awaiting confirmation after a hold
     mid, phase = job["meeting_id"], job["phase"]
     if is_held(store, mid, phase):
         _mark(store, jid, "pending", HELD_NOTE)
@@ -144,8 +151,8 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
                 held = True
             else:
                 held = False
-                db.execute("UPDATE meetings SET content_epoch = content_epoch + 1 WHERE id = ?",
-                       (mid,))
+                db.execute("UPDATE meetings SET content_epoch = content_epoch + 1 "
+                           "WHERE id = ?", (mid,))
                 db.execute("UPDATE cleanup_jobs SET attempts = attempts + 1, "
                            "last_attempt_at = ? WHERE id = ?", (time.time(), jid))
         if held:
@@ -161,7 +168,9 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
     except (OSError, StoreError) as exc:
         _mark(store, jid, "failed", _reason(exc))
         return JobResult.FAILED
-    _mark(store, jid, "done", notes)
+    # Success: the job row is replaced by a minimal receipt (#18).
+    with store.tx() as db:
+        record_receipt(db, job, result=f"{phase} removed" + (f"; {notes}" if notes else ""))
     return JobResult.DONE
 
 
