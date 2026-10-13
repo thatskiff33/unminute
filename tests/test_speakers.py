@@ -1,0 +1,137 @@
+# Speaker separation after transcription (#16), with fake diarizers in a real
+# worker process (no models).
+#   python -m unittest discover -s tests -v
+
+import importlib.util
+import sys
+import tempfile
+import threading
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
+SR = 16000
+
+if HAVE_NUMPY:
+    import numpy as np
+
+    from asr_engines import Segment
+    from workspace import speakers
+    from workspace.speakers import SpeakerResult
+    from workspace.store import Store
+    from workspace.worker import WorkerHandle
+
+
+def fake(name):
+    return f"test:fake_worker_engines:{name}"
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class SpeakerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.store = Store(root / "db.sqlite")
+        self.handle = WorkerHandle(root)
+        self.audio = root / "audio.f32"
+        np.zeros(60 * SR, dtype="<f4").tofile(self.audio)
+        mid = self.store.create_meeting("t")
+        sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_sha256="b" * 64,
+                                    samples=60 * SR, sample_rate=SR)
+        plan = [(a * SR, (a + 20) * SR, a * SR, (a + 20) * SR) for a in (0, 20, 40)]
+        self.vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                             model_revision="1", precision="int8", config={},
+                                             chunk_plan=plan)
+        self.mid = mid
+        # A committed transcript: one 4 s sentence every 5 s.
+        for idx in range(3):
+            segs = [Segment(t, t + 4.0, f"sentence at {t:.0f}")
+                    for t in np.arange(idx * 20.0 + 1, idx * 20.0 + 20, 5.0)]
+            self.store.commit_chunk(self.vid, idx, segs)
+        self.before = [(r["id"], r["text"]) for r in self.store.transcript(self.vid)]
+
+    def tearDown(self):
+        self.handle.close()
+        self.store.close()
+        self.tmp.cleanup()
+
+    def run_speakers(self, model="fake_diarizer", hint=None, audio=None):
+        return speakers.run_speakers(self.store, self.mid, self.vid, self.handle,
+                                     audio or self.audio, threads=1, hint=hint,
+                                     model=fake(model))
+
+    def assertTranscriptUntouched(self):
+        self.assertEqual([(r["id"], r["text"]) for r in self.store.transcript(self.vid)],
+                         self.before)
+
+    def test_attribution_and_overlap_without_touching_text(self):
+        self.assertEqual(self.run_speakers(), SpeakerResult.DONE)
+        self.assertTranscriptUntouched()
+        labels = self.store.current_speakers(self.vid)
+        by_text = {r["text"]: labels[r["id"]] for r in self.store.transcript(self.vid)}
+        self.assertEqual(by_text["sentence at 1"], ("SPEAKER_00", False))
+        self.assertEqual(by_text["sentence at 11"], ("SPEAKER_01", False))
+        self.assertEqual(by_text["sentence at 21"], ("SPEAKER_00", False))
+        self.assertEqual(by_text["sentence at 26"], ("SPEAKER_00", True))   # B talked over A
+
+    def test_failure_keeps_the_transcript_usable(self):
+        self.assertEqual(self.run_speakers("diarizer_fails"), SpeakerResult.FAILED)
+        self.assertTranscriptUntouched()
+        self.assertEqual(self.store.current_speakers(self.vid), {})
+        run = self.store.speaker_runs(self.vid)[-1]
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("failed verification", run["error"])
+        self.assertNotIn("Traceback", run["error"])
+
+    def test_interrupted_pass_says_it_restarts_and_then_completes(self):
+        threading.Timer(1.0, self.handle.stop_now).start()
+        self.assertEqual(self.run_speakers("diarizer_sleepy"), SpeakerResult.STOPPED)
+        run = self.store.speaker_runs(self.vid)[-1]
+        self.assertEqual(run["status"], "interrupted")
+        self.assertIn("start again from the beginning", run["error"])
+        self.assertTranscriptUntouched()
+        self.assertEqual(self.run_speakers(), SpeakerResult.DONE)
+
+    def test_known_count_rerun_changes_only_the_speaker_phase(self):
+        self.run_speakers()
+        self.assertEqual(self.run_speakers(hint=3), SpeakerResult.DONE)
+        self.assertTranscriptUntouched()
+        runs = self.store.speaker_runs(self.vid)
+        self.assertEqual([r["status"] for r in runs], ["superseded", "done"])
+        self.assertEqual(runs[-1]["hint_count"], 3)
+        used = {v[0] for v in self.store.current_speakers(self.vid).values()}
+        self.assertEqual(used, {"SPEAKER_00", "SPEAKER_01", "SPEAKER_02"})
+
+    def test_refusals(self):
+        self.assertEqual(self.run_speakers(audio=Path(self.tmp.name) / "gone.f32"),
+                         SpeakerResult.NO_AUDIO)
+        for bad in (0, 21, "3", 2.5, True):
+            self.assertEqual(self.run_speakers(hint=bad), SpeakerResult.BAD_HINT)
+        self.assertEqual(self.store.speaker_runs(self.vid), [])
+
+    def test_not_run_while_transcription_is_pending(self):
+        sid = self.store.version(self.vid)["source_id"]
+        vid2 = self.store.ensure_version(self.mid, sid, engine="fake", model="fake",
+                                         model_revision="2", precision="int8", config={},
+                                         chunk_plan=[(0, 60 * SR, 0, 60 * SR)])
+        self.assertEqual(speakers.run_speakers(self.store, self.mid, vid2, self.handle,
+                                               self.audio, threads=1,
+                                               model=fake("fake_diarizer")),
+                         SpeakerResult.NOT_TRANSCRIBED)
+
+    def test_speech_model_is_released_before_speaker_separation(self):
+        from workspace.worker import diarize
+        self.handle.load(fake("echo"), 1)
+        *_, asr_was_loaded = diarize(self.handle, fake("fake_diarizer"), self.audio, None, 1)
+        self.assertTrue(asr_was_loaded)            # it was resident, and the worker freed it
+        self.assertIsNone(self.handle._loaded)     # next transcription reloads it
+        self.handle.load(fake("echo"), 1)
+        segs, _ = self.handle.transcribe(np.zeros(SR, dtype=np.float32))
+        self.assertTrue(segs)
+
+
+if __name__ == "__main__":
+    unittest.main()

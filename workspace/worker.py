@@ -92,6 +92,18 @@ def _worker_main(conn, cache_dir, quiet):
                 conn.send(("ok", [(s.start, s.end, s.text,
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
+            elif op == "diarize":
+                _, model, audio_path, hint, threads = msg
+                # One heavy model at a time: release the speech model first.
+                had_asr = engine is not None
+                engine, loaded = None, None
+                import gc
+                gc.collect()
+                from workspace.engines import diarize_file
+                turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
+                                                        threads)
+                gc.collect()
+                conn.send(("ok", turns, exclusive, device, had_asr))
             elif op == "exit":
                 conn.send(("ok",))
                 return
@@ -267,6 +279,15 @@ class WorkerHandle:
             reply = self._request(("transcribe", audio), timeout)
         return [Segment(a, b, t, tuple(tuple(w) for w in ws)) for a, b, t, ws in reply[1]], \
             reply[2]
+
+
+def diarize(handle, model, audio_path, hint, threads):
+    """Whole-meeting speaker separation in the worker. Returns
+    (turns, exclusive_turns, device, asr_was_loaded_before)."""
+    with handle._lock:
+        reply = handle._request(("diarize", model, str(audio_path), hint, threads))
+        handle._loaded = None            # the speech model was released for this
+        return reply[1], reply[2], reply[3], reply[4]
 
 
 class WorkerEngine:

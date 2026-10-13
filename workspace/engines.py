@@ -44,3 +44,42 @@ def load_engine(name, cache_dir, threads):
         return asr_engines.WhisperEngine(model, name, "int8", "en", word_timestamps=True)
 
     raise ModelLoadError(f"Unknown model: {name}")
+
+
+SPEAKER_MODEL = "pyannote"
+
+
+def diarize_file(model, cache_dir, audio_path, hint, threads):
+    """Speaker separation over a meeting's decoded audio file (16 kHz float32).
+    Returns (turns, exclusive_turns, device); turns are (start, end, label).
+    Offline only: loads the hash-verified pyannote folder by path."""
+    import numpy as np
+    mm = np.memmap(audio_path, dtype="<f4", mode="r")
+    audio = np.array(mm)            # pyannote needs the whole waveform anyway
+    mm._mmap.close()                # release the file handle now (cleanup, #17)
+    del mm
+    if model.startswith(TEST_PREFIX):
+        module, func = model[len(TEST_PREFIX):].split(":")
+        return getattr(importlib.import_module(module), func)(audio, hint)
+
+    spec = asr_engines.SPEAKER_MODEL
+    folder = asr_engines.find_verified(spec, cache_dir)
+    if folder is None:
+        raise ModelLoadError("The speaker identification model is not installed or failed "
+                             "verification. Repair it in Setup.")
+    import torch
+    torch.set_num_threads(threads)
+    from pyannote.audio import Pipeline
+    pipeline = Pipeline.from_pretrained(str(folder))
+    kwargs = {"num_speakers": int(hint)} if hint else {}
+    out = pipeline({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": 16000},
+                   **kwargs)
+    full = getattr(out, "speaker_diarization", out)
+    exclusive = getattr(out, "exclusive_speaker_diarization", full)
+
+    def as_list(annotation):
+        return [(float(t.start), float(t.end), str(lbl))
+                for t, _, lbl in annotation.itertracks(yield_label=True)]
+    turns, excl = as_list(full), as_list(exclusive)
+    del pipeline
+    return turns, excl, "cpu"
