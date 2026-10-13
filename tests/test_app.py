@@ -122,7 +122,16 @@ class WorkspaceTests(unittest.TestCase):
         ws.retranscribe(mid)
         self.assertTrue(ws.wait_idle(120))
         d = ws.detail(mid)
-        self.assertEqual(d["older_versions"], [{"model": fake("sentences"), "edits": 1}])
+        [older] = d["older_versions"]
+        self.assertEqual((older["index"], older["model"], older["edits"]),
+                         (0, fake("sentences"), 1))
+        # The earlier version, with its edit, can still be read (not edited).
+        self.assertEqual(ws.transcript(mid, version=0)["items"][0]["text"], "Human correction")
+        self.assertEqual(ws.search(mid, "human", version=0), [seg["id"]])
+        with self.assertRaises(WorkspaceError):
+            ws.edit(mid, seg["id"], "edit an old version")
+        with self.assertRaises(WorkspaceError):
+            ws.transcript(mid, version=1)
         self.assertTrue(ws.transcript(mid)["items"][0]["text"].startswith("second"))
         old = ws.store._one("SELECT text FROM edits WHERE segment_id = ?", (seg["id"],))
         self.assertEqual(old["text"], "Human correction")    # machine history untouched
@@ -132,7 +141,7 @@ class WorkspaceTests(unittest.TestCase):
         mid = self.imported(ws)
         items = ws.transcript(mid)["items"]
         ws.edit(mid, items[5]["id"], "The budget for Kawaroa park")
-        self.assertEqual(ws.search(mid, "kawaroa"), [5])
+        self.assertEqual(ws.search(mid, "kawaroa"), [items[5]["id"]])
         self.assertEqual(len(ws.search(mid, "sentence")), len(items) - 1)
         self.assertEqual(ws.search(mid, "   "), [])
 
@@ -222,6 +231,55 @@ class WorkspaceTests(unittest.TestCase):
         ws.keep_hold(hid)
         self.assertEqual(ws.reminders()["holds_due"], [])
 
+    def test_held_cleanup_does_not_block_other_meetings(self):
+        ws = self.open()
+        first = self.imported(ws)
+        ws.add_hold(first, "audio", "dispute")
+        ws.confirm_reviewed(first)
+        ws.import_paths([str(write_wav(self.root / "second.wav", 30))])
+        self.assertTrue(ws.wait_idle(120))
+        second = next(m["id"] for m in ws.meetings() if m["id"] != first)
+        ws.confirm_reviewed(second)
+        self.assertTrue(ws.wait_idle(60))
+        self.assertTrue(ws.detail(first)["audio_available"])
+        self.assertFalse(ws.detail(second)["audio_available"])
+
+    def test_missing_audio_stops_with_an_explanation(self):
+        ws = self.open(start=False, speakers=True)
+        ws._import_one(self.rec)
+        mid = ws.meetings()[0]["id"]
+        from workspace import media
+        media.audio_path(ws.media, mid).unlink()           # e.g. quarantined
+        ws.start()
+        self.assertTrue(ws.wait_idle(30))
+        [m] = ws.meetings()
+        self.assertIn("missing", m["error"])
+
+    def test_speaker_rerun_runs_on_the_processing_thread_and_not_after_review(self):
+        ws = self.open()
+        mid = self.imported(ws)
+        ws.rerun_speakers(mid, 3)
+        ws.rerun_speakers(mid, 3)                           # double click: one pass
+        self.assertTrue(ws.wait_idle(60))
+        runs = ws.store.speaker_runs(ws.store.active_version(mid)["id"])
+        self.assertEqual([r["status"] for r in runs], ["superseded", "done"])
+        self.assertEqual(runs[-1]["hint_count"], 3)
+        ws.add_hold(mid, "audio", "keep")
+        ws.confirm_reviewed(mid)
+        with self.assertRaises(WorkspaceError):
+            ws.rerun_speakers(mid, 2)
+
+    def test_interrupted_import_is_finished_or_removed_at_startup(self):
+        ws = self.open(start=False)
+        from workspace import media
+        mid, _ = media.import_recording(ws.store, ws.media, self.rec, "cut short")
+        orphan = ws.store.create_meeting("never got a source")
+        ws = self.reopen(start=False)
+        ids = [m["id"] for m in ws.meetings()]
+        self.assertEqual(ids, [mid])                        # finished, orphan removed
+        self.assertNotIn(orphan, ids)
+        self.assertIsNotNone(ws.store.active_version(mid))
+
     # -- intake ---------------------------------------------------------------------
 
     def test_refused_imports_explain_without_paths(self):
@@ -261,7 +319,8 @@ class WorkspaceTests(unittest.TestCase):
         page = ws.transcript(mid, 4000, 1000)
         hits = ws.search(mid, "passage 4999")
         elapsed = time.perf_counter() - t
-        self.assertEqual((page["total"], len(page["items"]), hits), (5000, 1000, [4999]))
+        self.assertEqual((page["total"], len(page["items"])), (5000, 1000))
+        self.assertEqual(hits, [ws.transcript(mid, 4999, 1)["items"][0]["id"]])
         self.assertLess(elapsed, 2.0)
 
 

@@ -59,11 +59,12 @@ def make_api(ws, get_window=lambda: None):
     def detail(self, mid):
         return _safe(ws.detail, mid)
 
-    def transcript(self, mid, start=0, count=500):
-        return _safe(lambda: ws.transcript(mid, _int(start, 0, 10**7), _int(count, 1, 2000)))
+    def transcript(self, mid, start=0, count=500, version=None):
+        return _safe(lambda: ws.transcript(mid, _int(start, 0, 10**7), _int(count, 1, 2000),
+                                           version))
 
-    def search(self, mid, query):
-        return _safe(ws.search, mid, query)
+    def search(self, mid, query, version=None):
+        return _safe(ws.search, mid, query, version)
 
     def edit(self, mid, segment_id, text):
         return _safe(ws.edit, mid, segment_id, text)

@@ -58,6 +58,8 @@ aside { border-left: 1px solid var(--line); padding-left: 16px; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
 fieldset label { display: block; margin: 4px 0; }
 .receipts { padding-left: 20px; }
+.versions { list-style: none; padding: 0; }
+.versions li { margin: 4px 0; }
 
 #transcript { list-style: none; margin: 0; padding: 0; }
 /* Long transcripts: the browser skips layout/paint of off-screen rows. */

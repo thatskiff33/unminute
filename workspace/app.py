@@ -112,7 +112,10 @@ class Workspace:
         self._import_errors = []          # recent intake refusals (safe messages)
         self._imports = queue.Queue()
         self._last_purge = 0.0
+        self._lock = threading.Lock()
+        self._reruns = {}                 # meeting id -> known speaker count (or None)
         self._threads = []
+        self._reconcile_imports()
         if start:
             self.start()
 
@@ -182,12 +185,47 @@ class Workspace:
     def _import_one(self, path):
         title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
+        try:
+            self._plan_version(mid, sid)
+        except BaseException:
+            self._discard_import(mid)       # nothing half-imported is left behind
+            raise
+
+    def _plan_version(self, mid, sid):
         reader = media.AudioReader(media.audio_path(self.media, mid))
         try:
             plan = plan_chunks(reader, len(reader))
         finally:
             reader.close()
-        self._new_version(mid, sid, plan)
+        return self._new_version(mid, sid, plan)
+
+    def _discard_import(self, mid):
+        """Remove a meeting whose import never completed. Only the app's own
+        fresh copy is removed; the original recording is never touched."""
+        import shutil
+        shutil.rmtree(self.media / mid, ignore_errors=True)
+        try:
+            with self.store.tx() as db:
+                if db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
+                              (mid,)).fetchone() is None:
+                    db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
+                    db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+        except StoreError:
+            pass
+
+    def _reconcile_imports(self):
+        """At startup: finish or remove imports cut short by a crash or close
+        (a meeting with no transcript version would otherwise wait forever)."""
+        for m in self.store._all("SELECT m.id FROM meetings m WHERE NOT EXISTS "
+                                 "(SELECT 1 FROM versions v WHERE v.meeting_id = m.id)"):
+            src = self.store._one("SELECT id FROM sources WHERE meeting_id = ?", (m["id"],))
+            if src is not None and media.audio_path(self.media, m["id"]).is_file():
+                try:
+                    self._plan_version(m["id"], src["id"])
+                    continue
+                except Exception:
+                    pass
+            self._discard_import(m["id"])
 
     def _new_version(self, mid, sid, plan):
         model = self.settings["model"]
@@ -200,16 +238,26 @@ class Workspace:
     # -- processing thread ------------------------------------------------------------
 
     def _next_work(self):
-        """The next job, in priority order, or None. Pure database scan."""
+        """The next job, in priority order, or None. Pure database scan, plus
+        explicit speaker reruns the user asked for (#16 known count)."""
         now = time.time()
-        job = self.store._one(
-            "SELECT id, meeting_id FROM cleanup_jobs WHERE state = 'pending' OR "
-            "(state = 'failed' AND COALESCE(last_attempt_at, 0) <= ?) "
-            "ORDER BY intent_at LIMIT 1", (now - FAILED_RETRY_S,))
-        if job is not None and not cleanup.is_held(self.store, job["meeting_id"],
-                                                   self._job_phase(job["id"])):
-            if not self._waiting_on_audio(job["id"]):
+        # Every due cleanup job is considered: one held or waiting job must not
+        # block cleanup of other meetings.
+        for job in self.store._all(
+                "SELECT id, meeting_id, phase FROM cleanup_jobs WHERE state = 'pending' OR "
+                "(state = 'failed' AND COALESCE(last_attempt_at, 0) <= ?) ORDER BY intent_at",
+                (now - FAILED_RETRY_S,)):
+            if (not cleanup.is_held(self.store, job["meeting_id"], job["phase"])
+                    and not self._waiting_on_audio(job)):
                 return ("cleanup", job["meeting_id"], job["id"])
+        with self._lock:
+            for mid, count in list(self._reruns.items()):
+                m = self.store.meeting(mid)
+                v = self.store.active_version(mid)
+                if m is None or v is None or m["reviewed_at"] or not self._audio_available(m):
+                    del self._reruns[mid]           # no longer possible
+                    continue
+                return ("rerun", mid, (v["id"], count))
         for m in self.store._all("SELECT * FROM meetings WHERE paused = 0 AND phase != 'error' "
                                  "AND reviewed_at IS NULL AND audio_removed_at IS NULL "
                                  "ORDER BY created_at"):
@@ -226,13 +274,8 @@ class Workspace:
                 return ("speakers", m["id"], v["id"])
         return None
 
-    def _job_phase(self, jid):
-        row = self.store._one("SELECT phase FROM cleanup_jobs WHERE id = ?", (jid,))
-        return row["phase"] if row else cleanup.AUDIO
-
-    def _waiting_on_audio(self, jid):
-        job = self.store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
-        return job is not None and job["phase"] == cleanup.TRANSCRIPT and self.store._one(
+    def _waiting_on_audio(self, job):
+        return job["phase"] == cleanup.TRANSCRIPT and self.store._one(
             "SELECT 1 FROM cleanup_jobs WHERE meeting_id = ? AND phase = ? AND state != 'done'",
             (job["meeting_id"], cleanup.AUDIO)) is not None
 
@@ -240,6 +283,7 @@ class Workspace:
         while not self._closing.is_set():
             self._wake.wait(timeout=30)
             self._wake.clear()
+            last, repeats = None, 0
             while not self._closing.is_set():
                 try:
                     self._maybe_purge()
@@ -249,8 +293,16 @@ class Workspace:
                 if work is None:
                     self._status = ""
                     break
+                # Safety net against tight loops: the same work coming straight
+                # back (e.g. a full disk stopping progress from being recorded)
+                # waits for the next wake-up instead of spinning.
+                repeats = repeats + 1 if work == last else 0
+                last = work
+                if repeats >= 3:
+                    self._status = "Waiting before trying again"
+                    break
                 kind, mid, ref = work
-                if kind != "cleanup" and not resources.may_start_automatic_work(
+                if kind in ("transcribe", "speakers") and not resources.may_start_automatic_work(
                         self.settings["battery_override"], battery=self._battery):
                     self._status = "Waiting: the computer is on battery power"
                     break
@@ -276,8 +328,28 @@ class Workspace:
             self._status = "Cleaning up"
             cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown)
             return
+        if self._closing.is_set():
+            return                          # never start a worker during shutdown
+        m = self.store.meeting(mid)
+        if m is None or m["reviewed_at"]:
+            return                          # reviewed meanwhile: nothing more to process
+        if not self._audio_available(m):
+            # Missing audio (e.g. quarantined or deleted outside the app): stop
+            # here with an explanation instead of retrying.
+            self.store.set_phase(mid, "error", "The meeting audio is missing from the "
+                                               "workspace. Import the recording again.")
+            return
         threads = resources.worker_threads(self.settings["mode"])
         self.handle.quiet = self.settings["mode"] == resources.QUIET
+        if kind == "rerun":
+            vid, count = ref
+            with self._lock:
+                self._reruns.pop(mid, None)
+            self._status = "Identifying speakers"
+            speakers.run_speakers(self.store, mid, vid, self.handle,
+                                  media.audio_path(self.media, mid), threads=threads,
+                                  hint=count, model=self.speaker_model)
+            return
         if kind == "transcribe":
             self._status = "Transcribing"
             reader = media.AudioReader(media.audio_path(self.media, mid))
@@ -333,6 +405,9 @@ class Workspace:
 
     def rerun_speakers(self, mid, count=None):
         m = self._meeting(mid)
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed, so speakers can no "
+                                 "longer be changed.")
         if not self._audio_available(m):
             raise WorkspaceError("The audio has been removed, so speakers cannot be "
                                  "identified again.")
@@ -342,23 +417,11 @@ class Workspace:
         if count is not None and (isinstance(count, bool) or not isinstance(count, int)
                                   or not 1 <= count <= speakers.MAX_HINT):
             raise WorkspaceError(f"Enter a number of people from 1 to {speakers.MAX_HINT}.")
-        threading.Thread(target=self._speakers_now, args=(mid, v["id"], count),
-                         daemon=True).start()
-
-    def _speakers_now(self, mid, vid, count):
-        # Runs on its own thread but waits for the processing thread to be free.
-        while self._busy is not None and not self._closing.is_set():
-            time.sleep(0.2)
-        if self._closing.is_set():
-            return
-        self._busy = (mid, "speakers")
-        try:
-            speakers.run_speakers(self.store, mid, vid, self.handle,
-                                  media.audio_path(self.media, mid),
-                                  threads=resources.worker_threads(self.settings["mode"]),
-                                  hint=count, model=self.speaker_model)
-        finally:
-            self._busy = None
+        # Queued for the processing thread (one heavy job at a time); asking
+        # again before it starts just replaces the request.
+        with self._lock:
+            self._reruns[mid] = count
+        self._wake.set()
 
     def retranscribe(self, mid):
         """Transcribe again with the current model. The previous version and
@@ -391,9 +454,20 @@ class Workspace:
     def _audio_available(self, m):
         return m["audio_removed_at"] is None and media.audio_path(self.media, m["id"]).is_file()
 
-    def transcript(self, mid, start=0, count=500):
+    def _version(self, mid, version):
+        """The active version, or (read-only) an earlier one by its position in
+        detail()["older_versions"]."""
+        if version is None:
+            return self.store.active_version(mid)
+        older = [x for x in self.store.versions(mid) if x["state"] != "active"]
+        if (isinstance(version, bool) or not isinstance(version, int)
+                or not 0 <= version < len(older)):
+            raise WorkspaceError("That earlier version is not available.")
+        return older[version]
+
+    def transcript(self, mid, start=0, count=500, version=None):
         self._meeting(mid)
-        v = self.store.active_version(mid)
+        v = self._version(mid, version)
         if v is None:
             return {"total": 0, "start": 0, "items": []}
         rows = self.store.transcript(v["id"])
@@ -416,13 +490,16 @@ class Workspace:
                 names[lbl] = f"Speaker {len(names) + 1}"
         return names
 
-    def search(self, mid, query):
+    def search(self, mid, query, version=None):
+        """Ids of matching passages (ids, not positions, so highlights stay
+        right while the page is being updated)."""
         self._meeting(mid)
         query = _clean_text(query, 200)
-        v = self.store.active_version(mid)
+        v = self._version(mid, version)
         if not query or v is None:
             return []
-        return self.store.search(v["id"], query)
+        rows = self.store.transcript(v["id"])
+        return [rows[i]["id"] for i in self.store.search(v["id"], query)]
 
     def edit(self, mid, segment_id, text):
         """Autosaved edit of one passage, kept separate from the generated text."""
@@ -529,8 +606,10 @@ class Workspace:
             "model": v["model"] if v else None,
             "edits": self.store.edit_count(v["id"]) if v else 0,
             "can_undo": bool(v) and not m["reviewed_at"] and self.store.can_undo(v["id"]),
-            "older_versions": [{"model": x["model"], "edits": self.store.edit_count(x["id"])}
-                               for x in older],
+            "older_versions": [{"index": i, "model": x["model"],
+                                "created_at": x["created_at"],
+                                "edits": self.store.edit_count(x["id"])}
+                               for i, x in enumerate(older)],
             "speakers": ({"status": runs[-1]["status"], "error": runs[-1]["error"],
                           "count": runs[-1]["hint_count"]} if runs else None),
             "holds": [{"id": h["id"], "scope": h["scope"], "reason": h["reason"],

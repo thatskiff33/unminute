@@ -13,6 +13,8 @@ const SAVE_DELAY_MS = 800;   // autosave after typing stops
 const state = {
   view: "inbox", mid: null, detail: null, total: -1, signature: "",
   hits: [], hit: -1, editing: null, saveTimer: null,
+  version: null,                 // null = current version; else an earlier one (read only)
+  saving: Promise.resolve(),     // edits are saved strictly in order
 };
 
 // -- bridge -----------------------------------------------------------------
@@ -67,6 +69,7 @@ function show(view) {
 async function openMeeting(mid) {
   stopEditing();
   state.mid = mid; state.total = -1; state.signature = ""; state.hits = []; state.hit = -1;
+  state.version = null;
   $("m-search").value = ""; $("m-hits").textContent = "";
   $("transcript").replaceChildren();
   show("meeting");
@@ -89,7 +92,12 @@ function meetingRow(m) {
       ? el("button", { type: "button", textContent: m.error ? "Try again" : "Resume",
                        on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } })
       : el("button", { type: "button", textContent: "Pause",
+                       title: "Stops at the next safe point; nothing is lost",
                        on: { click: () => attempt(() => call("pause", m.id).then(refresh)) } }));
+    if (!m.paused && !m.error)
+      row.append(el("button", { type: "button", textContent: "Stop now",
+                                title: "Stops at once; the part in progress is redone later",
+                                on: { click: () => attempt(() => call("stop_now", m.id).then(refresh)) } }));
   } else {
     row.append(el("span", { class: "badge", textContent: STAGES[m.stage] }));
   }
@@ -167,11 +175,10 @@ async function renderMeeting() {
   renderSteps(d);
   renderSpeakers(d);
   renderHolds(d);
-  $("m-versions").textContent = `${d.model || "No model yet"} · ${d.edits} edited passage${d.edits === 1 ? "" : "s"}` +
-    (d.older_versions.length ? ` · ${d.older_versions.length} earlier version(s) kept with their own edits` : "");
+  renderVersions(d);
   $("m-retranscribe").disabled = !d.audio_available || !!d.reviewed_at || d.stage === "inbox";
 
-  const sig = signatureOf(d);
+  const sig = signatureOf(d) + "|" + state.version;
   if (sig !== state.signature && !state.editing) {
     state.signature = sig;
     await renderTranscript();
@@ -190,8 +197,13 @@ function renderSteps(d) {
     if (!j) return null;
     if (j.state === "awaiting_confirmation")
       return el("div", {}, el("span", { class: "muted", textContent: "A hold was released. " }),
-        el("button", { type: "button", textContent: "Confirm cleanup",
-                       on: { click: () => attempt(() => call("confirm_cleanup", j.id).then(refresh)) } }));
+        el("button", { type: "button", textContent: "Confirm cleanup…",
+                       on: { click: () => confirmDialog({
+                         title: `Confirm the ${phase} cleanup`,
+                         body: "The hold on this material was released. Nothing was removed when it was released; this confirmation lets the cleanup go ahead.",
+                         check: `Remove the ${phase === "audio" ? "audio" : "transcript working content"} now.`,
+                         onConfirm: () => attempt(() => call("confirm_cleanup", j.id).then(refresh)),
+                       }) } }));
     if (j.state === "failed")
       return el("div", {}, el("span", { class: "error", textContent: `Cleanup failed: ${j.note} ` }),
         el("button", { type: "button", textContent: "Try again",
@@ -222,7 +234,33 @@ function renderSpeakers(d) {
   else if (s && s.status === "interrupted") text = s.error || "Speaker identification was interrupted and will start again from the beginning.";
   else if (s && s.status === "running") text = "Identifying speakers…";
   $("m-speakers").textContent = text;
-  $("m-rerun").disabled = !d.audio_available || d.stage === "inbox";
+  $("m-rerun").disabled = !d.audio_available || d.stage === "inbox" || !!d.reviewed_at
+    || !!d.busy || state.version !== null;
+}
+
+function renderVersions(d) {
+  const viewing = state.version !== null;
+  const current = `Current: ${d.model || "no model yet"} · ${d.edits} edited passage${d.edits === 1 ? "" : "s"}`;
+  const items = [el("li", {}, viewing
+    ? el("button", { type: "button", class: "link", textContent: current,
+                     on: { click: () => viewVersion(null) } })
+    : el("strong", { textContent: current }))];
+  for (const v of d.older_versions) {
+    const label = `Earlier: ${v.model} (${fmtDate(v.created_at)}) · ${v.edits} edited passage${v.edits === 1 ? "" : "s"}`;
+    items.push(el("li", {}, state.version === v.index ? el("strong", { textContent: label })
+      : el("button", { type: "button", class: "link", textContent: label,
+                       on: { click: () => viewVersion(v.index) } })));
+  }
+  $("m-versions").replaceChildren(...items);
+  $("m-viewing").hidden = !viewing;
+}
+
+function viewVersion(index) {
+  stopEditing();
+  state.version = index;
+  state.signature = "";
+  $("m-search").value = ""; state.hits = []; $("m-hits").textContent = "";
+  renderMeeting();
 }
 
 function renderHolds(d) {
@@ -260,13 +298,20 @@ async function renderTranscript() {
   const audio = state.detail && state.detail.audio_available;
   const scroll = document.scrollingElement.scrollTop;
   const rows = [];
+  const mid = state.mid, version = state.version;
   let start = 0, total = 1;
   while (start < total) {
-    const page = await call("transcript", state.mid, start, PAGE);
+    const page = await call("transcript", mid, start, PAGE, version);
     total = page.total;
     for (const item of page.items) rows.push(transcriptRow(item, audio));
     start += page.items.length;
     if (!page.items.length) break;
+  }
+  // The user may have started editing, or switched meeting or version, while
+  // this was loading: never replace a passage being edited; render later.
+  if (state.editing || state.mid !== mid || state.version !== version) {
+    state.signature = "";
+    return;
   }
   list.replaceChildren(...rows);
   state.total = total;
@@ -277,6 +322,7 @@ async function renderTranscript() {
 function startEditing(span) {
   const d = state.detail;
   if (!d || d.reviewed_at) { say("The transcript review is confirmed, so it can no longer be edited."); return; }
+  if (state.version !== null) { say("Earlier versions are read only. Switch to the current version to edit."); return; }
   if (state.editing === span) return;
   stopEditing();
   state.editing = span;
@@ -297,15 +343,20 @@ function scheduleSave() {
   state.saveTimer = setTimeout(() => save(span), SAVE_DELAY_MS);
 }
 
-async function save(span) {
-  if (!span) return;
-  const id = Number(span.dataset.id);
-  const r = await attempt(() => call("edit", state.mid, id, span.textContent));
-  if (r) {
-    span.classList.toggle("edited", r.edited);
-    say("Saved");
-    $("m-undo").disabled = false;
-  }
+// Saves run one after another, in order, so a later keystroke can never be
+// overwritten by an earlier save finishing last; undo waits for them too.
+function save(span) {
+  if (!span) return state.saving;
+  const mid = state.mid, id = Number(span.dataset.id), text = span.textContent;
+  state.saving = state.saving.then(async () => {
+    const r = await attempt(() => call("edit", mid, id, text));
+    if (r) {
+      span.classList.toggle("edited", r.edited);
+      say("Saved");
+      $("m-undo").disabled = false;
+    }
+  });
+  return state.saving;
 }
 
 function stopEditing() {
@@ -320,7 +371,9 @@ function stopEditing() {
 }
 
 async function undo() {
+  if (state.version !== null) return;
   stopEditing();
+  await state.saving;                      // the edit being closed is saved first
   const r = await attempt(() => call("undo", state.mid));
   if (r) {
     const span = document.querySelector(`#transcript .text[data-id="${r.id}"]`);
@@ -335,19 +388,20 @@ async function runSearch(jump = true) {
   for (const li of document.querySelectorAll("#transcript li.hit")) li.classList.remove("hit", "current");
   const q = $("m-search").value.trim();
   if (!q) { state.hits = []; $("m-hits").textContent = ""; return; }
-  state.hits = await attempt(() => call("search", state.mid, q)) || [];
-  const rows = $("transcript").children;
-  for (const i of state.hits) if (rows[i]) rows[i].classList.add("hit");
+  state.hits = await attempt(() => call("search", state.mid, q, state.version)) || [];
+  for (const id of state.hits) { const row = rowFor(id); if (row) row.classList.add("hit"); }
   $("m-hits").textContent = state.hits.length ? `${state.hits.length} found` : "No matches";
   if (jump) { state.hit = -1; nextHit(1); }
 }
 
+function rowFor(id) { return document.querySelector(`#transcript li[data-id="${Number(id)}"]`); }
+
 function nextHit(dir) {
   if (!state.hits.length) return;
-  const rows = $("transcript").children;
-  if (state.hit >= 0 && rows[state.hits[state.hit]]) rows[state.hits[state.hit]].classList.remove("current");
+  const prev = state.hit >= 0 ? rowFor(state.hits[state.hit]) : null;
+  if (prev) prev.classList.remove("current");
   state.hit = (state.hit + dir + state.hits.length) % state.hits.length;
-  const row = rows[state.hits[state.hit]];
+  const row = rowFor(state.hits[state.hit]);
   if (row) { row.classList.add("current"); row.scrollIntoView({ block: "center" }); }
   $("m-hits").textContent = `${state.hit + 1} of ${state.hits.length}`;
 }
@@ -364,11 +418,11 @@ async function play(start, end) {
 }
 
 // -- confirmations ---------------------------------------------------------------
-function confirmDialog({ title, body, check, onConfirm }) {
+function confirmDialog({ title, body, check, onConfirm, limits = true }) {
   const dlg = $("confirm");
   $("c-title").textContent = title;
   $("c-body").textContent = body;
-  $("c-limits").textContent = state.detail ? state.detail.limits : "";
+  $("c-limits").textContent = limits && state.detail ? state.detail.limits : "";
   $("c-check-text").textContent = check;
   $("c-check").checked = false;
   $("c-ok").disabled = true;
@@ -448,11 +502,18 @@ function wire() {
   $("m-stop").addEventListener("click", () => attempt(() => call("stop_now", state.mid).then(refresh)));
   $("m-resume").addEventListener("click", () => attempt(() => call("resume", state.mid).then(refresh)));
   $("m-undo").addEventListener("click", undo);
-  $("m-retranscribe").addEventListener("click", () => attempt(async () => {
-    await call("retranscribe", state.mid);
-    state.signature = "";
-    say("Transcribing again. The previous version and its edits are kept.");
-    refresh();
+  $("m-retranscribe").addEventListener("click", () => confirmDialog({
+    title: "Transcribe again with the current model?",
+    body: "A new transcript is made from the audio. Your edits stay with the current version, " +
+      "which is kept as an earlier version you can still open (read only); they are not copied " +
+      "into the new transcript.",
+    check: "I understand my edits stay with the earlier version.",
+    limits: false,
+    onConfirm: () => attempt(async () => {
+      await call("retranscribe", state.mid);
+      viewVersion(null);
+      say("Transcribing again. The previous version and its edits are kept.");
+    }),
   }));
   $("m-rerun").addEventListener("click", () => attempt(async () => {
     const v = $("m-count").value.trim();
