@@ -179,6 +179,76 @@ class CleanupTests(unittest.TestCase):
         results = cleanup.resume_pending(self.store, self.media)
         self.assertEqual(set(results.values()), {JobResult.DONE})
 
+    def add_hold(self, scope="all"):
+        with self.store.tx() as db:
+            db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at) "
+                       "VALUES (?, ?, ?, 'late hold', ?)", (new_id(), self.mid, scope, time.time()))
+
+    def test_hold_added_while_stopping_the_worker_still_wins(self):
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        self.assertEqual(self.run_job(jid, quiesce=self.add_hold), JobResult.HELD)
+        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertEqual(self.job(jid)["state"], "pending")
+
+    def test_hold_added_during_transcript_cleanup_keeps_everything(self):
+        self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid))
+        jid = cleanup.confirm_final_saved(self.store, self.mid)
+        real = cleanup._held
+        calls = []
+
+        def hold_arrives_late(db, mid, phase):         # after both earlier checks
+            calls.append(phase)
+            if len(calls) == 3:
+                db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at) "
+                           "VALUES (?, ?, 'all', 'late hold', ?)", (new_id(), mid, time.time()))
+            return real(db, mid, phase)
+        cleanup._held = hold_arrives_late
+        try:
+            self.assertEqual(self.run_job(jid), JobResult.HELD)
+        finally:
+            cleanup._held = real
+        self.assertIsNotNone(self.store.meeting(self.mid))
+        self.assertTrue(self.store.transcript(self.vid))
+
+    def test_transcript_cleanup_waits_for_audio_cleanup(self):
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        with self.store.tx() as db:
+            db.execute("UPDATE cleanup_jobs SET state = 'failed' WHERE id = ?", (jid,))
+        jid2 = cleanup.confirm_final_saved(self.store, self.mid)
+        self.assertEqual(self.run_job(jid2), JobResult.WAITING)
+        self.assertIsNotNone(self.store.source(self.store.version(self.vid)["source_id"]))
+        self.assertEqual(cleanup.resume_pending(self.store, self.media),
+                         {jid: JobResult.DONE, jid2: JobResult.DONE})
+
+    def test_linked_original_is_kept(self):
+        mid, _, original = self.make_meeting(authority=True)
+        link = self.intake / "link.wav"
+        try:
+            link.symlink_to(original)
+        except OSError:
+            self.skipTest("creating symlinks needs Developer Mode or admin on Windows")
+        with self.store.tx() as db:
+            db.execute("UPDATE sources SET original_path = ? WHERE meeting_id = ?",
+                       (str(link), mid))
+        jid = cleanup.confirm_transcript_reviewed(self.store, mid)
+        self.assertEqual(self.run_job(jid, original_roots=[self.intake]), JobResult.DONE)
+        self.assertTrue(link.exists() and original.exists())
+
+    def test_compaction_error_fails_the_job_instead_of_escaping(self):
+        self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid))
+        jid = cleanup.confirm_final_saved(self.store, self.mid)
+        real = cleanup.compact
+
+        def broken(store):
+            raise cleanup.StoreError("Could not compact the database: disk full")
+        cleanup.compact = broken
+        try:
+            self.assertEqual(self.run_job(jid), JobResult.FAILED)
+        finally:
+            cleanup.compact = real
+        self.assertEqual(self.job(jid)["state"], "failed")
+        self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.DONE})
+
     # -- checkpoint 2: final output saved -> transcript ----------------------------------
 
     def test_final_confirmation_removes_all_transcript_content(self):

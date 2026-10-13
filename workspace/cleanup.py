@@ -19,9 +19,11 @@
 import hashlib
 import os
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 
+from workspace import safe_paths
 from workspace.media import sha256_file
 from workspace.store import StoreError, new_id
 
@@ -40,7 +42,8 @@ class CleanupError(RuntimeError):
 
 
 class JobResult:
-    DONE, FAILED, HELD, NOTHING_PENDING = "done", "failed", "held", "nothing_pending"
+    DONE, FAILED, HELD, WAITING, NOTHING_PENDING = (
+        "done", "failed", "held", "waiting", "nothing_pending")
 
 
 # -- confirmations ----------------------------------------------------------------
@@ -123,22 +126,40 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
         return JobResult.NOTHING_PENDING
     mid, phase = job["meeting_id"], job["phase"]
     if is_held(store, mid, phase):
-        _mark(store, jid, "pending", "Held: kept until the hold is released.")
+        _mark(store, jid, "pending", HELD_NOTE)
         return JobResult.HELD
+    # Audio cleanup must finish first: transcript cleanup removes the source
+    # records (identity and deletion authority) that audio cleanup needs.
+    if phase == TRANSCRIPT and store._one(
+            "SELECT 1 FROM cleanup_jobs WHERE meeting_id = ? AND phase = ? AND state != 'done'",
+            (mid, AUDIO)):
+        _mark(store, jid, "pending", WAITING_NOTE)
+        return JobResult.WAITING
     try:
         if quiesce:
             quiesce()
         with store.tx() as db:       # late worker results are refused from here on
-            db.execute("UPDATE meetings SET content_epoch = content_epoch + 1 WHERE id = ?",
+            # Re-check holds atomically: one may have been added while quiescing.
+            if _held(db, mid, phase):
+                held = True
+            else:
+                held = False
+                db.execute("UPDATE meetings SET content_epoch = content_epoch + 1 WHERE id = ?",
                        (mid,))
-            db.execute("UPDATE cleanup_jobs SET attempts = attempts + 1, last_attempt_at = ? "
-                       "WHERE id = ?", (time.time(), jid))
+                db.execute("UPDATE cleanup_jobs SET attempts = attempts + 1, "
+                           "last_attempt_at = ? WHERE id = ?", (time.time(), jid))
+        if held:
+            _mark(store, jid, "pending", HELD_NOTE)
+            return JobResult.HELD
         if phase == AUDIO:
             notes = _remove_audio(store, mid, Path(media_root), original_roots)
         else:
             notes = _remove_transcript(store, mid, Path(media_root))
+    except HeldDuringCleanup:
+        _mark(store, jid, "pending", HELD_NOTE)
+        return JobResult.HELD
     except (OSError, StoreError) as exc:
-        _mark(store, jid, "failed", f"{type(exc).__name__}: {exc}"[:300])
+        _mark(store, jid, "failed", _reason(exc))
         return JobResult.FAILED
     _mark(store, jid, "done", notes)
     return JobResult.DONE
@@ -152,19 +173,47 @@ def resume_pending(store, media_root, *, quiesce=None, original_roots=()):
                              original_roots=original_roots) for j in jobs}
 
 
+HELD_NOTE = "Held: kept until the hold is released."
+WAITING_NOTE = "Waiting for audio cleanup to finish first."
+
+
+class HeldDuringCleanup(RuntimeError):
+    """A hold was added after the job started; nothing more is removed."""
+
+
+def _reason(exc):
+    """A failure reason without file paths (they name meetings and clients)."""
+    if isinstance(exc, OSError):
+        return f"{type(exc).__name__}: {exc.strerror or 'file error'}"[:300]
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def hold_scopes(phase):
+    """Hold scopes that block a cleanup phase. Transcript cleanup removes
+    everything that remains, so any hold blocks it."""
+    return ("all", AUDIO, TRANSCRIPT) if phase == TRANSCRIPT else ("all", phase)
+
+
+def _held(db, mid, phase):
+    scopes = hold_scopes(phase)
+    return db.execute("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at IS NULL AND "
+                      f"scope IN ({','.join('?' * len(scopes))})",
+                      (mid, *scopes)).fetchone() is not None
+
+
 def is_held(store, mid, phase):
-    """True if an active hold covers this phase (holds table, #18). Transcript
-    cleanup removes everything that remains, so any active hold blocks it."""
-    scopes = ("all", AUDIO, TRANSCRIPT) if phase == TRANSCRIPT else ("all", phase)
-    return store._one("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at IS NULL AND "
-                      f"scope IN ({','.join('?' * len(scopes))})", (mid, *scopes)) is not None
+    """True if an active hold covers this phase (holds table, #18)."""
+    with store._lock:
+        return _held(store.db, mid, phase)
 
 
 def _mark(store, jid, state, error):
+    """Update an unfinished job. Never touches a job in another state (for
+    example one waiting for confirmation after its hold was released, #18)."""
     try:
         with store.tx() as db:
-            db.execute("UPDATE cleanup_jobs SET state = ?, error = ? WHERE id = ?",
-                       (state, error, jid))
+            db.execute("UPDATE cleanup_jobs SET state = ?, error = ? WHERE id = ? AND "
+                       "state IN ('pending', 'failed')", (state, error, jid))
     except StoreError:
         pass
 
@@ -187,13 +236,21 @@ def _remove_original(src, roots):
     path = src["original_path"]
     if not src["delete_original"] or not path:
         return None                                   # no authority: never touched
+    try:
+        safe_paths.check_raw(path)      # never a network, device or stream path
+    except safe_paths.UnsafePathError:
+        return "Original kept: not a local file path."
     p = Path(path)
     if not roots or not any(_inside(p, Path(r)) for r in roots):
         return "Original kept: not in a folder the app may delete from."
     try:
-        st = p.stat()
+        st = p.lstat()
     except FileNotFoundError:
         return "Original already gone."
+    # A link or junction: deleting it would leave the recording itself behind.
+    reparse = getattr(st, "st_file_attributes", 0) & safe_paths.FILE_ATTRIBUTE_REPARSE_POINT
+    if p.is_symlink() or reparse:
+        return "Original kept: it is a link, not the recording itself."
     if (st.st_size, st.st_mtime_ns) != (src["original_size"], src["original_mtime_ns"]) \
             or sha256_file(p) != src["original_sha256"]:
         return "Original kept: the file changed since it was imported."
@@ -211,10 +268,9 @@ def _inside(p, root):
 
 
 def _remove_transcript(store, mid, media_root):
-    folder = media_root / mid                 # anything left (clips, exports)
-    if folder.exists():
-        shutil.rmtree(folder)
     with store.tx() as db:
+        if _held(db, mid, TRANSCRIPT):
+            raise HeldDuringCleanup()
         versions = [r["id"] for r in db.execute("SELECT id FROM versions WHERE meeting_id = ?",
                                                 (mid,))]
         for vid in versions:
@@ -235,6 +291,9 @@ def _remove_transcript(store, mid, media_root):
         db.execute("DELETE FROM holds WHERE meeting_id = ? AND released_at IS NOT NULL", (mid,))
         db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
     compact(store)
+    folder = media_root / mid                 # anything left (clips, exports)
+    if folder.exists():
+        shutil.rmtree(folder)                 # a failure is retried; the rows are gone
     return None
 
 
@@ -243,6 +302,11 @@ def compact(store):
     overwrites freed pages; checkpoint the WAL into the main file and
     truncate it; VACUUM rebuilds the file without free pages."""
     with store._lock:
-        store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        store.db.execute("VACUUM")
-        store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        try:
+            store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            store.db.execute("VACUUM")
+            busy = store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        except sqlite3.Error as exc:
+            raise StoreError(f"Could not compact the database: {exc}") from exc
+    if busy:
+        raise StoreError("Could not compact the database: it is in use. Will retry.")
