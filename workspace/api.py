@@ -25,6 +25,8 @@ API_METHODS = frozenset({
     "speakers", "speaker_examples", "rename_speaker", "merge_speakers", "assign_speaker",
     "undo_speakers", "speaker_panel", "handoff_templates", "save_template", "reset_template",
     "handoff_preview", "set_handoff_options", "copy_handoff", "save_handoff",
+    "setup_state", "download_model", "remove_token", "finish_setup", "open_help",
+    "verify_model", "cancel_download",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -189,6 +191,28 @@ def make_api(ws, get_window=lambda: None):
             return ws.save_handoff_to(mid, tid, path, expected)
         return _safe(run)
 
+    def setup_state(self):
+        return _safe(ws.setup_state)
+
+    def download_model(self, name, token=None, remember=True, use_earlier=False):
+        # The token passes straight through; it is never returned or logged.
+        return _safe(ws.download_model, name, token, bool(remember), bool(use_earlier))
+
+    def verify_model(self, name):
+        return _safe(ws.verify_model, name)
+
+    def cancel_download(self):
+        return _safe(ws.cancel_download)
+
+    def remove_token(self):
+        return _safe(ws.remove_token)
+
+    def finish_setup(self, speakers):
+        return _safe(ws.finish_setup, speakers)
+
+    def open_help(self, key):
+        return _safe(ws.open_help, key)
+
     def import_dialog(self):
         def run():
             import webview
@@ -216,7 +240,10 @@ def make_api(ws, get_window=lambda: None):
                  handoff_templates=handoff_templates,
                  save_template=save_template, reset_template=reset_template,
                  handoff_preview=handoff_preview, set_handoff_options=set_handoff_options,
-                 copy_handoff=copy_handoff, save_handoff=save_handoff)
+                 copy_handoff=copy_handoff, save_handoff=save_handoff,
+                 setup_state=setup_state, download_model=download_model,
+                 remove_token=remove_token, finish_setup=finish_setup, open_help=open_help,
+                 verify_model=verify_model, cancel_download=cancel_download)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

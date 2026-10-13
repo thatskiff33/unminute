@@ -466,7 +466,7 @@ def _download(spec, dest):
                       token=None if spec.gated else False)
 
 
-def install_model(spec, cache_dir, log=print, download=_download):
+def install_model(spec, cache_dir, log=print, download=_download, has_token=None):
     """Make `spec` present and verified. Returns 'ok', 'installed' or 'repaired'.
 
     An existing folder that fails verification is renamed to
@@ -493,7 +493,10 @@ def install_model(spec, cache_dir, log=print, download=_download):
         log(f"{spec.name}: installed files are not usable "
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
-    if spec.gated and not os.environ.get("HF_TOKEN") and not staging_dir(spec, cache_dir).is_dir():
+    # has_token: the caller passes the token to `download` itself (workspace
+    # setup, #19); None keeps the legacy behaviour of reading HF_TOKEN.
+    token_ok = os.environ.get("HF_TOKEN") if has_token is None else has_token
+    if spec.gated and not token_ok and not staging_dir(spec, cache_dir).is_dir():
         raise ModelLoadError(
             f"{spec.name} needs downloading again, which needs your Hugging Face token. "
             f"Run install.cmd and follow the token step.")
@@ -559,11 +562,11 @@ def install_parakeet(name, cache_dir, log=print, download=_download):
     return results
 
 
-def install(name, cache_dir, log=print, download=_download):
+def install(name, cache_dir, log=print, download=_download, has_token=None):
     """Install or repair any managed model. Returns {component: result}."""
     if is_parakeet(name):
         return install_parakeet(name, cache_dir, log, download)
-    return {name: install_model(MANAGED_MODELS[name], cache_dir, log, download)}
+    return {name: install_model(MANAGED_MODELS[name], cache_dir, log, download, has_token)}
 
 
 def is_present(name, cache_dir):

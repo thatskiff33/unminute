@@ -58,6 +58,11 @@ aside { border-left: 1px solid var(--line); padding-left: 16px; }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; }
 fieldset label { display: block; margin: 4px 0; }
 .receipts { padding-left: 20px; }
+.cards { list-style: none; padding: 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.card h2 { margin-top: 4px; }
+.ok { color: #188038; }
+.speaker-setup { border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; margin: 12px 0; }
 .versions { list-style: none; padding: 0; }
 .versions li { margin: 4px 0; }
 

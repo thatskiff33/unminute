@@ -16,6 +16,7 @@
     <button type="button" data-view="inbox" class="nav">Inbox</button>
     <button type="button" data-view="active" class="nav">Active meetings</button>
     <button type="button" data-view="settings" class="nav">Settings</button>
+    <button type="button" data-view="setup" class="nav">Setup</button>
   </nav>
   <p id="status" role="status" aria-live="polite"></p>
 </header>
@@ -104,6 +105,43 @@
       </aside>
     </div>
     <audio id="player" controls preload="none"></audio>
+  </section>
+
+  <section id="view-setup" class="view" aria-labelledby="h-setup" hidden>
+    <h1 id="h-setup">Set up</h1>
+    <p>This app transcribes on this computer. It needs a speech model, and optionally a speaker identification model, downloaded once. Downloads happen only here, when you choose; each file is checked against a published checksum before it is used.</p>
+    <ul id="setup-cards" class="cards"></ul>
+    <section id="speaker-setup" class="speaker-setup" aria-labelledby="h-speaker-setup">
+      <h2 id="h-speaker-setup">Speaker identification (optional)</h2>
+      <p class="muted">The speaker model is free but its publisher asks you to accept its terms with a Hugging Face account before downloading. You only need to do this once. After it is downloaded it works offline, and the token is not needed again.</p>
+      <ol class="steps">
+        <li>Create a free Hugging Face account. <button type="button" data-help="account">Open the sign-up page</button></li>
+        <li>Accept the terms of the speaker model. <button type="button" data-help="terms">Open the model page</button></li>
+        <li>Create an access token of type "Read". <button type="button" data-help="tokens">Open the tokens page</button></li>
+        <li>Paste the token here:
+          <div class="row">
+            <label><span class="sr">Hugging Face token</span>
+              <input id="s-token" type="password" autocomplete="off" spellcheck="false" placeholder="hf_…"></label>
+            <label><input type="checkbox" id="s-remember" checked> Remember it on this computer (Windows Credential Manager)</label>
+          </div>
+          <button type="button" id="s-download-speakers" class="primary">Download the speaker model</button>
+        </li>
+      </ol>
+      <div class="row">
+        <button type="button" id="s-use-remembered" hidden>Download with the remembered token</button>
+        <button type="button" id="s-use-earlier" hidden>Use the token from the earlier version of the app</button>
+      </div>
+    </section>
+    <div class="row">
+      <p id="s-token-note" class="muted"></p>
+      <button type="button" id="s-remove-token" hidden>Remove the remembered token</button>
+    </div>
+    <label><input type="checkbox" id="s-speakers-on" checked> Identify speakers after transcription (when the speaker model is downloaded)</label>
+    <div class="row">
+      <button type="button" id="s-finish" class="primary">Finish setup</button>
+      <button type="button" id="s-skip-speakers">Skip speaker identification for now</button>
+    </div>
+    <p id="s-finish-note" class="muted"></p>
   </section>
 
   <section id="view-settings" class="view" aria-labelledby="h-settings" hidden>
