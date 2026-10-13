@@ -32,7 +32,7 @@ import shutil
 import sys
 import time
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 SAMPLE_RATE = 16000
@@ -49,10 +49,15 @@ VERIFIED_MARKER = ".verified.json"
 
 @dataclass(frozen=True)
 class Segment:
-    """One timed piece of transcript text, in seconds from the recording start."""
+    """One timed piece of transcript text, in seconds from the recording start.
+
+    `words` (optional) holds (start, end, text) per word, with each word's text
+    keeping its leading space. The workspace uses word times to divide a
+    sentence that crosses a chunk boundary (docs/WORKSPACE_DESIGN.md)."""
     start: float
     end: float
     text: str
+    words: tuple = field(default=(), compare=False)
 
 
 class ModelLoadError(RuntimeError):
@@ -633,7 +638,14 @@ def split_sentences(start, end, tokens, timestamps, text):
         return []
     if not tokens or len(tokens) != len(timestamps):
         return [Segment(start, end, text)]
+    words = _token_words(start, end, tokens, timestamps)   # [(first_token_idx, word)]
     out, first, buf = [], 0, []
+
+    def words_in(lo, hi):
+        # By token position, not time: TDT can give several tokens one timestamp,
+        # so a time filter could move a word into the neighbouring sentence.
+        return tuple(w for i, w in words if lo <= i < hi)
+
     for i, tok in enumerate(tokens):
         buf.append(tok)
         nxt = tokens[i + 1] if i + 1 < len(tokens) else None
@@ -641,12 +653,26 @@ def split_sentences(start, end, tokens, timestamps, text):
             seg_end = start + timestamps[i + 1] if nxt is not None else end
             sentence = join_tokens(buf)
             if sentence:
-                out.append(Segment(start + timestamps[first], min(seg_end, end), sentence))
+                out.append(Segment(start + timestamps[first], min(seg_end, end), sentence,
+                                   words_in(first, i + 1)))
             first, buf = i + 1, []
     tail = join_tokens(buf)
     if tail:
-        out.append(Segment(start + timestamps[first], end, tail))
+        out.append(Segment(start + timestamps[first], end, tail, words_in(first, len(tokens))))
     return out
+
+
+def _token_words(start, end, tokens, timestamps):
+    """Group tokens into words: a token beginning with a space starts a new
+    word, which ends where the next one starts. Returns
+    [(index of the word's first token, (start, end, text))]."""
+    starts = [i for i, t in enumerate(tokens) if i == 0 or t.startswith(" ")]
+    words = []
+    for n, i in enumerate(starts):
+        j = starts[n + 1] if n + 1 < len(starts) else len(tokens)
+        w_end = start + timestamps[j] if j < len(tokens) else end
+        words.append((i, (start + timestamps[i], min(w_end, end), "".join(tokens[i:j]))))
+    return words
 
 
 class WhisperEngine:
@@ -654,12 +680,13 @@ class WhisperEngine:
 
     device = "cpu"
 
-    def __init__(self, model, label, precision, language, beam_size=5):
+    def __init__(self, model, label, precision, language, beam_size=5, word_timestamps=False):
         self.model = model
         self.label = label
         self.precision = precision
         self.language = language
         self.beam_size = beam_size
+        self.word_timestamps = word_timestamps   # the workspace needs word times
 
     @property
     def description(self):
@@ -667,9 +694,16 @@ class WhisperEngine:
 
     def transcribe(self, audio):
         """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
+        if not self.word_timestamps:     # legacy app: settings unchanged
+            segments, info = self.model.transcribe(
+                audio, language=self.language, vad_filter=True, beam_size=self.beam_size)
+            return (Segment(s.start, s.end, s.text.strip()) for s in segments), info.duration
         segments, info = self.model.transcribe(
-            audio, language=self.language, vad_filter=True, beam_size=self.beam_size)
-        return (Segment(s.start, s.end, s.text.strip()) for s in segments), info.duration
+            audio, language=self.language, vad_filter=True, beam_size=self.beam_size,
+            word_timestamps=True)
+        return (Segment(s.start, s.end, s.text.strip(),
+                        tuple((w.start, w.end, w.word) for w in (s.words or ())))
+                for s in segments), info.duration
 
     def close(self):
         self.model = None
