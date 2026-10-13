@@ -14,6 +14,12 @@ CACHE_DIR = os.path.join(os.environ["LOCALAPPDATA"], "whisper-models")
 os.environ.setdefault("HF_HUB_CACHE", CACHE_DIR)
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", CACHE_DIR)
 
+# No usage statistics (pyannote sends OpenTelemetry metrics by default). This
+# script may download models, so it does not install the network guard.
+import offline_guard
+
+offline_guard.disable_telemetry()
+
 # Token comes from the user environment (setx HF_TOKEN ...). Fall back to the
 # registry in case this process started before the variable propagated.
 if not os.environ.get("HF_TOKEN"):

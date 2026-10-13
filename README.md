@@ -167,6 +167,8 @@ Consecutive lines from the same speaker are merged into one paragraph. Timestamp
 ## Privacy and network behaviour
 
 - Transcription never uses the network. Offline mode is enforced at the library level, so cached models load without any revision or telemetry calls.
+- No usage statistics are sent. pyannote.audio 4.x sends anonymous usage metrics to otel.pyannote.ai by default; the app forces this off (`PYANNOTE_METRICS_ENABLED=false`, `OTEL_SDK_DISABLED=true`), along with Hugging Face and ONNX Runtime telemetry, even if your environment says otherwise.
+- As a backstop, the app process refuses every network connection and DNS lookup except to the local machine, apart from deliberate model downloads. If a library ever tries to phone home, the attempt fails instead of sending anything.
 - The installer goes online to fetch Python, packages and models.
 - The Update / repair button in the app re-runs the installer in a separate window to reinstall packages at their pinned versions and fetch any missing models. It does not pull new code.
 - If you select a model that is not yet downloaded, the app asks before downloading it.
@@ -211,6 +213,8 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 | --- | --- |
 | `transcribe_ui.py` | The tkinter UI (sv-ttk theme, drag and drop, queue, rename dialog, update button) |
 | `transcriber_core.py` | Engine: model loading, diarisation, transcript rendering, queue worker. No tkinter. |
+| `offline_guard.py` | Forces dependency telemetry off and refuses non-local network access outside deliberate downloads |
+| `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `install.ps1` | Idempotent per-user installer. `install.cmd` is the double-click wrapper. |
 | `whisper-ui.cmd` | Launches the UI with the venv pythonw.exe, no console window |
 | `requirements.txt` | Full pinned freeze of a known-good environment. Install with wheels only. |
