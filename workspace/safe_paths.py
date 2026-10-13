@@ -22,6 +22,10 @@ class UnsafePathError(ValueError):
     """The path was refused. The message is safe to show to the user."""
 
 
+class CloudPlaceholderError(UnsafePathError):
+    """The file is only in cloud storage (not downloaded to this computer)."""
+
+
 def _is_within(child, root):
     child_n, root_n = os.path.normcase(child), os.path.normcase(root)
     try:
@@ -68,7 +72,7 @@ def resolve_within(path, roots):
     return Path(real)
 
 
-def validate_input_file(path, allowed_ext, max_bytes, roots=None):
+def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=False):
     """Accept an existing regular file with an allowed extension and size.
 
     `roots` limits where the real target may live (None = anywhere local).
@@ -83,8 +87,9 @@ def validate_input_file(path, allowed_ext, max_bytes, roots=None):
     if not stat.S_ISREG(st.st_mode):
         raise UnsafePathError("Only regular files can be imported.")
     attrs = getattr(st, "st_file_attributes", 0)
-    if attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE):
-        raise UnsafePathError("The file is in cloud storage and not downloaded to this "
+    if not allow_cloud and attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+                                    | FILE_ATTRIBUTE_OFFLINE):
+        raise CloudPlaceholderError("The file is in cloud storage and not downloaded to this "
                               "computer yet. Make it available offline, then try again.")
     if real.suffix.lower() not in {e.lower() for e in allowed_ext}:
         raise UnsafePathError(f"{real.suffix or 'This file type'} files are not supported.")

@@ -344,6 +344,35 @@ Failure reasons are stored without file paths.
 ### Pinned revisions
 - A meeting keeps the model revision it was started with. If an app update changes the pinned revision, its unfinished transcription stops with an explanation ("Transcribe again"), instead of silently mixing revisions.
 
+## Watched folders (#23) and cloud sources (#24)
+
+`workspace/intake.py`. The user guide is [INTAKE.md](INTAKE.md).
+
+### Scanning
+- Folders are watched explicitly. Existing contents are imported only if the user chooses.
+- A scanner thread reconciles each folder at launch, every 5 minutes while the app is open, and on wake. Sleep counts as elapsed time.
+- Polling was chosen over change notifications because notifications are lost while the app is closed and are unreliable on synced folders. A reconciliation scan is needed anyway.
+- Files are identified by keyed path hash, file ID, size and modification time, never by date.
+- A file is imported once it has been stable across two scans. Its content is hashed once per new identity.
+
+### Suppression data
+- **`intake_seen`:** keyed path hashes, sizes, times and states per folder. Rows go when a file leaves the folder.
+- **`intake_content`:** SHA-256 of imported content, kept for 120 days and at most 20,000 rows.
+- Neither holds names or meeting content.
+- Manual imports are never deduplicated.
+
+### Bounds
+- Drive roots and the user profile root are refused as watched folders.
+- Scans go at most 2 levels deep and look at most at 5,000 files per folder per scan.
+
+### Cloud files and deletion authority
+- **Cloud-only placeholders** wait by default. With a per-folder setting, the app reads them so the sync client fetches them.
+- **Paused sync, offline and unreadable files** are recorded and retried. No progress is invented.
+- **Deletion authority** is a separate, explicit per-folder setting (`watched_folders.delete_originals`).
+  - It marks sources imported from that folder (`sources.delete_original`).
+  - Cleanup receives the authorised folders at deletion time, so revoking the setting keeps originals.
+  - The identity and link checks from #17 still apply.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |
