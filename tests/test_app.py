@@ -305,6 +305,35 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertEqual(ws.store._one("SELECT COUNT(*) AS n FROM speaker_corrections")["n"], 0)
 
+    def test_handoff_copy_and_save_after_review(self):
+        from workspace import clipboard
+        ws = self.open()
+        mid = self.imported(ws)
+        with self.assertRaises(WorkspaceError):
+            ws.handoff_preview(mid, "minutes")               # review first
+        ws.confirm_reviewed(mid)
+        self.assertTrue(ws.wait_idle(60))
+        copied = []
+        real = clipboard.copy_text
+        clipboard.copy_text = copied.append
+        try:
+            r = ws.copy_handoff(mid, "minutes", "combined")
+            ws.copy_handoff(mid, "summary", "prompt_only")
+        finally:
+            clipboard.copy_text = real
+        preview = ws.handoff_preview(mid, "minutes")
+        self.assertEqual(copied[0], preview["combined"])      # exactly what was previewed
+        self.assertEqual(r["chars"], len(preview["combined"]))
+        self.assertNotIn("sentence", copied[1])
+        out = ws.save_handoff_to(mid, "minutes", str(self.root / "handoff"))
+        saved = (self.root / "handoff.md").read_text(encoding="utf-8")
+        self.assertEqual((out["name"], saved), ("handoff.md", preview["markdown"]))
+        with self.assertRaises(WorkspaceError):
+            ws.copy_handoff(mid, "minutes", "everything")
+        ws.confirm_final_saved(mid)
+        self.assertTrue(ws.wait_idle(60))
+        self.assertTrue((self.root / "handoff.md").exists())  # the user's file is theirs
+
     # -- intake ---------------------------------------------------------------------
 
     def test_refused_imports_explain_without_paths(self):

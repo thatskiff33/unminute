@@ -139,6 +139,44 @@
   </div>
 </dialog>
 
+<dialog id="handoff" aria-labelledby="ho-title">
+  <h2 id="ho-title">Hand off the reviewed transcript</h2>
+  <p class="muted">Copy or save the prompt and transcript, then use them in your organisation's approved AI assistant. The app sends nothing anywhere. Check you are using your business account, and review everything the assistant produces before you rely on it.</p>
+  <div class="row">
+    <label>Template <select id="ho-template"></select></label>
+    <button type="button" id="ho-edit">Edit template</button>
+    <button type="button" id="ho-new">New template</button>
+  </div>
+  <div id="ho-editor" class="hold-form" hidden>
+    <label>Name <input id="ho-t-title" maxlength="120" autocomplete="off"></label>
+    <label>Prompt <textarea id="ho-t-prompt" rows="10"></textarea></label>
+    <div class="row">
+      <button type="button" id="ho-t-save" class="primary">Save as new version</button>
+      <button type="button" id="ho-t-reset">Restore original wording</button>
+      <button type="button" id="ho-t-cancel">Cancel</button>
+    </div>
+  </div>
+  <details>
+    <summary>Leave out passages or redact words (this handoff only)</summary>
+    <p class="muted">These change only what is copied or saved. The reviewed transcript stays as it is.</p>
+    <label>Words or phrases to redact, one per line
+      <textarea id="ho-redactions" rows="3"></textarea></label>
+    <p>Passages to leave out:</p>
+    <ul id="ho-passages" class="passages"></ul>
+    <button type="button" id="ho-apply">Apply</button>
+  </details>
+  <p id="ho-info" class="muted"></p>
+  <p id="ho-long" class="banner" hidden>This handoff is long. It is never shortened, but some assistants cut off long pasted text: prefer Save Markdown, attach the file and use Copy prompt only.</p>
+  <pre id="ho-preview" class="preview" tabindex="0" aria-label="Exact preview of what is copied"></pre>
+  <div class="row">
+    <button type="button" id="ho-copy" class="primary">Copy prompt and transcript</button>
+    <button type="button" id="ho-copy-prompt">Copy prompt only</button>
+    <button type="button" id="ho-save">Save Markdown…</button>
+    <button type="button" id="ho-close">Close</button>
+  </div>
+  <p id="ho-status" role="status" aria-live="polite"></p>
+</dialog>
+
 <dialog id="confirm">
   <form method="dialog">
     <h2 id="c-title"></h2>

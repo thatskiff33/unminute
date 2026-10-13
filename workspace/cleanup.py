@@ -301,6 +301,7 @@ def _remove_transcript(store, mid, media_root):
             db.execute("DELETE FROM chunks WHERE version_id = ?", (vid,))
         db.execute("DELETE FROM versions WHERE meeting_id = ?", (mid,))
         db.execute("DELETE FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
+        db.execute("DELETE FROM handoff_options WHERE meeting_id = ?", (mid,))
         db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
         db.execute("DELETE FROM holds WHERE meeting_id = ? AND released_at IS NOT NULL", (mid,))
         db.execute("DELETE FROM meetings WHERE id = ?", (mid,))

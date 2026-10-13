@@ -159,6 +159,31 @@ def checks(window, ws, mid, long_mid, report):
                         Number(document.querySelector('#transcript .text').dataset.id),
                             'x')).error};""",
                                        timeout=90)
+        report["handoff"] = evaluate(window, WAIT + """
+            [...document.querySelectorAll('#steps button')]
+                .find(b => b.textContent.startsWith('Hand off')).click();
+            await wait(2500);
+            const pre = document.getElementById('ho-preview');
+            const before = pre.textContent;
+            document.getElementById('ho-redactions').value = 'Aroha';
+            document.querySelector('#ho-passages input').checked = true;
+            document.getElementById('ho-apply').click(); await wait(2000);
+            const after = pre.textContent;
+            document.getElementById('ho-edit').click();
+            document.getElementById('ho-t-prompt').value = 'Our own minutes prompt.';
+            document.getElementById('ho-t-save').click(); await wait(2000);
+            const edited = pre.textContent;
+            const tpl = document.getElementById('ho-template').selectedOptions[0].textContent;
+            document.getElementById('ho-copy').click(); await wait(1500);
+            const status = document.getElementById('ho-status').textContent
+                || document.getElementById('status').textContent;
+            document.getElementById('ho-close').click();
+            return {has_markers: before.includes('\\nBEGIN TRANSCRIPT\\n'),
+                    named_before: before.includes('Aroha'), named_after: after.includes('Aroha'),
+                    redacted: after.includes('[redacted]'),
+                    left_out: after.includes('1 passage was left out'),
+                    edited_prompt: edited.startsWith('Our own minutes prompt.'),
+                    template_label: tpl, copy_status: status};""")
         t0 = time.perf_counter()
         report["long_transcript"] = evaluate(window, WAIT + f"""
             const t = performance.now();
@@ -245,6 +270,10 @@ def main():
         bad.append("speaker naming")
     if report.get("reassign") != "Speaker 3:":
         bad.append("passage reassignment")
+    h = report.get("handoff") or {}
+    if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")
+            and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")):
+        bad.append("handoff")
     if (report.get("long_transcript") or {}).get("rows") != 5000:
         bad.append("long transcript")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")

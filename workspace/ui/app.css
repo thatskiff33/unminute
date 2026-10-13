@@ -81,3 +81,8 @@ dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 10px; c
 .speaker .examples { list-style: none; padding: 0; margin: 6px 0; }
 .speaker .examples li { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
 button.who { border: 0; padding: 0 2px; font-weight: 600; }
+
+#handoff { width: min(900px, 94vw); max-height: 90vh; overflow: auto; }
+.preview { white-space: pre-wrap; max-height: 40vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: 13px/1.45 Consolas, monospace; }
+.passages { list-style: none; padding: 0; max-height: 30vh; overflow: auto; }
+textarea { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: 100%; }

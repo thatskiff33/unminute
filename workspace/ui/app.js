@@ -218,7 +218,8 @@ function renderSteps(d) {
           disabled: d.stage === "inbox", on: { click: () => confirmReviewed(d) } }))));
   steps.push(step("Hand off the reviewed text and create the final document outside the app",
     !!d.final_saved_at, d.reviewed_at && !d.final_saved_at
-      ? el("div", { class: "muted", textContent: "Copy and prompt tools arrive with the handoff feature (#22)." })
+      ? el("div", {}, el("button", { type: "button", class: "primary", textContent: "Hand off…",
+                                     on: { click: openHandoff } }))
       : null));
   steps.push(step("Confirm the final document is reviewed and saved", !!d.final_saved_at,
     d.final_saved_at ? jobNote("transcript")
@@ -557,10 +558,141 @@ function confirmReviewed(d) {
 function confirmFinal(d) {
   confirmDialog({
     title: "Confirm the final document is saved",
-    body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers and versions. Copying or exporting alone never does this.",
+    body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers, handoff options and versions. Copying or exporting alone never does this. " +
+      "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard, and delete saved handoff files when you no longer need them.",
     check: "The final document is reviewed and saved outside this app.",
     onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => show("active"))),
   });
+}
+
+// -- handoff (#22) ------------------------------------------------------------------
+// The preview is exactly what Copy or Save produces. Nothing is sent anywhere
+// by the app: the user pastes or attaches it in their approved assistant.
+const handoffState = { template: "minutes", templates: [], preview: null, generation: 0 };
+
+async function openHandoff() {
+  handoffState.templates = await attempt(() => call("handoff_templates")) || [];
+  if (!handoffState.templates.some((t) => t.id === handoffState.template))
+    handoffState.template = "minutes";
+  renderTemplateSelect();
+  $("ho-editor").hidden = true;
+  await renderHandoffOptions();
+  await renderHandoffPreview();
+  $("handoff").showModal();
+}
+
+function renderTemplateSelect() {
+  const sel = $("ho-template");
+  sel.replaceChildren(...handoffState.templates.map((t) =>
+    el("option", { value: t.id, textContent: `${t.title} (v${t.version}${t.edited ? ", edited" : ""})` })));
+  sel.value = handoffState.template;
+}
+
+async function renderHandoffPreview() {
+  const generation = ++handoffState.generation;
+  const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template));
+  if (!p || generation !== handoffState.generation) return;
+  handoffState.preview = p;
+  $("ho-preview").textContent = p.combined;
+  const size = `${p.chars.toLocaleString()} characters`;
+  const parts = [`Template: ${p.template.title}, version ${p.template.version}`, size];
+  if (p.omitted) parts.push(`${p.omitted} passage${p.omitted === 1 ? "" : "s"} left out`);
+  if (p.redactions) parts.push(`${p.redactions} redaction${p.redactions === 1 ? "" : "s"}`);
+  $("ho-info").textContent = parts.join(" · ");
+  $("ho-long").hidden = !p.long;
+}
+
+async function renderHandoffOptions() {
+  const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template));
+  if (!p) return;
+  $("ho-redactions").value = p.options.redactions.join("\n");
+  const omitted = new Set(p.options.omitted);
+  const page = await attempt(() => call("transcript", state.mid, 0, 2000));
+  const rows = [];
+  let start = 0, total = page ? page.total : 0, items = page ? page.items : [];
+  while (true) {
+    for (const it of items)
+      rows.push(el("li", {}, el("label", {},
+        el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id) }),
+        ` [${fmtTime(it.t)}] ${it.who ? it.who + ": " : ""}${it.text}`)));
+    start += items.length;
+    if (start >= total || !items.length) break;
+    const next = await attempt(() => call("transcript", state.mid, start, 2000));
+    items = next ? next.items : [];
+  }
+  $("ho-passages").replaceChildren(...rows);
+}
+
+async function applyHandoffOptions() {
+  const omitted = [...document.querySelectorAll("#ho-passages input:checked")].map((i) => Number(i.value));
+  const redactions = $("ho-redactions").value.split("\n").map((s) => s.trim()).filter(Boolean);
+  await attempt(async () => {
+    await call("set_handoff_options", state.mid, omitted, redactions);
+    say("Handoff options saved. The transcript itself is unchanged.");
+    await renderHandoffPreview();
+  });
+}
+
+async function copyHandoff(kind) {
+  let r;
+  try { r = await call("copy_handoff", state.mid, handoffState.template, kind); }
+  catch (err) { $("ho-status").textContent = String(err.message || err); return; }
+  $("ho-status").textContent = kind === "combined"
+    ? `Copied the prompt and transcript (${r.chars.toLocaleString()} characters). Paste it into your organisation's approved AI assistant.` +
+      (r.long ? " It is long: if the assistant cuts it off, use Save Markdown and Copy prompt only instead." : "")
+    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.";
+}
+
+async function saveHandoff() {
+  let r;
+  try { r = await call("save_handoff", state.mid, handoffState.template); }
+  catch (err) { $("ho-status").textContent = String(err.message || err); return; }
+  if (r) $("ho-status").textContent = `Saved ${r.name}. The app keeps no record of this file; file or delete it yourself when you no longer need it.`;
+}
+
+function editTemplate(isNew) {
+  const t = handoffState.templates.find((x) => x.id === handoffState.template);
+  $("ho-editor").hidden = false;
+  $("ho-editor").dataset.id = isNew ? "" : t.id;
+  $("ho-t-title").value = isNew ? "" : t.title;
+  $("ho-t-prompt").value = isNew ? (t ? t.prompt : "") : t.prompt;
+  $("ho-t-reset").textContent = !isNew && t.builtin ? "Restore original wording" : "Delete template";
+  $("ho-t-reset").hidden = isNew || (t.builtin && !t.edited);
+}
+
+async function saveTemplate() {
+  const id = $("ho-editor").dataset.id || null;
+  const saved = await attempt(() => call("save_template", id, $("ho-t-title").value, $("ho-t-prompt").value));
+  if (!saved) return;
+  handoffState.template = saved;
+  handoffState.templates = await call("handoff_templates");
+  renderTemplateSelect();
+  $("ho-editor").hidden = true;
+  say("Template saved as a new version");
+  renderHandoffPreview();
+}
+
+async function resetTemplate() {
+  await attempt(() => call("reset_template", handoffState.template));
+  handoffState.templates = await call("handoff_templates");
+  if (!handoffState.templates.some((t) => t.id === handoffState.template)) handoffState.template = "minutes";
+  renderTemplateSelect();
+  $("ho-editor").hidden = true;
+  renderHandoffPreview();
+}
+
+function wireHandoff() {
+  $("ho-template").addEventListener("change", () => { handoffState.template = $("ho-template").value; $("ho-editor").hidden = true; renderHandoffPreview(); });
+  $("ho-edit").addEventListener("click", () => editTemplate(false));
+  $("ho-new").addEventListener("click", () => editTemplate(true));
+  $("ho-t-save").addEventListener("click", saveTemplate);
+  $("ho-t-cancel").addEventListener("click", () => { $("ho-editor").hidden = true; });
+  $("ho-t-reset").addEventListener("click", resetTemplate);
+  $("ho-apply").addEventListener("click", applyHandoffOptions);
+  $("ho-copy").addEventListener("click", () => copyHandoff("combined"));
+  $("ho-copy-prompt").addEventListener("click", () => copyHandoff("prompt_only"));
+  $("ho-save").addEventListener("click", saveHandoff);
+  $("ho-close").addEventListener("click", () => $("handoff").close());
 }
 
 // -- settings ------------------------------------------------------------------
@@ -601,6 +733,7 @@ async function refresh() {
 }
 
 function wire() {
+  wireHandoff();
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
   $("import").addEventListener("click", () => attempt(async () => {
     await call("clear_import_errors");
