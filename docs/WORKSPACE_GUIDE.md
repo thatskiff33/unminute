@@ -4,14 +4,14 @@ The meeting workspace turns a meeting recording into a reviewed transcript on yo
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in the [README](../README.md). The two keep separate data, and nothing in the earlier app is changed or deleted by the workspace.
+This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in the [README](../README.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Setup's Repair downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
 
 ## What stays on your computer, and what does not
 
 | | Where it is |
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
-| **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. The app blocks its own internet access while it works. |
+| **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
 | **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\whisper\workspace`). This is not a synced folder. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\whisper-models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
@@ -34,7 +34,7 @@ This guide covers the packaged workspace. The earlier source-installed app (`ins
   - **Pause** stops at the next safe point. **Stop now** stops at once; the part in progress is redone later and nothing already transcribed is lost.
 - **Review.** Open the meeting from Active meetings.
   - Select a time to play that passage.
-  - Select text to correct it. Edits save automatically, and **Undo** (Ctrl+Z) reverses them, even after a restart.
+  - Select text to correct it. Edits save automatically, and **Undo edit** (Ctrl+Z) reverses them, even after a restart.
   - Search with Ctrl+F.
 - **Name speakers.** **Name speakers** plays three short clips for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
 - **Transcribe again.** **Transcribe again** with another model keeps your earlier version and its edits. You can still open them read-only.
@@ -100,7 +100,7 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 
 For IT support:
 
-- `runtime\python.exe -m workspace --self-test` in the installed version folder checks every component and the network block.
+- `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Setup for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
@@ -110,7 +110,7 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
-- **Speech models:** Parakeet v2 (recommended), Parakeet v3 and Whisper large-v3 turbo.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
 GPU acceleration is not part of this release. Detecting a graphics card does not enable it.

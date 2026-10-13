@@ -25,7 +25,7 @@ A newer, packaged meeting workspace is being prepared for business use. It adds:
 - watched folders;
 - per-user and Intune installation.
 
-It runs alongside this app and does not change or remove anything this app created.
+It runs alongside this app with its own workspace. The two share downloaded models, and the workspace never deletes anything this app created.
 
 - [User guide](docs/WORKSPACE_GUIDE.md)
 - [Installation and deployment](docs/PACKAGING.md)

@@ -12,7 +12,7 @@ This lists what a workspace release needs, what has been verified, and what stil
 
 ## Verified on the development machine
 
-Machine: Windows 11, 16 logical CPUs. Another heavy transcription app was running throughout, so timings are pessimistic.
+Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy transcription app was running, so the timings in PR #47 and #56 are pessimistic.
 
 | Area | Evidence |
 | --- | --- |
@@ -24,7 +24,7 @@ Machine: Windows 11, 16 logical CPUs. Another heavy transcription app was runnin
 | Workspace window, review, naming, handoff | Automated checks in a real WebView2 window. PRs #51 to #53. |
 | Setup and token | A real gated download, with the token passed by pipe only. Windows Credential Manager round trip. PR #54. |
 | Watched folders | PR #55. Real OneDrive placeholders are not yet tested (#24). |
-| Package | Build, tamper refusal, install, reinstall, self-test, offline inference, the window and uninstall. PR #56. |
+| Package | Build, tamper refusal, install, reinstall, self-test and uninstall on the 0.2.0 build. Offline Parakeet and pyannote inference and the app window were run on an earlier build of the same package. PR #56. |
 | Updates and migration gate | The real installer, end to end with two versions: a held workspace waits (exit 5) with the reason, an emptied workspace migrates and keeps its receipts, rollback after migration is refused (exit 6), a compatible reinstall works, and uninstall. PR #58. |
 | Packaged lifecycle and resources | `tools/packaged_check.py` (PR #57) collects these from an installed package. A full run on the development machine was stopped part-way because memory ran low while another app was using it; the reference measurements belong on the lowest-supported laptop (#28). |
 
@@ -33,7 +33,7 @@ Machine: Windows 11, 16 logical CPUs. Another heavy transcription app was runnin
 - [ ] **#11:** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Choose the signing route.
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
 - [ ] **#22:** a real clipboard copy and paste. Check that copies are excluded from Win+V history, and save once through the native dialog.
-- [ ] **#24:** a real OneDrive online-only file, and how this tenant stores Teams recordings.
+- [ ] **#24:** a real OneDrive online-only file, and how the deploying organisation's tenant stores Teams recordings.
 - [ ] **#27:** accessibility and an end-to-end task with nontechnical users.
 - [ ] **#28:** run `tools/packaged_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue), crash tests around deletions on the packaged build, and an unchanged clipboard.
 - [ ] **#20:** importing by drag and drop, and through the native Import dialog.
@@ -46,7 +46,8 @@ Machine: Windows 11, 16 logical CPUs. Another heavy transcription app was runnin
 | Windows 11 x64, CPU | Tested on the development machine |
 | Windows 10 x64 (1809 or later) | Supported by the installer checks, not yet tested |
 | Edge WebView2 Runtime | Required. The installer checks for it |
-| Parakeet v2 (recommended), Parakeet v3, Whisper large-v3 turbo | Tested from source; Parakeet v2 tested from the package |
+| Parakeet v2 (recommended) | Tested in the workspace (real-engine checks), and offline Parakeet inference from an earlier package build |
+| Parakeet v3, Whisper large-v3 turbo | Tested in the earlier app's engine only (Parakeet v3 dropped speech on some clips) |
 | pyannote community-1 speaker identification | Tested from source and from the package |
 | GPU acceleration | Not included. A detected graphics card does not enable it (#9, #12) |
 
