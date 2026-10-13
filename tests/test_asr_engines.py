@@ -337,5 +337,195 @@ class EngineTests(unittest.TestCase):
             self.assertIn("Update / repair", str(ctx.exception))
 
 
+# --- Whisper model integrity (the "expected 128 mel bands, got 80" failure) ---
+
+def preproc(feature_size=128, raw=None):
+    if raw is not None:
+        return raw
+    return json.dumps({"chunk_length": 30, "feature_size": feature_size,
+                       "hop_length": 160, "n_fft": 400, "sampling_rate": 16000}).encode()
+
+
+W_GOOD = {"config.json": b'{"num_mel_bins": 128}', "model.bin": b"\x05" * 2000,
+          "preprocessor_config.json": preproc(128)}
+
+
+def whisper_spec(contents=W_GOOD, n_mels=128, name="fake-whisper"):
+    base = make_spec(contents, name)
+    return dataclasses.replace(base, onnx_asr_name=None, family="whisper", n_mels=n_mels,
+                               hub_repos=("org/fake-whisper",))
+
+
+def hub_snapshot(cache, rev="a" * 40):
+    return Path(cache) / "models--org--fake-whisper" / "snapshots" / rev
+
+
+def tree(folder):
+    """{relative path: bytes} for every file under folder (to prove it is untouched)."""
+    return {str(p.relative_to(folder)): p.read_bytes()
+            for p in Path(folder).rglob("*") if p.is_file()}
+
+
+class WhisperIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cache = Path(self.tmp.name)
+        self.spec = whisper_spec()
+        ae.WHISPER_MODELS[self.spec.name] = self.spec   # registered for status/CLI helpers
+        self.logs = []
+
+    def tearDown(self):
+        ae.WHISPER_MODELS.pop(self.spec.name, None)
+        self.tmp.cleanup()
+
+    def status(self):
+        return ae.whisper_status(self.spec.name, self.cache)
+
+    def test_missing(self):
+        self.assertEqual(self.status(), ("missing", "not installed"))
+        self.assertFalse(ae.is_present(self.spec.name, self.cache))
+
+    def test_empty_hub_folder_is_not_ready(self):
+        # The original bug: a cache folder existing was treated as "downloaded".
+        hub_snapshot(self.cache).mkdir(parents=True)
+        state, detail = self.status()
+        self.assertEqual(state, "invalid")
+        self.assertIn("model.bin is missing", detail)
+        self.assertTrue(ae.is_present(self.spec.name, self.cache))
+
+    def test_missing_preprocessor_config(self):
+        write_files(hub_snapshot(self.cache),
+                    {k: v for k, v in W_GOOD.items() if k != "preprocessor_config.json"})
+        state, detail = self.status()
+        self.assertEqual(state, "invalid")
+        self.assertIn("preprocessor_config.json is missing", detail)
+
+    def test_malformed_preprocessor_config(self):
+        write_files(hub_snapshot(self.cache),
+                    {**W_GOOD, "preprocessor_config.json": b'{"feature_size": 12'})
+        self.assertIn("not valid JSON", self.status()[1])
+
+    def test_preprocessor_config_without_feature_size(self):
+        write_files(hub_snapshot(self.cache),
+                    {**W_GOOD, "preprocessor_config.json": b'{"sampling_rate": 16000}'})
+        self.assertIn("has no feature_size", self.status()[1])
+
+    def test_preprocessor_config_with_wrong_feature_size(self):
+        write_files(hub_snapshot(self.cache),
+                    {**W_GOOD, "preprocessor_config.json": preproc(80)})
+        self.assertIn("feature_size 80, but fake-whisper needs 128", self.status()[1])
+
+    def test_same_size_wrong_feature_size_caught_by_checksum(self):
+        # A config that differs only in content still fails full verification.
+        bad = preproc(raw=W_GOOD["preprocessor_config.json"].replace(b"128", b"812"))
+        write_files(hub_snapshot(self.cache), {**W_GOOD, "preprocessor_config.json": bad})
+        self.assertIsNone(ae.find_verified_whisper(self.spec, self.cache))
+
+    def test_valid_hub_cache_is_used_without_writing_to_it(self):
+        snap = hub_snapshot(self.cache)
+        write_files(snap, W_GOOD)
+        before = tree(snap.parents[1])
+        self.assertEqual(self.status(), ("ready", ""))
+        self.assertEqual(ae.find_verified_whisper(self.spec, self.cache, full=True), snap)
+        self.assertEqual(tree(snap.parents[1]), before)            # hub cache untouched
+        self.assertTrue(any((self.cache / "whisper" / ".verified").iterdir()))
+        dl = FakeDownload(W_GOOD)
+        self.assertEqual(ae.install_model(self.spec, self.cache, self.logs.append, dl), "ok")
+        self.assertEqual(dl.calls, 0)
+
+    def test_broken_hub_cache_is_kept_and_a_verified_copy_installed(self):
+        snap = hub_snapshot(self.cache)
+        write_files(snap, {**W_GOOD, "preprocessor_config.json": preproc(80)})
+        before = tree(snap.parents[1])
+        dl = FakeDownload(W_GOOD)
+        self.assertEqual(ae.install_model(self.spec, self.cache, self.logs.append, dl),
+                         "installed")
+        self.assertEqual(tree(snap.parents[1]), before)            # preserved for diagnosis
+        self.assertTrue(any("left untouched" in m for m in self.logs))
+        managed = ae.model_dir(self.spec, self.cache)
+        self.assertEqual(ae.find_verified_whisper(self.spec, self.cache), managed)
+        self.assertEqual(self.status(), ("ready", ""))
+        # Repeat repair: nothing more to do, no second download.
+        self.assertEqual(ae.install_model(self.spec, self.cache, self.logs.append, dl), "ok")
+        self.assertEqual(dl.calls, 1)
+
+    def test_checksum_failure_in_hub_cache_shows_needs_repair(self):
+        # Right sizes, wrong bytes: quick checks pass until a full check fails.
+        snap = hub_snapshot(self.cache)
+        write_files(snap, {**W_GOOD, "model.bin": b"\x06" * 2000})
+        before = tree(snap.parents[1])
+        self.assertEqual(self.status(), ("ready", ""))
+        self.assertIsNone(ae.find_verified_whisper(self.spec, self.cache, full=True))
+        state, detail = self.status()
+        self.assertEqual(state, "invalid")
+        self.assertIn("model.bin does not match the expected checksum", detail)
+        self.assertEqual(tree(snap.parents[1]), before)            # nothing written there
+
+    def test_cli_present_includes_damaged_whisper_cache(self):
+        write_files(hub_snapshot(self.cache), {"config.json": W_GOOD["config.json"]})
+        self.assertIn(self.spec.name,
+                      [n for n in ae.WHISPER_MODELS if ae.is_present(n, self.cache)])
+
+    def test_install_dispatches_whisper(self):
+        dl = FakeDownload(W_GOOD)
+        self.assertEqual(ae.install(self.spec.name, self.cache, self.logs.append, dl),
+                         {self.spec.name: "installed"})
+
+    def test_other_models_are_checked_against_their_own_width(self):
+        # Not every model needs 128 bands: an 80-band model validates as 80.
+        spec80 = whisper_spec({**W_GOOD, "preprocessor_config.json": preproc(80)},
+                              n_mels=80, name="fake-80")
+        write_files(ae.model_dir(spec80, self.cache), {**W_GOOD,
+                                                       "preprocessor_config.json": preproc(80)})
+        self.assertEqual(ae.check_files(spec80, ae.model_dir(spec80, self.cache)), [])
+
+
+class FeatureWidthTests(unittest.TestCase):
+    """feature_width_problem() against stand-ins for WhisperModel's attributes."""
+
+    @staticmethod
+    def model(produced, expected):
+        class Arr:
+            shape = (produced, 201)
+
+        class FE:
+            mel_filters = Arr()
+
+        class CT2:
+            n_mels = expected
+
+        class M:
+            feature_extractor = FE()
+            model = CT2()
+        return M()
+
+    def test_turbo_with_128_is_fine(self):
+        self.assertIsNone(ae.feature_width_problem(self.model(128, 128),
+                                                   ae.WHISPER_MODELS["large-v3-turbo"]))
+
+    def test_fallback_to_80_is_caught(self):
+        msg = ae.feature_width_problem(self.model(80, 128), ae.WHISPER_MODELS["large-v3-turbo"])
+        self.assertIn("expects 128 mel bands but its preprocessing settings produce 80", msg)
+
+    def test_model_reporting_unexpected_width_is_caught(self):
+        msg = ae.feature_width_problem(self.model(80, 80), ae.WHISPER_MODELS["large-v3"])
+        self.assertIn("should use 128", msg)
+
+    def test_unpinned_80_band_model_is_not_forced_to_128(self):
+        spec = dataclasses.replace(ae.WHISPER_MODELS["large-v3"], n_mels=None)
+        self.assertIsNone(ae.feature_width_problem(self.model(80, 80), spec))
+
+
+class WhisperManifestTests(unittest.TestCase):
+    def test_supported_whisper_models_are_pinned_to_128_bands(self):
+        for spec in ae.WHISPER_MODELS.values():
+            self.assertEqual(spec.family, "whisper")
+            self.assertEqual(spec.n_mels, 128)
+            names = {f.name for f in spec.files}
+            self.assertTrue({"model.bin", "config.json", "preprocessor_config.json",
+                             "tokenizer.json", "vocabulary.json"} <= names)
+            self.assertTrue(spec.hub_repos)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -260,9 +260,6 @@ except Exception:
 # --- 6. Model downloads -----------------------------------------------------------
 Write-Step 'Step 6/8: Speech models'
 
-# Hub cache folder names for the models faster-whisper 1.2.1 resolves to.
-$TurboDir   = Join-Path $ModelCache 'models--mobiuslabsgmbh--faster-whisper-large-v3-turbo'
-$LargeV3Dir = Join-Path $ModelCache 'models--Systran--faster-whisper-large-v3'
 $PyaDir     = Join-Path $ModelCache 'models--pyannote--speaker-diarization-community-1'
 
 if ($SkipModels) {
@@ -286,49 +283,24 @@ if ($SkipModels) {
     $env:HF_HUB_CACHE = $ModelCache
     $env:HUGGINGFACE_HUB_CACHE = $ModelCache
 
-    # Parakeet: download the recommended model if selected, and check every
-    # Parakeet model already on disk against its pinned checksums. A damaged
-    # copy is set aside (not deleted) and replaced with a verified download.
-    $pkArgs = @('ensure', '--present', '--cache', $ModelCache)
+    # Download the selected models and verify every speech model already on
+    # disk against its pinned checksums and preprocessing settings. A folder
+    # existing is not proof of a working model. A damaged copy is never
+    # deleted: Parakeet's is set aside as .invalid-<date>, and an old Whisper
+    # cache is left untouched while a verified copy is downloaded beside it.
     # 'parakeet' adds the recommended model only when no Parakeet model is on
     # disk yet, so Update / repair on a v3-only install does not pull v2.
-    if ($Models -eq 'parakeet') { $pkArgs += @('--default-parakeet') }
-    Write-Note 'Checking Parakeet models...'
-    & $VenvPython (Join-Path $RepoDir 'asr_engines.py') @pkArgs | Out-Host
-    if ($LASTEXITCODE -ne 0) {
-        if ($Models -eq 'parakeet') { Fail 'Parakeet model download failed. Check your network connection and re-run.' }
-        Write-Warn2 'A Parakeet model could not be repaired. Whisper models are unaffected; re-run to retry.'
+    $selected = switch ($Models) {
+        'parakeet' { @() }
+        'turbo'    { @('large-v3-turbo') }
+        'full'     { @('large-v3-turbo', 'large-v3') }
     }
-
-    if ($Models -eq 'parakeet') {
-        Write-Note 'Whisper models not selected - skipping them.'
-    } elseif (Test-Path $TurboDir) {
-        Write-Ok 'large-v3-turbo already downloaded.'
-    } else {
-        Write-Note 'Downloading large-v3-turbo (~1.6 GB)...'
-        $code = Invoke-VenvPython @'
-import os
-from faster_whisper import download_model
-download_model("large-v3-turbo", cache_dir=os.environ["HF_HUB_CACHE"])
-print("  large-v3-turbo downloaded.")
-'@
-        if ($code -ne 0) { Fail 'Model download failed. Check your network connection and re-run.' }
-    }
-
-    if ($Models -eq 'full') {
-        if (Test-Path $LargeV3Dir) {
-            Write-Ok 'large-v3 already downloaded.'
-        } else {
-            Write-Note 'Downloading large-v3 (~3 GB)...'
-            $code = Invoke-VenvPython @'
-import os
-from faster_whisper import download_model
-download_model("large-v3", cache_dir=os.environ["HF_HUB_CACHE"])
-print("  large-v3 downloaded.")
-'@
-            if ($code -ne 0) { Fail 'Model download failed. Check your network connection and re-run.' }
-        }
-    }
+    $ensureArgs = @('ensure', '--present', '--cache', $ModelCache)
+    if ($Models -eq 'parakeet') { $ensureArgs += '--default-parakeet' }
+    foreach ($m in $selected) { $ensureArgs += @('--model', $m) }
+    Write-Note 'Checking speech models (verifying large files can take a minute)...'
+    & $VenvPython (Join-Path $RepoDir 'asr_engines.py') @ensureArgs | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail 'A speech model could not be downloaded or repaired. Check your network connection and re-run.' }
 
     if ($env:HF_TOKEN) {
         if (Test-Path $PyaDir) {

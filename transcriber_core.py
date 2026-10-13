@@ -139,23 +139,26 @@ def _hub_dir(repo):
 
 
 def model_downloaded(name):
-    """True if the model's weights are already in the local cache.
+    """True if the model's weights are in the local cache and look usable.
 
-    Parakeet must also have every pinned file at its exact size; it is fully
-    checksummed when loaded. Whisper keeps its existing folder check."""
-    if asr_engines.is_parakeet(name):
-        return model_status(name)[0] == "ready"
-    for model_name, repo, _ in MODEL_INFO:
-        if model_name == name:
-            return _hub_dir(repo).is_dir()
-    return False
+    A folder existing is not enough: every pinned file must be present at its
+    exact size, and Whisper's preprocessing config must give the right number
+    of mel bands. Files are fully checksummed when the model is first loaded."""
+    return model_status(name)[0] == "ready"
+
+
+def model_present(name):
+    """True if any copy of the model is on disk, even a damaged one."""
+    return asr_engines.is_present(name, CACHE_DIR)
 
 
 def model_status(name):
     """('ready' | 'missing' | 'invalid', detail) for the UI."""
     if asr_engines.is_parakeet(name):
         return asr_engines.parakeet_status(name, CACHE_DIR)
-    return ("ready", "") if model_downloaded(name) else ("missing", "not installed")
+    if asr_engines.is_whisper(name):
+        return asr_engines.whisper_status(name, CACHE_DIR)
+    return "missing", "unknown model"
 
 
 def diarizer_available():
@@ -175,26 +178,38 @@ _models = {}            # at most ONE entry: name -> engine (see asr_engines)
 _model_lock = threading.Lock()
 
 
+def _ensure_installed(name, log):
+    """Download or repair a model if it is missing or fails its checks."""
+    state, detail = model_status(name)
+    if state == "ready":
+        return
+    if state == "invalid":
+        log(f"Model '{name}' needs repair: {detail}")
+    log(f"Downloading verified '{name}' files once (needs internet)...")
+    with allow_network():
+        asr_engines.install(name, CACHE_DIR, log=lambda m: log("  " + m))
+
+
 def _load_whisper(name, log):
-    kwargs = dict(device="cpu", compute_type=COMPUTE_TYPE,
-                  cpu_threads=CPU_THREADS, download_root=CACHE_DIR)
-    if model_downloaded(name):
-        model = WhisperModel(name, **kwargs)        # offline, from cache
-    else:
-        log(f"Model '{name}' is not cached yet - downloading once (needs internet)...")
-        with allow_network():
-            model = WhisperModel(name, **kwargs)
+    _ensure_installed(name, log)
+    spec = asr_engines.WHISPER_MODELS[name]
+    folder = asr_engines.find_verified_whisper(spec, CACHE_DIR)   # checksums once
+    if folder is None:
+        raise asr_engines.ModelLoadError(
+            f"{name} files failed verification. Run Update / repair.")
+    # Load the verified folder by path: no Hugging Face lookup, nothing downloaded.
+    model = WhisperModel(str(folder), device="cpu", compute_type=COMPUTE_TYPE,
+                         cpu_threads=CPU_THREADS)
+    problem = asr_engines.feature_width_problem(model, spec)
+    if problem:
+        del model
+        raise asr_engines.ModelLoadError(f"{problem}. Run Update / repair to restore "
+                                         f"a matching copy of {name}.")
     return asr_engines.WhisperEngine(model, name, COMPUTE_TYPE, LANGUAGE)
 
 
 def _load_parakeet(name, log):
-    state, detail = model_status(name)
-    if state != "ready":
-        if state == "invalid":
-            log(f"Model '{name}' needs repair: {detail}")
-        log(f"Downloading verified '{name}' files once (needs internet)...")
-        with allow_network():
-            asr_engines.install_parakeet(name, CACHE_DIR, log=lambda m: log("  " + m))
+    _ensure_installed(name, log)
     engine = asr_engines.ParakeetEngine(name, CACHE_DIR, CPU_THREADS, decode_audio)
     return engine.load()   # checksums the files, then loads offline
 

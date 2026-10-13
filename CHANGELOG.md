@@ -6,6 +6,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 ## Unreleased
 
 - Privacy (issue #8): pyannote.audio's default usage metrics (OpenTelemetry to otel.pyannote.ai) are now forced off, together with Hugging Face, OpenTelemetry and ONNX Runtime telemetry. The app process also refuses all non-local network access outside deliberate model downloads, so no usage statistics can be sent.
+- Fix: Whisper large-v3-turbo could fail with "Invalid input features shape: expected (1, 128, 3000), got (1, 80, 3000)" when its cached `preprocessor_config.json` was missing, malformed or lacked `feature_size` (faster-whisper then falls back to 80 mel bands). Whisper models now have pinned SHA-256 manifests like Parakeet; a cache folder existing is no longer treated as a working model; preprocessing settings are validated; and the loaded feature width is checked against the model before "Model ready" or speaker identification.
+- Update / repair (and Start queue) now repair damaged Whisper models instead of skipping any existing folder. A verified copy is downloaded beside the old cache, which is left untouched for diagnosis.
 - Parakeet engine (issue #13): NVIDIA parakeet-tdt-0.6b-v2 (English) is the recommended model for new installs, with parakeet-tdt-0.6b-v3 (multilingual) as an alternative. Both run as INT8 ONNX on the CPU via onnx-asr. Existing Whisper models and saved model choices are unchanged.
 - Parakeet model files are pinned to exact revisions and SHA-256 checksums. A folder that merely exists is not treated as installed; damaged copies are set aside (not deleted) and replaced by Start queue or Update / repair.
 - All engines now share one timed-segment interface. Markdown transcripts record the engine, precision and model revision.

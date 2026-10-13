@@ -11,8 +11,14 @@
 # size, and is fully hashed before first use. A damaged installation is moved
 # aside for diagnosis (never deleted) and replaced with a verified download.
 #
+# Whisper models get the same treatment. An existing Hugging Face cache copy is
+# reused when its files verify; otherwise a verified copy is downloaded into
+# <cache>/whisper/<model> and the old cache is left untouched for diagnosis.
+# After loading, feature_width_problem() confirms the preprocessing produces
+# the mel-band count the model expects before anything is transcribed.
+#
 # This module never touches the network on its own. Downloads happen only in
-# install_parakeet(), which callers wrap in their own network permission
+# install()/install_model(), which callers wrap in their own network permission
 # (transcriber_core.allow_network() in the app; the installer runs it online).
 #
 # CLI (used by install.ps1):
@@ -66,12 +72,15 @@ class ModelFile:
 class ModelSpec:
     """A pinned, hash-verified set of files from one Hugging Face revision."""
     name: str          # name shown in the app
-    folder: str        # folder under <cache>/parakeet
-    onnx_asr_name: str  # model name understood by onnx_asr.load_model
+    folder: str        # folder under <cache>/<family>
     repo: str
     revision: str
     files: tuple
+    onnx_asr_name: str | None = None  # model name understood by onnx_asr.load_model
     quantization: str | None = None
+    family: str = "parakeet"          # "parakeet" or "whisper"
+    n_mels: int | None = None         # Whisper: mel bands the model expects
+    hub_repos: tuple = ()             # Whisper: repo ids an older install may have cached
 
     @property
     def download_bytes(self):
@@ -136,13 +145,72 @@ SILERO_VAD = ModelSpec(
 
 RECOMMENDED_PARAKEET = "parakeet-tdt-0.6b-v2"
 
+# faster-whisper (CTranslate2) models. File hashes match Hugging Face's LFS
+# SHA-256 and git blob IDs; the model files are identical across turbo
+# revisions 0c94664 and 0a363e9 (only README.md changed), so any cached copy
+# with these exact files is accepted whatever revision it came from. Both
+# models need 128 mel bands: faster-whisper 1.2.1 silently falls back to 80
+# when preprocessor_config.json is missing, malformed or lacks feature_size.
+_WHISPER_SHARED = (
+    ModelFile("preprocessor_config.json", 340,
+              "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"),
+    ModelFile("vocabulary.json", 1068114,
+              "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"),
+)
+
+WHISPER_MODELS = {
+    "large-v3-turbo": ModelSpec(
+        name="large-v3-turbo",
+        folder="faster-whisper-large-v3-turbo",
+        family="whisper",
+        repo="dropbox-dash/faster-whisper-large-v3-turbo",
+        revision="0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+        hub_repos=("mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+                   "dropbox-dash/faster-whisper-large-v3-turbo"),
+        n_mels=128,
+        files=(
+            ModelFile("config.json", 2263,
+                      "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"),
+            ModelFile("model.bin", 1617884929,
+                      "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"),
+            ModelFile("tokenizer.json", 2710337,
+                      "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"),
+            *_WHISPER_SHARED,
+        ),
+    ),
+    "large-v3": ModelSpec(
+        name="large-v3",
+        folder="faster-whisper-large-v3",
+        family="whisper",
+        repo="Systran/faster-whisper-large-v3",
+        revision="edaa852ec7e145841d8ffdb056a99866b5f0a478",
+        hub_repos=("Systran/faster-whisper-large-v3",),
+        n_mels=128,
+        files=(
+            ModelFile("config.json", 2394,
+                      "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9"),
+            ModelFile("model.bin", 3087284237,
+                      "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1"),
+            ModelFile("tokenizer.json", 2480617,
+                      "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca"),
+            *_WHISPER_SHARED,
+        ),
+    ),
+}
+
+MANAGED_MODELS = {**PARAKEET_MODELS, **WHISPER_MODELS}
+
 
 def is_parakeet(name):
     return name in PARAKEET_MODELS
 
 
+def is_whisper(name):
+    return name in WHISPER_MODELS
+
+
 def model_dir(spec, cache_dir):
-    return Path(cache_dir) / "parakeet" / spec.folder
+    return Path(cache_dir) / spec.family / spec.folder
 
 
 def staging_dir(spec, cache_dir):
@@ -150,7 +218,7 @@ def staging_dir(spec, cache_dir):
     temporary files under <dir>\\.cache\\huggingface\\download\\ with names of
     ~113 characters, so a long folder name here breaks Windows' 260-character
     path limit."""
-    return Path(cache_dir) / "parakeet" / f"~dl-{zlib.crc32(spec.folder.encode()):08x}"
+    return Path(cache_dir) / spec.family / f"~dl-{zlib.crc32(spec.folder.encode()):08x}"
 
 
 # --- Integrity checks ---------------------------------------------------------
@@ -172,31 +240,34 @@ def _fingerprint(folder, spec):
     return out
 
 
-def _read_marker(folder):
+def _read_marker(path):
     try:
-        return json.loads((folder / VERIFIED_MARKER).read_text(encoding="utf-8"))
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
 
-def check_files(spec, folder, full=False):
+def check_files(spec, folder, full=False, marker=None):
     """Return a list of problems with `folder` (empty when it is usable).
 
-    Quick mode checks presence and exact sizes, and trusts a verification
-    marker only if it names this revision and the files are unchanged since
-    hashing. full=True (or a missing/stale marker) hashes every file and
-    records a fresh marker on success."""
+    Quick mode checks presence, exact sizes and (Whisper) the preprocessing
+    config, and trusts a verification marker only if it names this revision
+    and the files are unchanged since hashing. full=True (or a missing/stale
+    marker) hashes every file and records a fresh marker on success. `marker`
+    defaults to a file inside `folder`; pass another path for folders we must
+    not write to (an existing Hugging Face cache)."""
     folder = Path(folder)
+    marker = Path(marker) if marker else folder / VERIFIED_MARKER
     if not folder.is_dir():
         return ["not installed"]
     problems = _quick_problems(spec, folder)
     if problems:
         return problems
 
-    marker = _read_marker(folder)
-    trusted = (not full and marker is not None and marker.get("ok", True)
-               and marker.get("revision") == spec.revision
-               and marker.get("files") == _fingerprint(folder, spec))
+    recorded = _read_marker(marker)
+    trusted = (not full and recorded is not None and recorded.get("ok", True)
+               and recorded.get("revision") == spec.revision
+               and recorded.get("files") == _fingerprint(folder, spec))
     if trusted:
         return []
 
@@ -206,18 +277,20 @@ def check_files(spec, folder, full=False):
     try:
         # Record the outcome either way: a failure makes the quick status show
         # "needs repair" until these exact files change.
-        (folder / VERIFIED_MARKER).write_text(json.dumps({
-            "repo": spec.repo, "revision": spec.revision, "ok": not problems,
-            "problems": problems, "files": _fingerprint(folder, spec),
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({
+            "repo": spec.repo, "revision": spec.revision, "folder": str(folder),
+            "ok": not problems, "problems": problems, "files": _fingerprint(folder, spec),
         }), encoding="utf-8")
     except OSError:
         pass  # read-only cache: still usable, it just re-hashes next time
     return problems
 
 
-def _recorded_failure(spec, folder):
+def _recorded_failure(spec, folder, marker=None):
     """Problems from an earlier full check of these exact files, if it failed."""
-    marker = _read_marker(folder)
+    folder = Path(folder)
+    marker = _read_marker(marker or folder / VERIFIED_MARKER)
     try:
         if (marker and marker.get("ok") is False and marker.get("revision") == spec.revision
                 and marker.get("files") == _fingerprint(folder, spec)):
@@ -245,7 +318,7 @@ def parakeet_status(name, cache_dir):
 
 
 def _quick_problems(spec, folder):
-    """Presence and size checks only (no hashing)."""
+    """Presence, size and preprocessing-config checks (no hashing)."""
     problems = []
     for f in spec.files:
         p = folder / f.name
@@ -254,7 +327,92 @@ def _quick_problems(spec, folder):
         elif p.stat().st_size != f.size:
             problems.append(f"{f.name} has the wrong size "
                             f"({p.stat().st_size:,} bytes, expected {f.size:,})")
+    if spec.n_mels:
+        problems += _preprocessor_problems(spec, folder)
     return problems
+
+
+def _preprocessor_problems(spec, folder):
+    """Explain a preprocessing config that would make faster-whisper fall back
+    to 80 mel bands (the 'expected (1, 128, 3000), got (1, 80, 3000)' failure)."""
+    p = Path(folder) / "preprocessor_config.json"
+    if not p.is_file():
+        return []   # already reported as missing
+    try:
+        config = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ["preprocessor_config.json is not valid JSON"]
+    if not isinstance(config, dict) or "feature_size" not in config:
+        return ["preprocessor_config.json has no feature_size"]
+    if config["feature_size"] != spec.n_mels:
+        return [f"preprocessor_config.json sets feature_size {config['feature_size']}, "
+                f"but {spec.name} needs {spec.n_mels}"]
+    return []
+
+
+# --- Whisper: verified folders and feature-width check ------------------------
+
+def _hub_snapshots(spec, cache_dir):
+    """Snapshot folders an older install left in the Hugging Face cache."""
+    out = []
+    for repo in spec.hub_repos:
+        snaps = Path(cache_dir) / ("models--" + repo.replace("/", "--")) / "snapshots"
+        if snaps.is_dir():
+            out += sorted(p for p in snaps.iterdir() if p.is_dir())
+    return out
+
+
+def whisper_candidates(spec, cache_dir):
+    """Existing folders that may hold this model: our managed copy first."""
+    managed = model_dir(spec, cache_dir)
+    return ([managed] if managed.is_dir() else []) + _hub_snapshots(spec, cache_dir)
+
+
+def _marker_for(spec, cache_dir, folder):
+    """Markers for Hugging Face cache folders live outside that cache."""
+    if Path(folder) == model_dir(spec, cache_dir):
+        return None
+    key = hashlib.sha1(str(Path(folder).resolve()).lower().encode()).hexdigest()[:16]
+    return Path(cache_dir) / spec.family / ".verified" / f"{spec.folder}-{key}.json"
+
+
+def whisper_status(name, cache_dir):
+    """('ready' | 'missing' | 'invalid', detail) without hashing large files."""
+    spec = WHISPER_MODELS[name]
+    candidates = whisper_candidates(spec, cache_dir)
+    if not candidates:
+        return "missing", "not installed"
+    reports = []
+    for folder in candidates:
+        problems = (_quick_problems(spec, folder)
+                    or _recorded_failure(spec, folder, _marker_for(spec, cache_dir, folder)))
+        if not problems:
+            return "ready", ""
+        reports.append("; ".join(problems))
+    return "invalid", " | ".join(dict.fromkeys(reports))
+
+
+def find_verified_whisper(spec, cache_dir, full=False):
+    """First candidate folder whose files all verify, or None."""
+    for folder in whisper_candidates(spec, cache_dir):
+        if not check_files(spec, folder, full=full, marker=_marker_for(spec, cache_dir, folder)):
+            return folder
+    return None
+
+
+def feature_width_problem(model, spec):
+    """Compare the loaded feature extractor with what the model expects.
+
+    For faster-whisper 1.2.1 / CTranslate2 4.8.0, mel_filters has shape
+    (n_mels, n_fft // 2 + 1) and model.model.n_mels is the model's input width."""
+    produced = int(model.feature_extractor.mel_filters.shape[0])
+    expected = int(model.model.n_mels)
+    if produced != expected:
+        return (f"{spec.name} expects {expected} mel bands but its preprocessing "
+                f"settings produce {produced}")
+    if spec.n_mels and expected != spec.n_mels:
+        return f"{spec.name} reports {expected} mel bands; this model should use {spec.n_mels}"
+    return None
 
 
 # --- Download and repair ------------------------------------------------------
@@ -276,6 +434,14 @@ def install_model(spec, cache_dir, log=print, download=_download):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
+    if spec.family == "whisper":
+        # Reuse any copy that verifies, including an older Hugging Face cache.
+        if find_verified_whisper(spec, cache_dir, full=True) is not None:
+            return "ok"
+        for snap in _hub_snapshots(spec, cache_dir):
+            log(f"{spec.name}: the cached copy in {snap} is not usable "
+                f"({'; '.join(_quick_problems(spec, snap)) or 'checksum mismatch'}). "
+                f"It is left untouched for diagnosis.")
     had_folder = target.exists()
     if had_folder:
         problems = check_files(spec, target, full=True)
@@ -343,6 +509,20 @@ def install_parakeet(name, cache_dir, log=print, download=_download):
     spec = PARAKEET_MODELS[name]
     results[spec.name] = install_model(spec, cache_dir, log, download)
     return results
+
+
+def install(name, cache_dir, log=print, download=_download):
+    """Install or repair any managed model. Returns {component: result}."""
+    if is_parakeet(name):
+        return install_parakeet(name, cache_dir, log, download)
+    return {name: install_model(WHISPER_MODELS[name], cache_dir, log, download)}
+
+
+def is_present(name, cache_dir):
+    """True if any copy of the model exists on disk, usable or not."""
+    if is_parakeet(name):
+        return model_dir(PARAKEET_MODELS[name], cache_dir).exists()
+    return bool(whisper_candidates(WHISPER_MODELS[name], cache_dir))
 
 
 # --- Engines ------------------------------------------------------------------
@@ -486,12 +666,12 @@ class ParakeetEngine:
 
 def _main(argv):
     import argparse
-    parser = argparse.ArgumentParser(description="Install or repair Parakeet models.")
+    parser = argparse.ArgumentParser(description="Install or repair speech models.")
     sub = parser.add_subparsers(dest="cmd", required=True)
     ensure = sub.add_parser("ensure", help="download missing / repair damaged models")
-    ensure.add_argument("--model", action="append", default=[], choices=sorted(PARAKEET_MODELS))
+    ensure.add_argument("--model", action="append", default=[], choices=sorted(MANAGED_MODELS))
     ensure.add_argument("--present", action="store_true",
-                        help="also verify and repair every Parakeet model already on disk")
+                        help="also verify and repair every model already on disk")
     ensure.add_argument("--default-parakeet", action="store_true",
                         help=f"install {RECOMMENDED_PARAKEET} only if no Parakeet model is on disk")
     ensure.add_argument("--cache", default=os.path.join(
@@ -504,16 +684,17 @@ def _main(argv):
 
     names = list(dict.fromkeys(args.model))
     if args.present:
-        names += [n for n, s in PARAKEET_MODELS.items() if on_disk(s) and n not in names]
+        names += [n for n, s in MANAGED_MODELS.items() if n not in names
+                  and (is_present(n, args.cache) or staging_dir(s, args.cache).exists())]
     if args.default_parakeet and not any(on_disk(s) for s in PARAKEET_MODELS.values()):
         names.append(RECOMMENDED_PARAKEET)
     if not names:
-        print("  No Parakeet models selected or installed.")
+        print("  No speech models selected or installed.")
         return 0
     failed = False
     for name in names:
         try:
-            results = install_parakeet(name, args.cache, log=lambda m: print("  " + m))
+            results = install(name, args.cache, log=lambda m: print("  " + m))
             print(f"  {name}: {results[name]}")
         except Exception as exc:
             failed = True
