@@ -19,6 +19,7 @@
 #   - Idle workers exit after IDLE_UNLOAD_S, releasing all model memory.
 
 import multiprocessing as mp
+import os
 import re
 import threading
 import time
@@ -62,6 +63,11 @@ def safe_message(exc):
 
 
 def _worker_main(conn, cache_dir, quiet):
+    # Launched from pythonw there is no console: libraries that write to
+    # stdout/stderr must not crash the worker.
+    import sys
+    if sys.stdout is None or sys.stderr is None:
+        sys.stdout = sys.stderr = open(os.devnull, "w")
     # Before importing any model library: no telemetry, no network.
     import offline_guard
     offline_guard.disable_telemetry()
