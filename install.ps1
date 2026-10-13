@@ -4,16 +4,17 @@
 # Needs NO admin rights. Everything is per-user:
 #   - Python 3.12 (per-user install, only if no suitable Python is found)
 #   - venv + packages   -> %LOCALAPPDATA%\whisper\.venv   (~1.2 GB)
-#   - model weights     -> %LOCALAPPDATA%\whisper-models  (1.6-4.6 GB)
+#   - model weights     -> %LOCALAPPDATA%\whisper-models  (0.7-4.6 GB)
 #   - HF_TOKEN          -> user environment variable (optional, speaker ID only)
 #   - one Start Menu shortcut "Whisper Transcriber"
 #
 # Usual entry point is install.cmd (double-click). Unattended use:
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -Models turbo -SkipToken
 param(
-    # 'turbo' = Standard (large-v3-turbo only), 'full' = turbo + large-v3.
-    # Omit to be asked interactively (default chosen from installed RAM).
-    [ValidateSet('turbo', 'full')]
+    # 'parakeet' = Parakeet English only, 'turbo' = Standard (large-v3-turbo
+    # only), 'full' = turbo + large-v3. Omit to be asked interactively.
+    # Any Parakeet model already on disk is verified (and repaired) every run.
+    [ValidateSet('parakeet', 'turbo', 'full')]
     [string]$Models,
     [switch]$SkipModels,    # skip the model download step entirely
     [switch]$SkipToken,     # skip the Hugging Face token step (no speaker ID)
@@ -268,15 +269,15 @@ if ($SkipModels) {
     Write-Note 'Skipped (-SkipModels). The app will download models on first use instead.'
 } else {
     if (-not $Models) {
-        # Standard for ordinary laptops; Full only makes sense with plenty of RAM
+        # Parakeet is the recommended English engine. Whisper sets remain for
+        # anyone who wants them; Full only makes sense with plenty of RAM
         # (large-v3 is also painfully slow on smaller CPUs).
-        $default = if ($ramGB -ge 24) { '2' } else { '1' }
         Write-Note 'Which models do you want?'
-        Write-Note "  [1] Standard - large-v3-turbo only (~1.6 GB). Best choice for 16 GB laptops."
-        Write-Note "  [2] Full     - turbo + large-v3 (~4.6 GB). For 32 GB machines; large-v3 is slower but most accurate."
-        $choice = Read-Host "Enter 1 or 2 (Enter = $default, recommended for this machine)"
-        if (-not $choice) { $choice = $default }
-        $Models = if ($choice -eq '2') { 'full' } else { 'turbo' }
+        Write-Note "  [1] Parakeet - English, fast (~0.7 GB). Recommended."
+        Write-Note "  [2] Standard - Whisper large-v3-turbo only (~1.6 GB)."
+        Write-Note "  [3] Full     - Whisper turbo + large-v3 (~4.6 GB). For 32 GB machines; large-v3 is slowest."
+        $choice = Read-Host "Enter 1, 2 or 3 (Enter = 1)"
+        $Models = switch ($choice) { '2' { 'turbo' } '3' { 'full' } default { 'parakeet' } }
     }
     Write-Note "Selected: $Models"
     New-Item -ItemType Directory -Force -Path $ModelCache | Out-Null
@@ -285,7 +286,23 @@ if ($SkipModels) {
     $env:HF_HUB_CACHE = $ModelCache
     $env:HUGGINGFACE_HUB_CACHE = $ModelCache
 
-    if (Test-Path $TurboDir) {
+    # Parakeet: download the recommended model if selected, and check every
+    # Parakeet model already on disk against its pinned checksums. A damaged
+    # copy is set aside (not deleted) and replaced with a verified download.
+    $pkArgs = @('ensure', '--present', '--cache', $ModelCache)
+    # 'parakeet' adds the recommended model only when no Parakeet model is on
+    # disk yet, so Update / repair on a v3-only install does not pull v2.
+    if ($Models -eq 'parakeet') { $pkArgs += @('--default-parakeet') }
+    Write-Note 'Checking Parakeet models...'
+    & $VenvPython (Join-Path $RepoDir 'asr_engines.py') @pkArgs | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        if ($Models -eq 'parakeet') { Fail 'Parakeet model download failed. Check your network connection and re-run.' }
+        Write-Warn2 'A Parakeet model could not be repaired. Whisper models are unaffected; re-run to retry.'
+    }
+
+    if ($Models -eq 'parakeet') {
+        Write-Note 'Whisper models not selected - skipping them.'
+    } elseif (Test-Path $TurboDir) {
         Write-Ok 'large-v3-turbo already downloaded.'
     } else {
         Write-Note 'Downloading large-v3-turbo (~1.6 GB)...'
@@ -358,8 +375,8 @@ if ($SkipShortcut) {
 Write-Step 'Step 8/8: Self-check'
 
 $code = Invoke-VenvPython @'
-import faster_whisper, av, tkinter, sv_ttk, tkinterdnd2, darkdetect
-print("  All imports OK (faster-whisper, PyAV, tkinter, theme, drag-and-drop).")
+import faster_whisper, onnx_asr, onnxruntime, av, tkinter, sv_ttk, tkinterdnd2, darkdetect
+print("  All imports OK (faster-whisper, onnx-asr, PyAV, tkinter, theme, drag-and-drop).")
 '@
 if ($code -ne 0) { Fail 'Self-check failed - one of the packages did not import. Re-run the installer.' }
 

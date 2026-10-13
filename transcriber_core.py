@@ -61,6 +61,8 @@ from faster_whisper.audio import decode_audio
 # telemetry events are off before first use (costs ~0.2 s at startup).
 offline_guard.disable_onnxruntime_telemetry()
 
+import asr_engines
+
 
 @contextlib.contextmanager
 def allow_network():
@@ -95,13 +97,21 @@ def allow_network():
 # Transcripts are saved here, next to the scripts.
 EXTRACT_DIR = Path(__file__).resolve().parent / "extracted"
 
-# (name shown to faster-whisper, Hugging Face repo it resolves to, UI hint)
+# (model name, Hugging Face repo faster-whisper resolves it to - None for
+# Parakeet, which asr_engines manages - UI hint). The first entry is the
+# default for new users; a saved choice is kept.
 MODEL_INFO = (
-    ("large-v3-turbo", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "faster"),
-    ("large-v3", "Systran/faster-whisper-large-v3", "most accurate"),
+    ("parakeet-tdt-0.6b-v2", None, "recommended: fast, English"),
+    ("large-v3-turbo", "mobiuslabsgmbh/faster-whisper-large-v3-turbo", "Whisper"),
+    ("large-v3", "Systran/faster-whisper-large-v3", "Whisper, slowest"),
+    ("parakeet-tdt-0.6b-v3", None, "fast, multilingual"),
 )
 MODELS = tuple(name for name, _, _ in MODEL_INFO)
-MODEL_DOWNLOAD_SIZES = {"large-v3-turbo": "1.6 GB", "large-v3": "3 GB"}
+MODEL_DOWNLOAD_SIZES = {"large-v3-turbo": "1.6 GB", "large-v3": "3 GB",
+                        "parakeet-tdt-0.6b-v2": "0.7 GB", "parakeet-tdt-0.6b-v3": "0.7 GB"}
+# Short form shown in the queue's Options column.
+MODEL_SHORT = {"large-v3-turbo": "turbo", "large-v3": "v3",
+               "parakeet-tdt-0.6b-v2": "parakeet", "parakeet-tdt-0.6b-v3": "parakeet v3"}
 
 DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 COMPUTE_TYPE = "int8"   # sensible CPU default; use "int8_float32" if a CPU rejects it
@@ -129,11 +139,23 @@ def _hub_dir(repo):
 
 
 def model_downloaded(name):
-    """True if the Whisper model's weights are already in the local cache."""
+    """True if the model's weights are already in the local cache.
+
+    Parakeet must also have every pinned file at its exact size; it is fully
+    checksummed when loaded. Whisper keeps its existing folder check."""
+    if asr_engines.is_parakeet(name):
+        return model_status(name)[0] == "ready"
     for model_name, repo, _ in MODEL_INFO:
         if model_name == name:
             return _hub_dir(repo).is_dir()
     return False
+
+
+def model_status(name):
+    """('ready' | 'missing' | 'invalid', detail) for the UI."""
+    if asr_engines.is_parakeet(name):
+        return asr_engines.parakeet_status(name, CACHE_DIR)
+    return ("ready", "") if model_downloaded(name) else ("missing", "not installed")
 
 
 def diarizer_available():
@@ -149,31 +171,52 @@ def diarizer_available():
 
 # --- Model loading (shared between threads) ----------------------------------
 
-_models = {}            # at most ONE entry: name -> WhisperModel
+_models = {}            # at most ONE entry: name -> engine (see asr_engines)
 _model_lock = threading.Lock()
 
 
+def _load_whisper(name, log):
+    kwargs = dict(device="cpu", compute_type=COMPUTE_TYPE,
+                  cpu_threads=CPU_THREADS, download_root=CACHE_DIR)
+    if model_downloaded(name):
+        model = WhisperModel(name, **kwargs)        # offline, from cache
+    else:
+        log(f"Model '{name}' is not cached yet - downloading once (needs internet)...")
+        with allow_network():
+            model = WhisperModel(name, **kwargs)
+    return asr_engines.WhisperEngine(model, name, COMPUTE_TYPE, LANGUAGE)
+
+
+def _load_parakeet(name, log):
+    state, detail = model_status(name)
+    if state != "ready":
+        if state == "invalid":
+            log(f"Model '{name}' needs repair: {detail}")
+        log(f"Downloading verified '{name}' files once (needs internet)...")
+        with allow_network():
+            asr_engines.install_parakeet(name, CACHE_DIR, log=lambda m: log("  " + m))
+    engine = asr_engines.ParakeetEngine(name, CACHE_DIR, CPU_THREADS, decode_audio)
+    return engine.load()   # checksums the files, then loads offline
+
+
 def get_model(name, log):
-    """Return a loaded WhisperModel. Only one model is kept in memory at a
-    time: switching models evicts the old one first (a reload takes ~15s,
-    holding both costs ~2.5 GB of RAM - bad on 16 GB laptops)."""
+    """Return a loaded engine with a transcribe(audio) -> (segments, duration)
+    method. Only one model is kept in memory at a time: switching models
+    evicts the old one first (a reload takes ~15s, holding both costs
+    ~2.5 GB of RAM - bad on 16 GB laptops)."""
     with _model_lock:
         if name not in _models:
             if _models:
                 old = next(iter(_models))
                 log(f"Releasing model '{old}' to free memory...")
-                _models.clear()
+                _models.pop(old).close()
                 gc.collect()
             log(f"Loading model '{name}' into memory...")
-            kwargs = dict(device="cpu", compute_type=COMPUTE_TYPE,
-                          cpu_threads=CPU_THREADS, download_root=CACHE_DIR)
-            if model_downloaded(name):
-                _models[name] = WhisperModel(name, **kwargs)        # offline, from cache
+            if asr_engines.is_parakeet(name):
+                _models[name] = _load_parakeet(name, log)
             else:
-                log(f"Model '{name}' is not cached yet - downloading once (needs internet)...")
-                with allow_network():
-                    _models[name] = WhisperModel(name, **kwargs)
-            log(f"Model '{name}' ready.")
+                _models[name] = _load_whisper(name, log)
+            log(f"Model '{name}' ready: {_models[name].description}.")
         return _models[name]
 
 
@@ -319,14 +362,17 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
             pct = min(100, 100 * completed // total)
             emit("phase", f"identifying speakers ({step_name} {pct}%)")
 
+    model_label = settings["model"]   # replaced by the engine's full description once loaded
+    load_error = None                 # set if the model fails to load in this run
+
     def finish(item, src, entries, out_name, status):
         """Save the transcript and tell the UI about it (enables renaming)."""
         out = unique_path(EXTRACT_DIR / out_name)
-        save_transcript(out, entries, settings["fmt"], src, settings["model"],
+        save_transcript(out, entries, settings["fmt"], src, model_label,
                         timestamps=settings["timestamps"])
         emit("item_result", (item["id"], {
             "out": str(out), "entries": entries, "fmt": settings["fmt"],
-            "src": str(src), "model": settings["model"],
+            "src": str(src), "model": model_label,
             "timestamps": settings["timestamps"],
             "speakers": any(who for who, _, _ in entries),
         }))
@@ -352,7 +398,17 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
 
             entries = []  # (speaker name or None, text, start seconds)
             try:
-                model = get_model(settings["model"], log)
+                # A model that failed to load fails the rest of this run the
+                # same way: no re-hashing per file, and no repair download the
+                # user did not accept at Start.
+                if load_error is not None:
+                    raise asr_engines.ModelLoadError(str(load_error))
+                try:
+                    model = get_model(settings["model"], log)
+                except asr_engines.ModelLoadError as exc:
+                    load_error = exc
+                    raise
+                model_label = model.description
 
                 # Optional speaker identification first: decode the audio once
                 # with PyAV, reuse the waveform for both steps.
@@ -366,11 +422,9 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
                     audio = wav
 
                 emit("phase", "transcribing")
-                segments, info = model.transcribe(
-                    audio, language=LANGUAGE, vad_filter=True, beam_size=5
-                )
+                segments, duration = model.transcribe(audio)
                 # Total audio length drives the percentage bar.
-                emit("duration", info.duration)
+                emit("duration", duration)
 
                 # Segments are generated as transcription progresses: label each
                 # with its speaker, log it live, and report progress (seg.end).
