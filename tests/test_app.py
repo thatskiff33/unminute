@@ -3,6 +3,7 @@
 #   python -m unittest discover -s tests -v
 
 import importlib.util
+import os
 import sys
 import tempfile
 import time
@@ -39,6 +40,7 @@ def write_wav(path, seconds):
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+@unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class WorkspaceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
