@@ -114,8 +114,9 @@ JS = {
         return r.ok ? 'allowed' : 'refused: ' + r.error; })()""",
     "bad_argument": """(async () => { const r = await window.pywebview.api.clip('0; import os', 5);
         return r.ok ? 'allowed' : 'refused: ' + r.error; })()""",
-    "error_has_no_stack": """(async () => { const r = await window.pywebview.api.clip(-1, 2);
-        return JSON.stringify(r).includes('Traceback') || JSON.stringify(r).includes(':\\\\'); })()""",
+    "error_has_no_stack": """(async () => {
+        const s = JSON.stringify(await window.pywebview.api.clip(-1, 2));
+        return s.includes('Traceback') || s.includes(':\\\\'); })()""",
     "dispatch_attack": """(async () => {
         const names = ['__init__', '__class__.__init__', 'clip.__globals__.clear',
                        '_paragraphs', 'transcript.__code__', 'pywebviewStateUpdate',
@@ -193,7 +194,8 @@ def run_checks(window, report, audio_s):
         report["pywebview_reported_url"] = window.get_current_url()
         report["system_browser_opened"] = opened
         report["blocked_navigations"] = list(shell.blocked_navigations)
-        report["bridge_still_works"] = evaluate(window, "(async () => (await window.pywebview.api.ping()).value)()")
+        report["bridge_still_works"] = evaluate(
+            window, "(async () => (await window.pywebview.api.ping()).value)()")
         report["blocked_calls"] = list(shell.blocked_calls)
         report["audio_seconds"] = audio_s
     finally:
