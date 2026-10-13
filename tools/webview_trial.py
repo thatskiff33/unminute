@@ -20,7 +20,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workspace import shell  # noqa: E402
-from workspace.bridge import Bridge  # noqa: E402
+from workspace.bridge import make_bridge  # noqa: E402
 
 HOSTILE = ['<img src=x onerror="window.__pwned=1">',
            '<script>window.__pwned=2</script>',
@@ -103,17 +103,33 @@ JS = {
     "hostile": """[document.querySelectorAll('#transcript img, #transcript script').length,
         window.__pwned || 0,
         document.getElementById('transcript').textContent.includes('<img src=x onerror')]""",
-    "playback": """(async () => { const url = await window.pywebview.api.clip(2, 5);
+    "playback": """(async () => { const url = (await window.pywebview.api.clip(2, 5)).value;
         const a = new Audio(); a.muted = true; a.src = url;
         await new Promise((r, j) => { a.onloadedmetadata = r; a.onerror = j; });
         const t0 = performance.now(); await a.play();
         await new Promise(r => a.onended = r);
         return {duration: a.duration, wall_s: (performance.now() - t0) / 1000,
                 url_bytes: url.length}; })()""",
-    "oversized_clip": """(async () => { try { await window.pywebview.api.clip(0, 120);
-        return 'allowed'; } catch (e) { return 'refused: ' + (e.message || e); } })()""",
-    "bad_argument": """(async () => { try { await window.pywebview.api.clip('0; import os', 5);
-        return 'allowed'; } catch (e) { return 'refused: ' + (e.message || e); } })()""",
+    "oversized_clip": """(async () => { const r = await window.pywebview.api.clip(0, 120);
+        return r.ok ? 'allowed' : 'refused: ' + r.error; })()""",
+    "bad_argument": """(async () => { const r = await window.pywebview.api.clip('0; import os', 5);
+        return r.ok ? 'allowed' : 'refused: ' + r.error; })()""",
+    "error_has_no_stack": """(async () => { const r = await window.pywebview.api.clip(-1, 2);
+        return JSON.stringify(r).includes('Traceback') || JSON.stringify(r).includes(':\\\\'); })()""",
+    "dispatch_attack": """(async () => {
+        const names = ['__init__', '__class__.__init__', 'clip.__globals__.clear',
+                       '_paragraphs', 'transcript.__code__', 'pywebviewStateUpdate',
+                       'pywebviewMoveWindow'];
+        for (const n of names) {
+          window.pywebview._returnValuesCallbacks[n] = {};
+          window.pywebview._jsApiCallback(n, [[0.5, 0.5], [[0, 'x', 'PWNED']]], 'atk');
+        }
+        window.pywebview._returnValuesCallbacks['clip.__globals__.__setitem__'] = {};
+        window.pywebview._jsApiCallback('clip.__globals__.__setitem__', ['np', 'PWNED'], 'atk');
+        await new Promise(r => setTimeout(r, 1500));
+        const first = (await window.pywebview.api.transcript(0, 1)).value.items[0].text;
+        const clipOk = (await window.pywebview.api.clip(1, 2)).ok;
+        return {first_paragraph_intact: first !== 'PWNED', clip_still_works: clipOk}; })()""",
     "page_fetch_remote": """(async () => { try { await fetch('https://example.com/');
         return 'fetched'; } catch (e) { return 'blocked'; } })()""",
     "page_fetch_file": """(async () => { try { await fetch('file:///C:/Windows/win.ini');
@@ -177,7 +193,8 @@ def run_checks(window, report, audio_s):
         report["pywebview_reported_url"] = window.get_current_url()
         report["system_browser_opened"] = opened
         report["blocked_navigations"] = list(shell.blocked_navigations)
-        report["bridge_still_works"] = evaluate(window, "window.pywebview.api.ping()")
+        report["bridge_still_works"] = evaluate(window, "(async () => (await window.pywebview.api.ping()).value)()")
+        report["blocked_calls"] = list(shell.blocked_calls)
         report["audio_seconds"] = audio_s
     finally:
         window.destroy()
@@ -185,9 +202,7 @@ def run_checks(window, report, audio_s):
 
 def main():
     wav, out = sys.argv[1], sys.argv[2]
-    if "--harden" in sys.argv:
-        from workspace.shell import harden_webview2
-        harden_webview2()
+    harden = "--no-harden" not in sys.argv
     audio = load_wav(wav)
     report = {
         "python": sys.version.split()[0],
@@ -197,8 +212,9 @@ def main():
     }
     import webview
     report["pywebview"] = webview.__version__ if hasattr(webview, "__version__") else "?"
-    bridge = Bridge(audio, synthetic_paragraphs())
-    window = shell.create_window(bridge, title="Workspace trial (synthetic data)")
+    report["hardened"] = harden
+    bridge = make_bridge(audio, synthetic_paragraphs())
+    window = shell.create_window(bridge, title="Workspace trial (synthetic data)", harden=harden)
     t0 = time.perf_counter()
     shell.run(run_checks, (window, report, round(len(audio) / 16000, 2)))
     report["total_s"] = round(time.perf_counter() - t0, 1)
@@ -224,6 +240,12 @@ def main():
         bad.append("navigation escaped")
     if report.get("system_browser_opened"):
         bad.append("system browser opened")
+    attack = report.get("dispatch_attack") or {}
+    if not (attack.get("first_paragraph_intact") and attack.get("clip_still_works")) \
+            or len(report.get("blocked_calls", [])) < 8:
+        bad.append("dispatch guard")
+    if report.get("error_has_no_stack") is not False:
+        bad.append("error leaks stack/paths")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     return 1 if bad else 0
 

@@ -29,12 +29,20 @@ function row(item) {
   return li;
 }
 
+// Bridge calls return {ok: true, value} or {ok: false, error}; they never
+// throw, so no Python stack trace (with file paths) reaches the page.
+async function call(name, ...args) {
+  const r = await window.pywebview.api[name](...args);
+  if (!r || !r.ok) throw new Error((r && r.error) || "The request failed.");
+  return r.value;
+}
+
 // Render every paragraph in pages from the bridge; returns timing for the trial.
 async function renderAll() {
   const t0 = performance.now();
   let start = 0, total = 1;
   while (start < total) {
-    const page = await window.pywebview.api.transcript(start, 2000);
+    const page = await call("transcript", start, 2000);
     total = page.total;
     const frag = document.createDocumentFragment();
     for (const item of page.items) frag.append(row(item));
@@ -48,14 +56,14 @@ async function renderAll() {
 
 async function playFrom(t) {
   try {
-    player.src = await window.pywebview.api.clip(t, t + 10);
+    player.src = await call("clip", t, t + 10);
     await player.play();
   } catch (err) {
     statusEl.textContent = String(err && err.message || err);
   }
 }
 
-window.trial = { renderAll, playFrom };
+window.trial = { renderAll, playFrom, call };
 
 window.addEventListener("pywebviewready", async () => {
   const r = await renderAll();

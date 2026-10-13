@@ -36,10 +36,19 @@ def check_raw(path):
     text = os.fspath(path)
     if not text or "\x00" in text:
         raise UnsafePathError("Not a file path.")
-    if text.startswith(("\\\\", "//")):
-        raise UnsafePathError("Network and device paths are not accepted.")
-    if not os.path.isabs(text):
+    # Only "X:\..." local paths. This refuses UNC and device paths in every
+    # separator mix (\\, //, /\, \/), which would otherwise contact a server
+    # (and offer it Windows credentials) while being resolved, plus rooted
+    # paths without a drive and drive-relative paths like "C:foo".
+    drive, rest = os.path.splitdrive(text)
+    if len(drive) != 2 or drive[1] != ":" or not drive[0].isalpha():
+        if text[:1] in "\\/" and text[1:2] in "\\/":
+            raise UnsafePathError("Network and device paths are not accepted.")
         raise UnsafePathError("A full path is required.")
+    if rest[:1] not in ("\\", "/"):
+        raise UnsafePathError("A full path is required.")
+    if ":" in rest:      # NTFS alternate data streams (file.wav:hidden)
+        raise UnsafePathError("Not a file path.")
     return text
 
 
@@ -51,6 +60,7 @@ def resolve_within(path, roots):
         real = os.path.realpath(text, strict=True)
     except OSError as exc:
         raise UnsafePathError("The file could not be found.") from exc
+    check_raw(real)      # a link must not lead to a network or device path either
     real_roots = [os.path.realpath(os.fspath(r)) for r in roots]
     if not any(_is_within(real, r) for r in real_roots):
         raise UnsafePathError("The file is outside the folders this app may read.")

@@ -22,7 +22,11 @@ class RawPathTests(unittest.TestCase):
     def test_refuses_relative_unc_device_and_nul(self):
         for bad in ("meeting.wav", "..\\x.wav", "\\\\server\\share\\a.wav",
                     "//server/share/a.wav", "\\\\?\\C:\\a.wav", "\\\\.\\PhysicalDrive0",
-                    "C:\\a\x00.wav", "", None, 42):
+                    # mixed-separator UNC (found in review): would contact a server
+                    "/\\localhost\\c$\\Windows\\win.ini", "\\/localhost/c$/Windows/win.ini",
+                    # rooted without a drive, drive-relative, alternate data stream
+                    "\\Windows\\win.ini", "C:foo.wav", "C:\\a.wav:hidden.wav",
+                    "C:\\a.wav::$DATA", "C:\\a\x00.wav", "", None, 42):
             with self.assertRaises(sp.UnsafePathError, msg=repr(bad)):
                 sp.check_raw(bad)
 
@@ -82,29 +86,67 @@ class BridgeTests(unittest.TestCase):
     def setUp(self):
         import numpy as np
 
-        from workspace.bridge import Bridge
-        self.bridge = Bridge(np.zeros(16000 * 60, dtype=np.float32),
-                             [(i, "S", f"p{i}") for i in range(10)])
+        from workspace.bridge import make_bridge
+        self.bridge = make_bridge(np.zeros(16000 * 60, dtype=np.float32),
+                                  [(i, "S", f"p{i}") for i in range(10)])
 
-    def test_public_surface_is_exactly_three_methods(self):
+    def test_facade_has_three_methods_and_no_state(self):
+        from workspace.bridge import BRIDGE_METHODS
         public = sorted(n for n in dir(self.bridge) if not n.startswith("_"))
-        self.assertEqual(public, ["clip", "ping", "transcript"])
+        self.assertEqual(public, sorted(BRIDGE_METHODS))
+        self.assertFalse(hasattr(self.bridge, "__dict__"))       # __slots__ = ()
+        with self.assertRaises(AttributeError):
+            self.bridge.anything = 1
 
     def test_clip_is_bounded_and_validated(self):
-        from workspace.bridge import BridgeError
-        self.assertTrue(self.bridge.clip(1, 4).startswith("data:audio/wav;base64,"))
+        ok = self.bridge.clip(1, 4)
+        self.assertTrue(ok["ok"] and ok["value"].startswith("data:audio/wav;base64,"))
         for args in ((0, 31), (5, 5), (-1, 2), ("0", 2), (True, 2), (float("nan"), 1),
                      (70, 80)):
-            with self.assertRaises(BridgeError, msg=repr(args)):
-                self.bridge.clip(*args)
+            r = self.bridge.clip(*args)
+            self.assertFalse(r["ok"], msg=repr(args))
+            self.assertNotIn("Traceback", r["error"])
 
     def test_transcript_pages_and_rejects_bad_ranges(self):
-        from workspace.bridge import BridgeError
-        page = self.bridge.transcript(8, 5)
+        page = self.bridge.transcript(8, 5)["value"]
         self.assertEqual((page["total"], [i["text"] for i in page["items"]]), (10, ["p8", "p9"]))
         for args in ((0, 0), (0, 5000), (1.5, 2), ("1", 2)):
-            with self.assertRaises(BridgeError):
-                self.bridge.transcript(*args)
+            self.assertFalse(self.bridge.transcript(*args)["ok"])
+
+
+@unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview not installed")
+class DispatchGuardTests(unittest.TestCase):
+    """pywebview resolves page calls with getattr over any dotted name; the
+    guard must refuse everything except the exact allowed names."""
+
+    def test_only_exact_allowed_names_reach_pywebview(self):
+        import webview.util as util
+
+        from workspace import shell
+        seen = []
+        original = util.js_bridge_call
+        util.js_bridge_call = lambda w, name, p, i: seen.append(name)
+        try:
+            shell.install_dispatch_guard({"clip", "ping", "transcript"})
+            for name in ("__init__", "__class__.__init__", "_audio.tofile",
+                         "clip.__globals__.clear", "clip.__call__", "pywebviewStateUpdate",
+                         "pywebviewMoveWindow", "pywebviewEventHandler", None, 7):
+                util.js_bridge_call(None, name, [], "id")
+            for name in ("clip", "ping", "transcript", "pywebviewAsyncCallback"):
+                util.js_bridge_call(None, name, [], "id")
+        finally:
+            util.js_bridge_call = original
+        self.assertEqual(seen, ["clip", "ping", "transcript", "pywebviewAsyncCallback"])
+        self.assertIn("_audio.tofile", shell.blocked_calls)
+
+    def test_navigation_allowlist(self):
+        from workspace import shell
+        base = shell.UI_DIR.as_uri()
+        self.assertTrue(shell._allowed(base + "/index.html"))
+        self.assertTrue(shell._allowed(base.replace("%20", " ") + "/index.html"))
+        for bad in ("https://example.com/", "about:blank", "data:text/html,x",
+                    base + "-evil/index.html", "file:///C:/Windows/win.ini"):
+            self.assertFalse(shell._allowed(bad), bad)
 
 
 if __name__ == "__main__":
