@@ -226,6 +226,29 @@ class SchemaTooNew(StoreError):
     """The database was written by a newer version of the app."""
 
 
+# Not meeting content: kept across an empty-workspace migration (#26).
+CARRY_OVER = ("receipts", "watched_folders", "intake_content", "intake_meta",
+              "intake_seen")
+
+
+def _statements(script):
+    """Split a schema script into single statements (for use in a transaction)."""
+    out, buf = [], ""
+    for line in script.splitlines(keepends=True):
+        if line.lstrip().startswith("--") and not buf.strip():
+            continue
+        buf += line
+        if sqlite3.complete_statement(buf):
+            out.append(buf.strip())
+            buf = ""
+    return out
+
+
+class MigrationBlocked(StoreError):
+    """An older-schema workspace still holds content: it is never migrated in
+    place (#26). The installer's gate normally prevents this ever happening."""
+
+
 def default_root():
     return Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper" / "workspace"
 
@@ -253,6 +276,7 @@ class Store:
             self.db.execute("PRAGMA foreign_keys=ON")
             # Deleted rows are overwritten, not just unlinked (#17 cleanup).
             self.db.execute("PRAGMA secure_delete=ON")
+            self._migrate_if_needed()
             self.db.executescript(SCHEMA)       # outside any transaction; idempotent
             with self.tx() as db:
                 row = db.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
@@ -271,6 +295,56 @@ class Store:
         except BaseException:
             self.db.close()          # never leave the file locked on a refused open
             raise
+
+    def _migrate_if_needed(self):
+        """Opening a workspace written with an older schema (#26): migrate only
+        if it holds no meeting content, no active hold and no unfinished
+        cleanup. Migration rebuilds the tables; receipts and watched-folder
+        configuration (CARRY_OVER) are carried over. No backup is made."""
+        db = self.db
+        has_version = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+                                 "name = 'schema_version'").fetchone()
+        if not has_version:
+            return
+        current = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        if current is None or current >= SCHEMA_VERSION:
+            return                              # same schema, or "too new" (checked later)
+        from workspace import update
+        found = update.blockers(self.path)
+        if found:
+            raise MigrationBlocked(" ".join(b["message"] for b in found))
+        tables = [r[0] for r in db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")]
+        # Configuration and bookkeeping that is not meeting content is carried
+        # over, column by column where the new schema still has the column.
+        carried = {}
+        for t in CARRY_OVER:
+            if t in tables:
+                cols = [r[1] for r in db.execute(f'PRAGMA table_info("{t}")')]
+                carried[t] = (cols, db.execute(f'SELECT * FROM "{t}"').fetchall())
+        # One transaction: SQLite DDL is transactional, so a crash part-way
+        # leaves the old workspace exactly as it was.
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            for t in tables:
+                db.execute(f'DROP TABLE IF EXISTS "{t}"')
+            for statement in _statements(SCHEMA):
+                db.execute(statement)
+            db.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+            for t, (cols, rows) in carried.items():
+                keep = {r[1] for r in db.execute(f'PRAGMA table_info("{t}")')}
+                use = [i for i, c in enumerate(cols) if c in keep]
+                if not use or not rows:
+                    continue
+                names = ", ".join(f'"{cols[i]}"' for i in use)
+                db.executemany(f'INSERT OR IGNORE INTO "{t}" ({names}) VALUES '
+                               f'({", ".join("?" * len(use))})',
+                               [tuple(r[i] for i in use) for r in rows])
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        db.execute("VACUUM")
 
     def close(self):
         with self._lock:

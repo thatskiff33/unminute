@@ -808,7 +808,11 @@ class Workspace:
         choices = [{"name": n, "label": n + (" (recommended)" if n ==
                                                asr_engines.RECOMMENDED_PARAKEET else "")}
                    for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
-        return {**self.settings.values, "choices": choices}
+        from workspace import update
+        return {**self.settings.values, "choices": choices,
+                "deployment": update.deployment(),
+                "update_blockers": [b["message"] for b in
+                                    update.blockers(self.root / "workspace.db")]}
 
     def set_settings(self, changes):
         if not isinstance(changes, dict):

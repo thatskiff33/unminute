@@ -16,8 +16,19 @@
   - Registers a per-user uninstall entry (used for Intune detection) and a
     Start menu shortcut.
 
+  Updates (#26) use the same command. Before switching version, the NEW
+  package's runtime checks the existing workspace (python -m workspace --gate):
+  an update that changes how the workspace is stored waits until the workspace
+  holds no meetings, retention holds or unfinished cleanup, and says why.
+  Nothing is expired, deleted or backed up to let an update proceed.
+
+  -Managed records that IT manages updates (Intune); -Rollback switches back to
+  the previous installed version if it can still open the workspace.
+
   Exit codes: 0 installed, 1 failed, 2 prerequisites missing,
-  3 the app is running, 4 the package failed verification.
+  3 the app is running, 4 the package failed verification,
+  5 the update waits for the workspace (see the message), 6 this version cannot
+  open the existing workspace (it was created by a newer version).
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
@@ -29,12 +40,16 @@ param(
     [string]$Package = "",
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\WhisperWorkspace"),
     [switch]$Silent,
-    [switch]$SkipShortcut
+    [switch]$SkipShortcut,
+    [switch]$Managed,
+    [switch]$SelfService,
+    [switch]$Rollback
 )
 
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
-$Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut }
+$Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
+             Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
 $AppName = "Meeting Workspace"
 $script:TempExtract = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
@@ -151,6 +166,34 @@ function Test-AppRunning {
     if ($running) { Stop-Install 3 "$AppName is running. Close it (and let any processing finish), then run this again." }
 }
 
+# -- update gate (#26) ----------------------------------------------------------------
+
+function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema = 0) {
+    # Normally run by the version that will take over the workspace, which
+    # knows its own schema. For an older version that cannot check itself,
+    # $Checker (a newer runtime) checks on its behalf with -Schema.
+    $base = if ($Checker) { $Checker } else { $Root }
+    $python = Join-Path $base "runtime\python.exe"
+    $gateArgs = @("-B", "-m", "workspace", "--gate")      # -B: write nothing into the package
+    if ($Schema -gt 0) { $gateArgs += @("--schema", "$Schema") }
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"                  # warnings on stderr must not abort
+    Push-Location (Join-Path $base "app")
+    try { $output = & $python @gateArgs 2>$null; $code = $LASTEXITCODE } finally {
+        Pop-Location
+        $ErrorActionPreference = $saved
+    }
+    $result = $null
+    try { $result = ($output | Select-Object -Last 1) | ConvertFrom-Json } catch { }
+    $message = if ($result) { $result.message } else { "The workspace check did not run." }
+    switch ($code) {
+        0 { Write-Step $message; return }
+        5 { Stop-Install 5 ("The update is waiting. " + $message) }
+        6 { Stop-Install 6 $message }
+        default { Stop-Install 1 "Could not check the workspace before updating: $message" }
+    }
+}
+
 # -- install --------------------------------------------------------------------------
 
 function Install-Version([string]$Root, [string]$Version) {
@@ -184,8 +227,13 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
         # Reinstalling the same version keeps the existing rollback version.
         $previous = if ($was.version -eq $Version) { $was.previous } else { $was.version }
     }
-    @{ version = $Version; path = $Target; previous = $previous } | ConvertTo-Json |
-        Set-Content -LiteralPath $currentFile -Encoding UTF8
+    $managed = [bool]$Options.Managed
+    if (-not $managed -and -not $Options.SelfService -and (Test-Path -LiteralPath $currentFile)) {
+        # An IT-managed installation stays managed across updates.
+        $managed = [bool](Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).managed
+    }
+    @{ version = $Version; path = $Target; previous = $previous; managed = $managed } |
+        ConvertTo-Json | Set-Content -LiteralPath $currentFile -Encoding UTF8
     # Keep the current and the previous version (for rollback, #26); remove older ones.
     Get-ChildItem -LiteralPath (Join-Path $Options.InstallDir "versions") -Directory | Where-Object {
         $_.Name -ne $Version -and $_.Name -ne $previous -and $_.Name -notlike "*.partial" -and $_.Name -notlike "*.old"
@@ -222,13 +270,41 @@ function Register-Uninstall([string]$Target, [string]$Version) {
 
 # -- main ---------------------------------------------------------------------------
 
+function Invoke-Rollback {
+    $currentFile = Join-Path $Options.InstallDir "current.json"
+    if (-not (Test-Path -LiteralPath $currentFile)) { Stop-Install 1 "$AppName is not installed." }
+    $current = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
+    if (-not $current.previous) { Stop-Install 1 "There is no previous version to go back to." }
+    $target = Join-Path $Options.InstallDir "versions\$($current.previous)"
+    if (-not (Test-Path -LiteralPath $target)) { Stop-Install 1 "The previous version is no longer installed." }
+    Test-AppRunning
+    # Can the older version open this workspace? Versions from before the update
+    # gate cannot answer themselves; they all used schema 1.
+    $info = Get-Content -LiteralPath (Join-Path $target "version.json") -Raw | ConvertFrom-Json
+    if ($info.features -contains "gate") {
+        Test-WorkspaceGate $target
+    } else {
+        Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$($current.version)") -Schema 1
+    }
+    Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
+    @{ version = $current.previous; path = $target; previous = $current.version
+       managed = [bool]$current.managed } | ConvertTo-Json |
+        Set-Content -LiteralPath $currentFile -Encoding UTF8
+    New-Shortcut $target
+    Register-Uninstall $target $current.previous
+    Write-Step "$AppName is back on version $($current.previous)."
+    exit 0
+}
+
 try {
+    if ($Options.Rollback) { Invoke-Rollback }
     Test-Prerequisite
     $root = Get-PackageRoot
     $version = (Get-Content -LiteralPath (Join-Path $root "version.json") -Raw | ConvertFrom-Json).version
     Write-Step "Installing $AppName $version for $env:USERNAME..."
     Test-PackageFile $root
     Test-AppRunning
+    Test-WorkspaceGate $root
     $target = Install-Version $root $version
     Set-CurrentVersion $target $version
     New-Shortcut $target

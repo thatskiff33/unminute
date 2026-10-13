@@ -196,7 +196,9 @@ def build(version, out, cache):
             shutil.copy2(PACKAGING / script, folder / script)
         (folder / "version.json").write_text(json.dumps({
             "version": version, "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "python": PYTHON_VERSION, "commit": git_commit()}, indent=2), encoding="utf-8")
+            "python": PYTHON_VERSION, "commit": git_commit(),
+            # Installers check for features before relying on them (#26).
+            "features": ["gate"]}, indent=2), encoding="utf-8")
         too_long = [p.relative_to(folder).as_posix() for p in folder.rglob("*")
                     if len(p.relative_to(folder).as_posix()) > MAX_RELATIVE_PATH]
         if too_long:

@@ -85,6 +85,41 @@ Exit codes:
 | 2 | Prerequisites missing |
 | 3 | The app is running |
 | 4 | The package failed verification |
+| 5 | The update is waiting for the workspace (see the message) |
+| 6 | This version cannot open the existing workspace |
+
+## Updates (#26)
+
+Self-service users and IT use the same route: run the new package's installer (`install.cmd`, or `install.ps1 -Silent` from Intune). Installing with `-Managed` records that IT manages updates. The app then shows "Updates are managed by your IT team" instead of self-service instructions, and later updates keep the setting.
+
+Before switching version, the installer runs the **new** version's own check, `python -m workspace --gate`, against the existing workspace:
+
+| Workspace | Result |
+| --- | --- |
+| None yet | Installed. |
+| Same storage format (schema) | Installed. Everything is kept: meetings, edits, holds, settings. |
+| New storage format, and the workspace holds no meetings, no active retention holds and no unfinished cleanup | Installed. Settings, watched folders and the minimal cleanup receipts are carried over when the app next opens. |
+| New storage format, and the workspace still holds any of those | **Waits.** Exit code 5, with the reasons, for example "2 retention holds are active. Holds never expire on their own…". Nothing is changed. |
+| Older storage format than the workspace (a downgrade) | Refused. Exit code 6. |
+
+Rules:
+
+- No update ever expires a hold, deletes content or makes a backup of meeting content to let itself proceed.
+- Every update waits while the app is running, so nothing is processing or cleaning up during an update.
+- In Intune, map exit code 5 to "Retry". The device gets the update once the people responsible have finished their meetings and released their holds.
+- Deploy in **user** context. The gate checks the signed-in user's workspace, and in System context it would see none.
+- A workspace that exists but cannot be read (damaged or locked) also makes the update wait, with exit code 5. It is never treated as a fresh install.
+- `-SelfService` switches an IT-managed installation back to self-service updates.
+
+Settings > Updates in the app shows the deployment mode and anything that would hold up a storage-format update.
+
+To go back to the previous installed version, run:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback
+```
+
+It runs the same check with the previous version, so it refuses if that version cannot open the workspace (exit code 6). This happens, for example, after a newer version has changed the storage format.
 
 ## Uninstalling
 
