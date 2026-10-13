@@ -23,7 +23,7 @@ API_METHODS = frozenset({
     "confirm_cleanup", "retry_cleanup", "reminders", "receipts", "settings",
     "set_settings", "import_dialog", "clear_import_errors", "pywebviewEventHandler",
     "speakers", "speaker_examples", "rename_speaker", "merge_speakers", "assign_speaker",
-    "undo_speakers",
+    "undo_speakers", "speaker_panel",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -137,6 +137,9 @@ def make_api(ws, get_window=lambda: None):
     def speakers(self, mid):
         return _safe(ws.speakers, mid)
 
+    def speaker_panel(self, mid, offsets=None):
+        return _safe(ws.speaker_panel, mid, offsets)
+
     def speaker_examples(self, mid, label, offset=0):
         return _safe(ws.speaker_examples, mid, label, offset)
 
@@ -175,7 +178,7 @@ def make_api(ws, get_window=lambda: None):
                  clear_import_errors=clear_import_errors, speakers=speakers,
                  speaker_examples=speaker_examples, rename_speaker=rename_speaker,
                  merge_speakers=merge_speakers, assign_speaker=assign_speaker,
-                 undo_speakers=undo_speakers)
+                 undo_speakers=undo_speakers, speaker_panel=speaker_panel)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

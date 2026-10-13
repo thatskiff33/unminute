@@ -504,6 +504,19 @@ class Workspace:
             return {"speakers": [], "can_undo": False}
         return speaker_names.summary(self.store, v["id"])
 
+    def speaker_panel(self, mid, offsets=None):
+        """Speakers, names and examples for the Name speakers panel (one pass)."""
+        self._meeting(mid)
+        v = self.store.active_version(mid)
+        if v is None:
+            return {"speakers": [], "can_undo": False}
+        offsets = offsets or {}
+        if not isinstance(offsets, dict) or len(offsets) > 100 or not all(
+                isinstance(k, str) and isinstance(o, int) and not isinstance(o, bool)
+                and 0 <= o <= 10**6 for k, o in offsets.items()):
+            raise WorkspaceError("Out of range.")
+        return speaker_names.panel(self.store, v["id"], offsets)
+
     def speaker_examples(self, mid, label, offset=0):
         self._meeting(mid)
         v = self.store.active_version(mid)

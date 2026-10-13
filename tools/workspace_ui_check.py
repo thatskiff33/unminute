@@ -136,7 +136,12 @@ def checks(window, ws, mid, long_mid, report):
             const id = btn.closest('li').dataset.id;
             btn.click(); await wait(800);
             const sel = document.querySelector('#transcript select');
-            sel.value = 'new'; sel.dispatchEvent(new Event('change')); await wait(2000);
+            sel.value = 'new'; sel.dispatchEvent(new Event('change')); await wait(500);
+            const unchanged = !!document.querySelector('#transcript select');
+            [...document.querySelectorAll('#transcript .reassign button')]
+                .find(b => b.textContent === 'Move').click();
+            await wait(2000);
+            if (!unchanged) return 'moved without Move';
             return document.querySelector(`#transcript li[data-id="${id}"] .who`)?.textContent;""")
         report["confirm_review"] = evaluate(window, WAIT + """
             [...document.querySelectorAll('#steps button')].find(b =>

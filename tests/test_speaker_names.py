@@ -127,6 +127,41 @@ class SpeakerNameTests(unittest.TestCase):
         more = sn.examples(self.store, self.vid, "SPEAKER_00", offset=3)
         self.assertFalse({i["id"] for i in more["items"]} & {i["id"] for i in first["items"]})
 
+    def test_merged_person_takes_the_latest_merged_name(self):
+        self.add_run([(0, 20, "SPEAKER_00"), (20, 40, "SPEAKER_01"), (40, 60, "SPEAKER_02")])
+        sn.rename(self.store, self.vid, "SPEAKER_00", "X")
+        sn.rename(self.store, self.vid, "SPEAKER_01", "Y")
+        sn.merge(self.store, self.vid, "SPEAKER_01", "SPEAKER_02")
+        sn.merge(self.store, self.vid, "SPEAKER_00", "SPEAKER_02")
+        self.assertEqual(self.who("passage 45"), "X")
+        sn.undo(self.store, self.vid)
+        self.assertEqual(self.who("passage 45"), "Y")
+
+    def test_examples_show_exactly_what_plays_when_only_long_passages_exist(self):
+        mid = self.store.create_meeting("long")
+        sid = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
+                                    original_size=1, original_mtime_ns=0,
+                                    audio_sha256="d" * 64, samples=60 * SR, sample_rate=SR)
+        vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                        model_revision="1", precision="int8", config={},
+                                        chunk_plan=[(0, 60 * SR, 0, 60 * SR)])
+        words = tuple((float(t), t + 0.8, f" w{t}") for t in range(0, 40))
+        self.store.commit_chunk(vid, 0, [Segment(0.0, 40.0, "".join(w[2] for w in words).strip(),
+                                                 words)])
+        rid = self.store.start_speaker_run(vid)
+        self.store.finish_speaker_run(rid, [(0, 40, "A")], [(0, 40, "A")])
+        [item] = sn.examples(self.store, vid, "A")["items"]
+        self.assertLessEqual(item["end"] - item["start"], sn.MAX_CLIP_S)
+        self.assertTrue(item["text"].startswith("w0 w1"))
+        self.assertIn("w14", item["text"])
+        self.assertNotIn("w15", item["text"])             # spoken after the clip ends
+
+    def test_panel_returns_every_speaker_with_examples(self):
+        p = sn.panel(self.store, self.vid, {"SPEAKER_00": 3})
+        self.assertEqual([s["label"] for s in p["speakers"]], ["SPEAKER_00", "SPEAKER_01"])
+        self.assertEqual(p["speakers"][0]["offset"], 3)
+        self.assertEqual(len(p["speakers"][1]["examples"]["items"]), 3)
+
     def test_names_are_removed_with_the_transcript(self):
         from workspace.cleanup import _remove_transcript
         sn.rename(self.store, self.vid, "SPEAKER_00", "Aroha")
