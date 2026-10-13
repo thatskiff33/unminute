@@ -219,6 +219,10 @@ and [coding and integration sequence](docs/IMPLEMENTATION_PLAN.md). These descri
 work, including optional GPU evaluation; the features above describe the current app.
 Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 
+The workspace is being built in the `workspace/` package beside the current app,
+which stays the shipped app until the replacement is tested. The desktop-shell
+feasibility trial and its security findings are in [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md).
+
 | File | Purpose |
 | --- | --- |
 | `transcribe_ui.py` | The tkinter UI (sv-ttk theme, drag and drop, queue, rename dialog, update button) |
