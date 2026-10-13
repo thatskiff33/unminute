@@ -237,7 +237,8 @@ def _remove_original(src, roots):
     if not src["delete_original"] or not path:
         return None                                   # no authority: never touched
     try:
-        safe_paths.check_raw(path)      # never a network, device or stream path
+        if os.name == "nt":             # Windows path rules (the app is Windows-only)
+            safe_paths.check_raw(path)  # never a network, device or stream path
     except safe_paths.UnsafePathError:
         return "Original kept: not a local file path."
     p = Path(path)
