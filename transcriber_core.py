@@ -32,9 +32,16 @@ os.environ.setdefault("HUGGINGFACE_HUB_CACHE", CACHE_DIR)
 # read once, at import). A deliberate one-off download lifts this via
 # allow_network(); steady-state transcription never touches the network.
 for _k, _v in (("HF_HUB_OFFLINE", "1"),
-               ("TRANSFORMERS_OFFLINE", "1"),
-               ("HF_HUB_DISABLE_TELEMETRY", "1")):
+               ("TRANSFORMERS_OFFLINE", "1")):
     os.environ.setdefault(_k, _v)
+
+# No usage statistics, ever: force every telemetry switch off (pyannote sends
+# OpenTelemetry metrics to otel.pyannote.ai by default), then refuse any
+# non-loopback network access outside allow_network(). See offline_guard.py.
+import offline_guard
+
+offline_guard.disable_telemetry()
+offline_guard.install()
 
 # The HF token authorises downloads of the gated pyannote models (one-off).
 # Read it from the user environment; fall back to the registry in case this
@@ -49,6 +56,10 @@ if not os.environ.get("HF_TOKEN"):
 
 from faster_whisper import WhisperModel
 from faster_whisper.audio import decode_audio
+
+# faster-whisper imports onnxruntime lazily (for its VAD); import it now so its
+# telemetry events are off before first use (costs ~0.2 s at startup).
+offline_guard.disable_onnxruntime_telemetry()
 
 
 @contextlib.contextmanager
@@ -70,7 +81,8 @@ def allow_network():
             os.environ[k] = "0"
         if hub_const is not None:
             hub_const.HF_HUB_OFFLINE = False   # the constant is what the library actually checks
-        yield
+        with offline_guard.permit():
+            yield
     finally:
         for k, v in saved_env.items():
             if v is None:

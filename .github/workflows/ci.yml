@@ -28,7 +28,12 @@ jobs:
       # Byte-compile every Python file. Catches syntax errors without importing
       # torch, faster-whisper or tkinter.
       - name: Compile Python sources
-        run: python -m compileall -q -f *.py
+        run: python -m compileall -q -f *.py tests/*.py
+
+      # Model-free tests (stdlib only). Any test that needs the full app stack
+      # must skip itself here; run those locally in the installed environment.
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
 
       # Parse the installer with the PowerShell parser and fail on any error.
       - name: Parse PowerShell installer
