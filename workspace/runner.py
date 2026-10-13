@@ -24,8 +24,13 @@ SAMPLE_RATE = 16000
 
 
 class RunResult:
-    DONE, PAUSED, FAILED, STORE_ERROR, SOURCE_CHANGED, SUPERSEDED = (
-        "done", "paused", "failed", "store_error", "source_changed", "superseded")
+    DONE, PAUSED, FAILED, STORE_ERROR, SOURCE_CHANGED, SUPERSEDED, STOPPED = (
+        "done", "paused", "failed", "store_error", "source_changed", "superseded", "stopped")
+
+
+# A chunk that has failed this many times stops the run instead of being
+# retried forever (e.g. a worker that crashes on the same audio every time).
+MAX_ATTEMPTS = 3
 
 
 def _note_error(store, mid, message):
@@ -74,6 +79,10 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
         if store.meeting(mid)["paused"]:
             return RunResult.PAUSED
         idx = chunk["idx"]
+        if chunk["failures"] >= MAX_ATTEMPTS:
+            _note_error(store, mid, f"Part {idx + 1} failed {chunk['failures']} times; "
+                                    f"stopped so it is not retried endlessly.")
+            return RunResult.FAILED
         try:
             attempt = store.start_attempt(vid, idx)
         except StoreError as exc:
@@ -96,6 +105,12 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
             _note_error(store, mid, f"Could not save progress: {exc}")
             return RunResult.STORE_ERROR
         except Exception as exc:
+            from workspace.worker import WorkerStopped
+            if isinstance(exc, WorkerStopped):
+                # Deliberate stop (pause / Stop now / cleanup): the in-flight
+                # chunk was never committed and this is not a failure.
+                _finish(store, attempt, "stopped", engine)
+                return RunResult.PAUSED if store.meeting(mid)["paused"] else RunResult.STOPPED
             _finish(store, attempt, "failed", engine)
             if hooks.get("reraise"):
                 raise
