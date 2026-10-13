@@ -80,7 +80,8 @@ class ModelSpec:
     quantization: str | None = None
     family: str = "parakeet"          # "parakeet" or "whisper"
     n_mels: int | None = None         # Whisper: mel bands the model expects
-    hub_repos: tuple = ()             # Whisper: repo ids an older install may have cached
+    hub_repos: tuple = ()             # repo ids an older install may have in the HF cache
+    gated: bool = False               # download needs the user's Hugging Face token
 
     @property
     def download_bytes(self):
@@ -198,7 +199,33 @@ WHISPER_MODELS = {
     ),
 }
 
-MANAGED_MODELS = {**PARAKEET_MODELS, **WHISPER_MODELS}
+# pyannote speaker identification. Gated on Hugging Face (needs the user's
+# token to download, never to load). pyannote 4.0.4 loads both sub-models with
+# torch.load(weights_only=False), which can execute code from a tampered file,
+# so these hashes are what stands between the cache and code execution.
+SPEAKER_MODEL = ModelSpec(
+    name="speaker-diarization-community-1",
+    folder="speaker-diarization-community-1",
+    family="pyannote",
+    repo="pyannote/speaker-diarization-community-1",
+    revision="3533c8cf8e369892e6b79ff1bf80f7b0286a54ee",
+    hub_repos=("pyannote/speaker-diarization-community-1",),
+    gated=True,
+    files=(
+        ModelFile("config.yaml", 444,
+                  "5ce2bfa9a938dc132cec1172592d65173cbb8f444ea1e4133f10f9391de155be"),
+        ModelFile("embedding/pytorch_model.bin", 26646242,
+                  "6f10ff60898a1d185fa22e1d11e0bfa8a92efec811f11bca48cb8cafebefd929"),
+        ModelFile("plda/plda.npz", 133852,
+                  "9b77bcd840692710dd3496f62ecfeed8d8e5f002fd991b785079b244eab7d255"),
+        ModelFile("plda/xvec_transform.npz", 134376,
+                  "325f1ce8e48f7e55e9c8aa47e05d2766b7c48c4b25b8de8dd751e7a4cc5fbe8f"),
+        ModelFile("segmentation/pytorch_model.bin", 5906507,
+                  "7ad24338d844fb95985486eb1a464e32d229f6d7a03c9abe60f978bacf3f816e"),
+    ),
+)
+
+MANAGED_MODELS = {**PARAKEET_MODELS, **WHISPER_MODELS, SPEAKER_MODEL.name: SPEAKER_MODEL}
 
 
 def is_parakeet(name):
@@ -377,8 +404,9 @@ def _marker_for(spec, cache_dir, folder):
 
 
 def whisper_status(name, cache_dir):
-    """('ready' | 'missing' | 'invalid', detail) without hashing large files."""
-    spec = WHISPER_MODELS[name]
+    """('ready' | 'missing' | 'invalid', detail) without hashing large files.
+    Works for any Hugging Face-cached model (Whisper, speaker identification)."""
+    spec = MANAGED_MODELS[name]
     candidates = whisper_candidates(spec, cache_dir)
     if not candidates:
         return "missing", "not installed"
@@ -426,9 +454,11 @@ def _download(spec, dest):
     """Fetch exactly the pinned files of one revision into `dest`."""
     # Deferred import: honours the offline flags the caller has set.
     from huggingface_hub import snapshot_download
-    # Public repos: never send a stored token with these requests.
+    # Public repos: never send a stored token. Gated repos: let huggingface_hub
+    # pick up the user's token implicitly (HF_TOKEN), as the app always has.
     snapshot_download(spec.repo, revision=spec.revision, local_dir=str(dest),
-                      allow_patterns=[f.name for f in spec.files], token=False)
+                      allow_patterns=[f.name for f in spec.files],
+                      token=None if spec.gated else False)
 
 
 def install_model(spec, cache_dir, log=print, download=_download):
@@ -439,7 +469,8 @@ def install_model(spec, cache_dir, log=print, download=_download):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
-    if spec.family == "whisper":
+    hub_cached = bool(spec.hub_repos)
+    if hub_cached:
         # Reuse any copy that verifies, including an older Hugging Face cache.
         if find_verified_whisper(spec, cache_dir, full=True) is not None:
             return "ok"
@@ -449,14 +480,18 @@ def install_model(spec, cache_dir, log=print, download=_download):
                 f"It is left untouched for diagnosis.")
     had_folder = target.exists()
     if had_folder:
-        # Whisper's managed copy was just fully checked above; don't re-hash it.
+        # A hub-cached model's managed copy was just fully checked above.
         problems = (_quick_problems(spec, target) or _recorded_failure(spec, target)
-                    if spec.family == "whisper" else check_files(spec, target, full=True))
-        if not problems and spec.family != "whisper":
+                    if hub_cached else check_files(spec, target, full=True))
+        if not problems and not hub_cached:
             return "ok"
         log(f"{spec.name}: installed files are not usable "
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
+    if spec.gated and not os.environ.get("HF_TOKEN") and not staging_dir(spec, cache_dir).is_dir():
+        raise ModelLoadError(
+            f"{spec.name} needs downloading again, which needs your Hugging Face token. "
+            f"Run install.cmd and follow the token step.")
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
         # A verified download from an attempt whose final move failed.
@@ -523,14 +558,56 @@ def install(name, cache_dir, log=print, download=_download):
     """Install or repair any managed model. Returns {component: result}."""
     if is_parakeet(name):
         return install_parakeet(name, cache_dir, log, download)
-    return {name: install_model(WHISPER_MODELS[name], cache_dir, log, download)}
+    return {name: install_model(MANAGED_MODELS[name], cache_dir, log, download)}
 
 
 def is_present(name, cache_dir):
     """True if any copy of the model exists on disk, usable or not."""
     if is_parakeet(name):
         return model_dir(PARAKEET_MODELS[name], cache_dir).exists()
-    return bool(whisper_candidates(WHISPER_MODELS[name], cache_dir))
+    return bool(whisper_candidates(MANAGED_MODELS[name], cache_dir))
+
+
+# Family-neutral names: these work for any model cached by Hugging Face.
+hub_model_status = whisper_status
+find_verified = find_verified_whisper
+
+# Licences as published on each model card (checked 13 October 2026).
+LICENCES = {
+    "parakeet-tdt-0.6b-v2": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v2, ONNX export by istupakov"),
+    "parakeet-tdt-0.6b-v3": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v3, ONNX export by istupakov"),
+    "silero-vad": ("MIT", "Silero VAD, ONNX packaging by istupakov"),
+    "large-v3-turbo": ("MIT", "OpenAI whisper-large-v3-turbo, CTranslate2 conversion"),
+    "large-v3": ("MIT", "OpenAI whisper-large-v3, CTranslate2 conversion by Systran"),
+    "speaker-diarization-community-1": (
+        "CC BY 4.0 (gated)",
+        "pyannoteAI speaker-diarization-community-1; accept terms to download"),
+}
+
+
+def manifest_markdown():
+    """The model manifest as Markdown (docs/MODEL_MANIFEST.md is generated from this)."""
+    lines = [
+        "# Model integrity manifest",
+        "",
+        "Generated from the manifests in `asr_engines.py` by",
+        "`python asr_engines.py manifest --out docs/MODEL_MANIFEST.md`;",
+        "a unit test fails if this file and the code disagree.",
+        "Every file must match its size and SHA-256 before a model counts as",
+        "installed. Large-file hashes match Hugging Face's published LFS SHA-256;",
+        "small files were checked against Hugging Face's git blob IDs.",
+        "",
+        "| Model | Licence | Source | Repository | Revision |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    specs = [*PARAKEET_MODELS.values(), SILERO_VAD, *WHISPER_MODELS.values(), SPEAKER_MODEL]
+    for s in specs:
+        lic, src = LICENCES[s.name]
+        lines.append(f"| {s.name} | {lic} | {src} | `{s.repo}` | `{s.revision}` |")
+    for s in specs:
+        lines += ["", f"## {s.name}", "", "| File | Bytes | SHA-256 |", "| --- | --- | --- |"]
+        lines += [f"| `{f.name}` | {f.size} | `{f.sha256}` |" for f in s.files]
+    return "\n".join(lines) + "\n"
 
 
 # --- Engines ------------------------------------------------------------------
@@ -684,7 +761,15 @@ def _main(argv):
                         help=f"install {RECOMMENDED_PARAKEET} only if no Parakeet model is on disk")
     ensure.add_argument("--cache", default=os.path.join(
         os.environ.get("LOCALAPPDATA", os.getcwd()), "whisper-models"))
+    man = sub.add_parser("manifest", help="write the model integrity manifest as Markdown")
+    man.add_argument("--out", help="file to write (UTF-8, LF); default prints it")
     args = parser.parse_args(argv)
+    if args.cmd == "manifest":
+        if args.out:   # written directly: PowerShell 5.1 '>' would produce UTF-16
+            Path(args.out).write_text(manifest_markdown(), encoding="utf-8", newline="\n")
+        else:
+            sys.stdout.write(manifest_markdown())
+        return 0
 
     def on_disk(spec):
         # A verified download whose final move failed counts as present too.

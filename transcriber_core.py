@@ -158,16 +158,21 @@ def model_status(name):
         return asr_engines.parakeet_status(name, CACHE_DIR)
     if asr_engines.is_whisper(name):
         return asr_engines.whisper_status(name, CACHE_DIR)
+    if name in asr_engines.MANAGED_MODELS:          # e.g. the speaker model
+        return asr_engines.hub_model_status(name, CACHE_DIR)
     return "missing", "unknown model"
 
 
 def diarizer_available():
-    """Speaker ID works if the pyannote model is cached (offline) or a token
-    allows downloading it. Returns (available, reason-if-not)."""
-    if _hub_dir(DIARIZATION_MODEL).is_dir():
+    """Speaker ID works if a verified copy of the pyannote model is cached
+    (fully offline, no token needed) or a token allows downloading/repairing
+    it. Returns (available, reason-if-not)."""
+    state, _ = asr_engines.hub_model_status(asr_engines.SPEAKER_MODEL.name, CACHE_DIR)
+    if state == "ready" or os.environ.get("HF_TOKEN"):
         return True, ""
-    if os.environ.get("HF_TOKEN"):
-        return True, ""
+    if state == "invalid":
+        return False, ("Speaker model files are damaged - re-run install.cmd with a "
+                       "Hugging Face token to repair them.")
     return False, ("Needs a Hugging Face token - re-run install.cmd and follow "
                    "the token step.")
 
@@ -246,13 +251,17 @@ def get_diarizer(log):
     with _diarizer_lock:
         if _diarizer is None:
             log("Loading speaker identification pipeline...")
+            spec = asr_engines.SPEAKER_MODEL
+            _ensure_installed(spec.name, log)
+            # Checksummed before loading: pyannote unpickles these weights
+            # (torch.load with weights_only=False), so only verified files load.
+            folder = asr_engines.find_verified(spec, CACHE_DIR)
+            if folder is None:
+                raise asr_engines.ModelLoadError(
+                    "Speaker identification files failed verification. Re-run "
+                    "install.cmd (with a Hugging Face token) to repair them.")
             from pyannote.audio import Pipeline  # heavy import, deferred
-            if _hub_dir(DIARIZATION_MODEL).is_dir():
-                _diarizer = Pipeline.from_pretrained(DIARIZATION_MODEL)   # offline, from cache
-            else:
-                log("Speaker model is not cached yet - downloading once (needs internet)...")
-                with allow_network():
-                    _diarizer = Pipeline.from_pretrained(DIARIZATION_MODEL)
+            _diarizer = Pipeline.from_pretrained(str(folder))   # local folder: no hub lookup
             log("Speaker identification ready.")
         return _diarizer
 
@@ -380,6 +389,7 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
 
     model_label = settings["model"]   # replaced by the engine's full description once loaded
     load_error = None                 # set if the model fails to load in this run
+    speaker_error = None              # set if speaker identification fails in this run
 
     def finish(item, src, entries, out_name, status):
         """Save the transcript and tell the UI about it (enables renaming)."""
@@ -430,12 +440,25 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
                 # with PyAV, reuse the waveform for both steps.
                 turns = None
                 audio = str(src)
-                if settings["speakers"]:
+                if settings["speakers"] and speaker_error is None:
                     emit("phase", "identifying speakers")
                     wav = decode_audio(str(src), sampling_rate=SAMPLE_RATE)
-                    turns = diarize(wav, log, hook=diarization_hook)
-                    log(f"  Found {len({lbl for _, _, lbl in turns})} speaker(s).")
                     audio = wav
+                    try:
+                        turns = diarize(wav, log, hook=diarization_hook)
+                        log(f"  Found {len({lbl for _, _, lbl in turns})} speaker(s).")
+                    except CancelledJob:
+                        raise
+                    except Exception as exc:
+                        # Speaker failure must not cost the text: transcribe
+                        # without labels, and skip speaker ID for the rest of
+                        # this run (no repeated repair attempts per file).
+                        speaker_error = exc
+                        turns = None
+                        log(f"  Speaker identification failed ({exc}). Transcribing "
+                            f"without speaker labels; files later in this run will too.")
+                elif settings["speakers"]:
+                    log("  Speaker identification skipped (it failed earlier in this run).")
 
                 emit("phase", "transcribing")
                 segments, duration = model.transcribe(audio)

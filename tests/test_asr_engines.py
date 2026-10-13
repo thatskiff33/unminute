@@ -553,6 +553,65 @@ class FeatureWidthTests(unittest.TestCase):
         self.assertIsNone(ae.feature_width_problem(self.model(80, 80), spec))
 
 
+class SpeakerModelAndManifestDocTests(unittest.TestCase):
+    def test_speaker_model_is_pinned_gated_and_managed(self):
+        s = ae.SPEAKER_MODEL
+        self.assertTrue(s.gated)
+        self.assertIn(s.name, ae.MANAGED_MODELS)
+        self.assertEqual({f.name for f in s.files},
+                         {"config.yaml", "embedding/pytorch_model.bin", "plda/plda.npz",
+                          "plda/xvec_transform.npz", "segmentation/pytorch_model.bin"})
+        for f in s.files:
+            self.assertRegex(f.sha256, r"^[0-9a-f]{64}$")
+
+    def test_gated_downloads_use_the_users_token_public_ones_never(self):
+        import types
+        calls = []
+        fake = types.ModuleType("huggingface_hub")
+        fake.snapshot_download = lambda repo, **kw: calls.append((repo, kw["token"]))
+        saved = sys.modules.get("huggingface_hub")
+        sys.modules["huggingface_hub"] = fake
+        try:
+            ae._download(ae.SPEAKER_MODEL, "unused")
+            ae._download(ae.WHISPER_MODELS["large-v3-turbo"], "unused")
+        finally:
+            if saved is None:
+                sys.modules.pop("huggingface_hub")
+            else:
+                sys.modules["huggingface_hub"] = saved
+        self.assertEqual(calls, [(ae.SPEAKER_MODEL.repo, None),
+                                 ("dropbox-dash/faster-whisper-large-v3-turbo", False)])
+
+    def test_damaged_speaker_cache_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snap = (Path(tmp) / "models--pyannote--speaker-diarization-community-1"
+                    / "snapshots" / ae.SPEAKER_MODEL.revision)
+            (snap / "embedding").mkdir(parents=True)
+            (snap / "config.yaml").write_text("pipeline: {}", encoding="utf-8")
+            state, detail = ae.hub_model_status(ae.SPEAKER_MODEL.name, tmp)
+            self.assertEqual(state, "invalid")
+            self.assertIn("embedding/pytorch_model.bin is missing", detail)
+
+    def test_docs_manifest_matches_code(self):
+        doc = Path(__file__).resolve().parents[1] / "docs" / "MODEL_MANIFEST.md"
+        self.assertEqual(doc.read_text(encoding="utf-8").replace("\r\n", "\n"),
+                         ae.manifest_markdown(),
+                         "Regenerate: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md")
+
+    def test_gated_repair_without_token_says_so_and_downloads_nothing(self):
+        saved = os.environ.pop("HF_TOKEN", None)
+        dl = FakeDownload()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(ae.ModelLoadError) as ctx:
+                    ae.install_model(ae.SPEAKER_MODEL, tmp, print, dl)
+            self.assertIn("Hugging Face token", str(ctx.exception))
+            self.assertEqual(dl.calls, 0)
+        finally:
+            if saved is not None:
+                os.environ["HF_TOKEN"] = saved
+
+
 class WhisperManifestTests(unittest.TestCase):
     def test_supported_whisper_models_are_pinned_to_128_bands(self):
         for spec in ae.WHISPER_MODELS.values():
