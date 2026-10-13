@@ -147,9 +147,11 @@ class App:
         if self.model_var.get() not in core.MODELS:
             self.model_var.set(core.MODELS[0])
         self.model_buttons = {}
-        for name, _, hint in core.MODEL_INFO:
-            btn = ttk.Radiobutton(row, text="", variable=self.model_var, value=name)
-            btn.pack(side="left", padx=(10, 0))
+        grid = ttk.Frame(row)
+        grid.pack(side="left")
+        for i, (name, _, hint) in enumerate(core.MODEL_INFO):
+            btn = ttk.Radiobutton(grid, text="", variable=self.model_var, value=name)
+            btn.grid(row=i // 2, column=i % 2, sticky="w", padx=(10, 0))
             self.model_buttons[name] = (btn, hint)
         self.refresh_model_labels()
 
@@ -320,7 +322,10 @@ class App:
         """Radio button labels reflect whether weights are on disk yet."""
         for name, (btn, hint) in self.model_buttons.items():
             label = f"{name} ({hint})"
-            if not core.model_downloaded(name):
+            state, _ = core.model_status(name)
+            if state == "invalid":
+                label += " - needs repair"
+            elif state != "ready":
                 size = core.MODEL_DOWNLOAD_SIZES.get(name, "large")
                 label += f" - {size} download required"
             btn.configure(text=label)
@@ -657,13 +662,20 @@ class App:
                                  f"Installer not found:\n{installer}")
             return
         # Keep whatever model set is already installed; don't pull large-v3 onto
-        # a machine that only has turbo.
-        models = "full" if core.model_downloaded("large-v3") else "turbo"
+        # a machine that only has turbo, or Whisper onto a Parakeet-only one.
+        # The installer always verifies (and repairs) Parakeet models on disk.
+        if core.model_downloaded("large-v3"):
+            models = "full"
+        elif core.model_downloaded("large-v3-turbo"):
+            models = "turbo"
+        else:
+            models = "parakeet"
         if not messagebox.askyesno(
                 "Update / repair",
                 "This re-runs setup in a separate window to:\n"
                 "  - reinstall the Python packages at their tested versions\n"
-                "  - download any speech models that are missing\n\n"
+                "  - download any speech models that are missing\n"
+                "  - check Parakeet model files and replace damaged ones\n\n"
                 "It needs the internet for this step only. Your audio and "
                 "transcripts never leave the machine, and normal transcription "
                 "stays fully offline.\n\n"
@@ -703,8 +715,16 @@ class App:
         if self.worker_running or not self.queued_count():
             return
         model = self.model_var.get()
-        if not core.model_downloaded(model):
-            size = core.MODEL_DOWNLOAD_SIZES.get(model, "several GB")
+        state, detail = core.model_status(model)
+        size = core.MODEL_DOWNLOAD_SIZES.get(model, "several GB")
+        if state == "invalid":
+            if not messagebox.askyesno(
+                    "Repair model?",
+                    f"The installed {model} files are not usable:\n{detail}\n\n"
+                    f"Download a fresh, verified copy ({size}, needs internet)? "
+                    f"The damaged copy is kept aside, not deleted."):
+                return
+        elif state != "ready":
             if not messagebox.askyesno(
                     "Download model?",
                     f"{model} is not installed yet. It is a one-off {size} download "
@@ -717,7 +737,7 @@ class App:
             "speakers": self.diar_var.get(),
             "timestamps": self.ts_var.get(),
         }
-        self.run_opts = ("turbo" if model.endswith("turbo") else "v3") \
+        self.run_opts = core.MODEL_SHORT.get(model, model) \
             + ", " + settings["fmt"].lstrip(".") \
             + (", speakers" if settings["speakers"] else "") \
             + (", ts" if settings["timestamps"] else "")
