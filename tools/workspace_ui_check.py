@@ -111,6 +111,38 @@ def checks(window, ws, mid, long_mid, report):
             document.getElementById('h-add').click(); await wait(2500);
             return {holds: [...document.querySelectorAll('#m-holds li')].map(l => l.textContent),
                     badge: document.getElementById('m-badges').textContent};""")
+        report["names"] = evaluate(window, WAIT + """
+            document.getElementById('m-names').click(); await wait(1500);
+            const dlg = document.getElementById('names');
+            const sections = dlg.querySelectorAll('.speaker');
+            const first = sections[0];
+            const examples = first.querySelectorAll('.examples li').length;
+            const p = document.getElementById('player'); p.muted = true;
+            first.querySelector('.examples button').click(); await wait(1200);
+            const clip_s = p.duration;
+            const input = first.querySelector('input');
+            input.value = 'Aroha'; input.dispatchEvent(new Event('change')); await wait(1500);
+            const more = [...dlg.querySelectorAll('button')]
+                .find(b => b.textContent === 'More examples');
+            if (more) { more.click(); await wait(1000); }
+            const after_more = dlg.querySelector('.speaker .examples li span')?.textContent;
+            document.getElementById('n-close').click(); await wait(1500);
+            const who = document.querySelector('#transcript .who')?.textContent;
+            return {speakers: sections.length, examples, clip_s, after_more,
+                    open_after_close: dlg.open, first_label: who};""")
+        report["reassign"] = evaluate(window, WAIT + """
+            const btn = [...document.querySelectorAll('#transcript .who')]
+                .find(b => b.textContent !== 'Aroha:');
+            const id = btn.closest('li').dataset.id;
+            btn.click(); await wait(800);
+            const sel = document.querySelector('#transcript select');
+            sel.value = 'new'; sel.dispatchEvent(new Event('change')); await wait(500);
+            const unchanged = !!document.querySelector('#transcript select');
+            [...document.querySelectorAll('#transcript .reassign button')]
+                .find(b => b.textContent === 'Move').click();
+            await wait(2000);
+            if (!unchanged) return 'moved without Move';
+            return document.querySelector(`#transcript li[data-id="${id}"] .who`)?.textContent;""")
         report["confirm_review"] = evaluate(window, WAIT + """
             [...document.querySelectorAll('#steps button')].find(b =>
                 b.textContent.startsWith('Transcript reviewed')).click();
@@ -208,6 +240,11 @@ def main():
     if not (c.get("ok_disabled_until_ticked") and c.get("limits_shown")
             and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")):
         bad.append("review confirmation")
+    n = report.get("names") or {}
+    if not (n.get("examples") == 3 and n.get("clip_s") == 3 and n.get("first_label") == "Aroha:"):
+        bad.append("speaker naming")
+    if report.get("reassign") != "Speaker 3:":
+        bad.append("passage reassignment")
     if (report.get("long_transcript") or {}).get("rows") != 5000:
         bad.append("long transcript")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")

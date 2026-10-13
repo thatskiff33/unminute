@@ -239,6 +239,35 @@ Failure reasons are stored without file paths.
 - `content-visibility: auto` lets the browser skip off-screen rows.
 - On the UI check, a 5000-passage transcript rendered in under 0.5 s.
 
+## Speaker names (#21)
+
+`workspace/speaker_names.py`.
+
+### Corrections log
+- Corrections are an append-only log per speaker run (`speaker_corrections`), with three kinds of entry:
+  - name: a name for a speaker;
+  - merge: one speaker is the same person as another;
+  - assign: one passage belongs to a given speaker, or to a new one.
+- The view is the log replayed over the machine attribution. Undo removes the last entry, and everything survives restart.
+- Machine attribution and transcript text are never changed.
+
+### Default names
+- Unnamed speakers are shown as "Speaker N".
+- Machine speakers are numbered by first appearance. New speakers are numbered after them, so corrections do not renumber anyone.
+- A name given to either side of a merge follows the merged person.
+
+### Name speakers panel
+- Each speaker gets three representative passages: clean (no overlap), 1.5 to 15 s long, and spread over the meeting.
+- More examples pages through the rest.
+- Each clip is exactly the passage shown: same start and end, at most 15 s. Clips play through the single player, so only one plays at a time.
+- Selecting a speaker label in the transcript reassigns that passage.
+
+### Scope and lifetime
+- Names are meeting-only. There is no cross-meeting list, autocomplete or voiceprint, and no speaking-time chart.
+- Naming is locked after the review confirmation. The reviewed snapshot is rendered with the names.
+- Identifying again starts with an empty log. The old run keeps its corrections.
+- Transcript cleanup removes the log.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |

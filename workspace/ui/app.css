@@ -75,3 +75,9 @@ fieldset label { display: block; margin: 4px 0; }
 #player { position: fixed; bottom: 8px; left: 16px; right: 16px; width: calc(100% - 32px); }
 dialog { max-width: 560px; border: 1px solid var(--line); border-radius: 10px; color: var(--fg); background: var(--bg); }
 .check { display: flex; gap: 8px; margin: 12px 0; }
+
+#names { width: min(720px, 92vw); max-height: 86vh; overflow: auto; }
+.speaker { border-top: 1px solid var(--line); padding: 10px 0; }
+.speaker .examples { list-style: none; padding: 0; margin: 6px 0; }
+.speaker .examples li { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; }
+button.who { border: 0; padding: 0 2px; font-weight: 600; }

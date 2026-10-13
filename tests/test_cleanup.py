@@ -76,7 +76,7 @@ class CleanupTests(unittest.TestCase):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         snap = self.store._one("SELECT * FROM reviewed_snapshots WHERE meeting_id = ?",
                                (self.mid,))
-        self.assertIn(f"SPEAKER_00: edited {MARKER} note", snap["text"])
+        self.assertIn(f"Speaker 1: edited {MARKER} note", snap["text"])
         self.assertTrue((self.media / self.mid).exists())          # intent only, so far
         self.assertEqual(self.run_job(jid), JobResult.DONE)
         self.assertFalse((self.media / self.mid).exists())         # audio + clips gone
@@ -123,8 +123,8 @@ class CleanupTests(unittest.TestCase):
                                "rowid DESC LIMIT 1")["result"]
 
     def test_copy_or_export_alone_never_deletes(self):
-        with self.store.tx() as db:
-            cleanup.render_reviewed(db, self.vid)                   # what an export uses
+        with self.store.tx():
+            cleanup.render_reviewed(self.store, self.vid)           # what an export uses
         self.assertEqual(self.store._all("SELECT * FROM cleanup_jobs"), [])
         self.assertTrue((self.media / self.mid / "audio.f32").exists())
 

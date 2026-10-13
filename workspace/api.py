@@ -22,6 +22,8 @@ API_METHODS = frozenset({
     "add_hold", "release_hold", "keep_hold", "confirm_reviewed", "confirm_final_saved",
     "confirm_cleanup", "retry_cleanup", "reminders", "receipts", "settings",
     "set_settings", "import_dialog", "clear_import_errors", "pywebviewEventHandler",
+    "speakers", "speaker_examples", "rename_speaker", "merge_speakers", "assign_speaker",
+    "undo_speakers", "speaker_panel",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -132,6 +134,27 @@ def make_api(ws, get_window=lambda: None):
     def clear_import_errors(self):
         return _safe(ws.clear_import_errors)
 
+    def speakers(self, mid):
+        return _safe(ws.speakers, mid)
+
+    def speaker_panel(self, mid, offsets=None):
+        return _safe(ws.speaker_panel, mid, offsets)
+
+    def speaker_examples(self, mid, label, offset=0):
+        return _safe(ws.speaker_examples, mid, label, offset)
+
+    def rename_speaker(self, mid, label, name):
+        return _safe(ws.rename_speaker, mid, label, name)
+
+    def merge_speakers(self, mid, label, into):
+        return _safe(ws.merge_speakers, mid, label, into)
+
+    def assign_speaker(self, mid, segment_id, label):
+        return _safe(ws.assign_speaker, mid, segment_id, label)
+
+    def undo_speakers(self, mid):
+        return _safe(ws.undo_speakers, mid)
+
     def import_dialog(self):
         def run():
             import webview
@@ -152,7 +175,10 @@ def make_api(ws, get_window=lambda: None):
                  confirm_cleanup=confirm_cleanup, retry_cleanup=retry_cleanup,
                  reminders=reminders, receipts=receipts, settings=settings,
                  set_settings=set_settings, import_dialog=import_dialog,
-                 clear_import_errors=clear_import_errors)
+                 clear_import_errors=clear_import_errors, speakers=speakers,
+                 speaker_examples=speaker_examples, rename_speaker=rename_speaker,
+                 merge_speakers=merge_speakers, assign_speaker=assign_speaker,
+                 undo_speakers=undo_speakers, speaker_panel=speaker_panel)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

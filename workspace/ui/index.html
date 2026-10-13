@@ -76,6 +76,10 @@
         <h2>Speakers</h2>
         <p id="m-speakers" class="muted"></p>
         <div class="row">
+          <button type="button" id="m-names" class="primary">Name speakers</button>
+          <button type="button" id="m-undo-speakers">Undo speaker change</button>
+        </div>
+        <div class="row">
           <label>People in the meeting <input id="m-count" type="number" min="1" max="20" inputmode="numeric"></label>
           <button type="button" id="m-rerun">Identify again</button>
         </div>
@@ -124,6 +128,16 @@
     <ul id="receipts" class="receipts"></ul>
   </section>
 </main>
+
+<dialog id="names" aria-labelledby="n-title">
+  <h2 id="n-title">Name speakers</h2>
+  <p class="muted">Listen to each speaker's examples and give them a name. Names are for this meeting only and are removed with the transcript at cleanup. To move one passage to a different speaker, select its speaker label in the transcript.</p>
+  <div id="n-list"></div>
+  <div class="row end">
+    <button type="button" id="n-undo">Undo last change</button>
+    <button type="button" id="n-close" class="primary">Done</button>
+  </div>
+</dialog>
 
 <dialog id="confirm">
   <form method="dialog">

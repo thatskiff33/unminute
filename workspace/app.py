@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import cleanup, holds, media, resources, runner, speakers
+from workspace import cleanup, holds, media, resources, runner, speaker_names, speakers
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root
@@ -471,24 +471,79 @@ class Workspace:
         if v is None:
             return {"total": 0, "start": 0, "items": []}
         rows = self.store.transcript(v["id"])
-        labels = self.store.current_speakers(v["id"])
-        names = self._speaker_names(rows, labels)
+        view = speaker_names.resolve(self.store, v["id"])
         page = rows[start:start + count]
         return {"total": len(rows), "start": start, "items": [
             {"id": r["id"], "t": r["start_s"], "end": r["end_s"], "text": r["text"],
-             "edited": bool(r["edited"]), "who": names.get(labels.get(r["id"], (None,))[0]),
-             "overlap": bool(labels.get(r["id"], (None, False))[1])} for r in page]}
+             "edited": bool(r["edited"]), "label": view["labels"].get(r["id"]),
+             "who": view["names"].get(view["labels"].get(r["id"])),
+             "overlap": bool(view["overlap"].get(r["id"]))} for r in page]}
 
-    @staticmethod
-    def _speaker_names(rows, labels):
-        """Machine labels as "Speaker 1", "Speaker 2"... in order of first
-        appearance. Naming speakers is #21."""
-        names = {}
-        for r in rows:
-            lbl = labels.get(r["id"], (None,))[0]
-            if lbl and lbl not in names:
-                names[lbl] = f"Speaker {len(names) + 1}"
-        return names
+    # -- speaker names (#21) ------------------------------------------------------------
+
+    def _naming_version(self, mid):
+        m = self._meeting(mid)
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed, so speakers can no "
+                                 "longer be changed.")
+        v = self.store.active_version(mid)
+        if v is None:
+            raise WorkspaceError("Speakers have not been identified for this meeting.")
+        return v["id"]
+
+    def _naming(self, fn, *args):
+        try:
+            return fn(*args)
+        except speaker_names.NamingError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def speakers(self, mid):
+        self._meeting(mid)
+        v = self.store.active_version(mid)
+        if v is None:
+            return {"speakers": [], "can_undo": False}
+        return speaker_names.summary(self.store, v["id"])
+
+    def speaker_panel(self, mid, offsets=None):
+        """Speakers, names and examples for the Name speakers panel (one pass)."""
+        self._meeting(mid)
+        v = self.store.active_version(mid)
+        if v is None:
+            return {"speakers": [], "can_undo": False}
+        offsets = offsets or {}
+        if not isinstance(offsets, dict) or len(offsets) > 100 or not all(
+                isinstance(k, str) and isinstance(o, int) and not isinstance(o, bool)
+                and 0 <= o <= 10**6 for k, o in offsets.items()):
+            raise WorkspaceError("Out of range.")
+        return speaker_names.panel(self.store, v["id"], offsets)
+
+    def speaker_examples(self, mid, label, offset=0):
+        self._meeting(mid)
+        v = self.store.active_version(mid)
+        if v is None or not isinstance(label, str):
+            raise WorkspaceError("Speaker not found.")
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 10**6:
+            raise WorkspaceError("Out of range.")
+        return speaker_names.examples(self.store, v["id"], label, offset)
+
+    def rename_speaker(self, mid, label, name):
+        vid = self._naming_version(mid)
+        self._naming(speaker_names.rename, self.store, vid, label,
+                     _clean_text(name, speaker_names.MAX_NAME))
+
+    def merge_speakers(self, mid, label, into):
+        vid = self._naming_version(mid)
+        self._naming(speaker_names.merge, self.store, vid, label, into)
+
+    def assign_speaker(self, mid, segment_id, label):
+        vid = self._naming_version(mid)
+        if isinstance(segment_id, bool) or not isinstance(segment_id, int):
+            raise WorkspaceError("That passage is not in the current transcript.")
+        return self._naming(speaker_names.assign, self.store, vid, segment_id, label)
+
+    def undo_speakers(self, mid):
+        vid = self._naming_version(mid)
+        return speaker_names.undo(self.store, vid)
 
     def search(self, mid, query, version=None):
         """Ids of matching passages (ids, not positions, so highlights stay
@@ -611,7 +666,8 @@ class Workspace:
                                 "edits": self.store.edit_count(x["id"])}
                                for i, x in enumerate(older)],
             "speakers": ({"status": runs[-1]["status"], "error": runs[-1]["error"],
-                          "count": runs[-1]["hint_count"]} if runs else None),
+                          "count": runs[-1]["hint_count"],
+                          "started_at": runs[-1]["started_at"]} if runs else None),
             "holds": [{"id": h["id"], "scope": h["scope"], "reason": h["reason"],
                        "created_at": h["created_at"], "due_review": h["id"] in due}
                       for h in holds.active_holds(self.store, mid)],

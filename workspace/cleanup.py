@@ -65,7 +65,7 @@ def confirm_transcript_reviewed(store, mid):
         if db.execute("SELECT 1 FROM speaker_runs WHERE version_id = ? AND status = 'running'",
                       (version["id"],)).fetchone():
             raise CleanupError("Speaker identification is still running.")
-        text = render_reviewed(db, version["id"])
+        text = render_reviewed(store, version["id"])
         db.execute("INSERT OR REPLACE INTO reviewed_snapshots VALUES (?,?,?,?)",
                    (mid, text, hashlib.sha256(text.encode()).hexdigest(), time.time()))
         db.execute("UPDATE meetings SET reviewed_at = ? WHERE id = ?", (time.time(), mid))
@@ -101,23 +101,24 @@ def _add_job(db, mid, phase):
     return jid
 
 
-def render_reviewed(db, vid):
-    """The reviewed text as plain lines: [time] Speaker: text (edits applied)."""
-    rows = db.execute(
+def render_reviewed(store, vid):
+    """The reviewed text as plain lines: [time] Speaker: text, with edits and
+    the user's speaker names and corrections (#21) applied. Called inside the
+    confirmation transaction (the store lock is re-entrant)."""
+    from workspace.speaker_names import resolve
+    rows = store._all(
         "SELECT s.id, s.start_s, COALESCE(e.text, s.text) AS text FROM segments s "
         "LEFT JOIN edits e ON e.segment_id = s.id WHERE s.version_id = ? "
-        "ORDER BY s.start_s, s.id", (vid,)).fetchall()
-    run = db.execute("SELECT id FROM speaker_runs WHERE version_id = ? AND status = 'done' "
-                     "ORDER BY started_at DESC LIMIT 1", (vid,)).fetchone()
-    labels = {}
-    if run:
-        labels = {r["segment_id"]: r["label"] for r in db.execute(
-            "SELECT segment_id, label FROM segment_speakers WHERE run_id = ?", (run["id"],))}
+        "ORDER BY s.start_s, s.id", (vid,))
+    view = resolve(store, vid)
     lines = []
     for r in rows:
-        m, s = divmod(int(r["start_s"]), 60)
-        who = f"{labels[r['id']]}: " if labels.get(r["id"]) else ""
-        lines.append(f"[{m}:{s:02d}] {who}{r['text']}")
+        h, rest = divmod(int(r["start_s"]), 3600)
+        m, s = divmod(rest, 60)
+        stamp = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+        label = view["labels"].get(r["id"])
+        who = f"{view['names'][label]}: " if label else ""
+        lines.append(f"[{stamp}] {who}{r['text']}")
     return "\n".join(lines) + "\n"
 
 
@@ -288,6 +289,7 @@ def _remove_transcript(store, mid, media_root):
                                                 "version_id = ?", (vid,))]
             for rid in runs:
                 db.execute("DELETE FROM segment_speakers WHERE run_id = ?", (rid,))
+                db.execute("DELETE FROM speaker_corrections WHERE run_id = ?", (rid,))
                 db.execute("DELETE FROM speaker_turns WHERE run_id = ?", (rid,))
             db.execute("DELETE FROM speaker_runs WHERE version_id = ?", (vid,))
             db.execute("DELETE FROM edit_history WHERE segment_id IN "
