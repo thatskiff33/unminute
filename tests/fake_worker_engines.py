@@ -107,3 +107,21 @@ def network(threads):
         except OSError as exc:
             return [_seg(0.0, 0.1, f"blocked: {type(exc).__name__}")]
     return _Engine(run)
+
+
+# -- fake download process (workspace.setup.Downloads target) ----------------------
+
+def fake_download(conn, name, cache_dir):
+    """Reports what it received; downloads nothing. The token arrives by pipe."""
+    import sys
+    token = conn.recv()
+    conn.send(("log", "Downloading (test)..."))
+    in_argv = bool(token) and any(token in a for a in sys.argv)
+    in_env = bool(token) and any(token in v for v in os.environ.values())
+    conn.send(("done", {"token_received": bool(token), "in_argv": in_argv, "in_env": in_env}))
+
+
+def fake_download_fails(conn, name, cache_dir):
+    conn.recv()
+    conn.send(("error", "Could not reach Hugging Face. Check the internet connection and "
+                        "try again."))

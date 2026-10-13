@@ -22,8 +22,8 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import (cleanup, clipboard, handoff, holds, media, resources, runner,
-                       speaker_names, speakers)
+from workspace import (cleanup, clipboard, credentials, handoff, holds, media, resources,
+                       runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root
@@ -44,6 +44,7 @@ DEFAULT_SETTINGS = {
     "model": asr_engines.RECOMMENDED_PARAKEET,
     "speakers": True,                              # separate speakers after transcription
     "battery_override": False,                     # process automatically on battery
+    "onboarded": False,                            # guided setup finished or skipped (#19)
 }
 
 
@@ -85,7 +86,8 @@ class Settings:
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
                 raise WorkspaceError("Unknown speech model.")
-            if key in ("speakers", "battery_override") and not isinstance(value, bool):
+            if (key in ("speakers", "battery_override", "onboarded")
+                    and not isinstance(value, bool)):
                 raise WorkspaceError("Expected on or off.")
             self.values[key] = value
         tmp = self.path.with_suffix(".tmp")
@@ -105,8 +107,11 @@ class Workspace:
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
-        self.handle = WorkerHandle(cache_dir or self.root / "models",
+        self.cache_dir = Path(cache_dir or self.root / "models")
+        self.handle = WorkerHandle(self.cache_dir,
                                    quiet=self.settings["mode"] == resources.QUIET, **kw)
+        # Downloads replace model files: the inference worker is unloaded first.
+        self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown)
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
@@ -353,6 +358,13 @@ class Workspace:
                                   hint=count, model=self.speaker_model)
             return
         if kind == "transcribe":
+            version = self.store.version(ref)
+            spec = asr_engines.MANAGED_MODELS.get(version["model"])
+            if spec is not None and spec.revision != version["model_revision"]:
+                # Never continue a transcript with a different model revision.
+                self.store.set_phase(mid, "error", "The speech model was updated since this "
+                                     "meeting started. Use Transcribe again to continue.")
+                return
             self._status = "Transcribing"
             reader = media.AudioReader(media.audio_path(self.media, mid))
             try:
@@ -797,6 +809,76 @@ class Workspace:
             reason = exc.strerror or "file error"
             raise WorkspaceError(f"Could not save the file: {reason}.") from exc
         return {"chars": len(out["markdown"]), "name": target.name}
+
+    # -- setup (#19) ----------------------------------------------------------------------
+
+    def setup_state(self):
+        cards = setup.cards(self.cache_dir)
+        for c in cards:
+            c["download"] = self.downloads.state.get(c["name"])
+        speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
+        import os
+        return {"cards": cards, "token_remembered": credentials.has_token(),
+                "earlier_token": bool(os.environ.get("HF_TOKEN")),
+                "onboarded": self.settings["onboarded"], "speech_ready": speech_ready,
+                "speakers": self.settings["speakers"]}
+
+    def download_model(self, name, token=None, remember=True, use_earlier=False):
+        """Download or repair a model. For the speaker model the token is the
+        one given now (remembered in Credential Manager unless the user
+        unticks Remember), the remembered one, or the earlier app's one."""
+        import os
+        if not isinstance(name, str) or name not in asr_engines.MANAGED_MODELS:
+            raise WorkspaceError("Unknown model.")
+        if self._busy and self._busy[1] != "cleanup":
+            raise WorkspaceError("Pause processing first: models cannot be replaced while "
+                                 "a meeting is being processed.")
+        if token is not None and not isinstance(token, str):
+            raise WorkspaceError("Expected a token.")
+        if asr_engines.MANAGED_MODELS[name].gated:
+            try:
+                if token:
+                    token = token.strip()
+                    if remember:
+                        credentials.save_token(token)
+                elif use_earlier:
+                    token = os.environ.get("HF_TOKEN") or None
+                    if token and remember:
+                        credentials.save_token(token)
+                else:
+                    token = credentials.load_token()
+            except credentials.CredentialError as exc:
+                raise WorkspaceError(str(exc)) from exc
+            if not token:
+                raise WorkspaceError("Enter your Hugging Face token to download the speaker "
+                                     "model.")
+        else:
+            token = None                       # public models never receive a token
+        try:
+            self.downloads.start(name, token)
+        except setup.SetupError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def remove_token(self):
+        """Forget the remembered token. Downloaded models keep working offline."""
+        try:
+            return credentials.remove_token()
+        except credentials.CredentialError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def finish_setup(self, speakers):
+        if not isinstance(speakers, bool):
+            raise WorkspaceError("Expected on or off.")
+        self.settings.update(onboarded=True, speakers=speakers)
+        self._wake.set()
+
+    def open_help(self, key):
+        """Open one of a fixed set of help pages in the user's own browser."""
+        url = setup.HELP_LINKS.get(key) if isinstance(key, str) else None
+        if url is None:
+            raise WorkspaceError("Unknown page.")
+        import webbrowser
+        webbrowser.open(url)
 
     # -- holds and cleanup --------------------------------------------------------------
 

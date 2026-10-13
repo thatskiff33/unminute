@@ -24,6 +24,7 @@ from workspace import api, shell  # noqa: E402
 from workspace.app import Workspace  # noqa: E402
 
 FAKE = "test:fake_worker_engines:"
+VAULT = {}          # stands in for Windows Credential Manager during the check
 HOSTILE = '<img src=x onerror="window.__pwned=1"> and <script>window.__pwned=2</script>'
 SR = 16000
 
@@ -65,6 +66,19 @@ def checks(window, ws, mid, long_mid, report):
         report["api_surface"] = evaluate(window, "return Object.keys(window.pywebview.api)"
                                                  ".filter(k => typeof window.pywebview.api[k]"
                                                  " === 'function').sort();")
+        report["setup"] = evaluate(window, WAIT + """
+            window.workspace.show('setup'); await wait(1200);
+            const cards = document.querySelectorAll('#setup-cards .card').length;
+            const token = document.getElementById('s-token');
+            token.value = 'hf_UIcheckNOTreal123';
+            document.getElementById('s-download-speakers').click(); await wait(4000);
+            await window.workspace.refresh(); await wait(500);
+            const page = document.documentElement.outerHTML;
+            return {cards, token_field_type: token.type, token_cleared: token.value === '',
+                    token_in_page: page.includes('hf_UIcheckNOTreal123'),
+                    remembered_text: document.getElementById('s-token-state').textContent,
+                    remove_visible: !document.getElementById('s-remove-token').hidden};""")
+        report["setup_vault"] = sorted(VAULT)
         report["lists"] = evaluate(window, WAIT + """
             window.workspace.show('active'); await wait(800);
             return {active: [...document.querySelectorAll('#active-list li')].map(l =>
@@ -234,6 +248,14 @@ def main():
                            [(vid, i * 3.0, i * 3.0 + 2.5, f"passage {i} about the budget")
                             for i in range(5000)])
         ws.settings.update(speakers=False)
+        # Setup: fake downloads, and never touch the real Credential Manager.
+        import fake_worker_engines
+
+        from workspace import credentials
+        ws.downloads.target = fake_worker_engines.fake_download
+        credentials.save_token = lambda t, target=None: VAULT.__setitem__("token", t)
+        credentials.load_token = lambda target=None: VAULT.get("token")
+        credentials.has_token = lambda target=None: "token" in VAULT
         holder = {}
         window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
                                      title="Workspace UI check (synthetic data)",
@@ -265,6 +287,11 @@ def main():
     if not (c.get("ok_disabled_until_ticked") and c.get("limits_shown")
             and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")):
         bad.append("review confirmation")
+    st = report.get("setup") or {}
+    if not (st.get("cards") == 4 and st.get("token_field_type") == "password"
+            and st.get("token_cleared") and not st.get("token_in_page")
+            and st.get("remove_visible") and report.get("setup_vault") == ["token"]):
+        bad.append("setup")
     n = report.get("names") or {}
     if not (n.get("examples") == 3 and n.get("clip_s") == 3 and n.get("first_label") == "Aroha:"):
         bad.append("speaker naming")

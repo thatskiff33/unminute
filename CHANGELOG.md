@@ -5,6 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- Workspace: guided Setup with model cards (download, verification and repair), shown on first run. Optional speaker identification has step-by-step Hugging Face account, terms and token guidance. The token is remembered in Windows Credential Manager (removable) and used only by a separate download process. Downloaded models keep working offline without it (#19).
 - Workspace: provider-neutral handoff with an exact preview. Options are Copy prompt and transcript, Copy prompt only, and Save Markdown. Templates (Minutes and actions, Short summary, Action list) are editable and versioned. Leaving out passages and redacting words affects only the handoff. Long text is never cut short (#22).
 - Workspace: Name speakers, with three representative clips per speaker, More examples, rename, merge, reassigning a passage and undo. Names are for the current meeting only and are removed with the transcript (#21).
 - Workspace preview (`python -m workspace`): Inbox, Active meetings and Settings. It covers import by dialog or drop, background transcription and speaker identification with pause and resume, searchable timestamped review with clip playback, autosaved edits with undo, holds, and the two cleanup confirmations (#20).

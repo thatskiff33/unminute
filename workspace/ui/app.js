@@ -60,7 +60,7 @@ const STAGES = {
 // -- navigation -------------------------------------------------------------
 function show(view) {
   state.view = view;
-  for (const v of ["inbox", "active", "meeting", "settings"]) $(`view-${v}`).hidden = v !== view;
+  for (const v of ["inbox", "active", "meeting", "settings", "setup"]) $(`view-${v}`).hidden = v !== view;
   for (const b of document.querySelectorAll(".nav"))
     b.setAttribute("aria-current", b.dataset.view === view ? "page" : "false");
   refresh();
@@ -726,6 +726,82 @@ function wireHandoff() {
   $("ho-close").addEventListener("click", () => $("handoff").close());
 }
 
+// -- setup (#19) ----------------------------------------------------------------------
+// The token is typed into a password field and passed straight to Python;
+// the page never receives it back (only whether one is remembered).
+async function renderSetup() {
+  const s = await call("setup_state");
+  state.setup = s;
+  $("setup-cards").replaceChildren(...s.cards.map((c) => {
+    const dl = c.download;
+    const running = dl && dl.state === "running";
+    const action = c.state === "ready" ? null
+      : c.needs_token ? el("span", { class: "muted", textContent: "Download it with the steps below." })
+      : el("button", { type: "button", class: c.recommended ? "primary" : "",
+                       textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
+                       disabled: running, on: { click: () => startDownload(c.name) } });
+    return el("li", { class: "card" },
+      el("h2", { textContent: c.title }),
+      el("p", { textContent: c.about }),
+      el("p", { class: c.state === "ready" ? "ok" : c.state === "invalid" ? "error" : "muted",
+                textContent: running ? dl.message : (dl && dl.state === "failed" ? dl.message : c.status) }),
+      el("p", { class: "muted", textContent: `${c.size_gb} GB · licence ${c.licence} · ${c.source} · revision ${c.revision}` }),
+      action);
+  }));
+  const speaker = s.cards.find((c) => c.role === "speakers");
+  const speakerRunning = speaker.download && speaker.download.state === "running";
+  $("speaker-setup").hidden = speaker.state === "ready";
+  $("s-download-speakers").disabled = speakerRunning;
+  $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
+  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready";
+  $("s-remove-token").hidden = !s.token_remembered;
+  $("s-token-state").textContent = s.token_remembered
+    ? "A token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
+    : "";
+  $("s-finish").disabled = !s.speech_ready;
+  $("s-finish-note").textContent = s.speech_ready
+    ? (speaker.state === "ready" ? "Everything is ready." : "You can add speaker identification later from Settings.")
+    : "Download a speech model first (Parakeet v2 is recommended).";
+}
+
+function startDownload(name, extra = {}) {
+  return attempt(async () => {
+    await call("download_model", name, extra.token || null, extra.remember !== false, !!extra.earlier);
+    say("Download started");
+    renderSetup();
+  });
+}
+
+function wireSetup() {
+  for (const b of document.querySelectorAll("[data-help]"))
+    b.addEventListener("click", () => attempt(() => call("open_help", b.dataset.help)));
+  const speakerName = () => state.setup.cards.find((c) => c.role === "speakers").name;
+  $("s-download-speakers").addEventListener("click", () => {
+    const token = $("s-token").value.trim();
+    if (!token) { say("Paste your Hugging Face token first."); return; }
+    $("s-token").value = "";                         // never kept in the page
+    startDownload(speakerName(), { token, remember: $("s-remember").checked });
+  });
+  $("s-use-remembered").addEventListener("click", () => startDownload(speakerName()));
+  $("s-use-earlier").addEventListener("click", () =>
+    startDownload(speakerName(), { earlier: true, remember: $("s-remember").checked }));
+  $("s-remove-token").addEventListener("click", () => attempt(async () => {
+    await call("remove_token");
+    say("Token removed. Downloaded models keep working.");
+    renderSetup();
+  }));
+  $("s-finish").addEventListener("click", () => attempt(async () => {
+    const speakers = state.setup.cards.some((c) => c.role === "speakers" && c.state === "ready");
+    await call("finish_setup", speakers);
+    show("inbox");
+  }));
+  $("s-skip-speakers").addEventListener("click", () => attempt(async () => {
+    if (!state.setup.speech_ready) { say("Download a speech model first."); return; }
+    await call("finish_setup", false);
+    show("inbox");
+  }));
+}
+
 // -- settings ------------------------------------------------------------------
 async function renderSettings() {
   const s = await call("settings");
@@ -756,6 +832,7 @@ async function refresh() {
     if (state.view === "inbox" || state.view === "active") await renderLists();
     else if (state.view === "meeting") await renderMeeting();
     else if (state.view === "settings") await renderSettings();
+    else if (state.view === "setup") await renderSetup();
   } catch (err) {
     say(String((err && err.message) || err));
   } finally {
@@ -764,6 +841,7 @@ async function refresh() {
 }
 
 function wire() {
+  wireSetup();
   wireHandoff();
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
   $("import").addEventListener("click", () => attempt(async () => {
@@ -836,4 +914,10 @@ function wire() {
 window.workspace = { call, show, openMeeting, refresh, state };   // for the UI check tool
 
 wire();
-window.addEventListener("pywebviewready", () => { show("inbox"); setInterval(refresh, POLL_MS); });
+window.addEventListener("pywebviewready", async () => {
+  // First run, or no usable speech model: start with Setup.
+  let s = null;
+  try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }
+  show(s && (!s.onboarded || !s.speech_ready) ? "setup" : "inbox");
+  setInterval(refresh, POLL_MS);
+});

@@ -306,6 +306,39 @@ Failure reasons are stored without file paths.
 ### Final confirmation
 - The final confirmation reminds the user that the app neither clears the clipboard nor deletes saved Markdown files. It does not clear the clipboard automatically.
 
+## Setup and credentials (#19)
+
+`workspace/setup.py`, `workspace/credentials.py`.
+
+### The Setup view
+- It opens on first run, and whenever no speech model is usable.
+- Model cards show each model's purpose, download size, licence, source, pinned revision and status: ready, not downloaded, or damaged.
+- Actions are Download and Repair.
+- Speaker identification is optional and can be skipped, then added later from Setup.
+
+### Downloads
+- Downloads run one at a time in a separate, short-lived download process. The app process keeps its offline network guard, and inference workers never download.
+- Before a model is replaced, the inference worker is unloaded. Models cannot be replaced while a meeting is being processed.
+- Each download is verified against the pinned SHA-256 manifest before it replaces anything. A damaged copy is set aside, not deleted.
+- An interrupted or failed download is retried by starting it again. Errors are explained in plain language, for example:
+  - terms not accepted;
+  - token not accepted;
+  - no connection.
+
+### The Hugging Face token
+- The token is needed only for the gated speaker model. Public models never receive it.
+- It reaches the download process through a pipe, never on a command line or in the environment.
+- By default it is remembered in the user's Windows Credential Manager. The user can untick Remember to use it once. Remove the remembered token removes it.
+- It is never written to settings, logs or the database, and never returned to the page. The page learns only whether a token is remembered, and clears the input after use.
+- Removing the token does not affect models already downloaded: they load offline.
+- A token from the earlier app (the `HF_TOKEN` user variable) can be used once, or moved into Credential Manager.
+
+### Help pages
+- Help links (sign-up, model terms, tokens) are a fixed allowlist, opened in the user's own browser.
+
+### Pinned revisions
+- A meeting keeps the model revision it was started with. If an app update changes the pinned revision, its unfinished transcription stops with an explanation ("Transcribe again"), instead of silently mixing revisions.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |
