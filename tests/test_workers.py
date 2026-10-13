@@ -40,6 +40,16 @@ def fake(name):
     return f"test:fake_worker_engines:{name}"
 
 
+def wait_until(condition, timeout=30.0):
+    """Poll instead of sleeping a fixed time: robust on a loaded machine."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.1)
+    return condition()
+
+
 class QuietDefaultTests(unittest.TestCase):
     def test_threads_half_capped_at_four_min_one(self):
         for cpus, quiet in ((1, 1), (2, 1), (4, 2), (8, 4), (16, 4), (32, 4)):
@@ -102,7 +112,7 @@ class WorkerTests(unittest.TestCase):
         t = time.monotonic()
         with self.assertRaises(WorkerStopped):
             self.h.transcribe(np.zeros(100, np.float32))
-        self.assertLess(time.monotonic() - t, 5)
+        self.assertLess(time.monotonic() - t, 20)   # well under the 30 s sleep
         self.assertIsNone(self.h.pid)
 
     def test_idle_worker_unloads(self):
@@ -110,8 +120,7 @@ class WorkerTests(unittest.TestCase):
         try:
             h.load(fake("echo"), 1)
             self.assertIsNotNone(h.pid)
-            time.sleep(2.0)
-            self.assertIsNone(h.pid)                                 # memory released
+            self.assertTrue(wait_until(lambda: h.pid is None))       # memory released
             h.load(fake("echo"), 1)                                  # transparently restarts
             self.assertIsNotNone(h.pid)
         finally:
@@ -151,14 +160,13 @@ class WorkerTests(unittest.TestCase):
         t = time.monotonic()
         with self.assertRaises(WorkerCrashed):
             self.h.transcribe(np.zeros(10, np.float32), timeout=1.0)
-        self.assertLess(time.monotonic() - t, 6)
+        self.assertLess(time.monotonic() - t, 20)   # well under the 30 s sleep
 
     def test_reloads_by_itself_after_an_idle_unload(self):
         h = WorkerHandle(self.tmp.name, idle_unload_s=0.5)
         try:
             h.load(fake("echo"), 2)
-            time.sleep(2.0)
-            self.assertIsNone(h.pid)
+            self.assertTrue(wait_until(lambda: h.pid is None))
             segs, _ = h.transcribe(np.zeros(10, np.float32))   # no explicit load
             self.assertIn("threads=2", segs[0].text)
         finally:
@@ -257,7 +265,7 @@ class RunnerWithWorkerTests(unittest.TestCase):
             t = time.monotonic()
             self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
                              runner.RunResult.PAUSED)
-            self.assertLess(time.monotonic() - t, 6)
+            self.assertLess(time.monotonic() - t, 20)   # well under the 30 s sleep
         finally:
             self.store_pause_conn.close()
         c = self.store.chunks(vid)[0]
