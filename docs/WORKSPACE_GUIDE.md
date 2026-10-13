@@ -1,0 +1,120 @@
+# Meeting workspace: user guide
+
+The meeting workspace turns a meeting recording into a reviewed transcript on your own computer. You then hand the transcript to your organisation's approved AI assistant to draft minutes, and clear the meeting out of the workspace.
+
+It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
+
+This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in the [README](../README.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Setup's Repair downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
+
+## What stays on your computer, and what does not
+
+| | Where it is |
+| --- | --- |
+| **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
+| **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\whisper\workspace`). This is not a synced folder. |
+| **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\whisper-models`. |
+| **Handoff to an AI assistant** | Only when you copy or save it. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
+| **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
+
+## Getting started
+
+1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.
+2. **Set up.** On first start, Setup offers the models:
+   - **Speech to text: Parakeet v2** is recommended (about 0.7 GB).
+   - **Speaker identification** is optional. It needs a free Hugging Face account and token, once. Follow the steps on the Setup screen. The token is remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
+   - You can skip speakers and add them later from Setup.
+3. **Import a recording.** In Inbox, choose **Import recordings…** or drop audio or video files on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)).
+
+## Working on a meeting
+
+- **Transcription runs in the background.**
+  - **Quiet** (the default) leaves most of the computer free. **Faster** uses more of it.
+  - On battery, automatic work waits unless you allow it in Settings.
+  - **Pause** stops at the next safe point. **Stop now** stops at once; the part in progress is redone later and nothing already transcribed is lost.
+- **Review.** Open the meeting from Active meetings.
+  - Select a time to play that passage.
+  - Select text to correct it. Edits save automatically, and **Undo edit** (Ctrl+Z) reverses them, even after a restart.
+  - Search with Ctrl+F.
+- **Name speakers.** **Name speakers** plays three short clips for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
+- **Transcribe again.** **Transcribe again** with another model keeps your earlier version and its edits. You can still open them read-only.
+
+## Handing off and cleaning up
+
+Each meeting shows its steps:
+
+1. **Confirm the transcript is reviewed.**
+   - The reviewed text is saved in the workspace.
+   - The app then removes its own copy of the audio. It also removes the original recording, but only if you allowed that for the watched folder it came from.
+   - Playback and editing are no longer available after this step.
+2. **Hand off.**
+   - **Hand off…** shows exactly what will be copied, with three ways out: **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown**.
+   - The templates ask the assistant to keep decisions separate from suggestions, not to invent owners or dates, and to flag anything uncertain.
+   - You can leave out passages or redact words for this handoff only.
+   - Long transcripts are never cut short. The app suggests saving the file and attaching it instead.
+3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
+4. **Confirm the final document is saved.** The app then removes the meeting's transcript working content: text, edits, speakers and versions. A minimal receipt (a random number, times and the result) is kept for 30 days.
+
+Copying or saving never deletes anything by itself. The app does not clear your clipboard or delete files you saved. Replace the clipboard and delete saved handoff files yourself when you no longer need them.
+
+**What cleanup cannot reach.** Cleanup removes the app's own copies on this computer. It cannot remove:
+
+- copies in synced or backed-up folders;
+- the original on a phone or recorder;
+- copies in a cloud recycle bin;
+- anything you shared with an AI assistant or another service.
+
+Ordinary deletion is also not forensic erasure of the disk.
+
+## Keeping material (holds)
+
+Anyone can **hold** a meeting's audio, transcript or everything, with a reason. A hold:
+
+- stops the matching cleanup until it is released;
+- never expires by itself;
+- is listed for review every 30 days while the app is open (a closed app sends no reminders).
+
+Releasing a hold deletes nothing by itself. The cleanup it was blocking waits for you to confirm it again.
+
+Ordinary unfinished work shows its age and next step in Active meetings. There are no scheduled reminders.
+
+## Updates
+
+Self-service updates and IT-managed updates follow the same rule: an update that changes how the workspace is stored waits until the workspace is empty. That means:
+
+- no meetings in progress;
+- no active holds;
+- no unfinished cleanup.
+
+The installer explains what it is waiting for, and so does Settings > Updates in the app. No update expires a hold, deletes your work or makes a backup copy of it. Updates that keep the same storage format keep everything.
+
+## Troubleshooting and support
+
+| Problem | What to do |
+| --- | --- |
+| A model shows "Damaged or incomplete" | Setup > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
+| Speaker identification did not work | The transcript is still usable. Check the speaker model in Setup, then use **Identify again** in the meeting. |
+| A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows files waiting for copying to finish, cloud-only files and unreadable files. |
+| The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
+| An update is waiting | Settings > Updates lists what it is waiting for. |
+
+For IT support:
+
+- `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Setup for those.
+- `--status` prints counts only (meetings, holds, pending cleanup), never content.
+
+Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
+
+## Supported configuration
+
+These configurations have been tested:
+
+- **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
+- **Speaker identification:** pyannote community-1.
+
+GPU acceleration is not part of this release. Detecting a graphics card does not enable it.
+
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for what is verified for a release and what still needs people or hardware.
+
+For how the workspace is built and planned, see [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md), [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and [WORKSPACE_DESIGN.md](WORKSPACE_DESIGN.md).
