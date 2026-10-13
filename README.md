@@ -209,7 +209,7 @@ Delete these and you are back to a clean machine:
 - Speakers option is greyed out. The token step was skipped or the gated model terms are not accepted yet. Re-run `install.cmd` and follow the token step.
 - Install fails downloading packages. Usually network or VPN. Re-run `install.cmd`, it resumes where it left off.
 - Model not installed dialog on Start queue. You picked a model that was not part of your install choice. Say yes to download it once, or pick an installed model.
-- A model says "needs repair". One or more of its files is missing, the wrong size, or (for Whisper) its preprocessing settings are missing or wrong. Say yes when Start queue offers a fresh copy, or click Update / repair. Damaged copies are kept for diagnosis: Parakeet in `%LOCALAPPDATA%\whisper-models\parakeet` with `.invalid-` and a date in the folder name, Whisper in its original `models--...` folder. Delete them once you no longer need them.
+- A model says "needs repair". One or more of its files is missing, the wrong size, or (for Whisper) its preprocessing settings are missing or wrong. Say yes when Start queue offers a fresh copy, or click Update / repair. Damaged copies are kept for diagnosis: a damaged Hugging Face cache copy stays in its original `models--...` folder, and a damaged copy the app installed itself is renamed with `.invalid-` and a date (under `whisper-models\parakeet` or `whisper-models\whisper`). Delete them once you no longer need them.
 - "Invalid input features shape: expected (1, 128, 3000), got (1, 80, 3000)". Earlier versions showed this when a Whisper model's `preprocessor_config.json` was missing, malformed or lacked `feature_size`, which made faster-whisper fall back to 80 mel bands. This version detects the problem before transcribing; update the app, then run Update / repair.
 - App feels slow or fans are loud. Normal while transcribing. It leaves a couple of cores free so you can keep working. Pause if you need full speed elsewhere.
 - Window opens off-screen after undocking. The app checks the saved position is on a live monitor and drops it if not. If you still cannot see it, delete `ui-settings.json`.
@@ -261,7 +261,7 @@ The repository contains only this project's own code. No model weights or third-
 | Component | Licence | Notes |
 | --- | --- | --- |
 | OpenAI Whisper (model architecture and original weights) | MIT | |
-| mobiuslabsgmbh/faster-whisper-large-v3-turbo | MIT | CTranslate2 conversion of openai/whisper-large-v3-turbo |
+| dropbox-dash/faster-whisper-large-v3-turbo (formerly mobiuslabsgmbh) | MIT | CTranslate2 conversion of openai/whisper-large-v3-turbo |
 | Systran/faster-whisper-large-v3 | MIT | CTranslate2 conversion of openai/whisper-large-v3 |
 | faster-whisper, CTranslate2 | MIT | |
 | pyannote.audio (library) | MIT | Copyright CNRS |

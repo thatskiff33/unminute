@@ -13,7 +13,7 @@
 param(
     # 'parakeet' = Parakeet English only, 'turbo' = Standard (large-v3-turbo
     # only), 'full' = turbo + large-v3. Omit to be asked interactively.
-    # Any Parakeet model already on disk is verified (and repaired) every run.
+    # Every speech model already on disk is verified (and repaired) every run.
     [ValidateSet('parakeet', 'turbo', 'full')]
     [string]$Models,
     [switch]$SkipModels,    # skip the model download step entirely
@@ -300,7 +300,8 @@ if ($SkipModels) {
     foreach ($m in $selected) { $ensureArgs += @('--model', $m) }
     Write-Note 'Checking speech models (verifying large files can take a minute)...'
     & $VenvPython (Join-Path $RepoDir 'asr_engines.py') @ensureArgs | Out-Host
-    if ($LASTEXITCODE -ne 0) { Fail 'A speech model could not be downloaded or repaired. Check your network connection and re-run.' }
+    if ($LASTEXITCODE -eq 1) { Fail 'A selected speech model could not be downloaded or repaired. Check your network connection and re-run.' }
+    if ($LASTEXITCODE -eq 2) { Write-Warn2 'Another installed model could not be repaired (details above). The selected models are fine; re-run to retry.' }
 
     if ($env:HF_TOKEN) {
         if (Test-Path $PyaDir) {

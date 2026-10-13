@@ -395,7 +395,12 @@ def whisper_status(name, cache_dir):
 def find_verified_whisper(spec, cache_dir, full=False):
     """First candidate folder whose files all verify, or None."""
     for folder in whisper_candidates(spec, cache_dir):
-        if not check_files(spec, folder, full=full, marker=_marker_for(spec, cache_dir, folder)):
+        marker = _marker_for(spec, cache_dir, folder)
+        # A copy already found bad (and unchanged since) is skipped rather than
+        # re-hashed on every load; a full check (repair) re-examines it.
+        if not full and _recorded_failure(spec, folder, marker):
+            continue
+        if not check_files(spec, folder, full=full, marker=marker):
             return folder
     return None
 
@@ -444,10 +449,13 @@ def install_model(spec, cache_dir, log=print, download=_download):
                 f"It is left untouched for diagnosis.")
     had_folder = target.exists()
     if had_folder:
-        problems = check_files(spec, target, full=True)
-        if not problems:
+        # Whisper's managed copy was just fully checked above; don't re-hash it.
+        problems = (_quick_problems(spec, target) or _recorded_failure(spec, target)
+                    if spec.family == "whisper" else check_files(spec, target, full=True))
+        if not problems and spec.family != "whisper":
             return "ok"
-        log(f"{spec.name}: installed files are not usable ({'; '.join(problems)}).")
+        log(f"{spec.name}: installed files are not usable "
+            f"({'; '.join(problems) or 'checksum mismatch'}).")
 
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
@@ -682,24 +690,30 @@ def _main(argv):
         # A verified download whose final move failed counts as present too.
         return model_dir(spec, args.cache).exists() or staging_dir(spec, args.cache).exists()
 
-    names = list(dict.fromkeys(args.model))
-    if args.present:
-        names += [n for n, s in MANAGED_MODELS.items() if n not in names
-                  and (is_present(n, args.cache) or staging_dir(s, args.cache).exists())]
+    selected = list(dict.fromkeys(args.model))
     if args.default_parakeet and not any(on_disk(s) for s in PARAKEET_MODELS.values()):
-        names.append(RECOMMENDED_PARAKEET)
-    if not names:
+        selected.append(RECOMMENDED_PARAKEET)
+    extra = []
+    if args.present:
+        extra = [n for n, s in MANAGED_MODELS.items() if n not in selected
+                 and (is_present(n, args.cache) or staging_dir(s, args.cache).exists())]
+    if not selected and not extra:
         print("  No speech models selected or installed.")
         return 0
-    failed = False
-    for name in names:
+    failed_selected = failed_extra = False
+    for name in selected + extra:
         try:
             results = install(name, args.cache, log=lambda m: print("  " + m))
             print(f"  {name}: {results[name]}")
         except Exception as exc:
-            failed = True
             print(f"  {name}: FAILED - {exc}")
-    return 1 if failed else 0
+            if name in selected:
+                failed_selected = True
+            else:
+                failed_extra = True
+    # 1 = a model the user chose failed; 2 = only an already-present extra
+    # model could not be repaired (the installer warns and carries on).
+    return 1 if failed_selected else (2 if failed_extra else 0)
 
 
 if __name__ == "__main__":

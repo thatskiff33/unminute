@@ -372,10 +372,12 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.cache = Path(self.tmp.name)
         self.spec = whisper_spec()
         ae.WHISPER_MODELS[self.spec.name] = self.spec   # registered for status/CLI helpers
+        ae.MANAGED_MODELS[self.spec.name] = self.spec
         self.logs = []
 
     def tearDown(self):
         ae.WHISPER_MODELS.pop(self.spec.name, None)
+        ae.MANAGED_MODELS.pop(self.spec.name, None)
         self.tmp.cleanup()
 
     def status(self):
@@ -415,11 +417,15 @@ class WhisperIntegrityTests(unittest.TestCase):
                     {**W_GOOD, "preprocessor_config.json": preproc(80)})
         self.assertIn("feature_size 80, but fake-whisper needs 128", self.status()[1])
 
-    def test_same_size_wrong_feature_size_caught_by_checksum(self):
-        # A config that differs only in content still fails full verification.
-        bad = preproc(raw=W_GOOD["preprocessor_config.json"].replace(b"128", b"812"))
+    def test_same_size_valid_looking_config_caught_by_checksum(self):
+        # Still valid JSON with feature_size 128 and the same size, but other
+        # bytes: only the checksum can tell, and it must.
+        bad = W_GOOD["preprocessor_config.json"].replace(b"16000", b"16001")
+        self.assertEqual(len(bad), len(W_GOOD["preprocessor_config.json"]))
         write_files(hub_snapshot(self.cache), {**W_GOOD, "preprocessor_config.json": bad})
+        self.assertEqual(self.status(), ("ready", ""))              # quick check passes
         self.assertIsNone(ae.find_verified_whisper(self.spec, self.cache))
+        self.assertIn("preprocessor_config.json does not match", self.status()[1])
 
     def test_valid_hub_cache_is_used_without_writing_to_it(self):
         snap = hub_snapshot(self.cache)
@@ -461,10 +467,41 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.assertIn("model.bin does not match the expected checksum", detail)
         self.assertEqual(tree(snap.parents[1]), before)            # nothing written there
 
-    def test_cli_present_includes_damaged_whisper_cache(self):
+    def test_cli_present_repairs_damaged_whisper_cache_and_warns_only(self):
         write_files(hub_snapshot(self.cache), {"config.json": W_GOOD["config.json"]})
-        self.assertIn(self.spec.name,
-                      [n for n in ae.WHISPER_MODELS if ae.is_present(n, self.cache)])
+        calls = []
+        real = ae.install
+
+        def fake_install(name, cache, log=print, download=None):
+            calls.append(name)
+            raise ae.ModelLoadError("offline")
+
+        ae.install = fake_install
+        try:
+            # Not selected, only present: attempted, failure is a warning (2).
+            code = ae._main(["ensure", "--present", "--cache", str(self.cache)])
+            self.assertEqual((calls, code), ([self.spec.name], 2))
+            calls.clear()
+            # Selected: the same failure is fatal for the installer (1).
+            code = ae._main(["ensure", "--model", self.spec.name, "--cache", str(self.cache)])
+            self.assertEqual((calls, code), ([self.spec.name], 1))
+        finally:
+            ae.install = real
+
+    def test_known_bad_copy_is_skipped_not_rehashed(self):
+        managed = ae.model_dir(self.spec, self.cache)
+        write_files(managed, {**W_GOOD, "model.bin": b"\x06" * 2000})   # bad, sizes ok
+        write_files(hub_snapshot(self.cache), W_GOOD)                    # good
+        self.assertTrue(ae.check_files(self.spec, managed, full=True))  # fails, recorded
+        hashed = []
+        real = ae._sha256
+        ae._sha256 = lambda p, *a: (hashed.append(Path(p).parent.name), real(p, *a))[1]
+        try:
+            found = ae.find_verified_whisper(self.spec, self.cache)
+        finally:
+            ae._sha256 = real
+        self.assertEqual(found, hub_snapshot(self.cache))
+        self.assertNotIn(managed.name, hashed)
 
     def test_install_dispatches_whisper(self):
         dl = FakeDownload(W_GOOD)

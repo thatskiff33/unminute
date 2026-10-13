@@ -196,7 +196,8 @@ def _load_whisper(name, log):
     folder = asr_engines.find_verified_whisper(spec, CACHE_DIR)   # checksums once
     if folder is None:
         raise asr_engines.ModelLoadError(
-            f"{name} files failed verification. Run Update / repair.")
+            f"{name} files failed verification. It now shows 'needs repair': start the "
+            f"queue again and accept the repair, or run Update / repair.")
     # Load the verified folder by path: no Hugging Face lookup, nothing downloaded.
     model = WhisperModel(str(folder), device="cpu", compute_type=COMPUTE_TYPE,
                          cpu_threads=CPU_THREADS)
