@@ -260,7 +260,6 @@ except Exception:
 # --- 6. Model downloads -----------------------------------------------------------
 Write-Step 'Step 6/8: Speech models'
 
-$PyaDir     = Join-Path $ModelCache 'models--pyannote--speaker-diarization-community-1'
 
 if ($SkipModels) {
     Write-Note 'Skipped (-SkipModels). The app will download models on first use instead.'
@@ -304,17 +303,11 @@ if ($SkipModels) {
     if ($LASTEXITCODE -eq 2) { Write-Warn2 'Another installed model could not be repaired (details above). The selected models are fine; re-run to retry.' }
 
     if ($env:HF_TOKEN) {
-        if (Test-Path $PyaDir) {
-            Write-Ok 'Speaker identification model already downloaded.'
-        } else {
-            Write-Note 'Downloading speaker identification model (~100 MB)...'
-            $code = Invoke-VenvPython @'
-from pyannote.audio import Pipeline
-Pipeline.from_pretrained("pyannote/speaker-diarization-community-1")
-print("  Speaker identification model downloaded and loads OK.")
-'@
-            if ($code -ne 0) { Write-Warn2 'Speaker model download failed (token/terms issue above?). Transcription itself is unaffected.' }
-        }
+        # Verified like the speech models (the step above already checked any
+        # existing copy); downloads it with the token if it is missing.
+        Write-Note 'Checking the speaker identification model (~30 MB)...'
+        & $VenvPython (Join-Path $RepoDir 'asr_engines.py') ensure --model speaker-diarization-community-1 --cache $ModelCache | Out-Host
+        if ($LASTEXITCODE -ne 0) { Write-Warn2 'Speaker model download failed (token/terms issue above?). Transcription itself is unaffected.' }
     } else {
         Write-Note 'No token set - skipping the speaker identification model.'
     }
