@@ -5,6 +5,20 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.0-preview.1
+
+**Preview release** of the packaged meeting workspace, for testing. It installs per user without admin rights and runs alongside the existing app.
+
+Not yet verified (see docs/RELEASE_CHECKLIST.md):
+- a clean standard-user profile, and Intune deployment (#10, #11);
+- transcription quality on representative business recordings (#12, #25);
+- testing with nontechnical users (#27);
+- resource use on the lowest-supported laptop (#28);
+- the final fetch step for OneDrive online-only files (#24).
+
+Download `WhisperWorkspace-0.2.0-preview.1.zip` and its `.sha256` file, then follow docs/PACKAGING.md. The earlier source app is unchanged and still installs with `install.cmd`.
+
+
 - Docs: a business-user guide for the meeting workspace (docs/WORKSPACE_GUIDE.md) and a release checklist with tested compatibility (docs/RELEASE_CHECKLIST.md). The privacy wording now separates local processing from synced storage and from deliberate sharing with an AI assistant (#29, #8).
 - Workspace updates: one gate for self-service and IT-managed installs. An update that changes how the workspace is stored waits, and explains why, until there are no meetings, retention holds or unfinished cleanup. Holds are never expired and no content backups are made. Compatible updates keep everything, and rollback to the previous version is supported (#26).
 - Workspace package: a preassembled per-user Windows package (private Python runtime, pinned wheels, verified file by file) with an unattended install for Intune, uninstall, and support options (`--self-test`, `--status`). See docs/PACKAGING.md (#11).
