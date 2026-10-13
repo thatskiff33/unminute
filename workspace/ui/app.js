@@ -861,6 +861,15 @@ async function renderSettings() {
                      check: "Stop watching the folder.", limits: false,
                      onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) }) } })))
     : [el("li", { class: "muted", textContent: "No folders are watched." })]));
+  const dep = s.deployment || {};
+  $("s-deployment").textContent = dep.mode === "managed"
+    ? `Version ${dep.version}. Updates are managed by your IT team.`
+    : dep.mode === "self-service"
+      ? `Version ${dep.version}. To update, close the app, then run install.cmd from the new package. Updates that change how the workspace is stored wait until the workspace is empty; the list below shows what would make one wait.`
+      : "Running from source (development).";
+  $("s-update-blockers").replaceChildren(...(s.update_blockers.length
+    ? s.update_blockers.map((b) => el("li", { textContent: b }))
+    : [el("li", { class: "muted", textContent: "Nothing would hold up an update." })]));
   const receipts = await call("receipts");
   $("receipts").replaceChildren(...(receipts.length ? receipts.map((r) =>
     el("li", { textContent: `${fmtDate(r.completed_at)}: ${r.result}` }))

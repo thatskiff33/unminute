@@ -11,6 +11,9 @@
 #   --status      workspace contents as JSON counts (meetings, holds, pending
 #                 cleanup); used by installers and updates (#26). No content.
 #   --self-test   import every runtime dependency and check the offline guard
+#   --gate        run by the installer from the NEW package before an update:
+#                 may this version take over the existing workspace? (#26)
+#                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
 
 import json
 import os
@@ -95,9 +98,26 @@ def main():
         return 0
     if "--self-test" in sys.argv:
         return self_test()
+    if "--gate" in sys.argv:
+        from workspace import update
+        from workspace.store import SCHEMA_VERSION, default_root
+        schema = SCHEMA_VERSION
+        if "--schema" in sys.argv:          # for a version too old to check itself
+            schema = int(sys.argv[sys.argv.index("--schema") + 1])
+        result = update.gate(default_root() / "workspace.db", schema)
+        print(json.dumps(result))
+        return result["code"]
     from workspace import api, shell
     from workspace.app import Workspace
-    ws = Workspace(cache_dir=MODEL_CACHE)
+    from workspace.store import StoreError
+    try:
+        ws = Workspace(cache_dir=MODEL_CACHE)
+    except StoreError as exc:
+        # e.g. a workspace from a newer version, or one that cannot be migrated:
+        # explain instead of disappearing (pythonw has no console).
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, str(exc), "Meeting workspace", 0x10)
+        return 1
     holder = {}
     window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
                                  allowed=api.API_METHODS)
