@@ -31,6 +31,7 @@ class RawPathTests(unittest.TestCase):
                 sp.check_raw(bad)
 
 
+@unittest.skipUnless(os.name == "nt", "the workspace is Windows-only (drive-letter paths)")
 class FileValidationTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

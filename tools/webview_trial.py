@@ -237,8 +237,7 @@ def main():
         bad.append("page network/file access")
     if set(report.get("api_surface") or []) != {"clip", "ping", "transcript"}:
         bad.append("api surface")
-    if not str(report.get("after_navigation_attempt", "")).startswith(shell.UI_DIR.as_uri()[:8]) \
-            or "example.com" in str(report.get("after_navigation_attempt")):
+    if not shell._allowed(str(report.get("after_navigation_attempt", ""))):
         bad.append("navigation escaped")
     if report.get("system_browser_opened"):
         bad.append("system browser opened")

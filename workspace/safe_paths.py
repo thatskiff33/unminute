@@ -8,6 +8,7 @@
 #   - only regular files with an allowed extension and size are accepted.
 # Stdlib only.
 
+import ntpath
 import os
 import stat
 from pathlib import Path
@@ -40,7 +41,7 @@ def check_raw(path):
     # separator mix (\\, //, /\, \/), which would otherwise contact a server
     # (and offer it Windows credentials) while being resolved, plus rooted
     # paths without a drive and drive-relative paths like "C:foo".
-    drive, rest = os.path.splitdrive(text)
+    drive, rest = ntpath.splitdrive(text)   # Windows rules on every OS (tests run on Linux)
     if len(drive) != 2 or drive[1] != ":" or not drive[0].isalpha():
         if text[:1] in "\\/" and text[1:2] in "\\/":
             raise UnsafePathError("Network and device paths are not accepted.")
