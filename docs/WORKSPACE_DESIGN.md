@@ -87,6 +87,34 @@ Meeting `phase`: `new`, then `transcribing`, then `transcribed`, then (#16) spea
 
 `paused` is a separate, persisted flag set only by an explicit user pause, so it survives restart. A run checks it between chunks and stops at the next safe boundary. Pause is acknowledged immediately; reported progress stays truthful because it counts committed chunks only.
 
+## Workers and resources (#15)
+
+Heavy inference runs in a separate worker process (`workspace/worker.py`). The state owner keeps the database and the worker never opens it.
+
+- **What the worker does:** it loads one model at a time; loading another replaces the first in the same process. It transcribes the bounded audio it is sent (at most 120 s per request) and returns plain segments with word times.
+- **Network and priority:** before loading anything, the worker installs the offline network guard and, in Quiet mode, lowers its own priority to below normal.
+- **No downloads:** the worker loads models offline only (`workspace/engines.py`). A missing or unverified model is an error for Setup (#19); downloads happen in a separate step.
+
+Quiet defaults:
+
+- threads are half the logical CPUs, capped at 4 and at least 1;
+- below-normal priority;
+- the worker exits after 120 s idle, releasing all model memory.
+
+Faster mode uses all but two logical CPUs. Neither mode promises a speed; `tools/worker_check.py` measures them.
+
+Pause and stop:
+
+- **Pause** is persisted immediately and takes effect at the next chunk boundary. Progress stays truthful because it counts only committed chunks.
+- **Stop now** terminates the worker at once and discards only the uncommitted chunk. The stop is recorded as an attempt with result `stopped`, not counted as a failure.
+
+Recovery:
+
+- A worker that dies is detected. Its chunk stays pending, and the next request starts a new worker.
+- A chunk that fails `MAX_ATTEMPTS` (3) times stops the run with a message instead of being retried forever.
+
+Battery: automatic processing waits while Windows reports battery power, unless the user overrides it (`resources.may_start_automatic_work`). Work the user starts explicitly is not blocked.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |

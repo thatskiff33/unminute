@@ -24,8 +24,13 @@ SAMPLE_RATE = 16000
 
 
 class RunResult:
-    DONE, PAUSED, FAILED, STORE_ERROR, SOURCE_CHANGED, SUPERSEDED = (
-        "done", "paused", "failed", "store_error", "source_changed", "superseded")
+    DONE, PAUSED, FAILED, STORE_ERROR, SOURCE_CHANGED, SUPERSEDED, STOPPED = (
+        "done", "paused", "failed", "store_error", "source_changed", "superseded", "stopped")
+
+
+# A chunk that has failed this many times stops the run instead of being
+# retried forever (e.g. a worker that crashes on the same audio every time).
+MAX_ATTEMPTS = 3
 
 
 def _note_error(store, mid, message):
@@ -49,9 +54,14 @@ def _shift(s, offset):
     return Segment(s.start + offset, s.end + offset, s.text, words)
 
 
-def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None):
-    """Process pending chunks until done, paused or failed. Returns a RunResult."""
+def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None,
+                retry_failed=False):
+    """Process pending chunks until done, paused or failed. Returns a RunResult.
+    retry_failed=True is the user's explicit "Try again": it clears the
+    failure counts that would otherwise stop a chunk after MAX_ATTEMPTS."""
     try:
+        if retry_failed:
+            store.reset_failures(vid)
         return _run(store, mid, vid, reader, engine, on_progress, hooks or {})
     except StoreError as exc:     # a read failed (e.g. database unavailable)
         _note_error(store, mid, f"Could not read progress: {exc}")
@@ -74,6 +84,10 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
         if store.meeting(mid)["paused"]:
             return RunResult.PAUSED
         idx = chunk["idx"]
+        if chunk["failures"] >= MAX_ATTEMPTS:
+            _note_error(store, mid, f"Part {idx + 1} failed {chunk['failures']} times; "
+                                    f"stopped so it is not retried endlessly.")
+            return RunResult.FAILED
         try:
             attempt = store.start_attempt(vid, idx)
         except StoreError as exc:
@@ -96,10 +110,24 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
             _note_error(store, mid, f"Could not save progress: {exc}")
             return RunResult.STORE_ERROR
         except Exception as exc:
+            from workspace.worker import EngineUnavailable, WorkerStopped
+            if isinstance(exc, WorkerStopped):
+                # Deliberate stop (pause / Stop now / cleanup): the in-flight
+                # chunk was never committed and this is not a failure.
+                _finish(store, attempt, "stopped", engine)
+                return RunResult.PAUSED if store.meeting(mid)["paused"] else RunResult.STOPPED
+            if isinstance(exc, EngineUnavailable):
+                # The model is missing or damaged: not this chunk's fault, so
+                # it must not count towards the chunk's failure limit.
+                _finish(store, attempt, "unavailable", engine)
+                _note_error(store, mid, f"The speech model is not ready: {exc}"[:300])
+                return RunResult.FAILED
             _finish(store, attempt, "failed", engine)
             if hooks.get("reraise"):
                 raise
-            _note_error(store, mid, f"Transcription failed: {type(exc).__name__}: {exc}"[:300])
+            from workspace.worker import safe_message
+            _note_error(store, mid,
+                        f"Transcription failed: {type(exc).__name__}: {safe_message(exc)}"[:300])
             return RunResult.FAILED
         if not committed:
             # The version was superseded or its content cleaned while this

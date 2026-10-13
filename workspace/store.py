@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     started_at REAL NOT NULL,
     backend    TEXT,
     precision  TEXT,
-    result     TEXT NOT NULL DEFAULT 'running'   -- running|committed|failed|stopped|interrupted
+    result     TEXT NOT NULL DEFAULT 'running'
+    -- running | committed | failed | stopped | interrupted | unavailable (model not ready)
 );
 CREATE INDEX IF NOT EXISTS attempts_by_chunk ON attempts(version_id, chunk_idx);
 
@@ -322,6 +323,12 @@ class Store:
                 db.execute("UPDATE chunks SET failures = failures + 1 WHERE (version_id, idx) = "
                            "(SELECT version_id, chunk_idx FROM attempts WHERE id = ?)",
                            (attempt_id,))
+
+    def reset_failures(self, vid):
+        """The user's explicit retry: pending chunks may be attempted again."""
+        with self.tx() as db:
+            db.execute("UPDATE chunks SET failures = 0 WHERE version_id = ? AND "
+                       "status = 'pending'", (vid,))
 
     def attempts(self, vid, idx):
         return self._all("SELECT * FROM attempts WHERE version_id = ? AND chunk_idx = ? "
