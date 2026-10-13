@@ -226,6 +226,9 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 The workspace is being built in the `workspace/` package beside the current app,
 which stays the shipped app until the replacement is tested. The desktop-shell
 feasibility trial and its security findings are in [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md).
+The durable processing core (SQLite state, chunk manifests, atomic commits, resume) is
+described in [docs/WORKSPACE_DESIGN.md](docs/WORKSPACE_DESIGN.md); `tools/durable_core_check.py`
+runs a real-engine crash-and-resume check on a non-sensitive recording.
 
 | File | Purpose |
 | --- | --- |

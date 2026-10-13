@@ -30,8 +30,13 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q -f *.py tests tools workspace
 
-      # Model-free tests (stdlib only). Tests that need the full app stack
-      # skip themselves here; run them locally in the installed environment.
+      # Model-free tests. numpy and PyAV (at their pinned versions) let the
+      # workspace core tests run here; tests that need the full app stack or
+      # models skip themselves; run those locally in the installed environment.
+      - name: Install test dependencies
+        run: |
+          pip install --disable-pip-version-check --only-binary=:all: \
+            "$(grep -E '^numpy==' requirements.txt)" "$(grep -E '^av==' requirements.txt)"
       - name: Unit tests
         run: python -m unittest discover -s tests -v
 
