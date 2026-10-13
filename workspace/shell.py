@@ -35,8 +35,8 @@ def harden_webview2():
     os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = WEBVIEW2_ARGS
 
 
-def ui_url():
-    return (UI_DIR / "index.html").as_uri()
+def ui_url(page="index.html"):
+    return (UI_DIR / page).as_uri()
 
 
 blocked_navigations = []   # URLs the lock refused (for tests/diagnostics; no content)
@@ -102,20 +102,23 @@ def lock_navigation(window):
     control.NavigationStarting += on_navigation_starting
 
 
-def create_window(bridge, title="Meeting workspace", hidden=False, harden=True):
+def create_window(bridge, title="Meeting workspace", hidden=False, harden=True,
+                  page="index.html", allowed=None):
+    """`allowed` is the exact set of bridge names the page may call
+    (workspace.api.API_METHODS for the workspace, the trial's by default)."""
     import webview
 
     from workspace.bridge import BRIDGE_METHODS
     if harden:
         harden_webview2()
-    install_dispatch_guard(BRIDGE_METHODS)
+    install_dispatch_guard(BRIDGE_METHODS if allowed is None else allowed)
     # New-window requests (window.open, target=_blank) must not reach the
     # system browser: load them in place, where the navigation lock refuses them.
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
     webview.settings["ALLOW_DOWNLOADS"] = False
     # Otherwise pywebview adds --allow-file-access-from-files to WebView2.
     webview.settings["ALLOW_FILE_URLS"] = False
-    window = webview.create_window(title, url=ui_url(), js_api=bridge,
+    window = webview.create_window(title, url=ui_url(page), js_api=bridge,
                                    width=1100, height=760, min_size=(640, 480),
                                    hidden=hidden, text_select=True)
     window.events.before_load += lambda: _lock_once(window)

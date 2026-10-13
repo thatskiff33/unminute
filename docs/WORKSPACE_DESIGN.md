@@ -184,6 +184,61 @@ Failure reasons are stored without file paths.
 - `purge_expired_receipts` removes receipts 30 days after completion. The app calls it at startup and periodically while it is open.
 - A failed job keeps its row, with a reason that contains no file paths, only until a retry succeeds.
 
+## Workspace window (#20)
+
+`python -m workspace` opens the workspace. It is a development preview until packaging (#11) and setup (#19) land.
+
+### Process and threads
+
+- **One state-owning process.** `workspace/__main__.py` installs the offline guard. It then creates a `Workspace` (`workspace/app.py`), which owns the Store, the media folder and the worker, and opens the WebView2 shell.
+- **Processing thread.** One background thread finds work by scanning the database, in this order:
+  1. due cleanup jobs;
+  2. the oldest unpaused, unfinished transcription;
+  3. speaker separation for a transcribed meeting.
+- **Restarts.** Because work is found by scanning, a restart resumes exactly where processing stopped. Explicit pauses stay paused.
+- **Intake thread.** Imports (hash and decode) run on a separate thread, so adding a recording never waits behind a transcription.
+- **Battery.** Automatic work waits on battery unless the user overrides it in Settings.
+- **Failed cleanup.** A failed cleanup is retried at most once a minute, or at once on Try again.
+- **Receipts.** Expired receipts are purged at startup and hourly while the app is open.
+
+### Page API
+
+- The page calls only `workspace/api.py`. The shell's dispatch guard allows exactly `API_METHODS`.
+- Methods return plain results and never stack traces or file paths.
+- Recordings arrive through the native file dialog or a native drop. pywebview resolves the dropped file's path from the WebView2 drop. The page never supplies paths, and every path is validated again (`safe_paths`).
+
+### Views
+
+- **Inbox:** import, plus meetings still being processed, with progress, Pause, Stop now and Resume.
+- **Active meetings:** meetings in review, handoff or cleanup. Each shows its age, next action and held status. No scheduled reminders.
+- **Meeting:**
+  - the transcript, with speaker labels and overlap notes;
+  - search: Ctrl+F, Enter for the next match;
+  - playback of bounded clips (30 s or less) from a passage's time;
+  - autosaved edits;
+  - undo: Ctrl+Z or the Undo button;
+  - the checkpoint steps, with the cleanup limits shown in each confirmation;
+  - holds;
+  - versions.
+- **Settings:**
+  - Quiet or Faster;
+  - battery override;
+  - speech model;
+  - speaker identification on or off;
+  - cleanup receipts.
+
+### Edits and versions
+
+- Edits are stored over the generated text. `edit_history` records each change and the text it replaced, so undo survives restart.
+- Transcribing again with a different model creates a new version. The previous version and its edits are kept, never overwritten, until transcript cleanup removes them.
+- After the review confirmation, the text is locked. It is the text the snapshot was taken from. Playback and transcribing again are no longer available once the audio is removed, and the page explains why.
+
+### Long transcripts
+
+- Rows render in pages of 1000.
+- `content-visibility: auto` lets the browser skip off-screen rows.
+- On the UI check, a 5000-passage transcript rendered in under 0.5 s.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |
