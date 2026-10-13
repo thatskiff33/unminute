@@ -596,7 +596,20 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
         doc = Path(__file__).resolve().parents[1] / "docs" / "MODEL_MANIFEST.md"
         self.assertEqual(doc.read_text(encoding="utf-8").replace("\r\n", "\n"),
                          ae.manifest_markdown(),
-                         "Regenerate with: python asr_engines.py manifest > docs/MODEL_MANIFEST.md")
+                         "Regenerate: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md")
+
+    def test_gated_repair_without_token_says_so_and_downloads_nothing(self):
+        saved = os.environ.pop("HF_TOKEN", None)
+        dl = FakeDownload()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(ae.ModelLoadError) as ctx:
+                    ae.install_model(ae.SPEAKER_MODEL, tmp, print, dl)
+            self.assertIn("Hugging Face token", str(ctx.exception))
+            self.assertEqual(dl.calls, 0)
+        finally:
+            if saved is not None:
+                os.environ["HF_TOKEN"] = saved
 
 
 class WhisperManifestTests(unittest.TestCase):

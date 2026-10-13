@@ -389,6 +389,7 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
 
     model_label = settings["model"]   # replaced by the engine's full description once loaded
     load_error = None                 # set if the model fails to load in this run
+    speaker_error = None              # set if speaker identification fails in this run
 
     def finish(item, src, entries, out_name, status):
         """Save the transcript and tell the UI about it (enables renaming)."""
@@ -439,12 +440,25 @@ def queue_worker(pending, pending_lock, settings, emit, cancel_event, pause_even
                 # with PyAV, reuse the waveform for both steps.
                 turns = None
                 audio = str(src)
-                if settings["speakers"]:
+                if settings["speakers"] and speaker_error is None:
                     emit("phase", "identifying speakers")
                     wav = decode_audio(str(src), sampling_rate=SAMPLE_RATE)
-                    turns = diarize(wav, log, hook=diarization_hook)
-                    log(f"  Found {len({lbl for _, _, lbl in turns})} speaker(s).")
                     audio = wav
+                    try:
+                        turns = diarize(wav, log, hook=diarization_hook)
+                        log(f"  Found {len({lbl for _, _, lbl in turns})} speaker(s).")
+                    except CancelledJob:
+                        raise
+                    except Exception as exc:
+                        # Speaker failure must not cost the text: transcribe
+                        # without labels, and skip speaker ID for the rest of
+                        # this run (no repeated repair attempts per file).
+                        speaker_error = exc
+                        turns = None
+                        log(f"  Speaker identification failed ({exc}). Transcribing "
+                            f"without speaker labels; files later in this run will too.")
+                elif settings["speakers"]:
+                    log("  Speaker identification skipped (it failed earlier in this run).")
 
                 emit("phase", "transcribing")
                 segments, duration = model.transcribe(audio)

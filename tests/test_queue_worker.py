@@ -112,6 +112,35 @@ class QueueWorkerTests(unittest.TestCase):
         self.assertEqual([p for p in self.statuses() if p[1] == "failed"],
                          [(0, "failed"), (1, "failed"), (2, "failed")])
 
+    def test_speaker_failure_keeps_text_and_is_not_retried(self):
+        import numpy as np
+        engine = FakeEngine([(0.0, 1.0, "Still here.")])
+        calls = []
+
+        def failing_diarize(wav, log, hook=None):
+            calls.append(1)
+            raise RuntimeError("speaker model failed verification")
+
+        real_diarize, real_decode = self.core.diarize, self.core.decode_audio
+        self.core.diarize = failing_diarize
+        self.core.decode_audio = lambda path, sampling_rate: np.zeros(16000, dtype=np.float32)
+        try:
+            self.core.get_model = lambda name, log: engine
+            pending = [{"id": i, "path": str(self.out_dir / f"s{i}.wav")} for i in range(2)]
+            settings = {"model": "fake-model", "fmt": ".txt", "speakers": True,
+                        "timestamps": False}
+            self.core.queue_worker(pending, threading.Lock(), settings,
+                                   lambda k, p=None: self.events.append((k, p)),
+                                   self.cancel, self.pause)
+        finally:
+            self.core.diarize, self.core.decode_audio = real_diarize, real_decode
+        self.assertEqual(len(calls), 1)                       # not retried per file
+        self.assertIn((0, "done"), self.statuses())
+        self.assertIn((1, "done"), self.statuses())
+        self.assertIn("Still here.", (self.out_dir / "s0.txt").read_text(encoding="utf-8"))
+        logs = " ".join(str(p) for k, p in self.events if k == "log")
+        self.assertIn("without speaker labels", logs)
+
     def test_parakeet_models_listed_with_whisper_kept(self):
         self.assertEqual(self.core.MODELS[0], "parakeet-tdt-0.6b-v2")
         for name in ("large-v3-turbo", "large-v3", "parakeet-tdt-0.6b-v3"):

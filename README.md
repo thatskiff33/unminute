@@ -31,7 +31,8 @@ Rename the detected speakers once a file has finished. The first line each perso
 ## How it works
 
 - Parakeet models are NVIDIA's parakeet-tdt-0.6b, run as INT8 ONNX exports through [onnx-asr](https://github.com/istupakov/onnx-asr) and ONNX Runtime. Silero voice-activity detection splits recordings into speech pieces of at most 20 seconds, which avoids the export's hard failure on very long single inputs, and each piece is split into sentences using token timings.
-- Every speech model's files are pinned to SHA-256 checksums. A model only counts as installed when every expected file is present at the right size (and, for Whisper, `preprocessor_config.json` asks for the right number of mel bands); it is fully checksummed before first use. A folder merely existing is never taken as proof.
+- Every model's files, speech and speaker identification alike, are pinned to SHA-256 checksums, listed in [docs/MODEL_MANIFEST.md](docs/MODEL_MANIFEST.md) with their licences. A model only counts as installed when every expected file is present at the right size (and, for Whisper, `preprocessor_config.json` asks for the right number of mel bands); it is fully checksummed before first use. A folder merely existing is never taken as proof. This matters for the speaker model in particular: pyannote loads its weights with Python's pickle format, which can run code, so only verified files are loaded.
+- If speaker identification fails, the file is still transcribed, without speaker labels, and the log says why.
 - Damaged models are never deleted. A damaged Parakeet copy is moved aside as `<folder>.invalid-<date>`. A damaged Whisper copy in the Hugging Face cache is left untouched, and a verified copy is downloaded beside it into `whisper-models\whisper`.
 - After a Whisper model loads, the app checks that its audio preprocessing produces the number of mel bands the model expects (128 for large-v3 and turbo) before transcribing or identifying speakers. A mismatch stops with a repair instruction instead of failing part-way.
 - Whisper models use [faster-whisper](https://github.com/SYSTRAN/faster-whisper), a CTranslate2 port of OpenAI Whisper. All models run in int8 on the CPU, and a couple of cores are left free so the laptop stays usable while a long job runs.
@@ -111,7 +112,7 @@ Telling speakers apart uses a pyannote model that is gated on Hugging Face. You 
 3. Create a token of type Read at https://huggingface.co/settings/tokens
 4. Paste the token into the installer when it asks. If you skipped that step, run `install.cmd` again.
 
-The installer stores the token as the `HF_TOKEN` user environment variable, verifies it against Hugging Face, confirms the gated model is accessible, and downloads the model (about 100 MB). After that the token is not used for anything. Your audio never leaves the machine.
+The installer stores the token as the `HF_TOKEN` user environment variable, verifies it against Hugging Face, confirms the gated model is accessible, and downloads and verifies the model (about 30 MB). After that the token is not used for anything. Your audio never leaves the machine.
 
 ## Choosing a model
 
@@ -227,7 +228,7 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 | `transcribe_ui.py` | The tkinter UI (sv-ttk theme, drag and drop, queue, rename dialog, update button) |
 | `transcriber_core.py` | Engine: model loading, diarisation, transcript rendering, queue worker. No tkinter. |
 | `offline_guard.py` | Forces dependency telemetry off and refuses non-local network access outside deliberate downloads |
-| `asr_engines.py` | Shared timed-segment interface for Whisper and Parakeet, Parakeet model manifests, verified install and repair. `python asr_engines.py ensure --present` is what the installer runs. |
+| `asr_engines.py` | Shared timed-segment interface for Whisper and Parakeet; model manifests for all speech and speaker models; verified install and repair. `python asr_engines.py ensure --present` is what the installer runs; `python asr_engines.py manifest --out docs/MODEL_MANIFEST.md` regenerates the manifest document. |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v`. The queue-worker tests need the installed app environment and skip without it. |
 | `install.ps1` | Idempotent per-user installer. `install.cmd` is the double-click wrapper. |
 | `whisper-ui.cmd` | Launches the UI with the venv pythonw.exe, no console window |
