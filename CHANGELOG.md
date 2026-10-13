@@ -5,6 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- Docs: a business-user guide for the meeting workspace (docs/WORKSPACE_GUIDE.md) and a release checklist with tested compatibility (docs/RELEASE_CHECKLIST.md). The privacy wording now separates local processing from synced storage and from deliberate sharing with an AI assistant (#29, #8).
 - Workspace updates: one gate for self-service and IT-managed installs. An update that changes how the workspace is stored waits, and explains why, until there are no meetings, retention holds or unfinished cleanup. Holds are never expired and no content backups are made. Compatible updates keep everything, and rollback to the previous version is supported (#26).
 - Workspace package: a preassembled per-user Windows package (private Python runtime, pinned wheels, verified file by file) with an unattended install for Intune, uninstall, and support options (`--self-test`, `--status`). See docs/PACKAGING.md (#11).
 - Workspace: watched folders with reconciliation, catch-up after the app was closed, stable-file checks and duplicate suppression (#23). Cloud-only files wait or are fetched on request. Deleting reviewed originals needs a separate, explicit, revocable per-folder permission. See docs/INTAKE.md (#24).

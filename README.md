@@ -16,6 +16,22 @@ Built for a professional-services office where recordings are confidential, lapt
 - Needs no admin rights, no FFmpeg, no GPU. Everything lives under your own user profile.
 - Light and dark themes, drag and drop, a Start Menu shortcut and a proper taskbar icon.
 
+## Meeting workspace (new, packaged)
+
+A newer, packaged meeting workspace is being prepared for business use. It adds:
+
+- review against the audio, speaker naming and a handoff to your approved AI assistant;
+- holds, and two-step cleanup of meeting material;
+- watched folders;
+- per-user and Intune installation.
+
+It runs alongside this app and does not change or remove anything this app created.
+
+- [User guide](docs/WORKSPACE_GUIDE.md)
+- [Installation and deployment](docs/PACKAGING.md)
+- [Watched folders and cloud files](docs/INTAKE.md)
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
+
 ## Screenshots
 
 Screenshots show sample data, not real recordings.
@@ -185,6 +201,11 @@ Consecutive lines from the same speaker are merged into one paragraph. Timestamp
 - The Update / repair button in the app re-runs the installer in a separate window to reinstall packages at their pinned versions and fetch any missing models. It does not pull new code.
 - If you select a model that is not yet downloaded, the app asks before downloading it.
 - The Hugging Face token authorises one gated download. It is never sent anywhere else.
+
+Local processing is not the whole picture. These are outside the app's control:
+
+- **Synced or backed-up folders.** A recording or transcript saved into OneDrive, SharePoint or a backed-up folder is copied to that service by its sync client. The app does not change that.
+- **Anything you paste or upload to an AI assistant.** That text is then handled by the assistant's provider, under your organisation's account and policies.
 
 To verify for yourself, run a transcription and check that the venv Python has no connections to huggingface.co:
 
