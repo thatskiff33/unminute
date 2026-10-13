@@ -34,10 +34,12 @@ import secrets
 import time
 from pathlib import Path
 
-from workspace.safe_paths import UnsafePathError, check_raw, validate_input_file
+from workspace.safe_paths import (CloudPlaceholderError, UnsafePathError, check_raw,
+                                  validate_input_file)
 
 SCAN_INTERVAL_S = 300          # while the app is open
 STABLE_S = 5                   # a file must look the same this long apart (two scans)
+STABLE_RECENT_S = 60           # ...and not have been written in the last minute
 MAX_DEPTH = 2                  # subfolder levels below a watched folder
 MAX_FILES = 5000               # per folder per scan: a bounded folder, not a drive
 SUPPRESS_DAYS = 120
@@ -86,6 +88,12 @@ def add_folder(store, path, include_existing=False):
     if not p.is_dir():
         raise IntakeError("That folder could not be found.")
     real = os.path.realpath(p)
+    try:
+        if os.name == "nt":
+            check_raw(real)          # a mapped network drive resolves to \\server\share
+    except UnsafePathError as exc:
+        raise IntakeError("Network folders cannot be watched. Choose a folder on this "
+                          "computer (synced folders such as OneDrive are fine).") from exc
     if _broad(real):
         raise IntakeError("Choose a specific folder for recordings, not a whole drive or "
                           "your whole user folder.")
@@ -125,11 +133,14 @@ def set_fetch_cloud(store, fid, allowed):
                    (1 if allowed else 0, fid))
 
 
-def deletion_roots(store):
-    """Folders the user has authorised originals to be deleted from, now.
-    Cleanup re-checks this at deletion time, so revoking takes effect at once."""
+def deletion_roots(store, mid):
+    """For one meeting: the folder its original came from, if that folder
+    still has deletion authority right now. Authority belongs to the folder a
+    recording was imported from, never to another (e.g. a parent) folder, and
+    revoking it keeps the original. Paused folders keep their authority."""
     return [r["path"] for r in store._all(
-        "SELECT path FROM watched_folders WHERE delete_originals = 1")]
+        "SELECT wf.path FROM sources s JOIN watched_folders wf ON wf.id = s.intake_folder "
+        "WHERE s.meeting_id = ? AND wf.delete_originals = 1", (mid,))]
 
 
 def authority_for(store, fid):
@@ -144,17 +155,25 @@ def remove_folder(store, fid):
         db.execute("DELETE FROM watched_folders WHERE id = ?", (fid,))
 
 
-def _walk(root, extensions):
-    """Files with a recording extension, at most MAX_DEPTH levels down."""
-    out, stack = [], [(Path(root), 0)]
-    while stack and len(out) < MAX_FILES:
+def _walk(root, extensions, stop=None):
+    """(files, complete): files with a recording extension, at most MAX_DEPTH
+    levels down, never following links or junctions. complete is False if any
+    folder could not be read or MAX_FILES was reached: the caller must not
+    treat files it did not see as gone."""
+    out, stack, complete = [], [(Path(root), 0)], True
+    while stack:
+        if len(out) >= MAX_FILES or (stop and stop()):
+            return out, False
         folder, depth = stack.pop()
         try:
             entries = list(os.scandir(folder))
         except OSError:
+            complete = False
             continue
         for e in entries:
             try:
+                if e.is_symlink() or e.is_junction():
+                    continue
                 if e.is_dir(follow_symlinks=False):
                     if depth < MAX_DEPTH:
                         stack.append((Path(e.path), depth + 1))
@@ -162,13 +181,18 @@ def _walk(root, extensions):
                         os.path.splitext(e.name)[1].lower() in extensions:
                     out.append(Path(e.path))
             except OSError:
+                complete = False
                 continue
-    return out
+    return out, complete
 
 
 def already_imported(store, content_sha):
-    """Content the workspace already has, or imported within the suppression window."""
+    """Content the workspace already has, imported within the suppression
+    window, or being imported right now from another file."""
     if store._one("SELECT 1 FROM intake_content WHERE sha256 = ?", (content_sha,)):
+        return True
+    if store._one("SELECT 1 FROM intake_seen WHERE state = 'importing' AND content = ?",
+                  (content_sha,)):
         return True
     return store._one("SELECT 1 FROM sources WHERE original_sha256 = ?",
                       (content_sha,)) is not None
@@ -178,6 +202,24 @@ def remember_content(store, content_sha, now=None):
     with store.tx() as db:
         db.execute("INSERT OR REPLACE INTO intake_content VALUES (?, ?)",
                    (content_sha, now or time.time()))
+
+
+def import_finished(store, fid, key, content, ok, now=None):
+    """Called by the app after an import from a watched folder. Content is
+    suppressed only once it was really imported; a failed import is shown and
+    tried again if the file changes."""
+    with store.tx() as db:
+        db.execute("UPDATE intake_seen SET state = ?, content = NULL WHERE folder_id = ? "
+                   "AND key = ?", ("imported" if ok else "failed", fid, key))
+    if ok:
+        remember_content(store, content, now)
+
+
+def recover(store):
+    """At startup: imports that were queued when the app closed are found again."""
+    with store.tx() as db:
+        db.execute("UPDATE intake_seen SET state = 'waiting', content = NULL "
+                   "WHERE state = 'importing'")
 
 
 def purge(store, now=None):
@@ -191,15 +233,30 @@ def purge(store, now=None):
                    (SUPPRESS_MAX,))
 
 
-def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None):
-    """Reconcile every active folder once. `enqueue(path, folder_id)` queues an
-    import. Returns {"queued", "waiting", "duplicates", "cloud", "errors"}."""
+RETRY_STATES = ("waiting", "cloud", "unreadable")
+
+
+def _same(row, ident):
+    """Same file? Compare the file ID only where the filesystem provides a
+    stable one (0 on some network and cloud filesystems)."""
+    size, mtime, fid = ident
+    if row["file_id"] and fid:
+        return (row["size"], row["mtime_ns"], row["file_id"]) == ident
+    return (row["size"], row["mtime_ns"]) == (size, mtime)
+
+
+def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None):
+    """Reconcile every active folder once. `enqueue(path, folder_id, key,
+    content)` queues an import; the app reports back with import_finished().
+    Returns {"queued", "waiting", "duplicates", "cloud", "errors"}."""
     from workspace.media import sha256_file
     hasher = hasher or sha256_file
     now = now or time.time()
     salt = _salt(store)
     stats = {"queued": 0, "waiting": 0, "duplicates": 0, "cloud": 0, "errors": 0}
     for f in folders(store):
+        if stop and stop():
+            break
         if not f["active"]:
             continue
         root = Path(f["path"])
@@ -208,44 +265,74 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None):
                                               "renamed or offline). It will be checked again.")
             stats["errors"] += 1
             continue
+        files, complete = _walk(root, extensions, stop)
         baseline = not f["baseline_done"] and not f["include_existing"]
+        if baseline and not complete:
+            # Never record a partial baseline: files it missed would later look new.
+            _folder_note(store, f["id"], now, "The folder could not be read completely. It "
+                                              "will be checked again.")
+            stats["errors"] += 1
+            continue
         seen = {r["key"]: r for r in store._all(
             "SELECT * FROM intake_seen WHERE folder_id = ?", (f["id"],))}
         present = set()
-        for path in _walk(root, extensions):
+        stats_files = []
+        for path in files:
             try:
                 st = path.stat()
             except OSError:
                 continue
             key = _key(salt, path)
             present.add(key)
-            ident = (st.st_size, st.st_mtime_ns, getattr(st, "st_ino", 0))
+            stats_files.append((path, key, (st.st_size, st.st_mtime_ns,
+                                            getattr(st, "st_ino", 0))))
+        # Moves and renames inside the folder keep their state (same file ID
+        # and size), so an old recording renamed today is not "new".
+        missing = {(r["file_id"], r["size"]): r for k, r in seen.items()
+                   if k not in present and r["file_id"]}
+        for path, key, ident in stats_files:
+            if stop and stop():
+                break
             row = seen.get(key)
             if row is None:
+                moved = missing.pop((ident[2], ident[0]), None) if ident[2] else None
+                if moved is not None:
+                    _put(store, f["id"], key, ident, moved["state"], now, first=True)
+                    continue
                 state = "baseline" if baseline else "waiting"
                 _put(store, f["id"], key, ident, state, now, first=True)
                 if state == "waiting":
                     stats["waiting"] += 1
                 continue
-            same = (row["size"], row["mtime_ns"], row["file_id"]) == ident
-            if not same:
-                # Still copying, or replaced at the same path: wait for it to settle.
+            if not _same(row, ident):
+                # Still copying, or replaced at the same path: wait for it to
+                # settle, then compare content (a new recording is imported).
                 _put(store, f["id"], key, ident, "waiting", now)
                 stats["waiting"] += 1
                 continue
-            if row["state"] not in ("waiting", "cloud"):
+            if row["state"] not in RETRY_STATES:
                 _touch(store, f["id"], key, now)
                 continue
-            if now - row["last_seen"] < STABLE_S:
+            # Stable: unchanged since the previous scan, and not written recently
+            # (a stalled copy is not mistaken for a finished one).
+            if now - row["last_seen"] < STABLE_S or now - ident[1] / 1e9 < STABLE_RECENT_S:
                 stats["waiting"] += 1
                 continue
             try:
+                os.stat(path)
                 real = validate_input_file(path, extensions, max_bytes,
                                            allow_cloud=bool(f["fetch_cloud"]))
-            except UnsafePathError as exc:
-                cloud = "cloud" in str(exc)
-                _put(store, f["id"], key, ident, "cloud" if cloud else "refused", now)
-                stats["cloud" if cloud else "errors"] += 1
+            except PermissionError:
+                _put(store, f["id"], key, ident, "unreadable", now)
+                stats["errors"] += 1
+                continue
+            except CloudPlaceholderError:
+                _put(store, f["id"], key, ident, "cloud", now)
+                stats["cloud"] += 1
+                continue
+            except UnsafePathError:
+                _put(store, f["id"], key, ident, "refused", now)
+                stats["errors"] += 1
                 continue
             try:
                 # Read-only: reading a cloud-only file (when allowed) makes the
@@ -264,28 +351,32 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None):
                 _put(store, f["id"], key, ident, "duplicate", now)
                 stats["duplicates"] += 1
                 continue
-            remember_content(store, content, now)
-            _put(store, f["id"], key, ident, "queued", now)
-            enqueue(real, f["id"])
+            _put(store, f["id"], key, ident, "importing", now, content=content)
+            enqueue(real, f["id"], key, content)
             stats["queued"] += 1
         with store.tx() as db:
-            # Files that left the folder: forget their rows (bounded).
-            gone = [k for k in seen if k not in present]
-            db.executemany("DELETE FROM intake_seen WHERE folder_id = ? AND key = ?",
-                           [(f["id"], k) for k in gone])
-            db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = NULL, "
-                       "baseline_done = 1 WHERE id = ?", (now, f["id"]))
+            if complete:
+                # Files that left the folder: forget their rows (bounded). Only
+                # after a complete walk; otherwise unseen files are kept.
+                gone = [k for k in seen if k not in present]
+                db.executemany("DELETE FROM intake_seen WHERE folder_id = ? AND key = ?",
+                               [(f["id"], k) for k in gone])
+            db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ?, "
+                       "baseline_done = 1 WHERE id = ?",
+                       (now, None if complete else "Part of the folder could not be read; "
+                        "it will be checked again.", f["id"]))
     purge(store, now)
     return stats
 
 
-def _put(store, fid, key, ident, state, now, first=False):
+def _put(store, fid, key, ident, state, now, first=False, content=None):
     with store.tx() as db:
         db.execute("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
-                   "first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(folder_id, key) "
-                   "DO UPDATE SET size = excluded.size, mtime_ns = excluded.mtime_ns, "
-                   "file_id = excluded.file_id, state = excluded.state, "
-                   "last_seen = excluded.last_seen", (fid, key, *ident, state, now, now))
+                   "first_seen, last_seen, content) VALUES (?,?,?,?,?,?,?,?,?) "
+                   "ON CONFLICT(folder_id, key) DO UPDATE SET size = excluded.size, "
+                   "mtime_ns = excluded.mtime_ns, file_id = excluded.file_id, "
+                   "state = excluded.state, last_seen = excluded.last_seen, "
+                   "content = excluded.content", (fid, key, *ident, state, now, now, content))
 
 
 def _touch(store, fid, key, now):
@@ -310,8 +401,9 @@ def summary(store):
                     "delete_originals": bool(f["delete_originals"]),
                     "fetch_cloud": bool(f["fetch_cloud"]),
                     "unreadable": counts.get("unreadable", 0),
+                    "failed": counts.get("failed", 0),
                     "last_scan_at": f["last_scan_at"], "error": f["last_error"],
                     "waiting": counts.get("waiting", 0), "cloud": counts.get("cloud", 0),
-                    "imported": counts.get("queued", 0),
+                    "imported": counts.get("imported", 0),
                     "duplicates": counts.get("duplicate", 0)})
     return out

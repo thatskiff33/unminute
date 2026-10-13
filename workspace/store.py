@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS sources (
     samples          INTEGER NOT NULL,
     sample_rate      INTEGER NOT NULL,
     created_at       REAL NOT NULL,
-    delete_original  INTEGER NOT NULL DEFAULT 0   -- explicit authority to delete the original (#24)
+    delete_original  INTEGER NOT NULL DEFAULT 0,  -- explicit authority to delete the original (#24)
+    intake_folder    TEXT     -- watched folder it came from (#24); NULL for imports by hand
 );
 
 CREATE TABLE IF NOT EXISTS versions (
@@ -174,6 +175,7 @@ CREATE TABLE IF NOT EXISTS watched_folders (
 CREATE TABLE IF NOT EXISTS intake_seen (
     folder_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER, mtime_ns INTEGER,
     file_id INTEGER, state TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+    content TEXT,              -- SHA-256 only while an import is in progress
     PRIMARY KEY (folder_id, key));
 CREATE TABLE IF NOT EXISTS intake_content (
     sha256 TEXT PRIMARY KEY, imported_at REAL NOT NULL);

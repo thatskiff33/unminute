@@ -832,7 +832,8 @@ async function renderSettings() {
        f.waiting ? `${f.waiting} waiting until fully copied` : null,
        f.cloud ? `${f.cloud} in cloud storage, not on this computer yet` : null,
        f.duplicates ? `${f.duplicates} already imported` : null,
-       f.unreadable ? `${f.unreadable} could not be read (no permission)` : null].filter(Boolean).join(" · ") }),
+       f.unreadable ? `${f.unreadable} could not be read (no permission)` : null,
+       f.failed ? `${f.failed} could not be imported (damaged or unsupported)` : null].filter(Boolean).join(" · ") }),
     el("label", {}, el("input", { type: "checkbox", checked: f.fetch_cloud,
       on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
       " Download recordings that are only in cloud storage (OneDrive and similar)"),
@@ -854,7 +855,11 @@ async function renderSettings() {
                    on: { click: () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings)) } }),
     " ",
     el("button", { type: "button", textContent: "Stop watching",
-                   on: { click: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) } })))
+                   on: { click: () => confirmDialog({
+                     title: "Stop watching this folder?",
+                     body: "Recordings already imported stay in the workspace. New recordings in this folder will no longer be imported, and its deletion permission is removed.",
+                     check: "Stop watching the folder.", limits: false,
+                     onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) }) } })))
     : [el("li", { class: "muted", textContent: "No folders are watched." })]));
   const receipts = await call("receipts");
   $("receipts").replaceChildren(...(receipts.length ? receipts.map((r) =>

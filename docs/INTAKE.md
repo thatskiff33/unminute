@@ -10,17 +10,30 @@ How watching works:
 
 - **When folders are checked.** The app checks each folder when it starts and every few minutes while it is open. If the app was closed, it catches up when it is next opened. No background service runs while the app is closed.
 - **What counts as new.** A recording is new because it was not in the folder before, whatever its date. An old recording copied in today is imported.
-- **Unfinished copies wait.** A file is imported only once it has stopped changing between two checks, so a recording that is still copying or syncing is left until it is complete.
+- **Renames and moves are not new.** Renaming or moving a recording within the folder does not make it new.
+- **Edited files count as new.** A file whose content changes, for example one saved over with a new recording or one with edited tags, is compared by content and imported if the content is new.
+- **Unfinished copies wait.** A file is imported only once it has stopped changing between two checks and has not been written for at least a minute, so a recording that is still copying or syncing is left until it is complete.
+- **Failed imports.** A damaged or unsupported file is shown as "could not be imported". It is tried again if the file changes, for example when a complete copy is saved over it.
+- **Interrupted imports.** Recordings waiting to be imported when the app closes are found again at the next launch.
+- **Partial reads.** If part of a folder cannot be read (for example while a sync client is re-initialising), nothing is treated as removed, and a new folder's existing recordings are not mistaken for new ones.
 - **No double imports.** A recording already imported, from any folder or by hand, is not imported again for 120 days. A file saved over with different content is imported. **Import recordings…** always works, so you can deliberately transcribe something again.
-- **Narrow folders only.** Watch a specific recordings folder. Whole drives and the whole user folder are refused, and the app looks at most two subfolder levels deep.
+- **Narrow, local folders only.**
+  - Watch a specific recordings folder on this computer. Synced folders such as OneDrive are fine.
+  - Whole drives, the whole user folder and network folders (including mapped drives) are refused.
+  - The app looks at most two subfolder levels deep, and does not follow links or junctions.
+  - Folders are checked one after another. A large cloud file being downloaded can delay checks of other folders.
 
 The app keeps a small record of what it has seen in each folder so it does not import things twice:
 
-- keyed hashes of file locations, not names;
+- keyed hashes of file locations, rather than names;
 - sizes and dates;
 - for 120 days, a fingerprint (SHA-256) of each imported recording.
 
 None of this is meeting content. Stopping watching a folder removes that folder's records.
+
+The location hashes use a key stored in the same workspace database. They keep names out of plain sight, but they are not a secret from someone who has the database and can guess file names.
+
+Where a recording came from is stored only while the app may delete the original (see below). Otherwise only its fingerprint is kept, for duplicate detection and the identity check.
 
 ## Files in cloud storage (OneDrive, SharePoint and similar)
 
@@ -45,7 +58,7 @@ Watching a folder lets the app import from it. Deleting from it is a separate pe
 **Delete originals from this folder after review** needs an explicit confirmation. When it is on, the app may delete the original recording, but only when all of these are true:
 
 - you have confirmed the meeting's transcript is reviewed (the first cleanup step);
-- the original is still in a folder with this permission at that moment, so turning the permission off later keeps originals;
+- the folder the recording was imported from still has this permission at that moment, so turning the permission off later keeps originals. Permission on a parent folder does not extend to recordings imported from a separately watched subfolder. Pausing a folder does not remove its permission; Stop watching does;
 - the file is still exactly the one that was imported (same size, date and SHA-256). A replaced or edited file is never deleted;
 - it is a plain local file, not a link, a network path or a shortcut.
 

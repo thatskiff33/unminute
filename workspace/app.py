@@ -126,6 +126,7 @@ class Workspace:
         self.last_scan = None
         self._threads = []
         self._reconcile_imports()
+        intake.recover(self.store)        # imports queued when the app last closed
         if start:
             self.start()
 
@@ -146,7 +147,8 @@ class Workspace:
         self._imports.put(None)
         self.handle.close()
         for t in self._threads:
-            t.join(15)
+            # A folder scan may be hashing a large file; it stops between files.
+            t.join(60 if t.name == "workspace-watch" else 15)
         self.store.close()
 
     def wait_idle(self, timeout=60.0):
@@ -184,9 +186,16 @@ class Workspace:
             try:
                 if item is None or self._closing.is_set():
                     return
-                path, folder_id = item
+                path, folder_id, key, content = (*item, None, None)[:4]
                 self._status = "Importing a recording"
-                self._import_one(path, folder_id)
+                try:
+                    self._import_one(path, folder_id)
+                except Exception:
+                    if key:
+                        intake.import_finished(self.store, folder_id, key, content, False)
+                    raise
+                if key:
+                    intake.import_finished(self.store, folder_id, key, content, True)
             except Exception as exc:          # a bad file must not stop the intake thread
                 self._import_errors = (self._import_errors + [_import_message(exc)])[-5:]
             finally:
@@ -197,10 +206,15 @@ class Workspace:
     def _import_one(self, path, folder_id=None):
         title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
-        if folder_id and intake.authority_for(self.store, folder_id):
-            # Authority comes only from the folder's explicit setting (#24).
-            with self.store.tx() as db:
-                db.execute("UPDATE sources SET delete_original = 1 WHERE id = ?", (sid,))
+        with self.store.tx() as db:
+            if folder_id and intake.authority_for(self.store, folder_id):
+                # Authority comes only from the folder's explicit setting (#24);
+                # the original's location is kept only when it may be deleted.
+                db.execute("UPDATE sources SET delete_original = 1, intake_folder = ? "
+                           "WHERE id = ?", (folder_id, sid))
+            else:
+                db.execute("UPDATE sources SET original_path = NULL, intake_folder = ? "
+                           "WHERE id = ?", (folder_id, sid))
         try:
             self._plan_version(mid, sid)
         except BaseException:
@@ -264,7 +278,8 @@ class Workspace:
                 try:
                     self.last_scan = intake.scan(
                         self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
-                        lambda p, fid: self._imports.put((p, fid)))
+                        lambda p, fid, key, content: self._imports.put((p, fid, key, content)),
+                        stop=self._closing.is_set)
                 except Exception as exc:     # a scan problem must not stop watching
                     self.last_scan = {"error": safe_message(exc)}
             self._closing.wait(1.0)
@@ -404,7 +419,7 @@ class Workspace:
         if kind == "cleanup":
             self._status = "Cleaning up"
             cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown,
-                            original_roots=intake.deletion_roots(self.store))
+                            original_roots=intake.deletion_roots(self.store, mid))
             return
         if self._closing.is_set():
             return                          # never start a worker during shutdown

@@ -21,7 +21,7 @@ if HAVE_DEPS:
     from test_intake import wav
 
     from workspace import intake
-    from workspace.safe_paths import UnsafePathError
+    from workspace.safe_paths import CloudPlaceholderError
     from workspace.store import Store
 
 
@@ -35,16 +35,22 @@ class CloudTests(unittest.TestCase):
         self.store = Store(self.root / "ws" / "workspace.db")
         self.fid = intake.add_folder(self.store, str(self.folder))
         self.queued, self.now = [], time.time()
+        self.saved_recent = intake.STABLE_RECENT_S
+        intake.STABLE_RECENT_S = 0
         self.scan()
 
     def tearDown(self):
+        intake.STABLE_RECENT_S = self.saved_recent
         self.store.close()
         self.tmp.cleanup()
 
+    def enqueue(self, path, fid, key, content):
+        self.queued.append(Path(path))
+        intake.import_finished(self.store, fid, key, content, True)
+
     def scan(self, hasher=None):
         self.now += 10
-        return intake.scan(self.store, EXT, 1 << 30,
-                           lambda p, fid: self.queued.append(Path(p)), now=self.now,
+        return intake.scan(self.store, EXT, 1 << 30, self.enqueue, now=self.now,
                            hasher=hasher)
 
     def test_cloud_only_file_waits_without_inventing_progress(self):
@@ -55,8 +61,8 @@ class CloudTests(unittest.TestCase):
         def placeholder(path, ext, size, allow_cloud=False):
             calls.append(allow_cloud)
             if not allow_cloud:
-                raise UnsafePathError("The file is in cloud storage and not downloaded to "
-                                      "this computer yet.")
+                raise CloudPlaceholderError("The file is in cloud storage and not "
+                                            "downloaded to this computer yet.")
             return real(path, ext, size)
         intake.validate_input_file = placeholder
         try:
@@ -95,11 +101,11 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(self.queued, [])
 
     def test_deletion_authority_is_explicit_and_revocable(self):
-        self.assertEqual(intake.deletion_roots(self.store), [])   # watching is not authority
+        self.assertFalse(intake.authority_for(self.store, self.fid))  # watching is not authority
         intake.set_delete_originals(self.store, self.fid, True)
-        self.assertEqual(intake.deletion_roots(self.store), [os.path.realpath(self.folder)])
+        self.assertTrue(intake.authority_for(self.store, self.fid))
         intake.set_delete_originals(self.store, self.fid, False)
-        self.assertEqual(intake.deletion_roots(self.store), [])
+        self.assertFalse(intake.authority_for(self.store, self.fid))
 
 
 @unittest.skipUnless(HAVE_DEPS and os.name == "nt", "Windows paths")
@@ -141,6 +147,33 @@ class AuthorityFlowTests(unittest.TestCase):
         kept, result = self.run_flow(authority=True, revoke_before_cleanup=True)
         self.assertTrue(kept)
         self.assertIn("not in a folder", result)
+
+    def test_authority_belongs_to_the_folder_the_file_came_from(self):
+        from workspace import app
+        tmp = tempfile.TemporaryDirectory()
+        root = Path(tmp.name)
+        parent = root / "All recordings"
+        child = parent / "Board"
+        child.mkdir(parents=True)
+        ws = app.Workspace(root / "ws", root / "models", start=False, battery=False)
+        try:
+            ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
+            pid = ws.add_watched_folder(str(parent), False)
+            cid = ws.add_watched_folder(str(child), False)
+            ws.set_folder_authority(pid, delete_originals=True)    # parent allowed
+            original = wav(child / "Board.wav", seconds=6, seed=23)
+            ws._import_one(original, cid)                           # came from the child
+            mid = ws.meetings()[0]["id"]
+            src = ws.store._one("SELECT * FROM sources WHERE meeting_id = ?", (mid,))
+            self.assertIsNone(src["original_path"])                 # not even recorded
+            ws.start()
+            self.assertTrue(ws.wait_idle(60))
+            ws.confirm_reviewed(mid)
+            self.assertTrue(ws.wait_idle(60))
+            self.assertTrue(original.exists())
+        finally:
+            ws.close()
+            tmp.cleanup()
 
     def test_replaced_original_is_never_deleted(self):
         kept, result = self.run_flow(authority=True, replace=True)

@@ -47,15 +47,23 @@ class IntakeTests(unittest.TestCase):
         self.store = Store(self.db)
         self.queued = []
         self.now = time.time()
+        self.saved_recent = intake.STABLE_RECENT_S
+        intake.STABLE_RECENT_S = 0          # simulated clock; recency has its own test
+        self.import_ok = True
 
     def tearDown(self):
+        intake.STABLE_RECENT_S = self.saved_recent
         self.store.close()
         self.tmp.cleanup()
 
-    def scan(self, advance=10):
+    def enqueue(self, path, fid, key, content):
+        """Stands in for the app: import, then report back."""
+        self.queued.append(Path(path))
+        intake.import_finished(self.store, fid, key, content, self.import_ok)
+
+    def scan(self, advance=10, **kw):
         self.now += advance
-        return intake.scan(self.store, EXT, BIG, lambda p, fid: self.queued.append(Path(p)),
-                           now=self.now)
+        return intake.scan(self.store, EXT, BIG, self.enqueue, now=self.now, **kw)
 
     def settle(self):
         """Two scans: first sees a new file, the second (later) imports it."""
@@ -150,8 +158,98 @@ class IntakeTests(unittest.TestCase):
         self.assertNotIn(b"Client X", raw)
         self.store = Store(self.db)
         self.assertEqual(len(self.store._all("SELECT * FROM intake_content")), 1)
+        self.assertIsNone(self.store._one("SELECT content FROM intake_seen "
+                                          "WHERE content IS NOT NULL"))
         intake.purge(self.store, now=time.time() + (intake.SUPPRESS_DAYS + 1) * 86400)
         self.assertEqual(self.store._all("SELECT * FROM intake_content"), [])
+
+    def test_failed_import_is_not_suppressed(self):
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        self.import_ok = False
+        wav(self.folder / "damaged.wav", seed=30)
+        self.settle()
+        self.assertEqual(len(self.queued), 1)
+        self.assertEqual(self.store._all("SELECT * FROM intake_content"), [])
+        self.settle()
+        self.assertEqual(len(self.queued), 1)                # unchanged: not retried endlessly
+        self.import_ok = True
+        wav(self.folder / "damaged.wav", seconds=2, seed=31) # fixed copy saved over it
+        self.settle()
+        self.assertEqual(len(self.queued), 2)
+
+    def test_imports_queued_at_close_are_found_again(self):
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "queued.wav", seed=32)
+        self.scan()
+        self.now += 10
+        intake.scan(self.store, EXT, BIG, lambda *a: None, now=self.now)  # queued, app closes
+        intake.recover(self.store)                                     # next launch
+        self.settle()
+        self.assertEqual([p.name for p in self.queued], ["queued.wav"])
+
+    def test_partial_read_never_records_a_baseline(self):
+        wav(self.folder / "history.wav", seed=33)
+        intake.add_folder(self.store, str(self.folder))
+        real = intake._walk
+        intake._walk = lambda root, ext, stop=None: ([], False)       # e.g. sync re-initialising
+        try:
+            self.scan()
+        finally:
+            intake._walk = real
+        self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
+        self.settle()
+        self.assertEqual(self.queued, [])                           # history not imported
+
+    def test_partial_read_keeps_rows_for_unseen_files(self):
+        wav(self.folder / "history.wav", seed=34)
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        real = intake._walk
+        intake._walk = lambda root, ext, stop=None: ([], False)
+        try:
+            self.scan()
+        finally:
+            intake._walk = real
+        self.settle()
+        self.assertEqual(self.queued, [])
+
+    @unittest.skipUnless(os.name == "nt", "NTFS file IDs")
+    def test_rename_or_move_of_an_old_file_is_not_new(self):
+        old = wav(self.folder / "old.wav", seed=35)
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        renamed = old.rename(self.folder / "old renamed.wav")
+        self.settle()
+        (self.folder / "sub").mkdir()
+        renamed.rename(self.folder / "sub" / renamed.name)          # moved into a subfolder
+        self.settle()
+        self.assertEqual(self.queued, [])
+
+    def test_unreadable_file_is_retried_when_readable(self):
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "locked.wav", seed=36)
+        self.scan()
+
+        def denied(path):
+            raise PermissionError(13, "Access is denied")
+        self.scan(hasher=denied)
+        self.assertEqual(self.queued, [])
+        self.scan()                                                  # permission fixed
+        self.assertEqual(len(self.queued), 1)
+
+    def test_recently_written_file_waits(self):
+        intake.STABLE_RECENT_S = 3600
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        f = wav(self.folder / "fresh.wav", seed=37)
+        self.settle()
+        self.assertEqual(self.queued, [])                           # written moments ago
+        os.utime(f, (time.time() - 7200,) * 2)
+        self.settle()
+        self.assertEqual(len(self.queued), 1)
 
     def test_unavailable_folder_is_reported_and_rechecked(self):
         fid = intake.add_folder(self.store, str(self.folder))
@@ -177,8 +275,8 @@ class WorkspaceIntakeTests(unittest.TestCase):
             root = Path(tmp)
             folder = root / "Recordings"
             folder.mkdir()
-            saved = (intake.SCAN_INTERVAL_S, intake.STABLE_S)
-            intake.SCAN_INTERVAL_S, intake.STABLE_S = 1, 0
+            saved = (intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S)
+            intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = 1, 0, 0
             ws = app.Workspace(root / "ws", root / "models", start=False, battery=False)
             try:
                 ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
@@ -194,7 +292,7 @@ class WorkspaceIntakeTests(unittest.TestCase):
                 self.assertEqual(m["title"], "Synthetic standup")
                 self.assertEqual(ws.watched_folders()["folders"][0]["imported"], 1)
             finally:
-                intake.SCAN_INTERVAL_S, intake.STABLE_S = saved
+                intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = saved
                 ws.close()
 
 
