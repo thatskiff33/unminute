@@ -100,7 +100,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.run_job(jid, original_roots=[self.root / "elsewhere"]),
                          JobResult.DONE)
         self.assertTrue(original.exists())                         # outside authorised folder
-        self.assertIn("not in a folder", self.job(jid)["error"])
+        self.assertIn("not in a folder", self.last_receipt())
 
         mid, _, original = self.make_meeting(authority=True)
         time.sleep(0.01)
@@ -108,7 +108,7 @@ class CleanupTests(unittest.TestCase):
         jid = cleanup.confirm_transcript_reviewed(self.store, mid)
         self.run_job(jid, original_roots=[self.intake])
         self.assertTrue(original.exists())
-        self.assertIn("changed", self.job(jid)["error"])
+        self.assertIn("changed", self.last_receipt())
 
         mid, _, original = self.make_meeting(authority=True)
         jid = cleanup.confirm_transcript_reviewed(self.store, mid)
@@ -117,6 +117,10 @@ class CleanupTests(unittest.TestCase):
 
     def job(self, jid):
         return self.store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
+
+    def last_receipt(self):
+        return self.store._one("SELECT result FROM receipts ORDER BY completed_at DESC, "
+                               "rowid DESC LIMIT 1")["result"]
 
     def test_copy_or_export_alone_never_deletes(self):
         with self.store.tx() as db:
@@ -148,11 +152,13 @@ class CleanupTests(unittest.TestCase):
         try:
             self.assertEqual(self.run_job(jid), JobResult.FAILED)
             self.assertEqual(self.job(jid)["state"], "failed")
+            self.assertNotIn(str(self.media), self.job(jid)["error"])     # no paths kept
+            self.assertEqual(self.job(jid)["attempts"], 1)
             self.assertIsNone(self.store.meeting(self.mid)["audio_removed_at"])
         finally:
             handle.close()
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.DONE})
-        self.assertEqual(self.job(jid)["attempts"], 2)
+        self.assertIsNone(self.job(jid))            # replaced by a receipt (#18)
 
     def test_intent_survives_a_crash_and_is_retried(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
@@ -174,8 +180,13 @@ class CleanupTests(unittest.TestCase):
         # An audio hold also blocks transcript cleanup (it removes everything left).
         jid2 = cleanup.confirm_final_saved(self.store, self.mid)
         self.assertEqual(self.run_job(jid2), JobResult.HELD)
-        with self.store.tx() as db:
-            db.execute("UPDATE holds SET released_at = ? WHERE id = ?", (time.time(), hid))
+        # Releasing the hold removes nothing by itself (#18): both jobs wait.
+        from workspace import holds
+        self.assertEqual(set(holds.release_hold(self.store, hid)), {jid, jid2})
+        self.assertEqual(cleanup.resume_pending(self.store, self.media), {})
+        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        for j in (jid, jid2):
+            holds.confirm_pending_cleanup(self.store, j)
         results = cleanup.resume_pending(self.store, self.media)
         self.assertEqual(set(results.values()), {JobResult.DONE})
 
