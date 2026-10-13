@@ -178,7 +178,13 @@ def check_host():
 def build(version, out, cache):
     check_host()
     name = f"WhisperWorkspace-{version}"
-    work = Path(tempfile.mkdtemp(prefix="wwbuild-"))
+    # Build in an extended-length path (\\?\): the temp folder plus the
+    # deepest wheel files can pass 260 characters on the build machine, and
+    # Windows APIs then silently skip those files. (Paths inside the package
+    # are still kept to MAX_RELATIVE_PATH for the machines it installs on.)
+    work = Path(tempfile.mkdtemp(prefix="wwbuild-")).resolve()
+    if os.name == "nt":
+        work = Path("\\\\?\\" + str(work))
     folder = work / name
     runtime = folder / "runtime"
     try:
