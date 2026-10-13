@@ -126,6 +126,35 @@ Speaker separation (`workspace/speakers.py`) runs only after every chunk of the 
 - **Stale results are refused.** A run records the meeting's content epoch when it starts. Its result is refused if the epoch has changed (cleanup) or the version is no longer active.
 - **Known count.** A known-count rerun ("3 people spoke") creates a new run. Earlier runs are superseded only when the new one succeeds.
 
+## Cleanup checkpoints (#17)
+
+Cleanup (`workspace/cleanup.py`) follows exactly two explicit confirmations. Copying or exporting never counts as either.
+
+1. **Transcript reviewed.** This needs every chunk committed and no speaker pass running.
+   - The reviewed text is frozen in `reviewed_snapshots` first.
+   - The app's audio folder is then removed.
+   - An intake original is deleted only if all of these hold:
+     - the user gave explicit authority (`sources.delete_original`, #24);
+     - it is inside an authorised folder;
+     - it is a plain local file, not a link, junction, network or device path;
+     - its size, modification time and SHA-256 still match the import.
+2. **Final deliverable reviewed and saved outside the app.**
+   - This removes all transcript working content: segments, edits, edit history, speaker data, attempts, chunks, versions, snapshot, sources, released holds and the meeting row.
+   - It then runs `secure_delete`, a WAL checkpoint (TRUNCATE) and `VACUUM`, so no removed text stays readable in the database files.
+   - Leftover files are removed last.
+   - Transcript cleanup waits until audio cleanup has finished, because it removes the source records that audio cleanup needs.
+
+Each confirmation records a `cleanup_jobs` row before anything is removed, and `resume_pending` retries unfinished jobs at startup.
+
+Before removal:
+
+- the worker is quiesced;
+- the meeting's `content_epoch` is bumped, so late chunk or speaker results are refused.
+
+Holds (#18) are checked before an attempt, again in the transaction that bumps the epoch, and again in the transcript-delete transaction. A hold added while the worker is stopping still wins.
+
+Failure reasons are stored without file paths.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |

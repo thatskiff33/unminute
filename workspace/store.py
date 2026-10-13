@@ -36,7 +36,18 @@ CREATE TABLE IF NOT EXISTS meetings (
     phase         TEXT NOT NULL DEFAULT 'new',
     paused        INTEGER NOT NULL DEFAULT 0,      -- explicit user pause, survives restart
     content_epoch INTEGER NOT NULL DEFAULT 0,      -- bumped by cleanup (#17); drops stale results
-    last_error    TEXT
+    last_error    TEXT,
+    reviewed_at   REAL,      -- explicit "transcript reviewed" confirmation (#17)
+    final_saved_at REAL,     -- explicit "final deliverable reviewed and saved" confirmation
+    audio_removed_at REAL    -- app audio cleaned up; playback/retranscription unavailable
+);
+
+-- The reviewed transcript frozen at confirmation, before any audio is removed.
+CREATE TABLE IF NOT EXISTS reviewed_snapshots (
+    meeting_id TEXT PRIMARY KEY REFERENCES meetings(id),
+    text       TEXT NOT NULL,
+    sha256     TEXT NOT NULL,
+    created_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS sources (
@@ -49,7 +60,8 @@ CREATE TABLE IF NOT EXISTS sources (
     audio_sha256     TEXT NOT NULL,                 -- decoded 16 kHz mono float32
     samples          INTEGER NOT NULL,
     sample_rate      INTEGER NOT NULL,
-    created_at       REAL NOT NULL
+    created_at       REAL NOT NULL,
+    delete_original  INTEGER NOT NULL DEFAULT 0   -- explicit authority to delete the original (#24)
 );
 
 CREATE TABLE IF NOT EXISTS versions (
@@ -202,6 +214,8 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self.db.execute("PRAGMA foreign_keys=ON")
+            # Deleted rows are overwritten, not just unlinked (#17 cleanup).
+            self.db.execute("PRAGMA secure_delete=ON")
             self.db.executescript(SCHEMA)       # outside any transaction; idempotent
             with self.tx() as db:
                 row = db.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
@@ -282,7 +296,9 @@ class Store:
                    original_mtime_ns, audio_sha256, samples, sample_rate):
         sid = new_id()
         with self.tx() as db:
-            db.execute("INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?)",
+            db.execute("INSERT INTO sources (id, meeting_id, original_path, original_sha256, "
+                       "original_size, original_mtime_ns, audio_sha256, samples, sample_rate, "
+                       "created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                        (sid, mid, original_path, original_sha256, original_size,
                         original_mtime_ns, audio_sha256, samples, sample_rate, time.time()))
         return sid
