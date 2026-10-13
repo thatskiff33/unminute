@@ -281,11 +281,19 @@ class WorkerHandle:
             reply[2]
 
 
+DIARIZE_TIMEOUT_FACTOR = 3.0      # x audio length, plus a floor: generous for slow CPUs
+DIARIZE_TIMEOUT_FLOOR_S = 600.0
+
+
 def diarize(handle, model, audio_path, hint, threads):
     """Whole-meeting speaker separation in the worker. Returns
-    (turns, exclusive_turns, device, asr_was_loaded_before)."""
+    (turns, exclusive_turns, device, asr_was_loaded_before). A stop or a hang
+    ends the pass (it restarts from the beginning next time)."""
+    from pathlib import Path
+    seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
+    timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
     with handle._lock:
-        reply = handle._request(("diarize", model, str(audio_path), hint, threads))
+        reply = handle._request(("diarize", model, str(audio_path), hint, threads), timeout)
         handle._loaded = None            # the speech model was released for this
         return reply[1], reply[2], reply[3], reply[4]
 

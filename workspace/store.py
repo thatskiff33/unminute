@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS receipts (
 
 
 OVERLAP_MIN_S = 0.3   # another speaker must talk this long during a segment to count
+SPEAKER_RESTART_NOTE = (
+    "Speaker identification was interrupted. It works on the whole meeting at once, so it "
+    "will start again from the beginning; the transcript is unaffected.")
 
 
 def attribute(start, end, turns, exclusive_turns):
@@ -202,6 +205,9 @@ class Store:
                 # the previous session (this process owns the state, #15).
                 db.execute("UPDATE attempts SET result = 'interrupted' "
                            "WHERE result = 'running'")
+                # Same for a speaker pass cut short: it restarts from the start.
+                db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
+                           "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
         except BaseException:
             self.db.close()          # never leave the file locked on a refused open
             raise

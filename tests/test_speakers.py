@@ -95,6 +95,15 @@ class SpeakerTests(unittest.TestCase):
         self.assertTranscriptUntouched()
         self.assertEqual(self.run_speakers(), SpeakerResult.DONE)
 
+    def test_crashed_pass_is_marked_interrupted_on_reopen(self):
+        self.store.start_speaker_run(self.vid)                 # app dies mid-pass
+        path = self.store.path
+        self.store.close()
+        self.store = Store(path)
+        run = self.store.speaker_runs(self.vid)[-1]
+        self.assertEqual(run["status"], "interrupted")
+        self.assertIn("start again from the beginning", run["error"])
+
     def test_known_count_rerun_changes_only_the_speaker_phase(self):
         self.run_speakers()
         self.assertEqual(self.run_speakers(hint=3), SpeakerResult.DONE)

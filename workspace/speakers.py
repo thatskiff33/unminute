@@ -14,13 +14,12 @@
 
 from pathlib import Path
 
+from workspace.store import SPEAKER_RESTART_NOTE as RESTART_NOTE
 from workspace.store import StoreError
 from workspace.worker import WorkerStopped
 from workspace.worker import diarize as worker_diarize
 
 MAX_HINT = 20
-RESTART_NOTE = ("Speaker identification was interrupted. It works on the whole meeting at "
-                "once, so it will start again from the beginning; the transcript is unaffected.")
 
 
 class SpeakerResult:
@@ -37,6 +36,7 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
         return SpeakerResult.NO_AUDIO       # cleaned up (#17): nothing to analyse
     if store.chunks(vid, status="pending"):
         return SpeakerResult.NOT_TRANSCRIBED
+    handle.begin_run()               # a new run: clears any earlier Stop
     rid = store.start_speaker_run(vid, hint)
     try:
         turns, exclusive, device, _ = worker_diarize(handle, model, audio_path, hint, threads)
@@ -44,7 +44,8 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
         _end(store, rid, "interrupted", RESTART_NOTE)
         return SpeakerResult.STOPPED
     except Exception as exc:
-        _end(store, rid, "failed", f"{type(exc).__name__}: {exc}"[:300])
+        from workspace.worker import safe_message
+        _end(store, rid, "failed", f"{type(exc).__name__}: {safe_message(exc)}"[:300])
         return SpeakerResult.FAILED
     try:
         if not store.finish_speaker_run(rid, turns, exclusive, backend=device):
