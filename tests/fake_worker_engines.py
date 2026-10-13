@@ -29,6 +29,26 @@ def echo(threads):
                                                      f"pid={os.getpid()}")])
 
 
+def _sentences(word):
+    def run(a):
+        out, t, dur = [], 0.5, len(a) / SR
+        while t + 3.0 <= dur:
+            out.append(Segment(t, t + 3.0, f"{word} {t:.1f}", ((t, t + 3.0, " " + word),)))
+            t += 4.0
+        return out
+    return run
+
+
+def sentences(threads):
+    """A 3 s sentence every 4 s, like a steady speaker."""
+    return _Engine(_sentences("sentence"))
+
+
+def sentences_v2(threads):
+    """Same timing, different words: a different model for retranscription."""
+    return _Engine(_sentences("second"))
+
+
 def crash_always(threads):
     def run(a):
         os._exit(3)

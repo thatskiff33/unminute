@@ -122,6 +122,16 @@ CREATE TABLE IF NOT EXISTS edits (
     text       TEXT NOT NULL,
     edited_at  REAL NOT NULL
 );
+-- Undo history for edits (#20): each change records the text it replaced
+-- (NULL = the generated text). Removed with the transcript at cleanup.
+CREATE TABLE IF NOT EXISTS edit_history (
+    id         INTEGER PRIMARY KEY,
+    segment_id INTEGER NOT NULL REFERENCES segments(id),
+    before     TEXT,
+    after      TEXT,
+    at         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS edit_history_by_segment ON edit_history(segment_id);
 
 -- Reserved for later issues (see docs/WORKSPACE_DESIGN.md).
 -- Speaker separation (#16): a whole-meeting pass after transcription. Machine
@@ -497,7 +507,65 @@ class Store:
             "SELECT * FROM segment_speakers WHERE run_id = ?", (run["id"],))}
 
     def save_edit(self, segment_id, text):
+        """Store a human edit on top of the generated text, recording what it
+        replaced so it can be undone. Saving the generated text again removes
+        the edit. Returns False if nothing changed."""
         with self.tx() as db:
+            seg = db.execute("SELECT s.text AS generated, e.text AS edited FROM segments s "
+                             "LEFT JOIN edits e ON e.segment_id = s.id WHERE s.id = ?",
+                             (segment_id,)).fetchone()
+            if seg is None:
+                raise StoreError("That passage no longer exists.")
+            current = seg["edited"]
+            new = None if text == seg["generated"] else text
+            if new == current:
+                return False
+            self._set_edit(db, segment_id, new)
+            db.execute("INSERT INTO edit_history (segment_id, before, after, at) "
+                       "VALUES (?,?,?,?)", (segment_id, current, new, time.time()))
+        return True
+
+    @staticmethod
+    def _set_edit(db, segment_id, text):
+        if text is None:
+            db.execute("DELETE FROM edits WHERE segment_id = ?", (segment_id,))
+        else:
             db.execute("INSERT INTO edits (segment_id, text, edited_at) VALUES (?,?,?) "
                        "ON CONFLICT(segment_id) DO UPDATE SET text = excluded.text, "
                        "edited_at = excluded.edited_at", (segment_id, text, time.time()))
+
+    def undo_edit(self, vid):
+        """Undo the most recent edit in this version. Returns the segment id,
+        or None when there is nothing to undo. Survives restart."""
+        with self.tx() as db:
+            last = db.execute("SELECT h.* FROM edit_history h JOIN segments s "
+                              "ON s.id = h.segment_id WHERE s.version_id = ? "
+                              "ORDER BY h.id DESC LIMIT 1", (vid,)).fetchone()
+            if last is None:
+                return None
+            self._set_edit(db, last["segment_id"], last["before"])
+            db.execute("DELETE FROM edit_history WHERE id = ?", (last["id"],))
+            return last["segment_id"]
+
+    def edit_count(self, vid):
+        return self._one("SELECT COUNT(*) AS n FROM edits e JOIN segments s "
+                         "ON s.id = e.segment_id WHERE s.version_id = ?", (vid,))["n"]
+
+    def can_undo(self, vid):
+        return self._one("SELECT 1 FROM edit_history h JOIN segments s ON s.id = h.segment_id "
+                         "WHERE s.version_id = ? LIMIT 1", (vid,)) is not None
+
+    def search(self, vid, query, limit=500):
+        """Positions (0-based, transcript order) of passages containing query,
+        case-insensitive, in the edited text where there is an edit."""
+        needle = query.casefold()
+        return [i for i, r in enumerate(self.transcript(vid))
+                if needle in r["text"].casefold()][:limit]
+
+    def active_version(self, mid):
+        return self._one("SELECT * FROM versions WHERE meeting_id = ? AND state = 'active'",
+                         (mid,))
+
+    def versions(self, mid):
+        return self._all("SELECT * FROM versions WHERE meeting_id = ? ORDER BY created_at",
+                         (mid,))

@@ -1,0 +1,648 @@
+# workspace/app.py
+# The state-owning workspace controller (#20). One instance per app process.
+#
+# It owns the Store, the media folder and the worker, and runs ONE background
+# processing thread that does, in order of priority:
+#   1. cleanup jobs that are due (#17/#18) - before any new processing;
+#   2. transcription of the oldest unfinished, unpaused meeting (#14/#15);
+#   3. speaker separation for a transcribed meeting (#16).
+# Imports (hash + decode) run on a separate intake thread so a long
+# transcription never blocks adding the next recording.
+#
+# The UI (workspace/api.py) only calls the public methods below. They return
+# plain data and raise WorkspaceError with a message that is safe to show;
+# they never return file paths. Work is found by scanning the database, so a
+# restart resumes exactly where the last session stopped, and explicit
+# pauses stay paused.
+
+import json
+import queue
+import threading
+import time
+from pathlib import Path
+
+import asr_engines
+from workspace import cleanup, holds, media, resources, runner, speakers
+from workspace.chunking import plan_chunks
+from workspace.safe_paths import UnsafePathError, validate_input_file
+from workspace.store import Store, StoreError, default_root
+from workspace.worker import WorkerEngine, WorkerHandle, safe_message
+
+AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
+                    ".ogg", ".aac", ".wma", ".webm", ".avi")
+MAX_IMPORT_BYTES = 8 << 30          # 8 GB: several hours of video
+MAX_CLIP_S = 30.0
+MAX_EDIT_CHARS = 5000
+MAX_TITLE_CHARS = 200
+FAILED_RETRY_S = 60.0               # a failed cleanup is retried at most this often
+RECEIPT_PURGE_S = 3600.0
+SR = 16000
+
+DEFAULT_SETTINGS = {
+    "mode": resources.QUIET,                       # quiet | faster
+    "model": asr_engines.RECOMMENDED_PARAKEET,
+    "speakers": True,                              # separate speakers after transcription
+    "battery_override": False,                     # process automatically on battery
+}
+
+
+class WorkspaceError(ValueError):
+    """A refused request. The message is safe to show in the UI."""
+
+
+def _clean_text(text, limit):
+    if not isinstance(text, str):
+        raise WorkspaceError("Expected text.")
+    text = "".join(ch for ch in text if ch in "\n\t" or ch >= " ").strip()
+    if len(text) > limit:
+        raise WorkspaceError(f"That is too long (limit {limit} characters).")
+    return text
+
+
+class Settings:
+    """Configuration only (no content), kept beside the database."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.values = dict(DEFAULT_SETTINGS)
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+            self.values.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
+        except (OSError, ValueError):
+            pass
+
+    def __getitem__(self, key):
+        return self.values[key]
+
+    def update(self, **changes):
+        for key, value in changes.items():
+            if key not in DEFAULT_SETTINGS:
+                raise WorkspaceError("Unknown setting.")
+            if key == "mode" and value not in (resources.QUIET, resources.FASTER):
+                raise WorkspaceError("Choose Quiet or Faster.")
+            if key == "model" and not (asr_engines.is_parakeet(value)
+                                       or asr_engines.is_whisper(value)
+                                       or str(value).startswith("test:")):
+                raise WorkspaceError("Unknown speech model.")
+            if key in ("speakers", "battery_override") and not isinstance(value, bool):
+                raise WorkspaceError("Expected on or off.")
+            self.values[key] = value
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
+        tmp.replace(self.path)
+
+
+class Workspace:
+    def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
+                 idle_unload_s=None, battery=None, start=True):
+        self.root = Path(root or default_root())
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.media = self.root / "media"
+        self.store = Store(self.root / "workspace.db")
+        self.settings = Settings(self.root / "settings.json")
+        self.speaker_model = speaker_model
+        self._battery = battery           # tests: fixed value instead of asking Windows
+        kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
+        self.handle = WorkerHandle(cache_dir or self.root / "models",
+                                   quiet=self.settings["mode"] == resources.QUIET, **kw)
+        self._wake = threading.Event()
+        self._closing = threading.Event()
+        self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
+        self._status = ""                 # short, content-free status line
+        self._import_errors = []          # recent intake refusals (safe messages)
+        self._imports = queue.Queue()
+        self._last_purge = 0.0
+        self._threads = []
+        if start:
+            self.start()
+
+    # -- lifecycle --------------------------------------------------------------------
+
+    def start(self):
+        for target, name in ((self._process_loop, "workspace-processing"),
+                             (self._intake_loop, "workspace-intake")):
+            t = threading.Thread(target=target, name=name, daemon=True)
+            t.start()
+            self._threads.append(t)
+        self._wake.set()
+
+    def close(self):
+        self._closing.set()
+        self._wake.set()
+        self._imports.put(None)
+        self.handle.close()
+        for t in self._threads:
+            t.join(15)
+        self.store.close()
+
+    def wait_idle(self, timeout=60.0):
+        """Tests and tools: wait until no work is queued or running."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if (self._busy is None and self._imports.unfinished_tasks == 0
+                    and self._next_work() is None):
+                return True
+            time.sleep(0.05)
+        return False
+
+    # -- intake -------------------------------------------------------------------------
+
+    def import_paths(self, paths):
+        """Queue recordings chosen in the file dialog or dropped on the window.
+        Paths come from the operating system, never from page script, and are
+        validated again here. Returns the number accepted."""
+        accepted, refused = 0, []
+        for p in list(paths)[:50]:
+            try:
+                real = validate_input_file(p, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES)
+            except UnsafePathError as exc:
+                refused.append(str(exc))
+                continue
+            self._imports.put(real)
+            accepted += 1
+        if refused:
+            self._import_errors = (self._import_errors + refused)[-5:]
+        return {"accepted": accepted, "refused": refused}
+
+    def _intake_loop(self):
+        while True:
+            path = self._imports.get()
+            try:
+                if path is None or self._closing.is_set():
+                    return
+                self._status = "Importing a recording"
+                self._import_one(path)
+            except Exception as exc:          # a bad file must not stop the intake thread
+                self._import_errors = (self._import_errors + [_import_message(exc)])[-5:]
+            finally:
+                self._imports.task_done()
+                self._status = ""
+                self._wake.set()
+
+    def _import_one(self, path):
+        title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
+        mid, sid = media.import_recording(self.store, self.media, path, title)
+        reader = media.AudioReader(media.audio_path(self.media, mid))
+        try:
+            plan = plan_chunks(reader, len(reader))
+        finally:
+            reader.close()
+        self._new_version(mid, sid, plan)
+
+    def _new_version(self, mid, sid, plan):
+        model = self.settings["model"]
+        spec = asr_engines.MANAGED_MODELS.get(model)
+        return self.store.ensure_version(
+            mid, sid, engine="parakeet" if asr_engines.is_parakeet(model) else "whisper",
+            model=model, model_revision=spec.revision if spec else "test",
+            precision="int8", config={"chunking": "v1"}, chunk_plan=plan)
+
+    # -- processing thread ------------------------------------------------------------
+
+    def _next_work(self):
+        """The next job, in priority order, or None. Pure database scan."""
+        now = time.time()
+        job = self.store._one(
+            "SELECT id, meeting_id FROM cleanup_jobs WHERE state = 'pending' OR "
+            "(state = 'failed' AND COALESCE(last_attempt_at, 0) <= ?) "
+            "ORDER BY intent_at LIMIT 1", (now - FAILED_RETRY_S,))
+        if job is not None and not cleanup.is_held(self.store, job["meeting_id"],
+                                                   self._job_phase(job["id"])):
+            if not self._waiting_on_audio(job["id"]):
+                return ("cleanup", job["meeting_id"], job["id"])
+        for m in self.store._all("SELECT * FROM meetings WHERE paused = 0 AND phase != 'error' "
+                                 "AND reviewed_at IS NULL AND audio_removed_at IS NULL "
+                                 "ORDER BY created_at"):
+            v = self.store.active_version(m["id"])
+            if v is None:
+                continue
+            if self.store.chunks(v["id"], status="pending"):
+                return ("transcribe", m["id"], v["id"])
+            # Speakers once per version; an interrupted pass restarts (it cannot
+            # resume), a failed one waits for the user's explicit rerun.
+            if self.settings["speakers"] and not any(
+                    r["status"] in ("done", "failed", "running")
+                    for r in self.store.speaker_runs(v["id"])):
+                return ("speakers", m["id"], v["id"])
+        return None
+
+    def _job_phase(self, jid):
+        row = self.store._one("SELECT phase FROM cleanup_jobs WHERE id = ?", (jid,))
+        return row["phase"] if row else cleanup.AUDIO
+
+    def _waiting_on_audio(self, jid):
+        job = self.store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
+        return job is not None and job["phase"] == cleanup.TRANSCRIPT and self.store._one(
+            "SELECT 1 FROM cleanup_jobs WHERE meeting_id = ? AND phase = ? AND state != 'done'",
+            (job["meeting_id"], cleanup.AUDIO)) is not None
+
+    def _process_loop(self):
+        while not self._closing.is_set():
+            self._wake.wait(timeout=30)
+            self._wake.clear()
+            while not self._closing.is_set():
+                try:
+                    self._maybe_purge()
+                    work = self._next_work()
+                except StoreError:
+                    work = None
+                if work is None:
+                    self._status = ""
+                    break
+                kind, mid, ref = work
+                if kind != "cleanup" and not resources.may_start_automatic_work(
+                        self.settings["battery_override"], battery=self._battery):
+                    self._status = "Waiting: the computer is on battery power"
+                    break
+                self._busy = (mid, kind)
+                try:
+                    self._run(kind, mid, ref)
+                except Exception as exc:       # never let one meeting stop the loop
+                    try:
+                        self.store.set_phase(mid, "error",
+                                             f"Unexpected problem: {safe_message(exc)}"[:300])
+                    except StoreError:
+                        pass
+                finally:
+                    self._busy = None
+
+    def _maybe_purge(self):
+        if time.time() - self._last_purge > RECEIPT_PURGE_S:
+            holds.purge_expired_receipts(self.store)
+            self._last_purge = time.time()
+
+    def _run(self, kind, mid, ref):
+        if kind == "cleanup":
+            self._status = "Cleaning up"
+            cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown)
+            return
+        threads = resources.worker_threads(self.settings["mode"])
+        self.handle.quiet = self.settings["mode"] == resources.QUIET
+        if kind == "transcribe":
+            self._status = "Transcribing"
+            reader = media.AudioReader(media.audio_path(self.media, mid))
+            try:
+                engine = WorkerEngine(self.handle, self.store.version(ref)["model"], threads)
+                result = runner.run_version(self.store, mid, ref, reader, engine)
+            finally:
+                reader.close()               # release the handle before any cleanup
+            if result == runner.RunResult.STOPPED and not self._closing.is_set():
+                self.store.set_paused(mid, True)    # Stop now = paused until resumed
+            return
+        self._status = "Identifying speakers"
+        speakers.run_speakers(self.store, mid, ref, self.handle,
+                              media.audio_path(self.media, mid), threads=threads,
+                              model=self.speaker_model)
+
+    # -- controls -------------------------------------------------------------------------
+
+    def _meeting(self, mid):
+        if not isinstance(mid, str) or len(mid) != 32:
+            raise WorkspaceError("Meeting not found.")
+        m = self.store.meeting(mid)
+        if m is None:
+            raise WorkspaceError("Meeting not found.")
+        return m
+
+    def pause(self, mid):
+        """Acknowledged at once; takes effect at the next safe point."""
+        self._meeting(mid)
+        self.store.set_paused(mid, True)
+
+    def stop_now(self, mid):
+        """Stop immediately: the part in progress is discarded (never committed)."""
+        self._meeting(mid)
+        self.store.set_paused(mid, True)
+        if self._busy and self._busy[0] == mid:
+            self.handle.stop_now()
+
+    def resume(self, mid):
+        m = self._meeting(mid)
+        v = self.store.active_version(mid)
+        if m["phase"] == "error" and v is not None:
+            self.store.reset_failures(v["id"])          # the user's explicit "Try again"
+            self.store.set_phase(mid, "transcribing")
+        self.store.set_paused(mid, False)
+        self._wake.set()
+
+    def rename(self, mid, title):
+        self._meeting(mid)
+        title = _clean_text(title, MAX_TITLE_CHARS) or "Untitled meeting"
+        with self.store.tx() as db:
+            db.execute("UPDATE meetings SET title = ? WHERE id = ?", (title, mid))
+
+    def rerun_speakers(self, mid, count=None):
+        m = self._meeting(mid)
+        if not self._audio_available(m):
+            raise WorkspaceError("The audio has been removed, so speakers cannot be "
+                                 "identified again.")
+        v = self.store.active_version(mid)
+        if v is None or self.store.chunks(v["id"], status="pending"):
+            raise WorkspaceError("Finish transcription first.")
+        if count is not None and (isinstance(count, bool) or not isinstance(count, int)
+                                  or not 1 <= count <= speakers.MAX_HINT):
+            raise WorkspaceError(f"Enter a number of people from 1 to {speakers.MAX_HINT}.")
+        threading.Thread(target=self._speakers_now, args=(mid, v["id"], count),
+                         daemon=True).start()
+
+    def _speakers_now(self, mid, vid, count):
+        # Runs on its own thread but waits for the processing thread to be free.
+        while self._busy is not None and not self._closing.is_set():
+            time.sleep(0.2)
+        if self._closing.is_set():
+            return
+        self._busy = (mid, "speakers")
+        try:
+            speakers.run_speakers(self.store, mid, vid, self.handle,
+                                  media.audio_path(self.media, mid),
+                                  threads=resources.worker_threads(self.settings["mode"]),
+                                  hint=count, model=self.speaker_model)
+        finally:
+            self._busy = None
+
+    def retranscribe(self, mid):
+        """Transcribe again with the current model. The previous version and
+        its edits are kept (superseded), never overwritten."""
+        m = self._meeting(mid)
+        if not self._audio_available(m):
+            raise WorkspaceError("The audio has been removed, so the meeting cannot be "
+                                 "transcribed again.")
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed; it cannot be replaced.")
+        if self._busy and self._busy[0] == mid:
+            raise WorkspaceError("Pause this meeting first.")
+        v = self.store.active_version(mid)
+        source = self.store._one("SELECT id FROM sources WHERE meeting_id = ? "
+                                 "ORDER BY created_at DESC LIMIT 1", (mid,))
+        reader = media.AudioReader(media.audio_path(self.media, mid))
+        try:
+            plan = plan_chunks(reader, len(reader))
+        finally:
+            reader.close()
+        new = self._new_version(mid, source["id"], plan)
+        if v is not None and new == v["id"]:
+            raise WorkspaceError("It is already transcribed with this model and settings. "
+                                 "Change the model in Settings first.")
+        self.store.set_phase(mid, "transcribing")
+        self._wake.set()
+
+    # -- review -------------------------------------------------------------------------
+
+    def _audio_available(self, m):
+        return m["audio_removed_at"] is None and media.audio_path(self.media, m["id"]).is_file()
+
+    def transcript(self, mid, start=0, count=500):
+        self._meeting(mid)
+        v = self.store.active_version(mid)
+        if v is None:
+            return {"total": 0, "start": 0, "items": []}
+        rows = self.store.transcript(v["id"])
+        labels = self.store.current_speakers(v["id"])
+        names = self._speaker_names(rows, labels)
+        page = rows[start:start + count]
+        return {"total": len(rows), "start": start, "items": [
+            {"id": r["id"], "t": r["start_s"], "end": r["end_s"], "text": r["text"],
+             "edited": bool(r["edited"]), "who": names.get(labels.get(r["id"], (None,))[0]),
+             "overlap": bool(labels.get(r["id"], (None, False))[1])} for r in page]}
+
+    @staticmethod
+    def _speaker_names(rows, labels):
+        """Machine labels as "Speaker 1", "Speaker 2"... in order of first
+        appearance. Naming speakers is #21."""
+        names = {}
+        for r in rows:
+            lbl = labels.get(r["id"], (None,))[0]
+            if lbl and lbl not in names:
+                names[lbl] = f"Speaker {len(names) + 1}"
+        return names
+
+    def search(self, mid, query):
+        self._meeting(mid)
+        query = _clean_text(query, 200)
+        v = self.store.active_version(mid)
+        if not query or v is None:
+            return []
+        return self.store.search(v["id"], query)
+
+    def edit(self, mid, segment_id, text):
+        """Autosaved edit of one passage, kept separate from the generated text."""
+        m = self._meeting(mid)
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed, so it can no longer be "
+                                 "edited.")
+        v = self.store.active_version(mid)
+        if (v is None or isinstance(segment_id, bool) or not isinstance(segment_id, int)
+                or self.store._one("SELECT 1 FROM segments WHERE id = ? AND version_id = ?",
+                                   (segment_id, v["id"])) is None):
+            raise WorkspaceError("That passage is not in the current transcript.")
+        self.store.save_edit(segment_id, _clean_text(text, MAX_EDIT_CHARS))
+        return self._segment(segment_id)
+
+    def undo(self, mid):
+        m = self._meeting(mid)
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed, so it can no longer be "
+                                 "edited.")
+        v = self.store.active_version(mid)
+        sid = self.store.undo_edit(v["id"]) if v else None
+        return self._segment(sid) if sid else None
+
+    def _segment(self, sid):
+        r = self.store._one("SELECT s.id, COALESCE(e.text, s.text) AS text, "
+                            "e.text IS NOT NULL AS edited FROM segments s LEFT JOIN edits e "
+                            "ON e.segment_id = s.id WHERE s.id = ?", (sid,))
+        return {"id": r["id"], "text": r["text"], "edited": bool(r["edited"])}
+
+    def clip(self, mid, start, end):
+        """A bounded piece of the meeting audio as 16-bit WAV bytes."""
+        m = self._meeting(mid)
+        if not self._audio_available(m):
+            raise WorkspaceError("The audio has been removed after review, so playback is no "
+                                 "longer available.")
+        for value in (start, end):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0 \
+                    or value != value:
+                raise WorkspaceError("Expected a time in seconds.")
+        if end <= start or end - start > MAX_CLIP_S:
+            raise WorkspaceError(f"Clips are limited to {MAX_CLIP_S:.0f} seconds.")
+        reader = media.AudioReader(media.audio_path(self.media, mid))
+        try:
+            samples = reader.read(int(start * SR), int(end * SR))
+        finally:
+            reader.close()               # never keep the audio open (cleanup, #17)
+        if not len(samples):
+            raise WorkspaceError("That time is after the end of the recording.")
+        return samples
+
+    # -- lists and details --------------------------------------------------------------
+
+    def meetings(self):
+        out = []
+        for row in holds.unfinished_work(self.store):
+            m = self.store.meeting(row["id"])
+            v = self.store.active_version(row["id"])
+            done, total = self.store.progress(v["id"]) if v else (0, 0)
+            busy = self._busy and self._busy[0] == row["id"] and self._busy[1]
+            stage = self._stage(m, v)
+            out.append({**row, "progress": round(100 * done / total) if total else 0,
+                        "paused": bool(m["paused"]), "error": m["last_error"]
+                        if m["phase"] == "error" else None,
+                        "busy": busy or None, "stage": stage,
+                        "action": self._action(m, stage)})
+        return out
+
+    @staticmethod
+    def _action(m, stage):
+        if stage == "inbox":
+            return ("Needs attention" if m["phase"] == "error" else
+                    "Paused" if m["paused"] else "Transcribing")
+        return {"review": "Review the transcript",
+                "handoff": "Hand off, then confirm the final document is saved",
+                "cleanup": "Cleanup pending"}[stage]
+
+    def _stage(self, m, v):
+        """inbox: still being processed; review / handoff / cleanup: active meetings."""
+        if m["final_saved_at"]:
+            return "cleanup"
+        if m["reviewed_at"]:
+            return "handoff"
+        if v is None or self.store.chunks(v["id"], status="pending") or m["phase"] == "error":
+            return "inbox"
+        return "review"
+
+    def detail(self, mid):
+        m = self._meeting(mid)
+        v = self.store.active_version(mid)
+        runs = self.store.speaker_runs(v["id"]) if v else []
+        older = [x for x in self.store.versions(mid) if v is None or x["id"] != v["id"]]
+        due = {h["id"] for h in holds.due_for_review(self.store)}
+        done, total = self.store.progress(v["id"]) if v else (0, 0)
+        return {
+            "id": mid, "title": m["title"], "created_at": m["created_at"],
+            "stage": self._stage(m, v), "paused": bool(m["paused"]),
+            "error": m["last_error"] if m["phase"] == "error" else None,
+            "busy": (self._busy[1] if self._busy and self._busy[0] == mid else None),
+            "progress": round(100 * done / total) if total else 0,
+            "audio_available": self._audio_available(m),
+            "audio_removed_at": m["audio_removed_at"],
+            "reviewed_at": m["reviewed_at"], "final_saved_at": m["final_saved_at"],
+            "model": v["model"] if v else None,
+            "edits": self.store.edit_count(v["id"]) if v else 0,
+            "can_undo": bool(v) and not m["reviewed_at"] and self.store.can_undo(v["id"]),
+            "older_versions": [{"model": x["model"], "edits": self.store.edit_count(x["id"])}
+                               for x in older],
+            "speakers": ({"status": runs[-1]["status"], "error": runs[-1]["error"],
+                          "count": runs[-1]["hint_count"]} if runs else None),
+            "holds": [{"id": h["id"], "scope": h["scope"], "reason": h["reason"],
+                       "created_at": h["created_at"], "due_review": h["id"] in due}
+                      for h in holds.active_holds(self.store, mid)],
+            "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
+                         "note": j["error"]} for j in self.store._all(
+                "SELECT * FROM cleanup_jobs WHERE meeting_id = ? ORDER BY intent_at", (mid,))],
+            "limits": cleanup.LIMITS,
+        }
+
+    def reminders(self):
+        """Shown while the app is open: holds due for review and cleanup that
+        waits for a confirmation. Nothing is scheduled outside the app."""
+        titles = {m["id"]: m["title"] for m in self.store._all("SELECT id, title FROM meetings")}
+        return {
+            "holds_due": [{"id": h["id"], "meeting": h["meeting_id"],
+                           "title": titles.get(h["meeting_id"], ""), "reason": h["reason"]}
+                          for h in holds.due_for_review(self.store)],
+            "awaiting_confirmation": [{"id": j["id"], "meeting": j["meeting_id"],
+                                       "title": titles.get(j["meeting_id"], ""),
+                                       "phase": j["phase"]}
+                                      for j in holds.awaiting_confirmation(self.store)],
+        }
+
+    def status(self):
+        return {"busy": self._busy[1] if self._busy else None, "message": self._status,
+                "import_errors": list(self._import_errors),
+                "importing": self._imports.unfinished_tasks}
+
+    def clear_import_errors(self):
+        self._import_errors = []
+
+    def receipts(self):
+        return [{"id": r["job_id"], "requested_at": r["created_at"],
+                 "completed_at": r["completed_at"], "result": r["result"]}
+                for r in holds.receipts(self.store)]
+
+    def get_settings(self):
+        choices = [{"name": n, "label": n + (" (recommended)" if n ==
+                                               asr_engines.RECOMMENDED_PARAKEET else "")}
+                   for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
+        return {**self.settings.values, "choices": choices}
+
+    def set_settings(self, changes):
+        if not isinstance(changes, dict):
+            raise WorkspaceError("Expected settings.")
+        quiet_before = self.handle.quiet
+        self.settings.update(**changes)
+        self.handle.quiet = self.settings["mode"] == resources.QUIET
+        if self.handle.quiet != quiet_before and self._busy is None:
+            self.handle.shutdown()        # the next worker starts with the new priority
+        self._wake.set()
+        return self.get_settings()
+
+    # -- holds and cleanup --------------------------------------------------------------
+
+    def add_hold(self, mid, scope, reason):
+        self._meeting(mid)
+        try:
+            return holds.add_hold(self.store, mid, scope, _clean_text(reason, 500))
+        except holds.HoldError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def release_hold(self, hold_id):
+        return holds.release_hold(self.store, _hold_id(hold_id))
+
+    def keep_hold(self, hold_id):
+        holds.mark_reviewed(self.store, _hold_id(hold_id))
+
+    def confirm_reviewed(self, mid):
+        self._meeting(mid)
+        if self._busy and self._busy[0] == mid:
+            raise WorkspaceError("Wait until processing of this meeting has finished.")
+        try:
+            jid = cleanup.confirm_transcript_reviewed(self.store, mid)
+        except cleanup.CleanupError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        self._wake.set()
+        return jid
+
+    def confirm_final_saved(self, mid):
+        self._meeting(mid)
+        try:
+            jid = cleanup.confirm_final_saved(self.store, mid)
+        except cleanup.CleanupError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        self._wake.set()
+        return jid
+
+    def confirm_cleanup(self, job_id):
+        """Explicit confirmation for cleanup that waited on a released hold."""
+        holds.confirm_pending_cleanup(self.store, _hold_id(job_id))
+        self._wake.set()
+
+    def retry_cleanup(self, job_id):
+        """The user's "Try again" for a failed cleanup: run it on the next pass."""
+        with self.store.tx() as db:
+            db.execute("UPDATE cleanup_jobs SET last_attempt_at = NULL WHERE id = ? AND "
+                       "state = 'failed'", (_hold_id(job_id),))
+        self._wake.set()
+
+
+def _hold_id(value):
+    if not isinstance(value, str) or len(value) != 32 or not value.isalnum():
+        raise WorkspaceError("Not found.")
+    return value
+
+
+def _import_message(exc):
+    if isinstance(exc, (media.SourceChanged, UnsafePathError, WorkspaceError)):
+        return str(exc)
+    if isinstance(exc, ValueError) and "no audio" in str(exc):
+        return "That file contains no audio."
+    return "That recording could not be imported (unsupported or damaged file)."

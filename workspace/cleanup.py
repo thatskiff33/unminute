@@ -290,6 +290,8 @@ def _remove_transcript(store, mid, media_root):
                 db.execute("DELETE FROM segment_speakers WHERE run_id = ?", (rid,))
                 db.execute("DELETE FROM speaker_turns WHERE run_id = ?", (rid,))
             db.execute("DELETE FROM speaker_runs WHERE version_id = ?", (vid,))
+            db.execute("DELETE FROM edit_history WHERE segment_id IN "
+                       "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
             db.execute("DELETE FROM edits WHERE segment_id IN "
                        "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
             db.execute("DELETE FROM segments WHERE version_id = ?", (vid,))

@@ -216,7 +216,8 @@ def main():
     report["pywebview"] = webview.__version__ if hasattr(webview, "__version__") else "?"
     report["hardened"] = harden
     bridge = make_bridge(audio, synthetic_paragraphs())
-    window = shell.create_window(bridge, title="Workspace trial (synthetic data)", harden=harden)
+    window = shell.create_window(bridge, title="Workspace trial (synthetic data)", harden=harden,
+                                 page="trial.html")
     t0 = time.perf_counter()
     shell.run(run_checks, (window, report, round(len(audio) / 16000, 2)))
     report["total_s"] = round(time.perf_counter() - t0, 1)
