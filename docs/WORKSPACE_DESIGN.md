@@ -115,6 +115,17 @@ Recovery:
 
 Battery: automatic processing waits while Windows reports battery power, unless the user overrides it (`resources.may_start_automatic_work`). Work the user starts explicitly is not blocked.
 
+## Speakers after transcription (#16)
+
+Speaker separation (`workspace/speakers.py`) runs only after every chunk of the active version is committed. It is one whole-meeting pyannote pass in the worker. The worker releases the speech model first, so only one heavy model is loaded at a time.
+
+- **Text is never touched.** A pass writes `speaker_runs`, `speaker_turns` and `segment_speakers` only. If it fails, the transcript stays usable without labels, and a failed rerun keeps the previous good labels.
+- **Two kinds of turns.** Full turns (`exclusive = 0`) keep overlapped speech as evidence. Exclusive turns (`exclusive = 1`) give each passage its main speaker.
+- **Overlap flag.** A passage is flagged as overlap when two different people talk at the same time within it for at least 0.3 s. A handover from one speaker to the next is not overlap.
+- **Interrupted passes restart.** A pass cannot resume. A stopped, hung (timeout: 3x the audio length, at least 10 minutes) or crashed pass is recorded as `interrupted`, with a note that it starts again from the beginning.
+- **Stale results are refused.** A run records the meeting's content epoch when it starts. Its result is refused if the epoch has changed (cleanup) or the version is no longer active.
+- **Known count.** A known-count rerun ("3 people spoke") creates a new run. Earlier runs are superseded only when the new one succeeds.
+
 ## Lifecycle tables reserved for later issues
 
 | Issue | Tables |
