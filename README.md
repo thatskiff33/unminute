@@ -31,7 +31,9 @@ Rename the detected speakers once a file has finished. The first line each perso
 ## How it works
 
 - Parakeet models are NVIDIA's parakeet-tdt-0.6b, run as INT8 ONNX exports through [onnx-asr](https://github.com/istupakov/onnx-asr) and ONNX Runtime. Silero voice-activity detection splits recordings into speech pieces of at most 20 seconds, which avoids the export's hard failure on very long single inputs, and each piece is split into sentences using token timings.
-- Parakeet model files are pinned to an exact Hugging Face revision and SHA-256 checksums. A model only counts as installed when every expected file is present at the right size, and it is fully checksummed before first use. A damaged copy is moved aside as `<folder>.invalid-<date>` for diagnosis, never deleted, and replaced with a verified download.
+- Every speech model's files are pinned to SHA-256 checksums. A model only counts as installed when every expected file is present at the right size (and, for Whisper, `preprocessor_config.json` asks for the right number of mel bands); it is fully checksummed before first use. A folder merely existing is never taken as proof.
+- Damaged models are never deleted. A damaged Parakeet copy is moved aside as `<folder>.invalid-<date>`. A damaged Whisper copy in the Hugging Face cache is left untouched, and a verified copy is downloaded beside it into `whisper-models\whisper`.
+- After a Whisper model loads, the app checks that its audio preprocessing produces the number of mel bands the model expects (128 for large-v3 and turbo) before transcribing or identifying speakers. A mismatch stops with a repair instruction instead of failing part-way.
 - Whisper models use [faster-whisper](https://github.com/SYSTRAN/faster-whisper), a CTranslate2 port of OpenAI Whisper. All models run in int8 on the CPU, and a couple of cores are left free so the laptop stays usable while a long job runs.
 - Speaker identification uses the [pyannote.audio](https://github.com/pyannote/pyannote-audio) speaker-diarization-community-1 pipeline. Each transcript segment is assigned to the speaker whose turn overlaps it most.
 - Audio is decoded in memory with PyAV, which ships inside the faster-whisper wheel. That is why FFmpeg is not required.
@@ -69,7 +71,7 @@ The installer walks through eight steps and prints what it is doing at each one:
 3. Virtual environment. Creates `%LOCALAPPDATA%\whisper\.venv`.
 4. Packages. Installs the pinned dependency set from `requirements.txt`, wheels only, about 1.2 GB.
 5. Hugging Face token. Optional, only needed for speaker identification. See the next section.
-6. Speech models. Asks whether you want Parakeet (English, about 0.7 GB, recommended), Standard (Whisper large-v3-turbo, about 1.6 GB) or Full (turbo plus large-v3, about 4.6 GB). Every run (unless `-SkipModels` is used) also checks any Parakeet model already installed and repairs it if its files do not match their checksums.
+6. Speech models. Asks whether you want Parakeet (English, about 0.7 GB, recommended), Standard (Whisper large-v3-turbo, about 1.6 GB) or Full (turbo plus large-v3, about 4.6 GB). Every run (unless `-SkipModels` is used) also checks every speech model already installed and repairs any whose files do not match their checksums.
 7. Start Menu shortcut. Adds Whisper Transcriber to the Start Menu with the app icon.
 8. Self-check. Imports every component to confirm the install works.
 
@@ -77,7 +79,7 @@ A completed run looks like this (this example skipped the token and shortcut ste
 
 ![Installer output](docs/screenshots/installer.png)
 
-The installer is idempotent. Run it again at any time to repair packages or add the larger model. It skips Whisper models that are already in place, and re-verifies Parakeet models against their checksums.
+The installer is idempotent. Run it again at any time to repair packages or add the larger model. It re-verifies every installed speech model against its checksums and preprocessing settings, so Update / repair fixes a damaged model rather than skipping it because its folder exists. Checking large models takes a minute.
 
 ### 3. Launch
 
@@ -126,7 +128,7 @@ Rough guide from our own use: a one-hour recording takes about 15 to 30 minutes 
 
 Parakeet test figures (13 October 2026, Intel Core Ultra 7 255H, 32 GB RAM, synthetic speech, so treat these as indicative only): a 15-minute recording transcribed in about 4 minutes with peak memory of 1.2 GB. On the same 51-second two-speaker clip, Parakeet took 12 seconds to transcribe and turbo 56 seconds. Parakeet sometimes writes numbers as words ("fifty seven") rather than digits, which matters if you search transcripts.
 
-If you select a model that is not installed yet, the app offers to download it rather than failing. If an installed Parakeet model is damaged, its label says "needs repair" and Start queue offers to replace it.
+If you select a model that is not installed yet, the app offers to download it rather than failing. If an installed model is damaged, its label says "needs repair" and Start queue offers to replace it.
 
 ## Using the app
 
@@ -207,7 +209,8 @@ Delete these and you are back to a clean machine:
 - Speakers option is greyed out. The token step was skipped or the gated model terms are not accepted yet. Re-run `install.cmd` and follow the token step.
 - Install fails downloading packages. Usually network or VPN. Re-run `install.cmd`, it resumes where it left off.
 - Model not installed dialog on Start queue. You picked a model that was not part of your install choice. Say yes to download it once, or pick an installed model.
-- A Parakeet model says "needs repair". One or more of its files is missing or the wrong size. Say yes when Start queue offers a fresh copy, or click Update / repair. The damaged copy is kept in `%LOCALAPPDATA%\whisper-models\parakeet` with `.invalid-` and a date in its folder name; delete it once you no longer need it for diagnosis.
+- A model says "needs repair". One or more of its files is missing, the wrong size, or (for Whisper) its preprocessing settings are missing or wrong. Say yes when Start queue offers a fresh copy, or click Update / repair. Damaged copies are kept for diagnosis: a damaged Hugging Face cache copy stays in its original `models--...` folder, and a damaged copy the app installed itself is renamed with `.invalid-` and a date (under `whisper-models\parakeet` or `whisper-models\whisper`). Delete them once you no longer need them.
+- "Invalid input features shape: expected (1, 128, 3000), got (1, 80, 3000)". Earlier versions showed this when a Whisper model's `preprocessor_config.json` was missing, malformed or lacked `feature_size`, which made faster-whisper fall back to 80 mel bands. This version detects the problem before transcribing; update the app, then run Update / repair.
 - App feels slow or fans are loud. Normal while transcribing. It leaves a couple of cores free so you can keep working. Pause if you need full speed elsewhere.
 - Window opens off-screen after undocking. The app checks the saved position is on a live monitor and drops it if not. If you still cannot see it, delete `ui-settings.json`.
 - Antivirus or Intune warnings. The app is plain Python running locally. Nothing needs admin. Point IT at this README.
@@ -258,7 +261,7 @@ The repository contains only this project's own code. No model weights or third-
 | Component | Licence | Notes |
 | --- | --- | --- |
 | OpenAI Whisper (model architecture and original weights) | MIT | |
-| mobiuslabsgmbh/faster-whisper-large-v3-turbo | MIT | CTranslate2 conversion of openai/whisper-large-v3-turbo |
+| dropbox-dash/faster-whisper-large-v3-turbo (formerly mobiuslabsgmbh) | MIT | CTranslate2 conversion of openai/whisper-large-v3-turbo |
 | Systran/faster-whisper-large-v3 | MIT | CTranslate2 conversion of openai/whisper-large-v3 |
 | faster-whisper, CTranslate2 | MIT | |
 | pyannote.audio (library) | MIT | Copyright CNRS |

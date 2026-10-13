@@ -661,12 +661,13 @@ class App:
             messagebox.showerror("Update / repair",
                                  f"Installer not found:\n{installer}")
             return
-        # Keep whatever model set is already installed; don't pull large-v3 onto
-        # a machine that only has turbo, or Whisper onto a Parakeet-only one.
-        # The installer always verifies (and repairs) Parakeet models on disk.
-        if core.model_downloaded("large-v3"):
+        # Keep whatever model set is already installed (even if damaged, so it
+        # gets repaired); don't pull large-v3 onto a machine that only has
+        # turbo, or Whisper onto a Parakeet-only one. The installer verifies and
+        # repairs every model on disk regardless.
+        if core.model_present("large-v3"):
             models = "full"
-        elif core.model_downloaded("large-v3-turbo"):
+        elif core.model_present("large-v3-turbo"):
             models = "turbo"
         else:
             models = "parakeet"
@@ -675,7 +676,7 @@ class App:
                 "This re-runs setup in a separate window to:\n"
                 "  - reinstall the Python packages at their tested versions\n"
                 "  - download any speech models that are missing\n"
-                "  - check Parakeet model files and replace damaged ones\n\n"
+                "  - check every installed speech model and replace damaged ones\n\n"
                 "It needs the internet for this step only. Your audio and "
                 "transcripts never leave the machine, and normal transcription "
                 "stays fully offline.\n\n"
