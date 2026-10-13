@@ -99,12 +99,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Analyse install.ps1
+      - name: Analyse install.ps1 and the package installer scripts
         shell: pwsh
         run: |
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -Confirm:$false
-          $findings = Invoke-ScriptAnalyzer -Path install.ps1 -Severity Warning, Error `
-            -ExcludeRule PSAvoidUsingWriteHost, PSAvoidUsingEmptyCatchBlock, PSUseShouldProcessForStateChangingFunctions
+          $findings = @("install.ps1", "packaging/install.ps1", "packaging/uninstall.ps1") |
+            ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error `
+            -ExcludeRule PSAvoidUsingWriteHost, PSAvoidUsingEmptyCatchBlock, PSUseShouldProcessForStateChangingFunctions }
           $findings | Format-Table Severity, RuleName, Line, Message -AutoSize -Wrap
           if (@($findings).Count -gt 0) { exit 1 }
-          "install.ps1: no findings"
+          "installer scripts: no findings"
