@@ -127,6 +127,52 @@ class WorkerTests(unittest.TestCase):
         self.assertIn("failed verification", str(ctx.exception))
         self.assertNotIn("Traceback", str(ctx.exception))
 
+    def test_failed_model_switch_recovers(self):
+        from workspace.worker import EngineUnavailable
+        self.h.load(fake("echo"), 1)
+        with self.assertRaises(EngineUnavailable):
+            self.h.load(fake("load_fails"), 1)
+        self.h.load(fake("echo"), 1)                       # back to a working model
+        self.assertTrue(self.h.transcribe(np.zeros(10, np.float32))[0])
+
+    def test_stop_between_requests_is_not_lost(self):
+        self.h.load(fake("echo"), 1)
+        self.h.stop_now()                                   # nothing in flight
+        with self.assertRaises(WorkerStopped):
+            self.h.transcribe(np.zeros(10, np.float32))
+        with self.assertRaises(WorkerStopped):
+            self.h.load(fake("echo"), 1)
+        self.h.begin_run()                                  # the next run
+        self.h.load(fake("echo"), 1)
+        self.assertTrue(self.h.transcribe(np.zeros(10, np.float32))[0])
+
+    def test_hung_worker_is_detected(self):
+        self.h.load(fake("sleepy"), 1)
+        t = time.monotonic()
+        with self.assertRaises(WorkerCrashed):
+            self.h.transcribe(np.zeros(10, np.float32), timeout=1.0)
+        self.assertLess(time.monotonic() - t, 6)
+
+    def test_reloads_by_itself_after_an_idle_unload(self):
+        h = WorkerHandle(self.tmp.name, idle_unload_s=0.5)
+        try:
+            h.load(fake("echo"), 2)
+            time.sleep(2.0)
+            self.assertIsNone(h.pid)
+            segs, _ = h.transcribe(np.zeros(10, np.float32))   # no explicit load
+            self.assertIn("threads=2", segs[0].text)
+        finally:
+            h.close()
+
+    def test_error_text_has_no_paths(self):
+        from workspace.worker import safe_message
+        msg = safe_message(RuntimeError(r"cannot open C:\Users\Jordan Smith\models\x.onnx: "
+                                        r"and \\server\share\y and /home/jo/z"))
+        self.assertNotIn("Users", msg)
+        self.assertNotIn("server", msg)
+        self.assertNotIn("/home", msg)
+        self.assertIn("<path>", msg)
+
     def test_worker_cannot_reach_the_network(self):
         self.h.load(fake("network"), 1)
         text = self.h.transcribe(np.zeros(10, np.float32))[0][0].text
@@ -171,6 +217,31 @@ class RunnerWithWorkerTests(unittest.TestCase):
         self.assertEqual(self.store.chunks(vid)[0]["failures"], runner.MAX_ATTEMPTS)
         self.assertIn("failed 3 times", self.store.meeting(mid)["last_error"])
         self.assertEqual(self.store.chunks(vid, status="done"), [])
+
+    def test_unavailable_model_does_not_count_against_the_chunk(self):
+        mid, vid, reader = self.meeting()
+        for _ in range(4):
+            eng = WorkerEngine(self.h, fake("load_fails"), 1)
+            self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
+                             runner.RunResult.FAILED)
+        self.assertEqual(self.store.chunks(vid)[0]["failures"], 0)
+        self.assertEqual({a["result"] for a in self.store.attempts(vid, 0)}, {"unavailable"})
+        self.assertIn("not ready", self.store.meeting(mid)["last_error"])
+        eng = WorkerEngine(self.h, fake("echo"), 1)          # model repaired: it just works
+        self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
+                         runner.RunResult.DONE)
+
+    def test_explicit_retry_resets_the_failure_limit(self):
+        mid, vid, reader = self.meeting()
+        for _ in range(3):
+            runner.run_version(self.store, mid, vid, reader,
+                               WorkerEngine(self.h, fake("crash_always"), 1))
+        eng = WorkerEngine(self.h, fake("echo"), 1)
+        self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
+                         runner.RunResult.FAILED)               # capped, no attempt made
+        self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng,
+                                            retry_failed=True),
+                         runner.RunResult.DONE)
 
     def test_pause_with_stop_now_keeps_chunk_pending_and_is_not_a_failure(self):
         import threading
