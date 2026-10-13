@@ -28,7 +28,7 @@ jobs:
       # Byte-compile every Python file. Catches syntax errors without importing
       # torch, faster-whisper or tkinter.
       - name: Compile Python sources
-        run: python -m compileall -q -f *.py tests/*.py
+        run: python -m compileall -q -f *.py tests tools workspace
 
       # Model-free tests (stdlib only). Tests that need the full app stack
       # skip themselves here; run them locally in the installed environment.

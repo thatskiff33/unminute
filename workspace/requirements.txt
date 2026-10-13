@@ -1,0 +1,15 @@
+# Additional pins for the planned meeting workspace shell (#10), on top of
+# ../requirements.txt. Kept separate until the private runtime (#11) decides
+# how the environment is assembled, so the legacy installer is unaffected.
+#
+# proxy_tools has no wheel (2014 pure-Python sdist only), so this set needs:
+#   pip install -r workspace/requirements.txt --only-binary=:all: --no-binary=proxy_tools
+# #11 should ship a pre-built, hash-pinned wheel instead. See docs/WEBVIEW_TRIAL.md.
+bottle==0.13.4
+cffi==2.1.1
+clr_loader==0.3.1
+proxy_tools==0.1.0
+pycparser==3.11
+pythonnet==3.2.0
+pywebview==6.2.1
+typing_extensions==4.15.0
