@@ -161,6 +161,14 @@
       <legend>Speakers</legend>
       <label><input type="checkbox" id="s-speakers"> Identify speakers after transcription</label>
     </fieldset>
+    <h2>Watched folders</h2>
+    <p class="muted">Recordings saved into a watched folder are imported automatically. Each folder is checked when the app starts and every few minutes while it is open; if the app was closed, it catches up when you open it. Recordings already imported are not imported twice (Import by hand always works).</p>
+    <ul id="s-folders" class="folders"></ul>
+    <div class="row">
+      <button type="button" id="s-add-folder">Watch a folder…</button>
+      <label><input type="checkbox" id="s-include-existing"> Also import recordings already in it</label>
+      <button type="button" id="s-scan">Check now</button>
+    </div>
     <h2>Cleanup receipts</h2>
     <p class="muted">Completed cleanups leave only an anonymous receipt, kept for 30 days.</p>
     <ul id="receipts" class="receipts"></ul>

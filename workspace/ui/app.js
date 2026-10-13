@@ -822,6 +822,40 @@ async function renderSettings() {
     sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name, textContent: c.label })));
     sel.value = s.model;
   }
+  const wf = await call("watched_folders");
+  $("s-folders").replaceChildren(...(wf.folders.length ? wf.folders.map((f) => el("li", {},
+    el("div", { textContent: f.path }),
+    el("div", { class: f.error ? "error" : "muted", textContent: f.error ||
+      [f.active ? "Watching" : "Paused",
+       f.last_scan_at ? `checked ${fmtDate(f.last_scan_at)}` : "not checked yet",
+       f.imported ? `${f.imported} imported` : null,
+       f.waiting ? `${f.waiting} waiting until fully copied` : null,
+       f.cloud ? `${f.cloud} in cloud storage, not on this computer yet` : null,
+       f.duplicates ? `${f.duplicates} already imported` : null,
+       f.unreadable ? `${f.unreadable} could not be read (no permission)` : null].filter(Boolean).join(" · ") }),
+    el("label", {}, el("input", { type: "checkbox", checked: f.fetch_cloud,
+      on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
+      " Download recordings that are only in cloud storage (OneDrive and similar)"),
+    el("label", {}, el("input", { type: "checkbox", checked: f.delete_originals,
+      on: { change: (e) => {
+        if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
+        e.target.checked = false;
+        confirmDialog({
+          title: "Allow deleting originals from this folder?",
+          body: "After you confirm a meeting's transcript is reviewed, the app may delete the original recording from this folder, but only if it is exactly the file that was imported. " +
+            "Do not allow this for shared folders, Teams or channel storage, or recordings someone else (such as a meeting organiser) owns. Copies elsewhere, such as on a phone, in the cloud recycle bin or in backups, are not removed.",
+          check: "I am responsible for recordings in this folder and allow the app to delete reviewed originals from it.",
+          limits: false,
+          onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then(renderSettings)),
+        });
+      } } }),
+      " Delete originals from this folder after review (needs confirmation)"),
+    el("button", { type: "button", textContent: f.active ? "Pause" : "Resume",
+                   on: { click: () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings)) } }),
+    " ",
+    el("button", { type: "button", textContent: "Stop watching",
+                   on: { click: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) } })))
+    : [el("li", { class: "muted", textContent: "No folders are watched." })]));
   const receipts = await call("receipts");
   $("receipts").replaceChildren(...(receipts.length ? receipts.map((r) =>
     el("li", { textContent: `${fmtDate(r.completed_at)}: ${r.result}` }))
@@ -850,6 +884,12 @@ async function refresh() {
 }
 
 function wire() {
+  $("s-add-folder").addEventListener("click", () => attempt(async () => {
+    const added = await call("add_folder_dialog", $("s-include-existing").checked);
+    if (added) say("Folder added. It will be checked now.");
+    renderSettings();
+  }));
+  $("s-scan").addEventListener("click", () => attempt(async () => { await call("scan_now"); say("Checking watched folders"); }));
   wireSetup();
   wireHandoff();
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));

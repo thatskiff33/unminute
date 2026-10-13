@@ -26,7 +26,8 @@ API_METHODS = frozenset({
     "undo_speakers", "speaker_panel", "handoff_templates", "save_template", "reset_template",
     "handoff_preview", "set_handoff_options", "copy_handoff", "save_handoff",
     "setup_state", "download_model", "remove_token", "finish_setup", "open_help",
-    "verify_model", "cancel_download",
+    "verify_model", "cancel_download", "watched_folders", "add_folder_dialog",
+    "set_folder_active", "remove_folder", "scan_now", "set_folder_authority",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -213,6 +214,34 @@ def make_api(ws, get_window=lambda: None):
     def open_help(self, key):
         return _safe(ws.open_help, key)
 
+    def watched_folders(self):
+        return _safe(ws.watched_folders)
+
+    def add_folder_dialog(self, include_existing=False):
+        def run():
+            import webview
+            window = get_window()
+            if window is None:
+                raise WorkspaceError("The folder dialog is not available.")
+            chosen = window.create_file_dialog(webview.FileDialog.FOLDER)
+            if not chosen:
+                return None                       # cancelled
+            path = chosen if isinstance(chosen, str) else chosen[0]
+            return bool(ws.add_watched_folder(path, bool(include_existing)))
+        return _safe(run)
+
+    def set_folder_active(self, fid, active):
+        return _safe(ws.set_folder_active, fid, active)
+
+    def remove_folder(self, fid):
+        return _safe(ws.remove_folder, fid)
+
+    def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
+        return _safe(ws.set_folder_authority, fid, delete_originals, fetch_cloud)
+
+    def scan_now(self):
+        return _safe(ws.scan_now)
+
     def import_dialog(self):
         def run():
             import webview
@@ -243,7 +272,10 @@ def make_api(ws, get_window=lambda: None):
                  copy_handoff=copy_handoff, save_handoff=save_handoff,
                  setup_state=setup_state, download_model=download_model,
                  remove_token=remove_token, finish_setup=finish_setup, open_help=open_help,
-                 verify_model=verify_model, cancel_download=cancel_download)
+                 verify_model=verify_model, cancel_download=cancel_download,
+                 watched_folders=watched_folders, add_folder_dialog=add_folder_dialog,
+                 set_folder_active=set_folder_active, remove_folder=remove_folder,
+                 scan_now=scan_now, set_folder_authority=set_folder_authority)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

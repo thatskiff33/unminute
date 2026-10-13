@@ -68,7 +68,7 @@ def resolve_within(path, roots):
     return Path(real)
 
 
-def validate_input_file(path, allowed_ext, max_bytes, roots=None):
+def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=False):
     """Accept an existing regular file with an allowed extension and size.
 
     `roots` limits where the real target may live (None = anywhere local).
@@ -83,7 +83,8 @@ def validate_input_file(path, allowed_ext, max_bytes, roots=None):
     if not stat.S_ISREG(st.st_mode):
         raise UnsafePathError("Only regular files can be imported.")
     attrs = getattr(st, "st_file_attributes", 0)
-    if attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE):
+    if not allow_cloud and attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+                                    | FILE_ATTRIBUTE_OFFLINE):
         raise UnsafePathError("The file is in cloud storage and not downloaded to this "
                               "computer yet. Make it available offline, then try again.")
     if real.suffix.lower() not in {e.lower() for e in allowed_ext}:

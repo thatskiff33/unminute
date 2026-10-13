@@ -163,6 +163,21 @@ CREATE TABLE IF NOT EXISTS speaker_corrections (
 CREATE TABLE IF NOT EXISTS handoff_options (
     meeting_id TEXT PRIMARY KEY REFERENCES meetings(id),
     omitted TEXT NOT NULL, redactions TEXT NOT NULL);
+-- Watched-folder intake (#23): configuration plus bounded suppression data
+-- (keyed path hashes, content hashes); no names, no meeting content.
+CREATE TABLE IF NOT EXISTS watched_folders (
+    id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL, last_scan_at REAL, last_error TEXT,
+    baseline_done INTEGER NOT NULL DEFAULT 0, include_existing INTEGER NOT NULL DEFAULT 0,
+    delete_originals INTEGER NOT NULL DEFAULT 0,   -- #24: explicit, separate from import
+    fetch_cloud INTEGER NOT NULL DEFAULT 0);       -- #24: read cloud-only files to fetch them
+CREATE TABLE IF NOT EXISTS intake_seen (
+    folder_id TEXT NOT NULL, key TEXT NOT NULL, size INTEGER, mtime_ns INTEGER,
+    file_id INTEGER, state TEXT NOT NULL, first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+    PRIMARY KEY (folder_id, key));
+CREATE TABLE IF NOT EXISTS intake_content (
+    sha256 TEXT PRIMARY KEY, imported_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS intake_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cleanup_jobs (
     id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, phase TEXT NOT NULL,
     state TEXT NOT NULL, intent_at REAL NOT NULL, last_attempt_at REAL,

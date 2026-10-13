@@ -22,8 +22,8 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import (cleanup, clipboard, credentials, handoff, holds, media, resources,
-                       runner, setup, speaker_names, speakers)
+from workspace import (cleanup, clipboard, credentials, handoff, holds, intake, media,
+                       resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root
@@ -122,6 +122,8 @@ class Workspace:
         self._last_purge = 0.0
         self._lock = threading.Lock()
         self._reruns = {}                 # meeting id -> known speaker count (or None)
+        self._scan_requested = False
+        self.last_scan = None
         self._threads = []
         self._reconcile_imports()
         if start:
@@ -131,7 +133,8 @@ class Workspace:
 
     def start(self):
         for target, name in ((self._process_loop, "workspace-processing"),
-                             (self._intake_loop, "workspace-intake")):
+                             (self._intake_loop, "workspace-intake"),
+                             (self._watch_loop, "workspace-watch")):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
@@ -169,7 +172,7 @@ class Workspace:
             except UnsafePathError as exc:
                 refused.append(str(exc))
                 continue
-            self._imports.put(real)
+            self._imports.put((real, None))         # by hand: never deduplicated
             accepted += 1
         if refused:
             self._import_errors = (self._import_errors + refused)[-5:]
@@ -177,12 +180,13 @@ class Workspace:
 
     def _intake_loop(self):
         while True:
-            path = self._imports.get()
+            item = self._imports.get()
             try:
-                if path is None or self._closing.is_set():
+                if item is None or self._closing.is_set():
                     return
+                path, folder_id = item
                 self._status = "Importing a recording"
-                self._import_one(path)
+                self._import_one(path, folder_id)
             except Exception as exc:          # a bad file must not stop the intake thread
                 self._import_errors = (self._import_errors + [_import_message(exc)])[-5:]
             finally:
@@ -190,9 +194,13 @@ class Workspace:
                 self._status = ""
                 self._wake.set()
 
-    def _import_one(self, path):
+    def _import_one(self, path, folder_id=None):
         title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
+        if folder_id and intake.authority_for(self.store, folder_id):
+            # Authority comes only from the folder's explicit setting (#24).
+            with self.store.tx() as db:
+                db.execute("UPDATE sources SET delete_original = 1 WHERE id = ?", (sid,))
         try:
             self._plan_version(mid, sid)
         except BaseException:
@@ -242,6 +250,62 @@ class Workspace:
             mid, sid, engine="parakeet" if asr_engines.is_parakeet(model) else "whisper",
             model=model, model_revision=spec.revision if spec else "test",
             precision="int8", config={"chunking": "v1"}, chunk_plan=plan)
+
+    # -- watched folders (#23) -------------------------------------------------------
+
+    def _watch_loop(self):
+        """Reconcile watched folders at launch, then every SCAN_INTERVAL_S while
+        open. Sleep counts as elapsed time, so waking from sleep scans at once."""
+        last = 0.0
+        while not self._closing.is_set():
+            if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
+                self._scan_requested = False
+                last = time.monotonic()
+                try:
+                    self.last_scan = intake.scan(
+                        self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
+                        lambda p, fid: self._imports.put((p, fid)))
+                except Exception as exc:     # a scan problem must not stop watching
+                    self.last_scan = {"error": safe_message(exc)}
+            self._closing.wait(1.0)
+
+    def watched_folders(self):
+        return {"folders": intake.summary(self.store), "last_scan": self.last_scan,
+                "interval_minutes": intake.SCAN_INTERVAL_S // 60}
+
+    def add_watched_folder(self, path, include_existing):
+        if not isinstance(include_existing, bool):
+            raise WorkspaceError("Expected yes or no.")
+        try:
+            fid = intake.add_folder(self.store, path, include_existing)
+        except intake.IntakeError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        self.scan_now()
+        return fid
+
+    def set_folder_active(self, fid, active):
+        if not isinstance(active, bool):
+            raise WorkspaceError("Expected on or off.")
+        intake.set_active(self.store, _hold_id(fid), active)
+        if active:
+            self.scan_now()
+
+    def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
+        fid = _hold_id(fid)
+        for v in (delete_originals, fetch_cloud):
+            if v is not None and not isinstance(v, bool):
+                raise WorkspaceError("Expected on or off.")
+        if delete_originals is not None:
+            intake.set_delete_originals(self.store, fid, delete_originals)
+        if fetch_cloud is not None:
+            intake.set_fetch_cloud(self.store, fid, fetch_cloud)
+            self.scan_now()
+
+    def remove_folder(self, fid):
+        intake.remove_folder(self.store, _hold_id(fid))
+
+    def scan_now(self):
+        self._scan_requested = True
 
     # -- processing thread ------------------------------------------------------------
 
@@ -339,7 +403,8 @@ class Workspace:
     def _run(self, kind, mid, ref):
         if kind == "cleanup":
             self._status = "Cleaning up"
-            cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown)
+            cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown,
+                            original_roots=intake.deletion_roots(self.store))
             return
         if self._closing.is_set():
             return                          # never start a worker during shutdown
