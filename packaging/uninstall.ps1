@@ -29,7 +29,7 @@ function Write-Step([string]$Message) {
 
 try {
     $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        try { $_.Path -and $_.Path.StartsWith($Options.InstallDir, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+        try { $_.Path -and $_.Path.StartsWith($Options.InstallDir.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase) } catch { $false }
     }
     if ($running) {
         Write-Step "$AppName is running. Close it, then run this again."
@@ -37,13 +37,14 @@ try {
     }
     $link = Join-Path ([Environment]::GetFolderPath("Programs")) "$AppName.lnk"
     if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
-    if (Test-Path -LiteralPath $RegKey) { Remove-Item -LiteralPath $RegKey -Recurse -Force }
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove everything else first.
         Get-ChildItem -LiteralPath $Options.InstallDir | Where-Object { $_.Name -ne "uninstall.ps1" } |
             ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
         Remove-Item -LiteralPath $Options.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    # Last: while any file remains, the app still shows as installed (Intune detection).
+    if (Test-Path -LiteralPath $RegKey) { Remove-Item -LiteralPath $RegKey -Recurse -Force }
     Write-Step "$AppName has been removed."
     $db = Join-Path $env:LOCALAPPDATA "whisper\workspace\workspace.db"
     if (Test-Path -LiteralPath $db) {

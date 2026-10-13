@@ -77,8 +77,11 @@ def self_test():
         socket.create_connection(("example.com", 443), timeout=5).close()
         ok = False
         print("FAILED  network guard: a connection succeeded")
-    except OSError:
+    except offline_guard.NetworkBlockedError:
         print("ok      network guard blocks outside connections")
+    except OSError as exc:      # e.g. no internet: says nothing about the guard
+        ok = False
+        print(f"FAILED  network guard did not intercept ({type(exc).__name__})")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

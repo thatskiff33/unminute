@@ -44,6 +44,11 @@ APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHAN
 MAX_RELATIVE_PATH = 140
 SITE = "lib"                 # runtime/lib instead of runtime/Lib/site-packages
 PACKAGING = ROOT / "packaging"
+# proxy_tools (MIT) has no published wheel. This one was built once from the
+# PyPI sdist and is committed with its hash, so the build installs nothing
+# unpinned and needs no sdist build step.
+VENDORED = {"proxy_tools-0.1.0-py3-none-any.whl":
+            "b299ba191b86e8173bf116ee9b2324aa58622bdb4d58b26ec18379b713007ffa"}
 
 
 def sha256(path):
@@ -81,16 +86,17 @@ def check_signatures(runtime):
 
 
 def install_wheels(site, wheel_cache):
-    """Pinned requirements, wheels only, except proxy_tools: a 2014 pure-Python
-    package with no wheel, built here once and recorded in the manifest."""
+    """Pinned requirements, wheels only, for Windows x64 CPython 3.12. The one
+    package without a published wheel comes from packaging/wheels (hash-checked)."""
     reqs = [ROOT / "requirements.txt", ROOT / "workspace" / "requirements.txt"]
     pip = [sys.executable, "-m", "pip", "--disable-pip-version-check"]
-    wheel_cache.mkdir(parents=True, exist_ok=True)
-    subprocess.run(pip + ["wheel", "--no-deps", "--no-binary=proxy_tools", "-w",
-                          str(wheel_cache), "proxy_tools==0.1.0"], check=True)
+    vendored = PACKAGING / "wheels"
+    for name, digest in VENDORED.items():
+        if sha256(vendored / name) != digest:
+            sys.exit(f"{name} does not match its pinned SHA-256.")
     cmd = pip + ["install", "--no-compile", "--target", str(site), "--platform",
                  "win_amd64", "--python-version", "3.12", "--implementation", "cp",
-                 "--only-binary=:all:", "--find-links", str(wheel_cache)]
+                 "--only-binary=:all:", "--find-links", str(vendored)]
     for r in reqs:
         cmd += ["-r", str(r)]
     subprocess.run(cmd, check=True)
@@ -101,6 +107,12 @@ def write_pth(runtime):
     A ._pth file also makes Python ignore PYTHONPATH and user site-packages."""
     pth = next(runtime.glob("python3*._pth"))
     pth.write_text(f"python312.zip\n.\n{SITE}\n..\\app\nimport site\n", encoding="ascii")
+    # site only reads .pth files from Lib\site-packages; runtime\lib is ours,
+    # so register it as a site directory (sitecustomize runs at start-up).
+    (runtime / "sitecustomize.py").write_text(
+        "import os\nimport site\n\n"
+        f"site.addsitedir(os.path.join(os.path.dirname(os.path.abspath(__file__)), {SITE!r}))\n",
+        encoding="ascii")
 
 
 def flatten_licences(site):
@@ -156,7 +168,15 @@ def manifest(folder):
     return len(files)
 
 
+def check_host():
+    """Environment markers are evaluated against this interpreter."""
+    if os.name != "nt" or sys.version_info[:2] != (3, 12) or \
+            sys.implementation.name != "cpython" or sys.maxsize < 2**32:
+        sys.exit("Build the package with 64-bit CPython 3.12 on Windows.")
+
+
 def build(version, out, cache):
+    check_host()
     name = f"WhisperWorkspace-{version}"
     work = Path(tempfile.mkdtemp(prefix="wwbuild-"))
     folder = work / name
@@ -168,6 +188,9 @@ def build(version, out, cache):
         write_pth(runtime)
         install_wheels(runtime / SITE, cache / "wheels")
         flatten_licences(runtime / SITE)
+        # pip --target writes console launchers with the build machine's
+        # Python path baked in; they do not work elsewhere and reveal it.
+        shutil.rmtree(runtime / SITE / "bin", ignore_errors=True)
         copy_app(folder / "app")
         for script in ("install.ps1", "install.cmd", "uninstall.ps1"):
             shutil.copy2(PACKAGING / script, folder / script)

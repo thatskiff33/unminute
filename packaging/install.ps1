@@ -56,9 +56,10 @@ function Get-FileSha256([string]$Path) {
 # -- prerequisites -----------------------------------------------------------------
 
 function Test-Prerequisite {
-    # Package paths are at most 140 characters below versions\<version>\.
-    if ($Options.InstallDir.Length -gt 100) {
-        Stop-Install 2 "The install folder path is too long for Windows (over 100 characters). Choose a shorter -InstallDir."
+    # Package paths are at most 140 characters below <InstallDir>\versions\<version>\
+    # and Windows PowerShell stops at 259; allow up to 16 characters of version.
+    if ($Options.InstallDir.Length -gt 92) {
+        Stop-Install 2 "The install folder path is too long for Windows (over 92 characters). Choose a shorter -InstallDir."
     }
     if (-not [Environment]::Is64BitOperatingSystem) {
         Stop-Install 2 "$AppName needs 64-bit Windows 10 or 11."
@@ -121,6 +122,17 @@ function Test-PackageFile([string]$Root) {
     if (-not (Test-Path -LiteralPath $manifestPath)) { Stop-Install 4 "package-manifest.json is missing." }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
     $names = @($manifest.PSObject.Properties.Name)
+    # Nothing may be added either: an extra file (a planted .pth or module)
+    # would be loaded by the app.
+    $listed = @{}
+    foreach ($n in $names) { $listed[$n.ToLowerInvariant()] = $true }
+    $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\") + "\"
+    foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -Force) {
+        $rel = $file.FullName.Substring($rootFull.Length).Replace("\", "/")
+        if ($rel -ne "package-manifest.json" -and -not $listed.ContainsKey($rel.ToLowerInvariant())) {
+            Stop-Install 4 "The package contains a file that is not in its manifest: $rel"
+        }
+    }
     Write-Step "Verifying $($names.Count) files..."
     foreach ($name in $names) {
         $path = Join-Path $Root ($name -replace "/", "\")
@@ -134,7 +146,7 @@ function Test-PackageFile([string]$Root) {
 
 function Test-AppRunning {
     $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        try { $_.Path -and $_.Path.StartsWith($Options.InstallDir, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+        try { $_.Path -and $_.Path.StartsWith($Options.InstallDir.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase) } catch { $false }
     }
     if ($running) { Stop-Install 3 "$AppName is running. Close it (and let any processing finish), then run this again." }
 }
@@ -149,8 +161,17 @@ function Install-Version([string]$Root, [string]$Version) {
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     Write-Step "Copying files..."
     Copy-Item -LiteralPath $Root -Destination $staging -Recurse
-    if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+    # Files extracted by Explorer carry the "downloaded from the internet" mark;
+    # the package was just verified, so clear it on the executable files.
+    Get-ChildItem -LiteralPath $staging -Recurse -File -Include *.exe, *.dll, *.pyd, *.ps1 |
+        Unblock-File -ErrorAction SilentlyContinue
+    # Same version again: move the live copy aside first, so a locked file can
+    # never leave a half-deleted version in use.
+    $old = "$target.old"
+    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
+    if (Test-Path -LiteralPath $target) { Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf) }
     Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf)
+    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     return $target
 }
@@ -159,13 +180,15 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
     $currentFile = Join-Path $Options.InstallDir "current.json"
     $previous = $null
     if (Test-Path -LiteralPath $currentFile) {
-        $previous = (Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).version
+        $was = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
+        # Reinstalling the same version keeps the existing rollback version.
+        $previous = if ($was.version -eq $Version) { $was.previous } else { $was.version }
     }
     @{ version = $Version; path = $Target; previous = $previous } | ConvertTo-Json |
         Set-Content -LiteralPath $currentFile -Encoding UTF8
     # Keep the current and the previous version (for rollback, #26); remove older ones.
     Get-ChildItem -LiteralPath (Join-Path $Options.InstallDir "versions") -Directory | Where-Object {
-        $_.Name -ne $Version -and $_.Name -ne $previous -and $_.Name -notlike "*.partial"
+        $_.Name -ne $Version -and $_.Name -ne $previous -and $_.Name -notlike "*.partial" -and $_.Name -notlike "*.old"
     } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 }
 
@@ -183,7 +206,7 @@ function New-Shortcut([string]$Target) {
 
 function Register-Uninstall([string]$Target, [string]$Version) {
     $sizeKb = [int]((Get-ChildItem -LiteralPath $Target -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
-    $uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`""
+    $uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`" -InstallDir `"$($Options.InstallDir)`""
     New-Item -Path $RegKey -Force | Out-Null
     $values = @{
         DisplayName = $AppName; DisplayVersion = $Version; Publisher = "Whisper Transcriber project"

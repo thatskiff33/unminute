@@ -38,7 +38,11 @@ python tools/build_package.py --version 0.2.0 --out dist
 The build:
 
 1. Downloads the embeddable runtime, checks it against the pinned SHA-256, and checks that `python.exe`, `pythonw.exe` and `python312.dll` carry a valid Python Software Foundation Authenticode signature.
-2. Installs the pinned requirements as wheels only, for `win_amd64` and CPython 3.12. The one exception is `proxy_tools`, a pure-Python package with no published wheel, which is built from its sdist during the build.
+2. Installs the pinned requirements as wheels only, for `win_amd64` and CPython 3.12. The build refuses to run on any other host.
+   - `proxy_tools` (MIT) publishes no wheel. Its wheel was built once from the PyPI sdist and is committed in `packaging/wheels/`, and the build checks it against a pinned SHA-256.
+   - Other wheels are pinned by version but not yet by hash. Adding `--require-hashes` is a future hardening step.
+   - Console launchers written by pip (`runtime\lib\bin`) are removed, because they embed the build machine's paths.
+   - `runtime\sitecustomize.py` registers `runtime\lib` as a site directory, so packages that rely on `.pth` files work.
 3. Copies the app and installer files, then writes `version.json` and `package-manifest.json`.
 4. Zips the result and writes the `.sha256` file.
 
@@ -63,7 +67,11 @@ The installer runs as the current user and needs no administrator rights. It:
   - the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and present on most managed Windows 10 devices;
   - about 6 GB free disk space;
   - 8 GB of memory, which is recommended but not required.
-- **Verifies the zip** against its `.sha256` file, when given the zip, and **every file** against `package-manifest.json`. Nothing is installed if any file differs.
+- **Verifies the package.**
+  - With `-Package`, it checks the zip against its `.sha256` file. That is the check that detects tampering, provided the `.sha256` comes from the release page.
+  - In every mode it checks every file against `package-manifest.json`, and refuses files that are missing, different or not listed.
+  - The manifest travels inside the package. In the extracted-folder route it therefore detects corruption and accidental changes, not deliberate tampering. Prefer `-Package`, or verify the zip's `.sha256` before extracting it.
+  - Nothing is installed if any check fails.
 - **Installs side by side** to `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`. It keeps the previous version for rollback and removes older ones.
 - **Refuses to install while the app is running.**
 - **Creates a Start menu shortcut,** "Meeting Workspace", and a per-user uninstall entry in Settings > Apps.
@@ -96,6 +104,7 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
   ```
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Silent
   ```
+  Before wrapping the folder, verify the zip's `.sha256` in the packaging pipeline.
 - **Uninstall command:**
   ```
   powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\WhisperWorkspace\uninstall.ps1" -Silent
@@ -110,8 +119,8 @@ For support, `runtime\python.exe -m workspace --self-test` (in the installed ver
 
 The build does not sign anything, and this guide does not assume a particular signing provider. Integrity currently rests on two checks:
 
-- the published `.sha256` of the zip, which should be published through the release page over HTTPS;
-- the per-file manifest that the installer verifies.
+- the published `.sha256` of the zip, published through the release page over HTTPS and checked by `-Package` installs or by the pipeline that uploads to Intune;
+- the per-file manifest that the installer verifies, which detects corruption, missing files and added files.
 
 The Python runtime's own executables keep their Python Software Foundation signatures.
 
