@@ -71,7 +71,10 @@ try {
     # 3. The app's own native Open dialog (#32770). Win32 messages to its
     #    controls (no user input): file name Edit in ComboBoxEx32 (id 1148)
     #    > ComboBox > Edit; Open is id 1.
-    $dialog = Find-InApp $null 30 '#32770'
+    # Shown as a top-level window, or under its owner (the app window).
+    $dlgCond = New-Object System.Windows.Automation.PropertyCondition($A::ClassNameProperty, '#32770')
+    $dialog = Find-InApp $null 3 '#32770'
+    if (-not $dialog) { $dialog = Find-InApp $dlgCond 30 }
     if (-not $dialog) { throw 'Open dialog not found' }
     $result.dialog_title = $dialog.Current.Name
     Add-Type @'
