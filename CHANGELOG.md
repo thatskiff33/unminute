@@ -5,6 +5,12 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.0-preview.4
+
+**Fourth preview** of the packaged meeting workspace, for testing. It installs per user without admin rights. An installed earlier preview updates in place. The open checks are the same as for preview.3 (see docs/RELEASE_CHECKLIST.md and docs/VALIDATION_RUNBOOK.md).
+
+Download `WhisperWorkspace-0.2.0-preview.4.zip` and its `.sha256` file, then follow docs/PACKAGING.md.
+
 - **App icon.** Meeting Workspace now shows the microphone icon in the Start menu, the window, the taskbar and Settings > Apps, instead of Python's. A pinned taskbar shortcut groups with the running window.
 
 ## v0.2.0-preview.3
