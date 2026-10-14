@@ -25,7 +25,7 @@ select { max-width: 100%; }   /* long model names must not force sideways scroll
 header { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
 nav { display: flex; flex-wrap: wrap; gap: 4px; }
 .nav[aria-current="page"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
-#status { margin: 0; color: var(--muted); }
+#status { margin: 0; color: var(--muted); flex: 1 1 20ch; min-width: 0; }
 .banner { background: var(--warn-bg); padding: 8px 16px; border-bottom: 1px solid var(--line); }
 .banner p { margin: 4px 0; }
 main { padding: 8px 16px 80px; }

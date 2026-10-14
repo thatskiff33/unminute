@@ -5,7 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
-- **Zoom and accessibility fixes.** Ctrl+plus, Ctrl+minus and Ctrl+mouse wheel now zoom the workspace window, which pywebview had turned off. At 400% zoom the pages and dialogs fit the window without sideways scrolling. The speech model list and the confirmation dialog now have names for screen readers.
+- **Zoom and accessibility fixes.** Ctrl+plus, Ctrl+minus, Ctrl+0 and Ctrl+mouse wheel now zoom the workspace window (50% to 300%); zoom had been turned off. At 400% zoom the pages and dialogs fit the window without sideways scrolling. The speech model list and the confirmation dialog now have names for screen readers.
 - **Faster mode no longer slows Parakeet down.** On a test laptop with performance and efficiency cores (Intel Core Ultra 7 255H), Faster mode made Parakeet 3 to 4 times slower than Quiet mode. ONNX Runtime threads now wait without spinning. On that laptop, 5 minutes of speech now takes 19 s in both modes (previously 20 to 24 s in Quiet and 73 to 80 s in Faster). Faster mode still speeds up speaker identification.
 
 ## v0.2.0-preview.1

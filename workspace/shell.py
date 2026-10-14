@@ -87,6 +87,35 @@ def install_dispatch_guard(allowed):
         backend.js_bridge_call = guarded
 
 
+# Zoom levels as in Edge (50% to 300%).
+ZOOM_STEPS = (0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
+
+
+def set_zoom(window, direction):
+    """Change the WebView2 zoom by one step ("in", "out") or back to 100%
+    ("reset"); returns the new factor. Needed because pywebview turns off the
+    browser's own accelerator keys, which include Ctrl+plus and Ctrl+minus
+    (Ctrl+wheel still works through zoomable=True)."""
+    from System import Action
+    form = window.native
+    control = form.browser.webview
+    box = {}
+
+    def apply():
+        now = float(control.ZoomFactor)
+        if direction == "reset":
+            new = 1.0
+        elif direction == "in":
+            new = next((z for z in ZOOM_STEPS if z > now + 0.01), ZOOM_STEPS[-1])
+        else:
+            new = next((z for z in reversed(ZOOM_STEPS) if z < now - 0.01), ZOOM_STEPS[0])
+        control.ZoomFactor = new
+        box["zoom"] = new
+
+    form.Invoke(Action(apply))          # WebView2 must be used on the UI thread
+    return box["zoom"]
+
+
 def lock_navigation(window):
     """Cancel any navigation outside the bundled UI (WebView2 NavigationStarting).
     Attached at before_load, i.e. after the first (bundled) page navigation,
@@ -121,8 +150,8 @@ def create_window(bridge, title="Meeting workspace", hidden=False, harden=True,
     window = webview.create_window(title, url=ui_url(page), js_api=bridge,
                                    width=1100, height=760, min_size=(640, 480),
                                    hidden=hidden, text_select=True,
-                                   # Ctrl+plus/minus and Ctrl+wheel zoom (#27);
-                                   # pywebview turns zoom off by default.
+                                   # Ctrl+wheel zoom (#27); pywebview turns it off
+                                   # by default. Ctrl+plus/minus/0: set_zoom().
                                    zoomable=True)
     window.events.before_load += lambda: _lock_once(window)
     return window

@@ -415,6 +415,11 @@ class ApiTests(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertNotIn("Traceback", str(r))
 
+    def test_zoom_accepts_only_known_steps_and_needs_a_window(self):
+        for bad in ("bigger", 2, None, {"__class__": 1}):
+            self.assertEqual(self.api.zoom(bad), {"ok": False, "error": "Unknown zoom."})
+        self.assertEqual(self.api.zoom("in"), {"ok": False, "error": "Zoom is not available."})
+
     def test_clip_is_a_bounded_data_url(self):
         r = self.api.clip(self.mid, 0, 2)
         self.assertTrue(r["value"].startswith("data:audio/wav;base64,"))

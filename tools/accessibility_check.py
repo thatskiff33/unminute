@@ -89,7 +89,9 @@ const lowContrast = [];
 const seen = new Set();
 for (const el of document.querySelectorAll('body *')) {
   if (!visible(el) || el.closest('dialog:not([open])')) continue;
-  const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
+  const own = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim())
+    || (['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName) && el.value
+        && !['checkbox', 'radio', 'range', 'file'].includes(el.type));
   if (!own) continue;
   const s = getComputedStyle(el);
   if (el.disabled || el.closest('[disabled]')) continue;    // WCAG exempts inactive controls
@@ -160,6 +162,13 @@ def checks(window, ws, mid, report):
                                      "window.pywebview.api && window.pywebview.api.meetings)"):
             time.sleep(0.2)
         report["zoomable"] = window.zoomable
+        report["keyboard_zoom"] = evaluate(window, WAIT + """
+            const key = (k) => document.dispatchEvent(new KeyboardEvent('keydown',
+                {key: k, ctrlKey: true, bubbles: true}));
+            const before = window.devicePixelRatio;
+            key('+'); await wait(800); const zoomed = window.devicePixelRatio;
+            key('0'); await wait(800); const reset = window.devicePixelRatio;
+            return {before, zoomed, reset};""")
         report["page"] = evaluate(window, "return {lang: document.documentElement.lang, "
                                           "title: document.title, live_status: "
                                           "document.getElementById('status')?.getAttribute"
@@ -226,12 +235,18 @@ def main():
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     problems = [] if not report.get("error") else [report["error"]]
+    kz = report.get("keyboard_zoom") or {}
+    if not (report.get("zoomable") and kz.get("zoomed", 0) > kz.get("before", 0) * 1.05
+            and abs(kz.get("reset", 0) - kz.get("before", -1)) < 0.01):
+        problems.append(f"keyboard zoom does not work ({kz})")
     for view, a in report.get("views", {}).items():
         for key in ("unnamed", "untabbable", "pointer_only", "no_focus_ring", "low_contrast",
                     "colour_only", "unnamed_dialogs"):
             if a.get(key):
                 problems.append(f"{view}: {key} ({len(a[key])})")
         for width, r in a.get("reflow", {}).items():
+            if r["css_width"] > int(width) + 1:
+                problems.append(f"{view}: reflow width {width} not reached ({r['css_width']})")
             if r["horizontal_overflow_px"] > 0 or r["cut_off"]:
                 problems.append(f"{view}: content cut off or scrolling at {width} CSS px "
                                 f"({', '.join(r['cut_off'][:3]) or 'page'})")
