@@ -5,6 +5,19 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.0-preview.3
+
+**Third preview** of the packaged meeting workspace, for testing. It installs per user without admin rights. An installed preview.1 or preview.2 updates in place.
+
+Not yet verified (see docs/RELEASE_CHECKLIST.md and docs/VALIDATION_RUNBOOK.md):
+- a clean standard-user profile, and Intune deployment (#10, #11);
+- transcription quality on representative business recordings (#12, #25);
+- a screen-reader pass and testing with nontechnical users (#27);
+- resource use on the lowest-supported laptop (#28);
+- unplugging a USB or Bluetooth microphone during a recording (#30).
+
+Download `WhisperWorkspace-0.2.0-preview.3.zip` and its `.sha256` file, then follow docs/PACKAGING.md.
+
 - **Microphone recording (optional, off by default).** Record a meeting from a chosen microphone, with a 3-second microphone test, a level meter, and pause, resume and stop. Audio is saved to disk every few seconds. After a crash the next start imports what was saved and reports roughly what is missing. Overruns, a full disk and a disconnected microphone are reported, never hidden, and the recording never switches device. Other transcription waits while recording. Recordings then follow the usual review, hold and cleanup steps. Turn it on in Settings > Microphone (#30).
 
 ## v0.2.0-preview.2
