@@ -5,6 +5,10 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.2
+
+Fixes and Setup improvements. Install: download `WhisperWorkspace-0.2.2.zip` and its `.sha256` file, then follow docs/PACKAGING.md. An installed v0.2.x updates and keeps your workspace. The known limitations listed for v0.2.0 and v0.2.1 still apply.
+
 - **Pause speaker identification.** Meetings in the Active list now show Pause while speakers are being identified. Speaker identification works on the whole meeting at once, so Pause stops the pass and Resume starts it again; the transcript is not affected. Previously it could not be paused, which also blocked downloads in Setup.
 - **Graphics card component downloads while processing.** It is used only by graphics card speaker passes, so it can be downloaded or checked while a meeting is processed on the processor.
 - **Remove models in Setup.** Each downloaded model, and the graphics card component, has a Remove button, with a confirmation. A model still needed is not removed: the selected speech model, one a meeting is still being transcribed with, and the speaker model while speaker identification is on. The voice detector shared by the Parakeet models goes with the last of them.
