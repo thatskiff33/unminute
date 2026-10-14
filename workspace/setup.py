@@ -200,6 +200,10 @@ def removal_targets(name, cache_dir):
     return out
 
 
+class RemovalRefused(OSError):
+    """Removal refused for safety (message is safe to show: no paths)."""
+
+
 def _is_link(path):
     """A symbolic link or a junction (any reparse point): never followed."""
     st = os.lstat(path)
@@ -219,9 +223,11 @@ def remove(name, cache_dir):
         inside = [a for a in Path(p).parents
                   if a != Path(cache_dir) and str(a).startswith(str(Path(cache_dir)))]
         if _is_link(p) or any(_is_link(a) for a in inside if a.exists()):
-            raise OSError(f"{Path(p).name} is a link; it was not removed.")
+            raise RemovalRefused("A model folder is a link to somewhere else, so nothing was "
+                                 "removed.")
         if not Path(p).resolve().is_relative_to(cache):
-            raise OSError("A model folder is outside the model cache; nothing was removed.")
+            raise RemovalRefused("A model folder is outside the model cache, so nothing was "
+                                 "removed.")
     freed = 0
     for p in targets:
         long = gpu._long(p)
