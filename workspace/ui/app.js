@@ -58,6 +58,21 @@ const STAGES = {
 };
 
 // -- navigation -------------------------------------------------------------
+// The meeting view's two scrolling panes fill the window below the toolbar.
+function fitMeeting() {
+  if (state.view !== "meeting") return;
+  const top = document.querySelector(".meeting-body").getBoundingClientRect().top + window.scrollY;
+  document.documentElement.style.setProperty("--meeting-top", `${Math.round(top)}px`);
+}
+window.addEventListener("resize", fitMeeting);
+// Anything above the panes changing height (a banner, a wrapped toolbar or
+// search count) moves them: refit at once rather than at the next refresh.
+const meetingTopObserver = new ResizeObserver(() => fitMeeting());
+for (const el of document.querySelectorAll("body > header, body > .banner")) meetingTopObserver.observe(el);
+for (let el = document.querySelector(".meeting-body").previousElementSibling; el; el = el.previousElementSibling) {
+  meetingTopObserver.observe(el);
+}
+
 function show(view) {
   state.view = view;
   for (const v of ["inbox", "active", "meeting", "settings", "setup"]) $(`view-${v}`).hidden = v !== view;
@@ -184,6 +199,7 @@ async function renderMeeting() {
   try { d = await call("detail", state.mid); }
   catch (err) { say(String(err.message || err)); show("active"); return; }
   state.detail = d;
+  requestAnimationFrame(fitMeeting);     // banners or errors above may have changed
   if (document.activeElement !== $("m-title")) $("m-title").value = d.title;
   const badges = [el("span", { class: "badge", textContent: STAGES[d.stage] })];
   if (d.holds.length) badges.push(el("span", { class: "badge hold", textContent: "Held" }));
@@ -440,6 +456,7 @@ async function renderTranscript() {
   const list = $("transcript");
   const audio = state.detail && state.detail.audio_available;
   const scroll = document.scrollingElement.scrollTop;
+  const paneScroll = document.querySelector(".transcript-wrap").scrollTop;   // wide windows
   const rows = [];
   const mid = state.mid, version = state.version;
   let start = 0, total = 1;
@@ -459,6 +476,7 @@ async function renderTranscript() {
   list.replaceChildren(...rows);
   state.total = total;
   document.scrollingElement.scrollTop = scroll;
+  document.querySelector(".transcript-wrap").scrollTop = paneScroll;
   if ($("m-search").value) runSearch(false);
 }
 

@@ -743,6 +743,7 @@ class ParakeetEngine:
         try:
             import onnx_asr
             import onnxruntime as rt
+            rt.disable_telemetry_events()   # before any session, in every process
             opts = rt.SessionOptions()
             opts.intra_op_num_threads = self.threads
             opts.inter_op_num_threads = 1

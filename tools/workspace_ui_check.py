@@ -213,7 +213,15 @@ def checks(window, ws, mid, long_mid, report):
             box.dispatchEvent(new Event('input')); await wait(600);
             const lastRow = document.querySelectorAll('#transcript li')[4999];
             lastRow.scrollIntoView(); const scroll_ms = performance.now() - s;
+            await wait(300);
+            // Wide window: the transcript scrolls in its own pane; the search box
+            // and the steps panel stay in view.
+            const search = document.getElementById('m-search').getBoundingClientRect();
+            const wrap = document.querySelector('.transcript-wrap');
             return {{rows: document.querySelectorAll('#transcript li').length,
+                    wide: matchMedia('(min-width: 901px) and (min-height: 600px)').matches,
+                    pane_scrolled: wrap.scrollTop > 0, page_scroll_y: Math.round(window.scrollY),
+                    search_visible: search.top >= 0 && search.bottom <= window.innerHeight,
                     render_ms: Math.round(render_ms),
                     hit: document.getElementById('m-hits').textContent}};""", timeout=120)
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
@@ -306,8 +314,16 @@ def main():
     if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")
             and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")):
         bad.append("handoff")
-    if (report.get("long_transcript") or {}).get("rows") != 5000:
+    lt = report.get("long_transcript") or {}
+    if lt.get("rows") != 5000:
         bad.append("long transcript")
+    # Split scrolling applies only to a wide, tall enough window; high display
+    # scaling can make the check window narrower in page pixels.
+    if not lt.get("wide"):
+        print("note: window too small in page pixels for split scrolling; not checked")
+    elif not (lt.get("pane_scrolled") and lt.get("search_visible")
+              and lt.get("page_scroll_y") == 0):
+        bad.append("transcript pane scrolling")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     return 1 if bad else 0
 

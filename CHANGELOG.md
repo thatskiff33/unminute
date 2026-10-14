@@ -5,8 +5,17 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.3
+
+Discard, review layout and privacy improvements, and a new README. Install: download `WhisperWorkspace-0.2.3.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x updates and keeps your workspace. The known limitations listed for v0.2.0 and v0.2.1 still apply, except that unplugging a USB microphone mid-recording and dragging a recording onto the window have now been tested on hardware (#30, #27).
+
 - **Discard a meeting you do not need.** Meetings in the Inbox, and in review before the transcript review is confirmed, have Discard…, for test or wrong recordings. One explicit confirmation deletes the meeting's audio, transcript, edits and speaker names, using the same secure cleanup as the review steps, and leaves only the usual minimal receipts. Work in progress on it stops first. It is refused while a retention hold is active or the recording is still importing, and the original recording file is never deleted. A reviewed meeting is still finished with the final confirmation.
 - **Dismiss import errors.** Messages such as "The file is in cloud storage" now have a Dismiss link.
+- **Separate scrolling in the meeting view.** In a wide window the transcript and the steps panel scroll separately, so the title, toolbar and search box stay in view. Narrow or zoomed windows keep one page scroll.
+- **Long meeting titles** now use the available width instead of being cut short.
+- **Clearer microphone disconnection message.** When a microphone is unplugged mid-recording, Windows also reports a brief overrun. That is now part of the disconnection message rather than a separate "could not keep up" gap.
+- **ONNX Runtime telemetry off in the workspace.** The workspace now switches off ONNX Runtime's Windows telemetry events, as the earlier app already did, before any speech model loads.
+- **New README** centred on Meeting Workspace, with current screenshots of a fictional sample meeting. The earlier app's documentation moved to docs/EARLIER_APP.md.
 
 ## v0.2.2
 

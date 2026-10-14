@@ -98,7 +98,7 @@ Before switching version, the installer runs the **new** version's own check, `p
 | --- | --- |
 | None yet | Installed. |
 | Same storage format (schema) | Installed. Everything is kept: meetings, edits, holds, settings. |
-| New storage format, and the workspace holds no meetings, no active retention holds and no unfinished cleanup | Installed. Settings, watched folders and the minimal cleanup receipts are carried over when the app next opens. |
+| New storage format, and the workspace holds no meetings, no active retention holds, no unfinished cleanup and no microphone recording waiting to be imported | Installed. Settings, watched folders and the minimal cleanup receipts are carried over when the app next opens. |
 | New storage format, and the workspace still holds any of those | **Waits.** Exit code 5, with the reasons, for example "2 retention holds are active. Holds never expire on their own…". Nothing is changed. |
 | Older storage format than the workspace (a downgrade) | Refused. Exit code 6. |
 

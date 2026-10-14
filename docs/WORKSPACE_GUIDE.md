@@ -4,7 +4,7 @@ The meeting workspace turns a meeting recording into a reviewed transcript on yo
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in the [README](../README.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Setup's Repair downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
+This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in [EARLIER_APP.md](EARLIER_APP.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Setup's Repair downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
 
 ## What stays on your computer, and what does not
 

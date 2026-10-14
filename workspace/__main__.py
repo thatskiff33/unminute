@@ -68,6 +68,7 @@ def self_test():
     import importlib
     import socket
     ok = True
+    offline_guard.disable_onnxruntime_telemetry()   # before onnxruntime is used below
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
                  "torch", "pyannote.audio", "huggingface_hub", "webview", "clr_loader",
                  "sounddevice",                    # loads PortAudio (microphone, #30)

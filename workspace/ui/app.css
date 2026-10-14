@@ -46,13 +46,22 @@ progress { width: 120px; }
 
 /* Wraps at high zoom (400% = 320 CSS px wide) instead of scrolling sideways (#27). */
 .meeting-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.title-edit { min-width: 0; max-width: 100%; }
-.title-edit input { font-size: 18px; font-weight: 600; border-color: transparent; width: min(18em, 100%); }
+.title-edit { flex: 1 1 18em; min-width: 0; max-width: 100%; }   /* long titles use the space */
+.title-edit input { font-size: 18px; font-weight: 600; border-color: transparent; width: 100%; }
 .title-edit input:hover, .title-edit input:focus { border-color: var(--line); }
 .toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
 .toolbar .search { margin-left: auto; }
 .meeting-body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; }
 @media (max-width: 900px) { .meeting-body { grid-template-columns: 1fr; } }
+/* Wide windows: the title, toolbar and search stay in view, and the transcript
+   and the side panel scroll separately. --meeting-top is set by fitMeeting()
+   (app.js); the bottom space keeps clear of the audio player. Narrow windows
+   short windows and high zoom keep one page scroll (#27 reflow). */
+@media (min-width: 901px) and (min-height: 600px) {
+  .meeting-body { height: calc(100vh - var(--meeting-top, 220px) - 80px); }
+  .meeting-body > .transcript-wrap, .meeting-body > aside { overflow-y: auto; min-height: 0; }
+  .meeting-body > .transcript-wrap { padding-right: 8px; }
+}
 aside { border-left: 1px solid var(--line); padding-left: 16px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
