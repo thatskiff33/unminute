@@ -10,6 +10,8 @@
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
+# The microphone icon the earlier app uses; next to the app code in the package.
+ICON = Path(__file__).resolve().parents[1] / "whisper.ico"
 
 
 # Chromium switches for WebView2: resolve no host names (the page has nothing
@@ -166,4 +168,5 @@ def _lock_once(window):
 def run(func=None, args=None, debug=False):
     import webview
     webview.start(func, args, gui="edgechromium", http_server=False,
-                  private_mode=True, debug=debug)
+                  private_mode=True, debug=debug,
+                  icon=str(ICON) if ICON.is_file() else None)

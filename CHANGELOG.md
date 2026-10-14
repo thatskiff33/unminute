@@ -5,6 +5,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **App icon.** Meeting Workspace now shows the microphone icon in the Start menu, the window, the taskbar and Settings > Apps, instead of Python's. A pinned taskbar shortcut groups with the running window.
+
 ## v0.2.0-preview.3
 
 **Third preview** of the packaged meeting workspace, for testing. It installs per user without admin rights. An installed preview.1 or preview.2 updates in place.

@@ -27,6 +27,7 @@ import offline_guard  # noqa: E402
 offline_guard.disable_telemetry()
 offline_guard.install()
 
+APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1
 MODEL_CACHE = Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper-models"
 
 
@@ -119,6 +120,13 @@ def main():
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, str(exc), "Meeting workspace", 0x10)
         return 1
+    try:
+        # Our own taskbar identity (matches the shortcut, set by install.ps1),
+        # so the window shows the app's icon instead of Python's.
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
     holder = {}
     window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
                                  allowed=api.API_METHODS)

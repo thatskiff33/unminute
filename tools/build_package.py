@@ -37,7 +37,8 @@ EMBED_URL = (f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
 # pythonw.exe and python312.dll (Python Software Foundation) on 13 October 2026.
 EMBED_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
 
-APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md"]
+APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md",
+             "whisper.ico"]
 # Windows PowerShell 5.1 and many tools stop at 260-character paths. With the
 # default install folder (about 85 characters plus the user name) every path
 # inside the package must stay at or under this length.
