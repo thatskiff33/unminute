@@ -40,6 +40,7 @@ class FakeStream:
 
     def stop(self):
         self.stopped = True
+        self.finished()          # like PortAudio: finished_callback runs on stop()
 
     def close(self):
         self.closed = True

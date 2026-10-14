@@ -177,7 +177,8 @@ class Recording:
         self.paused = False
         self.level_db = -96.0
         self._last_audio = clock()
-        self._stop = threading.Event()
+        self._stop = threading.Event()          # the writer's signal to finish
+        self._stopping = threading.Event()      # a deliberate stop (not a lost device)
         self._writer = None
         self._stream = None
         self.journal = {
@@ -205,7 +206,8 @@ class Recording:
                         note="Saving fell behind; this audio was lost.")
 
     def _finished(self):
-        if not self._stop.is_set():
+        # PortAudio also calls this when we stop the stream ourselves.
+        if not self._stopping.is_set() and not self._stop.is_set():
             self._device_lost()
 
     # -- journal ---------------------------------------------------------------------
@@ -275,6 +277,7 @@ class Recording:
                         seconds=lost, note="The recording could not be saved any further: "
                                            "the disk is full or not writable.")
             self.journal["state"] = "failed"
+            self._stopping.set()
             self._stop.set()
             self._close_stream()
             try:
@@ -338,6 +341,7 @@ class Recording:
 
     def stop(self):
         """Stop capture and save everything queued. Returns the journal."""
+        self._stopping.set()          # a deliberate stop: not reported as a lost device
         self._close_stream()          # no more blocks arrive...
         self._stop.set()              # ...then the writer drains the queue and finishes
         if self._writer is not None:
