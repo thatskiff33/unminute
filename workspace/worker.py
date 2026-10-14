@@ -62,7 +62,7 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
-def _worker_main(conn, cache_dir, quiet):
+def _worker_main(conn, cache_dir, quiet, gpu_site=None):
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker.
     import sys
@@ -72,6 +72,11 @@ def _worker_main(conn, cache_dir, quiet):
     import offline_guard
     offline_guard.disable_telemetry()
     offline_guard.install()
+    if gpu_site:
+        # The GPU worker (speaker identification only): the CUDA build of
+        # PyTorch must be first on the path before anything imports torch.
+        from workspace import gpu
+        gpu.activate(gpu_site)
     if quiet:
         from workspace.resources import set_priority
         set_priority()
@@ -102,7 +107,7 @@ def _worker_main(conn, cache_dir, quiet):
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
             elif op == "diarize":
-                _, model, audio_path, hint, threads = msg
+                _, model, audio_path, hint, threads, device = msg
                 # One heavy model at a time: release the speech model first.
                 had_asr = engine is not None
                 engine, loaded = None, None
@@ -110,7 +115,7 @@ def _worker_main(conn, cache_dir, quiet):
                 gc.collect()
                 from workspace.engines import diarize_file
                 turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
-                                                        threads)
+                                                        threads, device=device)
                 gc.collect()
                 conn.send(("ok", turns, exclusive, device, had_asr))
             elif op == "exit":
@@ -126,8 +131,10 @@ def _worker_main(conn, cache_dir, quiet):
 class WorkerHandle:
     """Owned by the state-owning process. One meeting at a time uses it."""
 
-    def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S):
+    def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S, gpu_site=None):
         self.cache_dir, self.quiet, self.idle_unload_s = str(cache_dir), quiet, idle_unload_s
+        self.gpu_site = gpu_site
+        self._gpu = None             # companion GPU worker (speaker identification only)
         self._ctx = mp.get_context("spawn")
         self._proc = self._conn = None
         self._loaded = None          # what the CURRENT worker process has loaded
@@ -154,8 +161,9 @@ class WorkerHandle:
     def _start(self):
         parent, child = self._ctx.Pipe()
         self._proc = self._ctx.Process(target=_worker_main,
-                                       args=(child, self.cache_dir, self.quiet),
-                                       daemon=True, name="whisper-worker")
+                                       args=(child, self.cache_dir, self.quiet, self.gpu_site),
+                                       daemon=True, name="whisper-gpu-worker" if self.gpu_site
+                                       else "whisper-worker")
         self._proc.start()
         child.close()
         self._conn, self._loaded = parent, None
@@ -170,7 +178,24 @@ class WorkerHandle:
         self._proc = self._conn = None
         self._loaded = None
 
+    def gpu_worker(self, site):
+        """The companion worker that loads the CUDA build of PyTorch. It is
+        stopped, shut down and closed together with this one."""
+        if self._gpu is None or self._gpu.gpu_site != str(site):
+            if self._gpu is not None:
+                self._gpu.close()
+            self._gpu = WorkerHandle(self.cache_dir, quiet=self.quiet,
+                                     idle_unload_s=self.idle_unload_s, gpu_site=str(site))
+        self._gpu.quiet = self.quiet
+        if self._stop_requested.is_set():
+            self._gpu._stop_requested.set()
+        else:
+            self._gpu.begin_run()
+        return self._gpu
+
     def shutdown(self):
+        if self._gpu is not None:
+            self._gpu.shutdown()
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 try:
@@ -182,6 +207,8 @@ class WorkerHandle:
             self._kill()
 
     def close(self):
+        if self._gpu is not None:
+            self._gpu.close()
         self._closed = True
         self.stop_now()              # do not wait for an in-flight chunk
         with self._lock:
@@ -194,6 +221,8 @@ class WorkerHandle:
         cleans up and raises WorkerStopped, otherwise cleanup happens here.
         The stop stays in force until begin_run()."""
         self._stop_requested.set()
+        if self._gpu is not None:
+            self._gpu.stop_now()
         proc = self._proc
         if proc is not None and proc.is_alive():
             proc.terminate()
@@ -294,17 +323,25 @@ DIARIZE_TIMEOUT_FACTOR = 3.0      # x audio length, plus a floor: generous for s
 DIARIZE_TIMEOUT_FLOOR_S = 600.0
 
 
-def diarize(handle, model, audio_path, hint, threads):
+def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=None):
     """Whole-meeting speaker separation in the worker. Returns
     (turns, exclusive_turns, device, asr_was_loaded_before). A stop or a hang
-    ends the pass (it restarts from the beginning next time)."""
+    ends the pass (it restarts from the beginning next time). With
+    device="cuda" it runs in the companion GPU worker (gpu_site)."""
     from pathlib import Path
     seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
     timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
-    with handle._lock:
+    if device == "cuda":
+        # One heavy model at a time: release the speech model in the main
+        # worker before the GPU worker loads pyannote.
+        handle.shutdown()
+        target = handle.gpu_worker(gpu_site)
+    else:
+        target = handle
+    with target._lock:
         try:
-            reply = handle._request(("diarize", model, str(audio_path), hint, threads),
-                                    timeout)
+            reply = target._request(("diarize", model, str(audio_path), hint, threads,
+                                     device), timeout)
         finally:
             # The worker released the speech model before trying, so the next
             # transcription must reload it even if speaker separation failed.

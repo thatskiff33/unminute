@@ -53,9 +53,24 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 | Parakeet v2 (recommended) | Tested in the workspace (real-engine checks), and offline Parakeet inference from an earlier package build |
 | Parakeet v3, Whisper large-v3 turbo | Tested in the earlier app's engine only (Parakeet v3 dropped speech on some clips) |
 | pyannote community-1 speaker identification | Tested from source and from the package |
-| GPU acceleration | Not included. A detected graphics card does not enable it. See the GPU trial below (#9, #12) |
+| GPU acceleration | Optional, for speaker identification only (Setup component, Faster mode). Tested on an NVIDIA RTX 500 Ada laptop GPU (4 GB, driver 595.95). Transcription stays on the CPU. See below. |
 
-## GPU trial (not in this release)
+## GPU for speaker identification
+
+The optional component is the PyTorch 2.13.0 and torchaudio 2.11.0 CUDA 13.0 wheels (`workspace/gpu.py`). They are pinned by SHA-256 and every file is checked against the wheels' RECORD. They are loaded only by a separate speaker-identification worker. Measured through the app's worker on 14 October 2026 (RTX 500 Ada, 4 GB):
+
+| Synthetic audio | CPU (14 threads) | GPU | Speed-up | Peak GPU memory (incl. desktop) | Output |
+| --- | --- | --- | --- | --- | --- |
+| 2 minutes | 53.7 s | 17.3 s | 3.1x | 2.1 GB | identical turns |
+| 15 minutes | 435 s | 80.5 s | 5.4x | 2.1 GB | identical turns (150) |
+
+Other results:
+
+- **Install:** the real install through Setup's download process took 132 s, and the full file check passed.
+- **Fallback:** forcing a failure ran the pass on the CPU and labelled it.
+- **Not yet tested:** the synthetic audio was identified as one speaker, so multi-speaker agreement still needs a real recording (#12, #25).
+
+## GPU trial (engines)
 
 `tools/gpu_trial.py` runs the same audio on the CPU and on the GPU, verifies which ONNX Runtime provider was really used, and compares the outputs. Results for 5 minutes of synthetic speech, CPU against an NVIDIA RTX 500 Ada laptop GPU (4 GB), measured on 14 October 2026:
 

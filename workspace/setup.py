@@ -17,6 +17,7 @@ import os
 import threading
 
 import asr_engines
+from workspace import gpu
 
 HELP_LINKS = {   # fixed pages the user can open in their own browser (allowlist)
     "account": "https://huggingface.co/join",
@@ -64,6 +65,25 @@ def status(name, cache_dir):
     return state, plain, detail
 
 
+def gpu_card(cache_dir):
+    """The optional graphics card component, offered only with an NVIDIA card."""
+    info = gpu.detected()
+    if info is None:
+        return None
+    state, plain = gpu.status(cache_dir)
+    about = (f"Speeds up speaker identification on this computer's {info['name']}. "
+             "Used only in Faster mode, once turned on in Settings. Transcription stays "
+             "on the processor.")
+    if not info["driver_ok"]:
+        about += (f" The NVIDIA driver ({info['driver']}) is too old: version 580 or later "
+                  "is needed. Ask IT to update it.")
+    return {"name": gpu.COMPONENT, "role": "gpu", "recommended": False,
+            "title": "Graphics card acceleration (optional)", "about": about,
+            "state": state, "status": plain, "licence": gpu.LICENCE[0],
+            "source": gpu.LICENCE[1], "size_gb": round(gpu.DOWNLOAD_BYTES / 1e9, 2),
+            "revision": gpu.VERSION, "needs_token": False}
+
+
 def cards(cache_dir):
     out = []
     for c in CARDS:
@@ -73,6 +93,9 @@ def cards(cache_dir):
         out.append({**c, "state": state, "status": plain, "licence": lic, "source": source,
                     "size_gb": round(_size(c["name"]) / 1e9, 2), "revision": spec.revision[:7],
                     "needs_token": spec.gated})
+    card = gpu_card(cache_dir)
+    if card is not None:
+        out.append(card)
     return out
 
 
@@ -88,7 +111,7 @@ def _friendly(exc):
     if "401" in low or "unauthorized" in low or ("invalid" in low and "token" in low):
         return "Hugging Face did not accept the token. Check it, or create a new read token."
     if any(k in low for k in ("connection", "timeout", "temporarily", "resolve", "offline")):
-        return "Could not reach Hugging Face. Check the internet connection and try again."
+        return "Could not reach the download site. Check the internet connection and try again."
     if isinstance(exc, asr_engines.ModelLoadError):
         return str(exc).split(" (")[0] + ". Try again."
     return "The download did not finish. Nothing was changed; try again."
@@ -116,15 +139,40 @@ def _download_main(conn, name, cache_dir):
     def log(message):
         conn.send(("log", safe_message(message)[:300]))
     try:
+        if name == gpu.COMPONENT:
+            conn.send(("done", gpu.install(cache_dir, log, _fetch)))
+            return
         if asr_engines.MANAGED_MODELS[name].gated and not token:
             raise SetupError("The speaker model needs your Hugging Face token to download.")
         result = asr_engines.install(name, cache_dir, log, download,
                                      has_token=bool(token))
         conn.send(("done", result))
-    except SetupError as exc:
+    except (SetupError, gpu.GpuError) as exc:
         conn.send(("error", str(exc)))
     except Exception as exc:
         conn.send(("error", _friendly(exc.__cause__ or exc)))
+
+
+def _fetch(url, dest, expected_size):
+    """Stream one file to disk (download process only); the caller checks the
+    SHA-256. Only the pinned PyTorch download host is accepted."""
+    import urllib.request
+    if not url.startswith("https://download-r2.pytorch.org/whl/cu130/"):
+        raise SetupError("Unexpected download address.")
+    req = urllib.request.Request(url, headers={"User-Agent": "MeetingWorkspace"})
+    done = 0
+    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as out:
+        while block := r.read(8 << 20):
+            done += len(block)
+            if done > expected_size:
+                raise SetupError("The download is larger than expected. Nothing was installed.")
+            out.write(block)
+    if done != expected_size:
+        raise SetupError("The download was incomplete. Try again.")
+
+
+def known(name):
+    return name in asr_engines.MANAGED_MODELS or name == gpu.COMPONENT
 
 
 class Downloads:
@@ -142,7 +190,7 @@ class Downloads:
     def start(self, name, token=None, on_success=None):
         """on_success runs only after a verified download (e.g. remember the
         token only once it has been shown to work)."""
-        if name not in asr_engines.MANAGED_MODELS:
+        if not known(name):
             raise SetupError("Unknown model.")
         with self._lock:
             if self._running:
@@ -167,7 +215,7 @@ class Downloads:
 
     def verify(self, name):
         """Full SHA-256 check of an installed model (in the background)."""
-        if name not in asr_engines.MANAGED_MODELS:
+        if not known(name):
             raise SetupError("Unknown model.")
         with self._lock:
             if self._running:
@@ -182,8 +230,14 @@ class Downloads:
         entry, final = self.state[name], {"state": "failed",
                                           "message": "The check could not be completed."}
         try:
-            spec = asr_engines.MANAGED_MODELS[name]
-            if asr_engines.is_parakeet(name):
+            if name == gpu.COMPONENT:
+                ok = not gpu.check(self.cache_dir, full=True)
+                spec = None
+            else:
+                spec = asr_engines.MANAGED_MODELS[name]
+            if spec is None:
+                pass
+            elif asr_engines.is_parakeet(name):
                 problems = []
                 for s in (spec, asr_engines.SILERO_VAD):
                     folder = asr_engines.model_dir(s, self.cache_dir)

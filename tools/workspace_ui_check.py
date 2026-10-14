@@ -288,7 +288,9 @@ def main():
             and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")):
         bad.append("review confirmation")
     st = report.get("setup") or {}
-    if not (st.get("cards") == 4 and st.get("token_field_type") == "password"
+    from workspace import gpu          # the graphics card component card needs NVIDIA
+    if not (st.get("cards") == 4 + (gpu.detected() is not None)
+            and st.get("token_field_type") == "password"
             and st.get("token_cleared") and not st.get("token_in_page")
             and st.get("remove_visible") and report.get("setup_vault") == ["token"]):
         bad.append("setup")

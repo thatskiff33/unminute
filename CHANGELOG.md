@@ -5,6 +5,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **Graphics card for speaker identification (optional).** On computers with an NVIDIA card, Setup offers a one-time, verified download of the CUDA build of PyTorch (1.92 GB). With it turned on in Settings (Faster mode), speaker identification runs on the graphics card. On a 15-minute test recording on an RTX 500 laptop GPU it took 80 s instead of 435 s, with identical results. Transcription stays on the processor. If the card cannot be used, that pass runs on the processor and the meeting says so.
+
 ## v0.2.0
 
 **Meeting Workspace**: a Windows app that transcribes, reviews and cleans up meeting recordings on your own computer. This first full release brings together the four previews (v0.2.0-preview.1 to preview.4).

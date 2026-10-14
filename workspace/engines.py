@@ -49,7 +49,11 @@ def load_engine(name, cache_dir, threads):
 SPEAKER_MODEL = "pyannote"
 
 
-def diarize_file(model, cache_dir, audio_path, hint, threads):
+class GpuUnavailable(RuntimeError):
+    """The CUDA build or a usable NVIDIA card/driver is not available."""
+
+
+def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu"):
     """Speaker separation over a meeting's decoded audio file (16 kHz float32).
     Returns (turns, exclusive_turns, device); turns are (start, end, label).
     Offline only: loads the hash-verified pyannote folder by path."""
@@ -60,7 +64,11 @@ def diarize_file(model, cache_dir, audio_path, hint, threads):
     del mm
     if model.startswith(TEST_PREFIX):
         module, func = model[len(TEST_PREFIX):].split(":")
-        return getattr(importlib.import_module(module), func)(audio, hint)
+        result = getattr(importlib.import_module(module), func)(audio, hint)
+        if device == "cuda":              # tests: the fake reports where it "ran"
+            return result[0], result[1], getattr(importlib.import_module(module),
+                                                 "GPU_LABEL", "cuda")
+        return result
 
     spec = asr_engines.SPEAKER_MODEL
     folder = asr_engines.find_verified(spec, cache_dir)
@@ -69,8 +77,16 @@ def diarize_file(model, cache_dir, audio_path, hint, threads):
                              "verification. Repair it in Setup.")
     import torch
     torch.set_num_threads(threads)
+    label = "cpu"
+    if device == "cuda":
+        if "+cu" not in torch.__version__ or not torch.cuda.is_available():
+            raise GpuUnavailable("graphics card unavailable (needs NVIDIA driver 580 or "
+                                 "later and the graphics card component)")
+        label = f"cuda ({torch.cuda.get_device_name(0)})"[:80]
     from pyannote.audio import Pipeline
     pipeline = Pipeline.from_pretrained(str(folder))
+    if device == "cuda":
+        pipeline.to(torch.device("cuda"))
     kwargs = {"num_speakers": int(hint)} if hint else {}
     out = pipeline({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": 16000},
                    **kwargs)
@@ -82,4 +98,6 @@ def diarize_file(model, cache_dir, audio_path, hint, threads):
                 for t, _, lbl in annotation.itertracks(yield_label=True)]
     turns, excl = as_list(full), as_list(exclusive)
     del pipeline
-    return turns, excl, "cpu"          # pyannote runs in float32 on the CPU here
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    return turns, excl, label          # pyannote runs in float32 on either device

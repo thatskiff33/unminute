@@ -133,7 +133,14 @@ These configurations have been tested:
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
-GPU acceleration is not part of this release. Detecting a graphics card does not enable it.
+**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Setup offers "Graphics card acceleration". This is a one-time 1.92 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Speakers > "Use the graphics card for speaker identification".
+
+- **When it is used:** only in Faster mode. Transcription always runs on the processor.
+- **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.
+- **If the card cannot be used** (an old driver, too little graphics memory or a damaged component), that speaker pass runs on the processor instead, and the meeting says so.
+- **Each meeting shows** whether speaker identification ran on the graphics card.
+
+Detecting a graphics card does not enable anything on its own.
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for what is verified for a release and what still needs people or hardware.
 

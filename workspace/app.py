@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import (cleanup, clipboard, credentials, handoff, holds, intake, media,
+from workspace import (cleanup, clipboard, credentials, gpu, handoff, holds, intake, media,
                        recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -47,6 +47,7 @@ DEFAULT_SETTINGS = {
     "battery_override": False,                     # process automatically on battery
     "onboarded": False,                            # guided setup finished or skipped (#19)
     "microphone": False,                           # microphone recording (#30), off by default
+    "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
 }
 
 
@@ -88,7 +89,8 @@ class Settings:
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
                 raise WorkspaceError("Unknown speech model.")
-            if (key in ("speakers", "battery_override", "onboarded", "microphone")
+            if (key in ("speakers", "battery_override", "onboarded", "microphone",
+                        "gpu_speakers")
                     and not isinstance(value, bool)):
                 raise WorkspaceError("Expected on or off.")
             self.values[key] = value
@@ -729,9 +731,11 @@ class Workspace:
             with self._lock:
                 self._reruns.pop(mid, None)
             self._status = "Identifying speakers"
+            device, site = self._speaker_device()
             speakers.run_speakers(self.store, mid, vid, self.handle,
                                   media.audio_path(self.media, mid), threads=threads,
-                                  hint=count, model=self.speaker_model)
+                                  hint=count, model=self.speaker_model, device=device,
+                                  gpu_site=site)
             return
         if kind == "transcribe":
             version = self.store.version(ref)
@@ -753,9 +757,19 @@ class Workspace:
                 self.store.set_paused(mid, True)    # Stop now = paused until resumed
             return
         self._status = "Identifying speakers"
+        device, site = self._speaker_device()
         speakers.run_speakers(self.store, mid, ref, self.handle,
                               media.audio_path(self.media, mid), threads=threads,
-                              model=self.speaker_model)
+                              model=self.speaker_model, device=device, gpu_site=site)
+
+    def _speaker_device(self):
+        """The graphics card for speaker identification only when the user
+        turned it on, in Faster mode, with the component verified. Otherwise
+        the processor."""
+        if (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
+                and gpu.status(self.cache_dir)[0] == "ready"):
+            return "cuda", str(gpu.site_dir(self.cache_dir))
+        return "cpu", None
 
     # -- controls -------------------------------------------------------------------------
 
@@ -1057,6 +1071,7 @@ class Workspace:
                                 "edits": self.store.edit_count(x["id"])}
                                for i, x in enumerate(older)],
             "speakers": ({"status": runs[-1]["status"], "error": runs[-1]["error"],
+                          "device": runs[-1]["backend"],
                           "count": runs[-1]["hint_count"],
                           "started_at": runs[-1]["started_at"]} if runs else None),
             "holds": [{"id": h["id"], "scope": h["scope"], "reason": h["reason"],
@@ -1100,7 +1115,11 @@ class Workspace:
                                                asr_engines.RECOMMENDED_PARAKEET else "")}
                    for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
         from workspace import update
+        info = gpu.detected()
         return {**self.settings.values, "choices": choices,
+                "gpu": {"card": info["name"] if info else None,
+                        "driver_ok": bool(info and info["driver_ok"]),
+                        "component": gpu.status(self.cache_dir)[0] if info else "missing"},
                 "deployment": update.deployment(),
                 "update_blockers": [b["message"] for b in
                                     update.blockers(self.root / "workspace.db")]}
@@ -1108,6 +1127,8 @@ class Workspace:
     def set_settings(self, changes):
         if not isinstance(changes, dict):
             raise WorkspaceError("Expected settings.")
+        if changes.get("gpu_speakers") is True and gpu.status(self.cache_dir)[0] != "ready":
+            raise WorkspaceError("Download the graphics card component in Setup first.")
         if changes.get("microphone") is False and self._recording is not None:
             raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet
@@ -1211,12 +1232,12 @@ class Workspace:
         one given now (remembered in Credential Manager unless the user
         unticks Remember), the remembered one, or the earlier app's one."""
         import os
-        if not isinstance(name, str) or name not in asr_engines.MANAGED_MODELS:
+        if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")
         on_success = None
-        if asr_engines.MANAGED_MODELS[name].gated:
+        if name in asr_engines.MANAGED_MODELS and asr_engines.MANAGED_MODELS[name].gated:
             try:
                 if token or use_earlier:
                     token = (token or "").strip() or os.environ.get("HF_TOKEN") or None
