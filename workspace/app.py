@@ -1444,6 +1444,21 @@ class Workspace:
         self._wake.set()
         return jid
 
+    def discard_meeting(self, mid):
+        """Delete a meeting that is not needed, with one explicit confirmation
+        (cleanup.discard). Work in progress on it is stopped first."""
+        self._meeting(mid)
+        with self._lock:
+            self._reruns.pop(mid, None)
+            busy = self._busy
+            if busy and busy[0] == mid and busy[1] != "cleanup":
+                self.handle.stop_now()
+            try:
+                cleanup.discard(self.store, mid)
+            except cleanup.CleanupError as exc:
+                raise WorkspaceError(str(exc)) from exc
+        self._wake.set()
+
     def confirm_final_saved(self, mid):
         self._meeting(mid)
         try:

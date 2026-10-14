@@ -83,6 +83,14 @@ function meetingRow(m) {
     m.held ? el("span", { class: "badge hold", textContent: "Held" }) : null,
     el("div", { class: "muted", textContent: `${age(m.age_days)} · Next: ${m.action}` }));
   const row = el("li", {}, name);
+  const discard = el("button", { type: "button", class: "link", textContent: "Discard…",
+    title: "Delete a meeting you do not need (for example a test recording)",
+    on: { click: () => confirmDialog({
+      title: "Discard this meeting?",
+      body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
+      check: "Delete this meeting and everything in it.",
+      onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
+    }) } });
   if (m.stage === "inbox") {
     row.append(el("progress", { max: 100, value: m.progress, title: `${m.progress}% transcribed` }));
     const label = m.error ? "Needs attention" : m.paused ? "Paused"
@@ -98,6 +106,7 @@ function meetingRow(m) {
       row.append(el("button", { type: "button", textContent: "Stop now",
                                 title: "Stops at once; the part in progress is redone later",
                                 on: { click: () => attempt(() => call("stop_now", m.id).then(refresh)) } }));
+    row.append(discard);
   } else {
     row.append(el("span", { class: "badge", textContent: STAGES[m.stage] }));
     // Speaker identification runs after transcription; it can be paused too.
@@ -112,6 +121,7 @@ function meetingRow(m) {
       row.append(el("button", { type: "button", textContent: "Resume",
                                 on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } }));
     }
+    if (m.stage !== "cleanup") row.append(discard);
   }
   return row;
 }
@@ -132,7 +142,9 @@ async function renderStatus() {
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
   if (s.message) parts.push(s.message);
   say(parts.join(" · "));
-  $("import-errors").replaceChildren(...s.import_errors.map((e) => el("li", { textContent: e })));
+  $("import-errors").replaceChildren(...s.import_errors.map((e) => el("li", {}, e, " ",
+    el("button", { type: "button", class: "link", textContent: "Dismiss",
+                   on: { click: () => attempt(() => call("clear_import_errors").then(refresh)) } }))));
 }
 
 async function renderReminders() {

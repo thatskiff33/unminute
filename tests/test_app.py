@@ -257,6 +257,37 @@ class WorkspaceTests(unittest.TestCase):
         [m] = ws.meetings()
         self.assertIn("missing", m["error"])
 
+    def test_discard_stops_work_and_removes_the_meeting_securely(self):
+        import time as _time
+        ws = self.open(start=False, model="sleepy")         # transcription in progress
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        deadline = _time.time() + 60
+        while _time.time() < deadline and not (ws._busy and ws._busy[1] == "transcribe"):
+            _time.sleep(0.1)
+        [m] = ws.meetings()
+        ws.discard_meeting(m["id"])
+        self.assertTrue(ws.wait_idle(120))
+        self.assertEqual(ws.meetings(), [])
+        self.assertFalse((ws.media / m["id"]).exists())
+        self.assertEqual(sorted(r["result"] for r in ws.receipts()),
+                         ["audio removed", "transcript removed"])
+
+    def test_discard_is_refused_while_held_and_never_deletes_the_original(self):
+        ws = self.open(start=False)
+        ws._import_one(str(self.rec))
+        [m] = ws.meetings()
+        ws.add_hold(m["id"], "audio", "keep for review")
+        with self.assertRaises(WorkspaceError):
+            ws.discard_meeting(m["id"])
+        hid = ws.store._one("SELECT id FROM holds")["id"]
+        ws.release_hold(hid)
+        with ws.store.tx() as db:                            # as if a watched folder allowed it
+            db.execute("UPDATE sources SET delete_original = 1")
+        ws.discard_meeting(m["id"])
+        self.assertEqual(ws.store._one("SELECT delete_original FROM sources")[0], 0)
+        self.assertTrue(self.rec.exists())
+
     def test_models_can_be_removed_unless_still_needed(self):
         import asr_engines
         from workspace import gpu
