@@ -129,6 +129,7 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
+- **Minimum hardware:** 4 processor cores and 8 GB of memory. This is the stated minimum; so far it has only been tested on a faster laptop (#28).
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
