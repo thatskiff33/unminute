@@ -29,13 +29,14 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 | Handoff clipboard | A real copy round-tripped exactly and carried the formats that keep it out of clipboard history and cloud clipboard sync (#22, closed). |
 | Packaged crash tests | `tools/packaged_crash_check.py` (PR #65) on the installed 0.2.0-preview.1 package passed all 12 criteria. The app was killed after chunk commits, during speaker identification, after the review and final confirmations, and with an active hold. Each time it restarted with an identical transcript, no duplicates, correct cleanup and no residue. A hold survived a crash, and releasing it removed nothing without confirmation. A test token was removed, and the clipboard was unchanged. |
 | Import dialog | `tools/import_dialog_check.ps1` (PR #65): the native Import dialog of the installed package imported a recording. |
+| Accessibility (technical) | `tools/accessibility_check.py` (PR #68) found no problems in 8 states of the real window: names, keyboard reach, focus rings, WCAG AA contrast, colour-only statuses and reflow at 640 and 320 CSS px. Keyboard and Ctrl+wheel zoom work (50% to 300%). Not covered: screen-reader use, high-contrast themes and pilot users (#27). |
 | Packaged lifecycle and resources | `tools/packaged_check.py` (PR #57) collects these from an installed package. Development laptop run of the installed 0.2.0-preview.1 package (16 logical CPUs, 32 GB, CPU only, 14 October 2026). Self-test PASS. 15 minutes of synthetic audio transcribed with speakers in 673 s, with a worker peak of 2,418 MB and 0 network attempts. After review and final-saved confirmation, no meeting or marker text remained and there were no backup files. The idle window used 1.0% of one core and 480 MB. Reference measurements still belong on the lowest-supported laptop (#28). |
 
 ## Before a business release (needs people or hardware)
 
 - [ ] **#11:** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Choose the signing route.
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
-- [ ] **#27:** accessibility and an end-to-end task with nontechnical users.
+- [ ] **#27:** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
 - [ ] **#28:** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
 - [ ] **#20:** importing by dragging a recording onto the window (needs a real mouse; the Import dialog is verified).
 
