@@ -154,7 +154,7 @@
     </fieldset>
     <fieldset>
       <legend>Speech model</legend>
-      <select id="s-model"></select>
+      <select id="s-model" aria-label="Speech model"></select>
       <p class="muted">Changing the model affects new recordings and "Transcribe again".</p>
     </fieldset>
     <fieldset>
@@ -232,7 +232,7 @@
   <p id="ho-status" role="status" aria-live="polite"></p>
 </dialog>
 
-<dialog id="confirm">
+<dialog id="confirm" aria-labelledby="c-title" aria-describedby="c-body">
   <form method="dialog">
     <h2 id="c-title"></h2>
     <p id="c-body"></p>

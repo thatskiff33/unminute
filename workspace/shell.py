@@ -120,7 +120,10 @@ def create_window(bridge, title="Meeting workspace", hidden=False, harden=True,
     webview.settings["ALLOW_FILE_URLS"] = False
     window = webview.create_window(title, url=ui_url(page), js_api=bridge,
                                    width=1100, height=760, min_size=(640, 480),
-                                   hidden=hidden, text_select=True)
+                                   hidden=hidden, text_select=True,
+                                   # Ctrl+plus/minus and Ctrl+wheel zoom (#27);
+                                   # pywebview turns zoom off by default.
+                                   zoomable=True)
     window.events.before_load += lambda: _lock_once(window)
     return window
 
