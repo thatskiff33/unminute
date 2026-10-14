@@ -40,6 +40,7 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
 - [ ] **#27:** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
 - [ ] **#28:** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
+- [ ] **#30:** unplug a USB or Bluetooth microphone during a recording (runbook section 6). Everything else is tested with a simulated device and the built-in microphone (PR #72).
 - [ ] **#20:** importing by dragging a recording onto the window (needs a real mouse; the Import dialog is verified).
 
 ## Supported configuration (this release)
