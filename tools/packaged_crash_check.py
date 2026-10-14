@@ -3,18 +3,22 @@
 # (and its worker) around chunk commits, speaker identification, cleanup and a
 # held cleanup, restart, and check that nothing is lost, duplicated or brought
 # back. Also checks token removal (test credential only) and that the
-# clipboard is untouched. Run it with the package's own runtime:
+# clipboard sequence number is unchanged (do not copy anything while it runs).
+# Run it with the package's own runtime:
 #
 #   <install>\versions\<v>\runtime\python.exe tools\packaged_crash_check.py
 #       <install>\versions\<v> <model cache> <recording.wav> <report.json> [seconds]
 #
-# Uses two throwaway LOCALAPPDATA profiles ("crash" and "reference"); no real
-# workspace, model cache or saved token is touched. Synthetic audio only.
+# Uses two throwaway LOCALAPPDATA profiles ("crash" and "reference"), deleted
+# at the end; no real workspace or saved token is touched. The model cache is
+# used as given: pass a copy if it must stay untouched. Synthetic audio only.
+# The report ends with "pass" and the list of criteria that failed.
 
 import ctypes
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,7 +93,10 @@ class Child:
 
 
 def run_to_idle(ctx, wav=None, timeout=3000):
-    return Child(ctx, "run", ctx["cache"], wav or "-").finish(timeout)
+    last = Child(ctx, "run", ctx["cache"], wav or "-").finish(timeout)
+    if not (last and last.get("idle")):
+        raise RuntimeError(f"the app did not become idle: {last}")
+    return last
 
 
 def act(ctx, action, kill_after=None):
@@ -156,11 +163,13 @@ def check(version_dir, cache, wav, report, seconds):
     if first is None:
         raise RuntimeError("the run finished before the first kill point")
     total = first["chunks"]
-    kills.append({"at": "after first chunk commit", "killed": c.kill()})
+    kills.append({"at": f"after {first['committed']} of {total} chunks committed",
+                  "killed": c.kill()})
     c = Child(crash, "run", crash["cache"], "-")
-    c.until(lambda s: s.get("committed", 0) >= max(2, total - 2), 1200)
+    s = c.until(lambda s: s.get("committed", 0) >= max(2, total - 2), 1200)
     time.sleep(0.3)                       # land inside the next chunk's work
-    kills.append({"at": f"chunk {max(2, total - 2)} of {total}", "killed": c.kill()})
+    kills.append({"at": f"after {s['committed']} of {total} chunks committed",
+                  "killed": c.kill()})
     c = Child(crash, "run", crash["cache"], "-")
     c.until(lambda s: s.get("busy") == "speakers", 1200)
     time.sleep(3)
@@ -205,8 +214,46 @@ def check(version_dir, cache, wav, report, seconds):
                        capture_output=True, text=True, env=crash["env"], cwd=app)
     report["token_removal"] = json.loads(r.stdout.strip().splitlines()[-1])
 
-    report["clipboard_unchanged"] = clipboard_sequence() == clip0
-    report["profiles"] = str(base)
+    report["clipboard_sequence_unchanged"] = clipboard_sequence() == clip0
+    report["failed"] = verdict(report)
+    report["pass"] = not report["failed"]
+    shutil.rmtree(base, ignore_errors=True)
+    report["profiles_removed"] = not base.exists()
+
+
+def verdict(r):
+    """Names of the criteria that failed (empty when everything passed)."""
+    ref, pc = r["reference"], r["processing_crashes"]
+    rv, fin, h = r["review_cleanup_crash"], r["final_cleanup_crash"], r["hold_race"]
+    clean = (lambda st, res: st["meetings"] == 0 and st["segments"] == 0
+             and st["edits"] == 0 and st["audio_files"] == 0 and not res["marker_found_in"]
+             and st["freelist_pages"] == 0 and st["wal_bytes"] == 0)
+    checks = {
+        "reference transcribed with speakers": ref["segments"] > 0
+            and ref["speaker_runs"] == ["done"] and not ref["errors"],
+        "every kill landed on a live process": all(k["killed"] for k in pc["kills"])
+            and rv["kill"]["killed"] and fin["kill"]["killed"] and h["crash"]["killed"],
+        "same transcript as reference after crashes": pc["same_text_as_reference"]
+            and pc["same_segment_count"] and pc["state"]["duplicate_segments"] == 0
+            and not pc["state"]["errors"],
+        "interrupted work recorded": pc["state"]["attempts"].get("interrupted", 0) >= 1
+            and pc["state"]["speaker_runs"][-1] == "done",
+        "audio removed, transcript kept after review crash": rv["state"]["audio_files"] == 0
+            and rv["state"]["marker_in_edits"] and rv["state"]["segments"] == ref["segments"],
+        "nothing left after final cleanup crash": clean(fin["state"], fin["residue"]),
+        "hold kept audio through a crash": h["after_restart"]["audio_files"] == 1
+            and h["after_restart"]["active_holds"] == 1,
+        "release alone removed nothing": h["after_release"]["audio_files"] == 1
+            and h["after_release"]["cleanup_jobs"][0]["state"] == "awaiting_confirmation",
+        "confirmation then removed audio": h["after_confirm"]["audio_files"] == 0,
+        "nothing left after held meeting's final cleanup": clean(h["after_final"],
+                                                                 h["residue"]),
+        "test token removed": r["token_removal"]["saved"]
+            and not r["token_removal"]["present_after_removal"]
+            and not r["token_removal"]["loaded_after_removal"],
+        "clipboard sequence unchanged": r["clipboard_sequence_unchanged"],
+    }
+    return [name for name, ok in checks.items() if not ok]
 
 
 CHILD = r'''
@@ -233,12 +280,13 @@ def status(ws):
 def run(ws, wav):
     if wav != "-" and not ws.meetings():
         ws.import_paths([wav])
-    t = time.time()
+    t, idle = time.time(), False
     while time.time() - t < 3000:
         say(**status(ws))
         if ws.wait_idle(0.25) and (ws.meetings() or wav == "-") and ws.wait_idle(1):
+            idle = True
             break
-    say(done=True, **status(ws))
+    say(done=True, idle=idle, **status(ws))
 
 
 def act(ws, action, marker):

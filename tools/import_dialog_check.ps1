@@ -19,43 +19,63 @@ $env:LOCALAPPDATA = $profileDir
 $app = Join-Path $Version 'app'
 $proc = Start-Process -FilePath (Join-Path $Version 'runtime\pythonw.exe') -ArgumentList '-m', 'workspace' -WorkingDirectory $app -PassThru
 
-function Find-Until($scope, $cond, $seconds) {
+
+# Processes of this app instance only (pythonw and its children).
+function Get-AppPid {
+    $ids = @($proc.Id)
+    $all = Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId
+    do {
+        $more = @($all | Where-Object { $ids -contains $_.ParentProcessId -and $ids -notcontains $_.ProcessId } |
+            ForEach-Object ProcessId)
+        $ids += $more
+    } while ($more.Count)
+    return $ids
+}
+
+# Top-level windows of this app instance; never another program's windows.
+function Get-AppWindow($class) {
+    $appIds = Get-AppPid
+    $wins = $A::RootElement.FindAll($T::Children, [System.Windows.Automation.Condition]::TrueCondition)
+    return @($wins | Where-Object { $appIds -contains $_.Current.ProcessId -and
+        (-not $class -or $_.Current.ClassName -eq $class) })
+}
+
+function Find-InApp($cond, $seconds, $class) {
     $end = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $end) {
-        $e = $scope.FindFirst($T::Descendants, $cond)
-        if ($e) { return $e }
+        foreach ($w in Get-AppWindow $class) {
+            if (-not $cond) { return $w }
+            $e = $w.FindFirst($T::Descendants, $cond)
+            if ($e) { return $e }
+        }
         Start-Sleep -Milliseconds 500
     }
     return $null
 }
 
-$result = [ordered]@{ profile = $profileDir }
+$result = [ordered]@{ pass = $false }
 try {
-    # 2. The app window and its Import button (inside WebView2). Without models
-    #    the app opens on Setup; Import is on the Inbox page.
+    # 2. The app's Import button (inside WebView2). Without models the app
+    #    opens on Setup; Import is on the Inbox page.
     $inboxCond = New-Object System.Windows.Automation.AndCondition(
         (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Inbox')),
         (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)))
-    $inbox = Find-Until $A::RootElement $inboxCond 90
+    $inbox = Find-InApp $inboxCond 90
     if (-not $inbox) { throw 'Inbox button not found' }
     $inbox.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     $byName = New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "Import recordings$([char]0x2026)")
-    $button = Find-Until $A::RootElement $byName 90
+    $button = Find-InApp $byName 90
     if (-not $button) { throw 'Import button not found' }
-    $result.button_found = $true
     $button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 
-    # 3. The native Open dialog (#32770): file name box (1148) and Open (1).
-    $dlgCond = New-Object System.Windows.Automation.PropertyCondition($A::ClassNameProperty, '#32770')
-    $dialog = Find-Until $A::RootElement $dlgCond 30
+    # 3. The app's own native Open dialog (#32770). Win32 messages to its
+    #    controls (no user input): file name Edit in ComboBoxEx32 (id 1148)
+    #    > ComboBox > Edit; Open is id 1.
+    $dialog = Find-InApp $null 30 '#32770'
     if (-not $dialog) { throw 'Open dialog not found' }
     $result.dialog_title = $dialog.Current.Name
-    # The file name box is an Edit inside a ComboBox (both AutomationId 1148 on
-    # most builds); use whichever offers a value pattern.
-    # Win32 messages to the dialog's own controls (no user input): the file
-    # name Edit sits in ComboBoxEx32 (id 1148) > ComboBox > Edit; Open is id 1.
     Add-Type @'
-using System; using System.Runtime.InteropServices; using System.Text;
+using System; using System.Runtime.InteropServices;
 public static class Dlg {
   [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr a, string c, string w);
@@ -70,20 +90,26 @@ public static class Dlg {
     if ($editH -eq [IntPtr]::Zero) { $editH = [Dlg]::FindWindowEx($combo, [IntPtr]::Zero, 'Edit', $null) }
     if ($editH -eq [IntPtr]::Zero) { throw 'File name box not found' }
     [Dlg]::SendMessage($editH, 0x000C, [IntPtr]::Zero, $Wav) | Out-Null          # WM_SETTEXT
-    $result.name_box = 'set'
     [Dlg]::SendMessage([Dlg]::GetDlgItem($hDlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null   # BM_CLICK on Open
 
-    # 4. The meeting appears in the workspace (content-free counts only).
+    # 4. The meeting appears: a read-only count, so the probe changes nothing.
+    $db = Join-Path $profileDir 'whisper\workspace\workspace.db'
+    $probe = "import sqlite3, sys; d = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True); print(d.execute('SELECT count(*) FROM meetings').fetchone()[0])"
     $end = (Get-Date).AddSeconds(120)
-    Set-Location $app
     do {
         Start-Sleep -Seconds 2
-        $status = & (Join-Path $Version 'runtime\python.exe') -c "import sys; sys.path.insert(0, '.'); from workspace.store import Store, default_root; s = Store(default_root() / 'workspace.db'); print(s._one('SELECT count(*) n FROM meetings')['n']); s.close()" 2>$null
-    } while ((Get-Date) -lt $end -and "$status".Trim() -ne '1')
-    $result.meetings_after_dialog = "$status".Trim()
+        $count = & (Join-Path $Version 'runtime\python.exe') -c $probe $db 2>$null
+    } while ((Get-Date) -lt $end -and "$count".Trim() -ne '1')
+    $result.meetings_after_dialog = "$count".Trim()
+    $result.pass = ("$count".Trim() -eq '1')
+    if (-not $result.pass) { $result.error = 'No meeting was created within 120 s' }
 } catch {
     $result.error = $_.Exception.Message
 } finally {
     Start-Process taskkill -ArgumentList '/F', '/T', '/PID', $proc.Id -NoNewWindow -Wait | Out-Null
+    Start-Sleep -Seconds 2
+    Remove-Item $profileDir -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
+    $result.profile_removed = -not (Test-Path $profileDir)
 }
 $result | ConvertTo-Json
+if (-not $result.pass) { exit 1 }
