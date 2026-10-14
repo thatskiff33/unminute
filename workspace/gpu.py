@@ -31,17 +31,22 @@ LICENCE = ("PyTorch BSD-3-Clause; NVIDIA CUDA runtime and cuDNN under NVIDIA's l
            "PyTorch CUDA 13.0 build from download.pytorch.org")
 
 # Pinned on 14 October 2026 from https://download.pytorch.org/whl/cu130/ (the
-# index publishes these SHA-256 values with each file).
+# index publishes these SHA-256 values with each file). record_sha256 pins each
+# wheel's own file list (RECORD), so an installed file cannot be changed
+# together with its RECORD line and still pass.
 WHEELS = (
     {"name": "torch", "version": "2.13.0+cu130", "size": 1915519202,
      "url": "https://download-r2.pytorch.org/whl/cu130/"
             "torch-2.13.0%2Bcu130-cp312-cp312-win_amd64.whl",
-     "sha256": "2efab1e83604ca628c6d85b9e188c153690980498d1297081a9dad704919303c"},
+     "sha256": "2efab1e83604ca628c6d85b9e188c153690980498d1297081a9dad704919303c",
+     "record_sha256": "e415d943930b06b803c218451db82748e7cdfe57c514e5d51de9a175ee5a2c16"},
     {"name": "torchaudio", "version": "2.11.0+cu130", "size": 1722734,
      "url": "https://download-r2.pytorch.org/whl/cu130/"
             "torchaudio-2.11.0%2Bcu130-cp312-cp312-win_amd64.whl",
-     "sha256": "f74949f9ace1e4a6cf9468bdb3211b9cfa0af6ea348125471ac71c8621d6c77d"},
+     "sha256": "f74949f9ace1e4a6cf9468bdb3211b9cfa0af6ea348125471ac71c8621d6c77d",
+     "record_sha256": "10cdec950a2b1ea0d80c6967ab49a380c030ebdec3f10f402d4f986efc94d62f"},
 )
+DOWNLOAD_HOST = "https://download-r2.pytorch.org/whl/cu130/"
 DOWNLOAD_BYTES = sum(w["size"] for w in WHEELS)
 # CUDA 13.0 needs an NVIDIA driver from the R580 series or later.
 MIN_DRIVER = (580, 0)
@@ -54,9 +59,12 @@ def _long(path):
     """An extended-length path on Windows, so deep files (third-party
     licence texts) can be written and checked. Python imports use normal paths;
     the files it imports stay well inside the limit."""
-    p = Path(path).resolve()
-    return Path("\\\\?\\" + str(p)) if os.name == "nt" and not str(p).startswith("\\\\?\\") \
-        else p
+    p = str(Path(path).resolve())
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return Path(p)
+    if p.startswith("\\\\"):                       # a network (UNC) folder
+        return Path("\\\\?\\UNC\\" + p[2:])
+    return Path("\\\\?\\" + p)
 
 
 class GpuError(RuntimeError):
@@ -79,7 +87,7 @@ def detect():
     try:
         out = subprocess.run([exe, "--query-gpu=name,driver_version,memory.total",
                               "--format=csv,noheader,nounits"], capture_output=True,
-                             text=True, timeout=10,
+                             text=True, timeout=5,
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -101,58 +109,102 @@ _detected = []        # cached result of detect() for this process
 
 
 def detected():
-    """detect(), asked once per app session (nvidia-smi takes a moment)."""
+    """detect(), asked once per app session (nvidia-smi takes a moment). A
+    driver update is seen after the app restarts."""
     if not _detected:
         _detected.append(detect())
     return _detected[0]
 
 
 def _record_entries(site):
-    """(relative path, sha256 b64 digest or '', size) for every file the two
-    wheels installed, from their RECORD files."""
+    """(relative path, digest, size) for every file the two wheels installed,
+    from their RECORD files, each of which must match its pinned SHA-256."""
     entries = []
     for w in WHEELS:
-        record = site / f"{w['name']}-{w['version']}.dist-info" / "RECORD"
-        if not record.is_file():
-            raise GpuError("The graphics card component is incomplete. Repair it in Setup.")
-        with open(record, newline="", encoding="utf-8") as f:
-            for row in csv.reader(f):
+        record = Path(site) / f"{w['name']}-{w['version']}.dist-info" / "RECORD"
+        try:
+            data = record.read_bytes()
+        except OSError as exc:
+            raise GpuError("The graphics card component is incomplete.") from exc
+        if hashlib.sha256(data).hexdigest() != w["record_sha256"]:
+            raise GpuError("The graphics card component's file list has been changed.")
+        try:
+            for row in csv.reader(data.decode("utf-8").splitlines()):
                 if row and row[0]:
                     entries.append((row[0], row[1] if len(row) > 1 else "",
                                     int(row[2]) if len(row) > 2 and row[2] else None))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise GpuError("The graphics card component's file list is damaged.") from exc
     return entries
 
 
+def _hash_ok(path, digest):
+    algo, _, want = digest.partition("=")
+    if algo != "sha256":
+        return False
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return base64.urlsafe_b64encode(h.digest()).rstrip(b"=").decode() == want
+
+
+def _unlisted(site, entries, full):
+    """Files that are not in the wheels' RECORD. Any file under the import
+    root could be loaded, so none may be added. Quick: the import root and
+    torch/lib (where DLLs load from); full: everything. __pycache__ is
+    Python's own byte-code cache."""
+    listed = {rel.replace("\\", "/") for rel, _, _ in entries}
+    tops = {rel.split("/")[0] for rel in listed}
+    out = []
+    if full:
+        for root, dirs, files in os.walk(site):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for f in files:
+                rel = os.path.relpath(os.path.join(root, f), site).replace("\\", "/")
+                if rel not in listed:
+                    out.append(rel)
+        return out
+    for p in Path(site).iterdir():
+        if p.name not in tops:
+            out.append(p.name)
+    lib = Path(site) / "torch" / "lib"
+    if lib.is_dir():
+        folders = {rel.split("/")[2] for rel in listed
+                   if rel.startswith("torch/lib/") and rel.count("/") > 2}
+        out += [f"torch/lib/{p.name}" for p in lib.iterdir()
+                if f"torch/lib/{p.name}" not in listed
+                and not (p.is_dir() and p.name in folders)]
+    return out
+
+
 def check(cache_dir, full=False):
-    """Problems with the installed component ([] = fine). Quick: every file is
-    present with the right size. Full: every file's SHA-256 too."""
-    site = site_dir(cache_dir)
+    """Problems with the installed component ([] = fine). Quick: pinned file
+    lists, every file present with the right size, no added files at the
+    import root or in torch/lib. Full: every file's SHA-256, and no added file
+    anywhere. Never raises: anything unreadable is reported as a problem."""
     if not (component_dir(cache_dir) / "installed.json").is_file():
         return ["not installed"]
-    problems = []
     try:
+        site = _long(site_dir(cache_dir))
         entries = _record_entries(site)
+        problems = [f"{rel}: not part of the component"
+                    for rel in _unlisted(site, entries, full)]
+        for rel, digest, size in entries:
+            if not digest or rel.startswith(SKIP_PREFIXES):   # RECORD itself; headers
+                continue
+            p = site / rel
+            if not p.is_file() or (size is not None and p.stat().st_size != size):
+                problems.append(f"{rel}: missing or wrong size")
+            elif full and not _hash_ok(p, digest):
+                problems.append(f"{rel}: checksum does not match")
+            if len(problems) > 20:
+                break
+        return problems
     except GpuError as exc:
         return [str(exc)]
-    site = _long(site)
-    for rel, digest, size in entries:
-        p = site / rel
-        if not digest or rel.startswith(SKIP_PREFIXES):   # RECORD itself; headers
-            continue
-        if not p.is_file() or (size is not None and p.stat().st_size != size):
-            problems.append(f"{rel}: missing or wrong size")
-        elif full:
-            algo, _, want = digest.partition("=")
-            h = hashlib.new(algo)
-            with open(p, "rb") as f:
-                for block in iter(lambda: f.read(1 << 20), b""):
-                    h.update(block)
-            got = base64.urlsafe_b64encode(h.digest()).rstrip(b"=").decode()
-            if got != want:
-                problems.append(f"{rel}: checksum does not match")
-        if len(problems) > 20:
-            break
-    return problems
+    except (OSError, ValueError) as exc:
+        return [f"The graphics card component could not be read ({type(exc).__name__})."]
 
 
 def status(cache_dir):
@@ -193,46 +245,45 @@ def install(cache_dir, log, fetch):
                 members = [m for m in z.namelist() if not m.startswith(SKIP_PREFIXES)]
                 for member in members:
                     parts = member.replace("\\", "/").split("/")
-                    if member.startswith("/") or ":" in member or ".." in parts:
+                    if member.startswith(("/", "\\")) or ":" in member or ".." in parts:
                         raise GpuError("The download contains an unsafe path.")
                 z.extractall(site, members=members)
             dest.unlink()
+        shutil.rmtree(staging / "wheels", ignore_errors=True)
+        log("Checking every file…")
+        entries = _record_entries(site)
+        if _unlisted(site, entries, full=True) or any(
+                digest and not rel.startswith(SKIP_PREFIXES)
+                and (not (site / rel).is_file() or not _hash_ok(site / rel, digest))
+                for rel, digest, _ in entries):
+            raise GpuError("The unpacked files do not match their checksums. Try again.")
         (staging / "installed.json").write_text(json.dumps(
             {"version": VERSION, "wheels": [{k: w[k] for k in ("name", "version", "sha256")}
                                             for w in WHEELS]}, indent=1), encoding="utf-8")
-        shutil.rmtree(staging / "wheels", ignore_errors=True)
-        log("Checking every file…")
-        bad = [p for p in _check_site(staging) if p]
-        if bad:
-            raise GpuError("The unpacked files do not match their checksums. Try again.")
-        if base.exists():                   # an earlier damaged copy is kept aside
-            base.rename(base.parent / (VERSION + ".invalid-" + os.urandom(3).hex()))
-        staging.rename(base)
+        if base.exists():
+            # Keep the most recent damaged copy aside (never deleted silently),
+            # but not one per repair: the component is several GB.
+            for old in base.parent.glob(VERSION + ".invalid-*"):
+                shutil.rmtree(old, ignore_errors=True)
+            _rename(base, base.parent / (VERSION + ".invalid-" + os.urandom(3).hex()))
+        _rename(staging, base)
         return {"version": VERSION}
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
-def _check_site(folder):
-    """Full check of a component folder that is not yet in place."""
-    site = folder / "site"
-    out = []
-    for rel, digest, _size in _record_entries(site):
-        if not digest or rel.startswith(SKIP_PREFIXES):
-            continue
-        p = site / rel
-        algo, _, want = digest.partition("=")
-        if not p.is_file():
-            out.append(rel)
-            continue
-        h = hashlib.new(algo)
-        with open(p, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                h.update(block)
-        if base64.urlsafe_b64encode(h.digest()).rstrip(b"=").decode() != want:
-            out.append(rel)
-    return out
+def _rename(src, dst, attempts=20, wait=0.5):
+    """Rename a folder of freshly written files. Antivirus or the search
+    indexer may hold them for a moment, so a refused rename is retried briefly."""
+    import time
+    for i in range(attempts):
+        try:
+            return src.rename(dst)
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+            time.sleep(wait)
 
 
 def activate(site):

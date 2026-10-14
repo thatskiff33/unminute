@@ -825,11 +825,14 @@ async function renderSettings() {
   // Graphics card (speaker identification only): shown when an NVIDIA card is present.
   $("s-gpu-box").hidden = !s.gpu.card;
   $("s-gpu").checked = !!s.gpu_speakers;
-  $("s-gpu").disabled = s.gpu.component !== "ready" || !s.gpu.driver_ok;
+  // Always possible to turn off; turning on needs the component and driver.
+  $("s-gpu").disabled = !s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok);
   $("s-gpu-note").textContent = !s.gpu.card ? "" : !s.gpu.driver_ok
     ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
     : s.gpu.component !== "ready"
-      ? `${s.gpu.card} found. Download "Graphics card acceleration" in Setup to use it.`
+      ? (s.gpu_speakers
+        ? "The graphics card component needs repair in Setup; until then speaker identification runs on the processor."
+        : `${s.gpu.card} found. Download "Graphics card acceleration" in Setup to use it.`)
       : s.mode !== "faster" && s.gpu_speakers
         ? "Used only in Faster mode (Processing, above)."
         : `${s.gpu.card}. Transcription always runs on the processor.`;

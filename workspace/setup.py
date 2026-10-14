@@ -15,6 +15,7 @@
 import multiprocessing as mp
 import os
 import threading
+import urllib.request
 
 import asr_engines
 from workspace import gpu
@@ -153,15 +154,25 @@ def _download_main(conn, name, cache_dir):
         conn.send(("error", _friendly(exc.__cause__ or exc)))
 
 
+class _SameHost(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only within the pinned HTTPS location."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith(gpu.DOWNLOAD_HOST):
+            raise SetupError("The download site redirected elsewhere. Nothing was installed.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _fetch(url, dest, expected_size):
     """Stream one file to disk (download process only); the caller checks the
     SHA-256. Only the pinned PyTorch download host is accepted."""
     import urllib.request
-    if not url.startswith("https://download-r2.pytorch.org/whl/cu130/"):
+    if not url.startswith(gpu.DOWNLOAD_HOST):
         raise SetupError("Unexpected download address.")
+    opener = urllib.request.build_opener(_SameHost)
     req = urllib.request.Request(url, headers={"User-Agent": "MeetingWorkspace"})
     done = 0
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as out:
+    with opener.open(req, timeout=120) as r, open(dest, "wb") as out:
         while block := r.read(8 << 20):
             done += len(block)
             if done > expected_size:

@@ -67,7 +67,10 @@ def checks(window, ws, mid, long_mid, report):
                                                  ".filter(k => typeof window.pywebview.api[k]"
                                                  " === 'function').sort();")
         report["setup"] = evaluate(window, WAIT + """
-            window.workspace.show('setup'); await wait(1200);
+            window.workspace.show('setup');
+            for (let i = 0; i < 50 && !document.querySelector('#setup-cards .card'); i++)
+                await wait(200);
+            await wait(300);
             const cards = document.querySelectorAll('#setup-cards .card').length;
             const token = document.getElementById('s-token');
             token.value = 'hf_UIcheckNOTreal123';

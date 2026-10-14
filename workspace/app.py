@@ -126,6 +126,7 @@ class Workspace:
         self._last_purge = 0.0
         self._lock = threading.Lock()
         self._reruns = {}                 # meeting id -> known speaker count (or None)
+        self._rerun_count = None          # the count of the rerun now running
         self._scan_requested = False
         self.last_scan = None
         self._threads = []
@@ -152,6 +153,9 @@ class Workspace:
             t.start()
             self._threads.append(t)
         self._wake.set()
+        # Ask nvidia-smi once in the background, so Setup and Settings do not
+        # wait for it the first time they open.
+        threading.Thread(target=gpu.detected, daemon=True, name="gpu-detect").start()
         # Recordings left by a crash, power loss or a failed import (#30).
         for folder, _ in recorder.unfinished(self.recordings):   # also half-removed ones
             self._imports.put(("__recording__", str(folder)))
@@ -730,6 +734,7 @@ class Workspace:
             vid, count = ref
             with self._lock:
                 self._reruns.pop(mid, None)
+                self._rerun_count = count
             self._status = "Identifying speakers"
             device, site = self._speaker_device()
             speakers.run_speakers(self.store, mid, vid, self.handle,
@@ -823,8 +828,11 @@ class Workspace:
                                   or not 1 <= count <= speakers.MAX_HINT):
             raise WorkspaceError(f"Enter a number of people from 1 to {speakers.MAX_HINT}.")
         # Queued for the processing thread (one heavy job at a time); asking
-        # again before it starts just replaces the request.
+        # again before it starts just replaces the request, and asking again
+        # for the pass that is already running (a double click) is ignored.
         with self._lock:
+            if self._busy == (mid, "rerun") and self._rerun_count == count:
+                return
             self._reruns[mid] = count
         self._wake.set()
 
@@ -1127,8 +1135,13 @@ class Workspace:
     def set_settings(self, changes):
         if not isinstance(changes, dict):
             raise WorkspaceError("Expected settings.")
-        if changes.get("gpu_speakers") is True and gpu.status(self.cache_dir)[0] != "ready":
-            raise WorkspaceError("Download the graphics card component in Setup first.")
+        if changes.get("gpu_speakers") is True:
+            info = gpu.detected()
+            if info is None or not info["driver_ok"]:
+                raise WorkspaceError("This computer has no NVIDIA graphics card with a recent "
+                                     "enough driver (580 or later).")
+            if gpu.status(self.cache_dir)[0] != "ready":
+                raise WorkspaceError("Download the graphics card component in Setup first.")
         if changes.get("microphone") is False and self._recording is not None:
             raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet

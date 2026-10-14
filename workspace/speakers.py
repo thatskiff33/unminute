@@ -72,9 +72,30 @@ def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
     except WorkerStopped:
         raise
     except (WorkerError, WorkerCrashed) as exc:
+        if not _gpu_failure(exc):
+            raise                      # not the graphics card's fault: no second run
         reason = safe_message(exc).split(": ", 1)[-1][:120]
+        handle.release_gpu()           # stop the failed GPU worker and free its memory
+    try:
         turns, exclusive, _, had = worker_diarize(handle, model, audio_path, hint, threads)
-        return turns, exclusive, f"cpu (graphics card not used: {reason})"[:200], had
+    except WorkerStopped:
+        raise
+    except Exception as exc:
+        raise type(exc)(f"{exc} (after the graphics card could not be used: {reason})") \
+            from exc
+    return turns, exclusive, f"cpu (graphics card not used: {reason})"[:200], had
+
+
+GPU_FAILURE_WORDS = ("gpuunavailable", "cuda", "cudnn", "cublas", "out of memory",
+                     "outofmemory")
+
+
+def _gpu_failure(exc):
+    """A failure the graphics card caused: the GPU worker crashed or hung, or
+    the error names CUDA, cuDNN, cuBLAS or graphics memory."""
+    from workspace.worker import WorkerCrashed
+    return isinstance(exc, WorkerCrashed) or any(
+        w in str(exc).lower() for w in GPU_FAILURE_WORDS)
 
 
 def _end(store, rid, status, message):

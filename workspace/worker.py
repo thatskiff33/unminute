@@ -41,6 +41,10 @@ _PATHS = re.compile(r"'(?:[A-Za-z]:[\\/]|\\\\|/)[^']*'"
                     r"|(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|tmp)/)[^\s'\"<>|]*")
 
 
+GPU_TIMEOUT_FLOOR_S = 300
+GPU_TIMEOUT_FACTOR = 1.0
+
+
 class WorkerCrashed(RuntimeError):
     """The worker process ended or hung; nothing from it was committed."""
 
@@ -187,11 +191,18 @@ class WorkerHandle:
             self._gpu = WorkerHandle(self.cache_dir, quiet=self.quiet,
                                      idle_unload_s=self.idle_unload_s, gpu_site=str(site))
         self._gpu.quiet = self.quiet
+        # Clear the companion's old stop first, then carry over a stop that is
+        # in force now, so a stop that lands meanwhile is never lost.
+        self._gpu.begin_run()
         if self._stop_requested.is_set():
             self._gpu._stop_requested.set()
-        else:
-            self._gpu.begin_run()
         return self._gpu
+
+    def release_gpu(self):
+        """Stop the GPU worker and free its graphics memory (after a GPU failure)."""
+        if self._gpu is not None:
+            self._gpu.close()
+            self._gpu = None
 
     def shutdown(self):
         if self._gpu is not None:
@@ -332,6 +343,9 @@ def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=Non
     seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
     timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
     if device == "cuda":
+        # A hung GPU gives up sooner, so the CPU fallback is not delayed for
+        # long (15 minutes of audio took 80 s on a 4 GB laptop GPU).
+        timeout = max(GPU_TIMEOUT_FLOOR_S, GPU_TIMEOUT_FACTOR * seconds)
         # One heavy model at a time: release the speech model in the main
         # worker before the GPU worker loads pyannote.
         handle.shutdown()
