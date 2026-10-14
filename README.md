@@ -302,6 +302,7 @@ The repository contains only this project's own code. No model weights or third-
 | istupakov/silero-vad-onnx | MIT | Silero voice-activity detection. Verified 13 October 2026. |
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
+| PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Setup from download.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
 | sounddevice | MIT | Optional microphone recording in the meeting workspace. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
 

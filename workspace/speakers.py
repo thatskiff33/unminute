@@ -27,7 +27,8 @@ class SpeakerResult:
         "done", "failed", "stopped", "no_audio", "not_transcribed", "bad_hint")
 
 
-def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, model="pyannote"):
+def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, model="pyannote",
+                 device="cpu", gpu_site=None):
     """Separate speakers for an already-transcribed version. Returns a SpeakerResult."""
     if hint is not None and (isinstance(hint, bool) or not isinstance(hint, int)
                              or not 1 <= hint <= MAX_HINT):
@@ -39,7 +40,8 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
     handle.begin_run()               # a new run: clears any earlier Stop
     rid = store.start_speaker_run(vid, hint)
     try:
-        turns, exclusive, device, _ = worker_diarize(handle, model, audio_path, hint, threads)
+        turns, exclusive, device, _ = _diarize(handle, model, audio_path, hint, threads,
+                                               device, gpu_site)
     except WorkerStopped:
         _end(store, rid, "interrupted", RESTART_NOTE)
         return SpeakerResult.STOPPED
@@ -55,6 +57,45 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
         _end(store, rid, "failed", f"Could not save speakers: {exc}"[:300])
         return SpeakerResult.FAILED
     return SpeakerResult.DONE
+
+
+def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
+    """GPU first when asked; any GPU failure (driver, missing libraries, out of
+    graphics memory, a crashed GPU worker) falls back to the CPU for this pass,
+    and the result says so. A deliberate stop is never retried."""
+    if device != "cuda":
+        return worker_diarize(handle, model, audio_path, hint, threads)
+    from workspace.worker import WorkerCrashed, WorkerError, safe_message
+    try:
+        return worker_diarize(handle, model, audio_path, hint, threads, device="cuda",
+                              gpu_site=gpu_site)
+    except WorkerStopped:
+        raise
+    except (WorkerError, WorkerCrashed) as exc:
+        if not _gpu_failure(exc):
+            raise                      # not the graphics card's fault: no second run
+        reason = safe_message(exc).split(": ", 1)[-1][:120]
+        handle.release_gpu()           # stop the failed GPU worker and free its memory
+    try:
+        turns, exclusive, _, had = worker_diarize(handle, model, audio_path, hint, threads)
+    except WorkerStopped:
+        raise
+    except Exception as exc:
+        raise type(exc)(f"{exc} (after the graphics card could not be used: {reason})") \
+            from exc
+    return turns, exclusive, f"cpu (graphics card not used: {reason})"[:200], had
+
+
+GPU_FAILURE_WORDS = ("gpuunavailable", "cuda", "cudnn", "cublas", "out of memory",
+                     "outofmemory")
+
+
+def _gpu_failure(exc):
+    """A failure the graphics card caused: the GPU worker crashed or hung, or
+    the error names CUDA, cuDNN, cuBLAS or graphics memory."""
+    from workspace.worker import WorkerCrashed
+    return isinstance(exc, WorkerCrashed) or any(
+        w in str(exc).lower() for w in GPU_FAILURE_WORDS)
 
 
 def _end(store, rid, status, message):

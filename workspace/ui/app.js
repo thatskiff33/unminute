@@ -235,6 +235,11 @@ function renderSpeakers(d) {
   else if (s && s.status === "failed") text = `Speaker identification did not work: ${s.error || "unknown reason"}. The transcript is still usable.`;
   else if (s && s.status === "interrupted") text = s.error || "Speaker identification was interrupted and will start again from the beginning.";
   else if (s && s.status === "running") text = "Identifying speakers…";
+  if (s && s.status === "done" && s.device) {
+    // Where it actually ran, including an honest fallback note.
+    if (s.device.startsWith("cuda")) text += " Ran on the graphics card.";
+    else if (s.device.includes("graphics card not used")) text += " Ran on the processor: the graphics card could not be used this time.";
+  }
   $("m-speakers").textContent = text;
   $("m-names").disabled = !canName();
   $("m-undo-speakers").disabled = !canName();
@@ -817,6 +822,20 @@ async function renderSettings() {
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   $("s-battery").checked = s.battery_override;
   $("s-speakers").checked = s.speakers;
+  // Graphics card (speaker identification only): shown when an NVIDIA card is present.
+  $("s-gpu-box").hidden = !s.gpu.card;
+  $("s-gpu").checked = !!s.gpu_speakers;
+  // Always possible to turn off; turning on needs the component and driver.
+  $("s-gpu").disabled = !s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok);
+  $("s-gpu-note").textContent = !s.gpu.card ? "" : !s.gpu.driver_ok
+    ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
+    : s.gpu.component !== "ready"
+      ? (s.gpu_speakers
+        ? "The graphics card component needs repair in Setup; until then speaker identification runs on the processor."
+        : `${s.gpu.card} found. Download "Graphics card acceleration" in Setup to use it.`)
+      : s.mode !== "faster" && s.gpu_speakers
+        ? "Used only in Faster mode (Processing, above)."
+        : `${s.gpu.card}. Transcription always runs on the processor.`;
   $("s-microphone").checked = !!s.microphone;
   const sel = $("s-model");
   if (document.activeElement !== sel) {
@@ -1052,6 +1071,7 @@ function wire() {
   for (const r of document.querySelectorAll('input[name="mode"]')) r.addEventListener("change", () => setSetting({ mode: r.value }));
   $("s-battery").addEventListener("change", () => setSetting({ battery_override: $("s-battery").checked }));
   $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }));
+  $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
   $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }));
   wireRecorder();
   $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }));

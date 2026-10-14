@@ -185,6 +185,10 @@
     <fieldset>
       <legend>Speakers</legend>
       <label><input type="checkbox" id="s-speakers"> Identify speakers after transcription</label>
+      <div id="s-gpu-box" hidden>
+        <label><input type="checkbox" id="s-gpu"> Use the graphics card for speaker identification (Faster mode only)</label>
+        <p id="s-gpu-note" class="muted"></p>
+      </div>
     </fieldset>
     <h2>Watched folders</h2>
     <p class="muted">Recordings saved into a watched folder are imported automatically. Each folder is checked when the app starts and every few minutes while it is open; if the app was closed, it catches up when you open it. Recordings already imported are not imported twice (Import by hand always works).</p>
