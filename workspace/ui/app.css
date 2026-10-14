@@ -56,9 +56,9 @@ progress { width: 120px; }
 /* Wide windows: the title, toolbar and search stay in view, and the transcript
    and the side panel scroll separately. --meeting-top is set by fitMeeting()
    (app.js); the bottom space keeps clear of the audio player. Narrow windows
-   and high zoom keep one page scroll (#27 reflow). */
-@media (min-width: 901px) {
-  .meeting-body { height: calc(100vh - var(--meeting-top, 220px) - 76px); }
+   short windows and high zoom keep one page scroll (#27 reflow). */
+@media (min-width: 901px) and (min-height: 600px) {
+  .meeting-body { height: calc(100vh - var(--meeting-top, 220px) - 80px); }
   .meeting-body > .transcript-wrap, .meeting-body > aside { overflow-y: auto; min-height: 0; }
   .meeting-body > .transcript-wrap { padding-right: 8px; }
 }

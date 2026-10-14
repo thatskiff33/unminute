@@ -219,6 +219,7 @@ def checks(window, ws, mid, long_mid, report):
             const search = document.getElementById('m-search').getBoundingClientRect();
             const wrap = document.querySelector('.transcript-wrap');
             return {{rows: document.querySelectorAll('#transcript li').length,
+                    wide: matchMedia('(min-width: 901px) and (min-height: 600px)').matches,
                     pane_scrolled: wrap.scrollTop > 0, page_scroll_y: Math.round(window.scrollY),
                     search_visible: search.top >= 0 && search.bottom <= window.innerHeight,
                     render_ms: Math.round(render_ms),
@@ -316,7 +317,11 @@ def main():
     lt = report.get("long_transcript") or {}
     if lt.get("rows") != 5000:
         bad.append("long transcript")
-    if not (lt.get("pane_scrolled") and lt.get("search_visible")):
+    # Split scrolling applies only to a wide, tall enough window; high display
+    # scaling can make the check window narrower in page pixels.
+    if not lt.get("wide"):
+        print("note: window too small in page pixels for split scrolling; not checked")
+    elif not (lt.get("pane_scrolled") and lt.get("search_visible") and lt.get("page_scroll_y") == 0):
         bad.append("transcript pane scrolling")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     return 1 if bad else 0
