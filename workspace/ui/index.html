@@ -32,6 +32,26 @@
       <span>or drop audio or video files anywhere on this window.</span>
     </div>
     <ul id="import-errors" class="errors"></ul>
+    <section id="rec-panel" class="recorder" aria-labelledby="h-record" hidden>
+      <h2 id="h-record">Record with a microphone</h2>
+      <p class="muted">Only the microphone is recorded, not sound playing on the computer. Tell everyone present that the meeting is being recorded. Transcription of other meetings waits until you stop.</p>
+      <div class="row">
+        <label for="rec-device">Microphone</label>
+        <select id="rec-device"></select>
+        <button type="button" id="rec-test">Test microphone</button>
+        <span id="rec-test-result" role="status" aria-live="polite"></span>
+      </div>
+      <div class="row">
+        <button type="button" id="rec-start" class="primary">Start recording</button>
+        <button type="button" id="rec-pause" hidden>Pause</button>
+        <button type="button" id="rec-resume" hidden>Resume</button>
+        <button type="button" id="rec-stop" hidden>Stop and save</button>
+        <meter id="rec-level" min="-60" max="0" low="-45" high="-6" optimum="-20" value="-60" aria-label="Microphone level"></meter>
+        <span id="rec-state" role="status" aria-live="polite"></span>
+      </div>
+      <ul id="rec-events" class="errors"></ul>
+      <ul id="rec-reports" class="receipts"></ul>
+    </section>
     <ul id="inbox-list" class="meetings"></ul>
     <p id="inbox-empty" class="muted" hidden>Nothing waiting. Imported recordings appear here while they are transcribed.</p>
   </section>
@@ -156,6 +176,11 @@
       <legend>Speech model</legend>
       <select id="s-model" aria-label="Speech model"></select>
       <p class="muted">Changing the model affects new recordings and "Transcribe again".</p>
+    </fieldset>
+    <fieldset>
+      <legend>Microphone</legend>
+      <label><input type="checkbox" id="s-microphone"> Record meetings with a microphone (adds a Record panel to the Inbox)</label>
+      <p class="muted">Recordings stay on this computer and follow the same review and cleanup steps as imported files. Computer audio and live transcription are not available.</p>
     </fieldset>
     <fieldset>
       <legend>Speakers</legend>

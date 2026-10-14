@@ -98,6 +98,14 @@ def blockers(db_path):
             out.append({"kind": "cleanup", "count": jobs, "message":
                         f"{jobs} cleanup step{'s have' if jobs != 1 else ' has'} not finished. "
                         "Open the app so it can finish (or confirm) them."})
+        recordings = Path(db_path).parent / "recordings"
+        waiting = (sum(1 for p in recordings.iterdir() if p.is_dir())
+                   if recordings.is_dir() else 0)
+        if waiting:
+            out.append({"kind": "recordings", "count": waiting, "message":
+                        f"{waiting} microphone recording{'s have' if waiting != 1 else ' has'} "
+                        "not been imported yet. Open the app so it can import or discard "
+                        "them."})
         known = {"holds", "meetings", "cleanup_jobs"} | NON_CONTENT
         leftover = sum(count(t) for t in tables if t not in known)
         if leftover and not meetings:

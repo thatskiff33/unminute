@@ -26,6 +26,24 @@ This guide covers the packaged workspace. The earlier source-installed app (`ins
    - You can skip speakers and add them later from Setup.
 3. **Import a recording.** In Inbox, choose **Import recordings…** or drop audio or video files on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)).
 
+## Recording with a microphone
+
+Microphone recording is off by default. To turn it on, open Settings > Microphone. The Inbox then shows a **Record with a microphone** panel.
+
+1. **Choose and test the microphone.** Pick one from the list. **Test microphone** listens for 3 seconds and shows the level; nothing is kept.
+2. **Tell everyone present that the meeting is being recorded.**
+3. **Start recording.** The meter shows the input level and the timer the length. **Pause** and **Resume** leave a gap that is not recorded.
+4. **Stop and save.** The recording becomes a meeting in the Inbox and is transcribed like an imported file. Review, holds and cleanup work the same way.
+
+How it handles problems:
+
+- **Saved as it goes.** Audio is saved to disk every few seconds while recording. If the app or computer stops unexpectedly, the next start imports what was saved. It then reports about how much at the end could not be saved.
+- **Gaps are reported, never hidden.** If the computer falls behind or the disk fills up, the recording says when audio was lost and, where known, for how long.
+- **The microphone never changes on its own.** If the microphone is disconnected, recording stops and keeps what was saved. It does not move to another microphone.
+- **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
+- **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded, and there is no live transcription.
+- **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
+
 ## Working on a meeting
 
 - **Transcription runs in the background.**
@@ -84,7 +102,8 @@ Self-service updates and IT-managed updates follow the same rule: an update that
 
 - no meetings in progress;
 - no active holds;
-- no unfinished cleanup.
+- no unfinished cleanup;
+- no microphone recording still waiting to be imported.
 
 The installer explains what it is waiting for, and so does Settings > Updates in the app. No update expires a hold, deletes your work or makes a backup copy of it. Updates that keep the same storage format keep everything.
 

@@ -28,6 +28,8 @@ API_METHODS = frozenset({
     "setup_state", "download_model", "remove_token", "finish_setup", "open_help",
     "verify_model", "cancel_download", "watched_folders", "add_folder_dialog",
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
+    "microphone_devices", "start_recording", "pause_recording", "resume_recording",
+    "stop_recording", "recording_status", "discard_recording_report", "test_microphone",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -253,6 +255,30 @@ def make_api(ws, get_window=lambda: None):
             return ws.import_paths(paths)
         return _safe(run)
 
+    def microphone_devices(self):
+        return _safe(ws.microphone_devices)
+
+    def start_recording(self, device):
+        return _safe(lambda: ws.start_recording(_int(device, 0, 10_000)))
+
+    def test_microphone(self, device):
+        return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000)))
+
+    def pause_recording(self):
+        return _safe(ws.pause_recording)
+
+    def resume_recording(self):
+        return _safe(ws.resume_recording)
+
+    def stop_recording(self):
+        return _safe(ws.stop_recording)
+
+    def recording_status(self):
+        return _safe(ws.recording_status)
+
+    def discard_recording_report(self, index):
+        return _safe(lambda: ws.discard_recording_report(_int(index, 0, 100)))
+
     def zoom(self, direction):
         def run():
             if direction not in ("in", "out", "reset"):
@@ -286,7 +312,12 @@ def make_api(ws, get_window=lambda: None):
                  verify_model=verify_model, cancel_download=cancel_download,
                  watched_folders=watched_folders, add_folder_dialog=add_folder_dialog,
                  set_folder_active=set_folder_active, remove_folder=remove_folder,
-                 scan_now=scan_now, set_folder_authority=set_folder_authority, zoom=zoom)
+                 scan_now=scan_now, set_folder_authority=set_folder_authority, zoom=zoom,
+                 microphone_devices=microphone_devices, start_recording=start_recording,
+                 pause_recording=pause_recording, resume_recording=resume_recording,
+                 stop_recording=stop_recording, recording_status=recording_status,
+                 discard_recording_report=discard_recording_report,
+                 test_microphone=test_microphone)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

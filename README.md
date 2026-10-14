@@ -302,6 +302,8 @@ The repository contains only this project's own code. No model weights or third-
 | istupakov/silero-vad-onnx | MIT | Silero voice-activity detection. Verified 13 October 2026. |
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
+| sounddevice | MIT | Optional microphone recording in the meeting workspace. Verified 14 October 2026. |
+| PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
 
 Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.
 

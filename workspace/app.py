@@ -23,6 +23,7 @@ from pathlib import Path
 
 import asr_engines
 from workspace import (cleanup, clipboard, credentials, handoff, holds, intake, media,
+                       recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
@@ -45,6 +46,7 @@ DEFAULT_SETTINGS = {
     "speakers": True,                              # separate speakers after transcription
     "battery_override": False,                     # process automatically on battery
     "onboarded": False,                            # guided setup finished or skipped (#19)
+    "microphone": False,                           # microphone recording (#30), off by default
 }
 
 
@@ -86,7 +88,7 @@ class Settings:
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
                 raise WorkspaceError("Unknown speech model.")
-            if (key in ("speakers", "battery_override", "onboarded")
+            if (key in ("speakers", "battery_override", "onboarded", "microphone")
                     and not isinstance(value, bool)):
                 raise WorkspaceError("Expected on or off.")
             self.values[key] = value
@@ -125,6 +127,12 @@ class Workspace:
         self._scan_requested = False
         self.last_scan = None
         self._threads = []
+        # Microphone recording (#30): one at a time; heavy processing waits.
+        self.recordings = self.root / "recordings"
+        self._recording = None
+        self._yielded = False              # a worker stop caused by recording, not the user
+        self._recording_reports = []       # finished or recovered recordings (no content)
+        self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self._reconcile_imports()
         intake.recover(self.store)        # imports queued when the app last closed
         if start:
@@ -140,8 +148,15 @@ class Workspace:
             t.start()
             self._threads.append(t)
         self._wake.set()
+        # Recordings left by a crash, power loss or a failed import (#30).
+        for folder, _ in recorder.unfinished(self.recordings):
+            self._imports.put(("__recording__", str(folder)))
 
     def close(self):
+        rec = self._recording
+        if rec is not None:              # saved now; imported at the next start
+            rec.stop()
+            self._recording = None
         self._closing.set()
         self._wake.set()
         self._imports.put(None)
@@ -186,6 +201,9 @@ class Workspace:
             try:
                 if item is None or self._closing.is_set():
                     return
+                if item[0] == "__recording__":
+                    self._import_recording_folder(Path(item[1]))
+                    continue
                 path, folder_id, key, content = (*item, None, None)[:4]
                 self._status = "Importing a recording"
                 try:
@@ -203,8 +221,8 @@ class Workspace:
                 self._status = ""
                 self._wake.set()
 
-    def _import_one(self, path, folder_id=None):
-        title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
+    def _import_one(self, path, folder_id=None, title=None):
+        title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
         with self.store.tx() as db:
             if folder_id and intake.authority_for(self.store, folder_id):
@@ -220,6 +238,146 @@ class Workspace:
         except BaseException:
             self._discard_import(mid)       # nothing half-imported is left behind
             raise
+        return mid
+
+    # -- microphone recording (#30) ---------------------------------------------------
+
+    def _need_microphone(self):
+        if not self.settings["microphone"]:
+            raise WorkspaceError("Microphone recording is turned off in Settings.")
+
+    def microphone_devices(self):
+        self._need_microphone()
+        try:
+            return recorder.list_devices()
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def _device(self, device):
+        choice = next((d for d in self.microphone_devices() if d["index"] == device), None)
+        if choice is None:
+            raise WorkspaceError("That microphone is not available. Choose another one.")
+        return choice
+
+    def test_microphone(self, device):
+        self._need_microphone()
+        if self._recording is not None:
+            raise WorkspaceError("Stop the recording before testing a microphone.")
+        choice = self._device(device)
+        try:
+            return recorder.measure_level(choice["index"], choice["rate"],
+                                          open_stream=self.open_stream)
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        except Exception as exc:
+            raise WorkspaceError("The microphone could not be opened. Check that Windows "
+                                 "allows apps to use it (Settings > Privacy > "
+                                 "Microphone).") from exc
+
+    def start_recording(self, device):
+        self._need_microphone()
+        if self._recording is not None:
+            raise WorkspaceError("A recording is already running.")
+        choice = self._device(device)
+        rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
+                                 choice["name"], choice["rate"], open_stream=self.open_stream)
+        try:
+            rec.start()
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        self._recording = rec
+        # Heavy processing waits while recording. Work in progress is stopped;
+        # it was never committed and is redone afterwards, not marked paused.
+        busy = self._busy
+        if busy and busy[1] in ("transcribe", "speakers", "rerun"):
+            self._yielded = True
+            self.handle.stop_now()
+        threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
+                         name="recorder-watch").start()
+        return rec.status()
+
+    def _watch_recording(self, rec):
+        """A recording that stops itself (lost device, full disk, time limit)
+        is saved and imported like one the user stopped."""
+        while self._recording is rec and not rec.stopped:
+            time.sleep(0.5)
+        if self._recording is rec and not self._closing.is_set():
+            self._finish_recording(rec)
+
+    def _finish_recording(self, rec):
+        with self._lock:
+            if self._recording is not rec:
+                return                   # already finished by the other path
+            self._recording = None
+        rec.stop()
+        self._imports.put(("__recording__", str(rec.folder)))
+        self._wake.set()
+
+    def pause_recording(self):
+        if self._recording is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        self._recording.pause()
+        return self._recording.status()
+
+    def resume_recording(self):
+        if self._recording is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        self._recording.resume()
+        return self._recording.status()
+
+    def stop_recording(self):
+        rec = self._recording
+        if rec is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        status = rec.status()
+        self._finish_recording(rec)
+        return {**status, "state": "saving"}
+
+    def recording_status(self):
+        rec = self._recording
+        return {"enabled": self.settings["microphone"],
+                "recording": rec.status() if rec is not None else None,
+                "reports": self._recording_reports[-5:]}
+
+    def discard_recording_report(self, index):
+        if isinstance(index, int) and 0 <= index < len(self._recording_reports):
+            self._recording_reports.pop(index)
+
+    def _import_recording_folder(self, folder):
+        """Turn a saved (or crash-recovered) recording into a meeting, then
+        remove the recording folder. On failure the folder is kept and the
+        import is retried at the next start."""
+        import shutil
+        journal = recorder.read_journal(folder)
+        if journal is None:
+            return
+        wav, seconds = recorder.assemble_wav(folder, journal)
+        interrupted = journal.get("state") == "recording"     # the app did not stop it
+        events = [e for e in journal.get("events", []) if e["kind"] not in ("paused", "resumed")]
+        missing = recorder.missing_tail_seconds(folder, journal, seconds) if interrupted else 0
+        if interrupted and missing >= 0.5:
+            events.append({"kind": "interrupted", "at_s": round(seconds, 1),
+                           "seconds": round(missing, 1),
+                           "note": "The app closed unexpectedly while recording. About "
+                                   f"{missing:.0f} s at the end could not be saved."})
+        report = {"title": None, "seconds": round(seconds, 1), "events": events,
+                  "device": journal.get("device_name")}
+        if seconds < 0.5:
+            report["note"] = "Nothing was recorded."
+            shutil.rmtree(folder, ignore_errors=True)
+            self._recording_reports.append(report)
+            return
+        title = time.strftime("Recording %Y-%m-%d %H:%M",
+                              time.localtime(journal.get("started_at") or time.time()))
+        mid = self._import_one(str(wav), None, title)
+        report.update(title=title, meeting=mid)
+        try:
+            (self.media / mid / "recording.json").write_text(
+                json.dumps(report, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+        shutil.rmtree(folder, ignore_errors=True)   # the meeting now holds the audio
+        self._recording_reports.append(report)
 
     def _plan_version(self, mid, sid):
         reader = media.AudioReader(media.audio_path(self.media, mid))
@@ -337,6 +495,8 @@ class Workspace:
             if (not cleanup.is_held(self.store, job["meeting_id"], job["phase"])
                     and not self._waiting_on_audio(job)):
                 return ("cleanup", job["meeting_id"], job["id"])
+        if self._recording is not None:
+            return None                      # heavy processing waits for the recording
         with self._lock:
             for mid, count in list(self._reruns.items()):
                 m = self.store.meeting(mid)
@@ -409,6 +569,7 @@ class Workspace:
                         pass
                 finally:
                     self._busy = None
+                    self._yielded = False      # only the run that recording stopped
 
     def _maybe_purge(self):
         if time.time() - self._last_purge > RECEIPT_PURGE_S:
@@ -458,7 +619,8 @@ class Workspace:
                 result = runner.run_version(self.store, mid, ref, reader, engine)
             finally:
                 reader.close()               # release the handle before any cleanup
-            if result == runner.RunResult.STOPPED and not self._closing.is_set():
+            if result == runner.RunResult.STOPPED and not self._closing.is_set() \
+                    and not self._yielded:
                 self.store.set_paused(mid, True)    # Stop now = paused until resumed
             return
         self._status = "Identifying speakers"
@@ -817,6 +979,8 @@ class Workspace:
     def set_settings(self, changes):
         if not isinstance(changes, dict):
             raise WorkspaceError("Expected settings.")
+        if changes.get("microphone") is False and self._recording is not None:
+            raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet
         self.settings.update(**changes)
         self.handle.quiet = self.settings["mode"] == resources.QUIET
