@@ -59,9 +59,9 @@ def list_devices():
                 # unplugged microphone is seen (only when nothing is open).
                 sd._terminate()
                 sd._initialize()
-        devices = sd.query_devices()
-        default_in = sd.default.device[0]
-        hostapis = sd.query_hostapis()
+            devices = sd.query_devices()
+            default_in = sd.default.device[0]
+            hostapis = sd.query_hostapis()
     except Exception:
         return []
     out = []
@@ -79,8 +79,6 @@ def list_devices():
             continue
         out.append({"index": i, "name": str(d["name"])[:120], "default": i == default_in,
                     "rate": int(d.get("default_samplerate") or 44100)})
-    if out and not any(d["default"] for d in out):
-        out[0]["default"] = True          # Windows' default is the Sound Mapper
     return out
 
 
@@ -296,7 +294,6 @@ class Recording:
     def _close_stream(self):
         s, self._stream = self._stream, None
         if s is not None:
-            _stream_opened(-1)
             try:
                 s.stop()
             except Exception:
@@ -305,6 +302,7 @@ class Recording:
                 s.close()
             except Exception:
                 pass
+            _stream_opened(-1)
 
     # -- controls -------------------------------------------------------------------
 
@@ -340,8 +338,8 @@ class Recording:
 
     def stop(self):
         """Stop capture and save everything queued. Returns the journal."""
-        self._stop.set()
-        self._close_stream()
+        self._close_stream()          # no more blocks arrive...
+        self._stop.set()              # ...then the writer drains the queue and finishes
         if self._writer is not None:
             self._writer.join(60)
             if self._writer.is_alive():
@@ -354,6 +352,10 @@ class Recording:
         except OSError:
             pass
         return self.journal
+
+    @property
+    def writing(self):
+        return self._writer is not None and self._writer.is_alive()
 
     @property
     def stopped(self):

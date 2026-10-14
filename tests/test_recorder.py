@@ -313,20 +313,55 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertFalse((self.ws.root / "recordings").exists()
                          and any((self.ws.root / "recordings").iterdir()))
 
-    def test_imported_or_half_removed_folders_are_never_imported_twice(self):
+    def test_imported_or_empty_folders_are_removed_never_imported_twice(self):
         self.ws.settings.update(microphone=True)
         rec_root = self.ws.root / "recordings"
         done = rec_root / ("a" * 32)
         done.mkdir(parents=True)
         (done / "journal.json").write_text(json.dumps({"state": "imported", "meeting": "x"}))
         (done / "recording.wav").write_bytes(b"RIFF")
-        stray = rec_root / ("b" * 32)                  # journal already removed
-        stray.mkdir()
-        (stray / "chunk-000000.pcm").write_bytes(b"\x00" * 100)
+        empty = rec_root / ("b" * 32)                  # removal stopped at the very end
+        empty.mkdir()
         self.ws.start()
         self.assertTrue(self.ws.wait_idle(60))
         self.assertEqual(list(rec_root.iterdir()), [])
         self.assertEqual(self.ws.meetings(), [])
+
+    def test_unreadable_journal_keeps_the_audio_until_the_user_decides(self):
+        self.ws.settings.update(microphone=True)
+        folder = self.ws.root / "recordings" / ("c" * 32)
+        folder.mkdir(parents=True)
+        (folder / "journal.json").write_text("{ damaged by a power cut")
+        (folder / "chunk-000000.pcm").write_bytes(b"\x01\x00" * 8000)
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertTrue(folder.is_dir())                 # never deleted silently
+        rep = self.ws.recording_status()["reports"][-1]
+        self.assertIn("could not be read", rep["note"])
+        self.ws.delete_pending_recording(rep["id"])      # the user's explicit choice
+        self.assertFalse(folder.exists())
+
+    def test_a_meeting_made_from_the_folder_prevents_a_second_import(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3)
+        self.holder["stream"].feed(3)
+        rec = self.ws._recording
+        real = recorder._write_atomic
+
+        def no_journal_mark(path, data):              # marking the journal fails
+            if path.name == "journal.json" and b'"imported"' in data:
+                raise OSError(5, "Access is denied")
+            return real(path, data)
+        with mock.patch.object(recorder, "_write_atomic", no_journal_mark), \
+                mock.patch.object(recorder, "remove_folder", lambda f: None):
+            self.ws.stop_recording()
+            self.assertTrue(self.ws.wait_idle(120))
+        self.assertTrue(rec.folder.is_dir())             # left behind, journal not marked
+        self.ws._imports.put(("__recording__", str(rec.folder)))   # e.g. the next start
+        self.assertTrue(self.ws.wait_idle(120))
+        self.assertEqual(len(self.ws.meetings()), 1)     # no duplicate
+        self.assertFalse(rec.folder.exists())
 
     def test_a_failed_import_is_reported_kept_and_can_be_retried(self):
         self.ws.settings.update(microphone=True)

@@ -927,6 +927,12 @@ async function renderRecorder() {
       (rep.note ? `. ${rep.note}` : "") + (rep.events.length ? ". " + rep.events.map(eventText).join("; ") : "") }),
     rep.pending ? el("button", { type: "button", class: "link", textContent: "Try again",
                     on: { click: () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)) } }) : null,
+    rep.pending ? " " : null,
+    rep.pending ? el("button", { type: "button", class: "link", textContent: "Delete recording",
+                    on: { click: () => confirmDialog({ title: "Delete this recording?",
+                      body: "The saved audio of this recording is deleted from this computer. It cannot be recovered.",
+                      check: "Delete the recording.", limits: false,
+                      onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) }) } }) : null,
     " ", el("button", { type: "button", class: "link", textContent: "Dismiss",
                         on: { click: () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)) } }))));
   // Faster updates for the level meter while recording.

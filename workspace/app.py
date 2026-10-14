@@ -133,6 +133,7 @@ class Workspace:
         self._rec_starting = False         # a recording is being opened
         self._yielded = False              # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
+        self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self._reconcile_imports()
         intake.recover(self.store)        # imports queued when the app last closed
@@ -154,10 +155,17 @@ class Workspace:
             self._imports.put(("__recording__", str(folder)))
 
     def close(self):
+        for _ in range(100):              # a recording still opening (up to 10 s)
+            if not self._rec_starting:
+                break
+            time.sleep(0.1)
         rec = self._recording
         if rec is not None:              # saved now; imported at the next start
-            rec.stop()
             self._recording = None
+            try:
+                rec.stop()
+            except recorder.RecorderError:
+                pass                     # its folder is recovered at the next start
         self._closing.set()
         self._wake.set()
         self._imports.put(None)
@@ -331,7 +339,9 @@ class Workspace:
         try:
             rec.stop()
         except recorder.RecorderError as exc:
-            self._add_report({"title": None, "seconds": 0, "events": [],
+            self._hung[rec.folder.name] = rec
+            self._add_report({"title": None, "seconds": rec.status()["seconds"],
+                              "events": list(rec.journal["events"]),
                               "note": str(exc), "pending": rec.folder.name})
             return                       # imported at the next start
         self._imports.put(("__recording__", str(rec.folder)))
@@ -374,20 +384,61 @@ class Workspace:
     def retry_recording_import(self, rid):
         """The user's "Try again" for a recording that could not be imported."""
         report = next((r for r in self._recording_reports if r["id"] == rid), None)
-        folder = self.recordings / report["pending"] if report and report.get("pending") else None
-        if folder is None or not folder.is_dir():
-            raise WorkspaceError("That recording is no longer waiting.")
+        folder = self._pending_folder(report)
+        hung = self._hung.get(folder.name)
+        if hung is not None and hung.writing:
+            raise WorkspaceError("The recording is still being saved. Try again in a moment, "
+                                 "or restart the app.")
+        self._hung.pop(folder.name, None)
         self.discard_recording_report(rid)
         self._imports.put(("__recording__", str(folder)))
+
+    def _pending_folder(self, report):
+        folder = (self.recordings / report["pending"]
+                  if report and report.get("pending") else None)
+        if folder is None or not folder.is_dir():
+            raise WorkspaceError("That recording is no longer waiting.")
+        return folder
+
+    def delete_pending_recording(self, rid):
+        """The user's explicit choice to delete a recording that could not be
+        imported (for example its journal is damaged)."""
+        report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        folder = self._pending_folder(report)
+        hung = self._hung.get(folder.name)
+        if hung is not None and hung.writing:
+            raise WorkspaceError("The recording is still being saved. Try again in a moment.")
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        if folder.exists():
+            raise WorkspaceError("The recording could not be deleted yet. Close other apps "
+                                 "that may be using it, then try again.")
+        self._hung.pop(folder.name, None)
+        self.discard_recording_report(rid)
 
     def _import_recording_folder(self, folder):
         """Turn a saved (or crash-recovered) recording into a meeting, then
         remove the recording folder. Failures are reported and the folder is
         kept, to be tried again (Try again, or the next start)."""
         journal = recorder.read_journal(folder)
-        if journal is None or journal.get("state") == "imported":
-            # Already a meeting (or removal stopped part-way): finish removing.
-            try:
+        has_audio = any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
+        if journal is None and not (folder / "journal.json").exists() and not has_audio:
+            try:                         # an empty leftover (removal stopped at the end)
+                recorder.remove_folder(folder)
+            except OSError:
+                pass
+            return
+        if journal is None:
+            # Unreadable (locked, or damaged by a power cut): never delete
+            # audio that has not been imported. Keep it and say so.
+            self._add_report({"title": None, "seconds": 0, "events": [],
+                              "note": "A recording could not be read (its record file is "
+                                      "locked or damaged). The audio is kept. Choose Try "
+                                      "again, or Delete it if you do not need it.",
+                              "pending": folder.name})
+            return
+        if journal.get("state") == "imported" or self._already_imported(folder.name):
+            try:                         # already a meeting: finish removing the folder
                 recorder.remove_folder(folder)
             except OSError:
                 pass                     # tried again at the next start
@@ -423,21 +474,37 @@ class Workspace:
             report["pending"] = folder.name
             self._add_report(report)
             return
-        # Mark the folder as imported before removing it, so a crash here can
-        # never import the same recording twice.
-        journal.update(state="imported", meeting=mid)
-        recorder._write_atomic(folder / "journal.json", json.dumps(journal).encode("utf-8"))
-        report.update(title=title, meeting=mid)
+        # Record which recording this meeting came from, then mark the folder
+        # as imported before removing it: either one stops a second import.
+        report.update(title=title, meeting=mid, recording_id=folder.name)
         try:
-            (self.media / mid / "recording.json").write_text(
-                json.dumps(report, indent=1), encoding="utf-8")
+            recorder._retrying(lambda: recorder._write_atomic(
+                self.media / mid / "recording.json",
+                json.dumps(report, indent=1).encode("utf-8")))
         except OSError:
             pass
+        journal.update(state="imported", meeting=mid)
+        try:
+            recorder._retrying(lambda: recorder._write_atomic(
+                folder / "journal.json", json.dumps(journal).encode("utf-8")))
+        except OSError:
+            pass                              # the sidecar above still prevents a duplicate
         try:
             recorder.remove_folder(folder)    # the meeting now holds the audio
         except OSError:
             pass                              # finished at the next start
         self._add_report(report)
+
+    def _already_imported(self, recording_id):
+        """True if a meeting was already made from this recording folder."""
+        for sidecar in self.media.glob("*/recording.json"):
+            try:
+                if json.loads(sidecar.read_text(encoding="utf-8")).get(
+                        "recording_id") == recording_id:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
 
     def _plan_version(self, mid, sid):
         reader = media.AudioReader(media.audio_path(self.media, mid))
