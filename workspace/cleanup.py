@@ -85,6 +85,36 @@ def confirm_final_saved(store, mid):
         return _add_job(db, mid, TRANSCRIPT)
 
 
+def discard(store, mid):
+    """The user's explicit choice to delete a meeting they do not need (a test
+    or a wrong recording), with one confirmation instead of the two review
+    checkpoints. Removal uses the same jobs as the checkpoints (secure
+    deletion, minimal receipts). Refused while a hold is active. The original
+    file is never deleted: any deletion authority for it is withdrawn first."""
+    with store.tx() as db:
+        meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
+        if meeting is None:
+            raise CleanupError("Meeting not found.")
+        if db.execute("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at IS NULL",
+                      (mid,)).fetchone():
+            raise CleanupError("A retention hold is active on this meeting. It cannot be "
+                               "discarded until the hold is released.")
+        if meeting["reviewed_at"]:
+            # A reviewed meeting is cleaned up through the final-saved
+            # confirmation, never discarded (two-checkpoint rule).
+            raise CleanupError("This meeting's transcript review is confirmed. Finish it with "
+                               "the final confirmation instead.")
+        if db.execute("SELECT 1 FROM versions WHERE meeting_id = ? AND state = 'active'",
+                      (mid,)).fetchone() is None:
+            raise CleanupError("The recording is still being imported. Try again in a moment.")
+        db.execute("UPDATE sources SET delete_original = 0 WHERE meeting_id = ?", (mid,))
+        now = time.time()
+        # Marked reviewed and final-saved: no further processing of the meeting.
+        db.execute("UPDATE meetings SET paused = 1, reviewed_at = ?, final_saved_at = ? "
+                   "WHERE id = ?", (now, now, mid))
+        return _add_job(db, mid, AUDIO), _add_job(db, mid, TRANSCRIPT)
+
+
 def _add_job(db, mid, phase):
     existing = db.execute("SELECT id FROM cleanup_jobs WHERE meeting_id = ? AND phase = ? AND "
                           "state IN ('pending', 'failed', 'awaiting_confirmation')",
