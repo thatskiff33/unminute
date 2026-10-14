@@ -737,10 +737,14 @@ class Workspace:
                 self._rerun_count = count
             self._status = "Identifying speakers"
             device, site = self._speaker_device()
-            speakers.run_speakers(self.store, mid, vid, self.handle,
-                                  media.audio_path(self.media, mid), threads=threads,
-                                  hint=count, model=self.speaker_model, device=device,
-                                  gpu_site=site)
+            try:
+                speakers.run_speakers(self.store, mid, vid, self.handle,
+                                      media.audio_path(self.media, mid), threads=threads,
+                                      hint=count, model=self.speaker_model, device=device,
+                                      gpu_site=site)
+            finally:
+                with self._lock:
+                    self._rerun_count = None
             return
         if kind == "transcribe":
             version = self.store.version(ref)
@@ -772,7 +776,7 @@ class Workspace:
         turned it on, in Faster mode, with the component verified. Otherwise
         the processor."""
         if (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
-                and gpu.status(self.cache_dir)[0] == "ready"):
+                and gpu.verified_for_use(self.cache_dir)):
             return "cuda", str(gpu.site_dir(self.cache_dir))
         return "cpu", None
 
@@ -831,7 +835,9 @@ class Workspace:
         # again before it starts just replaces the request, and asking again
         # for the pass that is already running (a double click) is ignored.
         with self._lock:
-            if self._busy == (mid, "rerun") and self._rerun_count == count:
+            if (self._busy == (mid, "rerun") and self._rerun_count == count
+                    and not self.handle._stop_requested.is_set()):
+                self._reruns.pop(mid, None)     # this exact pass is already running
                 return
             self._reruns[mid] = count
         self._wake.set()

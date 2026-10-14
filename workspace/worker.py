@@ -200,13 +200,14 @@ class WorkerHandle:
 
     def release_gpu(self):
         """Stop the GPU worker and free its graphics memory (after a GPU failure)."""
-        if self._gpu is not None:
-            self._gpu.close()
-            self._gpu = None
+        companion, self._gpu = self._gpu, None
+        if companion is not None:
+            companion.close()
 
     def shutdown(self):
-        if self._gpu is not None:
-            self._gpu.shutdown()
+        companion = self._gpu            # read once: release_gpu may clear it
+        if companion is not None:
+            companion.shutdown()
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 try:
@@ -218,8 +219,9 @@ class WorkerHandle:
             self._kill()
 
     def close(self):
-        if self._gpu is not None:
-            self._gpu.close()
+        companion = self._gpu
+        if companion is not None:
+            companion.close()
         self._closed = True
         self.stop_now()              # do not wait for an in-flight chunk
         with self._lock:
@@ -232,8 +234,9 @@ class WorkerHandle:
         cleans up and raises WorkerStopped, otherwise cleanup happens here.
         The stop stays in force until begin_run()."""
         self._stop_requested.set()
-        if self._gpu is not None:
-            self._gpu.stop_now()
+        companion = self._gpu
+        if companion is not None:
+            companion.stop_now()
         proc = self._proc
         if proc is not None and proc.is_alive():
             proc.terminate()

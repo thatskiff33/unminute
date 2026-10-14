@@ -85,6 +85,15 @@ class InstallTests(unittest.TestCase):
     def fetch(self, url, dest, size):
         Path(dest).write_bytes(self.blobs[url])
 
+    def test_first_gpu_use_in_a_session_runs_the_full_check(self):
+        gpu.install(self.cache, lambda m: None, self.fetch)
+        gpu._verified.clear()
+        (gpu.site_dir(self.cache) / "torch" / "deep.pyd").write_bytes(b"MZ")  # not at root
+        self.assertEqual(gpu.check(self.cache), [])          # the quick check misses it
+        self.assertFalse(gpu.verified_for_use(self.cache))   # the full check does not
+        (gpu.site_dir(self.cache) / "torch" / "deep.pyd").unlink()
+        self.assertTrue(gpu.verified_for_use(self.cache))
+
     def test_install_verifies_and_skips_headers(self):
         self.assertEqual(gpu.status(self.cache)[0], "missing")
         gpu.install(self.cache, lambda m: None, self.fetch)
@@ -270,6 +279,7 @@ class WorkspaceGpuTests(unittest.TestCase):
     def test_device_is_the_gpu_only_in_faster_mode_with_the_component(self):
         card = {"name": "NVIDIA test", "driver": "595.95", "memory_mb": 4096, "driver_ok": True}
         with mock.patch.object(gpu, "status", return_value=("ready", "")), \
+                mock.patch.object(gpu, "verified_for_use", return_value=True), \
                 mock.patch.object(gpu, "detected", return_value=card):
             self.ws.set_settings({"gpu_speakers": True})
             self.assertEqual(self.ws._speaker_device()[0], "cpu")       # Quiet

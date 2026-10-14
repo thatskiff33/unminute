@@ -153,7 +153,9 @@ def _unlisted(site, entries, full):
     """Files that are not in the wheels' RECORD. Any file under the import
     root could be loaded, so none may be added. Quick: the import root and
     torch/lib (where DLLs load from); full: everything. __pycache__ is
-    Python's own byte-code cache."""
+    Python's own byte-code cache and cannot be pinned. The folder is in the
+    user's own profile, so this check finds damage and stray files; anyone able
+    to write there could equally change the app's own installed files."""
     listed = {rel.replace("\\", "/") for rel, _, _ in entries}
     tops = {rel.split("/")[0] for rel in listed}
     out = []
@@ -214,7 +216,7 @@ def status(cache_dir):
         return "missing", "Not downloaded yet."
     if problems:
         return "invalid", ("Damaged or incomplete. Repair downloads a fresh, verified copy; "
-                           "the damaged copy is kept aside, not deleted.")
+                           "the damaged copy is kept aside (only the most recent one).")
     return "ready", "Downloaded and verified."
 
 
@@ -260,17 +262,34 @@ def install(cache_dir, log, fetch):
         (staging / "installed.json").write_text(json.dumps(
             {"version": VERSION, "wheels": [{k: w[k] for k in ("name", "version", "sha256")}
                                             for w in WHEELS]}, indent=1), encoding="utf-8")
+        older = list(base.parent.glob(VERSION + ".invalid-*"))
         if base.exists():
-            # Keep the most recent damaged copy aside (never deleted silently),
-            # but not one per repair: the component is several GB.
-            for old in base.parent.glob(VERSION + ".invalid-*"):
-                shutil.rmtree(old, ignore_errors=True)
+            # The damaged copy is set aside, never deleted silently.
             _rename(base, base.parent / (VERSION + ".invalid-" + os.urandom(3).hex()))
         _rename(staging, base)
+        for old in older:
+            # Only the most recent damaged copy is kept: each is several GB.
+            shutil.rmtree(old, ignore_errors=True)
         return {"version": VERSION}
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+_verified = set()     # component folders fully checked in this app session
+
+
+def verified_for_use(cache_dir):
+    """Before the first GPU run of an app session: the full check (every
+    file's SHA-256 and no added file anywhere, a few seconds). Later runs in
+    the same session use the quick check."""
+    key = str(component_dir(cache_dir))
+    if key in _verified:
+        return not check(cache_dir)
+    if check(cache_dir, full=True):
+        return False
+    _verified.add(key)
+    return True
 
 
 def _rename(src, dst, attempts=20, wait=0.5):
