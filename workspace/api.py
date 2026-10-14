@@ -27,7 +27,7 @@ API_METHODS = frozenset({
     "handoff_preview", "set_handoff_options", "copy_handoff", "save_handoff",
     "setup_state", "download_model", "remove_token", "finish_setup", "open_help",
     "verify_model", "cancel_download", "watched_folders", "add_folder_dialog",
-    "set_folder_active", "remove_folder", "scan_now", "set_folder_authority",
+    "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -253,6 +253,17 @@ def make_api(ws, get_window=lambda: None):
             return ws.import_paths(paths)
         return _safe(run)
 
+    def zoom(self, direction):
+        def run():
+            if direction not in ("in", "out", "reset"):
+                raise WorkspaceError("Unknown zoom.")
+            window = get_window()
+            if window is None:
+                raise WorkspaceError("Zoom is not available.")
+            from workspace import shell
+            return shell.set_zoom(window, direction)
+        return _safe(run)
+
     names = dict(ping=ping, status=status, meetings=meetings, detail=detail,
                  transcript=transcript, search=search, edit=edit, undo=undo, clip=clip,
                  pause=pause, stop_now=stop_now, resume=resume, rename=rename,
@@ -275,7 +286,7 @@ def make_api(ws, get_window=lambda: None):
                  verify_model=verify_model, cancel_download=cancel_download,
                  watched_folders=watched_folders, add_folder_dialog=add_folder_dialog,
                  set_folder_active=set_folder_active, remove_folder=remove_folder,
-                 scan_now=scan_now, set_folder_authority=set_folder_authority)
+                 scan_now=scan_now, set_folder_authority=set_folder_authority, zoom=zoom)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

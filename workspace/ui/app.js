@@ -971,6 +971,11 @@ function wire() {
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "z" && !state.editing
         && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); undo(); }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); $("m-search").focus(); }
+    // Keyboard zoom (#27): the browser's own Ctrl+plus/minus/0 keys are off in this window.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const dir = ["+", "="].includes(e.key) ? "in" : ["-", "_"].includes(e.key) ? "out" : e.key === "0" ? "reset" : null;
+      if (dir) { e.preventDefault(); attempt(() => call("zoom", dir)); }
+    }
   });
 }
 
