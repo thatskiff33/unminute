@@ -80,6 +80,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 - dragging a recording onto the window (#20);
 - pressing Ctrl+plus to zoom.
 
+## 6. Microphone recording on real hardware (#30)
+
+Turn on Settings > Microphone. Use a USB or Bluetooth headset that can be unplugged or switched off.
+
+1. Start a recording, speak for 20 seconds, then unplug the headset or switch it off.
+2. Within a few seconds, the panel should say the microphone stopped responding and that recording stopped without switching device. The saved part should become a meeting.
+3. Check that the meeting's length matches the time before the unplug. If recording continued with silence instead, record that on #30: it means the device-loss check needs a silence-based rule for this driver.
+4. Optional: during a recording, end the app in Task Manager. At the next start, the saved part is imported, and the report gives about how much at the end was lost.
+
 ## After the checks
 
 Update `docs/RELEASE_CHECKLIST.md`, then close each issue whose acceptance is met, with the evidence. #29 closes when the checklist's open items are done. A full release then follows `docs/RELEASING.md`.
