@@ -104,9 +104,34 @@ function Test-Prerequisite {
         Stop-Install 2 ("$AppName needs about 6 GB free (the app about 2 GB, models about " +
             "3 GB, plus working space). Only $freeGb GB is free.")
     }
-    $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    if ($ramGb -lt 8) {
-        Write-Step "Warning: this computer has $ramGb GB of memory; 8 GB or more is recommended."
+    Test-Hardware
+}
+
+# Minimum 4 processor cores and 8 GB of memory; recommended 8 cores and 16 GB
+# (#28). Below the minimum the installer warns and, when someone is at the
+# keyboard, asks before continuing; unattended installs record the warning and
+# continue. Windows reports a little less memory than is fitted (an 8 GB laptop
+# shows about 7.7 GB), hence the 7.5 and 15 GB thresholds.
+function Test-Hardware {
+    $cores = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+    $ramGb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)
+    $below = @()
+    if ($cores -lt 4) { $below += "$cores processor cores (minimum 4)" }
+    if ($ramGb -lt 7.5) { $below += "$ramGb GB of memory (minimum 8 GB)" }
+    if ($below.Count) {
+        $message = "This computer has " + ($below -join " and ") + ". $AppName may be slow " +
+            "or run out of memory on long meetings. Recommended: 8 cores and 16 GB."
+        if ($Options.Silent) {
+            [Console]::Error.WriteLine("Warning: $message")
+            return
+        }
+        Write-Host "Warning: $message" -ForegroundColor Yellow
+        $answer = Read-Host "Install anyway? (y/N)"
+        if ($answer -notmatch '^(y|yes)$') { Stop-Install 2 "Installation cancelled: the computer is below the minimum hardware." }
+    } elseif ($cores -lt 8 -or $ramGb -lt 15) {
+        Write-Step "Note: $cores processor cores and $ramGb GB of memory meet the minimum. 8 cores and 16 GB are recommended for long meetings."
+    } else {
+        Write-Step "Hardware: $cores processor cores, $ramGb GB of memory."
     }
 }
 
