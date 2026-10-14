@@ -5,6 +5,44 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.0
+
+**Meeting Workspace**: a Windows app that transcribes, reviews and cleans up meeting recordings on your own computer. This first full release brings together the four previews (v0.2.0-preview.1 to preview.4).
+
+**Install:** download `WhisperWorkspace-0.2.0.zip` and its `.sha256` file, then follow docs/PACKAGING.md. It installs for your Windows account without administrator rights. It is built for unattended deployment through Intune, which has not yet been tested on a managed device (see Known limitations). An installed preview updates and keeps your workspace.
+
+### What it does
+
+- **Local transcription.** Parakeet v2 is the recommended model. Parakeet v3 and Whisper large-v3 turbo are alternatives. Models are downloaded once in Setup and checked against pinned SHA-256 checksums before use. The checksums match those Hugging Face publishes.
+- **Speaker identification (optional).** It uses pyannote community-1 and needs a free Hugging Face token once. You can name, merge and reassign speakers.
+- **Review.** A searchable, timestamped transcript with clip playback, autosaved edits and undo.
+- **Handoff.** Copy a prompt and the transcript for your own AI assistant, or save Markdown. You see an exact preview first, and you can leave out passages and redact words.
+- **Cleanup in two confirmed steps.** The audio is removed once you confirm the transcript is reviewed. The transcript is removed once you confirm the final document is saved elsewhere. Retention holds block cleanup until someone releases them, and they never expire on their own.
+- **Watched folders.** These include OneDrive online-only files, which are left alone unless you allow fetching. Deleting originals needs a separate, revocable permission per folder.
+- **Microphone recording (optional, off by default).** It saves to disk as it goes. Gaps, a full disk and a disconnected microphone are reported, never hidden, and it never switches device.
+- **Privacy.**
+  - Processing stays on your computer, and the known telemetry switches of the libraries it uses are forced off.
+  - The app blocks its own network connections, except the model downloads you start in Setup. On managed devices, an outbound firewall rule is the stronger control.
+  - Cleanup cannot remove copies in synced folders or anything you have shared.
+- **Updates and rollback.** An update that changes how the workspace is stored waits until the workspace is empty. You can roll back to the previous version, unless an update has changed how the workspace is stored.
+- **Accessibility.** Keyboard access, Ctrl+zoom from 50% to 300%, layouts that reflow at 320 CSS pixels wide (the WCAG test for 400% zoom), and accessible names for screen readers.
+- **Resources.** Quiet mode is the default, Faster mode is optional, and on battery automatic work waits by default.
+
+### Known limitations
+
+These have not yet been verified. Details are in docs/RELEASE_CHECKLIST.md and docs/VALIDATION_RUNBOOK.md.
+
+- **Clean profile and Intune.** Not yet tested on a clean standard-user Windows profile, or deployed through Intune on a managed device (#10, #11).
+- **No code signing.** This project's installer scripts are not code-signed. Integrity rests on the published `.sha256` and the installer's per-file check. The signing route is still to be chosen (#11).
+- **Transcription quality.** Measured on public test clips and synthetic audio only, not on representative business recordings (#12, #25).
+- **Accessibility with people.** Not yet tested with a screen reader, Windows contrast themes or nontechnical pilot users (#27).
+- **Hardware.** No minimum specification is set yet. Testing was on one laptop: an Intel Core Ultra 7 255H with 32 GB of memory, CPU only, on Windows 11 (#28). Windows 10 1809 or later passes the installer's checks but has not been tested.
+- **Alternative models.** Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine, not in the workspace. In that test, Parakeet v3 dropped speech on some clips.
+- **Microphone hardware.** Unplugging a USB or Bluetooth microphone mid-recording has not been tested on hardware (#30). Dragging a recording onto the window has not been tested on hardware either; the Import dialog has.
+- **No GPU acceleration.** It is not included.
+
+**The earlier source-installed app** (v0.1.0, `install.cmd`) remains in the repository. Its changes are listed under v0.2.0-preview.1.
+
 ## v0.2.0-preview.4
 
 **Fourth preview** of the packaged meeting workspace, for testing. It installs per user without admin rights. An installed earlier preview updates in place. The open checks are the same as for preview.3 (see docs/RELEASE_CHECKLIST.md and docs/VALIDATION_RUNBOOK.md).
