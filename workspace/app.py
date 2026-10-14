@@ -23,6 +23,7 @@ from pathlib import Path
 
 import asr_engines
 from workspace import (cleanup, clipboard, credentials, handoff, holds, intake, media,
+                       recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
@@ -45,6 +46,7 @@ DEFAULT_SETTINGS = {
     "speakers": True,                              # separate speakers after transcription
     "battery_override": False,                     # process automatically on battery
     "onboarded": False,                            # guided setup finished or skipped (#19)
+    "microphone": False,                           # microphone recording (#30), off by default
 }
 
 
@@ -86,7 +88,7 @@ class Settings:
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
                 raise WorkspaceError("Unknown speech model.")
-            if (key in ("speakers", "battery_override", "onboarded")
+            if (key in ("speakers", "battery_override", "onboarded", "microphone")
                     and not isinstance(value, bool)):
                 raise WorkspaceError("Expected on or off.")
             self.values[key] = value
@@ -125,6 +127,14 @@ class Workspace:
         self._scan_requested = False
         self.last_scan = None
         self._threads = []
+        # Microphone recording (#30): one at a time; heavy processing waits.
+        self.recordings = self.root / "recordings"
+        self._recording = None
+        self._rec_starting = False         # a recording is being opened
+        self._yielded = False              # a worker stop caused by recording, not the user
+        self._recording_reports = []       # finished or recovered recordings (no content)
+        self._hung = {}                    # folder name -> recording whose writer did not finish
+        self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self._reconcile_imports()
         intake.recover(self.store)        # imports queued when the app last closed
         if start:
@@ -140,8 +150,22 @@ class Workspace:
             t.start()
             self._threads.append(t)
         self._wake.set()
+        # Recordings left by a crash, power loss or a failed import (#30).
+        for folder, _ in recorder.unfinished(self.recordings):   # also half-removed ones
+            self._imports.put(("__recording__", str(folder)))
 
     def close(self):
+        for _ in range(100):              # a recording still opening (up to 10 s)
+            if not self._rec_starting:
+                break
+            time.sleep(0.1)
+        rec = self._recording
+        if rec is not None:              # saved now; imported at the next start
+            self._recording = None
+            try:
+                rec.stop()
+            except recorder.RecorderError:
+                pass                     # its folder is recovered at the next start
         self._closing.set()
         self._wake.set()
         self._imports.put(None)
@@ -186,6 +210,9 @@ class Workspace:
             try:
                 if item is None or self._closing.is_set():
                     return
+                if item[0] == "__recording__":
+                    self._import_recording_folder(Path(item[1]))
+                    continue
                 path, folder_id, key, content = (*item, None, None)[:4]
                 self._status = "Importing a recording"
                 try:
@@ -203,8 +230,8 @@ class Workspace:
                 self._status = ""
                 self._wake.set()
 
-    def _import_one(self, path, folder_id=None):
-        title = Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
+    def _import_one(self, path, folder_id=None, title=None):
+        title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
         with self.store.tx() as db:
             if folder_id and intake.authority_for(self.store, folder_id):
@@ -220,6 +247,264 @@ class Workspace:
         except BaseException:
             self._discard_import(mid)       # nothing half-imported is left behind
             raise
+        return mid
+
+    # -- microphone recording (#30) ---------------------------------------------------
+
+    def _need_microphone(self):
+        if not self.settings["microphone"]:
+            raise WorkspaceError("Microphone recording is turned off in Settings.")
+
+    def microphone_devices(self):
+        self._need_microphone()
+        try:
+            return recorder.list_devices()
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+
+    def _device(self, device, name=None):
+        """The device at this index, if it is still the microphone the page
+        listed (PortAudio numbers can shift when devices are plugged in or
+        out; a different microphone must never be opened silently)."""
+        choice = next((d for d in self.microphone_devices() if d["index"] == device), None)
+        if choice is None or (name is not None and choice["name"] != name):
+            raise WorkspaceError("The list of microphones has changed. Choose the "
+                                 "microphone again.")
+        return choice
+
+    def test_microphone(self, device, name=None):
+        self._need_microphone()
+        if self._capturing():
+            raise WorkspaceError("Stop the recording before testing a microphone.")
+        choice = self._device(device, name)
+        try:
+            return recorder.measure_level(choice["index"], choice["rate"],
+                                          open_stream=self.open_stream)
+        except recorder.RecorderError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        except Exception as exc:
+            raise WorkspaceError("The microphone could not be opened. Check that Windows "
+                                 "allows apps to use it (Settings > Privacy > "
+                                 "Microphone).") from exc
+
+    def _capturing(self):
+        return self._recording is not None or self._rec_starting
+
+    def start_recording(self, device, name=None):
+        self._need_microphone()
+        # Under the processing lock: the loop re-checks this flag under the
+        # same lock before starting heavy work, so nothing can slip in.
+        with self._lock:
+            if self._capturing():
+                raise WorkspaceError("A recording is already running.")
+            self._rec_starting = True
+            busy = self._busy
+        try:
+            # Heavy processing waits while recording. Work in progress is
+            # stopped; it was never committed and is redone afterwards.
+            if busy and busy[1] in ("transcribe", "speakers", "rerun"):
+                self._yielded = True
+                self.handle.stop_now()
+            choice = self._device(device, name)
+            rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
+                                     choice["name"], choice["rate"],
+                                     open_stream=self.open_stream)
+            try:
+                rec.start()
+            except recorder.RecorderError as exc:
+                raise WorkspaceError(str(exc)) from exc
+            with self._lock:
+                self._recording = rec
+        finally:
+            with self._lock:
+                self._rec_starting = False
+            self._wake.set()                 # if it failed, processing carries on
+        threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
+                         name="recorder-watch").start()
+        return rec.status()
+
+    def _watch_recording(self, rec):
+        """A recording that stops itself (lost device, full disk, time limit)
+        is saved and imported like one the user stopped."""
+        while self._recording is rec and not rec.stopped:
+            time.sleep(0.5)
+        if self._recording is rec and not self._closing.is_set():
+            self._finish_recording(rec)
+
+    def _finish_recording(self, rec):
+        with self._lock:
+            if self._recording is not rec:
+                return                   # already finished by the other path
+            self._recording = None
+        try:
+            rec.stop()
+        except recorder.RecorderError as exc:
+            self._hung[rec.folder.name] = rec
+            self._add_report({"title": None, "seconds": rec.status()["seconds"],
+                              "events": list(rec.journal["events"]),
+                              "note": str(exc), "pending": rec.folder.name})
+            return                       # imported at the next start
+        self._imports.put(("__recording__", str(rec.folder)))
+        self._wake.set()
+
+    def pause_recording(self):
+        if self._recording is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        self._recording.pause()
+        return self._recording.status()
+
+    def resume_recording(self):
+        if self._recording is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        self._recording.resume()
+        return self._recording.status()
+
+    def stop_recording(self):
+        rec = self._recording
+        if rec is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        status = rec.status()
+        self._finish_recording(rec)
+        return {**status, "state": "saving"}
+
+    def recording_status(self):
+        rec = self._recording
+        return {"enabled": self.settings["microphone"],
+                "recording": rec.status() if rec is not None else None,
+                "reports": self._recording_reports[-5:]}
+
+    def _add_report(self, report):
+        import uuid
+        report["id"] = uuid.uuid4().hex
+        self._recording_reports = (self._recording_reports + [report])[-20:]
+
+    def discard_recording_report(self, rid):
+        self._recording_reports = [r for r in self._recording_reports if r["id"] != rid]
+
+    def retry_recording_import(self, rid):
+        """The user's "Try again" for a recording that could not be imported."""
+        report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        folder = self._pending_folder(report)
+        hung = self._hung.get(folder.name)
+        if hung is not None and hung.writing:
+            raise WorkspaceError("The recording is still being saved. Try again in a moment, "
+                                 "or restart the app.")
+        self._hung.pop(folder.name, None)
+        self.discard_recording_report(rid)
+        self._imports.put(("__recording__", str(folder)))
+
+    def _pending_folder(self, report):
+        folder = (self.recordings / report["pending"]
+                  if report and report.get("pending") else None)
+        if folder is None or not folder.is_dir():
+            raise WorkspaceError("That recording is no longer waiting.")
+        return folder
+
+    def delete_pending_recording(self, rid):
+        """The user's explicit choice to delete a recording that could not be
+        imported (for example its journal is damaged)."""
+        report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        folder = self._pending_folder(report)
+        hung = self._hung.get(folder.name)
+        if hung is not None and hung.writing:
+            raise WorkspaceError("The recording is still being saved. Try again in a moment.")
+        import shutil
+        shutil.rmtree(folder, ignore_errors=True)
+        if folder.exists():
+            raise WorkspaceError("The recording could not be deleted yet. Close other apps "
+                                 "that may be using it, then try again.")
+        self._hung.pop(folder.name, None)
+        self.discard_recording_report(rid)
+
+    def _import_recording_folder(self, folder):
+        """Turn a saved (or crash-recovered) recording into a meeting, then
+        remove the recording folder. Failures are reported and the folder is
+        kept, to be tried again (Try again, or the next start)."""
+        journal = recorder.read_journal(folder)
+        has_audio = any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
+        if journal is None and not (folder / "journal.json").exists() and not has_audio:
+            try:                         # an empty leftover (removal stopped at the end)
+                recorder.remove_folder(folder)
+            except OSError:
+                pass
+            return
+        if journal is None:
+            # Unreadable (locked, or damaged by a power cut): never delete
+            # audio that has not been imported. Keep it and say so.
+            self._add_report({"title": None, "seconds": 0, "events": [],
+                              "note": "A recording could not be read (its record file is "
+                                      "locked or damaged). The audio is kept. Choose Try "
+                                      "again, or Delete it if you do not need it.",
+                              "pending": folder.name})
+            return
+        if journal.get("state") == "imported" or self._already_imported(folder.name):
+            try:                         # already a meeting: finish removing the folder
+                recorder.remove_folder(folder)
+            except OSError:
+                pass                     # tried again at the next start
+            return
+        events = [e for e in journal.get("events", []) if e["kind"] not in ("paused", "resumed")]
+        report = {"title": None, "seconds": 0, "events": events,
+                  "device": journal.get("device_name")}
+        try:
+            wav, seconds = recorder.assemble_wav(folder, journal)
+            report["seconds"] = round(seconds, 1)
+            interrupted = journal.get("state") == "recording"   # the app did not stop it
+            missing = (recorder.missing_tail_seconds(folder, journal, seconds)
+                       if interrupted else 0)
+            if interrupted and missing >= 0.5:
+                events.append({"kind": "interrupted", "at_s": round(seconds, 1),
+                               "seconds": round(missing, 1),
+                               "note": "The app closed unexpectedly while recording. About "
+                                       f"{missing:.0f} s at the end could not be saved."})
+            if seconds < 0.5:
+                report["note"] = "Nothing was recorded."
+                recorder.remove_folder(folder)
+                self._add_report(report)
+                return
+            title = time.strftime("Recording %Y-%m-%d %H:%M",
+                                  time.localtime(journal.get("started_at") or time.time()))
+            mid = self._import_one(str(wav), None, title)
+        except Exception as exc:
+            full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
+            report["note"] = ("It could not be imported yet: " +
+                              ("the disk is full. Free some space, then choose Try again."
+                               if full else _import_message(exc)) +
+                              " The saved audio is kept.")
+            report["pending"] = folder.name
+            self._add_report(report)
+            return
+        # Record which recording this meeting came from, then mark the folder
+        # as imported before removing it: either one stops a second import.
+        report.update(title=title, meeting=mid, recording_id=folder.name)
+        try:
+            recorder._retrying(lambda: recorder._write_atomic(
+                self.media / mid / "recording.json",
+                json.dumps(report, indent=1).encode("utf-8")))
+        except OSError:
+            pass
+        journal.update(state="imported", meeting=mid)
+        try:
+            recorder._retrying(lambda: recorder._write_atomic(
+                folder / "journal.json", json.dumps(journal).encode("utf-8")))
+        except OSError:
+            pass                              # the sidecar above still prevents a duplicate
+        try:
+            recorder.remove_folder(folder)    # the meeting now holds the audio
+        except OSError:
+            pass                              # finished at the next start
+        self._add_report(report)
+
+    def _already_imported(self, recording_id):
+        """True if a meeting was already made from this recording folder."""
+        for sidecar in self.media.glob("*/recording.json"):
+            try:
+                if json.loads(sidecar.read_text(encoding="utf-8")).get(
+                        "recording_id") == recording_id:
+                    return True
+            except (OSError, ValueError):
+                continue
+        return False
 
     def _plan_version(self, mid, sid):
         reader = media.AudioReader(media.audio_path(self.media, mid))
@@ -337,6 +622,8 @@ class Workspace:
             if (not cleanup.is_held(self.store, job["meeting_id"], job["phase"])
                     and not self._waiting_on_audio(job)):
                 return ("cleanup", job["meeting_id"], job["id"])
+        if self._capturing():
+            return None                      # heavy processing waits for the recording
         with self._lock:
             for mid, count in list(self._reruns.items()):
                 m = self.store.meeting(mid)
@@ -398,6 +685,8 @@ class Workspace:
                     if kind != "cleanup" and self.downloads.busy():
                         self._status = "Waiting for the model download to finish"
                         break
+                    if kind != "cleanup" and self._capturing():
+                        break                # a recording started meanwhile (#30)
                     self._busy = (mid, kind)
                 try:
                     self._run(kind, mid, ref)
@@ -409,6 +698,7 @@ class Workspace:
                         pass
                 finally:
                     self._busy = None
+                    self._yielded = False      # only the run that recording stopped
 
     def _maybe_purge(self):
         if time.time() - self._last_purge > RECEIPT_PURGE_S:
@@ -458,7 +748,8 @@ class Workspace:
                 result = runner.run_version(self.store, mid, ref, reader, engine)
             finally:
                 reader.close()               # release the handle before any cleanup
-            if result == runner.RunResult.STOPPED and not self._closing.is_set():
+            if result == runner.RunResult.STOPPED and not self._closing.is_set() \
+                    and not self._yielded:
                 self.store.set_paused(mid, True)    # Stop now = paused until resumed
             return
         self._status = "Identifying speakers"
@@ -817,6 +1108,8 @@ class Workspace:
     def set_settings(self, changes):
         if not isinstance(changes, dict):
             raise WorkspaceError("Expected settings.")
+        if changes.get("microphone") is False and self._recording is not None:
+            raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet
         self.settings.update(**changes)
         self.handle.quiet = self.settings["mode"] == resources.QUIET

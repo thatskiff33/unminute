@@ -175,7 +175,7 @@ def checks(window, ws, mid, report):
                                           "('aria-live')};")
         views = {
             "setup": "window.workspace.show('setup'); await wait(1200);",
-            "inbox": "window.workspace.show('inbox'); await wait(800);",
+            "inbox": "window.workspace.show('inbox'); await wait(1500);",
             "active": "window.workspace.show('active'); await wait(800);",
             "settings": "window.workspace.show('settings'); await wait(800);",
             "meeting": f"await window.workspace.openMeeting('{mid}'); await wait(1500);",
@@ -212,7 +212,8 @@ def main():
         root = Path(tmp)
         ws = Workspace(root / "ws", root / "models", start=False, battery=False,
                        speaker_model=FAKE + "fake_diarizer")
-        ws.settings.update(model=FAKE + "sentences", speakers=True)
+        # Microphone on, so the Inbox's recording panel (#30) is audited too.
+        ws.settings.update(model=FAKE + "sentences", speakers=True, microphone=True)
         ws.start()
         ws.import_paths([str(write_wav(root / "synthetic-standup.wav", 60))])
         assert ws.wait_idle(180), "processing did not finish"

@@ -115,6 +115,23 @@ def write_pth(runtime):
         encoding="ascii")
 
 
+def prune_portaudio(site):
+    """sounddevice's wheel carries PortAudio for every platform, plus builds
+    with Steinberg's ASIO SDK (separate licence terms). Keep only the 64-bit
+    Windows library without ASIO, which is the one sounddevice loads by default
+    (MIT-licensed PortAudio)."""
+    folder = site / "_sounddevice_data" / "portaudio-binaries"
+    if not folder.is_dir():
+        return
+    for p in folder.iterdir():
+        if p.is_file() and p.name not in ("libportaudio64bit.dll", "README.md"):
+            p.unlink()
+        elif p.is_dir():
+            shutil.rmtree(p)
+    if not (folder / "libportaudio64bit.dll").is_file():
+        sys.exit("sounddevice's 64-bit PortAudio library is missing.")
+
+
 def flatten_licences(site):
     """Some wheels ship licence files in very deep folders (torch's dist-info
     reproduces its whole third-party tree). Keep every licence text, but move
@@ -194,6 +211,7 @@ def build(version, out, cache):
         write_pth(runtime)
         install_wheels(runtime / SITE, cache / "wheels")
         flatten_licences(runtime / SITE)
+        prune_portaudio(runtime / SITE)
         # pip --target writes console launchers with the build machine's
         # Python path baked in; they do not work elsewhere and reveal it.
         shutil.rmtree(runtime / SITE / "bin", ignore_errors=True)

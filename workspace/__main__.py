@@ -69,6 +69,7 @@ def self_test():
     ok = True
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
                  "torch", "pyannote.audio", "huggingface_hub", "webview", "clr_loader",
+                 "sounddevice",                    # loads PortAudio (microphone, #30)
                  "workspace.app", "workspace.api", "asr_engines"):
         try:
             importlib.import_module(name)
