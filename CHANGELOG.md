@@ -36,7 +36,7 @@ These have not yet been verified. Details are in docs/RELEASE_CHECKLIST.md and d
 - **No code signing.** This project's installer scripts are not code-signed. Integrity rests on the published `.sha256` and the installer's per-file check. The signing route is still to be chosen (#11).
 - **Transcription quality.** Measured on public test clips and synthetic audio only, not on representative business recordings (#12, #25).
 - **Accessibility with people.** Not yet tested with a screen reader, Windows contrast themes or nontechnical pilot users (#27).
-- **Hardware.** The minimum is 4 processor cores and 8 GB of memory, but it has not yet been tested on a laptop at that level. Testing was on one laptop: an Intel Core Ultra 7 255H with 32 GB of memory, CPU only, on Windows 11 (#28). Windows 10 1809 or later passes the installer's checks but has not been tested.
+- **Hardware.** The minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. The installer warns below the minimum. Neither level has been tested yet. Testing was on one laptop: an Intel Core Ultra 7 255H with 32 GB of memory, CPU only, on Windows 11 (#28). Windows 10 1809 or later passes the installer's checks but has not been tested.
 - **Alternative models.** Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine, not in the workspace. In that test, Parakeet v3 dropped speech on some clips.
 - **Microphone hardware.** Unplugging a USB or Bluetooth microphone mid-recording has not been tested on hardware (#30). Dragging a recording onto the window has not been tested on hardware either; the Import dialog has.
 - **No GPU acceleration.** It is not included.

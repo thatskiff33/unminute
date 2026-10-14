@@ -66,7 +66,7 @@ The installer runs as the current user and needs no administrator rights. It:
   - 64-bit Windows 10 1809 or later, or Windows 11;
   - the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and present on most managed Windows 10 devices;
   - about 6 GB free disk space;
-  - 8 GB of memory, which is recommended but not required. The stated minimum is 4 processor cores and 8 GB of memory (#28); the installer checks memory only.
+  - processor cores and memory: the minimum is 4 cores and 8 GB, and 8 cores and 16 GB are recommended (#28). Below the minimum, the installer warns and asks before continuing; an unattended (`-Silent`) install records the warning and continues.
 - **Verifies the package.**
   - With `-Package`, it checks the zip against its `.sha256` file. That is the check that detects tampering, provided the `.sha256` comes from the release page.
   - In every mode it checks every file against `package-manifest.json`, and refuses files that are missing, different or not listed.
