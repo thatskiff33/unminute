@@ -53,6 +53,8 @@ $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Sile
 $AppName = "Meeting Workspace"
 $script:TempExtract = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
+# Must match APP_ID in workspace/__main__.py (taskbar grouping and icon).
+$AppId = "WhisperTranscriber.MeetingWorkspace"
 $WebView2Client = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
 function Write-Step([string]$Message) {
@@ -240,6 +242,62 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
     } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
 }
 
+# Stamp an explicit AppUserModelID onto a .lnk so a pinned shortcut groups with
+# the running window (workspace/__main__.py sets the same ID at startup). The target is
+# pythonw.exe, whose default identity is shared with every other Python app, so
+# without this a taskbar pin shows as a second button while the app is running.
+# Done via the shell property store (no admin needed).
+function Set-ShortcutAppId([string]$LnkPath, [string]$AppId) {
+    if (-not ([System.Management.Automation.PSTypeName]'ShellLnk.Helper').Type) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace ShellLnk {
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct PropertyKey { public Guid fmtid; public uint pid;
+        public PropertyKey(Guid id, uint p) { fmtid = id; pid = p; } }
+    [ComImport, Guid("0000010b-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPersistFile {
+        void GetClassID(out Guid pClassID);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string n, int m);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string n, [MarshalAs(UnmanagedType.Bool)] bool r);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string n);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string n); }
+    [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    public interface IPropertyStore {
+        void GetCount(out uint c);
+        void GetAt(uint i, out PropertyKey k);
+        void GetValue(ref PropertyKey k, out PropVariant v);
+        void SetValue(ref PropertyKey k, ref PropVariant v);
+        void Commit(); }
+    [StructLayout(LayoutKind.Explicit)]
+    public struct PropVariant { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr p; }
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")] public class CShellLink { }
+    public static class Helper {
+        static PropertyKey K = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+        [DllImport("ole32.dll")] static extern int PropVariantClear(ref PropVariant pv);
+        public static void SetAppId(string lnk, string appId) {
+            IPersistFile pf = (IPersistFile)(new CShellLink());
+            pf.Load(lnk, 2); // STGM_READWRITE
+            IPropertyStore store = (IPropertyStore)pf;
+            PropVariant pv = new PropVariant();
+            pv.vt = 31; // VT_LPWSTR
+            pv.p = Marshal.StringToCoTaskMemUni(appId);
+            store.SetValue(ref K, ref pv);
+            store.Commit();
+            PropVariantClear(ref pv);
+            pf.Save(lnk, true);
+        }
+    }
+}
+'@
+    }
+    [ShellLnk.Helper]::SetAppId($LnkPath, $AppId)
+}
+
 function New-Shortcut([string]$Target) {
     if ($Options.SkipShortcut) { return }
     $programs = [Environment]::GetFolderPath("Programs")
@@ -249,7 +307,11 @@ function New-Shortcut([string]$Target) {
     $link.Arguments = "-m workspace"
     $link.WorkingDirectory = Join-Path $Target "app"
     $link.Description = "Transcribe and review meetings on this computer"
+    $icon = Join-Path $Target "app\whisper.ico"
+    if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
     $link.Save()
+    try { Set-ShortcutAppId $link.FullName $AppId }
+    catch { Write-Warning "Could not set the taskbar identity on the shortcut: $($_.Exception.Message)" }
 }
 
 function Register-Uninstall([string]$Target, [string]$Version) {
@@ -262,6 +324,8 @@ function Register-Uninstall([string]$Target, [string]$Version) {
         QuietUninstallString = "$uninstall -Silent"; EstimatedSize = $sizeKb
         NoModify = 1; NoRepair = 1
     }
+    $icon = Join-Path $Target "app\whisper.ico"
+    if (Test-Path -LiteralPath $icon) { $values.DisplayIcon = $icon }
     foreach ($k in $values.Keys) {
         $type = if ($values[$k] -is [int]) { "DWord" } else { "String" }
         New-ItemProperty -Path $RegKey -Name $k -Value $values[$k] -PropertyType $type -Force | Out-Null
