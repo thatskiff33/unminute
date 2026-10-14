@@ -133,6 +133,23 @@ class RecordingTests(unittest.TestCase):
         _, seconds = recorder.assemble_wav(rec.folder, journal)
         self.assertAlmostEqual(seconds, 6.0, places=1)
 
+    def test_an_overrun_at_the_moment_of_disconnection_is_part_of_it(self):
+        rec, s = self.start()
+        s.feed(2)
+        s.feed(0.1, overflow=True)            # what Windows reports as the device goes
+        s.finished()
+        events = rec.stop()["events"]
+        self.assertEqual([e["kind"] for e in events], ["device_lost"])
+        self.assertIn("fraction of a second", events[0]["note"])
+
+    def test_an_earlier_overrun_is_still_reported_on_its_own(self):
+        rec, s = self.start()
+        s.feed(0.1, overflow=True)
+        s.feed(3)
+        s.finished()
+        kinds = [e["kind"] for e in rec.stop()["events"]]
+        self.assertEqual(kinds, ["overrun", "device_lost"])
+
     def test_driver_reporting_the_end_counts_as_device_loss(self):
         rec, s = self.start()
         s.feed(1)

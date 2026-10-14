@@ -288,9 +288,20 @@ class Recording:
     def _device_lost(self):
         if self.journal["state"] != "recording":
             return
+        # Windows reports an overrun at the moment a device disappears; that is
+        # part of the disconnection, not the computer falling behind.
+        with self._lock:
+            events = self.journal["events"]
+            at_now = (self.journal["frames"] + self._buffered) / self.rate
+            during = bool(events and events[-1]["kind"] == "overrun"
+                          and at_now - events[-1]["at_s"] <= 1.0)
+            if during:
+                events.pop()
         self._event("device_lost", note="The microphone stopped responding or was "
                                         "disconnected. Recording stopped; it did not "
-                                        "switch to another device.")
+                                        "switch to another device."
+                                        + (" A fraction of a second may be missing at the "
+                                           "moment it disconnected." if during else ""))
         self.journal["state"] = "device_lost"
         self._stop.set()
 
