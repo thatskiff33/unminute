@@ -106,10 +106,12 @@ def check(version_dir, cache, wav, report):
     # Lifecycle in a child process using the packaged runtime and app code.
     script = tmp / "lifecycle.py"
     script.write_text(LIFECYCLE, encoding="utf-8")
-    r = subprocess.run([py, str(script), str(cache), str(wav), MARKER], capture_output=True,
-                       text=True, env=env, cwd=Path(version_dir) / "app", timeout=7200)
     try:
+        r = subprocess.run([py, str(script), str(cache), str(wav), MARKER], capture_output=True,
+                           text=True, env=env, cwd=Path(version_dir) / "app", timeout=7200)
         report["lifecycle"] = json.loads(r.stdout.strip().splitlines()[-1])
+    except subprocess.TimeoutExpired:
+        report["lifecycle"] = {"error": "lifecycle script exceeded 7,200 s"}
     except (ValueError, IndexError):
         report["lifecycle"] = {"error": (r.stderr or r.stdout)[-2000:]}
 
@@ -183,11 +185,14 @@ def main():
         ws.settings.update(onboarded=True, speakers=True)
         ws.start()
         t = time.time()
-        ws.import_paths([wav])
+        imported = ws.import_paths([wav])
         while not ws.meetings() and time.time() - t < 600:
             time.sleep(1)
+        if not ws.meetings():
+            return {"error": "no meeting was created", "import_result": repr(imported)[:500]}
         peak = 0
-        while time.time() - t < 7000:
+        # Leave the parent's 7,200 s limit room for model load and close().
+        while time.time() - t < 6600:
             if ws.handle.pid:
                 peak = max(peak, worker_peak(ws.handle.pid))
             if ws.wait_idle(5) and ws.meetings():
@@ -198,12 +203,15 @@ def main():
                     d = ws.detail(m["id"])
                     if d["speakers"] and d["speakers"]["status"] in ("done", "failed"):
                         break
+        else:
+            out["error"] = "timed out before transcription and speakers finished"
         m = ws.meetings()[0]
         out["meetings_imported"] = len(ws.meetings())
         out["transcribed_s"] = round(time.time() - t)
         out["worker_peak_mb"] = round(peak / 2**20)
-        if m["error"]:
-            out["error"] = m["error"]
+        if m["error"] or out.get("error"):
+            out["error"] = m["error"] or out["error"]
+            out["speakers"] = (ws.detail(m["id"])["speakers"] or {}).get("status")
             return out
         d = ws.detail(m["id"])
         out["speakers"] = d["speakers"]["status"] if d["speakers"] else None
