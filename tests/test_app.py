@@ -257,6 +257,149 @@ class WorkspaceTests(unittest.TestCase):
         [m] = ws.meetings()
         self.assertIn("missing", m["error"])
 
+    def test_models_can_be_removed_unless_still_needed(self):
+        import asr_engines
+        from workspace import gpu
+        ws = self.open(start=False)
+        cache = ws.cache_dir
+
+        def put(path):
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "model.bin").write_bytes(b"x" * 1000)
+            return path
+        v2 = put(asr_engines.model_dir(asr_engines.PARAKEET_MODELS["parakeet-tdt-0.6b-v2"], cache))
+        v3 = put(asr_engines.model_dir(asr_engines.PARAKEET_MODELS["parakeet-tdt-0.6b-v3"], cache))
+        v3_bad = put(v3.with_name(v3.name + ".invalid-20261015"))
+        vad = put(asr_engines.model_dir(asr_engines.SILERO_VAD, cache))
+        spk = asr_engines.SPEAKER_MODEL
+        spk_dir = put(asr_engines.model_dir(spk, cache))
+        spk_hub = put(Path(cache) / ("models--" + spk.hub_repos[0].replace("/", "--")))
+        comp = put(gpu.component_dir(cache))
+        ws.settings.update(model="parakeet-tdt-0.6b-v2", speakers=True)
+        with self.assertRaises(WorkspaceError):
+            ws.remove_model("parakeet-tdt-0.6b-v2")        # the selected speech model
+        self.assertEqual(ws.remove_model("parakeet-tdt-0.6b-v3"), 0.0)   # GB freed (tiny files)
+        self.assertFalse(v3.exists() or v3_bad.exists())    # damaged copies go too
+        self.assertTrue(vad.exists())                       # still needed by v2
+        ws.settings.update(model="large-v3-turbo")
+        ws.remove_model("parakeet-tdt-0.6b-v2")
+        self.assertFalse(v2.exists() or vad.exists())       # the last Parakeet takes VAD
+        with self.assertRaises(WorkspaceError):
+            ws.remove_model(spk.name)                       # speakers still switched on
+        ws.settings.update(speakers=False)
+        ws.remove_model(spk.name)
+        self.assertFalse(spk_dir.exists() or spk_hub.exists())
+        ws.settings.update(gpu_speakers=True)
+        ws.remove_model(gpu.COMPONENT)
+        self.assertFalse(comp.exists())
+        self.assertFalse(ws.settings["gpu_speakers"])       # switched off with it
+        with self.assertRaises(WorkspaceError):
+            ws.remove_model("../../Windows")                # only known names
+
+    def test_removal_never_follows_links_or_matches_other_models(self):
+        import _winapi
+
+        import asr_engines
+        ws = self.open(start=False)
+        cache = Path(ws.cache_dir)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "precious.txt").write_text("keep")
+        v3 = asr_engines.model_dir(asr_engines.PARAKEET_MODELS["parakeet-tdt-0.6b-v3"], cache)
+        v3.parent.mkdir(parents=True, exist_ok=True)
+        _winapi.CreateJunction(str(outside), str(v3))       # the model folder is a junction
+        with self.assertRaises(WorkspaceError) as e:
+            ws.remove_model("parakeet-tdt-0.6b-v3")
+        self.assertIn("link", str(e.exception))
+        self.assertTrue((outside / "precious.txt").exists())
+        os.rmdir(v3)                                         # removes the junction only
+        # large-v3's check records must not match large-v3-turbo's.
+        marks = cache / "whisper" / ".verified"
+        marks.mkdir(parents=True)
+        turbo_mark = marks / ("faster-whisper-large-v3-turbo-" + "a" * 16 + ".json")
+        large_mark = marks / ("faster-whisper-large-v3-" + "b" * 16 + ".json")
+        turbo_mark.write_text("{}")
+        large_mark.write_text("{}")
+        ws.remove_model("large-v3")
+        self.assertTrue(turbo_mark.exists())
+        self.assertFalse(large_mark.exists())
+
+    def test_a_model_still_transcribing_a_meeting_is_not_removed(self):
+        import asr_engines
+        ws = self.open(start=False)
+        ws.settings.update(model="parakeet-tdt-0.6b-v3")
+        ws._import_one(str(self.rec))                       # pending chunks, v3 version
+        ws.settings.update(model="parakeet-tdt-0.6b-v2")
+        folder = asr_engines.model_dir(asr_engines.PARAKEET_MODELS["parakeet-tdt-0.6b-v3"],
+                                       ws.cache_dir)
+        folder.mkdir(parents=True)
+        with self.assertRaises(WorkspaceError) as e:
+            ws.remove_model("parakeet-tdt-0.6b-v3")
+        self.assertIn("still being transcribed", str(e.exception))
+        self.assertTrue(folder.exists())
+
+    def test_pausing_a_speaker_rerun_keeps_it_and_its_count(self):
+        import time as _time
+        ws = self.open()
+        mid = self.imported(ws)
+        ws.speaker_model = fake("diarizer_sleepy")
+        ws.rerun_speakers(mid, 3)
+        deadline = _time.time() + 60
+        while _time.time() < deadline and not (ws._busy and ws._busy[1] == "rerun"):
+            _time.sleep(0.1)
+        ws.pause(mid)
+        self.assertTrue(ws.wait_idle(30))
+        self.assertEqual(ws._reruns.get(mid), 3)            # kept, with its count
+        _time.sleep(1)
+        self.assertIsNone(ws._busy)                          # waits while paused
+        ws.speaker_model = fake("fake_diarizer")
+        ws.resume(mid)
+        self.assertTrue(ws.wait_idle(60))
+        runs = ws.store.speaker_runs(ws.store.active_version(mid)["id"])
+        self.assertEqual(runs[-1]["status"], "done")
+        self.assertEqual(runs[-1]["hint_count"], 3)
+
+    def test_speaker_identification_can_be_paused_and_resumed(self):
+        import time as _time
+        ws = self.open(start=False)
+        ws.speaker_model = fake("diarizer_sleepy")          # a long speaker pass
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        deadline = _time.time() + 120
+        while _time.time() < deadline and not (ws._busy and ws._busy[1] == "speakers"):
+            _time.sleep(0.1)
+        [m] = ws.meetings()
+        self.assertEqual(m["busy"], "speakers")             # shown in the list
+        ws.pause(m["id"])                                   # stops the pass at once
+        self.assertTrue(ws.wait_idle(30))
+        vid = ws.store.active_version(m["id"])["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)], ["interrupted"])
+        _time.sleep(1)
+        self.assertIsNone(ws._busy)                         # paused: it does not restart
+        self.assertTrue(ws.meetings()[0]["paused"])
+        ws.speaker_model = fake("fake_diarizer")
+        ws.resume(m["id"])                                  # starts it again
+        self.assertTrue(ws.wait_idle(120))
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)][-1], "done")
+        self.assertTrue(ws.transcript(m["id"])["items"])    # the transcript is untouched
+
+    def test_gpu_component_downloads_while_a_cpu_speaker_pass_runs(self):
+        from unittest import mock
+
+        from workspace import gpu
+        ws = self.open(start=False)
+        started = []
+        ws.downloads.start = lambda name, token=None, on_success=None: started.append(name)
+        ws._busy = ("x" * 32, "speakers")                    # a CPU speaker pass
+        ws.download_model(gpu.COMPONENT)
+        self.assertEqual(started, [gpu.COMPONENT])
+        with self.assertRaises(WorkspaceError):
+            ws.download_model("parakeet-tdt-0.6b-v2")       # speech models still wait
+        with mock.patch.object(ws, "_gpu_in_use", return_value=True):
+            with self.assertRaises(WorkspaceError):
+                ws.download_model(gpu.COMPONENT)            # not while the GPU is in use
+        ws._busy = None
+
     def test_speaker_rerun_runs_on_the_processing_thread_and_not_after_review(self):
         ws = self.open()
         mid = self.imported(ws)

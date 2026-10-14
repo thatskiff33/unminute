@@ -30,7 +30,7 @@ API_METHODS = frozenset({
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
     "microphone_devices", "start_recording", "pause_recording", "resume_recording",
     "stop_recording", "recording_status", "discard_recording_report", "test_microphone",
-    "retry_recording_import", "delete_pending_recording",
+    "retry_recording_import", "delete_pending_recording", "remove_model",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -295,6 +295,9 @@ def make_api(ws, get_window=lambda: None):
     def retry_recording_import(self, rid):
         return _safe(lambda: ws.retry_recording_import(_report_id(rid)))
 
+    def remove_model(self, name):
+        return _safe(lambda: ws.remove_model(name))
+
     def delete_pending_recording(self, rid):
         return _safe(lambda: ws.delete_pending_recording(_report_id(rid)))
 
@@ -338,7 +341,8 @@ def make_api(ws, get_window=lambda: None):
                  discard_recording_report=discard_recording_report,
                  test_microphone=test_microphone,
                  retry_recording_import=retry_recording_import,
-                 delete_pending_recording=delete_pending_recording)
+                 delete_pending_recording=delete_pending_recording,
+                 remove_model=remove_model)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()
