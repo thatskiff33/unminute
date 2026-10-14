@@ -85,11 +85,14 @@ function meetingRow(m) {
   const row = el("li", {}, name);
   const discard = el("button", { type: "button", class: "link", textContent: "Discard…",
     title: "Delete a meeting you do not need (for example a test recording)",
-    on: { click: () => confirmDialog({
-      title: "Discard this meeting?",
-      body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
-      check: "Delete this meeting and everything in it.",
-      onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
+    on: { click: () => attempt(async () => {
+      const d = await call("detail", m.id);            // its own deletion limits
+      confirmDialog({
+        title: "Discard this meeting?",
+        body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
+        check: "Delete this meeting and everything in it.", limitsText: d.limits,
+        onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
+      });
     }) } });
   if (m.stage === "inbox") {
     row.append(el("progress", { max: 100, value: m.progress, title: `${m.progress}% transcribed` }));
@@ -121,7 +124,7 @@ function meetingRow(m) {
       row.append(el("button", { type: "button", textContent: "Resume",
                                 on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } }));
     }
-    if (m.stage !== "cleanup") row.append(discard);
+    if (m.stage === "review") row.append(discard);       // before review is confirmed only
   }
   return row;
 }
@@ -560,11 +563,11 @@ async function play(start, end, exact = false) {
 }
 
 // -- confirmations ---------------------------------------------------------------
-function confirmDialog({ title, body, check, onConfirm, limits = true }) {
+function confirmDialog({ title, body, check, onConfirm, limits = true, limitsText = null }) {
   const dlg = $("confirm");
   $("c-title").textContent = title;
   $("c-body").textContent = body;
-  $("c-limits").textContent = limits && state.detail ? state.detail.limits : "";
+  $("c-limits").textContent = limitsText || (limits && state.detail ? state.detail.limits : "");
   $("c-check-text").textContent = check;
   $("c-check").checked = false;
   $("c-ok").disabled = true;

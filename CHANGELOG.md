@@ -5,7 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
-- **Discard a meeting you do not need.** Inbox and Active meetings have Discard…, for test or wrong recordings. One explicit confirmation deletes the meeting's audio, transcript, edits and speaker names, using the same secure cleanup as the review steps, and leaves only the usual minimal receipts. Work in progress on it stops first. It is refused while a retention hold is active, and the original recording file is never deleted.
+- **Discard a meeting you do not need.** Meetings in the Inbox, and in review before the transcript review is confirmed, have Discard…, for test or wrong recordings. One explicit confirmation deletes the meeting's audio, transcript, edits and speaker names, using the same secure cleanup as the review steps, and leaves only the usual minimal receipts. Work in progress on it stops first. It is refused while a retention hold is active or the recording is still importing, and the original recording file is never deleted. A reviewed meeting is still finished with the final confirmation.
 - **Dismiss import errors.** Messages such as "The file is in cloud storage" now have a Dismiss link.
 
 ## v0.2.2

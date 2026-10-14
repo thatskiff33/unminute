@@ -265,15 +265,18 @@ class WorkspaceTests(unittest.TestCase):
         deadline = _time.time() + 60
         while _time.time() < deadline and not (ws._busy and ws._busy[1] == "transcribe"):
             _time.sleep(0.1)
+        self.assertEqual(ws._busy[1], "transcribe")          # really mid-transcription
         [m] = ws.meetings()
+        started = _time.time()
         ws.discard_meeting(m["id"])
         self.assertTrue(ws.wait_idle(120))
         self.assertEqual(ws.meetings(), [])
         self.assertFalse((ws.media / m["id"]).exists())
         self.assertEqual(sorted(r["result"] for r in ws.receipts()),
                          ["audio removed", "transcript removed"])
+        self.assertLess(_time.time() - started, 25)        # stopped, not waited out (30 s)
 
-    def test_discard_is_refused_while_held_and_never_deletes_the_original(self):
+    def test_discard_is_refused_while_held_after_review_or_while_importing(self):
         ws = self.open(start=False)
         ws._import_one(str(self.rec))
         [m] = ws.meetings()
@@ -285,8 +288,17 @@ class WorkspaceTests(unittest.TestCase):
         with ws.store.tx() as db:                            # as if a watched folder allowed it
             db.execute("UPDATE sources SET delete_original = 1")
         ws.discard_meeting(m["id"])
+        # The original's deletion authority is withdrawn before any job runs.
         self.assertEqual(ws.store._one("SELECT delete_original FROM sources")[0], 0)
-        self.assertTrue(self.rec.exists())
+        from workspace import cleanup
+        reviewed = ws.store.create_meeting("reviewed")
+        with ws.store.tx() as db:
+            db.execute("UPDATE meetings SET reviewed_at = 1 WHERE id = ?", (reviewed,))
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.discard(ws.store, reviewed)               # use the final confirmation
+        importing = ws.store.create_meeting("still importing")
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.discard(ws.store, importing)              # no version yet
 
     def test_models_can_be_removed_unless_still_needed(self):
         import asr_engines

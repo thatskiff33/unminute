@@ -99,11 +99,19 @@ def discard(store, mid):
                       (mid,)).fetchone():
             raise CleanupError("A retention hold is active on this meeting. It cannot be "
                                "discarded until the hold is released.")
+        if meeting["reviewed_at"]:
+            # A reviewed meeting is cleaned up through the final-saved
+            # confirmation, never discarded (two-checkpoint rule).
+            raise CleanupError("This meeting's transcript review is confirmed. Finish it with "
+                               "the final confirmation instead.")
+        if db.execute("SELECT 1 FROM versions WHERE meeting_id = ? AND state = 'active'",
+                      (mid,)).fetchone() is None:
+            raise CleanupError("The recording is still being imported. Try again in a moment.")
         db.execute("UPDATE sources SET delete_original = 0 WHERE meeting_id = ?", (mid,))
         now = time.time()
-        # Reviewed and final-saved stop all further processing of the meeting.
-        db.execute("UPDATE meetings SET paused = 1, reviewed_at = COALESCE(reviewed_at, ?), "
-                   "final_saved_at = COALESCE(final_saved_at, ?) WHERE id = ?", (now, now, mid))
+        # Marked reviewed and final-saved: no further processing of the meeting.
+        db.execute("UPDATE meetings SET paused = 1, reviewed_at = ?, final_saved_at = ? "
+                   "WHERE id = ?", (now, now, mid))
         return _add_job(db, mid, AUDIO), _add_job(db, mid, TRANSCRIPT)
 
 
