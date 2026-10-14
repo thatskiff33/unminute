@@ -321,7 +321,8 @@ def main():
     # scaling can make the check window narrower in page pixels.
     if not lt.get("wide"):
         print("note: window too small in page pixels for split scrolling; not checked")
-    elif not (lt.get("pane_scrolled") and lt.get("search_visible") and lt.get("page_scroll_y") == 0):
+    elif not (lt.get("pane_scrolled") and lt.get("search_visible")
+              and lt.get("page_scroll_y") == 0):
         bad.append("transcript pane scrolling")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     return 1 if bad else 0
