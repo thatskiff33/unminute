@@ -5,6 +5,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **Faster mode no longer slows Parakeet down.** On CPUs with performance and efficiency cores, the extra threads in Faster mode made Parakeet about 4 times slower than Quiet mode. ONNX Runtime threads now wait without spinning: Faster mode takes the same time as Quiet mode, and idle CPU use is lower.
+
 ## v0.2.0-preview.1
 
 **Preview release** of the packaged meeting workspace, for testing. It installs per user without admin rights and runs alongside the existing app.

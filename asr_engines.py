@@ -746,6 +746,11 @@ class ParakeetEngine:
             opts = rt.SessionOptions()
             opts.intra_op_num_threads = self.threads
             opts.inter_op_num_threads = 1
+            # Idle ONNX Runtime threads busy-wait by default. On hybrid CPUs
+            # (performance and efficiency cores) that made more threads much
+            # slower: 14 threads took 4x as long as 4 on a Core Ultra 7 255H.
+            # Without spinning, extra threads no longer hurt, and idle CPU drops.
+            opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
             cpu = ["CPUExecutionProvider"]
             # An existing local folder makes onnx-asr load offline, with no downloads.
             asr = onnx_asr.load_model(
