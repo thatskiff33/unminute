@@ -100,6 +100,18 @@ function meetingRow(m) {
                                 on: { click: () => attempt(() => call("stop_now", m.id).then(refresh)) } }));
   } else {
     row.append(el("span", { class: "badge", textContent: STAGES[m.stage] }));
+    // Speaker identification runs after transcription; it can be paused too.
+    // It has no safe point inside, so Pause stops the pass and Resume restarts it.
+    if (m.busy === "speakers" || m.busy === "rerun") {
+      row.append(el("span", { class: "muted", textContent: "Identifying speakers" }));
+      row.append(el("button", { type: "button", textContent: "Pause",
+                                title: "Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected.",
+                                on: { click: () => attempt(() => call("pause", m.id).then(refresh)) } }));
+    } else if (m.paused && m.stage === "review") {
+      row.append(el("span", { class: "muted", textContent: "Paused" }));
+      row.append(el("button", { type: "button", textContent: "Resume",
+                                on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } }));
+    }
   }
   return row;
 }
@@ -753,13 +765,26 @@ async function renderSetup() {
           : el("button", { type: "button", class: c.recommended ? "primary" : "",
                            textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
                            disabled: busy, on: { click: () => startDownload(c.name) } });
+    // Remove a downloaded model from this computer (it can be downloaded again).
+    const remove = c.state !== "missing" && !running
+      ? el("button", { type: "button", class: "link", textContent: "Remove", disabled: busy,
+                       on: { click: () => confirmDialog({
+                         title: `Remove ${c.title}?`,
+                         body: `This deletes it from this computer (about ${c.size_gb} GB). Meetings already transcribed keep their text. You can download it again from Setup. If the earlier Whisper Transcriber app is installed, it uses the same model files.`,
+                         check: "Remove it from this computer.", limits: false,
+                         onConfirm: () => attempt(async () => {
+                           const gb = await call("remove_model", c.name);
+                           say(`Removed. About ${gb} GB freed.`);
+                           renderSetup();
+                         }) }) } })
+      : null;
     return el("li", { class: "card" },
       el("h2", { textContent: c.title }),
       el("p", { textContent: c.about }),
       el("p", { class: c.state === "ready" ? "ok" : c.state === "invalid" ? "error" : "muted",
                 textContent: running ? dl.message : (dl && dl.state === "failed" ? dl.message : c.status) }),
       el("p", { class: "muted", textContent: `${c.size_gb} GB · licence ${c.licence} · ${c.source} · revision ${c.revision}` }),
-      action);
+      el("div", { class: "row" }, action, remove));
   }));
   const speaker = s.cards.find((c) => c.role === "speakers");
   const speakerRunning = speaker.download && speaker.download.state === "running";

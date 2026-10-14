@@ -115,7 +115,8 @@ class Workspace:
         self.handle = WorkerHandle(self.cache_dir,
                                    quiet=self.settings["mode"] == resources.QUIET, **kw)
         # Downloads replace model files: the inference worker is unloaded first.
-        self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown)
+        self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
+                                         before_gpu_install=self.handle.release_gpu)
         self.downloads.after = lambda: self._wake.set()    # resume processing afterwards
         self._wake = threading.Event()
         self._closing = threading.Event()
@@ -791,9 +792,14 @@ class Workspace:
         return m
 
     def pause(self, mid):
-        """Acknowledged at once; takes effect at the next safe point."""
+        """Acknowledged at once; takes effect at the next safe point. Speaker
+        identification works on the whole meeting at once and has no safe point
+        inside, so pausing it stops the pass; Resume starts it again."""
         self._meeting(mid)
         self.store.set_paused(mid, True)
+        busy = self._busy
+        if busy and busy[0] == mid and busy[1] in ("speakers", "rerun"):
+            self.handle.stop_now()
 
     def stop_now(self, mid):
         """Stop immediately: the part in progress is discarded (never committed)."""
@@ -1253,6 +1259,7 @@ class Workspace:
         import os
         if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
+        gpu_only = name == gpu.COMPONENT     # used by no running work unless a GPU pass
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")
         on_success = None
@@ -1273,7 +1280,8 @@ class Workspace:
         else:
             token = None                       # public models never receive a token
         with self._lock:                       # atomic with the processing thread's start
-            if self._busy and self._busy[1] != "cleanup":
+            if self._busy and self._busy[1] != "cleanup" and not (
+                    gpu_only and not self._gpu_in_use()):
                 raise WorkspaceError("Pause processing first: models cannot be replaced "
                                      "while a meeting is being processed.")
             try:
@@ -1281,11 +1289,59 @@ class Workspace:
             except setup.SetupError as exc:
                 raise WorkspaceError(str(exc)) from exc
 
+    def remove_model(self, name):
+        """Remove a downloaded model, or the graphics card component, from this
+        computer. Refused while the model is still needed. Returns GB freed."""
+        if not isinstance(name, str) or not setup.known(name):
+            raise WorkspaceError("Unknown model.")
+        if self.downloads.busy():
+            raise WorkspaceError("Wait for the download or check to finish first.")
+        if name == gpu.COMPONENT:
+            if self._gpu_in_use():
+                raise WorkspaceError("Speaker identification is using the graphics card. "
+                                     "Pause it first.")
+            self.handle.release_gpu()
+            if self.settings["gpu_speakers"]:
+                self.settings.update(gpu_speakers=False)
+        else:
+            spec = asr_engines.MANAGED_MODELS[name]
+            if name == self.settings["model"]:
+                raise WorkspaceError("This is the speech model selected in Settings. Choose "
+                                     "another speech model first.")
+            if spec.family == "pyannote" and self.settings["speakers"]:
+                raise WorkspaceError("Turn off speaker identification in Settings first.")
+            waiting = [m for m in self.store._all(
+                "SELECT m.id FROM meetings m JOIN versions v ON v.meeting_id = m.id "
+                "AND v.state = 'active' WHERE v.model = ? AND EXISTS (SELECT 1 FROM chunks c "
+                "WHERE c.version_id = v.id AND c.status = 'pending')", (name,))]
+            if waiting:
+                are = "meetings are" if len(waiting) != 1 else "meeting is"
+                raise WorkspaceError(f"{len(waiting)} {are} still being transcribed with this "
+                                     "model. Finish or remove them first.")
+            with self._lock:
+                if self._busy and self._busy[1] != "cleanup":
+                    raise WorkspaceError("Pause processing first.")
+            self.handle.shutdown()             # the worker may still hold it loaded
+        try:
+            freed = setup.remove(name, self.cache_dir)
+        except OSError as exc:
+            raise WorkspaceError("Some files could not be removed. Close other apps that may "
+                                 "be using them, then try again.") from exc
+        self.downloads.state.pop(name, None)
+        return round(freed / 1e9, 2)
+
+    def _gpu_in_use(self):
+        """A speaker pass is running in the GPU worker right now."""
+        busy, companion = self._busy, self.handle._gpu
+        return bool(busy and busy[1] in ("speakers", "rerun") and companion is not None
+                    and companion.pid)
+
     def verify_model(self, name):
         if not isinstance(name, str):
             raise WorkspaceError("Unknown model.")
         with self._lock:
-            if self._busy and self._busy[1] != "cleanup":
+            if self._busy and self._busy[1] != "cleanup" and not (
+                    name == gpu.COMPONENT and not self._gpu_in_use()):
                 raise WorkspaceError("Pause processing first.")
             try:
                 self.downloads.verify(name)

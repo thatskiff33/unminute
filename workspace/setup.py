@@ -154,6 +154,61 @@ def _download_main(conn, name, cache_dir):
         conn.send(("error", _friendly(exc.__cause__ or exc)))
 
 
+def _size_of(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def removal_targets(name, cache_dir):
+    """Every folder that holds this model on this computer: the managed copy,
+    copies set aside as damaged, and older Hugging Face cache copies. The voice
+    detector shared by the Parakeet models goes only with the last of them."""
+    from pathlib import Path
+    cache = Path(cache_dir)
+    if name == gpu.COMPONENT:
+        base = gpu.component_dir(cache)
+        return [p for p in base.parent.glob(gpu.VERSION + "*") if p.is_dir()]
+    spec = asr_engines.MANAGED_MODELS[name]
+    folder = asr_engines.model_dir(spec, cache)
+    out = [folder] if folder.is_dir() else []
+    out += [p for p in folder.parent.glob(spec.folder + ".invalid-*") if p.is_dir()]
+    for repo in spec.hub_repos or ():
+        hub = cache / ("models--" + repo.replace("/", "--"))
+        if hub.is_dir():
+            out.append(hub)
+    if asr_engines.is_parakeet(name):
+        others = [n for n in asr_engines.PARAKEET_MODELS if n != name
+                  and asr_engines.model_dir(asr_engines.PARAKEET_MODELS[n], cache).is_dir()]
+        vad = asr_engines.model_dir(asr_engines.SILERO_VAD, cache)
+        if not others and vad.is_dir():
+            out.append(vad)
+    return out
+
+
+def remove(name, cache_dir):
+    """Delete the model's folders; returns the bytes freed. Paths come only
+    from the pinned model list, never from the page."""
+    import shutil
+    freed = 0
+    for p in removal_targets(name, cache_dir):
+        long = gpu._long(p)
+        freed += _size_of(long)
+        shutil.rmtree(long)
+    if name != gpu.COMPONENT:
+        spec = asr_engines.MANAGED_MODELS[name]
+        from pathlib import Path
+        marks = Path(cache_dir) / spec.family / ".verified"
+        for m in marks.glob(spec.folder + "-*.json") if marks.is_dir() else ():
+            m.unlink(missing_ok=True)
+    return freed
+
+
 class _SameHost(urllib.request.HTTPRedirectHandler):
     """Follow a redirect only within the pinned HTTPS location."""
 
@@ -189,11 +244,14 @@ def known(name):
 class Downloads:
     """One download at a time, in its own process; progress for the UI."""
 
-    def __init__(self, cache_dir, before_install=None, target=None):
+    def __init__(self, cache_dir, before_install=None, target=None, before_gpu_install=None):
         self.cache_dir = str(cache_dir)
         self.target = target or _download_main   # tests: a fake download process
         self.after = None                        # called when a download or check ends
         self.before_install = before_install     # e.g. unload the inference worker
+        # The graphics card component is used only by the GPU worker: replacing
+        # it stops that worker and leaves transcription running.
+        self.before_gpu_install = before_gpu_install
         self.state = {}                          # name -> {"state", "message", "log"}
         self._lock = threading.Lock()
         self._running = None
@@ -273,8 +331,9 @@ class Downloads:
         entry = self.state[name]
         final = {"state": "failed", "message": "The download stopped unexpectedly. Try again."}
         try:
-            if self.before_install:
-                self.before_install()
+            hook = self.before_gpu_install if name == gpu.COMPONENT else self.before_install
+            if hook:
+                hook()
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
             proc = ctx.Process(target=self.target, args=(child, name, self.cache_dir),
