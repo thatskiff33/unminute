@@ -1,0 +1,85 @@
+# Validation runbook: checks that need people or hardware
+
+These are the checks still open before a business release. Each one needs a machine, an organisation or people that the development laptop cannot supply. Run them against a published package. Record the results on the issue named, using anonymous, aggregate figures only.
+
+**Get the package and tools:**
+- From the release page, download `WhisperWorkspace-<version>.zip`, its `.sha256` file and "Source code (zip)".
+- The source zip contains `tools/`, which holds the evidence scripts.
+- The scripts run with the installed app's own Python runtime, so nothing else needs installing.
+
+**Paths used below:**
+- `<install>` is `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`.
+- Models live in `%LOCALAPPDATA%\whisper-models`, after Setup has downloaded them.
+- Use synthetic or consented, non-client audio only.
+
+## 1. Clean standard-user profile (#10, #11)
+
+**Machine:** a Windows 10 (1809 or later) or Windows 11 x64 device. Sign in with a standard (non-admin) account that has never had Python, Git or developer tools.
+
+1. Install with `install.cmd`, or with `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package WhisperWorkspace-<version>.zip`. Expect exit code 0 and no administrator prompt.
+2. Open **Meeting Workspace** from the Start menu. Complete Setup: download Parakeet v2, and optionally speaker identification with a Hugging Face token.
+3. Import a synthetic recording, review it, and confirm review and then the final save.
+4. Run `<install>\runtime\python.exe -m workspace --self-test` from `<install>\app`. Expect `PASS`.
+5. Uninstall from Settings > Apps. Check that `%LOCALAPPDATA%\Programs\WhisperWorkspace` is gone, and that the workspace and models are kept, as documented.
+
+**Record:** the Windows version, whether each step passed, and any prompt or error text.
+
+## 2. Managed deployment with Intune (#11)
+
+Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user context, `install.ps1 -Silent -Managed`, the registry detection rule, and exit code 5 mapped to Retry.
+
+1. Assign the app to a test device and user, and check that detection reports it as installed.
+2. Open the app and check that Settings shows "Updates are managed by your IT team".
+3. Deploy the next version. With a meeting under a hold, the install waits (exit 5). After the hold is released and cleanup is confirmed, it installs.
+4. Uninstall through Intune.
+
+**Signing route:** choose one of the options in `docs/PACKAGING.md`, "Signing and trust", and record the decision on #11.
+
+## 3. Lowest-supported laptop (#28)
+
+**Define the floor first.** Agree the lowest-supported specification, for example 4 cores and 8 GB of memory, CPU only. Record it on #28: it becomes the documented minimum.
+
+From the extracted source folder, using the installed runtime:
+
+```
+<install>\runtime\python.exe tools\packaged_check.py <install> %LOCALAPPDATA%\whisper-models <15-minute synthetic recording.wav> packaged_check.json
+<install>\runtime\python.exe tools\packaged_crash_check.py <install> %LOCALAPPDATA%\whisper-models <recording.wav> crash_check.json 240
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps1 -Version <install> -Wav <recording.wav>
+```
+
+- Expect `"pass": true` from the crash check and from the dialog check.
+- Do not copy anything to the clipboard during the crash check; it compares the clipboard sequence number.
+- From `packaged_check.json`, record:
+  - the transcription and speaker time against the recording length;
+  - the worker's peak memory;
+  - idle CPU and memory;
+  - no marker text found, and no backups.
+- Note whether the laptop stayed usable during processing in Quiet mode.
+
+## 4. Representative transcription quality (#12, #25)
+
+1. Collect consented business recordings, with each person's agreement, outside any client matter. Cover the expected range: accents including New Zealand English, meeting sizes, Teams recordings and in-room microphones.
+2. Have a person write a reference transcript for each one, or for a sampled excerpt.
+3. Write a JSON Lines manifest (`{"set", "id", "wav", "ref"}`), then run `tools/compare_engines.py run` once per engine, followed by `score`. The header of the file shows the usage.
+4. Publish only the aggregate figures: word error rate per set and per engine, and speed. No transcripts, names or audio.
+
+## 5. Accessibility and pilot users (#27)
+
+**Screen reader:**
+1. With NVDA or Narrator, complete import, review, naming speakers, handoff and both cleanup confirmations by keyboard only.
+2. Repeat with a Windows contrast theme turned on.
+3. Note anything unlabelled, unannounced or unreadable.
+
+**Pilot users:**
+1. Recruit at least three nontechnical people, each on a standard-user profile.
+2. Give each person one synthetic recording and the written task: "Transcribe this meeting, name the speakers, copy the minutes prompt, then clear it from the workspace."
+3. Do not coach. Note where people hesitate, any errors they see, and whether they finish.
+4. Record findings without personal details.
+
+**Two quick checks for the same session:**
+- dragging a recording onto the window (#20);
+- pressing Ctrl+plus to zoom.
+
+## After the checks
+
+Update `docs/RELEASE_CHECKLIST.md`, then close each issue whose acceptance is met, with the evidence. #29 closes when the checklist's open items are done. A full release then follows `docs/RELEASING.md`.

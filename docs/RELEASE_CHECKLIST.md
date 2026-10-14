@@ -34,6 +34,8 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 
 ## Before a business release (needs people or hardware)
 
+Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md).
+
 - [ ] **#11:** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Choose the signing route.
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
 - [ ] **#27:** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
