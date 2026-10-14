@@ -5,7 +5,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
-- **Faster mode no longer slows Parakeet down.** On CPUs with performance and efficiency cores, the extra threads in Faster mode made Parakeet about 4 times slower than Quiet mode. ONNX Runtime threads now wait without spinning: Faster mode takes the same time as Quiet mode, and idle CPU use is lower.
+- **Faster mode no longer slows Parakeet down.** On a test laptop with performance and efficiency cores (Intel Core Ultra 7 255H), Faster mode made Parakeet 3 to 4 times slower than Quiet mode. ONNX Runtime threads now wait without spinning. On that laptop, 5 minutes of speech now takes 19 s in both modes (previously 20 to 24 s in Quiet and 73 to 80 s in Faster). Faster mode still speeds up speaker identification.
 
 ## v0.2.0-preview.1
 
