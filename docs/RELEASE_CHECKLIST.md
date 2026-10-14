@@ -19,25 +19,25 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 | Offline processing and no telemetry | Telemetry switches are forced. Under the network guard, a real transcription made 0 connection attempts. PR #38, #8. |
 | Model integrity | Every model is pinned to a revision and SHA-256 manifest. Damaged copies are set aside, and the Whisper large-v3 turbo 80/128 mel-band failure was reproduced and repaired. PR #39, #45, `docs/MODEL_MANIFEST.md`. |
 | Durable processing | Chunked versus whole-recording output: 0 word differences over 2,300 words. Crash and resume gave identical results. PR #46. |
-| Workers and Quiet defaults | Below-normal priority, idle unload, Stop and pause behaviour. PR #47. Idle-machine timings are not yet measured. |
+| Workers and Quiet defaults | Below-normal priority, idle unload, Stop and pause behaviour. PR #47. Idle-machine timings (Intel Core Ultra 7 255H, 5 minutes of synthetic speech, 14 October 2026): Faster mode was 3 to 4 times slower than Quiet for Parakeet because ONNX Runtime threads spun. After the fix (PR #66), both modes take 19 s, with 0 word differences. Faster mode speeds up speaker identification: 58 s against 85 s on 2 minutes. |
 | Speakers, cleanup, holds, receipts | PRs #48 to #50. Cleanup leaves no transcript text readable in the database files (a marker-word test). |
 | Workspace window, review, naming, handoff | Automated checks in a real WebView2 window. PRs #51 to #53. |
 | Setup and token | A real gated download, with the token passed by pipe only. Windows Credential Manager round trip. PR #54. |
-| Watched folders | PR #55. A real OneDrive online-only file was detected and not downloaded; with the cloud provider unavailable it was kept for retry. The fetch-and-import step is still to be completed (#24). |
+| Watched folders | PR #55. A real OneDrive online-only file was detected and not downloaded. With the cloud provider unavailable, it was kept for retry. With OneDrive running and fetching turned on, it was downloaded and queued for import (#24, closed). |
 | Package | Build, tamper refusal, install, reinstall, self-test and uninstall on the 0.2.0 build. Offline Parakeet and pyannote inference and the app window were run on an earlier build of the same package. PR #56. |
 | Updates and migration gate | The real installer, end to end with two versions: a held workspace waits (exit 5) with the reason, an emptied workspace migrates and keeps its receipts, rollback after migration is refused (exit 6), a compatible reinstall works, and uninstall. PR #58. |
 | Handoff clipboard | A real copy round-tripped exactly and carried the formats that keep it out of clipboard history and cloud clipboard sync (#22, closed). |
+| Packaged crash tests | `tools/packaged_crash_check.py` (PR #65) on the installed 0.2.0-preview.1 package passed all 12 criteria. The app was killed after chunk commits, during speaker identification, after the review and final confirmations, and with an active hold. Each time it restarted with an identical transcript, no duplicates, correct cleanup and no residue. A hold survived a crash, and releasing it removed nothing without confirmation. A test token was removed, and the clipboard was unchanged. |
+| Import dialog | `tools/import_dialog_check.ps1` (PR #65): the native Import dialog of the installed package imported a recording. |
 | Packaged lifecycle and resources | `tools/packaged_check.py` (PR #57) collects these from an installed package. Development laptop run of the installed 0.2.0-preview.1 package (16 logical CPUs, 32 GB, CPU only, 14 October 2026). Self-test PASS. 15 minutes of synthetic audio transcribed with speakers in 673 s, with a worker peak of 2,418 MB and 0 network attempts. After review and final-saved confirmation, no meeting or marker text remained and there were no backup files. The idle window used 1.0% of one core and 480 MB. Reference measurements still belong on the lowest-supported laptop (#28). |
 
 ## Before a business release (needs people or hardware)
 
 - [ ] **#11:** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Choose the signing route.
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
-- [ ] **#24:** the fetch-and-import step for a OneDrive online-only file with OneDrive syncing normally, and how the deploying organisation's tenant stores Teams recordings.
 - [ ] **#27:** accessibility and an end-to-end task with nontechnical users.
-- [ ] **#28:** run `tools/packaged_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue), crash tests around deletions on the packaged build, and an unchanged clipboard.
-- [ ] **#20:** importing by drag and drop, and through the native Import dialog.
-- [ ] **#15:** Quiet versus Faster timings on an idle machine.
+- [ ] **#28:** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
+- [ ] **#20:** importing by dragging a recording onto the window (needs a real mouse; the Import dialog is verified).
 
 ## Supported configuration (this release)
 
