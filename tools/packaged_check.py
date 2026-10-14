@@ -147,59 +147,81 @@ def check(version_dir, cache, wav, report):
 
 
 LIFECYCLE = r'''
+# The worker is started with multiprocessing "spawn", which re-imports this
+# script in the child: everything must sit behind the __main__ guard.
 import json, sys, time
 sys.path.insert(0, ".")
 import offline_guard
 offline_guard.disable_telemetry(); offline_guard.install()
-from workspace.app import Workspace
-from workspace import holds
-cache, wav, marker = sys.argv[1], sys.argv[2], sys.argv[3]
-ws = Workspace(cache_dir=cache, start=False, battery=False)
-out = {}
-try:
-    ws.settings.update(onboarded=True, speakers=True)
-    ws.start()
-    t = time.time()
-    ws.import_paths([wav])
-    while not ws.meetings() and time.time() - t < 600:
-        time.sleep(1)
-    peak = 0
-    while time.time() - t < 7000:
-        pid = ws.handle.pid
-        if pid:
-            import ctypes
-            from ctypes import wintypes
-            class PMC(ctypes.Structure):
-                _fields_ = ([("cb", wintypes.DWORD), ("a", wintypes.DWORD),
-                             ("peak", ctypes.c_size_t)]
-                            + [("x%d" % i, ctypes.c_size_t) for i in range(7)])
-            k = ctypes.WinDLL("kernel32"); k.OpenProcess.restype = wintypes.HANDLE
-            h = k.OpenProcess(0x1010, False, pid)
-            if h:
-                pm = PMC(); pm.cb = ctypes.sizeof(pm)
-                if ctypes.WinDLL("psapi").GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb):
-                    peak = max(peak, pm.peak)
-                k.CloseHandle(h)
-        if ws.wait_idle(5) and ws.meetings() and ws.meetings()[0]["stage"] != "inbox":
-            d = ws.detail(ws.meetings()[0]["id"])
-            if d["speakers"] and d["speakers"]["status"] in ("done", "failed"):
-                break
-    m = ws.meetings()[0]
-    d = ws.detail(m["id"])
-    out["transcribed_s"] = round(time.time() - t)
-    out["worker_peak_mb"] = round(peak / 2**20)
-    out["speakers"] = d["speakers"]["status"] if d["speakers"] else None
-    items = ws.transcript(m["id"])["items"]
-    out["passages"] = len(items)
-    ws.edit(m["id"], items[0]["id"], "Marker " + marker + " for the residual check")
-    ws.confirm_reviewed(m["id"]); ws.wait_idle(120)
-    ws.confirm_final_saved(m["id"]); ws.wait_idle(120)
-    out["meetings_left"] = len(ws.meetings())
-    out["receipts"] = [r["result"] for r in ws.receipts()]
-    out["blocked_network_attempts"] = len(offline_guard.blocked)
-finally:
-    ws.close()
-print(json.dumps(out))
+
+
+def worker_peak(pid):
+    import ctypes
+    from ctypes import wintypes
+    class PMC(ctypes.Structure):
+        _fields_ = ([("cb", wintypes.DWORD), ("a", wintypes.DWORD),
+                     ("peak", ctypes.c_size_t)]
+                    + [("x%d" % i, ctypes.c_size_t) for i in range(7)])
+    k = ctypes.WinDLL("kernel32"); k.OpenProcess.restype = wintypes.HANDLE
+    h = k.OpenProcess(0x1010, False, pid)
+    if not h:
+        return 0
+    try:
+        pm = PMC(); pm.cb = ctypes.sizeof(pm)
+        ok = ctypes.WinDLL("psapi").GetProcessMemoryInfo(h, ctypes.byref(pm), pm.cb)
+        return pm.peak if ok else 0
+    finally:
+        k.CloseHandle(h)
+
+
+def main():
+    from workspace.app import Workspace
+    cache, wav, marker = sys.argv[1], sys.argv[2], sys.argv[3]
+    ws = Workspace(cache_dir=cache, start=False, battery=False)
+    out = {}
+    try:
+        ws.settings.update(onboarded=True, speakers=True)
+        ws.start()
+        t = time.time()
+        ws.import_paths([wav])
+        while not ws.meetings() and time.time() - t < 600:
+            time.sleep(1)
+        peak = 0
+        while time.time() - t < 7000:
+            if ws.handle.pid:
+                peak = max(peak, worker_peak(ws.handle.pid))
+            if ws.wait_idle(5) and ws.meetings():
+                m = ws.meetings()[0]
+                if m["error"]:
+                    break                          # failed: report it, do not wait on
+                if m["stage"] != "inbox":
+                    d = ws.detail(m["id"])
+                    if d["speakers"] and d["speakers"]["status"] in ("done", "failed"):
+                        break
+        m = ws.meetings()[0]
+        out["meetings_imported"] = len(ws.meetings())
+        out["transcribed_s"] = round(time.time() - t)
+        out["worker_peak_mb"] = round(peak / 2**20)
+        if m["error"]:
+            out["error"] = m["error"]
+            return out
+        d = ws.detail(m["id"])
+        out["speakers"] = d["speakers"]["status"] if d["speakers"] else None
+        items = ws.transcript(m["id"])["items"]
+        out["passages"] = len(items)
+        ws.edit(m["id"], items[0]["id"], "Marker " + marker + " for the residual check")
+        ws.confirm_reviewed(m["id"]); ws.wait_idle(120)
+        ws.confirm_final_saved(m["id"]); ws.wait_idle(120)
+        out["meetings_left"] = len(ws.meetings())
+        out["receipts"] = [r["result"] for r in ws.receipts()]
+        out["blocked_network_attempts"] = len(offline_guard.blocked)
+        return out
+    finally:
+        ws.close()
+
+
+if __name__ == "__main__":
+    print(json.dumps(main()))
 '''
 
 
