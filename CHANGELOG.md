@@ -5,6 +5,12 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.1
+
+Adds optional graphics card acceleration for speaker identification. Install: download `WhisperWorkspace-0.2.1.zip` and its `.sha256` file, then follow docs/PACKAGING.md. An installed v0.2.0 updates and keeps your workspace.
+
+The known limitations listed for v0.2.0 still apply. In addition, graphics card acceleration has been tested on one NVIDIA laptop GPU (RTX 500 Ada, 4 GB, driver 595.95) with synthetic audio. Agreement with several real speakers, smaller graphics cards and drivers older than 580 are untested; AMD and Intel graphics are not supported.
+
 - **Graphics card for speaker identification (optional).** On computers with an NVIDIA card, Setup offers a one-time, verified download of the CUDA build of PyTorch (1.92 GB). With it turned on in Settings (Faster mode), speaker identification runs on the graphics card. On a 15-minute test recording on an RTX 500 laptop GPU it took 80 s instead of 435 s, with identical results. Transcription stays on the processor. If the card cannot be used, that pass runs on the processor and the meeting says so.
 
 ## v0.2.0
