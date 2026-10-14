@@ -76,6 +76,9 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None):
     import offline_guard
     offline_guard.disable_telemetry()
     offline_guard.install()
+    # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
+    # Windows telemetry events, switched off by a call rather than a variable.
+    offline_guard.disable_onnxruntime_telemetry()
     if gpu_site:
         # The GPU worker (speaker identification only): the CUDA build of
         # PyTorch must be first on the path before anything imports torch.
