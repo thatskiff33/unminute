@@ -53,6 +53,12 @@ def list_devices():
         raise RecorderError("Microphone support could not start in this installation. "
                             "Reinstall the app, or contact support.") from exc
     try:
+        with _streams_lock:
+            if _open_streams == 0 and hasattr(sd, "_terminate"):
+                # PortAudio lists devices once; refresh so a plugged or
+                # unplugged microphone is seen (only when nothing is open).
+                sd._terminate()
+                sd._initialize()
         devices = sd.query_devices()
         default_in = sd.default.device[0]
         hostapis = sd.query_hostapis()
@@ -73,7 +79,33 @@ def list_devices():
             continue
         out.append({"index": i, "name": str(d["name"])[:120], "default": i == default_in,
                     "rate": int(d.get("default_samplerate") or 44100)})
+    if out and not any(d["default"] for d in out):
+        out[0]["default"] = True          # Windows' default is the Sound Mapper
     return out
+
+
+# Open PortAudio streams in this process; the device list is only refreshed
+# when there are none.
+_streams_lock = threading.Lock()
+_open_streams = 0
+
+
+def _stream_opened(delta):
+    global _open_streams
+    with _streams_lock:
+        _open_streams = max(0, _open_streams + delta)
+
+
+def _retrying(fn, attempts=3, wait=0.5):
+    """A short-lived Windows lock (antivirus, indexer) must not end a
+    recording: retry a write briefly. A full disk is not retried."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 28 or i == attempts - 1:
+                raise
+            time.sleep(wait)
 
 
 def measure_level(device, rate, seconds=3.0, open_stream=None):
@@ -84,16 +116,20 @@ def measure_level(device, rate, seconds=3.0, open_stream=None):
     def callback(indata, frames, time_info, status):
         levels.append(_level_db(np.array(indata, dtype=np.int16).reshape(-1)))
 
-    stream = (open_stream or _sounddevice_stream)(device, rate, callback, done.set)
+    _stream_opened(+1)
     try:
-        stream.start()
-        done.wait(seconds)
-    finally:
+        stream = (open_stream or _sounddevice_stream)(device, rate, callback, done.set)
         try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
+            stream.start()
+            done.wait(seconds)
+        finally:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+    finally:
+        _stream_opened(-1)
     if not levels:
         raise RecorderError("No sound arrived from that microphone. Check that it is "
                             "connected and allowed in Settings > Privacy > Microphone.")
@@ -178,7 +214,8 @@ class Recording:
 
     def _event(self, kind, seconds=None, note=""):
         with self._lock:
-            at = self.journal["frames"] / self.rate + self._buffered / self.rate
+            at = (self.journal["frames"] + self._buffered) / self.rate \
+                + self._queue.qsize() * BLOCK_S
             self.journal["events"].append({"kind": kind, "at_s": round(at, 1),
                                            "t": self._clock(),
                                            "seconds": None if seconds is None
@@ -187,7 +224,7 @@ class Recording:
     def _save_journal(self):
         with self._lock:
             data = json.dumps(self.journal, indent=1).encode("utf-8")
-        _write_atomic(self.folder / "journal.json", data)
+        _retrying(lambda: _write_atomic(self.folder / "journal.json", data))
 
     # -- writer thread -----------------------------------------------------------------
 
@@ -197,7 +234,7 @@ class Recording:
             return
         pcm = np.concatenate(self._buffer).astype("<i2").tobytes()
         name = f"chunk-{len(self.journal['chunks']):06d}.pcm"
-        _write_atomic(self.folder / name, pcm)
+        _retrying(lambda: _write_atomic(self.folder / name, pcm))
         with self._lock:
             self.journal["chunks"].append({"file": name, "frames": self._buffered})
             self.journal["frames"] += self._buffered
@@ -221,7 +258,10 @@ class Recording:
                 if now - last_beat >= HEARTBEAT_S:
                     last_beat = now
                     self.journal["last_seen"] = now
-                    (self.folder / "heartbeat").write_text(str(now), encoding="ascii")
+                    try:                 # only an estimate: never end a recording over it
+                        (self.folder / "heartbeat").write_text(str(now), encoding="ascii")
+                    except OSError:
+                        pass
                     if (not self.paused and not self._stop.is_set()
                             and now - self._last_audio > SILENT_DEVICE_S):
                         self._device_lost()
@@ -256,6 +296,7 @@ class Recording:
     def _close_stream(self):
         s, self._stream = self._stream, None
         if s is not None:
+            _stream_opened(-1)
             try:
                 s.stop()
             except Exception:
@@ -268,11 +309,12 @@ class Recording:
     # -- controls -------------------------------------------------------------------
 
     def start(self):
-        self.folder.mkdir(parents=True, exist_ok=False)
-        self._save_journal()
         try:
+            self.folder.mkdir(parents=True, exist_ok=False)
+            self._save_journal()
             self._stream = self._open_stream(self.journal["device"], self.rate,
                                              self._callback, self._finished)
+            _stream_opened(+1)
             self._stream.start()
         except Exception as exc:
             self._close_stream()
@@ -301,7 +343,10 @@ class Recording:
         self._stop.set()
         self._close_stream()
         if self._writer is not None:
-            self._writer.join(30)
+            self._writer.join(60)
+            if self._writer.is_alive():
+                raise RecorderError("Saving the recording did not finish. It is kept and "
+                                    "will be imported when the app next starts.")
         if self.journal["state"] == "recording":
             self.journal["state"] = "stopped"
         try:
@@ -360,12 +405,21 @@ def unfinished(root):
     base = Path(root)
     if not base.is_dir():
         return []
-    found = []
-    for d in sorted(p for p in base.iterdir() if p.is_dir()):
-        j = read_journal(d)
-        if j is not None:
-            found.append((d, j))
-    return found
+    return [(d, read_journal(d)) for d in sorted(p for p in base.iterdir() if p.is_dir())]
+
+
+def remove_folder(folder):
+    """Remove a recording folder, journal last: if this stops part-way, the
+    journal still marks the folder for the next start."""
+    folder = Path(folder)
+    for p in folder.iterdir():
+        if p.name != "journal.json":
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink()
+    (folder / "journal.json").unlink(missing_ok=True)
+    folder.rmdir()
 
 
 def missing_tail_seconds(folder, journal, saved_seconds):

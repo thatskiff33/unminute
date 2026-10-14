@@ -275,6 +275,81 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertIn("recordings", kinds)
         self.ws.stop_recording()
 
+    def test_two_starts_at_once_give_one_recording(self):
+        import threading
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        results, barrier = [], threading.Barrier(2)
+
+        def go():
+            barrier.wait()
+            try:
+                self.ws.start_recording(3)
+                results.append("started")
+            except WorkspaceError:
+                results.append("refused")
+        threads = [threading.Thread(target=go) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(results), ["refused", "started"])
+        self.assertEqual(len(list((self.ws.root / "recordings").iterdir())), 1)
+        self.ws.stop_recording()
+
+    def test_heavy_work_is_refused_while_a_recording_is_opening(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws._rec_starting = True            # between the check and the stream opening
+        self.assertIsNone(self.ws._next_work())
+        self.ws._rec_starting = False
+
+    def test_a_changed_device_list_is_refused_not_opened(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        with self.assertRaises(WorkspaceError) as e:
+            self.ws.start_recording(3, "Another microphone")
+        self.assertIn("changed", str(e.exception))
+        self.assertFalse((self.ws.root / "recordings").exists()
+                         and any((self.ws.root / "recordings").iterdir()))
+
+    def test_imported_or_half_removed_folders_are_never_imported_twice(self):
+        self.ws.settings.update(microphone=True)
+        rec_root = self.ws.root / "recordings"
+        done = rec_root / ("a" * 32)
+        done.mkdir(parents=True)
+        (done / "journal.json").write_text(json.dumps({"state": "imported", "meeting": "x"}))
+        (done / "recording.wav").write_bytes(b"RIFF")
+        stray = rec_root / ("b" * 32)                  # journal already removed
+        stray.mkdir()
+        (stray / "chunk-000000.pcm").write_bytes(b"\x00" * 100)
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertEqual(list(rec_root.iterdir()), [])
+        self.assertEqual(self.ws.meetings(), [])
+
+    def test_a_failed_import_is_reported_kept_and_can_be_retried(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3)
+        self.holder["stream"].feed(3)
+        real = self.ws._import_one
+        self.ws._import_one = mock.Mock(side_effect=OSError(28, "No space left on device"))
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.wait_idle(60))
+        rep = self.ws.recording_status()["reports"][-1]
+        self.assertIn("disk is full", rep["note"])
+        self.assertTrue(rep["pending"])
+        self.assertEqual(len(list((self.ws.root / "recordings").iterdir())), 1)
+        self.ws._import_one = real
+        self.ws.retry_recording_import(rep["id"])
+        self.assertTrue(self.ws.wait_idle(120))
+        self.assertEqual(len(self.ws.meetings()), 1)
+        self.assertEqual(list((self.ws.root / "recordings").iterdir()), [])
+        ids = [r["id"] for r in self.ws.recording_status()["reports"]]
+        self.ws.discard_recording_report(ids[-1])
+        self.assertNotIn(ids[-1], [r["id"] for r in self.ws.recording_status()["reports"]])
+
     def test_recording_cut_short_by_a_crash_is_imported_at_next_start(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()

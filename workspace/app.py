@@ -130,6 +130,7 @@ class Workspace:
         # Microphone recording (#30): one at a time; heavy processing waits.
         self.recordings = self.root / "recordings"
         self._recording = None
+        self._rec_starting = False         # a recording is being opened
         self._yielded = False              # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
@@ -149,7 +150,7 @@ class Workspace:
             self._threads.append(t)
         self._wake.set()
         # Recordings left by a crash, power loss or a failed import (#30).
-        for folder, _ in recorder.unfinished(self.recordings):
+        for folder, _ in recorder.unfinished(self.recordings):   # also half-removed ones
             self._imports.put(("__recording__", str(folder)))
 
     def close(self):
@@ -253,17 +254,21 @@ class Workspace:
         except recorder.RecorderError as exc:
             raise WorkspaceError(str(exc)) from exc
 
-    def _device(self, device):
+    def _device(self, device, name=None):
+        """The device at this index, if it is still the microphone the page
+        listed (PortAudio numbers can shift when devices are plugged in or
+        out; a different microphone must never be opened silently)."""
         choice = next((d for d in self.microphone_devices() if d["index"] == device), None)
-        if choice is None:
-            raise WorkspaceError("That microphone is not available. Choose another one.")
+        if choice is None or (name is not None and choice["name"] != name):
+            raise WorkspaceError("The list of microphones has changed. Choose the "
+                                 "microphone again.")
         return choice
 
-    def test_microphone(self, device):
+    def test_microphone(self, device, name=None):
         self._need_microphone()
-        if self._recording is not None:
+        if self._capturing():
             raise WorkspaceError("Stop the recording before testing a microphone.")
-        choice = self._device(device)
+        choice = self._device(device, name)
         try:
             return recorder.measure_level(choice["index"], choice["rate"],
                                           open_stream=self.open_stream)
@@ -274,24 +279,38 @@ class Workspace:
                                  "allows apps to use it (Settings > Privacy > "
                                  "Microphone).") from exc
 
-    def start_recording(self, device):
+    def _capturing(self):
+        return self._recording is not None or self._rec_starting
+
+    def start_recording(self, device, name=None):
         self._need_microphone()
-        if self._recording is not None:
-            raise WorkspaceError("A recording is already running.")
-        choice = self._device(device)
-        rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
-                                 choice["name"], choice["rate"], open_stream=self.open_stream)
+        # Under the processing lock: the loop re-checks this flag under the
+        # same lock before starting heavy work, so nothing can slip in.
+        with self._lock:
+            if self._capturing():
+                raise WorkspaceError("A recording is already running.")
+            self._rec_starting = True
+            busy = self._busy
         try:
-            rec.start()
-        except recorder.RecorderError as exc:
-            raise WorkspaceError(str(exc)) from exc
-        self._recording = rec
-        # Heavy processing waits while recording. Work in progress is stopped;
-        # it was never committed and is redone afterwards, not marked paused.
-        busy = self._busy
-        if busy and busy[1] in ("transcribe", "speakers", "rerun"):
-            self._yielded = True
-            self.handle.stop_now()
+            # Heavy processing waits while recording. Work in progress is
+            # stopped; it was never committed and is redone afterwards.
+            if busy and busy[1] in ("transcribe", "speakers", "rerun"):
+                self._yielded = True
+                self.handle.stop_now()
+            choice = self._device(device, name)
+            rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
+                                     choice["name"], choice["rate"],
+                                     open_stream=self.open_stream)
+            try:
+                rec.start()
+            except recorder.RecorderError as exc:
+                raise WorkspaceError(str(exc)) from exc
+            with self._lock:
+                self._recording = rec
+        finally:
+            with self._lock:
+                self._rec_starting = False
+            self._wake.set()                 # if it failed, processing carries on
         threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
                          name="recorder-watch").start()
         return rec.status()
@@ -309,7 +328,12 @@ class Workspace:
             if self._recording is not rec:
                 return                   # already finished by the other path
             self._recording = None
-        rec.stop()
+        try:
+            rec.stop()
+        except recorder.RecorderError as exc:
+            self._add_report({"title": None, "seconds": 0, "events": [],
+                              "note": str(exc), "pending": rec.folder.name})
+            return                       # imported at the next start
         self._imports.put(("__recording__", str(rec.folder)))
         self._wake.set()
 
@@ -339,45 +363,81 @@ class Workspace:
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
 
-    def discard_recording_report(self, index):
-        if isinstance(index, int) and 0 <= index < len(self._recording_reports):
-            self._recording_reports.pop(index)
+    def _add_report(self, report):
+        import uuid
+        report["id"] = uuid.uuid4().hex
+        self._recording_reports = (self._recording_reports + [report])[-20:]
+
+    def discard_recording_report(self, rid):
+        self._recording_reports = [r for r in self._recording_reports if r["id"] != rid]
+
+    def retry_recording_import(self, rid):
+        """The user's "Try again" for a recording that could not be imported."""
+        report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        folder = self.recordings / report["pending"] if report and report.get("pending") else None
+        if folder is None or not folder.is_dir():
+            raise WorkspaceError("That recording is no longer waiting.")
+        self.discard_recording_report(rid)
+        self._imports.put(("__recording__", str(folder)))
 
     def _import_recording_folder(self, folder):
         """Turn a saved (or crash-recovered) recording into a meeting, then
-        remove the recording folder. On failure the folder is kept and the
-        import is retried at the next start."""
-        import shutil
+        remove the recording folder. Failures are reported and the folder is
+        kept, to be tried again (Try again, or the next start)."""
         journal = recorder.read_journal(folder)
-        if journal is None:
+        if journal is None or journal.get("state") == "imported":
+            # Already a meeting (or removal stopped part-way): finish removing.
+            try:
+                recorder.remove_folder(folder)
+            except OSError:
+                pass                     # tried again at the next start
             return
-        wav, seconds = recorder.assemble_wav(folder, journal)
-        interrupted = journal.get("state") == "recording"     # the app did not stop it
         events = [e for e in journal.get("events", []) if e["kind"] not in ("paused", "resumed")]
-        missing = recorder.missing_tail_seconds(folder, journal, seconds) if interrupted else 0
-        if interrupted and missing >= 0.5:
-            events.append({"kind": "interrupted", "at_s": round(seconds, 1),
-                           "seconds": round(missing, 1),
-                           "note": "The app closed unexpectedly while recording. About "
-                                   f"{missing:.0f} s at the end could not be saved."})
-        report = {"title": None, "seconds": round(seconds, 1), "events": events,
+        report = {"title": None, "seconds": 0, "events": events,
                   "device": journal.get("device_name")}
-        if seconds < 0.5:
-            report["note"] = "Nothing was recorded."
-            shutil.rmtree(folder, ignore_errors=True)
-            self._recording_reports.append(report)
+        try:
+            wav, seconds = recorder.assemble_wav(folder, journal)
+            report["seconds"] = round(seconds, 1)
+            interrupted = journal.get("state") == "recording"   # the app did not stop it
+            missing = (recorder.missing_tail_seconds(folder, journal, seconds)
+                       if interrupted else 0)
+            if interrupted and missing >= 0.5:
+                events.append({"kind": "interrupted", "at_s": round(seconds, 1),
+                               "seconds": round(missing, 1),
+                               "note": "The app closed unexpectedly while recording. About "
+                                       f"{missing:.0f} s at the end could not be saved."})
+            if seconds < 0.5:
+                report["note"] = "Nothing was recorded."
+                recorder.remove_folder(folder)
+                self._add_report(report)
+                return
+            title = time.strftime("Recording %Y-%m-%d %H:%M",
+                                  time.localtime(journal.get("started_at") or time.time()))
+            mid = self._import_one(str(wav), None, title)
+        except Exception as exc:
+            full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
+            report["note"] = ("It could not be imported yet: " +
+                              ("the disk is full. Free some space, then choose Try again."
+                               if full else _import_message(exc)) +
+                              " The saved audio is kept.")
+            report["pending"] = folder.name
+            self._add_report(report)
             return
-        title = time.strftime("Recording %Y-%m-%d %H:%M",
-                              time.localtime(journal.get("started_at") or time.time()))
-        mid = self._import_one(str(wav), None, title)
+        # Mark the folder as imported before removing it, so a crash here can
+        # never import the same recording twice.
+        journal.update(state="imported", meeting=mid)
+        recorder._write_atomic(folder / "journal.json", json.dumps(journal).encode("utf-8"))
         report.update(title=title, meeting=mid)
         try:
             (self.media / mid / "recording.json").write_text(
                 json.dumps(report, indent=1), encoding="utf-8")
         except OSError:
             pass
-        shutil.rmtree(folder, ignore_errors=True)   # the meeting now holds the audio
-        self._recording_reports.append(report)
+        try:
+            recorder.remove_folder(folder)    # the meeting now holds the audio
+        except OSError:
+            pass                              # finished at the next start
+        self._add_report(report)
 
     def _plan_version(self, mid, sid):
         reader = media.AudioReader(media.audio_path(self.media, mid))
@@ -495,7 +555,7 @@ class Workspace:
             if (not cleanup.is_held(self.store, job["meeting_id"], job["phase"])
                     and not self._waiting_on_audio(job)):
                 return ("cleanup", job["meeting_id"], job["id"])
-        if self._recording is not None:
+        if self._capturing():
             return None                      # heavy processing waits for the recording
         with self._lock:
             for mid, count in list(self._reruns.items()):
@@ -558,6 +618,8 @@ class Workspace:
                     if kind != "cleanup" and self.downloads.busy():
                         self._status = "Waiting for the model download to finish"
                         break
+                    if kind != "cleanup" and self._capturing():
+                        break                # a recording started meanwhile (#30)
                     self._busy = (mid, kind)
                 try:
                     self._run(kind, mid, ref)

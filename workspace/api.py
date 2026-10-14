@@ -30,6 +30,7 @@ API_METHODS = frozenset({
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
     "microphone_devices", "start_recording", "pause_recording", "resume_recording",
     "stop_recording", "recording_status", "discard_recording_report", "test_microphone",
+    "retry_recording_import",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -49,6 +50,18 @@ def _int(value, lo, hi):
             or not lo <= value <= hi:
         raise WorkspaceError("Out of range.")
     return int(value)
+
+
+def _device_name(value):
+    if not isinstance(value, str) or len(value) > 120:
+        raise WorkspaceError("Choose the microphone again.")
+    return value
+
+
+def _report_id(value):
+    if not isinstance(value, str) or len(value) != 32 or not value.isalnum():
+        raise WorkspaceError("Not found.")
+    return value
 
 
 def make_api(ws, get_window=lambda: None):
@@ -258,11 +271,11 @@ def make_api(ws, get_window=lambda: None):
     def microphone_devices(self):
         return _safe(ws.microphone_devices)
 
-    def start_recording(self, device):
-        return _safe(lambda: ws.start_recording(_int(device, 0, 10_000)))
+    def start_recording(self, device, name):
+        return _safe(lambda: ws.start_recording(_int(device, 0, 10_000), _device_name(name)))
 
-    def test_microphone(self, device):
-        return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000)))
+    def test_microphone(self, device, name):
+        return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000), _device_name(name)))
 
     def pause_recording(self):
         return _safe(ws.pause_recording)
@@ -276,8 +289,11 @@ def make_api(ws, get_window=lambda: None):
     def recording_status(self):
         return _safe(ws.recording_status)
 
-    def discard_recording_report(self, index):
-        return _safe(lambda: ws.discard_recording_report(_int(index, 0, 100)))
+    def discard_recording_report(self, rid):
+        return _safe(lambda: ws.discard_recording_report(_report_id(rid)))
+
+    def retry_recording_import(self, rid):
+        return _safe(lambda: ws.retry_recording_import(_report_id(rid)))
 
     def zoom(self, direction):
         def run():
@@ -317,7 +333,8 @@ def make_api(ws, get_window=lambda: None):
                  pause_recording=pause_recording, resume_recording=resume_recording,
                  stop_recording=stop_recording, recording_status=recording_status,
                  discard_recording_report=discard_recording_report,
-                 test_microphone=test_microphone)
+                 test_microphone=test_microphone,
+                 retry_recording_import=retry_recording_import)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

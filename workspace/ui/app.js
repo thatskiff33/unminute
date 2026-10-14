@@ -905,7 +905,7 @@ async function renderRecorder() {
   const sel = $("rec-device");
   if (!sel.options.length) {
     const devices = await call("microphone_devices");
-    sel.replaceChildren(...devices.map((d) => el("option", { value: String(d.index),
+    sel.replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
       textContent: d.name + (d.default ? " (default)" : "") })));
     const def = devices.find((d) => d.default);
     if (def) sel.value = String(def.index);
@@ -922,11 +922,13 @@ async function renderRecorder() {
   $("rec-state").textContent = rec ? `${REC_TEXT[rec.state] || rec.state} ${fmtSeconds(rec.seconds)}` : "";
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
-  $("rec-reports").replaceChildren(...r.reports.map((rep, i) => el("li", {},
+  $("rec-reports").replaceChildren(...r.reports.map((rep) => el("li", {},
     el("span", { textContent: `${rep.title || "Recording"}: ${fmtSeconds(rep.seconds)} saved` +
       (rep.note ? `. ${rep.note}` : "") + (rep.events.length ? ". " + rep.events.map(eventText).join("; ") : "") }),
+    rep.pending ? el("button", { type: "button", class: "link", textContent: "Try again",
+                    on: { click: () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)) } }) : null,
     " ", el("button", { type: "button", class: "link", textContent: "Dismiss",
-                        on: { click: () => attempt(() => call("discard_recording_report", i).then(renderRecorder)) } }))));
+                        on: { click: () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)) } }))));
   // Faster updates for the level meter while recording.
   if (active && !recTimer) recTimer = setInterval(() => { if (state.view === "inbox") renderRecorder().catch(() => {}); }, 300);
   if (!active && recTimer) { clearInterval(recTimer); recTimer = null; }
@@ -934,14 +936,22 @@ async function renderRecorder() {
 
 function wireRecorder() {
   const device = () => Number($("rec-device").value);
+  const deviceName = () => $("rec-device").selectedOptions[0]?.dataset.name || "";
+  // A changed device list means choosing again: reload it.
+  const relist = (err) => { if (/changed/.test(String(err && err.message))) $("rec-device").replaceChildren(); throw err; };
   $("rec-test").addEventListener("click", () => attempt(async () => {
     $("rec-test-result").textContent = "Listening for 3 seconds…";
-    const t = await call("test_microphone", device());
+    const t = await call("test_microphone", device(), deviceName()).catch(relist);
     $("rec-test-result").textContent = t.heard
       ? `Sound heard (loudest ${t.peak_db} dB).`
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
-  $("rec-start").addEventListener("click", () => attempt(async () => { await call("start_recording", device()); renderRecorder(); }));
+  $("rec-start").addEventListener("click", () => attempt(async () => {
+    $("rec-start").disabled = true;           // one recording per click
+    try { await call("start_recording", device(), deviceName()).catch(relist); }
+    finally { $("rec-start").disabled = false; }
+    renderRecorder();
+  }));
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
   $("rec-stop").addEventListener("click", () => attempt(async () => {
