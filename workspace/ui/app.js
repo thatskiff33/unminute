@@ -105,7 +105,7 @@ function meetingRow(m) {
     if (m.busy === "speakers" || m.busy === "rerun") {
       row.append(el("span", { class: "muted", textContent: "Identifying speakers" }));
       row.append(el("button", { type: "button", textContent: "Pause",
-                                title: "Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected.",
+                                title: "Stops speaker identification now; Resume starts it again from the beginning (with the same number of people, if you gave one). The transcript is not affected.",
                                 on: { click: () => attempt(() => call("pause", m.id).then(refresh)) } }));
     } else if (m.paused && m.stage === "review") {
       row.append(el("span", { class: "muted", textContent: "Paused" }));
@@ -766,11 +766,11 @@ async function renderSetup() {
                            textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
                            disabled: busy, on: { click: () => startDownload(c.name) } });
     // Remove a downloaded model from this computer (it can be downloaded again).
-    const remove = c.state !== "missing" && !running
+    const remove = c.removable && !running
       ? el("button", { type: "button", class: "link", textContent: "Remove", disabled: busy,
                        on: { click: () => confirmDialog({
                          title: `Remove ${c.title}?`,
-                         body: `This deletes it from this computer (about ${c.size_gb} GB). Meetings already transcribed keep their text. You can download it again from Setup. If the earlier Whisper Transcriber app is installed, it uses the same model files.`,
+                         body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Setup.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
                          check: "Remove it from this computer.", limits: false,
                          onConfirm: () => attempt(async () => {
                            const gb = await call("remove_model", c.name);

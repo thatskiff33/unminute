@@ -97,6 +97,12 @@ def cards(cache_dir):
     card = gpu_card(cache_dir)
     if card is not None:
         out.append(card)
+    for c in out:
+        # Remove is offered whenever something is on disk, including leftover
+        # damaged or unfinished copies of a model that is not installed.
+        c["removable"] = bool(removal_targets(c["name"], cache_dir))
+        c["shared_with_earlier_app"] = c["role"] != "gpu" and not asr_engines.is_parakeet(
+            c["name"])
     return out
 
 
@@ -178,6 +184,9 @@ def removal_targets(name, cache_dir):
     folder = asr_engines.model_dir(spec, cache)
     out = [folder] if folder.is_dir() else []
     out += [p for p in folder.parent.glob(spec.folder + ".invalid-*") if p.is_dir()]
+    staging = asr_engines.staging_dir(spec, cache)      # a download that did not finish
+    if staging.is_dir():
+        out.append(staging)
     for repo in spec.hub_repos or ():
         hub = cache / ("models--" + repo.replace("/", "--"))
         if hub.is_dir():
@@ -191,20 +200,38 @@ def removal_targets(name, cache_dir):
     return out
 
 
+def _is_link(path):
+    """A symbolic link or a junction (any reparse point): never followed."""
+    st = os.lstat(path)
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
 def remove(name, cache_dir):
     """Delete the model's folders; returns the bytes freed. Paths come only
-    from the pinned model list, never from the page."""
+    from the pinned model list, never from the page. A folder that is a link
+    (symbolic link or junction) is refused, and every target must lie inside
+    the model cache, so nothing outside it can be deleted."""
     import shutil
+    from pathlib import Path
+    cache = Path(cache_dir).resolve()
+    targets = removal_targets(name, cache_dir)
+    for p in targets:
+        inside = [a for a in Path(p).parents
+                  if a != Path(cache_dir) and str(a).startswith(str(Path(cache_dir)))]
+        if _is_link(p) or any(_is_link(a) for a in inside if a.exists()):
+            raise OSError(f"{Path(p).name} is a link; it was not removed.")
+        if not Path(p).resolve().is_relative_to(cache):
+            raise OSError("A model folder is outside the model cache; nothing was removed.")
     freed = 0
-    for p in removal_targets(name, cache_dir):
+    for p in targets:
         long = gpu._long(p)
         freed += _size_of(long)
         shutil.rmtree(long)
     if name != gpu.COMPONENT:
         spec = asr_engines.MANAGED_MODELS[name]
-        from pathlib import Path
         marks = Path(cache_dir) / spec.family / ".verified"
-        for m in marks.glob(spec.folder + "-*.json") if marks.is_dir() else ():
+        # Exactly "<folder>-<16 hex>.json": large-v3 must not match large-v3-turbo.
+        for m in marks.glob(spec.folder + "-" + "?" * 16 + ".json") if marks.is_dir() else ():
             m.unlink(missing_ok=True)
     return freed
 
