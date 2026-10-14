@@ -5,6 +5,18 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.2.0-preview.2
+
+**Second preview** of the packaged meeting workspace, for testing. It installs per user without admin rights. An installed preview.1 updates in place.
+
+Not yet verified (see docs/RELEASE_CHECKLIST.md):
+- a clean standard-user profile, and Intune deployment (#10, #11);
+- transcription quality on representative business recordings (#12, #25);
+- a screen-reader pass and testing with nontechnical users (#27);
+- resource use on the lowest-supported laptop (#28).
+
+Download `WhisperWorkspace-0.2.0-preview.2.zip` and its `.sha256` file, then follow docs/PACKAGING.md.
+
 - **Zoom and accessibility fixes.** Ctrl+plus, Ctrl+minus, Ctrl+0 and Ctrl+mouse wheel now zoom the workspace window (50% to 300%); zoom had been turned off. At 400% zoom the pages and dialogs fit the window without sideways scrolling. The speech model list and the confirmation dialog now have names for screen readers.
 - **Faster mode no longer slows Parakeet down.** On a test laptop with performance and efficiency cores (Intel Core Ultra 7 255H), Faster mode made Parakeet 3 to 4 times slower than Quiet mode. ONNX Runtime threads now wait without spinning. On that laptop, 5 minutes of speech now takes 19 s in both modes (previously 20 to 24 s in Quiet and 73 to 80 s in Faster). Faster mode still speeds up speaker identification.
 
