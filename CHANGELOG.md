@@ -5,6 +5,10 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.3.0
+
+Unminute: the app is renamed. Install: download `Unminute-0.3.0.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x updates and keeps your workspace; uninstalling the old version first and installing this one also keeps your meetings and models, because the uninstaller never removes them. The known limitations listed for v0.2.0 and v0.2.1 still apply.
+
 - **New name: Unminute.** "Unlimit your meeting minutes." The app previously called Meeting Workspace is now Unminute: the window title, Start menu shortcut, Settings > Apps entry, installer messages, handoff source line and package name (`Unminute-<version>.zip`). Updating replaces the old "Meeting Workspace" Start menu shortcut, but only one that points into this install. Meetings, settings, models, the install folder, the uninstall registry key used for Intune detection and the taskbar identity are unchanged, so nothing moves and no migration is needed.
 
 ## v0.2.3
