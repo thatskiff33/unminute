@@ -79,7 +79,7 @@ const NAV_OF = { meetings: "meetings", meeting: "meetings", settings: "settings"
 
 function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
-  if (view !== "meeting") $("player").pause();
+  if (view !== "meeting") stopAudio();
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -100,10 +100,11 @@ async function openMeeting(mid, { handoff = false } = {}) {
   stopEditing();
   state.pendingHandoff = handoff;
   state.mid = mid; state.total = -1; state.signature = ""; state.hits = []; state.hit = -1;
-  state.version = null; state.items = []; state.speakerList = []; state.playingRow = null;
+  state.version = null; state.items = []; state.speakerList = []; state.playingRow = null; state.speakersSig = "";
   $("m-search").value = ""; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true;
   $("m-search").closest(".search").classList.remove("active");
   $("m-again-form").hidden = true;
+  $("m-again").setAttribute("aria-expanded", "false");
   const audio = $("player");
   audio.pause(); audio.removeAttribute("src"); audio.load();
   clips.generation++; clips.next = null;
@@ -379,7 +380,9 @@ async function renderMeeting() {
     if (d.reviewed_at && !d.final_saved_at) openHandoff();
   }
   const s = d.speakers;
-  const list = s && s.status === "done" ? await attempt(() => call("speakers", state.mid)) : null;
+  const mid = state.mid;
+  const list = s && s.status === "done" ? await attempt(() => call("speakers", mid)) : null;
+  if (mid !== state.mid) return;
   state.speakerList = list ? list.speakers : [];
   state.speakerUndo = !!(list && list.can_undo);
   if (document.activeElement !== $("m-title")) { $("m-title").value = d.title; fitTitle(); }
@@ -404,7 +407,6 @@ async function renderMeeting() {
     : transcribing ? "Transcribing. You can play and correct the finished parts now."
     : "Play passages and correct any words. Select text to edit it. Changes save as you go.";
   $("m-undo").hidden = readOnly;
-  $("m-toolbar").hidden = readOnly;   // locked or an earlier version: nothing to edit
   $("m-undo").disabled = !d.can_undo;
   $("m-more").hidden = !transcribing;
   $("m-player").hidden = !d.audio_available;
@@ -455,14 +457,10 @@ function renderSteps(d) {
       el("span", { class: "step-bar" }),
       el("span", { class: "step-label" },
         el("span", { class: "step-dot", "aria-hidden": "true", textContent: done[i] ? "✓" : String(i + 1) }),
-        el("span", { textContent: name + (done[i] ? " (done)" : "") })));
+        el("span", { textContent: name }, done[i] ? el("span", { class: "sr", textContent: ", done" }) : null)));
     if (i === now) li.setAttribute("aria-current", "step");
     return li;
   }));
-  // The done marks are for screen readers; the tick shows it on screen.
-  for (const label of $("steps").querySelectorAll("li.done .step-label > span:last-child"))
-    label.textContent = label.textContent.replace(" (done)", "");
-  for (const li of $("steps").querySelectorAll("li.done")) li.setAttribute("aria-label", `${li.textContent.replace("✓", "").trim()}, done`);
   $("m-step-short").textContent = `Step ${now + 1} of 4: ${STEP_NAMES[now]}`;
 }
 
@@ -487,6 +485,7 @@ function renderBanner(d) {
   } else if (d.final_saved_at) {
     text = "Final document saved. Unminute is removing this meeting's working copies.";
   } else if (d.reviewed_at) {
+    action = ["Final document saved…", () => confirmFinal(d)];
     text = d.audio_available
       ? "Reviewed and locked. The text can no longer be edited. The audio is kept while a hold covers it."
       : "Reviewed and locked. The audio was removed after the transcript review was confirmed, so playback and transcribing again are no longer available.";
@@ -538,6 +537,10 @@ function initials(name) {
 
 function renderSpeakers(d) {
   const s = d.speakers;
+  const sig = JSON.stringify([s, d.stage, d.busy, d.audio_available, d.reviewed_at, state.version,
+                              state.speakerList, state.speakerUndo]);
+  if (sig === state.speakersSig) return;
+  state.speakersSig = sig;
   const box = $("m-speakers");
   const card = (cls, title, text, ...extra) => el("div", { class: `panel-card ${cls}` },
     title, text ? el("span", { class: "panel-text", textContent: text }) : null, ...extra);
@@ -586,7 +589,7 @@ function renderSpeakers(d) {
   $("m-names").disabled = !naming;
   $("m-undo-speakers").hidden = !(naming && state.speakerUndo);
   $("m-again").closest(".again-row").hidden = !canRerun(d);
-  if (!canRerun(d)) $("m-again-form").hidden = true;
+  if (!canRerun(d)) { $("m-again-form").hidden = true; $("m-again").setAttribute("aria-expanded", "false"); }
 }
 
 function canRerun(d) {
@@ -701,6 +704,8 @@ function whoButton(item, again) {
 // on every step, which must not move the passage.
 async function reassign(button, item) {
   if (!canName()) { say("Speakers can be changed only before the review is confirmed."); return; }
+  const open = button.closest("li").querySelector(".reassign");
+  if (open) { open.querySelector("select").focus(); return; }
   const list = await attempt(() => call("speakers", state.mid));
   if (!list) return;
   const sel = el("select", { "aria-label": "Speaker for this passage" },
@@ -946,15 +951,20 @@ async function playFrom(t, { exact = false, end = null } = {}) {
   const stop = exact ? Math.max(end, start + 0.05) : Math.min(start + 30, length);
   if (stop - start < 0.05) return;
   const generation = ++clips.generation;
+  clips.pending = start;             // where playback is going, until the clip arrives
   audio.pause();
   const pre = clips.next && clips.next.start === start && clips.next.end === stop ? clips.next.url : null;
   clips.next = null;
   const url = await (pre || fetchClip(start, stop));
-  if (!url || generation !== clips.generation) return;
+  if (generation !== clips.generation) return;
+  clips.pending = null;
+  if (!url) return;
   Object.assign(clips, { start, end: stop, exact });
   audio.src = url;
   audio.playbackRate = exact ? 1 : state.speed || 1;
-  await attempt(() => audio.play());
+  try { await audio.play(); }
+  catch (err) { if (err && err.name !== "AbortError") say(String(err.message || err)); }
+  if (generation !== clips.generation) return;
   if (!exact && stop < length - 0.05) {
     const nextEnd = Math.min(stop + 30, length);
     clips.next = { start: stop, end: nextEnd, url: fetchClip(stop, nextEnd) };
@@ -966,7 +976,15 @@ function play(start, end, exact = false) { return playFrom(start, { exact, end }
 
 function position() {
   const audio = $("player");
+  if (clips.pending != null) return clips.pending;
   return audio.src ? clips.start + (audio.currentTime || 0) : 0;
+}
+
+function stopAudio() {
+  clips.generation++;
+  clips.next = null;
+  clips.pending = null;
+  $("player").pause();
 }
 
 function itemAt(t) {
@@ -1691,8 +1709,8 @@ function wire() {
     $("m-again").focus();
   });
   wirePlayer();
-  $("n-close").addEventListener("click", () => { $("player").pause(); $("names").close(); });
-  $("names").addEventListener("close", () => $("player").pause());
+  $("n-close").addEventListener("click", () => { stopAudio(); $("names").close(); });
+  $("names").addEventListener("close", stopAudio);
   $("n-undo").addEventListener("click", undoSpeakers);
   $("m-undo-speakers").addEventListener("click", undoSpeakers);
   $("m-retranscribe").addEventListener("click", () => confirmDialog({
@@ -1759,7 +1777,7 @@ function wire() {
       if (e.key === "k" || e.key === "K") { e.preventDefault(); nextPassage(-1); return; }
     }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "z" && !state.editing
-        && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); undo(); }
+        && !typing) { e.preventDefault(); undo(); }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); $("m-search").focus(); }
     // Keyboard zoom (#27): the browser's own Ctrl+plus/minus/0 keys are off in this window.
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {

@@ -191,28 +191,28 @@
       </div>
 
       <div class="tabs narrow-tabs" role="tablist" aria-label="Meeting">
-        <button type="button" role="tab" data-tab="transcript">Transcript</button>
-        <button type="button" role="tab" data-tab="speakers">Speakers</button>
-        <button type="button" role="tab" data-tab="versions">Versions</button>
-        <button type="button" role="tab" data-tab="holds">Holds</button>
+        <button type="button" role="tab" data-tab="transcript" aria-controls="m-transcript-pane">Transcript</button>
+        <button type="button" role="tab" data-tab="speakers" aria-controls="tab-speakers">Speakers</button>
+        <button type="button" role="tab" data-tab="versions" aria-controls="tab-versions">Versions</button>
+        <button type="button" role="tab" data-tab="holds" aria-controls="tab-holds">Holds</button>
       </div>
     </header>
 
     <div class="meeting-body">
-      <section aria-label="Transcript" class="transcript-wrap">
+      <section id="m-transcript-pane" aria-label="Transcript" class="transcript-wrap">
         <ol id="transcript"></ol>
         <p id="m-more" class="m-more" hidden>More text appears as each part is transcribed. You can start reviewing now.</p>
       </section>
 
       <aside class="side" aria-label="Speakers, versions and holds">
         <div class="tabs wide-tabs" role="tablist" aria-label="Meeting tools">
-          <button type="button" role="tab" data-tab="speakers">Speakers</button>
-          <button type="button" role="tab" data-tab="versions">Versions</button>
-          <button type="button" role="tab" data-tab="holds">Holds</button>
+          <button type="button" role="tab" id="tab-btn-speakers" data-tab="speakers" aria-controls="tab-speakers">Speakers</button>
+          <button type="button" role="tab" id="tab-btn-versions" data-tab="versions" aria-controls="tab-versions">Versions</button>
+          <button type="button" role="tab" id="tab-btn-holds" data-tab="holds" aria-controls="tab-holds">Holds</button>
         </div>
 
-        <div id="tab-speakers" class="tab-panel" role="tabpanel" aria-label="Speakers">
-          <div id="m-speakers" class="state-box" hidden></div>
+        <div id="tab-speakers" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-speakers">
+          <div id="m-speakers" class="spk-box" hidden></div>
           <ul id="m-speaker-list" class="sp-cards"></ul>
           <div id="m-name-tools" class="side-stack">
             <button type="button" id="m-names" class="wide-btn">
@@ -233,13 +233,13 @@
           </div>
         </div>
 
-        <div id="tab-versions" class="tab-panel" role="tabpanel" aria-label="Versions" hidden>
+        <div id="tab-versions" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-versions" hidden>
           <ul id="m-versions" class="ver-cards"></ul>
           <button type="button" id="m-retranscribe" class="wide-btn">Transcribe again with the current model…</button>
           <p class="side-text">Your edits stay with the current version, which is kept as an earlier version.</p>
         </div>
 
-        <div id="tab-holds" class="tab-panel" role="tabpanel" aria-label="Holds" hidden>
+        <div id="tab-holds" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-holds" hidden>
           <ul id="m-holds" class="holds"></ul>
           <div id="m-cleanup-notes"></div>
           <div class="panel-card">

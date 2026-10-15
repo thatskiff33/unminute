@@ -543,7 +543,8 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .sp1 { --sp-bg: var(--sp1); --sp-fg: var(--sp1-fg); }
 .sp2 { --sp-bg: var(--sp2); --sp-fg: var(--sp2-fg); }
 .sp3 { --sp-bg: var(--sp3); --sp-fg: var(--sp3-fg); }
-.who.none { --sp-bg: var(--soft); --sp-fg: var(--muted); }
+.who.none { --sp-bg: var(--soft); --sp-fg: var(--text); }
+.who.none .avatar { background: var(--soft-strong); color: var(--text); }
 /* A passage by the same speaker as the one above shows its label on hover or focus. */
 .who.again { position: absolute; top: 2px; right: 10px; opacity: 0; }
 #transcript li:hover .who.again, .who.again:focus-visible { opacity: 1; }

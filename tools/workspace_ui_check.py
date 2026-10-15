@@ -174,6 +174,8 @@ def checks(window, ws, mid, long_mid, report):
             dlg.returnValue = 'ok'; dlg.close('ok'); await wait(4000);
             return {ok_disabled_until_ticked: okBefore, limits_shown: limits.includes('OneDrive'),
                     playback_text: document.getElementById('m-playback').textContent,
+                    final_offered: document.getElementById('m-banner-action').textContent
+                        === 'Final document saved…',
                     time_buttons_disabled: document.querySelectorAll('#transcript .t')[0].disabled,
                     edit_refused: (await window.pywebview.api.edit(window.workspace.state.mid,
                         Number(document.querySelector('#transcript .text').dataset.id),
@@ -300,7 +302,8 @@ def main():
         bad.append("playback")
     c = report.get("confirm_review") or {}
     if not (c.get("ok_disabled_until_ticked") and c.get("limits_shown")
-            and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")):
+            and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")
+            and c.get("final_offered")):
         bad.append("review confirmation")
     st = report.get("setup") or {}
     from workspace import gpu          # the graphics card component card needs NVIDIA
