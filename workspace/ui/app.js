@@ -35,11 +35,13 @@ function say(message, { sticky = false } = {}) {
   const t = $("status");
   clearTimeout(toastTimer);
   t.textContent = message || "";
-  t.hidden = !message;
   t.classList.toggle("ok", OK_MESSAGE.test(message || ""));
   t.dataset.sticky = sticky && message ? "1" : "";
   if (message && !sticky)
-    toastTimer = setTimeout(() => { t.hidden = true; t.textContent = ""; }, OK_MESSAGE.test(message) ? 3000 : 8000);
+    toastTimer = setTimeout(() => {
+      if (state.statusLine) say(state.statusLine, { sticky: true });   // a lasting status returns
+      else t.textContent = "";
+    }, OK_MESSAGE.test(message) ? 3000 : 8000);
 }
 
 async function attempt(fn) {
@@ -238,29 +240,32 @@ function cleanupRow(m) {
 function workRow(m, busyTitle) {
   const pause = (title) => button("Pause", () => attempt(() => call("pause", m.id).then(refresh)), { title });
   const resume = () => button("Resume", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true });
+  const stopNow = () => button("Stop now", () => attempt(() => call("stop_now", m.id).then(refresh)),
+                               { title: "Stops at once; the part in progress is redone later" });
   let meta, pill = null, bar = null, actions;
   if (m.stage === "inbox" && m.paused) {
     meta = `${m.progress}% · paused by you`;
     pill = ["paused", "Paused"];
     bar = ["paused", m.progress];
     actions = [resume(), discardLink(m)];
-  } else if (m.stage === "inbox" && m.busy === "transcribing") {
+  } else if (m.stage === "inbox" && m.busy === "transcribe") {
     meta = joinParts(`${m.progress}%`, MODE[state.mode]);
     bar = ["", m.progress];
-    actions = [pause("Stops at the next safe point; nothing is lost")];
+    actions = [pause("Stops at the next safe point; nothing is lost"), stopNow(), discardLink(m)];
   } else if (m.stage === "inbox") {
     meta = busyTitle ? `starts after ${busyTitle}` : "Waiting";
     pill = ["waiting", "Waiting"];
-    actions = [discardLink(m)];
+    actions = [pause("Keeps it from starting until you resume it"), discardLink(m)];
   } else if (m.paused) {
     meta = "text ready · speaker identification paused";
     pill = ["paused", "Paused"];
-    actions = [resume()];
+    actions = [resume(), discardLink(m)];
   } else {
     meta = "text ready · working out who spoke";
     pill = ["", "Identifying speakers"];
     bar = ["busy", null];
-    actions = [pause("Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected.")];
+    actions = [pause("Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected."),
+               discardLink(m)];
   }
   const progress = bar ? el("div", { class: `progress ${bar[0]}`, role: "progressbar",
     "aria-label": `${m.title}: ${bar[1] === null ? "working" : `${bar[1]}% transcribed`}`,
@@ -288,9 +293,9 @@ async function renderLists() {
   const waiting = items.filter((m) => ["attention", "ready"].includes(groupOf(m))).length;
   $("nav-count").hidden = !waiting;
   $("nav-count").textContent = String(waiting);
-  $("nav-count").setAttribute("aria-label", `${waiting} waiting for you`);
+  $("nav-count-sr").textContent = waiting ? `, ${waiting} waiting for you` : "";
   if (state.view !== "meetings") return;
-  const busy = items.find((m) => m.busy === "transcribing");
+  const busy = items.find((m) => m.busy === "transcribe");
   const sections = [];
   for (const [key, title, kind] of GROUPS) {
     const mine = items.filter((m) => groupOf(m) === key);
@@ -1142,11 +1147,11 @@ function deviceName() {
   return opt ? opt.dataset.name : "";
 }
 
-function renderLevel(rec) {
+function renderLevel(rec, tick) {
   const box = $("rec-level");
   if (box.children.length !== LEVEL_BARS)
     box.replaceChildren(...Array.from({ length: LEVEL_BARS }, () => el("span", {})));
-  if (rec.state === "recording") {
+  if (rec.state === "recording" && tick) {
     levels.push(Math.max(-60, Math.min(0, rec.level_db)));
     if (levels.length > LEVEL_BARS) levels.shift();
   }
@@ -1158,7 +1163,7 @@ function renderLevel(rec) {
   box.setAttribute("aria-valuenow", String(Math.round(levels.length ? levels[levels.length - 1] : -60)));
 }
 
-function renderRecCard(rec) {
+function renderRecCard(rec, tick) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
   $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
@@ -1166,17 +1171,17 @@ function renderRecCard(rec) {
   $("rec-icon").hidden = kind !== "lost";
   $("rec-spinner").hidden = kind !== "saving";
   $("rec-level").hidden = kind !== "";
-  if (kind === "") renderLevel(rec);
+  if (kind === "") renderLevel(rec, tick);
   $("rec-middle").hidden = kind !== "paused";
   $("rec-middle").textContent = "Nothing is being recorded. Resume to carry on in the same recording.";
   $("rec-sub").hidden = kind !== "lost" && kind !== "saving";
   $("rec-sub").textContent = kind === "saving"
     ? "The recording is then imported and transcribed like any other."
-    : rec.state === "failed" ? "The recording stopped and could not be saved. Save what was recorded."
-    : `${fmtSeconds(rec.seconds)} recorded before it disconnected. Save what was recorded.`;
+    : rec.state === "failed" ? "The recording stopped. Saving what was recorded."
+    : `${fmtSeconds(rec.seconds)} recorded before it disconnected. Saving what was recorded.`;
   $("rec-pause").hidden = kind !== "";
   $("rec-resume").hidden = kind !== "paused";
-  $("rec-stop").hidden = kind === "saving";
+  $("rec-stop").hidden = kind === "saving" || kind === "lost";   // a lost microphone saves by itself
   $("rec-stop").className = kind === "paused" ? "" : "primary";
   $("rec-note").hidden = kind !== "" && kind !== "paused";
   $("rec-note").textContent = `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
@@ -1188,18 +1193,21 @@ function reportItem(rep) {
     () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)));
   const events = rep.events.length ? ` ${rep.events.map(eventText).join("; ")}.` : "";
   if (rep.pending)
-    return notice("alert", rep.note + events,
+    return notice("alert", `Recording: ${fmtSeconds(rep.seconds)}. ${rep.note}${events}`,
       button("Try again", () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)),
              { primary: true }),
       linkButton("Delete recording…", () => confirmDialog({ title: "Delete this recording?",
         body: "The saved audio of this recording is deleted from this computer. It cannot be recovered.",
         check: "Delete the recording.", limits: false, danger: true,
-        onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })));
+        onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })),
+      dismiss);
   const done = rep.note ? ` ${rep.note}` : rep.meeting ? " It is in Meetings now." : " It is being imported.";
+  if (rep.events.some((e) => e.kind === "device_lost"))
+    return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);
 }
 
-async function renderRecorder() {
+async function renderRecorder(tick = false) {
   const r = await call("recording_status");
   const sel = $("rec-device");
   if (r.enabled && !sel.options.length) {
@@ -1210,7 +1218,9 @@ async function renderRecorder() {
     if (def) sel.value = String(def.index);
     if (!devices.length) $("rec-test-result").textContent = "No microphone found.";
   }
-  const rec = r.recording;
+  const now = r.recording || {};
+  const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || 0, events: now.events || [] }
+    : r.recording;
   const active = !!rec;
   $("start").hidden = active;
   $("rec-card").hidden = !active;
@@ -1219,7 +1229,7 @@ async function renderRecorder() {
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceName() || "No microphone";
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
-  if (active) renderRecCard(rec);
+  if (active) renderRecCard(rec, tick);
   else levels.length = 0;
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
@@ -1227,7 +1237,7 @@ async function renderRecorder() {
   // Faster updates for the clock and level meter while recording.
   const live = active && rec.state !== "stopped";
   if (live && !recTimer)
-    recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder().catch(() => {}); }, 300);
+    recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder(true).catch(() => {}); }, 300);
   if (!live && recTimer) { clearInterval(recTimer); recTimer = null; }
 }
 
@@ -1264,7 +1274,13 @@ function wireRecorder() {
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
   $("rec-stop").addEventListener("click", () => attempt(async () => {
-    await call("stop_recording"); say("Recording saved. It is being imported."); renderRecorder();
+    state.recSaving = true;               // stopping can take a while: show Saving meanwhile
+    $("rec-stop").disabled = true;
+    renderRecorder().catch(() => {});
+    try { await call("stop_recording"); }
+    finally { state.recSaving = false; $("rec-stop").disabled = false; }
+    say("Recording saved. It is being imported.");
+    renderRecorder();
   }));
 }
 

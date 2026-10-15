@@ -64,7 +64,7 @@
         paused: false, error: null, busy: null, stage: "handoff",
         duration_s: 2520, speaker_count: 4, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
       { id: "m-catchup", title: "Team catch-up (sample)", age_days: 0, action: "Transcribing",
-        held: false, progress: 46, paused: false, error: null, busy: "transcribing", stage: "inbox",
+        held: false, progress: 46, paused: false, error: null, busy: "transcribe", stage: "inbox",
         duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
     ],
     detail: { "m-garden": meeting({}) },
@@ -114,7 +114,7 @@
         d.meetings = [
           row({ id: "m-site", title: "Site visit notes (sample)", stage: "inbox", progress: 0,
                 error: "Could not be transcribed: the recording could not be read." }),
-          row({ id: "m-catchup", title: "Team catch-up (sample)", stage: "inbox", progress: 46, busy: "transcribing" }),
+          row({ id: "m-catchup", title: "Team catch-up (sample)", stage: "inbox", progress: 46, busy: "transcribe" }),
           row({ id: "m-client", title: "Client call (sample)", stage: "inbox", progress: 20, paused: true }),
           row({ id: "m-workshop", title: "Workshop (sample)", stage: "inbox", progress: 0 }),
           row({ id: "m-planning", title: "Planning session (sample)", stage: "review", busy: "speakers" }),

@@ -31,7 +31,7 @@
     <button type="button" class="nav" data-view="meetings" title="Meetings">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
       <span class="nav-label">Meetings</span>
-      <span id="nav-count" class="count" hidden></span>
+      <span id="nav-count" class="count" aria-hidden="true" hidden></span><span id="nav-count-sr" class="sr"></span>
     </button>
     <button type="button" class="nav" data-view="settings" title="Settings">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
@@ -312,7 +312,7 @@
 </div>
 
 <!-- Short messages ("Saved", "Copied", errors). Announced politely. -->
-<p id="status" class="toast" role="status" aria-live="polite" hidden></p>
+<p id="status" class="toast" role="status" aria-live="polite"></p>
 
 <dialog id="names" aria-labelledby="n-title">
   <h2 id="n-title">Name speakers</h2>
