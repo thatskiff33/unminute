@@ -175,6 +175,11 @@ def checks(window, ws, mid, report):
                                           "('aria-live')};")
         views = {
             "setup": "window.workspace.show('setup'); await wait(1200);",
+            "setup speech model": "window.workspace.setStep(2); await wait(500);",
+            "setup speaker names": "window.workspace.setStep(3); await wait(500);",
+            "setup microphone": "window.workspace.setStep(4); await wait(800);",
+            "setup ready": "window.workspace.setStep(5); await wait(500);",
+            "downloads": "window.workspace.show('downloads'); await wait(1200);",
             "meetings": "window.workspace.show('meetings'); await wait(1500);",
             "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
             "settings": "window.workspace.show('settings'); await wait(800);",

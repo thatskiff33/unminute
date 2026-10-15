@@ -274,84 +274,232 @@
     <audio id="player" preload="none"></audio>
   </section>
 
-  <section id="view-setup" class="view" aria-labelledby="h-setup" hidden>
-    <h1 id="h-setup">Set up</h1>
-    <p>This app transcribes on this computer. It needs a speech model, and optionally a speaker identification model, downloaded once. Downloads happen only here, when you choose; each file is checked against a published checksum before it is used.</p>
-    <ul id="setup-cards" class="cards"></ul>
-    <section id="speaker-setup" class="speaker-setup" aria-labelledby="h-speaker-setup">
-      <h2 id="h-speaker-setup">Speaker identification (optional)</h2>
-      <p class="muted">The speaker model is free but its publisher asks you to accept its terms with a Hugging Face account before downloading. You only need to do this once. After it is downloaded it works offline, and the token is not needed again.</p>
-      <ol class="steps">
-        <li>Create a free Hugging Face account. <button type="button" data-help="account">Open the sign-up page</button></li>
-        <li>Accept the terms of the speaker model. <button type="button" data-help="terms">Open the model page</button></li>
-        <li>Create an access token of type "Read". <button type="button" data-help="tokens">Open the tokens page</button></li>
-        <li>Paste the token here:
-          <div class="row">
-            <label><span class="sr">Hugging Face token</span>
-              <input id="s-token" type="password" autocomplete="off" spellcheck="false" placeholder="hf_…"></label>
-            <label><input type="checkbox" id="s-remember" checked> Remember it on this computer (Windows Credential Manager)</label>
-          </div>
-          <button type="button" id="s-download-speakers" class="primary">Download the speaker model</button>
-        </li>
-      </ol>
-      <div class="row">
-        <button type="button" id="s-use-remembered" hidden>Download with the remembered token</button>
-        <button type="button" id="s-use-earlier" hidden>Use the token from the earlier version of the app</button>
+  <!-- First-run setup: five steps. Downloads happen only here (and on the
+       Downloads page), when the user chooses. -->
+  <section id="view-setup" class="view setup" aria-labelledby="su-title" hidden>
+    <aside class="su-side">
+      <span class="wordmark">Unminute<span class="dot">.</span></span>
+      <div class="su-intro">
+        <h1 id="su-title">Set up in a few minutes</h1>
+        <p>One-off downloads, then everything runs on this computer.</p>
       </div>
-    </section>
-    <div class="row">
-      <p id="s-token-note" class="muted"></p>
-      <button type="button" id="s-remove-token" hidden>Remove the remembered token</button>
+      <ol id="su-steps" class="su-steps" aria-label="Setup steps"></ol>
+      <p class="su-privacy">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        <span>Downloads happen only here, when you choose. Recordings never leave this computer.</span>
+      </p>
+    </aside>
+
+    <div class="su-main">
+      <section id="su-1" class="su-step" aria-labelledby="su-1-title">
+        <div class="su-head">
+          <span class="eyebrow">Welcome</span>
+          <h2 id="su-1-title" class="big">Meeting minutes, made easier</h2>
+          <p class="su-lede">Unminute turns a meeting recording into a transcript you check, name and hand off. It all happens on this computer.</p>
+        </div>
+        <ol class="su-how">
+          <li><span class="flow-n n1">1</span><span class="flow-title">Record or import</span><span class="flow-text">Record in the room, or bring in a Teams or phone recording.</span></li>
+          <li><span class="flow-n n2">2</span><span class="flow-title">Review</span><span class="flow-text">Play passages, fix words and name the speakers.</span></li>
+          <li><span class="flow-n n3">3</span><span class="flow-title">Hand off</span><span class="flow-text">Copy the reviewed text to draft the final document, then clean up.</span></li>
+        </ol>
+        <div class="su-foot end"><button type="button" class="primary" data-go="2">Get started</button></div>
+      </section>
+
+      <section id="su-2" class="su-step" aria-labelledby="su-2-title" hidden>
+        <div class="su-head">
+          <span class="eyebrow">Step 2 of 5</span>
+          <h2 id="su-2-title">Download a speech model</h2>
+          <p class="su-lede">This is what turns speech into text. Most people only ever need the recommended one.</p>
+        </div>
+        <div id="su-model"></div>
+        <details class="su-other">
+          <summary>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+            <span id="su-other-title">Other options</span>
+          </summary>
+          <ul id="setup-cards" class="dl-list"></ul>
+        </details>
+        <div class="su-foot">
+          <button type="button" data-go="1">Back</button>
+          <span class="su-foot-right"><span id="su-2-note" class="su-note"></span>
+            <button type="button" class="primary" data-go="3">Continue</button></span>
+        </div>
+      </section>
+
+      <section id="su-3" class="su-step" aria-labelledby="su-3-title" hidden>
+        <div class="su-head">
+          <span class="eyebrow">Step 3 of 5 · Optional</span>
+          <h2 id="su-3-title">Work out who spoke when</h2>
+          <p class="su-lede">The speaker model needs a free Hugging Face account to download, once. After that it works offline and the token is not needed.</p>
+        </div>
+        <div id="speaker-setup" class="su-token">
+          <ol class="su-token-steps">
+            <li><span class="su-n">1</span><span class="su-t">Create a free Hugging Face account</span>
+              <button type="button" class="ext" data-help="account">Open the sign-up page</button></li>
+            <li><span class="su-n">2</span><span class="su-t">Accept the speaker model terms</span>
+              <button type="button" class="ext" data-help="terms">Open the model page</button></li>
+            <li><span class="su-n">3</span><span class="su-t">Create a read token and copy it</span>
+              <button type="button" class="ext" data-help="tokens">Open the tokens page</button></li>
+            <li class="strong">
+              <div class="su-token-row">
+                <span class="su-n now">4</span>
+                <label class="su-paste" for="s-token">Paste the token
+                  <input id="s-token" type="password" autocomplete="off" spellcheck="false" placeholder="hf_…"></label>
+                <button type="button" id="s-download-speakers" class="primary">Download the speaker model</button>
+              </div>
+              <label class="su-remember"><input type="checkbox" id="s-remember" checked> Remember it on this computer (Windows Credential Manager)</label>
+            </li>
+          </ol>
+          <div class="su-links">
+            <button type="button" id="s-use-remembered" class="link-plain" hidden>Download with the remembered token</button>
+            <button type="button" id="s-use-earlier" class="link-plain" hidden>Use the token from the earlier version of the app</button>
+          </div>
+        </div>
+        <p id="su-speaker-status" class="su-status" role="status" aria-live="polite"></p>
+        <div class="su-token-note">
+          <p id="s-token-note"></p>
+          <button type="button" id="s-remove-token" class="link-plain" hidden>Remove the remembered token</button>
+        </div>
+        <div class="su-foot">
+          <button type="button" data-go="2">Back</button>
+          <span class="su-foot-right">
+            <button type="button" id="s-skip-speakers">Skip for now</button>
+            <button type="button" class="primary" id="su-next-3">Continue</button></span>
+        </div>
+      </section>
+
+      <section id="su-4" class="su-step" aria-labelledby="su-4-title" hidden>
+        <div class="su-head">
+          <span class="eyebrow">Step 4 of 5 · Optional</span>
+          <h2 id="su-4-title">Record with a microphone</h2>
+          <p class="su-lede">Record in-person meetings straight into Unminute. Only the microphone is recorded, not sound playing on the computer.</p>
+        </div>
+        <div class="su-card">
+          <label class="toggle-row" for="su-mic"><span class="t-label strong">Turn on recording</span>
+            <input type="checkbox" id="su-mic" class="switch" role="switch"></label>
+          <div class="chooser-row" id="su-mic-row">
+            <label class="field grow" for="su-device">Microphone
+              <select id="su-device"></select></label>
+            <button type="button" id="su-test">Test microphone</button>
+          </div>
+          <p id="su-test-result" class="su-test" role="status" aria-live="polite" hidden></p>
+        </div>
+        <p class="su-note">Tell everyone present when a meeting is being recorded.</p>
+        <div class="su-foot">
+          <button type="button" data-go="3">Back</button>
+          <span class="su-foot-right">
+            <button type="button" id="su-skip-4" data-go="5">Skip for now</button>
+            <button type="button" class="primary" data-go="5">Continue</button></span>
+        </div>
+      </section>
+
+      <section id="su-5" class="su-step" aria-labelledby="su-5-title" hidden>
+        <div class="su-head">
+          <span class="su-done-mark" aria-hidden="true">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>
+          </span>
+          <h2 id="su-5-title" class="big">You're ready</h2>
+          <p class="su-lede">You can change any of this later in Settings.</p>
+        </div>
+        <ul id="su-summary" class="su-summary"></ul>
+        <p id="s-finish-note" class="su-note"></p>
+        <div class="su-foot">
+          <button type="button" data-go="4">Back</button>
+          <button type="button" id="s-finish" class="primary">Finish setup</button>
+        </div>
+      </section>
     </div>
-    <label><input type="checkbox" id="s-speakers-on" checked> Identify speakers after transcription (when the speaker model is downloaded)</label>
-    <div class="row">
-      <button type="button" id="s-finish" class="primary">Finish setup</button>
-      <button type="button" id="s-skip-speakers">Skip speaker identification for now</button>
-    </div>
-    <p id="s-finish-note" class="muted"></p>
   </section>
 
-  <section id="view-settings" class="view" aria-labelledby="h-settings" hidden>
+  <!-- Settings -->
+  <section id="view-settings" class="view page settings-page" aria-labelledby="h-settings" hidden>
     <h1 id="h-settings">Settings</h1>
-    <fieldset>
-      <legend>Processing</legend>
-      <label><input type="radio" name="mode" value="quiet"> Quiet: leaves most of the computer free (recommended)</label>
-      <label><input type="radio" name="mode" value="faster"> Faster: uses more of the computer while transcribing</label>
-      <label><input type="checkbox" id="s-battery"> Process automatically on battery power</label>
-    </fieldset>
-    <fieldset>
-      <legend>Speech model</legend>
-      <select id="s-model" aria-label="Speech model"></select>
-      <p class="muted">Changing the model affects new recordings and "Transcribe again".</p>
-      <button type="button" id="s-downloads">Manage downloads</button>
-    </fieldset>
-    <fieldset>
-      <legend>Microphone</legend>
-      <label><input type="checkbox" id="s-microphone"> Record meetings with a microphone (adds a Record panel to the Inbox)</label>
-      <p class="muted">Recordings stay on this computer and follow the same review and cleanup steps as imported files. Computer audio and live transcription are not available.</p>
-    </fieldset>
-    <fieldset>
-      <legend>Speakers</legend>
-      <label><input type="checkbox" id="s-speakers"> Identify speakers after transcription</label>
-      <div id="s-gpu-box" hidden>
-        <label><input type="checkbox" id="s-gpu"> Use the graphics card for speaker identification (Faster mode only)</label>
-        <p id="s-gpu-note" class="muted"></p>
-      </div>
-    </fieldset>
-    <h2>Watched folders</h2>
-    <p class="muted">Recordings saved into a watched folder are imported automatically. Each folder is checked when the app starts and every few minutes while it is open; if the app was closed, it catches up when you open it. Recordings already imported are not imported twice (Import by hand always works).</p>
-    <ul id="s-folders" class="folders"></ul>
-    <div class="row">
-      <button type="button" id="s-add-folder">Watch a folder…</button>
-      <label><input type="checkbox" id="s-include-existing"> Also import recordings already in it</label>
-      <button type="button" id="s-scan">Check now</button>
+    <div class="set-grid two">
+      <section class="set-card" aria-labelledby="h-processing">
+        <h2 id="h-processing">Processing</h2>
+        <div class="segmented" role="radiogroup" aria-label="Processing speed">
+          <label><input type="radio" name="mode" value="quiet" class="sr"><span>Quiet</span></label>
+          <label><input type="radio" name="mode" value="faster" class="sr"><span>Faster</span></label>
+        </div>
+        <p id="s-mode-note" class="set-text">Quiet leaves most of the computer free while it transcribes. Recommended.</p>
+        <label class="toggle-row" for="s-battery"><span class="t-label">Process automatically on battery power</span>
+          <input type="checkbox" id="s-battery" class="switch" role="switch"></label>
+      </section>
+      <section class="set-card" aria-labelledby="h-model">
+        <h2 id="h-model">Speech model</h2>
+        <label class="field" for="s-model">Used for new recordings and Transcribe again
+          <select id="s-model"></select></label>
+        <p id="s-models-line" class="set-line"></p>
+        <button type="button" id="s-downloads" class="set-link-btn">Manage downloads</button>
+      </section>
     </div>
-    <h2>Updates</h2>
-    <p id="s-deployment" class="muted"></p>
-    <ul id="s-update-blockers" class="receipts"></ul>
-    <h2>Cleanup receipts</h2>
-    <p class="muted">Completed cleanups leave only an anonymous receipt, kept for 30 days.</p>
-    <ul id="receipts" class="receipts"></ul>
+
+    <section class="set-card" aria-labelledby="h-rec">
+      <h2 id="h-rec">Recording and speakers</h2>
+      <div class="set-grid three">
+        <label class="toggle-row top" for="s-microphone"><span class="t-text"><span class="t-label strong">Record with a microphone</span>
+          <span class="t-note">Adds Record a meeting to the Meetings page. Computer audio is not recorded.</span></span>
+          <input type="checkbox" id="s-microphone" class="switch" role="switch"></label>
+        <label class="toggle-row top" for="s-speakers"><span class="t-text"><span class="t-label strong">Name speakers after transcription</span>
+          <span class="t-note">Works out who spoke when, after the text is ready.</span></span>
+          <input type="checkbox" id="s-speakers" class="switch" role="switch"></label>
+        <div id="s-gpu-box" hidden>
+          <label class="toggle-row top" for="s-gpu"><span class="t-text"><span class="t-label strong">Use the graphics card</span>
+            <span id="s-gpu-note" class="t-note"></span></span>
+            <input type="checkbox" id="s-gpu" class="switch" role="switch"></label>
+        </div>
+      </div>
+    </section>
+
+    <section class="set-card" aria-labelledby="h-folders">
+      <div class="set-head">
+        <h2 id="h-folders">Watched folders</h2>
+        <button type="button" id="s-scan">Check now</button>
+      </div>
+      <p class="set-text">Recordings saved into a watched folder are imported automatically: when the app starts and every few minutes while it is open. Recordings already imported are not imported twice.</p>
+      <ul id="s-folders" class="folders"></ul>
+      <div class="set-row">
+        <button type="button" id="s-add-folder" class="primary">Watch a folder…</button>
+        <label class="inline-check"><input type="checkbox" id="s-include-existing"> Also import recordings already in it</label>
+      </div>
+    </section>
+
+    <div class="set-grid two">
+      <section class="set-card" aria-labelledby="h-updates">
+        <h2 id="h-updates">Updates</h2>
+        <p id="s-version" class="set-strong"></p>
+        <p id="s-deployment" class="set-text"></p>
+        <ul id="s-update-blockers" class="set-bullets"></ul>
+      </section>
+      <section class="set-card" aria-labelledby="h-receipts">
+        <h2 id="h-receipts">Cleanup receipts</h2>
+        <p class="set-text">A record of what was removed, kept for 30 days. No meeting content is kept.</p>
+        <ul id="receipts" class="set-receipts"></ul>
+      </section>
+    </div>
+
+    <section class="about" aria-label="About">
+      <span class="about-text"><span id="s-about-version" class="set-strong">Unminute</span>
+        <span class="set-text">Transcription runs on this computer. Nothing is uploaded.</span></span>
+      <span class="about-by">by</span>
+      <img src="img/unlimit.svg" alt="Unlimit" class="about-logo">
+    </section>
+  </section>
+
+  <!-- Downloads: every model and component, its state and what can be done -->
+  <section id="view-downloads" class="view page downloads-page" aria-labelledby="h-downloads" hidden>
+    <div class="page-head">
+      <button type="button" id="dl-back" class="back-link link-plain">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>Settings
+      </button>
+      <h1 id="h-downloads">Downloads</h1>
+      <p class="lede">Each file is checked against a published checksum before it is used. Downloads happen only here, when you choose.</p>
+    </div>
+    <ul id="dl-list" class="dl-list framed"></ul>
+    <div id="dl-token" class="dl-token" hidden>
+      <span id="dl-token-note" class="set-text"></span>
+      <button type="button" id="dl-remove-token" class="link-plain">Remove the remembered token</button>
+    </div>
   </section>
 
   <!-- Hand off: template, details to remove, copy or save; the preview is
