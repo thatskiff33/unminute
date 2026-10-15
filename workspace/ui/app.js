@@ -82,6 +82,7 @@ function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   if (view !== "meeting") stopAudio();
   if (view !== "meeting" && view !== "handoff") stopEditing();
+  if (view !== state.view) { suState.sig = ""; state.downloadsSig = ""; }   // rebuilt on arrival
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -1352,7 +1353,8 @@ function wireHandoff() {
 // one is remembered).
 const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Optional"],
                   ["Microphone", "Optional"], ["Ready", ""]];
-const suState = { step: 1, skipSpeakers: false, mic: null, devices: false };
+// returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
+const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, returnTo: null };
 
 // "Parakeet v2" from "Speech to text: Parakeet v2 (recommended)".
 function cardName(c) {
@@ -1377,12 +1379,24 @@ function progressBlock(dl, note) {
 }
 
 function setStep(n) {
+  $("s-token").value = "";                           // a typed token is never kept in the page
+  if (suState.returnTo && n !== 3) {
+    const back = suState.returnTo;
+    suState.returnTo = null;
+    show(back);
+    return;
+  }
   suState.step = n;
   for (let i = 1; i <= 5; i++) $(`su-${i}`).hidden = i !== n;
   renderSuSteps();
   window.scrollTo(0, 0);
   if (n === 4) renderSuMic();
   if (state.setup) renderSummary(state.setup);
+  // Focus moves into the new step (its first control) and the step is announced.
+  const first = [...$(`su-${n}`).querySelectorAll("button, input, select, summary")]
+    .find((c) => !c.disabled && c.offsetParent !== null);
+  if (first) first.focus();
+  say(`Step ${n} of 5: ${$(`su-${n}-title`).textContent}`);
 }
 
 function renderSuSteps() {
@@ -1438,7 +1452,12 @@ function downloadRow(c, s, inUse) {
     action = button("Check every file", () => attempt(() => call("verify_model", c.name).then(refresh)),
                     { title: "Compare every file with its published checksum" });
   else if (c.needs_token && c.state === "missing")
-    action = button("Set up…", () => { suState.step = 3; show("setup"); setStep(3); }, { primary: true });
+    action = button("Set up…", () => {
+      suState.step = 3;
+      suState.returnTo = state.view === "downloads" ? "downloads" : null;
+      show("setup");
+      setStep(3);
+    }, { primary: true });
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
   action.disabled = busy && !running;
   const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
@@ -1471,12 +1490,16 @@ async function renderSetup() {
   renderSuSteps();
   const speech = s.cards.filter((c) => c.role === "speech");
   const rec = speech.find((c) => c.recommended) || speech[0];
-  $("su-model").replaceChildren(modelCard(rec, s));
   const others = speech.filter((c) => c !== rec);
-  $("setup-cards").replaceChildren(...others.map((c) => downloadRow(c, s, false)));
+  const sig = JSON.stringify(s.cards);
+  if (sig !== suState.sig) {                         // unchanged: keep open Details and focus
+    suState.sig = sig;
+    $("su-model").replaceChildren(modelCard(rec, s));
+    $("setup-cards").replaceChildren(...others.map((c) => downloadRow(c, s, false)));
+  }
   $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
   $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
-  const speaker = s.cards.find((c) => c.role === "speakers");
+  const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
   $("s-download-speakers").disabled = isRunning(speaker);
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
@@ -1495,7 +1518,7 @@ async function renderSetup() {
 function renderSummary(s) {
   const rec = s.cards.find((c) => c.role === "speech" && c.recommended);
   const ready = s.cards.find((c) => c.role === "speech" && c.state === "ready");
-  const speaker = s.cards.find((c) => c.role === "speakers");
+  const speaker = s.cards.find((c) => c.role === "speakers") || {};
   const line = (label, value, on) => el("li", {},
     el("span", { class: `s-icon${on ? "" : " off"}` }, on ? icon("tick", 14) : el("span", { "aria-hidden": "true", textContent: "–" })),
     el("span", { class: "s-label", textContent: label }), el("span", { class: "s-value", textContent: value }));
@@ -1503,7 +1526,7 @@ function renderSummary(s) {
   const names = speaker.state === "ready" && !suState.skipSpeakers ? "Ready"
     : suState.skipSpeakers ? "Skipped. Turn on in Settings."
     : isRunning(speaker) ? "Downloading…" : "Not set up. You can add it later in Settings.";
-  const mic = suState.mic ? ($("su-device").selectedOptions[0]?.dataset.name || "On") : "Skipped. Turn on in Settings.";
+  const mic = suState.mic ? "On" : "Skipped. Turn on in Settings.";
   $("su-summary").replaceChildren(line("Speech model", speech, !!ready),
     line("Speaker names", names, names === "Ready"), line("Microphone", mic, !!suState.mic));
 }
@@ -1514,6 +1537,7 @@ async function renderSuMic() {
   suState.mic = !!s.microphone;
   $("su-mic").checked = suState.mic;
   $("su-mic-row").hidden = !suState.mic;
+  if (!suState.mic) $("su-test-result").hidden = true;
   if (suState.mic && !suState.devices) {
     const devices = await attempt(() => call("microphone_devices")) || [];
     $("su-device").replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
@@ -1521,6 +1545,7 @@ async function renderSuMic() {
     const def = devices.find((d) => d.default);
     if (def) $("su-device").value = String(def.index);
     suState.devices = devices.length > 0;
+    $("su-test").disabled = !devices.length;
     if (!devices.length) { $("su-test-result").hidden = false; $("su-test-result").textContent = "No microphone found."; }
   }
 }
@@ -1564,7 +1589,9 @@ function wireSetup() {
     renderSuMic();
   }));
   $("su-skip-4").addEventListener("click", () => {
-    if (suState.mic) attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = false; renderSummary(state.setup); }));
+    // First run only: skipping undoes a switch turned on here. Later visits leave Settings alone.
+    if (suState.mic && !state.setup.onboarded)
+      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = false; renderSummary(state.setup); }));
   });
   $("su-test").addEventListener("click", () => attempt(async () => {
     const box = $("su-test-result");
@@ -1577,9 +1604,12 @@ function wireSetup() {
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
   $("s-finish").addEventListener("click", () => attempt(async () => {
-    const speaker = state.setup.cards.find((c) => c.role === "speakers");
-    // Speaker names are on unless skipped; they start once the model is downloaded.
-    await call("finish_setup", !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker)));
+    const speaker = state.setup.cards.find((c) => c.role === "speakers") || {};
+    // First run: speaker names are on when their model is downloaded or downloading, unless
+    // skipped. Later visits (a speech model went missing) keep the Settings choice.
+    const speakers = state.setup.onboarded ? !!(await call("settings")).speakers
+      : !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker));
+    await call("finish_setup", speakers);
     show("meetings");
   }));
 }
@@ -1589,7 +1619,11 @@ async function renderDownloads() {
   const s = await call("setup_state");
   state.setup = s;
   const settings = await call("settings");
-  $("dl-list").replaceChildren(...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
+  const sig = JSON.stringify([s.cards, settings.model]);
+  if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
+    state.downloadsSig = sig;
+    $("dl-list").replaceChildren(...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
+  }
   $("dl-token").hidden = !s.token_remembered;
   $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
 }
