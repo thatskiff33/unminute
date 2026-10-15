@@ -347,7 +347,7 @@ class Workspace:
     def _finish_recording(self, rec):
         with self._lock:
             if self._recording is not rec:
-                return                   # already finished by the other path
+                return False             # already finished by the other path
             self._recording = None
         try:
             rec.stop()
@@ -378,9 +378,9 @@ class Workspace:
         if rec is None:
             raise WorkspaceError("Nothing is being recorded.")
         status = rec.status()
-        self._finish_recording(rec)
-        if rec.folder.exists() and recorder.is_discarded(rec.folder):
-            raise WorkspaceError("The recording was discarded.")   # Discard won the race
+        if self._finish_recording(rec) is False and (
+                not rec.folder.exists() or recorder.is_discarded(rec.folder)):
+            raise WorkspaceError("The recording was discarded.")   # Discard got there first
         return {**status, "state": "saving"}
 
     def discard_recording(self):
@@ -390,15 +390,16 @@ class Workspace:
             rec = self._recording
             if rec is None:
                 raise WorkspaceError("Nothing is being recorded.")
+            # Marked first: whatever happens next, this folder is deleted, never
+            # imported (at the next start, or by Try again). Unmarked, it carries on.
+            try:
+                recorder.mark_discarded(rec.folder)
+            except OSError as exc:
+                raise WorkspaceError("The recording could not be discarded. It carries on; "
+                                     "try again, or stop and save it.") from exc
             self._recording = None                # the watcher will not import it now
-        # Marked first: whatever happens next, this folder is deleted, never imported
-        # (at the next start, or by Try again).
-        try:
-            recorder.mark_discarded(rec.folder)
-        except OSError:
-            pass
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
-                  "note": "It is deleted as soon as it is free, or when the app next starts.",
+                  "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}
         try:
             rec.stop()
@@ -457,6 +458,10 @@ class Workspace:
         """The user's explicit choice to delete a recording that could not be
         imported (for example its journal is damaged)."""
         report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        if (report and report.get("discarded")
+                and not (self.recordings / report["pending"]).is_dir()):
+            self.discard_recording_report(rid)    # already gone: nothing left to delete
+            return
         folder = self._pending_folder(report)
         hung = self._hung.get(folder.name)
         if hung is not None and hung.writing:
