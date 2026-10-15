@@ -93,6 +93,11 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(numbers, list(range(numbers[0], numbers[0] + len(numbers))))
         self.assertLessEqual(len(numbers), 50)
         self.assertEqual(rec.status()["levels"], status["levels"])   # reading does not use them up
+        viz = status["viz"]                            # display data for the latest block
+        self.assertEqual(len(viz["bands"]), recorder.VIZ_BANDS)
+        self.assertEqual(len(viz["wave"]), recorder.VIZ_WAVE_POINTS)
+        self.assertLess(abs(viz["pitch_hz"] - 220), 15)   # the 220 Hz test tone
+        self.assertGreater(max(viz["bands"]), -20)
         journal = rec.stop()
         self.assertTrue(s.stopped and s.closed)
         self.assertEqual(journal["state"], "stopped")
@@ -288,6 +293,29 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertTrue((self.ws.media / meetings[0]["id"] / "recording.json").is_file())
         self.assertEqual(self.ws.recording_status()["reports"][-1]["seconds"], 8.0)
         self.assertTrue(self.ws.transcript(meetings[0]["id"])["items"])  # then transcribed
+
+    def test_discarding_keeps_nothing_and_makes_no_meeting(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3)
+        self.holder["stream"].feed(3)
+        self.ws.pause_recording()                       # can be discarded while paused too
+        self.ws.discard_recording()
+        self.assertTrue(self.holder["stream"].stopped and self.holder["stream"].closed)
+        self.assertIsNone(self.ws.recording_status()["recording"])
+        self.assertEqual(list((self.ws.root / "recordings").iterdir()), [])
+        time.sleep(1.0)                                 # the watcher must not import it
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertEqual(self.ws.meetings(), [])
+        with self.assertRaises(WorkspaceError):
+            self.ws.discard_recording()                 # nothing left to discard
+
+    def test_recording_display_setting(self):
+        self.assertEqual(self.ws.recording_status()["display"], "flow")
+        self.ws.settings.update(recording_display="spectrum")
+        self.assertEqual(self.ws.recording_status()["display"], "spectrum")
+        with self.assertRaises(WorkspaceError):
+            self.ws.settings.update(recording_display="bars")
 
     def test_unimported_recording_blocks_schema_updates(self):
         self.ws.settings.update(microphone=True)

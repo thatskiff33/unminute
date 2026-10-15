@@ -153,6 +153,47 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
+# The recording display: a few numbers per block for the page to draw, never audio
+# to keep. Bands are log-spaced across the speech range; the wave is a short,
+# thinned slice of the block for the "Sound wave" display.
+VIZ_BANDS = 40
+VIZ_LOW_HZ, VIZ_HIGH_HZ = 80.0, 8000.0
+VIZ_WAVE_POINTS = 128
+_band_cache = {}
+
+
+def _band_edges(n, rate):
+    """Bin index ranges of the display bands for an n-sample block."""
+    key = (n, rate)
+    if key not in _band_cache:
+        freqs = np.fft.rfftfreq(n, 1.0 / rate)
+        edges = np.geomspace(VIZ_LOW_HZ, min(VIZ_HIGH_HZ, rate / 2), VIZ_BANDS + 1)
+        idx = np.searchsorted(freqs, edges)
+        spans = [(int(a), max(int(a) + 1, int(b))) for a, b in zip(idx[:-1], idx[1:], strict=True)]
+        _band_cache[key] = (spans, np.hanning(n).astype(np.float32), freqs)
+    return _band_cache[key]
+
+
+def visual(block, rate):
+    """Display data for one block: band levels (dBFS of the loudest bin in each
+    band), the dominant pitch in Hz (0 when quiet) and a thinned wave (-1..1)."""
+    x = block.astype(np.float32) / 32768.0
+    n = len(x)
+    if n < 64:
+        return {"bands": [-96.0] * VIZ_BANDS, "pitch_hz": 0, "wave": [0.0] * VIZ_WAVE_POINTS}
+    spans, window, freqs = _band_edges(n, rate)
+    mags = np.abs(np.fft.rfft(x * window)) / (n / 4.0)      # a full-scale sine reads 0 dBFS
+    db = 20.0 * np.log10(np.maximum(mags, 1e-5))
+    bands = [round(float(db[a:b].max()), 1) for a, b in spans]
+    voice = (freqs >= VIZ_LOW_HZ) & (freqs <= 1000.0)
+    peak = int(np.argmax(np.where(voice, mags, 0.0)))
+    pitch = round(float(freqs[peak])) if db[peak] > -60.0 else 0
+    tail = x[-min(n, VIZ_WAVE_POINTS * 8):]
+    step = max(1, len(tail) // VIZ_WAVE_POINTS)
+    wave = [round(float(v), 3) for v in tail[::step][:VIZ_WAVE_POINTS]]
+    return {"bands": bands, "pitch_hz": pitch, "wave": wave}
+
+
 def _level_db(block):
     if block.size == 0:
         return -96.0
@@ -179,6 +220,7 @@ class Recording:
         self.level_db = -96.0
         self._levels = collections.deque(maxlen=50)   # recent [block number, level], for the meter
         self._level_seq = 0                           # blocks measured so far
+        self._viz = None                              # the latest block's display data
         self._last_audio = clock()
         self._stop = threading.Event()          # the writer's signal to finish
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
@@ -199,11 +241,16 @@ class Recording:
                                         "audio was lost here.")
         if self.paused:
             self.level_db = -96.0
+            self._viz = None
             return
         block = np.array(indata, dtype=np.int16).reshape(-1)
         self.level_db = _level_db(block)
         self._level_seq += 1
         self._levels.append((self._level_seq, round(self.level_db, 1)))
+        try:
+            self._viz = visual(block, self.rate)       # replaced whole, so readers see one block
+        except Exception:                             # the display must never stop a recording
+            self._viz = None
         try:
             self._queue.put_nowait(block)
         except queue.Full:
@@ -389,6 +436,7 @@ class Recording:
                 else self.journal["state"], "seconds": round(seconds, 1),
                 "level_db": round(self.level_db, 1), "id": self.journal["id"],
                 "levels": [list(x) for x in list(self._levels)],
+                "viz": self._viz,
                 "device": self.journal["device_name"],
                 "events": events[-10:]}
 

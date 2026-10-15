@@ -48,7 +48,9 @@ DEFAULT_SETTINGS = {
     "onboarded": False,                            # guided setup finished or skipped (#19)
     "microphone": False,                           # microphone recording (#30), off by default
     "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
+    "recording_display": "flow",                   # flow | spectrum | wave, while recording
 }
+RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
 
 class WorkspaceError(ValueError):
@@ -85,6 +87,8 @@ class Settings:
                 raise WorkspaceError("Unknown setting.")
             if key == "mode" and value not in (resources.QUIET, resources.FASTER):
                 raise WorkspaceError("Choose Quiet or Faster.")
+            if key == "recording_display" and value not in RECORDING_DISPLAYS:
+                raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
             if key == "model" and not (asr_engines.is_parakeet(value)
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
@@ -376,9 +380,40 @@ class Workspace:
         self._finish_recording(rec)
         return {**status, "state": "saving"}
 
+    def discard_recording(self):
+        """The user's explicit choice: stop the recording and delete its audio
+        without importing it. Nothing of it is kept."""
+        with self._lock:
+            rec = self._recording
+            if rec is None:
+                raise WorkspaceError("Nothing is being recorded.")
+            self._recording = None                # the watcher will not import it now
+        try:
+            rec.stop()
+        except recorder.RecorderError as exc:
+            # Still writing: keep it listed so the user can delete it once it is free.
+            self._hung[rec.folder.name] = rec
+            self._add_report({"title": None, "seconds": rec.status()["seconds"], "events": [],
+                              "note": "It could not be discarded yet. Delete it below.",
+                              "pending": rec.folder.name})
+            self._wake.set()
+            raise WorkspaceError("The recording is still being saved. It is listed on the "
+                                 "Meetings page; delete it there in a moment.") from exc
+        import shutil
+        shutil.rmtree(rec.folder, ignore_errors=True)
+        if rec.folder.exists():
+            self._add_report({"title": None, "seconds": rec.status()["seconds"], "events": [],
+                              "note": "It could not be discarded yet. Delete it below.",
+                              "pending": rec.folder.name})
+            self._wake.set()
+            raise WorkspaceError("The recording could not be deleted yet. It is listed on the "
+                                 "Meetings page; delete it there.")
+        self._wake.set()                          # processing that waited carries on
+
     def recording_status(self):
         rec = self._recording
         return {"enabled": self.settings["microphone"],
+                "display": self.settings["recording_display"],
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
 

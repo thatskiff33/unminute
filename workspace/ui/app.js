@@ -1651,6 +1651,7 @@ const MODE_NOTE = {
 async function renderSettings() {
   const s = await call("settings");
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
+  for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
   $("s-battery").checked = s.battery_override;
   $("s-speakers").checked = s.speakers;
@@ -1770,11 +1771,136 @@ function eventText(e) {
   return `${e.note || e.kind}${at}${len}`;
 }
 
-// The level meter scrolls the recent levels past as thin bars, newest on the
-// right: one bar per 0.1 s block of audio, as many as fit the space.
-const BAR_STEP = 7;            // 4 px bar + 3 px gap
-let levelBars = 0;
-const levels = [];
+// The recording display: one canvas across the card, drawn every frame from the
+// latest block the recorder measured (ten a second), easing between them.
+//   flow: Siri-style curves; height follows the level, ripple follows the pitch.
+//   spectrum: pitch from low (left) to high, mirrored about the centre line.
+//   wave: the shape of the sound itself.
+const viz = { mode: "flow", target: null, db: -96, amp: 0, k: 2.5, phase: 0, bands: [], wave: [],
+              gain: 4, raf: 0, last: 0, said: 0 };
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+// Speech sits around -50 to -10 dBFS: spread -60..-10 over 0..1, so loud speech
+// still has room to move rather than sitting at the top.
+const levelAmount = (db) => Math.pow(Math.max(0, Math.min(1, (db + 60) / 50)), 0.9);
+
+function feedViz(rec, display) {
+  if (display) viz.mode = display;
+  viz.target = rec.state === "recording" ? rec.viz : null;
+  viz.db = rec.state === "recording" ? rec.level_db : -96;
+  const box = $("rec-level");
+  const now = Date.now();
+  if (now - viz.said > 1000) {                       // the meter's value, once a second
+    viz.said = now;
+    box.setAttribute("aria-valuenow", String(Math.round(Math.max(-60, Math.min(0, viz.db)))));
+  }
+  if (!viz.raf) viz.raf = requestAnimationFrame(drawViz);
+}
+
+function stopViz() {
+  if (viz.raf) cancelAnimationFrame(viz.raf);
+  viz.raf = 0; viz.target = null; viz.amp = 0; viz.bands = []; viz.wave = [];
+}
+
+function ease(cur, to, rate) { return cur + (to - cur) * rate; }
+
+function drawViz(t) {
+  const c = $("rec-canvas");
+  if ($("rec-level").hidden || $("rec-card").hidden || state.view !== "meetings") { viz.raf = 0; return; }
+  viz.raf = requestAnimationFrame(drawViz);
+  const dt = Math.min(0.1, viz.last ? (t - viz.last) / 1000 : 0.016);
+  viz.last = t;
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  }
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue("--record").trim() || "#E56600";
+  const quiet = css.getPropertyValue("--line").trim() || "rgba(20,41,102,0.14)";
+  const mid = h / 2;
+  viz.amp = ease(viz.amp, levelAmount(viz.db), 0.3);
+  const tg = viz.target;
+  if (viz.mode === "spectrum") drawSpectrum(g, w, h, mid, tg, accent, quiet);
+  else if (viz.mode === "wave") drawWave(g, w, h, mid, tg, accent, quiet);
+  else drawFlow(g, w, h, mid, tg, dt, accent, quiet);
+}
+
+function line(g, colour, width) { g.strokeStyle = colour; g.lineWidth = width; g.lineJoin = "round"; g.lineCap = "round"; }
+
+function drawFlow(g, w, h, mid, tg, dt, accent, quiet) {
+  // Ripple count follows the voice's pitch (80 to 400 Hz: 1.5 to 4.5 waves).
+  const pitch = tg && tg.pitch_hz ? tg.pitch_hz : 0;
+  if (pitch) viz.k = ease(viz.k, 1.5 + Math.max(0, Math.min(1, (pitch - 80) / 320)) * 3, 0.08);
+  if (!reducedMotion.matches) viz.phase += dt * (1.2 + viz.amp * 7);
+  const amp = Math.max(0.04, viz.amp) * (mid - 3);
+  const curves = [[1, 1, 1, 0.95], [0.75, 1.35, 0.7, 0.55], [1.3, 0.7, 0.5, 0.35]];
+  for (const [speed, freq, size, alpha] of curves) {
+    g.beginPath();
+    for (let x = 0; x <= w; x += 2) {
+      const u = (x / w) * 4 - 2;                       // -2..2 across the card
+      const taper = Math.pow(2 / (2 + Math.pow(u, 4)), 2);   // the ends rest on the line
+      const y = mid + amp * size * taper * Math.sin(u * viz.k * freq * Math.PI + viz.phase * speed);
+      if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.globalAlpha = alpha;
+    line(g, accent, size === 1 ? 2.5 : 2);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  if (viz.amp < 0.02) { g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke(); }
+}
+
+function drawSpectrum(g, w, h, mid, tg, accent, quiet) {
+  const target = tg ? tg.bands.map((db) => Math.max(0, Math.min(1, (db + 85) / 70))) : [];
+  const n = target.length || viz.bands.length || 40;
+  if (viz.bands.length !== n) viz.bands = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) viz.bands[i] = ease(viz.bands[i], target[i] || 0, 0.25);
+  const pts = viz.bands.map((v, i) => [(i / (n - 1)) * w, v * (mid - 3)]);
+  const shape = (sign) => {
+    g.moveTo(0, mid);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+      g.quadraticCurveTo(x0, mid - sign * y0, (x0 + x1) / 2, mid - sign * (y0 + y1) / 2);
+    }
+    g.lineTo(w, mid);
+  };
+  g.beginPath(); shape(1); shape(-1);
+  const fill = g.createLinearGradient(0, 0, 0, h);
+  fill.addColorStop(0, accent); fill.addColorStop(0.5, accent); fill.addColorStop(1, accent);
+  g.globalAlpha = 0.35; g.fillStyle = fill; g.fill();
+  g.globalAlpha = 1;
+  g.beginPath(); shape(1); line(g, accent, 2); g.stroke();
+  g.beginPath(); shape(-1); line(g, accent, 2); g.stroke();
+  g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke();
+}
+
+function drawWave(g, w, h, mid, tg, accent, quiet) {
+  const target = tg ? tg.wave : [];
+  const n = target.length || viz.wave.length || 128;
+  if (viz.wave.length !== n) viz.wave = new Array(n).fill(0);
+  // Scale so speech fills most of the height, without blowing up silence.
+  const peak = target.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  if (peak > 0.002) viz.gain = ease(viz.gain, Math.min(40, 0.85 / peak), 0.1);
+  for (let i = 0; i < n; i++) viz.wave[i] = ease(viz.wave[i], target[i] || 0, 0.35);
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * w;
+    const y = mid - Math.max(-1, Math.min(1, viz.wave[i] * viz.gain)) * (mid - 3);
+    if (i === 0) g.moveTo(x, y);
+    else {
+      const px = ((i - 1) / (n - 1)) * w;
+      const py = mid - Math.max(-1, Math.min(1, viz.wave[i - 1] * viz.gain)) * (mid - 3);
+      g.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2);
+    }
+  }
+  line(g, viz.amp < 0.02 ? quiet : accent, 2);
+  g.stroke();
+}
+
 const REC_KIND = { recording: "", paused: "paused", device_lost: "lost", failed: "lost",
                    stopped: "saving", saving: "saving" };
 
@@ -1783,46 +1909,7 @@ function deviceName() {
   return opt ? opt.dataset.name : "";
 }
 
-// Speech sits around -45 to -10 dBFS: spread that range over the full height,
-// with a little lift for quiet speech so the bars bounce rather than crawl.
-function barHeight(db) {
-  const x = Math.max(0, Math.min(1, (db + 55) / 47));
-  return Math.round(6 + Math.pow(x, 0.8) * 58);
-}
-
-function renderLevel(rec, tick) {
-  const box = $("rec-level");
-  const fit = Math.max(20, Math.floor((box.clientWidth + 3) / BAR_STEP));
-  if (fit !== levelBars) {
-    levelBars = fit;
-    box.replaceChildren(...Array.from({ length: fit }, () => el("span", {})));
-  }
-  if (rec.state === "recording") {
-    // The recorder keeps its recent blocks as [number, level], so each block is
-    // drawn once however often, and in whatever order, the status is read.
-    let fresh = [];
-    if (Array.isArray(rec.levels)) {
-      if (rec.id !== state.levelRec) {                  // a new recording
-        levels.length = 0;
-        state.levelRec = rec.id;
-        state.levelSeq = 0;
-      }
-      fresh = rec.levels.filter(([n]) => n > state.levelSeq).map(([, db]) => db);
-      if (rec.levels.length) state.levelSeq = Math.max(state.levelSeq, rec.levels[rec.levels.length - 1][0]);
-    } else if (tick) fresh = [rec.level_db];
-    for (const db of fresh) levels.push(Math.max(-96, Math.min(0, db)));
-    while (levels.length > levelBars) levels.shift();
-  }
-  const offset = levelBars - levels.length;          // the newest bar is on the right
-  [...box.children].forEach((bar, i) => {
-    const db = levels[i - offset];
-    bar.classList.toggle("on", db !== undefined);
-    bar.style.height = db === undefined ? "" : `${barHeight(db)}px`;
-  });
-  box.setAttribute("aria-valuenow", String(Math.round(levels.length ? Math.max(-60, levels[levels.length - 1]) : -60)));
-}
-
-function renderRecCard(rec, tick) {
+function renderRecCard(rec, display) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
   $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
@@ -1831,7 +1918,8 @@ function renderRecCard(rec, tick) {
   $("rec-icon").hidden = kind !== "lost";
   $("rec-spinner").hidden = kind !== "saving";
   $("rec-level").hidden = kind !== "";
-  if (kind === "") renderLevel(rec, tick);
+  if (kind === "") feedViz(rec, display);
+  else stopViz();
   $("rec-middle").hidden = kind !== "paused";
   $("rec-middle").textContent = "Nothing is being recorded. Resume to carry on in the same recording.";
   $("rec-sub").hidden = kind !== "lost" && kind !== "saving";
@@ -1842,6 +1930,7 @@ function renderRecCard(rec, tick) {
   $("rec-pause").hidden = kind !== "";
   $("rec-resume").hidden = kind !== "paused";
   $("rec-stop").hidden = kind === "saving" || kind === "lost";   // a lost microphone saves by itself
+  $("rec-discard").hidden = kind !== "" && kind !== "paused";
   $("rec-stop").className = kind === "paused" ? "" : "primary";
   $("rec-note").hidden = kind !== "" && kind !== "paused";
   $("rec-note").textContent = `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
@@ -1893,8 +1982,8 @@ async function renderRecorder(tick = false) {
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceName() || "No microphone";
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
-  if (active) renderRecCard(rec, tick);
-  else levels.length = 0;
+  if (active) renderRecCard(rec, r.display);
+  else stopViz();
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
   const reportsSig = JSON.stringify(r.reports);
@@ -1941,6 +2030,16 @@ function wireRecorder() {
   }));
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
+  $("rec-discard").addEventListener("click", () => confirmDialog({
+    title: "Discard this recording?",
+    body: "Recording stops and the audio recorded so far is deleted from this computer. It is not transcribed and cannot be recovered.",
+    check: "Delete this recording.", limits: false, danger: true,
+    onConfirm: () => attempt(async () => {
+      await call("discard_recording");
+      say("Recording discarded.");
+      renderRecorder();
+    }),
+  }));
   $("rec-stop").addEventListener("click", () => attempt(async () => {
     state.recSaving = true;               // stopping can take a while: show Saving meanwhile
     $("rec-stop").disabled = true;
@@ -2104,6 +2203,8 @@ function wire() {
   }));
   $("c-check").addEventListener("change", () => { $("c-ok").disabled = !$("c-check").checked; });
   for (const r of document.querySelectorAll('input[name="mode"]')) r.addEventListener("change", () => setSetting({ mode: r.value }));
+  for (const r of document.querySelectorAll('input[name="recdisplay"]'))
+    r.addEventListener("change", () => setSetting({ recording_display: r.value }));
   $("s-battery").addEventListener("change", () => setSetting({ battery_override: $("s-battery").checked }));
   $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }));
   $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
