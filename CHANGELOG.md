@@ -5,6 +5,12 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.4.2
+
+More changes from testing, and the v0.4.1 fixes below. Install: download `Unminute-0.4.2.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.x updates and keeps your workspace.
+
+- **A live curve while recording.** The level bars are replaced by a curve across the recording card. Choose how it looks in Settings > Recording and speakers: **Flowing wave** (the default: overlapping waves whose height follows the volume and whose ripple follows the pitch), **Spectrum** (low to high pitch, left to right) or **Sound wave** (the shape of the sound itself). It is drawn 60 times a second from measurements the recorder takes ten times a second; no audio is kept for it.
+- **Discard a recording.** While recording or paused, **Discard…** stops and deletes the audio recorded so far, after a confirmation. Nothing is transcribed or kept.
 - **Pinned shortcuts follow updates.** A taskbar or Start pin is a copy of the shortcut from when it was pinned, so after an update it kept opening the old version (and would break once that version was removed). Installing or rolling back now repoints pins to this app at the new version. Pins to anything else are left alone.
 
 ## v0.4.1
