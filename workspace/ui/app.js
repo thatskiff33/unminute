@@ -804,7 +804,7 @@ function speakerBlock(sp, all, index) {
   return el("section", { class: `speaker sp${(index % 3) + 1}` },
     el("div", { class: "n-head" },
       el("span", { class: "n-avatar", "aria-hidden": "true", textContent: initials(sp.name) }),
-      el("label", { class: "n-label" }, `Speaker ${index + 1} · ${plural(sp.passages, "passage")}`, name)),
+      el("label", { class: "n-label" }, plural(sp.passages, "passage"), name)),
     examples,
     more || merge ? el("div", { class: "n-foot" }, more || el("span", {}), merge) : null);
 }
@@ -1115,7 +1115,12 @@ function confirmFinal(d) {
     body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers, handoff options and versions. Copying or exporting alone never does this. " +
       "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them.",
     check: "The final document is reviewed and saved outside this app.",
-    onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => show("meetings"))),
+    onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => {
+      $("ho-preview").textContent = "";
+      $("ho-passages").replaceChildren();
+      handoffState.preview = null;
+      show("meetings");
+    })),
   });
 }
 
@@ -1128,6 +1133,19 @@ const handoffState = { template: "minutes", templates: [], preview: null, genera
                        dirty: false, anonymise: false, total: 0 };
 
 async function openHandoff() {
+  // Nothing from the previous meeting stays on the page while this one loads.
+  if (handoffState.mid !== state.mid) handoffState.anonymise = false;   // this hand off only
+  handoffState.mid = state.mid;
+  handoffState.preview = null;
+  handoffState.dirty = false;
+  handoffState.generation++;
+  for (const id of ["ho-preview", "ho-info", "ho-redactions"]) {
+    if ($(id).tagName === "TEXTAREA") $(id).value = ""; else $(id).textContent = "";
+  }
+  $("ho-passages").replaceChildren();
+  $("ho-left-out").textContent = "";
+  $("ho-long").hidden = true;
+  setHandoffButtons();
   handoffState.templates = await attempt(() => call("handoff_templates")) || [];
   if (!handoffState.templates.some((t) => t.id === handoffState.template))
     handoffState.template = "minutes";
@@ -1137,6 +1155,7 @@ async function openHandoff() {
   $("ho-status").textContent = "";
   $("ho-anon").checked = handoffState.anonymise;
   show("handoff");
+  $("ho-close").focus();
   await renderHandoffOptions();
   await renderHandoffPreview();
 }
@@ -1144,6 +1163,7 @@ async function openHandoff() {
 function closeHandoff() {
   closeTemplateEditor();
   show("meeting");
+  $("m-primary").focus();
 }
 
 function renderTemplateSelect() {
@@ -1189,6 +1209,8 @@ async function renderHandoffOptions() {
   const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template, handoffState.anonymise));
   if (!p) return;
   handoffState.dirty = false;
+  $("ho-anon").checked = handoffState.anonymise;    // a tick made while loading is not applied
+  setHandoffButtons();
   $("ho-redactions").value = p.options.redactions.join("\n");
   const omitted = new Set(p.options.omitted);
   const rows = [];
@@ -1199,7 +1221,8 @@ async function renderHandoffOptions() {
     total = page.total;
     for (const it of page.items)
       rows.push(el("li", {}, el("label", { title: `${it.who ? it.who + ": " : ""}${it.text}` },
-        el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id) }),
+        el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id),
+                      "aria-label": `Leave out ${fmtTime(it.t)}${it.who ? ` ${it.who}` : ""}: ${it.text}` }),
         el("span", { class: "t-mark", textContent: fmtTime(it.t) }),
         el("span", { class: "p-text", textContent: it.text }))));
     start += page.items.length;
@@ -1227,8 +1250,8 @@ async function applyHandoffOptions() {
 }
 
 function handoffSaid(message) {
-  $("ho-status").textContent = message;
-  say(message);
+  $("ho-status").textContent = message;   // the last result, kept on the page
+  say(message);                           // announced once, by the toast
 }
 
 async function copyHandoff(kind) {
@@ -1716,7 +1739,10 @@ function wire() {
     refresh();
   }));
   $("back").addEventListener("click", () => { stopEditing(); show("meetings"); });
-  $("top-back").addEventListener("click", () => { stopEditing(); show("meetings"); });
+  $("top-back").addEventListener("click", () => {
+    if (state.view === "handoff") { closeHandoff(); return; }
+    stopEditing(); show("meetings");
+  });
   $("menu").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open")));
   $("empty-watch").addEventListener("click", () => show("settings"));
   $("s-downloads").addEventListener("click", () => show("setup"));
@@ -1824,6 +1850,7 @@ function wire() {
       e.preventDefault(); show("help"); return;
     }
     if (e.key === "Escape" && document.body.classList.contains("menu-open")) { setMenu(false); $("menu").focus(); }
+    else if (e.key === "Escape" && state.view === "handoff" && !typing && !document.querySelector("dialog[open]")) closeHandoff();
     // The player: Space plays or pauses, J and K move to the next or previous passage.
     if (state.view === "meeting" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey
         && !document.querySelector("dialog[open]") && state.detail && state.detail.audio_available) {

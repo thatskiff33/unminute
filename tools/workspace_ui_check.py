@@ -198,6 +198,10 @@ def checks(window, ws, mid, long_mid, report):
             document.getElementById('ho-t-save').click(); await wait(2000);
             const edited = pre.textContent;
             const tpl = document.getElementById('ho-template').selectedOptions[0].textContent;
+            document.getElementById('ho-anon').click();
+            const copy_blocked_until_applied = document.getElementById('ho-copy').disabled;
+            document.getElementById('ho-apply').click(); await wait(2000);
+            const anonymised = pre.textContent;
             document.getElementById('ho-copy').click(); await wait(1500);
             const status = document.getElementById('ho-status').textContent
                 || document.getElementById('status').textContent;
@@ -207,6 +211,8 @@ def checks(window, ws, mid, long_mid, report):
                     redacted: after.includes('[redacted]'),
                     left_out: after.includes('1 passage was left out'),
                     edited_prompt: edited.startsWith('Our own minutes prompt.'),
+                    copy_blocked_until_applied,
+                    anonymised: anonymised.includes('Speaker 1:') && !anonymised.includes('Aroha'),
                     template_label: tpl, copy_status: status};""")
         t0 = time.perf_counter()
         report["long_transcript"] = evaluate(window, WAIT + f"""
@@ -320,7 +326,8 @@ def main():
         bad.append("passage reassignment")
     h = report.get("handoff") or {}
     if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")
-            and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")):
+            and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")
+            and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
     lt = report.get("long_transcript") or {}
     if lt.get("rows") != 5000:
