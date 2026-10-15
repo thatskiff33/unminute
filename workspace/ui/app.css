@@ -701,6 +701,7 @@ dialog h2 { margin: 0; }
 .dlg-lede { margin: 0; font-size: 15px; line-height: 1.5; color: var(--muted); }
 .dlg-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .dlg-foot.end { justify-content: flex-end; }
+.dlg-foot-right { display: flex; gap: 10px; flex-wrap: wrap; }
 .dlg-foot button { min-height: var(--control-h); padding: 0 20px; font-size: 15px; }
 .with-icon { display: inline-flex; align-items: center; gap: 6px; }
 .dlg-foot button.wide-pad { padding: 0 28px; }

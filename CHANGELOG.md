@@ -5,6 +5,14 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.4.3
+
+Safer recording. Install: download `Unminute-0.4.3.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.x updates and keeps your workspace.
+
+- **Closing while recording asks first.** Closing the window during a recording now asks: **Stop, save and close**, **Discard and close**, or **Keep recording**. Before, the recording was left on disk and imported the next time the app started.
+- **A recovered recording waits for you.** If the app closes or the computer stops while recording, the next start lists the recording as recovered, with **Keep and transcribe** or **Delete…**. Before, it was transcribed straight away, which could look like a discarded recording coming back. A recording you stopped and saved is still imported as before.
+- **Full microphone names.** Windows' basic audio list cuts names at 31 characters ("Logitech C920 Microphone (HD Pr"). The app now shows the full name, such as "Logitech C920 Microphone (HD Pro Webcam C920)".
+
 ## v0.4.2
 
 More changes from testing, and the v0.4.1 fixes below. Install: download `Unminute-0.4.2.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.x updates and keeps your workspace.

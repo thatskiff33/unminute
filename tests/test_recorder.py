@@ -241,7 +241,8 @@ class DeviceListTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"sounddevice": self.fake_sd(devices, 1)}):
             found = recorder.list_devices()
         # The Sound Mapper follows the Windows default and could switch device.
-        self.assertEqual(found, [{"index": 1, "name": "Headset microphone", "default": True,
+        self.assertEqual(found, [{"index": 1, "name": "Headset microphone",
+                                  "label": "Headset microphone", "default": True,
                                   "rate": 48000}])
 
     def test_a_broken_audio_library_is_an_error_not_no_microphone(self):
@@ -338,6 +339,50 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertFalse(folder.exists())
         self.assertEqual(self.ws.meetings(), [])
         self.assertIs(recorder.remove_folder, real)
+
+    def test_a_recovered_recording_can_be_deleted_instead(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3)
+        self.holder["stream"].feed(2)
+        rec = self.ws._recording
+        time.sleep(0.6)
+        rec._stop.set()                                # the app closes without stopping it
+        rec._writer.join(5)
+        journal = json.loads((rec.folder / "journal.json").read_text())
+        journal["state"] = "recording"
+        (rec.folder / "journal.json").write_text(json.dumps(journal))
+        self.ws._recording = None
+        self.ws.close()
+        self.ws = self.make()
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        waiting = self.ws.recording_status()["reports"][-1]
+        self.assertTrue(waiting["recovered"])
+        locked = mock.patch("shutil.rmtree", lambda *a, **k: None)   # a file is locked
+        with locked, self.assertRaises(WorkspaceError):               # and it says so
+            self.ws.delete_pending_recording(waiting["id"])
+        self.assertTrue(recorder.is_discarded(rec.folder))      # so it is never offered again
+        self.ws.close()
+        self.ws = self.make()
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertFalse(rec.folder.exists())
+        self.assertEqual(self.ws.recording_status()["reports"], [])
+        self.assertEqual(self.ws.meetings(), [])
+        self.assertTrue(self.ws.recording_active() is False)
+
+    def test_full_microphone_names_are_shown(self):
+        full = ["Logitech C920 Microphone (HD Pro Webcam C920)",
+                "Laptop Inbuilt MIcrophone (2- Intel Smart Sound Technology for Digital "
+                "Microphones)"]
+        self.assertEqual(recorder._full_name("Logitech C920 Microphone (HD Pr", full), full[0])
+        self.assertEqual(recorder._full_name("Laptop Inbuilt MIcrophone (2- I", full), full[1])
+        self.assertEqual(recorder._full_name("USB Mic", full), "USB Mic")
+        twins = ["Headset Microphone (Jabra Evolve 65)", "Headset Microphone (Jabra Evolve2 85)"]
+        self.assertEqual(recorder._full_name("Headset Microphone (Jabra Evol", twins),
+                         "Headset Microphone (Jabra Evol")   # ambiguous: the name as listed
+        self.assertEqual(recorder._clean_name("Intel\ufffd Smart"), "Intel Smart")
 
     def test_recording_display_setting(self):
         self.assertEqual(self.ws.recording_status()["display"], "flow")
@@ -482,6 +527,11 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.close()
         self.ws = self.make()
         self.ws.start()
+        self.assertTrue(self.ws.wait_idle(120))
+        waiting = self.ws.recording_status()["reports"][-1]   # not transcribed until the user says
+        self.assertTrue(waiting["recovered"])
+        self.assertEqual(self.ws.meetings(), [])
+        self.ws.retry_recording_import(waiting["id"])        # Keep and transcribe
         self.assertTrue(self.ws.wait_idle(120))
         report = self.ws.recording_status()["reports"][-1]
         self.assertEqual(report["seconds"], 11.0)      # all the writer had saved

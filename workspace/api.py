@@ -10,6 +10,7 @@
 #     file dialog or a native drop, which pywebview resolves in Python.
 
 import base64
+import threading
 
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
 from workspace.bridge import _wav_bytes
@@ -32,6 +33,7 @@ API_METHODS = frozenset({
     "stop_recording", "discard_recording", "recording_status", "discard_recording_report",
     "test_microphone",
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
+    "close_app",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -302,6 +304,16 @@ def make_api(ws, get_window=lambda: None):
     def discard_meeting(self, mid):
         return _safe(ws.discard_meeting, mid)
 
+    def close_app(self):
+        """Close the window after the page asked about an open recording."""
+        def close():
+            window = get_window()
+            if window is not None:
+                window.unminute_may_close = True
+                window.destroy()
+        threading.Thread(target=close, daemon=True, name="close-app").start()
+        return {"ok": True, "value": None}
+
     def remove_model(self, name):
         return _safe(lambda: ws.remove_model(name))
 
@@ -350,7 +362,8 @@ def make_api(ws, get_window=lambda: None):
                  test_microphone=test_microphone,
                  retry_recording_import=retry_recording_import,
                  delete_pending_recording=delete_pending_recording,
-                 remove_model=remove_model, discard_meeting=discard_meeting)
+                 remove_model=remove_model, discard_meeting=discard_meeting,
+                 close_app=close_app)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

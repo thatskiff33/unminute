@@ -134,6 +134,60 @@ def main():
                                  allowed=api.API_METHODS)
     holder["window"] = window
     window.events.loaded += lambda: api.enable_drop(window, ws)
+
+    import threading
+    import time as _time
+    asked = {"at": 0.0}
+
+    def allow_and_close():
+        window.unminute_may_close = True
+        window.destroy()
+
+    def ask():
+        # The page answers true when it shows the question; otherwise (page not
+        # loaded, an error) the window closes and ws.close() saves the recording.
+        try:
+            shown = window.evaluate_js("window.workspace.askClose()")
+        except Exception:
+            shown = False
+        if not shown:
+            allow_and_close()
+
+    def closing():
+        # A recording is open: keep the window and let the page ask (Stop and
+        # save, Discard, Keep recording). The page closes it with close_app. A
+        # second close within 10 s closes anyway (the recording is then saved).
+        if getattr(window, "unminute_may_close", False) or not ws.recording_active():
+            return True
+        now = _time.monotonic()
+        if now - asked["at"] < 10:
+            return True
+        asked["at"] = now
+        threading.Thread(target=ask, daemon=True, name="ask-close").start()
+        return False
+    window.events.closing += closing
+
+    hooked = {"done": False}
+
+    def never_block_shutdown():
+        # Windows shutdown, sign-out or Task Manager must not wait for the
+        # question: a second handler on the form (it runs after pywebview's)
+        # lets those closes through; ws.close() then stops and saves the recording.
+        if hooked["done"]:
+            return
+        hooked["done"] = True
+        try:
+            from System.Windows.Forms import CloseReason   # pythonnet, loaded by the window
+
+            def on_form_closing(sender, args):
+                ending = (CloseReason.WindowsShutDown, CloseReason.TaskManagerClosing)
+                if args.CloseReason in ending:
+                    window.unminute_may_close = True
+                    args.Cancel = False
+            window.native.FormClosing += on_form_closing
+        except Exception:
+            pass
+    window.events.shown += never_block_shutdown
     try:
         shell.run()
     finally:
