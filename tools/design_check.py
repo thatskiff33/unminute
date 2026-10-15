@@ -29,7 +29,8 @@ UI = ROOT / "workspace" / "ui"
 SERVED = ("docs/design/", "docs/screenshots/", "tools/design_check/", "workspace/ui/")
 EDGE = [Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")]
-VISIBLE = 40          # a channel difference above this counts as a visible change
+APP_TAG = '<script src="app.js"></script>'   # the fake bridge is injected before it
+VISIBLE = 40         # a channel difference above this counts as a visible change
 
 # Each case pairs a board (and its props) with an app scenario from fixtures.js.
 # An empty "app" renders the board only (no app screen to compare yet).
@@ -82,10 +83,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             base = UI.resolve()
             if rel == "index.html":
                 html = (UI / rel).read_text(encoding="utf-8")
-                tag = '<script src="app.js"></script>'
-                if tag not in html:
-                    raise RuntimeError("index.html no longer loads app.js as expected; "
-                                       "update the bridge injection in design_check.py")
+                tag = APP_TAG
                 html = html.replace(
                     tag, '<script src="/tools/design_check/fixtures.js"></script>\n' + tag)
                 return self._send(html.encode("utf-8"), "text/html; charset=utf-8")
@@ -165,6 +163,8 @@ def main():
     cases = [c for c in CASES if not args.cases or c["name"] in args.cases]
     if not cases:
         sys.exit("No such case. Known: " + ", ".join(c["name"] for c in CASES))
+    if APP_TAG not in (UI / "index.html").read_text(encoding="utf-8"):
+        sys.exit("index.html no longer loads app.js as expected; update APP_TAG.")
     args.out.mkdir(parents=True, exist_ok=True)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
