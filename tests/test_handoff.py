@@ -136,6 +136,16 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn("\n## Injected", out["markdown"])
         self.assertTrue(out["markdown"].startswith("# Title ## Injected heading\n"))
 
+    def test_name_replacement_normalises_and_never_puts_a_name_back(self):
+        rename = handoff._name_replacer(
+            {"A": ["Strauß", "Ａroha  Ngata", "O'Brien"], "B": ["José"],
+             "C": ["Speaker 7"]},
+            {"A": "Speaker 1", "B": "Speaker 2", "C": "Speaker 3"})
+        text = handoff._one_line("Thanks Strauß, Aroha Ngata, O’Brien and "
+                                 "José. STRAUß agreed; Speaker 7 left; Josephine stayed.")
+        self.assertEqual(rename(text), "Thanks Speaker 1, Speaker 1, Speaker 1 and Speaker 2. "
+                                       "Speaker 1 agreed; Speaker 7 left; Josephine stayed.")
+
     def test_redaction_matches_whole_words_with_any_spacing(self):
         self.review()
         self.edit(3, "Annual report by Ann and Aroha\u00a0 Smith.")

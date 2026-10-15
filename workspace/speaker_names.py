@@ -215,17 +215,44 @@ def panel(store, vid, offsets=None):
     return out
 
 
-def summary(store, vid, view=None):
-    """Speakers with names and passage counts, for the Name speakers panel."""
+def given_names(store, vid, view=None):
+    """Every name each speaker has had in the current identification: the
+    current one, earlier ones (renamed) and those of speakers merged into
+    them, by final label. Used to replace names in a handoff."""
     view = view or resolve(store, vid)
-    counts = {}
-    for lbl in view["labels"].values():
+    out = {lbl: [name] for lbl, name in view["names"].items()}
+    if view["run"] is None:
+        return out
+    log = _log(store, view["run"])
+    merged = {c["target"]: c["value"] for c in log if c["kind"] == "merge"}
+
+    def final(lbl, seen=()):
+        while lbl in merged and lbl not in seen:
+            seen = (*seen, lbl)
+            lbl = merged[lbl]
+        return lbl
+    for c in log:
+        if c["kind"] == "name":
+            out.setdefault(final(c["target"]), []).append(c["value"])
+    return out
+
+
+def summary(store, vid, view=None):
+    """Speakers with names, passage counts and seconds of speech, for the Name
+    speakers panel and the meeting's Speakers tab."""
+    view = view or resolve(store, vid)
+    counts, seconds = {}, {}
+    for row in store._all("SELECT id, start_s, end_s FROM segments WHERE version_id = ?",
+                          (vid,)):
+        lbl = view["labels"].get(row["id"])
         if lbl:
             counts[lbl] = counts.get(lbl, 0) + 1
+            seconds[lbl] = seconds.get(lbl, 0.0) + max(0.0, row["end_s"] - row["start_s"])
     run = view["run"]
     can_undo = bool(run) and store._one("SELECT 1 FROM speaker_corrections WHERE run_id = ? "
                                         "LIMIT 1", (run,)) is not None
     return {"speakers": [{"label": lbl, "name": view["names"][lbl],
-                          "passages": counts.get(lbl, 0)} for lbl in view["order"]],
+                          "passages": counts.get(lbl, 0),
+                          "seconds": round(seconds.get(lbl, 0.0), 1)} for lbl in view["order"]],
             "can_undo": can_undo}
 
