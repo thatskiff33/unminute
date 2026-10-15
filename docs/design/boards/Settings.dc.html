@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 1320px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966">
+
+  <nav aria-label="Main" style="width: 224px; flex: none; box-sizing: border-box; padding: 24px 16px; display: flex; flex-direction: column; gap: 28px; background: #EEF7FD; border-right: 1px solid rgba(20,41,102,0.10)">
+    <div style="padding: 0 8px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">Unminute<span style="color: #E56600">.</span></div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="Home.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+        <span style="flex: 1">Meetings</span>
+        <span style="min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; background: #E56600; color: #351503; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center">3</span>
+      </a>
+      <a href="Settings.dc.html" aria-current="page" style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; background: #B4DDF6; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+        <span>Settings</span>
+      </a>
+      <a href="Help.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6"/><path d="M12 17h.01"/></svg>
+        <span>Help and shortcuts</span>
+      </a>
+    </div>
+  </nav>
+
+  <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 20px">
+    <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Settings</h1>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+      <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Processing</h2>
+        <div role="radiogroup" aria-label="Processing speed" style="display: flex; padding: 4px; border-radius: 12px; background: #EEF7FD">
+          <button role="radio" aria-checked="true" style="font: inherit; flex: 1; min-height: 40px; border: 0; border-radius: 9px; font-size: 15px; font-weight: 700; background: #FFFFFF; color: #142966; box-shadow: 0 1px 3px rgba(20,41,102,0.16)">Quiet</button>
+          <button role="radio" aria-checked="false" style="font: inherit; flex: 1; min-height: 40px; border: 0; border-radius: 9px; font-size: 15px; font-weight: 600; background: transparent; color: #566591">Faster</button>
+        </div>
+        <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Quiet leaves most of the computer free while it transcribes. Recommended.</p>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+          <span style="font-size: 15px">Process automatically on battery power</span>
+          <button role="switch" aria-checked="false" aria-label="Process automatically on battery power" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: flex-start; background: rgba(20,41,102,0.24)"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
+        </div>
+      </section>
+
+      <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Speech model</h2>
+        <label style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: #566591">Used for new recordings and Transcribe again
+          <select style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.28); color: #142966; background: #FFFFFF"><option>Parakeet v2 (recommended)</option></select>
+        </label>
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #566591">
+          <span style="width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #62D098; color: #003B2A"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg></span>
+          3 speech models and the speaker model are downloaded
+        </div>
+        <a href="Models.dc.html" style="align-self: flex-start; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; display: inline-flex; align-items: center; text-decoration: none; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Manage downloads</a>
+      </section>
+    </div>
+
+    <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
+      <h2 style="margin: 0; font-size: 17px; font-weight: 800">Recording and speakers</h2>
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px">
+        <sc-for list="{{toggles}}" as="g" hint-placeholder-count="3">
+          <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px">
+            <div style="display: flex; flex-direction: column; gap: 2px">
+              <span style="font-size: 15px; font-weight: 600">{{g.label}}</span>
+              <span style="font-size: 13px; line-height: 1.4; color: #566591">{{g.note}}</span>
+            </div>
+            <button role="switch" aria-checked="{{g.checked}}" aria-label="{{g.label}}" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: {{g.justify}}; background: {{g.track}}"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Watched folders</h2>
+        <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Check now</button>
+      </div>
+      <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Recordings saved into a watched folder are imported automatically: when the app starts and every few minutes while it is open. Recordings already imported are not imported twice.</p>
+      <div style="border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; background: #EEF7FD">
+        <div style="display: flex; align-items: center; gap: 12px">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+            <span style="font-size: 15px; font-weight: 700">Documents\Meeting recordings (sample)</span>
+            <span style="font-size: 13px; color: #566591">Watching · checked 2 minutes ago · 4 imported</span>
+          </div>
+          <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Pause</button>
+          <a href="#" style="font-size: 14px; font-weight: 600; color: #2B61BF">Stop watching…</a>
+        </div>
+        <label style="display: flex; align-items: center; gap: 10px; padding-left: 34px; font-size: 14px">
+          <input type="checkbox" checked style="width: 18px; height: 18px; margin: 0; accent-color: #142966">Download recordings that are only in cloud storage (OneDrive)
+        </label>
+        <label style="display: flex; align-items: center; gap: 10px; padding-left: 34px; font-size: 14px">
+          <input type="checkbox" style="width: 18px; height: 18px; margin: 0; accent-color: #142966">Delete originals from this folder after review…
+        </label>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap">
+        <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 18px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF">Watch a folder…</button>
+        <label style="display: flex; align-items: center; gap: 8px; font-size: 14px">
+          <input type="checkbox" style="width: 18px; height: 18px; margin: 0; accent-color: #142966">Also import recordings already in it
+        </label>
+      </div>
+    </section>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+      <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(20,41,102,0.14)">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Updates</h2>
+        <span style="font-size: 15px">Unminute 0.3.0</span>
+        <span style="font-size: 14px; line-height: 1.5; color: #566591">An update needs an empty workspace. Holding one up now:</span>
+        <ul style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6">
+          <li>Community garden planning (sample): in review</li>
+          <li>Team catch-up (sample): transcribing</li>
+        </ul>
+      </section>
+      <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 10px; border: 1px solid rgba(20,41,102,0.14)">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Cleanup receipts</h2>
+        <span style="font-size: 14px; line-height: 1.5; color: #566591">A record of what was removed. No meeting content is kept.</span>
+        <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column">
+          <sc-for list="{{receipts}}" as="r" hint-placeholder-count="2">
+            <li style="display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(20,41,102,0.08); font-size: 14px">
+              <span>{{r.what}}</span><span style="color: #566591; white-space: nowrap">{{r.when}}</span>
+            </li>
+          </sc-for>
+        </ul>
+      </section>
+    </div>
+
+    <section style="margin-top: auto; border-radius: 16px; padding: 16px 20px; display: flex; align-items: center; gap: 16px; background: #EEF7FD">
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 2px">
+        <span style="font-size: 15px; font-weight: 700">Unminute 0.3.0</span>
+        <span style="font-size: 13px; color: #566591">Transcription runs on this computer. Nothing is uploaded.</span>
+      </div>
+      <span style="font-size: 13px; color: #566591">by</span>
+      <img src="/_blob/db54b5564615ab70ce9e211b583e7378" alt="Unlimit" style="height: 18px; width: auto">
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":1320}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
+    const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.24)' });
+    return {
+      toggles: [
+        on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
+        on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),
+        off('Use the graphics card', 'NVIDIA RTX 500. Speeds up speaker names in Faster mode only.')
+      ],
+      receipts: [
+        { what: 'Audio and transcript removed (meeting 1)', when: '14/10/2026' },
+        { what: 'Audio removed after review (meeting 2)', when: '13/10/2026' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Unminute meetings home</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: {{t.page}}; color: {{t.text}}">
+
+  <nav aria-label="Main" style="width: 224px; flex: none; box-sizing: border-box; padding: 24px 16px; display: flex; flex-direction: column; gap: 28px; background: {{t.sideBg}}; color: {{t.sideText}}; border-right: 1px solid {{t.sideBorder}}">
+    <div style="padding: 0 8px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em; color: {{t.wordmark}}">Unminute<span style="color: #E56600">.</span></div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <button aria-current="page" style="font: inherit; font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 10px; text-align: left; background: {{t.sideSel}}; color: {{t.sideSelText}}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+        <span style="flex: 1">Meetings</span>
+        <span style="min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; background: #E56600; color: #351503; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center">3</span>
+      </button>
+      <button style="font: inherit; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 10px; text-align: left; background: transparent; color: {{t.sideText}}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+        <span>Settings</span>
+      </button>
+      <button style="font: inherit; font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border: 0; border-radius: 10px; text-align: left; background: transparent; color: {{t.sideText}}">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6"/><path d="M12 17h.01"/></svg>
+        <span>Help and shortcuts</span>
+      </button>
+    </div>
+    <div style="margin-top: auto; padding: 14px 12px; border-radius: 12px; display: flex; gap: 10px; font-size: 13px; line-height: 1.45; background: {{t.sideNoteBg}}; color: {{t.sideMuted}}">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 1px"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      <span>Recordings and transcripts stay on this computer.</span>
+    </div>
+  </nav>
+
+  <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 28px; overflow: hidden; position: relative">
+    <sc-if value="{{drop}}" hint-placeholder-val="{{ false }}">
+      <div aria-hidden="true" style="position: absolute; inset: 16px; z-index: 2; border-radius: 20px; border: 3px dashed #2B61BF; background: rgba(238,247,253,0.94); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px">
+        <span style="width: 72px; height: 72px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #142966; color: #FFFFFF">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+        </span>
+        <span style="font-size: 26px; font-weight: 800; color: #142966">Drop to import</span>
+        <span style="font-size: 16px; color: #566591">Audio or video files. Each one becomes a meeting.</span>
+      </div>
+    </sc-if>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Meetings</h1>
+      <p style="margin: 0; font-size: 15px; color: {{t.muted}}">Record or import a meeting. Unminute transcribes it here, then walks you through review and hand off.</p>
+    </div>
+
+    <sc-if value="{{idle}}" hint-placeholder-val="{{ true }}">
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+        <button style="font: inherit; text-align: left; border: 0; border-radius: 16px; padding: 24px; min-height: 148px; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; background: {{t.heroBg}}; color: {{t.heroFg}}">
+          <span style="width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: {{t.heroIconBg}}; color: {{t.heroIconFg}}">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg>
+          </span>
+          <span style="display: flex; flex-direction: column; gap: 4px">
+            <span style="font-size: 22px; font-weight: 800">Record a meeting</span>
+            <span style="font-size: 19px; font-weight: 700; opacity: 0.95">Laptop microphone</span>
+          </span>
+        </button>
+        <button style="font: inherit; text-align: left; border-radius: 16px; padding: 24px; min-height: 148px; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; background: {{t.dropBg}}; color: {{t.text}}; border: 2px dashed {{t.dropBorder}}">
+          <span style="width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: {{t.soft}}; color: {{t.softFg}}">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+          </span>
+          <span style="display: flex; flex-direction: column; gap: 4px">
+            <span style="font-size: 22px; font-weight: 800">Import a recording</span>
+            <span style="font-size: 15px; color: {{t.muted}}">Choose files, or drop audio or video anywhere in this window</span>
+          </span>
+        </button>
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px; margin-top: -14px; font-size: 14px; color: {{t.muted}}">
+        <span>Microphone: Laptop microphone</span>
+        <a href="Recording-States.dc.html" style="font-weight: 600; color: #2B61BF">Change or test</a>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{recording}}" hint-placeholder-val="{{ false }}">
+      <div style="border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 18px; background: {{t.card}}; border: 2px solid #E56600; box-shadow: 0 8px 24px rgba(20,41,102,0.10)">
+        <div style="display: flex; align-items: center; gap: 24px; flex-wrap: wrap">
+          <div style="display: flex; flex-direction: column; gap: 4px; min-width: 150px">
+            <span style="display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700"><span style="width: 12px; height: 12px; border-radius: 50%; background: #E56600; box-shadow: 0 0 0 5px rgba(229,102,0,0.22)"></span>Recording</span>
+            <span style="font-size: 52px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums">12:47</span>
+          </div>
+          <div role="meter" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="62" style="flex: 1; min-width: 200px; height: 64px; display: flex; align-items: center; gap: 4px">
+            <sc-for list="{{bars}}" as="b" hint-placeholder-count="36">
+              <span style="flex: 1; border-radius: 3px; height: {{b.h}}; background: {{b.c}}"></span>
+            </sc-for>
+          </div>
+          <div style="display: flex; gap: 10px">
+            <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Pause</button>
+            <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 18px; border-radius: 10px; border: 0; background: {{t.primaryBg}}; color: {{t.primaryFg}}">Stop and save</button>
+          </div>
+        </div>
+        <div style="font-size: 14px; color: {{t.muted}}">Laptop microphone. Only the microphone is recorded, not computer sound. Tell everyone present the meeting is being recorded.</div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{empty}}" hint-placeholder-val="{{ false }}">
+      <div style="border-radius: 16px; padding: 32px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; background: {{t.sideBg}}">
+        <span style="font-size: 20px; font-weight: 800">No meetings yet</span>
+        <span style="max-width: 460px; font-size: 15px; line-height: 1.5; color: {{t.muted}}">Record or import one above. Each meeting stays here only until you have reviewed it, handed it off and confirmed the final document is saved.</span>
+        <a href="Settings.dc.html" style="font-size: 15px; font-weight: 600; color: #2B61BF">Or watch a folder so recordings arrive by themselves</a>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{hasMeetings}}" hint-placeholder-val="{{ true }}">
+    <section style="display: flex; flex-direction: column; gap: 10px">
+      <h2 style="margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: {{t.muted}}">Ready for you</h2>
+      <div style="display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; background: {{t.card}}; border: 1px solid {{t.line}}">
+        <div style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-bottom: 1px solid {{t.line}}">
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+            <a href="Meeting.dc.html" style="font-size: 17px; font-weight: 700; text-decoration: none; color: {{t.text}}">Community garden planning (sample)</a>
+            <span style="font-size: 14px; color: {{t.muted}}">Today · 18 min · 2 speakers</span>
+          </div>
+          <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid {{t.line}}"><span style="width: 8px; height: 8px; border-radius: 50%; background: #E56600"></span>Ready to review</span>
+          <a href="Meeting.dc.html" style="font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 20px; border-radius: 10px; display: inline-flex; align-items: center; text-decoration: none; background: {{t.primaryBg}}; color: {{t.primaryFg}}">Review</a>
+        </div>
+        <div style="display: flex; align-items: center; gap: 16px; padding: 16px 20px">
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+            <span style="font-size: 17px; font-weight: 700">Quarterly planning (sample)</span>
+            <span style="font-size: 14px; color: {{t.muted}}">Yesterday · 42 min · 4 speakers</span>
+          </div>
+          <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid {{t.line}}"><span style="width: 8px; height: 8px; border-radius: 50%; background: #DD5EB9"></span>Ready to hand off</span>
+          <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 20px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Hand off…</button>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 10px">
+      <h2 style="margin: 0; font-size: 13px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: {{t.muted}}">Transcribing</h2>
+      <div style="display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-radius: 14px; background: {{t.card}}; border: 1px solid {{t.line}}">
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; justify-content: space-between; gap: 12px">
+            <span style="font-size: 17px; font-weight: 700">Team catch-up (sample)</span>
+            <span style="font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; color: {{t.muted}}">46% · Quiet mode</span>
+          </div>
+          <div role="progressbar" aria-label="Team catch-up transcription" aria-valuenow="46" aria-valuemin="0" aria-valuemax="100" style="height: 8px; border-radius: 999px; overflow: hidden; background: {{t.track}}">
+            <div style="width: 46%; height: 100%; border-radius: 999px; background: {{t.fill}}"></div>
+          </div>
+        </div>
+        <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Pause</button>
+      </div>
+    </section>
+    </sc-if>
+
+    <p style="margin: auto 0 0; font-size: 13px; color: {{t.muted}}">Unminute is a temporary workspace, not an archive. A meeting is cleared once you confirm the final document is saved.</p>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const themes = {
+      H: {
+        page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', card: '#FFFFFF',
+        sideBg: '#EEF7FD', sideText: '#142966', sideMuted: '#566591', sideSel: '#B4DDF6', sideSelText: '#142966', sideBorder: 'rgba(20,41,102,0.10)', sideNoteBg: '#FFFFFF', wordmark: '#142966',
+        heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
+        dropBg: '#FFFFFF', dropBorder: 'rgba(43,97,191,0.55)', soft: '#B4DDF6', softFg: '#142966',
+        primaryBg: '#142966', primaryFg: '#FFFFFF', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+      },
+      A: {
+        page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', card: '#FFFFFF',
+        sideBg: '#EEF7FD', sideText: '#142966', sideMuted: '#566591', sideSel: '#B4DDF6', sideSelText: '#142966', sideBorder: 'rgba(20,41,102,0.10)', sideNoteBg: '#FFFFFF', wordmark: '#142966',
+        heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
+        dropBg: '#FFFFFF', dropBorder: 'rgba(43,97,191,0.55)', soft: '#B4DDF6', softFg: '#142966',
+        primaryBg: '#E56600', primaryFg: '#351503', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+      },
+      B: {
+        page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', card: '#FFFFFF',
+        sideBg: '#142966', sideText: '#FFFFFF', sideMuted: 'rgba(255,255,255,0.78)', sideSel: 'rgba(255,255,255,0.14)', sideSelText: '#FFFFFF', sideBorder: '#142966', sideNoteBg: 'rgba(255,255,255,0.08)', wordmark: '#FFFFFF',
+        heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
+        dropBg: '#EEF7FD', dropBorder: 'rgba(43,97,191,0.55)', soft: '#142966', softFg: '#FFFFFF',
+        primaryBg: '#142966', primaryFg: '#FFFFFF', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+      },
+      Dark: {
+        page: '#101F4E', text: '#FFFFFF', muted: 'rgba(255,255,255,0.74)', line: 'rgba(255,255,255,0.14)', card: '#142966',
+        sideBg: '#0B1638', sideText: '#FFFFFF', sideMuted: 'rgba(255,255,255,0.74)', sideSel: 'rgba(180,221,246,0.16)', sideSelText: '#FFFFFF', sideBorder: 'rgba(255,255,255,0.08)', sideNoteBg: 'rgba(255,255,255,0.06)', wordmark: '#FFFFFF',
+        heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
+        dropBg: 'transparent', dropBorder: 'rgba(180,221,246,0.5)', soft: 'rgba(180,221,246,0.2)', softFg: '#B4DDF6',
+        primaryBg: '#B4DDF6', primaryFg: '#142966', secBg: 'transparent', secFg: '#FFFFFF', secBorder: 'rgba(255,255,255,0.32)',
+        track: 'rgba(255,255,255,0.14)', fill: '#B4DDF6'
+      }
+    };
+    const t = themes[this.props.direction ?? 'H'] || themes.H;
+    const recording = !!(this.props.recording ?? false);
+    const heights = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54, 62, 44, 30, 24, 42, 50, 38, 26, 18, 14, 12, 10, 10, 8, 8, 8];
+    const bars = heights.map((h, i) => ({ h: h + 'px', c: i < 30 ? '#E56600' : 'rgba(20,41,102,0.14)' }));
+    const variant = this.props.variant ?? 'default';
+    return { t, recording, idle: !recording, bars, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
+  }
+}
+</script>
+</body>
+</html>

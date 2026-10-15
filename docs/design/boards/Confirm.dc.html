@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Confirm the transcript is reviewed</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; overflow: hidden; position: relative; font-family: 'Archivo', 'Segoe UI', sans-serif; color: #142966">
+  <dc-import name="Meeting" direction="H" hint-size="1100px,760px"></dc-import>
+  <div style="position: absolute; inset: 0; background: rgba(20,41,102,0.45); display: flex; align-items: center; justify-content: center">
+    <div role="dialog" aria-labelledby="c-title" aria-describedby="c-body" style="width: 580px; box-sizing: border-box; padding: 28px; border-radius: 20px; background: #FFFFFF; box-shadow: 0 24px 64px rgba(20,41,102,0.35); display: flex; flex-direction: column; gap: 16px">
+      <div style="display: flex; align-items: center; gap: 14px">
+        <span style="width: 44px; height: 44px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #B4DDF6; color: #142966">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>
+        </span>
+        <h2 id="c-title" style="margin: 0; font-size: 22px; font-weight: 800">Confirm the transcript is reviewed</h2>
+      </div>
+      <p id="c-body" style="margin: 0; font-size: 15px; line-height: 1.55">The reviewed text is saved in the workspace first. Then the app's copy of the audio is removed. After this, playback and transcribing again are not possible and the text can no longer be edited.</p>
+      <p style="margin: 0; padding: 12px 14px; border-radius: 12px; font-size: 13px; line-height: 1.55; background: #EEF7FD; color: #566591">This removes the app's own working copies on this computer. It cannot remove copies elsewhere: synced or backed-up folders (for example OneDrive), the original on a phone or recorder, or anything you shared with an AI assistant or other service. Ordinary deletion is not a forensic erasure of the disk.</p>
+      <label style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; font-size: 15px; font-weight: 600; border: 1px solid rgba(20,41,102,0.28)">
+        <input type="checkbox" style="width: 20px; height: 20px; margin: 0; accent-color: #142966; flex: none">I have reviewed this transcript.
+      </label>
+      <div style="display: flex; justify-content: flex-end; gap: 10px">
+        <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 20px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Cancel</button>
+        <button disabled style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 24px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF; opacity: 0.45">Confirm</button>
+      </div>    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

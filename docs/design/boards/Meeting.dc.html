@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Unminute meeting review</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; display: flex; overflow: hidden; position: relative; font-family: 'Archivo', 'Segoe UI', sans-serif; background: {{t.page}}; color: {{t.text}}">
+
+  <nav aria-label="Main" style="width: 64px; flex: none; box-sizing: border-box; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 8px; background: {{t.sideBg}}; color: {{t.sideText}}; border-right: 1px solid {{t.sideBorder}}">
+    <a href="Home.dc.html" aria-label="Meetings" aria-current="page" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: {{t.sideSel}}; color: {{t.sideSelText}}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+    </a>
+    <a href="Settings.dc.html" aria-label="Settings" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: {{t.sideText}}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+    </a>
+    <a href="Help.dc.html" aria-label="Help and shortcuts" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: {{t.sideText}}">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6"/><path d="M12 17h.01"/></svg>
+    </a>
+  </nav>
+
+  <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+    <header style="box-sizing: border-box; padding: 20px 28px 0; display: flex; flex-direction: column; gap: 16px">
+      <div style="display: flex; align-items: flex-start; gap: 16px">
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+          <a href="Home.dc.html" style="display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; text-decoration: none; color: {{t.link}}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>Meetings
+          </a>
+          <h1 style="margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em">Community garden planning (sample)</h1>
+          <span style="font-size: 14px; color: {{t.muted}}">{{meta}}</span>
+        </div>
+        <sc-if value="{{p.primary}}" hint-placeholder-val="{{ true }}">
+          <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 20px; border: 0; border-radius: 10px; display: inline-flex; align-items: center; gap: 8px; background: {{t.primaryBg}}; color: {{t.primaryFg}}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{p.primaryIcon}}"/></svg>{{p.primaryLabel}}
+          </button>
+        </sc-if>
+        <sc-if value="{{p.transcribing}}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; gap: 10px">
+            <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Pause</button>
+            <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Stop now</button>
+          </div>
+        </sc-if>
+      </div>
+
+      <ol aria-label="Steps" style="list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px">
+        <sc-for list="{{steps}}" as="s" hint-placeholder-count="4">
+          <li aria-current="{{s.current}}" style="display: flex; flex-direction: column; gap: 8px">
+            <div style="height: 4px; border-radius: 999px; background: {{s.bar}}"></div>
+            <div style="display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: {{s.weight}}; color: {{s.color}}">
+              <span style="width: 22px; height: 22px; flex: none; border-radius: 50%; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: {{s.dotBg}}; color: {{s.dotFg}}; border: 2px solid {{s.dotBorder}}; box-sizing: border-box">{{s.mark}}</span>
+              <span>{{s.label}}</span>
+            </div>
+          </li>
+        </sc-for>
+      </ol>
+
+      <sc-if value="{{p.banner}}" hint-placeholder-val="{{ false }}">
+        <div role="status" style="border-radius: 12px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; font-size: 14px; line-height: 1.45; background: {{p.bannerBg}}; color: {{p.bannerFg}}">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none"><path d="{{p.bannerIcon}}"/></svg>
+          <span style="flex: 1">{{p.bannerText}}</span>
+          <sc-if value="{{p.bannerLink}}" hint-placeholder-val="{{ false }}">
+            <a href="#" style="font-weight: 700; white-space: nowrap; color: {{p.bannerFg}}">{{p.bannerLink}}</a>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{p.progress}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; align-items: center; gap: 12px">
+          <div role="progressbar" aria-label="Transcription" aria-valuenow="46" aria-valuemin="0" aria-valuemax="100" style="flex: 1; height: 8px; border-radius: 999px; overflow: hidden; background: {{t.track}}">
+            <div style="width: 46%; height: 100%; border-radius: 999px; background: {{t.fill}}"></div>
+          </div>
+          <span style="font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; color: {{t.muted}}">46% transcribed · Quiet mode</span>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{p.toolbar}}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+          <p style="margin: 0; flex: 1; min-width: 260px; font-size: 14px; color: {{t.muted}}">{{p.hint}}</p>
+          <label style="display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 10px; width: 240px; box-sizing: border-box; background: {{t.inputBg}}; border: 1px solid {{p.searchBorder}}; color: {{t.muted}}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+            <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Search transcript</span>
+            <input placeholder="Search transcript   Ctrl+F" value="{{p.search}}" style="font: inherit; font-size: 14px; border: 0; outline: 0; background: transparent; flex: 1; min-width: 0; color: {{t.text}}">
+            <span style="font-size: 13px; font-weight: 600; white-space: nowrap; color: {{t.muted}}">{{p.hits}}</span>
+          </label>
+          <sc-if value="{{p.searching}}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; gap: 4px">
+              <button aria-label="Previous match (Shift+Enter)" style="width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button>
+              <button aria-label="Next match (Enter)" style="width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+            </div>
+          </sc-if>
+          <button aria-label="Undo edit (Ctrl+Z)" style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 12px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Undo
+          </button>
+        </div>
+      </sc-if>
+    </header>
+
+    <div style="flex: 1; min-height: 0; display: flex; gap: 20px; padding: 12px 28px 0">
+      <ol aria-label="Transcript" style="list-style: none; margin: 0; padding: 4px 0; flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column">
+        <sc-for list="{{rows}}" as="r" hint-placeholder-count="12">
+          <li style="display: grid; grid-template-columns: 56px minmax(0, 1fr); column-gap: 8px; padding: {{r.pad}}; border-radius: 10px; background: {{r.bg}}; outline: {{r.outline}}; outline-offset: -2px">
+            <button style="font: inherit; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; border: 0; background: transparent; padding: 3px 0 0; text-align: left; align-self: start; color: {{r.timeColor}}">{{r.time}}</button>
+            <div style="display: flex; flex-direction: column; gap: 6px; min-width: 0">
+              <sc-if value="{{r.chip}}" hint-placeholder-val="{{ false }}">
+                <button style="font: inherit; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; border: 0; border-radius: 999px; font-size: 13px; font-weight: 700; background: {{r.spBg}}; color: {{r.spFg}}">
+                  <span style="width: 20px; height: 20px; border-radius: 50%; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; background: {{r.spFg}}; color: #FFFFFF">{{r.ini}}</span>{{r.who}}
+                </button>
+              </sc-if>
+              <sc-if value="{{r.reassign}}" hint-placeholder-val="{{ false }}">
+                <div style="align-self: flex-start; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 12px; font-size: 14px; background: {{t.card}}; border: 1px solid {{t.secBorder}}; box-shadow: 0 8px 24px rgba(20,41,102,0.14)">
+                  <label style="display: flex; align-items: center; gap: 8px">Move this passage to
+                    <select style="font: inherit; font-size: 14px; min-height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid {{t.secBorder}}; color: {{t.text}}; background: {{t.inputBg}}"><option>Alex</option></select>
+                  </label>
+                  <button style="font: inherit; font-size: 14px; font-weight: 700; min-height: 36px; padding: 0 14px; border: 0; border-radius: 8px; background: {{t.primaryBg}}; color: {{t.primaryFg}}">Move</button>
+                  <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 36px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: {{t.link}}">Cancel</button>
+                </div>
+              </sc-if>
+              <sc-if value="{{r.plain}}" hint-placeholder-val="{{ true }}">
+                <span style="font-size: 15px; line-height: 1.5; text-decoration: {{r.deco}}; text-decoration-color: {{t.muted}}; text-underline-offset: 4px">{{r.text}}</span>
+              </sc-if>
+              <sc-if value="{{r.editing}}" hint-placeholder-val="{{ false }}">
+                <textarea aria-label="Edit passage" rows="2" style="font: inherit; font-size: 15px; line-height: 1.5; padding: 6px 10px; border-radius: 8px; resize: none; border: 2px solid {{t.primaryBg}}; color: {{t.text}}; background: {{t.inputBg}}">{{r.text}}</textarea>
+                <span style="font-size: 12px; color: {{t.muted}}">Enter or Esc to finish · Shift+Enter for a new line · saves as you type</span>
+              </sc-if>
+              <sc-if value="{{r.skeleton}}" hint-placeholder-val="{{ false }}">
+                <span style="display: block; height: 12px; margin-top: 6px; border-radius: 999px; width: {{r.w}}; background: {{t.track}}"></span>
+              </sc-if>
+            </div>
+          </li>
+        </sc-for>
+        <sc-if value="{{p.transcribing}}" hint-placeholder-val="{{ false }}">
+          <li style="padding: 10px 10px 0 74px; font-size: 14px; color: {{t.muted}}">More text appears as each part is transcribed. You can start reviewing now.</li>
+        </sc-if>
+      </ol>
+
+      <aside aria-label="Meeting tools" style="width: 288px; flex: none; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
+        <div role="tablist" aria-label="Meeting tools" style="display: flex; padding: 4px; border-radius: 12px; background: {{t.tabsBg}}">
+          <button role="tab" aria-selected="true" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 700; background: {{t.card}}; color: {{t.text}}; box-shadow: 0 1px 3px rgba(20,41,102,0.16)">Speakers</button>
+          <button role="tab" aria-selected="false" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 600; background: transparent; color: {{t.muted}}">Versions</button>
+          <button role="tab" aria-selected="false" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 600; background: transparent; color: {{t.muted}}">Holds</button>
+        </div>
+        <sc-if value="{{p.speakersReady}}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <sc-for list="{{speakers}}" as="q" hint-placeholder-count="2">
+              <div style="display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: {{t.card}}; border: 1px solid {{t.line}}">
+                <span style="width: 36px; height: 36px; flex: none; border-radius: 50%; font-size: 13px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: {{q.bg}}; color: {{q.fg}}">{{q.ini}}</span>
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+                  <span style="font-size: 15px; font-weight: 700">{{q.who}}</span>
+                  <span style="font-size: 13px; color: {{t.muted}}">{{q.count}}</span>
+                </div>
+                <sc-if value="{{p.player}}" hint-placeholder-val="{{ true }}">
+                  <button aria-label="{{q.playLabel}}" style="width: 40px; height: 40px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">
+                    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4l13 8-13 8z" fill="currentColor"/></svg>
+                  </button>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+          <sc-if value="{{p.canName}}" hint-placeholder-val="{{ true }}">
+            <a href="Names.dc.html" style="font-size: 15px; font-weight: 700; min-height: 44px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M3 20a6 6 0 0 1 12 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7"/><path d="M18 14.5a6 6 0 0 1 3 5.5"/></svg>Name speakers
+            </a>
+            <p style="margin: 0; font-size: 13px; line-height: 1.5; color: {{t.muted}}">Speaker labels are machine estimates. Select a label in the transcript to move one passage.</p>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px">
+              <span>Wrong number of people?</span>
+              <a href="#" style="font-weight: 600; color: {{t.link}}">Identify again…</a>
+            </div>
+          </sc-if>
+        </sc-if>
+        <sc-if value="{{p.transcribing}}" hint-placeholder-val="{{ false }}">
+          <div style="border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; background: {{t.tabsBg}}">
+            <span style="font-size: 15px; font-weight: 700">Not identified yet</span>
+            <span style="font-size: 14px; line-height: 1.5; color: {{t.muted}}">Speakers are worked out once the text is ready. You can review the words in the meantime.</span>
+          </div>
+        </sc-if>
+      </aside>
+    </div>
+
+    <sc-if value="{{p.player}}" hint-placeholder-val="{{ true }}">
+      <div style="box-sizing: border-box; margin: 12px 28px 16px; padding: 10px 16px; border-radius: 16px; display: flex; align-items: center; gap: 14px; background: {{t.playerBg}}; color: {{t.playerFg}}">
+        <button aria-label="Pause (Space)" style="width: 44px; height: 44px; flex: none; border: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #E56600; color: #FFFFFF">
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="5" height="16" rx="1" fill="currentColor"/><rect x="14" y="4" width="5" height="16" rx="1" fill="currentColor"/></svg>
+        </button>
+        <button aria-label="Back 5 seconds" style="width: 40px; height: 40px; flex: none; border: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: {{t.playerFg}}">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+        </button>
+        <span style="font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap">0:24 / 18:05</span>
+        <div role="slider" aria-label="Position in meeting" aria-valuenow="24" aria-valuemin="0" aria-valuemax="1085" tabindex="0" style="flex: 1; min-width: 80px; height: 6px; border-radius: 999px; position: relative; background: {{t.playerTrack}}">
+          <div style="width: 2.2%; height: 100%; border-radius: 999px; background: #E56600"></div>
+        </div>
+        <span style="font-size: 14px; white-space: nowrap; color: {{t.playerMuted}}">Sam · 0:24</span>
+        <button aria-label="Playback speed" style="font: inherit; font-size: 14px; font-weight: 700; min-width: 44px; height: 36px; border-radius: 8px; background: transparent; color: {{t.playerFg}}; border: 1px solid {{t.playerTrack}}">1×</button>
+      </div>
+    </sc-if>
+    <sc-if value="{{p.noPlayer}}" hint-placeholder-val="{{ false }}">
+      <div style="height: 16px"></div>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{p.toast}}" hint-placeholder-val="{{ false }}">
+    <div role="status" style="position: absolute; right: 28px; bottom: 96px; padding: 10px 16px; border-radius: 12px; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; background: #142966; color: #FFFFFF; box-shadow: 0 8px 24px rgba(20,41,102,0.3)">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#62D098" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>Saved
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"phase":{"editor":"enum","options":["review","transcribing","edit","handoff","earlier"],"default":"review"},"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const base = { card: '#FFFFFF', link: '#2B61BF', inputBg: '#FFFFFF', page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)', hi: '#EEF7FD', tabsBg: '#EEF7FD', track: 'rgba(20,41,102,0.12)', fill: '#2B61BF', done: '#00A275', doneFg: '#FFFFFF', current: '#E56600', upcoming: 'rgba(20,41,102,0.16)', hit: '#FDCAEA' };
+    const themes = {
+      H: { ...base, sideBg: '#EEF7FD', sideText: '#142966', sideSel: '#B4DDF6', sideSelText: '#142966', sideBorder: 'rgba(20,41,102,0.10)', primaryBg: '#142966', primaryFg: '#FFFFFF', playerBg: '#142966', playerFg: '#FFFFFF', playerMuted: 'rgba(255,255,255,0.78)', playerTrack: 'rgba(255,255,255,0.24)' },
+      A: { ...base, sideBg: '#EEF7FD', sideText: '#142966', sideSel: '#B4DDF6', sideSelText: '#142966', sideBorder: 'rgba(20,41,102,0.10)', primaryBg: '#E56600', primaryFg: '#351503', playerBg: '#142966', playerFg: '#FFFFFF', playerMuted: 'rgba(255,255,255,0.78)', playerTrack: 'rgba(255,255,255,0.24)' },
+      B: { ...base, sideBg: '#142966', sideText: '#FFFFFF', sideSel: 'rgba(255,255,255,0.14)', sideSelText: '#FFFFFF', sideBorder: '#142966', primaryBg: '#142966', primaryFg: '#FFFFFF', playerBg: '#EEF7FD', playerFg: '#142966', playerMuted: '#566591', playerTrack: 'rgba(20,41,102,0.18)' },
+      Dark: {
+        page: '#101F4E', text: '#FFFFFF', muted: 'rgba(255,255,255,0.74)', line: 'rgba(255,255,255,0.14)', card: '#142966', link: '#B4DDF6', inputBg: 'rgba(255,255,255,0.06)',
+        sideBg: '#0B1638', sideText: '#FFFFFF', sideSel: 'rgba(180,221,246,0.16)', sideSelText: '#FFFFFF', sideBorder: 'rgba(255,255,255,0.08)',
+        primaryBg: '#B4DDF6', primaryFg: '#142966', secBg: 'transparent', secFg: '#FFFFFF', secBorder: 'rgba(255,255,255,0.32)',
+        hi: 'rgba(180,221,246,0.12)', tabsBg: 'rgba(255,255,255,0.06)', track: 'rgba(255,255,255,0.14)', fill: '#B4DDF6', hit: 'rgba(253,202,234,0.24)',
+        playerBg: '#0B1638', playerFg: '#FFFFFF', playerMuted: 'rgba(255,255,255,0.74)', playerTrack: 'rgba(255,255,255,0.24)',
+        done: '#62D098', doneFg: '#003B2A', current: '#E56600', upcoming: 'rgba(255,255,255,0.18)'
+      }
+    };
+    const t = themes[this.props.direction ?? 'H'] || themes.H;
+    const phase = this.props.phase ?? 'review';
+
+    // Phase-specific chrome: primary action, banner, toolbar, player
+    const check = 'M5 12l5 5 9-10';
+    const lock = 'M7 11V7a5 5 0 0 1 10 0v4M5 11h14v10H5z';
+    const clock = 'M12 7v5l3 2M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18';
+    const arrow = 'M5 12h14M13 6l6 6-6 6';
+    const P = {
+      review: { primary: true, primaryLabel: 'Transcript reviewed…', primaryIcon: check, toolbar: true, player: true, speakersReady: true, canName: true, hint: 'Play passages and correct any words. Select text to edit it. Changes save as you go.', stepAt: 2 },
+      transcribing: { primary: false, transcribing: true, progress: true, toolbar: true, player: true, speakersReady: false, hint: 'Transcribing. You can play and correct the finished parts now.', stepAt: 1 },
+      edit: { primary: true, primaryLabel: 'Transcript reviewed…', primaryIcon: check, toolbar: true, player: true, speakersReady: true, canName: true, searching: true, search: 'budget', hits: '2 of 3', toast: true, hint: 'Play passages and correct any words. Select text to edit it. Changes save as you go.', stepAt: 2 },
+      handoff: { primary: true, primaryLabel: 'Hand off…', primaryIcon: arrow, toolbar: false, player: false, noPlayer: true, speakersReady: true, canName: false, banner: true, bannerBg: '#EEF7FD', bannerFg: '#142966', bannerIcon: lock, bannerText: 'Reviewed and locked. The audio was removed after the transcript review was confirmed, so playback and transcribing again are no longer available.', stepAt: 3 },
+      earlier: { primary: false, toolbar: false, player: true, speakersReady: true, canName: false, banner: true, bannerBg: '#FDCAEA', bannerFg: '#440638', bannerIcon: clock, bannerText: 'You are viewing an earlier version (read only). Its edits are kept as they were.', bannerLink: 'Back to the current version', stepAt: 2 }
+    };
+    const p = { primary: false, transcribing: false, progress: false, toolbar: false, player: false, noPlayer: false, speakersReady: false, canName: false, searching: false, search: '', hits: '', toast: false, banner: false, bannerLink: '', searchBorder: t.secBorder, ...P[phase] };
+    if (p.searching) p.searchBorder = t.primaryBg;
+
+    const step = (label, n) => {
+      if (n < p.stepAt) return { label, mark: '✓', current: 'false', bar: t.done, dotBg: t.done, dotFg: t.doneFg, dotBorder: t.done, weight: 600, color: t.muted };
+      if (n === p.stepAt) return { label, mark: String(n), current: 'step', bar: t.current, dotBg: t.current, dotFg: '#351503', dotBorder: t.current, weight: 800, color: t.text };
+      return { label, mark: String(n), current: 'false', bar: t.upcoming, dotBg: 'transparent', dotFg: t.muted, dotBorder: t.upcoming, weight: 500, color: t.muted };
+    };
+    const steps = [step('Transcribe', 1), step('Review', 2), step('Hand off', 3), step('Clean up', 4)];
+
+    const sp = { Alex: { bg: '#B4DDF6', fg: '#142966', ini: 'AL' }, Sam: { bg: '#FDCAEA', fg: '#440638', ini: 'SA' } };
+    let raw = [
+      ['0:00', 'Alex', 'Thanks for making time this morning.'],
+      ['0:02', 'Alex', "Let's go through the plan for the community garden project."],
+      ['0:06', 'Alex', 'Then agree who does what.'],
+      ['0:08', 'Sam', 'Sounds good.'],
+      ['0:10', 'Sam', 'The main thing from last week is the budget.', 'hit'],
+      ['0:13', 'Sam', 'We have quotes for the raised beds and the water tank, and both came in under budget.', 'hitCurrent'],
+      ['0:19', 'Alex', "That's great news. How far under are we?"],
+      ['0:24', 'Sam', 'About 12% overall.', 'playing'],
+      ['0:26', 'Sam', 'The water tank was the bigger saving, because the supplier included delivery and installation.'],
+      ['0:33', 'Alex', 'Then I suggest we keep that margin as a contingency rather than spending it straight away.', 'edited'],
+      ['0:39', 'Alex', 'Weather delays could push the timeline out.']
+    ];
+    if (phase === 'transcribing') raw = raw.slice(0, 6).concat([['0:19', '', '', 'skeleton', '70%'], ['', '', '', 'skeleton', '45%'], ['', '', '', 'skeleton', '60%']]);
+    let prev = null;
+    const rows = raw.map(([time, who, text, flag, w]) => {
+      const skeleton = flag === 'skeleton';
+      const chip = phase !== 'transcribing' && !!who && who !== prev;
+      prev = who;
+      const editing = phase === 'edit' && time === '0:33';
+      const reassign = phase === 'edit' && time === '0:24';
+      const isHit = phase === 'edit' && (flag === 'hit' || flag === 'hitCurrent');
+      let bg = 'transparent';
+      if (flag === 'playing' && phase !== 'handoff' && phase !== 'transcribing') bg = t.hi;
+      if (isHit) bg = t.hit;
+      const s = sp[who] || { bg: 'transparent', fg: t.muted, ini: '' };
+      return {
+        time, who, text, chip, ini: s.ini, spBg: s.bg, spFg: s.fg, w: w || '0%',
+        skeleton, editing, reassign, plain: !skeleton && !editing,
+        bg, outline: phase === 'edit' && flag === 'hitCurrent' ? '2px solid #E56600' : '0',
+        deco: flag === 'edited' ? 'underline dotted' : 'none',
+        timeColor: phase === 'handoff' ? t.muted : t.link,
+        pad: chip ? '12px 10px 6px' : '4px 10px'
+      };
+    });
+    const speakers = [
+      { who: 'Alex', count: '15 passages · 52%', ini: 'AL', bg: sp.Alex.bg, fg: sp.Alex.fg, playLabel: 'Play an example of Alex' },
+      { who: 'Sam', count: '17 passages · 48%', ini: 'SA', bg: sp.Sam.bg, fg: sp.Sam.fg, playLabel: 'Play an example of Sam' }
+    ];
+    const metas = {
+      transcribing: 'Imported today, 1:57 am · 18 min · Parakeet v2',
+      handoff: 'Reviewed today, 3:12 pm · 18 min · 2 speakers · Parakeet v2',
+      earlier: 'Earlier version: Parakeet v3 (15/10/2026) · 2 edited passages'
+    };
+    return { t, p, steps, rows, speakers, meta: metas[phase] || 'Imported today, 1:57 am · 18 min · 2 speakers · Parakeet v2' };
+  }
+}
+</script>
+</body>
+</html>

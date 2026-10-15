@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Settings: downloads</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966">
+
+  <nav aria-label="Main" style="width: 224px; flex: none; box-sizing: border-box; padding: 24px 16px; display: flex; flex-direction: column; gap: 28px; background: #EEF7FD; border-right: 1px solid rgba(20,41,102,0.10)">
+    <div style="padding: 0 8px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">Unminute<span style="color: #E56600">.</span></div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="Home.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+        <span style="flex: 1">Meetings</span>
+        <span style="min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; background: #E56600; color: #351503; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center">3</span>
+      </a>
+      <a href="Settings.dc.html" aria-current="page" style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; background: #B4DDF6; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+        <span>Settings</span>
+      </a>
+      <a href="Help.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6"/><path d="M12 17h.01"/></svg>
+        <span>Help and shortcuts</span>
+      </a>
+    </div>
+  </nav>
+
+  <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 18px">
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="Settings.dc.html" style="display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; text-decoration: none; color: #2B61BF">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>Settings
+      </a>
+      <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Downloads</h1>
+      <p style="margin: 0; font-size: 15px; color: #566591">Each file is checked against a published checksum before it is used. Downloads happen only here, when you choose.</p>
+    </div>
+
+    <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-radius: 16px; border: 1px solid rgba(20,41,102,0.14)">
+      <sc-for list="{{models}}" as="m" hint-placeholder-count="5">
+        <li style="display: flex; flex-direction: column; gap: 8px; padding: 16px 20px; border-bottom: 1px solid rgba(20,41,102,0.08)">
+          <div style="display: flex; align-items: center; gap: 14px">
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+              <span style="font-size: 16px; font-weight: 700">{{m.name}} <span style="font-size: 13px; font-weight: 600; color: #566591">{{m.tag}}</span></span>
+              <span style="font-size: 14px; color: #566591">{{m.desc}}</span>
+            </div>
+            <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; background: {{m.pillBg}}; color: {{m.pillFg}}">{{m.status}}</span>
+            <button style="font: inherit; font-size: 14px; font-weight: {{m.btnWeight}}; min-height: 40px; padding: 0 14px; border-radius: 10px; white-space: nowrap; background: {{m.btnBg}}; color: {{m.btnFg}}; border: 1px solid {{m.btnBorder}}">{{m.action}}</button>
+            <a href="#" style="font-size: 14px; font-weight: 600; color: #2B61BF">{{m.more}}</a>
+          </div>
+          <details>
+            <summary style="font-size: 13px; font-weight: 600; color: #566591">Details</summary>
+          </details>
+        </li>
+      </sc-for>
+    </ul>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const ready = { status: 'Ready', pillBg: '#62D098', pillFg: '#003B2A', action: 'Check every file', btnBg: '#FFFFFF', btnFg: '#142966', btnBorder: 'rgba(20,41,102,0.28)', btnWeight: 600, more: 'Remove…' };
+    const missing = { status: 'Not downloaded', pillBg: 'rgba(20,41,102,0.10)', pillFg: '#142966', btnBg: '#142966', btnFg: '#FFFFFF', btnBorder: '#142966', btnWeight: 700, more: '' };
+    return {
+      models: [
+        { ...ready, name: 'Parakeet v2', tag: 'Recommended · in use', desc: 'Speech to text. Fast and accurate for English. 0.66 GB.' },
+        { ...ready, name: 'Parakeet v3', tag: '', desc: 'Speech to text. Multilingual; less accurate for English in our tests. 0.67 GB.' },
+        { ...missing, action: 'Download (1.62 GB)', name: 'Whisper large-v3 turbo', tag: '', desc: 'Speech to text. Alternative engine; slower on a processor.' },
+        { ...ready, name: 'Speaker identification', tag: 'Optional', desc: 'Works out who spoke when. 0.03 GB.' },
+        { ...missing, action: 'Download (1.92 GB)', name: 'Graphics card acceleration', tag: 'Optional', desc: 'NVIDIA RTX 500. Speeds up speaker identification in Faster mode.' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>
