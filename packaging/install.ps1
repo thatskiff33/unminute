@@ -51,8 +51,10 @@ $ErrorActionPreference = "Stop"
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
 $AppName = "Unminute"
-# Start menu names used by earlier versions; an update replaces them.
-$LegacyShortcutNames = @("Meeting Workspace")
+# Every Start menu / Settings > Apps name a version has used. Each version records its
+# own in version.json ("name"); versions from before that used "Meeting Workspace".
+$KnownAppNames = @("Unminute", "Meeting Workspace")
+$NameBeforeRecorded = "Meeting Workspace"
 $script:TempExtract = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
 # Must match APP_ID in workspace/__main__.py (taskbar grouping and icon). Kept from the
@@ -326,11 +328,22 @@ namespace ShellLnk {
     [ShellLnk.Helper]::SetAppId($LnkPath, $AppId)
 }
 
+# The display name of an installed version, so a rollback to an older version
+# recreates the shortcut and entry that version's own uninstaller expects.
+function Get-VersionAppName([string]$Target) {
+    try {
+        $info = Get-Content -LiteralPath (Join-Path $Target "version.json") -Raw | ConvertFrom-Json
+        if ($info.name) { return [string]$info.name }
+    } catch { }
+    return $NameBeforeRecorded
+}
+
 function New-Shortcut([string]$Target) {
     if ($Options.SkipShortcut) { return }
+    $name = Get-VersionAppName $Target
     $programs = [Environment]::GetFolderPath("Programs")
     $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut((Join-Path $programs "$AppName.lnk"))
+    $link = $shell.CreateShortcut((Join-Path $programs "$name.lnk"))
     $link.TargetPath = Join-Path $Target "runtime\pythonw.exe"
     $link.Arguments = "-m workspace"
     $link.WorkingDirectory = Join-Path $Target "app"
@@ -340,30 +353,33 @@ function New-Shortcut([string]$Target) {
     $link.Save()
     try { Set-ShortcutAppId $link.FullName $AppId }
     catch { Write-Warning "Could not set the taskbar identity on the shortcut: $($_.Exception.Message)" }
-    Remove-LegacyShortcut $programs $shell
+    Remove-OtherShortcut $programs $shell $name
 }
 
-# Remove a Start menu shortcut left by an earlier version under its old name, but
-# only one that points into this install: a same-named shortcut to anything else
-# is not ours and is left alone.
-function Remove-LegacyShortcut([string]$Programs, $Shell) {
+# Remove Start menu shortcuts this app made under its other names (after a rename or a
+# rollback), but only ones that point into this install: a same-named shortcut to
+# anything else is not ours and is left alone. Failures only warn.
+function Remove-OtherShortcut([string]$Programs, $Shell, [string]$Keep) {
     # Long form: a .lnk stores its target as a long path, so a short (8.3) InstallDir
     # would otherwise never match.
     $dir = $Options.InstallDir
     try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
     $prefix = $dir.TrimEnd("\") + "\"
-    foreach ($name in $LegacyShortcutNames) {
+    foreach ($name in $KnownAppNames) {
+        if ($name -eq $Keep) { continue }
         $path = Join-Path $Programs "$name.lnk"
         if (-not (Test-Path -LiteralPath $path)) { continue }
+        $sc = $null
         try {
-            # Release the shortcut object first: while alive it keeps the .lnk open.
             $sc = $Shell.CreateShortcut($path)
             $old = $sc.TargetPath
-            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc)
+            # Release the shortcut object before deleting: while alive it keeps the .lnk open.
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
             if ($old -and $old.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
                 Remove-Item -LiteralPath $path -Force
             }
         } catch { Write-Warning "Could not remove the old shortcut $($name): $($_.Exception.Message)" }
+        finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
     }
 }
 
@@ -372,7 +388,7 @@ function Register-Uninstall([string]$Target, [string]$Version) {
     $uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`" -InstallDir `"$($Options.InstallDir)`""
     New-Item -Path $RegKey -Force | Out-Null
     $values = @{
-        DisplayName = $AppName; DisplayVersion = $Version; Publisher = "Unminute project"
+        DisplayName = (Get-VersionAppName $Target); DisplayVersion = $Version; Publisher = "Unminute project"
         InstallLocation = $Options.InstallDir; UninstallString = $uninstall
         QuietUninstallString = "$uninstall -Silent"; EstimatedSize = $sizeKb
         NoModify = 1; NoRepair = 1
@@ -426,8 +442,7 @@ try {
     Set-CurrentVersion $target $version
     New-Shortcut $target
     Register-Uninstall $target $version
-    Write-Step "$AppName $version is installed. Open it from the Start menu."
-    Write-Step "Unminute: unlimit your meeting minutes."
+    Write-Step "$AppName $version is installed. Open it from the Start menu and unlimit your meeting minutes."
     Write-Step "Your workspace and downloaded models are kept separately and are not affected by updates or uninstalling."
     exit 0
 } catch {

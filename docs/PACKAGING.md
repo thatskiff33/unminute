@@ -1,4 +1,4 @@
-# Windows package for the meeting workspace
+# Windows package for Unminute
 
 This guide covers the preassembled package from #11:
 
@@ -74,7 +74,7 @@ The installer runs as the current user and needs no administrator rights. It:
   - Nothing is installed if any check fails.
 - **Installs side by side** to `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`. It keeps the previous version for rollback and removes older ones.
 - **Refuses to install while the app is running.**
-- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps. An update from a version that used the earlier name, "Meeting Workspace", replaces that shortcut. The install folder, uninstall registry key and taskbar identity keep their earlier names (`WhisperWorkspace`), so Intune detection rules and pinned shortcuts keep working.
+- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps. An update from a version that used the earlier name, "Meeting Workspace", replaces that shortcut. The install folder and uninstall registry key keep their earlier name (`WhisperWorkspace`), so Intune detection rules keep working, and the taskbar identity (`WhisperTranscriber.MeetingWorkspace`) is unchanged, so taskbar pins still group with the window. A rollback to a version from before the rename restores its "Meeting Workspace" shortcut and entry.
 
 Exit codes:
 

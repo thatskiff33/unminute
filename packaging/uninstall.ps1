@@ -21,8 +21,8 @@ $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent }
 $AppName = "Unminute"
-# Start menu names used by earlier versions (see install.ps1).
-$LegacyShortcutNames = @("Meeting Workspace")
+# Every Start menu name a version has used (see install.ps1).
+$KnownAppNames = @("Unminute", "Meeting Workspace")
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
 
 function Write-Step([string]$Message) {
@@ -40,23 +40,29 @@ try {
     $programs = [Environment]::GetFolderPath("Programs")
     $link = Join-Path $programs "$AppName.lnk"
     if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
-    # An old-name shortcut is removed only if it points into this install.
+    # A shortcut under another name is removed only if it points into this install,
+    # and a problem with one only warns: it must not stop the uninstall.
     # Long form: a .lnk stores its target as a long path, so a short (8.3) InstallDir
     # would otherwise never match.
     $dir = $Options.InstallDir
     try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
     $prefix = $dir.TrimEnd("\") + "\"
     $shell = New-Object -ComObject WScript.Shell
-    foreach ($name in $LegacyShortcutNames) {
+    foreach ($name in $KnownAppNames) {
+        if ($name -eq $AppName) { continue }
         $old = Join-Path $programs "$name.lnk"
         if (-not (Test-Path -LiteralPath $old)) { continue }
-        # Release the shortcut object first: while alive it keeps the .lnk open.
-        $sc = $shell.CreateShortcut($old)
-        $target = $sc.TargetPath
-        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc)
-        if ($target -and $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-            Remove-Item -LiteralPath $old -Force
-        }
+        $sc = $null
+        try {
+            $sc = $shell.CreateShortcut($old)
+            $target = $sc.TargetPath
+            # Release the shortcut object before deleting: while alive it keeps the .lnk open.
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
+            if ($target -and $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $old -Force
+            }
+        } catch { Write-Warning "Could not remove the old shortcut $($name): $($_.Exception.Message)" }
+        finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
     }
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove everything else first.

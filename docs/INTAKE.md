@@ -1,6 +1,6 @@
 # Watched folders, cloud files and deleting originals
 
-This guide is for people who set up automatic intake in the meeting workspace (#23, #24).
+This guide is for people who set up automatic intake in Unminute (#23, #24).
 
 ## Watching a folder
 

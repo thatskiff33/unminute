@@ -220,6 +220,9 @@ def build(version, out, cache):
         for script in ("install.ps1", "install.cmd", "uninstall.ps1"):
             shutil.copy2(PACKAGING / script, folder / script)
         (folder / "version.json").write_text(json.dumps({
+            # "name": Start menu and Settings > Apps name; installers read it so a
+            # rollback recreates what this version's uninstaller removes.
+            "name": "Unminute",
             "version": version, "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "python": PYTHON_VERSION, "commit": git_commit(),
             # Installers check for features before relying on them (#26).
