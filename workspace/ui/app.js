@@ -1145,6 +1145,8 @@ async function openHandoff() {
   $("ho-passages").replaceChildren();
   $("ho-left-out").textContent = "";
   $("ho-long").hidden = true;
+  $("ho-apply").disabled = true;                  // until this meeting's options have loaded
+  handoffState.loads = (handoffState.loads || 0) + 1;
   setHandoffButtons();
   handoffState.templates = await attempt(() => call("handoff_templates")) || [];
   if (!handoffState.templates.some((t) => t.id === handoffState.template))
@@ -1206,8 +1208,11 @@ async function renderHandoffPreview() {
 }
 
 async function renderHandoffOptions() {
-  const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template, handoffState.anonymise));
-  if (!p) return;
+  // A load for a meeting the user has since left must not fill this page.
+  const load = handoffState.loads, mid = state.mid;
+  const stale = () => load !== handoffState.loads || mid !== state.mid;
+  const p = await attempt(() => call("handoff_preview", mid, handoffState.template, handoffState.anonymise));
+  if (!p || stale()) return;
   handoffState.dirty = false;
   $("ho-anon").checked = handoffState.anonymise;    // a tick made while loading is not applied
   setHandoffButtons();
@@ -1216,7 +1221,8 @@ async function renderHandoffOptions() {
   const rows = [];
   let start = 0, total = 0;
   do {
-    const page = await attempt(() => call("transcript", state.mid, start, 2000));
+    const page = await attempt(() => call("transcript", mid, start, 2000));
+    if (stale()) return;
     if (!page || !page.items.length) break;
     total = page.total;
     for (const it of page.items)
@@ -1229,6 +1235,7 @@ async function renderHandoffOptions() {
   } while (start < total);
   handoffState.total = total;
   $("ho-passages").replaceChildren(...rows);
+  $("ho-apply").disabled = false;
   countLeftOut();
 }
 
@@ -1850,7 +1857,12 @@ function wire() {
       e.preventDefault(); show("help"); return;
     }
     if (e.key === "Escape" && document.body.classList.contains("menu-open")) { setMenu(false); $("menu").focus(); }
-    else if (e.key === "Escape" && state.view === "handoff" && !typing && !document.querySelector("dialog[open]")) closeHandoff();
+    else if (e.key === "Escape" && state.view === "handoff" && !typing && !document.querySelector("dialog[open]")) {
+      // The template editor closes first; changes not yet applied keep the page open.
+      if (!$("ho-editor").hidden) closeTemplateEditor();
+      else if (handoffState.dirty) say("Apply your changes first, or go back with the link at the top.");
+      else closeHandoff();
+    }
     // The player: Space plays or pauses, J and K move to the next or previous passage.
     if (state.view === "meeting" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey
         && !document.querySelector("dialog[open]") && state.detail && state.detail.audio_available) {
