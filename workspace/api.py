@@ -183,28 +183,28 @@ def make_api(ws, get_window=lambda: None):
     def reset_template(self, tid):
         return _safe(ws.reset_template, tid)
 
-    def handoff_preview(self, mid, tid):
-        return _safe(ws.handoff_preview, mid, tid)
+    def handoff_preview(self, mid, tid, anonymise=False):
+        return _safe(ws.handoff_preview, mid, tid, anonymise)
 
     def set_handoff_options(self, mid, omitted, redactions):
         return _safe(ws.set_handoff_options, mid, omitted, redactions)
 
-    def copy_handoff(self, mid, tid, kind, expected=None):
-        return _safe(ws.copy_handoff, mid, tid, kind, expected)
+    def copy_handoff(self, mid, tid, kind, expected=None, anonymise=False):
+        return _safe(ws.copy_handoff, mid, tid, kind, expected, anonymise)
 
-    def save_handoff(self, mid, tid, expected=None):
+    def save_handoff(self, mid, tid, expected=None, anonymise=False):
         def run():
             import webview
             window = get_window()
             if window is None:
                 raise WorkspaceError("The save dialog is not available.")
-            name = ws.handoff_preview(mid, tid)["filename"]
+            name = ws.handoff_preview(mid, tid, anonymise)["filename"]
             chosen = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name,
                                                file_types=("Markdown (*.md)",))
             if not chosen:
                 return None                       # cancelled
             path = chosen if isinstance(chosen, str) else chosen[0]
-            return ws.save_handoff_to(mid, tid, path, expected)
+            return ws.save_handoff_to(mid, tid, path, expected, anonymise)
         return _safe(run)
 
     def setup_state(self):

@@ -216,16 +216,20 @@ def panel(store, vid, offsets=None):
 
 
 def summary(store, vid, view=None):
-    """Speakers with names and passage counts, for the Name speakers panel."""
+    """Speakers with names, passage counts and seconds of speech, for the Name
+    speakers panel and the meeting's Speakers tab."""
     view = view or resolve(store, vid)
-    counts = {}
-    for lbl in view["labels"].values():
+    counts, seconds = {}, {}
+    for row in store.transcript(vid):
+        lbl = view["labels"].get(row["id"])
         if lbl:
             counts[lbl] = counts.get(lbl, 0) + 1
+            seconds[lbl] = seconds.get(lbl, 0.0) + max(0.0, row["end_s"] - row["start_s"])
     run = view["run"]
     can_undo = bool(run) and store._one("SELECT 1 FROM speaker_corrections WHERE run_id = ? "
                                         "LIMIT 1", (run,)) is not None
     return {"speakers": [{"label": lbl, "name": view["names"][lbl],
-                          "passages": counts.get(lbl, 0)} for lbl in view["order"]],
+                          "passages": counts.get(lbl, 0),
+                          "seconds": round(seconds.get(lbl, 0.0), 1)} for lbl in view["order"]],
             "can_undo": can_undo}
 

@@ -1067,12 +1067,23 @@ class Workspace:
             done, total = self.store.progress(v["id"]) if v else (0, 0)
             busy = self._busy and self._busy[0] == row["id"] and self._busy[1]
             stage = self._stage(m, v)
-            out.append({**row, "progress": round(100 * done / total) if total else 0,
+            out.append({**row, **self._facts(v),
+                        "progress": round(100 * done / total) if total else 0,
                         "paused": bool(m["paused"]), "error": m["last_error"]
                         if m["phase"] == "error" else None,
                         "busy": busy or None, "stage": stage,
                         "action": self._action(m, stage)})
         return out
+
+    def _facts(self, v):
+        """Recording length, number of speakers and model of a working version."""
+        if v is None:
+            return {"duration_s": None, "speaker_count": None, "model": None}
+        src = self.store.source(v["source_id"])
+        view = speaker_names.resolve(self.store, v["id"])
+        return {"duration_s": round(src["samples"] / src["sample_rate"], 1) if src else None,
+                "speaker_count": len(view["order"]) if view["run"] else None,
+                "model": v["model"]}
 
     @staticmethod
     def _action(m, stage):
@@ -1109,7 +1120,7 @@ class Workspace:
             "audio_available": self._audio_available(m),
             "audio_removed_at": m["audio_removed_at"],
             "reviewed_at": m["reviewed_at"], "final_saved_at": m["final_saved_at"],
-            "model": v["model"] if v else None,
+            **self._facts(v),
             "edits": self.store.edit_count(v["id"]) if v else 0,
             "can_undo": bool(v) and not m["reviewed_at"] and self.store.can_undo(v["id"]),
             "older_versions": [{"index": i, "model": x["model"],
@@ -1145,6 +1156,7 @@ class Workspace:
 
     def status(self):
         return {"busy": self._busy[1] if self._busy else None, "message": self._status,
+                "mode": self.settings["mode"],
                 "import_errors": list(self._import_errors),
                 "importing": self._imports.unfinished_tasks}
 
@@ -1213,11 +1225,15 @@ class Workspace:
             raise WorkspaceError("That template no longer exists.")
         self.templates.reset(tid)
 
-    def handoff_preview(self, mid, tid):
-        """Exactly what Copy and Save will produce, plus the options in use."""
+    def handoff_preview(self, mid, tid, anonymise=False):
+        """Exactly what Copy and Save will produce, plus the options in use.
+        anonymise (this handoff only, not stored) replaces speaker names with
+        Speaker 1, Speaker 2."""
         self._meeting(mid)
+        if not isinstance(anonymise, bool):
+            raise WorkspaceError("Expected yes or no.")
         template = self._handoff(self.templates.get, tid)
-        out = self._handoff(handoff.build, self.store, mid, template)
+        out = self._handoff(handoff.build, self.store, mid, template, anonymise)
         return {**out, "options": handoff.options(self.store, mid)}
 
     def set_handoff_options(self, mid, omitted, redactions):
@@ -1226,28 +1242,28 @@ class Workspace:
             raise WorkspaceError("Confirm the transcript review first.")
         self._handoff(handoff.set_options, self.store, mid, omitted, redactions)
 
-    def _checked(self, mid, tid, kind, expected):
+    def _checked(self, mid, tid, kind, expected, anonymise=False):
         """The handoff text, refused unless it is exactly what was previewed."""
-        out = self.handoff_preview(mid, tid)
+        out = self.handoff_preview(mid, tid, anonymise)
         if not isinstance(expected, str) or out["digests"][kind] != expected:
             raise WorkspaceError("The handoff changed since the preview. Check the preview "
                                  "again, then copy or save.")
         return out
 
-    def copy_handoff(self, mid, tid, kind, expected):
+    def copy_handoff(self, mid, tid, kind, expected, anonymise=False):
         if kind not in ("combined", "prompt_only"):
             raise WorkspaceError("Choose what to copy.")
-        out = self._checked(mid, tid, kind, expected)
+        out = self._checked(mid, tid, kind, expected, anonymise)
         self._handoff(clipboard.copy_text, out[kind])
         return {"chars": len(out[kind]), "long": out["long"] and kind == "combined"}
 
-    def save_handoff_to(self, mid, tid, path, expected):
+    def save_handoff_to(self, mid, tid, path, expected, anonymise=False):
         """Write the Markdown to a file the user chose in the save dialog. The
         app keeps no record of it; the user files or deletes it. ".md" is
         appended (never substituted) when missing, and a file the dialog did
         not ask about is never overwritten."""
         from workspace.safe_paths import check_raw
-        out = self._checked(mid, tid, "markdown", expected)
+        out = self._checked(mid, tid, "markdown", expected, anonymise)
         try:
             check_raw(path)
         except UnsafePathError as exc:

@@ -491,6 +491,53 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertEqual(ws.store._one("SELECT COUNT(*) AS n FROM speaker_corrections")["n"], 0)
 
+    def test_meeting_facts_and_handoff_name_replacement(self):
+        from workspace import clipboard
+        ws = self.open()
+        mid = self.imported(ws)
+        row = next(m for m in ws.meetings() if m["id"] == mid)
+        self.assertGreater(row["duration_s"], 0)
+        self.assertEqual((row["speaker_count"], bool(row["model"])), (2, True))
+        d = ws.detail(mid)
+        self.assertEqual((d["duration_s"], d["speaker_count"]), (row["duration_s"], 2))
+        self.assertIn(ws.status()["mode"], ("quiet", "faster"))
+        [a, b] = ws.speakers(mid)["speakers"]
+        self.assertTrue(a["seconds"] > 0 and b["seconds"] > 0)
+        ws.rename_speaker(mid, a["label"], "Aroha")
+        ws.rename_speaker(mid, b["label"], "Ben")
+        first = ws.transcript(mid)["items"][0]
+        self.assertEqual(first["who"], "Aroha")               # Aroha speaks first
+        ws.edit(mid, first["id"], "Thanks aroha and BEN, welcome. Benefits next.")
+        ws.rename(mid, "Catch-up with Aroha")
+        ws.confirm_reviewed(mid)
+        self.assertTrue(ws.wait_idle(60))
+        plain = ws.handoff_preview(mid, "minutes")
+        anon = ws.handoff_preview(mid, "minutes", True)
+        self.assertIn("**Aroha:**", plain["markdown"])
+        self.assertFalse(plain["anonymised"])
+        self.assertTrue(anon["anonymised"])
+        self.assertNotIn("aroha", anon["combined"].casefold())
+        self.assertIn("**Speaker 1:**", anon["markdown"])
+        # Whole words only: "Benefits" is not a name.
+        self.assertIn("Thanks Speaker 1 and Speaker 2, welcome. Benefits next.", anon["markdown"])
+        self.assertIn("# Catch-up with Speaker 1", anon["markdown"])
+        self.assertNotIn("Aroha", anon["filename"])
+        self.assertIn("speaker names were replaced", anon["markdown"])
+        copied = []
+        real = clipboard.copy_text
+        clipboard.copy_text = copied.append
+        try:
+            with self.assertRaisesRegex(WorkspaceError, "changed since the preview"):
+                ws.copy_handoff(mid, "minutes", "combined", anon["digests"]["combined"])
+            ws.copy_handoff(mid, "minutes", "combined", anon["digests"]["combined"], True)
+        finally:
+            clipboard.copy_text = real
+        self.assertEqual(copied, [anon["combined"]])
+        with self.assertRaises(WorkspaceError):
+            ws.handoff_preview(mid, "minutes", "yes")
+        ws.confirm_final_saved(mid)
+        self.assertTrue(ws.wait_idle(60))
+
     def test_handoff_copy_and_save_after_review(self):
         from workspace import clipboard
         ws = self.open()

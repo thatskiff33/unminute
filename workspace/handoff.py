@@ -228,8 +228,37 @@ def _stamp(t):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def build(store, mid, template):
-    """The exact handoff texts for a reviewed meeting."""
+def _pseudonyms(view, rows):
+    """Speaker 1, Speaker 2... for each speaker, numbered by first appearance."""
+    out = {}
+    for row in rows:
+        lbl = view["labels"].get(row["id"])
+        if lbl and lbl not in out:
+            out[lbl] = f"Speaker {len(out) + 1}"
+    return out
+
+
+def _name_replacer(view, pseudo):
+    """Replaces each speaker's given name where it appears in the text, as a
+    whole word, any spacing, case-insensitive; longest name first. Default
+    "Speaker N" names are left alone: they identify no one."""
+    pairs = {}
+    for lbl, alias in pseudo.items():
+        name = " ".join(view["names"].get(lbl, "").split())
+        if name and not re.fullmatch(r"Speaker \d+", name):
+            pairs.setdefault(name.casefold(), alias)
+    if not pairs:
+        return lambda text: text
+    parts = [r"\s+".join(re.escape(w) for w in n.split())
+             for n in sorted(pairs, key=len, reverse=True)]
+    pattern = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
+    return lambda text: pattern.sub(
+        lambda m: pairs.get(" ".join(m.group(0).split()).casefold(), m.group(0)), text)
+
+
+def build(store, mid, template, anonymise=False):
+    """The exact handoff texts for a reviewed meeting. anonymise replaces
+    speaker names, in the labels and in the text, with Speaker 1, Speaker 2."""
     m = store.meeting(mid)
     if m is None:
         raise HandoffError("Meeting not found.")
@@ -241,18 +270,22 @@ def build(store, mid, template):
     redact = _redactor(opts["redactions"])
     omitted = set(opts["omitted"])
     view = resolve(store, v["id"])
+    rows = store.transcript(v["id"])
+    pseudo = _pseudonyms(view, rows) if anonymise else {}
+    rename = _name_replacer(view, pseudo) if anonymise else (lambda text: text)
     count = 0
 
     def r(text):
         nonlocal count
         out, n = redact(_one_line(text))
         count += n
-        return out
+        return rename(out)          # after redaction, so a redacted name stays redacted
 
     title = r(m["title"]) or "Meeting"
-    names = {lbl: r(name) for lbl, name in view["names"].items()}   # counted once each
+    names = (pseudo if anonymise else
+             {lbl: r(name) for lbl, name in view["names"].items()})   # counted once each
     lines, speakers, skipped = [], [], 0
-    for row in store.transcript(v["id"]):
+    for row in rows:
         if row["id"] in omitted:
             skipped += 1
             continue
@@ -272,6 +305,9 @@ def build(store, mid, template):
                     f"{'were' if skipped != 1 else 'was'} left out and "
                     f"{count} word{'s' if count != 1 else ''} or phrase"
                     f"{'s' if count != 1 else ''} redacted as {REDACTED}.")
+    if anonymise:
+        head.append("- For this handoff, speaker names were replaced with Speaker 1, "
+                    "Speaker 2 and so on.")
     markdown = "\n".join(head + ["", "## Transcript", ""] + lines) + "\n"
     # Framing lines carry a marker derived from the content itself, so text in
     # the transcript cannot reproduce them (it would change the marker).
@@ -282,7 +318,7 @@ def build(store, mid, template):
     prompt_only = f"{prompt}\n\n{FILE_NOTE}\n"
     texts = {"combined": combined, "prompt_only": prompt_only, "markdown": markdown}
     return {**texts, "chars": len(combined), "long": len(combined) > LONG_CHARS,
-            "omitted": skipped, "redactions": count,
+            "omitted": skipped, "redactions": count, "anonymised": bool(anonymise),
             "digests": {k: digest(t) for k, t in texts.items()},
             "template": {"id": template["id"], "title": template["title"],
                          "version": template["version"]},
