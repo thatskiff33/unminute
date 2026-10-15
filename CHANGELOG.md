@@ -5,6 +5,10 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.4.0
+
+The redesign, in Unlimit colours. Install: download `Unminute-0.4.0.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x or v0.3.0 updates and keeps your workspace: the storage format is unchanged. The known limitations listed for v0.2.0 and v0.2.1 still apply. The new screens have been checked with sample data, automated UI and accessibility checks; they have not yet been tried by pilot users (#27).
+
 - **New look, in Unlimit colours.** Unminute is redesigned throughout, with the Archivo typeface bundled, a light sidebar, dark blue buttons and orange kept for Record. Dark mode follows Windows. The app icon is now dark blue and orange.
 - **One Meetings page.** The Inbox and Active meetings are merged into one page, grouped by what each meeting needs next: Needs attention, Ready for you, Transcribing and Cleaning up. Meetings ready for you show their length, number of speakers and next action. Record a meeting and Import a recording sit at the top, and the sidebar shows how many meetings are waiting for you.
 - **Meeting view.** The four steps run across the top with the next action beside them. Speakers, Versions and Holds are tabs in the side panel.
