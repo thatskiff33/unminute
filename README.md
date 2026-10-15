@@ -81,12 +81,12 @@ Transcription runs in the background, one meeting at a time. The Meetings page g
 
 Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) run across the top, with the next action beside them.
 
-- Select a time to play from that passage; the player at the bottom carries on through the meeting. Space plays or pauses, and J and K move between passages.
+- Select a time to play from that passage; the player at the bottom carries on through the meeting. While the audio is kept, Space plays or pauses, and J and K move between passages.
 - Select text, or press Enter, to correct it. Ctrl+Z undoes the last edit.
 - Search with Ctrl+F. In a wide window the transcript and the side panel scroll separately.
 - **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
 - The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**.
-- **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? to open it.
+- **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? (outside a text field) to open it.
 
 ![Naming speakers from short examples](docs/screenshots/workspace-names.png)
 
@@ -149,7 +149,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 | Problem | What to do |
 | --- | --- |
-| A model shows "Damaged" | Settings > Manage downloads > Repair. The damaged copy is kept aside, not deleted. |
+| A model shows "Damaged" or "Needs attention" | Settings > Manage downloads (the Downloads page) > Repair. The damaged copy is kept aside, not deleted. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > Manage downloads, then use Identify again in the meeting's Speakers tab. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |

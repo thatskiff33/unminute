@@ -52,13 +52,13 @@ How it handles problems:
   - On battery, automatic work waits unless you allow it in Settings.
   - **Pause** stops at the next safe point. **Stop now** stops at once; the part in progress is redone later and nothing already transcribed is lost.
 - **Find your meetings.** The Meetings page groups them by what they need next: **Needs attention**, **Ready for you**, **Transcribing** and **Cleaning up**. The number beside Meetings in the sidebar counts the meetings waiting for you.
-- **Review.** Select **Review** on a meeting. Its steps (Transcribe, Review, Hand off, Clean up) run across the top, with the next action beside them.
-  - Select a time to play from that passage. The player at the bottom carries on through the meeting and the transcript follows along. Space plays or pauses; J and K move between passages.
+- **Review.** Open a meeting (select its title or **Review**). Its steps (Transcribe, Review, Hand off, Clean up) run across the top, with the next action beside them.
+  - Select a time to play from that passage. The player at the bottom carries on through the meeting and the transcript follows along. While the audio is kept, Space plays or pauses and J and K move between passages.
   - Select text, or press Enter, to correct it. Edits save automatically, and Ctrl+Z reverses them, even after a restart.
   - Search with Ctrl+F.
 - **Name speakers.** **Name speakers** asks "Who's speaking?" and plays short examples for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
 - **Transcribe again.** The **Versions** tab can transcribe again with another model. Your earlier version and its edits are kept, and you can still open them read-only.
-- **Shortcuts.** **Help and shortcuts** in the sidebar lists them all. Press ? anywhere to open it.
+- **Shortcuts.** **Help and shortcuts** in the sidebar lists them all. Press ? (outside a text field) to open it.
 
 ## Handing off and cleaning up
 
@@ -116,7 +116,7 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 
 | Problem | What to do |
 | --- | --- |
-| A model shows "Damaged" | Settings > **Manage downloads** > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
+| A model shows "Damaged" or "Needs attention" | Settings > **Manage downloads** (the Downloads page) > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. |
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows files waiting for copying to finish, cloud-only files and unreadable files. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |

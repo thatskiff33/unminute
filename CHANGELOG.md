@@ -6,7 +6,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 ## Unreleased
 
 - **New look, in Unlimit colours.** Unminute is redesigned throughout, with the Archivo typeface bundled, a light sidebar, dark blue buttons and orange kept for Record. Dark mode follows Windows. The app icon is now dark blue and orange.
-- **One Meetings page.** The Inbox and Active meetings are merged into one page, grouped by what each meeting needs next: Needs attention, Ready for you, Transcribing and Cleaning up. Rows show the length, the number of speakers and the next action. Record a meeting and Import a recording sit at the top, and the sidebar shows how many meetings are waiting for you.
+- **One Meetings page.** The Inbox and Active meetings are merged into one page, grouped by what each meeting needs next: Needs attention, Ready for you, Transcribing and Cleaning up. Meetings ready for you show their length, number of speakers and next action. Record a meeting and Import a recording sit at the top, and the sidebar shows how many meetings are waiting for you.
 - **Meeting view.** The four steps run across the top with the next action beside them. Speakers, Versions and Holds are tabs in the side panel.
 - **Continuous playback.** The player plays on through the meeting from any passage, with the transcript following along. Space plays or pauses, and J and K move between passages.
 - **Who's speaking?** Naming speakers shows each speaker as a card with short examples to play.
@@ -14,7 +14,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 - **Setup in five steps**, with an optional microphone step. Models and the graphics card component moved to Settings > Manage downloads.
 - **Settings** regrouped into Processing, Speech model, Recording and speakers, Watched folders, Updates and Cleanup receipts.
 - **Help and shortcuts** page, opened from the sidebar or with ?.
-- The backend now reports each meeting's length, speaker count and model, and speaker summaries include speaking time.
+- The backend now reports each meeting's length, speaker count and model, and the Speakers tab shows each speaker's share of the talking.
 
 ## v0.3.0
 
