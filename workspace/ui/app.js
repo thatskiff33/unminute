@@ -1434,6 +1434,20 @@ function modelCard(c, s) {
     dl && dl.state === "failed" ? el("span", { class: "su-failed", textContent: dl.message }) : null);
 }
 
+// Rebuilds a list in place, keeping open Details and keyboard focus on the same
+// control (by position), so a download's progress updates do not disturb either.
+function replaceKeeping(box, ...children) {
+  const controls = () => [...box.querySelectorAll("button, summary, a[href], input, select")];
+  const at = controls().indexOf(document.activeElement);
+  const open = [...box.querySelectorAll("details")].map((d) => d.open);
+  box.replaceChildren(...children);
+  box.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });
+  if (at >= 0) {
+    const target = controls()[at];
+    if (target && !target.disabled) target.focus();
+  }
+}
+
 // One row per model or component, for Other options and the Downloads page.
 function downloadRow(c, s, inUse) {
   const dl = c.download;
@@ -1494,8 +1508,8 @@ async function renderSetup() {
   const sig = JSON.stringify(s.cards);
   if (sig !== suState.sig) {                         // unchanged: keep open Details and focus
     suState.sig = sig;
-    $("su-model").replaceChildren(modelCard(rec, s));
-    $("setup-cards").replaceChildren(...others.map((c) => downloadRow(c, s, false)));
+    replaceKeeping($("su-model"), modelCard(rec, s));
+    replaceKeeping($("setup-cards"), ...others.map((c) => downloadRow(c, s, false)));
   }
   $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
   $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
@@ -1563,7 +1577,7 @@ function wireSetup() {
     b.addEventListener("click", () => attempt(() => call("open_help", b.dataset.help)));
   for (const b of document.querySelectorAll("#view-setup [data-go]"))
     b.addEventListener("click", () => setStep(Number(b.dataset.go)));
-  const speakerName = () => state.setup.cards.find((c) => c.role === "speakers").name;
+  const speakerName = () => (state.setup.cards.find((c) => c.role === "speakers") || {}).name;
   $("s-download-speakers").addEventListener("click", () => {
     const token = $("s-token").value.trim();
     if (!token) { say("Paste your Hugging Face token first."); return; }
@@ -1622,7 +1636,7 @@ async function renderDownloads() {
   const sig = JSON.stringify([s.cards, settings.model]);
   if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
     state.downloadsSig = sig;
-    $("dl-list").replaceChildren(...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
+    replaceKeeping($("dl-list"), ...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
   }
   $("dl-token").hidden = !s.token_remembered;
   $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
