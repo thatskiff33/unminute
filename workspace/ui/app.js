@@ -40,7 +40,7 @@ function say(message, { sticky = false } = {}) {
   if (message && !sticky)
     toastTimer = setTimeout(() => {
       if (state.statusLine) say(state.statusLine, { sticky: true });   // a lasting status returns
-      else t.textContent = "";
+      else say("");
     }, OK_MESSAGE.test(message) ? 3000 : 8000);
 }
 
@@ -1167,6 +1167,7 @@ function renderRecCard(rec, tick) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
   $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
+  state.recSeconds = rec.seconds;
   $("rec-clock").textContent = fmtSeconds(rec.seconds);
   $("rec-icon").hidden = kind !== "lost";
   $("rec-spinner").hidden = kind !== "saving";
@@ -1219,7 +1220,7 @@ async function renderRecorder(tick = false) {
     if (!devices.length) $("rec-test-result").textContent = "No microphone found.";
   }
   const now = r.recording || {};
-  const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || 0, events: now.events || [] }
+  const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || state.recSeconds || 0, events: now.events || [] }
     : r.recording;
   const active = !!rec;
   $("start").hidden = active;
