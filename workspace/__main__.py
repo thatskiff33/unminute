@@ -134,6 +134,17 @@ def main():
                                  allowed=api.API_METHODS)
     holder["window"] = window
     window.events.loaded += lambda: api.enable_drop(window, ws)
+
+    def closing():
+        # A recording is open: keep the window and let the page ask (Stop and
+        # save, Discard, Keep recording). The page closes it with close_app.
+        if getattr(window, "unminute_may_close", False) or not ws.recording_active():
+            return True
+        import threading
+        threading.Thread(target=lambda: window.evaluate_js("window.workspace.askClose()"),
+                         daemon=True, name="ask-close").start()
+        return False
+    window.events.closing += closing
     try:
         shell.run()
     finally:

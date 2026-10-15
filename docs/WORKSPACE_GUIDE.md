@@ -38,7 +38,8 @@ Microphone recording is off until you turn it on, in Setup or in Settings > Reco
 
 How it handles problems:
 
-- **Saved as it goes.** Audio is saved to disk every few seconds while recording. If the app or computer stops unexpectedly, the next start imports what was saved. It then reports about how much at the end could not be saved.
+- **Saved as it goes.** Audio is saved to disk every few seconds while recording. If the app or computer stops unexpectedly, the next start lists it as a recovered recording: choose **Keep and transcribe** (it then reports about how much at the end could not be saved) or **Delete…**.
+- **Closing asks first.** Closing the window while recording asks whether to stop and save, discard, or keep recording.
 - **Gaps are reported, never hidden.** If the computer falls behind or the disk fills up, the recording says when audio was lost and, where known, for how long.
 - **The microphone never changes on its own.** If the microphone is disconnected, recording stops and keeps what was saved. It does not move to another microphone.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.

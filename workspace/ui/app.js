@@ -1554,8 +1554,7 @@ async function renderSuMic() {
   if (!suState.mic) $("su-test-result").hidden = true;
   if (suState.mic && !suState.devices) {
     const devices = await attempt(() => call("microphone_devices")) || [];
-    $("su-device").replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
-      textContent: d.name + (d.default ? " (default)" : "") })));
+    $("su-device").replaceChildren(...devices.map(deviceOption));
     const def = devices.find((d) => d.default);
     if (def) $("su-device").value = String(def.index);
     suState.devices = devices.length > 0;
@@ -1913,6 +1912,13 @@ function deviceName() {
   const opt = $("rec-device").selectedOptions[0];
   return opt ? opt.dataset.name : "";
 }
+// The full name, for showing (Windows' own list cuts names at 31 characters).
+function deviceLabel() {
+  const opt = $("rec-device").selectedOptions[0];
+  return opt ? opt.dataset.label || opt.dataset.name : "";
+}
+const deviceOption = (d) => el("option", { value: String(d.index), "data-name": d.name,
+  "data-label": d.label || d.name, textContent: (d.label || d.name) + (d.default ? " (default)" : "") });
 
 function renderRecCard(rec, display) {
   const kind = REC_KIND[rec.state] ?? "saving";
@@ -1946,6 +1952,16 @@ function reportItem(rep) {
   const dismiss = linkButton("Dismiss",
     () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)));
   const events = rep.events.length ? ` ${rep.events.map(eventText).join("; ")}.` : "";
+  if (rep.pending && rep.recovered) {                // left when the app closed: the user decides
+    const when = rep.started_at ? ` from ${new Date(rep.started_at * 1000).toLocaleString()}` : "";
+    return notice("alert", `Recovered recording${when} (about ${fmtSeconds(rep.seconds)}). ${rep.note}`,
+      button("Keep and transcribe", () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)),
+             { primary: true }),
+      linkButton("Delete…", () => confirmDialog({ title: "Delete this recording?",
+        body: "The recovered audio is deleted from this computer. It is not transcribed and cannot be recovered.",
+        check: "Delete the recording.", limits: false, danger: true,
+        onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })));
+  }
   if (rep.pending && rep.discarded)                 // discarded: it can only be deleted
     return notice("alert", `Discarded recording (${fmtSeconds(rep.seconds)}) could not be deleted yet. ${rep.note}`,
       linkButton("Delete now", () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder))));
@@ -1973,8 +1989,7 @@ async function renderRecorder(tick = false) {
   const sel = $("rec-device");
   if (r.enabled && !sel.options.length) {
     const devices = await call("microphone_devices");
-    sel.replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
-      textContent: d.name + (d.default ? " (default)" : "") })));
+    sel.replaceChildren(...devices.map(deviceOption));
     const def = devices.find((d) => d.default);
     if (def) sel.value = String(def.index);
     if (!devices.length) $("rec-test-result").textContent = "No microphone found.";
@@ -1988,7 +2003,7 @@ async function renderRecorder(tick = false) {
   $("rec-start").hidden = !r.enabled;
   $("mic-line").hidden = !r.enabled;
   if (!r.enabled) $("mic-chooser").hidden = true;
-  $("mic-name").textContent = $("rec-start-device").textContent = deviceName() || "No microphone";
+  $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
   if (active) renderRecCard(rec, r.display);
   else stopViz();
@@ -2027,7 +2042,7 @@ function wireRecorder() {
     if (open) $("rec-device").focus();
   });
   $("rec-device").addEventListener("change", () => {
-    $("mic-name").textContent = $("rec-start-device").textContent = deviceName();
+    $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel();
   });
   $("rec-test").addEventListener("click", () => attempt(async () => {
     $("rec-test-result").textContent = "Listening for 3 seconds…";
@@ -2253,7 +2268,21 @@ function wire() {
   });
 }
 
-window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep };   // for the check tools
+// Closing the window while recording: the app keeps the window open and asks.
+function askClose() {
+  const dlg = $("close-rec");
+  if (dlg.open) return;
+  dlg.returnValue = "";
+  dlg.onclose = () => attempt(async () => {
+    const choice = dlg.returnValue;
+    if (choice === "save") { await call("stop_recording"); await call("close_app"); }
+    else if (choice === "discard") { await call("discard_recording"); await call("close_app"); }
+    else renderRecorder();                           // keep recording
+  });
+  dlg.showModal();
+}
+
+window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep, askClose };   // check tools, close
 
 wire();
 window.addEventListener("pywebviewready", async () => {

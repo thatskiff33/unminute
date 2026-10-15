@@ -163,9 +163,10 @@ class Workspace:
         # Ask nvidia-smi once in the background, so Setup and Settings do not
         # wait for it the first time they open.
         threading.Thread(target=gpu.detected, daemon=True, name="gpu-detect").start()
-        # Recordings left by a crash, power loss or a failed import (#30).
+        # Recordings left by a crash, power loss or a failed import (#30). One the
+        # app never stopped waits for the user (Keep and transcribe, or Delete).
         for folder, _ in recorder.unfinished(self.recordings):   # also half-removed ones
-            self._imports.put(("__recording__", str(folder)))
+            self._imports.put(("__recovered__", str(folder)))
 
     def close(self):
         for _ in range(100):              # a recording still opening (up to 10 s)
@@ -223,8 +224,8 @@ class Workspace:
             try:
                 if item is None or self._closing.is_set():
                     return
-                if item[0] == "__recording__":
-                    self._import_recording_folder(Path(item[1]))
+                if item[0] in ("__recording__", "__recovered__"):
+                    self._import_recording_folder(Path(item[1]), ask=item[0] == "__recovered__")
                     continue
                 path, folder_id, key, content = (*item, None, None)[:4]
                 self._status = "Importing a recording"
@@ -320,7 +321,7 @@ class Workspace:
                 self.handle.stop_now()
             choice = self._device(device, name)
             rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
-                                     choice["name"], choice["rate"],
+                                     choice.get("label") or choice["name"], choice["rate"],
                                      open_stream=self.open_stream)
             try:
                 rec.start()
@@ -382,6 +383,10 @@ class Workspace:
                 not rec.folder.exists() or recorder.is_discarded(rec.folder)):
             raise WorkspaceError("The recording was discarded.")   # Discard got there first
         return {**status, "state": "saving"}
+
+    def recording_active(self):
+        """A recording is open (closing the window asks what to do with it)."""
+        return self._recording is not None
 
     def discard_recording(self):
         """The user's explicit choice: stop the recording and delete its audio
@@ -474,7 +479,7 @@ class Workspace:
         self._hung.pop(folder.name, None)
         self.discard_recording_report(rid)
 
-    def _import_recording_folder(self, folder):
+    def _import_recording_folder(self, folder, ask=False):
         """Turn a saved (or crash-recovered) recording into a meeting, then
         remove the recording folder. Failures are reported and the folder is
         kept, to be tried again (Try again, or the next start)."""
@@ -506,6 +511,16 @@ class Workspace:
                 recorder.remove_folder(folder)
             except OSError:
                 pass                     # tried again at the next start
+            return
+        if ask and journal.get("state") == "recording":
+            # The app closed or crashed while recording: nothing is transcribed
+            # until the user chooses to keep it.
+            rate = journal.get("rate") or 0
+            self._add_report({"title": None, "events": [], "pending": folder.name,
+                              "recovered": True, "started_at": journal.get("started_at"),
+                              "seconds": round(journal.get("frames", 0) / rate, 1) if rate else 0,
+                              "note": "The app closed while this was recording. Keep it to "
+                                      "transcribe it, or delete it."})
             return
         events = [e for e in journal.get("events", []) if e["kind"] not in ("paused", "resumed")]
         report = {"title": None, "seconds": 0, "events": events,

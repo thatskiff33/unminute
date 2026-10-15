@@ -659,6 +659,23 @@
   </form>
 </dialog>
 
+<dialog id="close-rec" class="confirm-dialog" aria-labelledby="cr-title" aria-describedby="cr-body">
+  <form method="dialog">
+    <div class="c-head">
+      <span class="c-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg></span>
+      <h2 id="cr-title">A recording is still running</h2>
+    </div>
+    <p id="cr-body">Choose what to do with it before Unminute closes.</p>
+    <div class="dlg-foot">
+      <button value="discard" type="submit" class="danger">Discard and close</button>
+      <span class="dlg-foot-right">
+        <button value="keep" type="submit" autofocus>Keep recording</button>
+        <button value="save" type="submit" class="primary">Stop, save and close</button>
+      </span>
+    </div>
+  </form>
+</dialog>
+
 <script src="app.js"></script>
 </body>
 </html>

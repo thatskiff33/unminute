@@ -65,6 +65,12 @@ def list_devices():
             hostapis = sd.query_hostapis()
     except Exception:
         return []
+    # MME cuts names at 31 characters ("Logitech C920 Microphone (HD Pr"); the
+    # other Windows APIs list the same device in full. The MME name stays the
+    # key (it is what is opened and matched); the full one is shown.
+    full = [_clean_name(d["name"]) for d in devices
+            if d.get("max_input_channels", 0) > 0 and hostapis
+            and hostapis[d["hostapi"]]["name"] != "MME"]
     out = []
     for i, d in enumerate(devices):
         if d.get("max_input_channels", 0) < 1:
@@ -78,9 +84,25 @@ def list_devices():
         # change device mid-recording; only real devices are offered.
         if str(d["name"]).startswith("Microsoft Sound Mapper"):
             continue
-        out.append({"index": i, "name": str(d["name"])[:120], "default": i == default_in,
+        name = str(d["name"])[:120]
+        out.append({"index": i, "name": name, "label": _full_name(name, full),
+                    "default": i == default_in,
                     "rate": int(d.get("default_samplerate") or 44100)})
     return out
+
+
+def _clean_name(name):
+    """Without the replacement characters PortAudio leaves for symbols such as ®."""
+    return " ".join(str(name).replace("\ufffd", " ").split())
+
+
+def _full_name(name, full):
+    """The untruncated name for a (possibly cut) MME name, or the name itself."""
+    short = _clean_name(name)
+    if len(str(name)) < 31:
+        return short[:120]
+    longer = [f for f in full if f.startswith(short) and len(f) > len(short)]
+    return (min(longer, key=len) if longer else short)[:120]
 
 
 # Open PortAudio streams in this process; the device list is only refreshed
