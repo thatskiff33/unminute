@@ -1093,9 +1093,12 @@ class Workspace:
         run = speaker_names.current_run(self.store, vid)
         if run is None:
             return None
-        last = self.store._one("SELECT MAX(id) AS n FROM speaker_corrections WHERE run_id = ?",
-                               (run["id"],))["n"]
-        key = (vid, run["id"], last)
+        # The whole (small) correction log: an undone correction's id can be
+        # reused by the next one, so the last id alone could repeat a key.
+        log = tuple((c["id"], c["kind"], c["target"], c["value"]) for c in self.store._all(
+            "SELECT id, kind, target, value FROM speaker_corrections WHERE run_id = ? "
+            "ORDER BY id", (run["id"],)))
+        key = (vid, run["id"], log)
         cache = self.__dict__.setdefault("_speaker_counts", {})
         if key not in cache:
             if len(cache) > 100:
