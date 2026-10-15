@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Removes the Meeting Workspace for the current Windows user (#11).
+  Removes Unminute for the current Windows user (#11).
 
 .DESCRIPTION
   Removes the installed program, its Start menu shortcut and its uninstall
@@ -20,7 +20,9 @@ param(
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent }
-$AppName = "Meeting Workspace"
+$AppName = "Unminute"
+# Every Start menu name a version has used (see install.ps1).
+$KnownAppNames = @("Unminute", "Meeting Workspace")
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
 
 function Write-Step([string]$Message) {
@@ -35,8 +37,33 @@ try {
         Write-Step "$AppName is running. Close it, then run this again."
         exit 3
     }
-    $link = Join-Path ([Environment]::GetFolderPath("Programs")) "$AppName.lnk"
+    $programs = [Environment]::GetFolderPath("Programs")
+    $link = Join-Path $programs "$AppName.lnk"
     if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+    # A shortcut under another name is removed only if it points into this install,
+    # and a problem with one only warns: it must not stop the uninstall.
+    # Long form: a .lnk stores its target as a long path, so a short (8.3) InstallDir
+    # would otherwise never match.
+    $dir = $Options.InstallDir
+    try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
+    $prefix = $dir.TrimEnd("\") + "\"
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($name in $KnownAppNames) {
+        if ($name -eq $AppName) { continue }
+        $old = Join-Path $programs "$name.lnk"
+        if (-not (Test-Path -LiteralPath $old)) { continue }
+        $sc = $null
+        try {
+            $sc = $shell.CreateShortcut($old)
+            $target = $sc.TargetPath
+            # Release the shortcut object before deleting: while alive it keeps the .lnk open.
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
+            if ($target -and $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $old -Force
+            }
+        } catch { Write-Warning "Could not remove the old shortcut $($name): $($_.Exception.Message)" }
+        finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
+    }
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove everything else first.
         Get-ChildItem -LiteralPath $Options.InstallDir | Where-Object { $_.Name -ne "uninstall.ps1" } |

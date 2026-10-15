@@ -70,7 +70,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "Whisper Transcriber $tag"
+          git tag -a "$tag" -m "Unminute $tag"
           git push origin "$tag"
 
       - name: Publish release
@@ -79,6 +79,6 @@ jobs:
         run: |
           tag="${{ steps.tag.outputs.tag }}"
           gh release create "$tag" \
-            --title "Whisper Transcriber $tag" \
+            --title "Unminute $tag" \
             --notes-file notes.md \
             --verify-tag

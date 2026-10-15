@@ -1,6 +1,6 @@
-# Meeting workspace: user guide
+# Unminute: user guide
 
-The meeting workspace turns a meeting recording into a reviewed transcript on your own computer. You then hand the transcript to your organisation's approved AI assistant to draft minutes, and clear the meeting out of the workspace.
+Unminute turns a meeting recording into a reviewed transcript on your own computer. You then hand the transcript to your organisation's approved AI assistant to draft minutes, and clear the meeting out of the workspace.
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 

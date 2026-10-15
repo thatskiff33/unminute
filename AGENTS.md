@@ -1,4 +1,4 @@
-# Agent guidelines for Whisper Transcriber
+# Agent guidelines for Unminute (formerly Whisper Transcriber)
 
 ## Read first
 - Read `README.md` for currently shipped behaviour and `docs/WORKSPACE_PLAN.md` for the target product. Read `docs/IMPLEMENTATION_PLAN.md` for sequencing and the current issue plus its comments for acceptance criteria.

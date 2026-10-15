@@ -3,7 +3,7 @@
 These are the checks still open before a business release. Each one needs a machine, an organisation or people that the development laptop cannot supply. Run them against a published package. Record the results on the issue named, using anonymous, aggregate figures only.
 
 **Get the package and tools:**
-- From the release page, download `WhisperWorkspace-<version>.zip`, its `.sha256` file and "Source code (zip)".
+- From the release page, download `Unminute-<version>.zip`, its `.sha256` file and "Source code (zip)".
 - The source zip contains `tools/`, which holds the evidence scripts.
 - The scripts run with the installed app's own Python runtime, so nothing else needs installing.
 
@@ -16,8 +16,8 @@ These are the checks still open before a business release. Each one needs a mach
 
 **Machine:** a Windows 10 (1809 or later) or Windows 11 x64 device. Sign in with a standard (non-admin) account that has never had Python, Git or developer tools.
 
-1. Install with `install.cmd`, or with `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package WhisperWorkspace-<version>.zip`. Expect exit code 0 and no administrator prompt.
-2. Open **Meeting Workspace** from the Start menu. Complete Setup: download Parakeet v2, and optionally speaker identification with a Hugging Face token.
+1. Install with `install.cmd`, or with `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package Unminute-<version>.zip`. Expect exit code 0 and no administrator prompt.
+2. Open **Unminute** from the Start menu. Complete Setup: download Parakeet v2, and optionally speaker identification with a Hugging Face token.
 3. Import a synthetic recording, review it, and confirm review and then the final save.
 4. Run `<install>\runtime\python.exe -m workspace --self-test` from `<install>\app`. Expect `PASS`.
 5. Uninstall from Settings > Apps. Check that `%LOCALAPPDATA%\Programs\WhisperWorkspace` is gone, and that the workspace and models are kept, as documented.

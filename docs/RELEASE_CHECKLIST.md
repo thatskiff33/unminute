@@ -1,4 +1,4 @@
-# Release checklist: meeting workspace
+# Release checklist: Unminute
 
 This lists what a workspace release needs, what has been verified, and what still needs people or hardware.
 

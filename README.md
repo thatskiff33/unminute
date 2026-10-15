@@ -1,12 +1,16 @@
-# Meeting Workspace (Whisper Transcriber)
+# Unminute
 
-Meeting Workspace turns meeting recordings into reviewed transcripts on your own Windows computer. You review the transcript against the audio, name the speakers, and hand the text to your organisation's approved AI assistant to draft minutes. Then the app clears its working copies away. Transcription and speaker identification run on your computer, and nothing is uploaded.
+**Unlimit your meeting minutes.**
+
+Unminute turns meeting recordings into reviewed transcripts on your own Windows computer. You review the transcript against the audio, name the speakers, and hand the text to your organisation's approved AI assistant to draft minutes. Then the app clears its working copies away. Transcription and speaker identification run on your computer, and nothing is uploaded.
 
 ![The Inbox, with one meeting in review and one paused](docs/screenshots/workspace-inbox.png)
 
 It was built for a professional-services office where recordings are confidential, laptops are locked down (no administrator rights, Intune managed) and nobody wants to learn a command line. It installs per user, without administrator rights.
 
 The screenshots show a fictional sample meeting, spoken by the Windows built-in text-to-speech voices. No real people or recordings appear in them.
+
+Unminute was previously called Meeting Workspace, and this repository Whisper Transcriber. Only the name changed: an installed copy updates in place and keeps its meetings, settings and models.
 
 ## What it does
 
@@ -32,17 +36,17 @@ You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own
 
 ## Install
 
-1. Download `WhisperWorkspace-<version>.zip` and `WhisperWorkspace-<version>.zip.sha256` from the [latest release](https://github.com/thatskiff33/whisper-transcriber/releases/latest).
+1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [latest release](https://github.com/thatskiff33/whisper-transcriber/releases/latest).
 2. Extract the zip.
 3. Double-click `install.cmd`.
 
-The installer checks the requirements and every file in the package, then installs for your Windows account only. It adds a **Meeting Workspace** shortcut to the Start menu. Installation takes a few minutes, mostly checking files.
+The installer checks the requirements and every file in the package, then installs for your Windows account only. It adds an **Unminute** shortcut to the Start menu. Installation takes a few minutes, mostly checking files.
 
 Before extracting, you can check the zip against its `.sha256` file. In PowerShell, in the download folder, the two values printed must match:
 
 ```powershell
-(Get-FileHash WhisperWorkspace-<version>.zip -Algorithm SHA256).Hash
-Get-Content WhisperWorkspace-<version>.zip.sha256
+(Get-FileHash Unminute-<version>.zip -Algorithm SHA256).Hash
+Get-Content Unminute-<version>.zip.sha256
 ```
 
 Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md).
@@ -124,15 +128,15 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 | Workspace (meetings, edits, holds, settings) | `%LOCALAPPDATA%\whisper\workspace` |
 | Models, and the optional graphics card component | `%LOCALAPPDATA%\whisper-models` |
 | Hugging Face token (if remembered) | Windows Credential Manager |
-| Start menu shortcut | Meeting Workspace |
+| Start menu shortcut | Unminute |
 
-`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive.
+`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. The folder names keep the app's earlier names so that existing installs, meetings and models carry over without being moved.
 
 ## Updates, rollback and uninstall
 
 - **Update:** run the new package's `install.cmd` with the app closed. An update that keeps the storage format keeps everything. One that changes it waits until the workspace is empty (no meetings in the workspace, active holds, unfinished cleanup or unimported microphone recordings), and says what it is waiting for. No update expires a hold, deletes your work or makes a backup copy of it.
 - **Rollback:** the previous version is kept. To return to it, run `install.ps1 -Rollback` from the current version's folder (`versions\<version>`). Rollback is refused if the previous version cannot open your workspace, for example after a storage-format change.
-- **Uninstall:** Settings > Apps > Meeting Workspace. The workspace and downloaded models are kept, because meeting content is only removed through the app's confirmed cleanup steps.
+- **Uninstall:** Settings > Apps > Unminute. The workspace and downloaded models are kept, because meeting content is only removed through the app's confirmed cleanup steps.
 
 Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 
@@ -144,7 +148,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Setup, then use Identify again in the meeting. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |
-| The installer says the app is running | Close Meeting Workspace and run it again. |
+| The installer says the app is running | Close Unminute and run it again. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 
 For IT support, `runtime\python.exe -m workspace --self-test` in the installed version folder checks that the main dependencies load and that the network block works. `--status` prints counts only, never content.
@@ -173,7 +177,7 @@ What is verified for each release is listed in [docs/RELEASE_CHECKLIST.md](docs/
 
 ## The earlier app
 
-The original source-installed Whisper Transcriber (a file queue with a tkinter window, installed with `install.cmd` at the top of this repository) still works. It is documented in [docs/EARLIER_APP.md](docs/EARLIER_APP.md). The two keep separate outputs and share downloaded models, and the workspace never deletes anything the earlier app created.
+The original source-installed app, Whisper Transcriber (a file queue with a tkinter window, installed with `install.cmd` at the top of this repository) still works. It is documented in [docs/EARLIER_APP.md](docs/EARLIER_APP.md). The two keep separate outputs and share downloaded models, and the workspace never deletes anything the earlier app created.
 
 ## For developers
 
@@ -181,7 +185,7 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 
 | Path | Purpose |
 | --- | --- |
-| `workspace/` | Meeting Workspace: SQLite state, durable chunked processing, managed workers, cleanup and holds, intake, recording, the pywebview shell (`workspace/ui/`) |
+| `workspace/` | Unminute: SQLite state, durable chunked processing, managed workers, cleanup and holds, intake, recording, the pywebview shell (`workspace/ui/`) |
 | `asr_engines.py` | Shared engine interface for Parakeet and Whisper; model manifests, verified install and repair |
 | `offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
 | `packaging/` | Per-user installer and uninstaller for the package |

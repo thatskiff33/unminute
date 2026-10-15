@@ -1,12 +1,12 @@
 # tools/build_package.py
-# Build the preassembled Windows package for the meeting workspace (#11).
+# Build the preassembled Windows package for Unminute (#11).
 #
 #   python tools/build_package.py --version 0.2.0 [--out dist] [--cache DIR]
 #
 # Run on a build machine (this is a deliberate download step; end users never
 # assemble anything). The result is one versioned zip plus a .sha256 file:
 #
-#   WhisperWorkspace-<version>/
+#   Unminute-<version>/
 #     runtime/      private CPython 3.12 (official embeddable package, hash-pinned
 #                   and Authenticode-checked) with the pinned wheels installed
 #     app/          asr_engines.py, offline_guard.py, workspace/ (no tests)
@@ -195,7 +195,7 @@ def check_host():
 
 def build(version, out, cache):
     check_host()
-    name = f"WhisperWorkspace-{version}"
+    name = f"Unminute-{version}"
     # Build in an extended-length path (\\?\): the temp folder plus the
     # deepest wheel files can pass 260 characters on the build machine, and
     # Windows APIs then silently skip those files. (Paths inside the package
@@ -220,6 +220,9 @@ def build(version, out, cache):
         for script in ("install.ps1", "install.cmd", "uninstall.ps1"):
             shutil.copy2(PACKAGING / script, folder / script)
         (folder / "version.json").write_text(json.dumps({
+            # "name": Start menu and Settings > Apps name; installers read it so a
+            # rollback recreates what this version's uninstaller removes.
+            "name": "Unminute",
             "version": version, "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "python": PYTHON_VERSION, "commit": git_commit(),
             # Installers check for features before relying on them (#26).

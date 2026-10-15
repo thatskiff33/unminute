@@ -133,7 +133,7 @@ def lock_navigation(window):
     control.NavigationStarting += on_navigation_starting
 
 
-def create_window(bridge, title="Meeting workspace", hidden=False, harden=True,
+def create_window(bridge, title="Unminute", hidden=False, harden=True,
                   page="index.html", allowed=None):
     """`allowed` is the exact set of bridge names the page may call
     (workspace.api.API_METHODS for the workspace, the trial's by default)."""
