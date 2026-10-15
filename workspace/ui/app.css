@@ -12,7 +12,7 @@ h2 { font-size: 17px; font-weight: 800; margin: 20px 0 8px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .muted { color: var(--muted); }
 .error, .errors { color: var(--error); }
-.ok { color: var(--done); font-weight: 600; }
+.ok { color: var(--done-text); font-weight: 600; }
 
 /* -- buttons ----------------------------------------------------------------- */
 /* Secondary by default; .primary dark blue; .record orange (19 px bold, so white
@@ -66,7 +66,15 @@ nav { display: flex; flex-wrap: wrap; gap: 4px; }
 #status { margin: 0; color: var(--muted); flex: 1 1 20ch; min-width: 0; }
 .banner { background: var(--hold); color: var(--hold-fg); padding: 12px 20px; }
 .banner p { margin: 4px 0; }
-.banner button.link { color: var(--hold-fg); }
+/* Pink (hold) surfaces keep their light look in both themes, so text and
+   buttons on them use the hold colours, not the page's. */
+.banner .muted, .holds li .muted { color: var(--hold-fg); }
+.banner button:not(.link), .holds li button:not(.link) {
+  background: #FFFFFF; color: var(--hold-fg); border-color: var(--hold-line);
+}
+.banner button:not(.link):hover:not(:disabled), .holds li button:not(.link):hover:not(:disabled) { background: #FFFFFF; }
+.banner button.link, .holds li button.link,
+.banner button.link:hover:not(:disabled), .holds li button.link:hover:not(:disabled) { color: var(--hold-fg); }
 main { padding: 16px 24px 80px; }   /* bottom: clear of the player; matches .meeting-body's height */
 
 /* -- inbox and lists -------------------------------------------------------------- */
@@ -132,6 +140,8 @@ aside { border-left: 1px solid var(--line); padding-left: 20px; }
 /* Long transcripts: the browser skips layout/paint of off-screen rows. */
 #transcript li { content-visibility: auto; contain-intrinsic-size: auto 48px; padding: 6px 10px; display: flex; gap: 10px; border-radius: var(--r); }
 #transcript li.hit { background: var(--hit); }
+/* On the pink match colour, true blue and muted text fall below 4.5:1. */
+#transcript li.hit .t, #transcript li.hit .muted, #transcript li.hit .overlap { color: var(--text); }
 #transcript li.current { outline: 2px solid var(--accent); outline-offset: -2px; }
 .t { min-height: 0; border: 0; padding: 0 2px; background: none; color: var(--link); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .t:hover:not(:disabled) { background: none; }

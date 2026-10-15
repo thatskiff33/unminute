@@ -61,6 +61,7 @@
   --fill: #2B61BF;
   --done: #00A275;
   --done-fg: #FFFFFF;
+  --done-text: #003B2A;       /* "Ready" and other success text (dark green) */
   --upcoming: rgba(20, 41, 102, 0.16);
   --success: #62D098;
   --success-fg: #003B2A;
@@ -129,6 +130,7 @@
     --fill: #B4DDF6;
     --done: #62D098;
     --done-fg: #003B2A;
+    --done-text: #62D098;
     --upcoming: rgba(255, 255, 255, 0.18);
     --error: #F2A49E;
     --player: #0B1638;

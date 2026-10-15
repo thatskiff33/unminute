@@ -10,6 +10,8 @@
 #
 # Needs Microsoft Edge and Pillow. Development tool only; not shipped.
 
+"""Compare the approved design boards with the app, screen by screen."""
+
 import argparse
 import http.server
 import json
@@ -18,7 +20,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from PIL import Image, ImageChops
 
@@ -74,24 +76,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        path = urlsplit(self.path).path.lstrip("/")
+        path = unquote(urlsplit(self.path).path).lstrip("/")
         if path.startswith("app/"):
             rel = path[4:] or "index.html"
-            target = UI / rel
+            base = UI.resolve()
             if rel == "index.html":
-                html = target.read_text(encoding="utf-8").replace(
-                    '<script src="app.js"></script>',
-                    '<script src="/tools/design_check/fixtures.js"></script>\n'
-                    '<script src="app.js"></script>')
+                html = (UI / rel).read_text(encoding="utf-8")
+                tag = '<script src="app.js"></script>'
+                if tag not in html:
+                    raise RuntimeError("index.html no longer loads app.js as expected; "
+                                       "update the bridge injection in design_check.py")
+                html = html.replace(
+                    tag, '<script src="/tools/design_check/fixtures.js"></script>\n' + tag)
                 return self._send(html.encode("utf-8"), "text/html; charset=utf-8")
-        elif path.startswith(SERVED):
-            target = ROOT / path
+            target = (base / rel).resolve()
         else:
-            return self.send_error(404)
-        target = target.resolve()
-        if ROOT not in target.parents or not target.is_file():
+            prefix = next((p for p in SERVED if path.startswith(p)), None)
+            if prefix is None:
+                return self.send_error(404)
+            base = (ROOT / prefix).resolve()
+            target = (ROOT / path).resolve()
+        # Only files inside the matched folder, whatever ".." the request holds.
+        if not target.is_relative_to(base) or not target.is_file():
             return self.send_error(404)
         return self._send(target.read_bytes(), self.guess_type(str(target)))
+
+    def do_HEAD(self):
+        self.send_error(405)
 
     def _send(self, body, ctype):
         self.send_response(200)
@@ -111,7 +122,8 @@ def edge():
 
 def shoot(url, out, width, height, dark=False):
     """Screenshot a page in headless Edge at width x height CSS pixels."""
-    with tempfile.TemporaryDirectory() as profile:
+    # Edge's crash handler can outlive it and keep the profile folder open.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
         cmd = [str(edge()), "--headless=new", "--disable-gpu", "--hide-scrollbars",
                "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
                "--force-device-scale-factor=1", f"--window-size={width},{height}",
@@ -176,7 +188,7 @@ def main():
             print(json.dumps(row))
     finally:
         server.shutdown()
-    (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+        (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":
