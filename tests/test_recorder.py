@@ -359,8 +359,16 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertTrue(self.ws.wait_idle(60))
         waiting = self.ws.recording_status()["reports"][-1]
         self.assertTrue(waiting["recovered"])
-        self.ws.delete_pending_recording(waiting["id"])
+        locked = mock.patch("shutil.rmtree", lambda *a, **k: None)   # a file is locked
+        with locked, self.assertRaises(WorkspaceError):               # and it says so
+            self.ws.delete_pending_recording(waiting["id"])
+        self.assertTrue(recorder.is_discarded(rec.folder))      # so it is never offered again
+        self.ws.close()
+        self.ws = self.make()
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
         self.assertFalse(rec.folder.exists())
+        self.assertEqual(self.ws.recording_status()["reports"], [])
         self.assertEqual(self.ws.meetings(), [])
         self.assertTrue(self.ws.recording_active() is False)
 
@@ -371,6 +379,9 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(recorder._full_name("Logitech C920 Microphone (HD Pr", full), full[0])
         self.assertEqual(recorder._full_name("Laptop Inbuilt MIcrophone (2- I", full), full[1])
         self.assertEqual(recorder._full_name("USB Mic", full), "USB Mic")
+        twins = ["Headset Microphone (Jabra Evolve 65)", "Headset Microphone (Jabra Evolve2 85)"]
+        self.assertEqual(recorder._full_name("Headset Microphone (Jabra Evol", twins),
+                         "Headset Microphone (Jabra Evol")   # ambiguous: the name as listed
         self.assertEqual(recorder._clean_name("Intel\ufffd Smart"), "Intel Smart")
 
     def test_recording_display_setting(self):

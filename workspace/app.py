@@ -471,6 +471,10 @@ class Workspace:
         hung = self._hung.get(folder.name)
         if hung is not None and hung.writing:
             raise WorkspaceError("The recording is still being saved. Try again in a moment.")
+        try:                                     # if any file is locked, the rest
+            recorder.mark_discarded(folder)      # is deleted at the next start, never imported
+        except OSError:
+            pass
         import shutil
         shutil.rmtree(folder, ignore_errors=True)
         if folder.exists():

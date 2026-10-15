@@ -101,8 +101,9 @@ def _full_name(name, full):
     short = _clean_name(name)
     if len(str(name)) < 31:
         return short[:120]
-    longer = [f for f in full if f.startswith(short) and len(f) > len(short)]
-    return (min(longer, key=len) if longer else short)[:120]
+    longer = {f for f in full if f.startswith(short) and len(f) > len(short)}
+    # Only when it is unambiguous: two devices can share the first 31 characters.
+    return (longer.pop() if len(longer) == 1 else short)[:120]
 
 
 # Open PortAudio streams in this process; the device list is only refreshed

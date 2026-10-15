@@ -135,16 +135,47 @@ def main():
     holder["window"] = window
     window.events.loaded += lambda: api.enable_drop(window, ws)
 
+    import threading
+    import time as _time
+    asked = {"at": 0.0}
+
+    def allow_and_close():
+        window.unminute_may_close = True
+        window.destroy()
+
+    def ask():
+        # The page answers true when it shows the question; otherwise (page not
+        # loaded, an error) the window closes and ws.close() saves the recording.
+        try:
+            shown = window.evaluate_js("window.workspace.askClose()")
+        except Exception:
+            shown = False
+        if not shown:
+            allow_and_close()
+
     def closing():
         # A recording is open: keep the window and let the page ask (Stop and
-        # save, Discard, Keep recording). The page closes it with close_app.
+        # save, Discard, Keep recording). The page closes it with close_app. A
+        # second close within 10 s closes anyway (the recording is then saved).
         if getattr(window, "unminute_may_close", False) or not ws.recording_active():
             return True
-        import threading
-        threading.Thread(target=lambda: window.evaluate_js("window.workspace.askClose()"),
-                         daemon=True, name="ask-close").start()
+        now = _time.monotonic()
+        if now - asked["at"] < 10:
+            return True
+        asked["at"] = now
+        threading.Thread(target=ask, daemon=True, name="ask-close").start()
         return False
     window.events.closing += closing
+
+    def never_block_shutdown():
+        # Windows shutdown or sign-out must not wait for the question; closing
+        # then stops and saves the recording (ws.close()).
+        try:
+            from Microsoft.Win32 import SystemEvents   # pythonnet, loaded by the window
+            SystemEvents.SessionEnding += lambda *a: setattr(window, "unminute_may_close", True)
+        except Exception:
+            pass
+    window.events.shown += never_block_shutdown
     try:
         shell.run()
     finally:

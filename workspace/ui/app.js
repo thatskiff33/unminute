@@ -2271,15 +2271,20 @@ function wire() {
 // Closing the window while recording: the app keeps the window open and asks.
 function askClose() {
   const dlg = $("close-rec");
-  if (dlg.open) return;
+  if (dlg.open) return true;
   dlg.returnValue = "";
   dlg.onclose = () => attempt(async () => {
     const choice = dlg.returnValue;
-    if (choice === "save") { await call("stop_recording"); await call("close_app"); }
-    else if (choice === "discard") { await call("discard_recording"); await call("close_app"); }
-    else renderRecorder();                           // keep recording
+    if (choice === "save") {
+      // If it already stopped by itself it was saved: close either way.
+      try { await call("stop_recording"); } finally { await call("close_app"); }
+    } else if (choice === "discard") {
+      await call("discard_recording");             // on an error the window stays, and says why
+      await call("close_app");
+    } else renderRecorder();                         // keep recording
   });
   dlg.showModal();
+  return true;
 }
 
 window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep, askClose };   // check tools, close
