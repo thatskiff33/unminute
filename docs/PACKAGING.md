@@ -121,6 +121,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback
 
 It runs the same check with the previous version, so it refuses if that version cannot open the workspace (exit code 6). This happens, for example, after a newer version has changed the storage format.
 
+Use `-Rollback` from the current version to go back, rather than running an older package's installer over a newer install. Installers from before the rename to Unminute only know the "Meeting Workspace" shortcut, so an older installer run that way can leave an extra Start menu shortcut.
+
 ## Uninstalling
 
 Use Settings > Apps > Unminute, or `uninstall.ps1` (with `-Silent` for unattended removal).

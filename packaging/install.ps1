@@ -425,7 +425,7 @@ function Invoke-Rollback {
         Set-Content -LiteralPath $currentFile -Encoding UTF8
     New-Shortcut $target
     Register-Uninstall $target $current.previous
-    Write-Step "$AppName is back on version $($current.previous)."
+    Write-Step "$(Get-VersionAppName $target) is back on version $($current.previous)."
     exit 0
 }
 
