@@ -48,7 +48,9 @@ DEFAULT_SETTINGS = {
     "onboarded": False,                            # guided setup finished or skipped (#19)
     "microphone": False,                           # microphone recording (#30), off by default
     "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
+    "recording_display": "flow",                   # flow | spectrum | wave, while recording
 }
+RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
 
 class WorkspaceError(ValueError):
@@ -85,6 +87,8 @@ class Settings:
                 raise WorkspaceError("Unknown setting.")
             if key == "mode" and value not in (resources.QUIET, resources.FASTER):
                 raise WorkspaceError("Choose Quiet or Faster.")
+            if key == "recording_display" and value not in RECORDING_DISPLAYS:
+                raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
             if key == "model" and not (asr_engines.is_parakeet(value)
                                        or asr_engines.is_whisper(value)
                                        or str(value).startswith("test:")):
@@ -343,7 +347,7 @@ class Workspace:
     def _finish_recording(self, rec):
         with self._lock:
             if self._recording is not rec:
-                return                   # already finished by the other path
+                return False             # already finished by the other path
             self._recording = None
         try:
             rec.stop()
@@ -369,16 +373,55 @@ class Workspace:
         return self._recording.status()
 
     def stop_recording(self):
-        rec = self._recording
+        with self._lock:
+            rec = self._recording
         if rec is None:
             raise WorkspaceError("Nothing is being recorded.")
         status = rec.status()
-        self._finish_recording(rec)
+        if self._finish_recording(rec) is False and (
+                not rec.folder.exists() or recorder.is_discarded(rec.folder)):
+            raise WorkspaceError("The recording was discarded.")   # Discard got there first
         return {**status, "state": "saving"}
+
+    def discard_recording(self):
+        """The user's explicit choice: stop the recording and delete its audio
+        without importing it. Nothing of it is kept."""
+        with self._lock:
+            rec = self._recording
+            if rec is None:
+                raise WorkspaceError("Nothing is being recorded.")
+            # Marked first: whatever happens next, this folder is deleted, never
+            # imported (at the next start, or by Try again). Unmarked, it carries on.
+            try:
+                recorder.mark_discarded(rec.folder)
+            except OSError as exc:
+                raise WorkspaceError("The recording could not be discarded. It carries on; "
+                                     "try again, or stop and save it.") from exc
+            self._recording = None                # the watcher will not import it now
+        report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
+                  "note": "Delete it now, or it is deleted when the app next starts.",
+                  "pending": rec.folder.name, "discarded": True}
+        try:
+            rec.stop()
+        except recorder.RecorderError as exc:
+            self._hung[rec.folder.name] = rec     # still writing: delete it once it is free
+            self._add_report(report)
+            self._wake.set()
+            raise WorkspaceError("The recording is still being saved, so it could not be "
+                                 "deleted yet. It is listed on the Meetings page.") from exc
+        try:
+            recorder.remove_folder(rec.folder)
+        except OSError as exc:
+            self._add_report(report)
+            self._wake.set()
+            raise WorkspaceError("The recording could not be deleted yet (another program may "
+                                 "be using it). It is listed on the Meetings page.") from exc
+        self._wake.set()                          # processing that waited carries on
 
     def recording_status(self):
         rec = self._recording
         return {"enabled": self.settings["microphone"],
+                "display": self.settings["recording_display"],
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
 
@@ -398,6 +441,8 @@ class Workspace:
         if hung is not None and hung.writing:
             raise WorkspaceError("The recording is still being saved. Try again in a moment, "
                                  "or restart the app.")
+        if recorder.is_discarded(folder):
+            raise WorkspaceError("This recording was discarded. Delete it instead.")
         self._hung.pop(folder.name, None)
         self.discard_recording_report(rid)
         self._imports.put(("__recording__", str(folder)))
@@ -413,6 +458,10 @@ class Workspace:
         """The user's explicit choice to delete a recording that could not be
         imported (for example its journal is damaged)."""
         report = next((r for r in self._recording_reports if r["id"] == rid), None)
+        if (report and report.get("discarded")
+                and not (self.recordings / report["pending"]).is_dir()):
+            self.discard_recording_report(rid)    # already gone: nothing left to delete
+            return
         folder = self._pending_folder(report)
         hung = self._hung.get(folder.name)
         if hung is not None and hung.writing:
@@ -429,6 +478,12 @@ class Workspace:
         """Turn a saved (or crash-recovered) recording into a meeting, then
         remove the recording folder. Failures are reported and the folder is
         kept, to be tried again (Try again, or the next start)."""
+        if recorder.is_discarded(folder):        # the user discarded it: delete, never import
+            try:
+                recorder.remove_folder(folder)
+            except OSError:
+                pass                             # tried again at the next start
+            return
         journal = recorder.read_journal(folder)
         has_audio = any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
         if journal is None and not (folder / "journal.json").exists() and not has_audio:

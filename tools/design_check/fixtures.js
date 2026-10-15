@@ -134,7 +134,7 @@
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
-    recording: { enabled: true, recording: null, reports: [] },
+    recording: { enabled: true, display: "flow", recording: null, reports: [] },
     status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet" },
     reminders: { holds_due: [], awaiting_confirmation: [] },
   };
@@ -147,12 +147,35 @@
   // Board heights of the level meter's bars, as microphone levels in dB.
   const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
                   62, 44, 30, 24, 42, 50, 38, 26, 18, 14]
-    // the board's bar heights, as levels (the inverse of barHeight in app.js)
+    // sample speech levels (dBFS), from the board's bar heights
     .map((h) => Math.pow(Math.max(0, h - 6) / 58, 1 / 0.8) * 47 - 55);
+  // Display data like the recorder's for one block of a voice at `db`: a few
+  // harmonics of 160 Hz across the bands, and a short slice of that wave.
+  function sampleViz(db, n) {
+    const bands = Array.from({ length: 40 }, (_, i) => {
+      const hz = 80 * Math.pow(100, i / 39);
+      const harmonic = Math.abs(Math.sin(Math.PI * hz / 160));
+      return Math.round((db - 6 - 18 * Math.log2(hz / 160 + 1) - 14 * harmonic) * 10) / 10;
+    });
+    const a = Math.pow(10, db / 20) * 1.4;
+    const wave = Array.from({ length: 128 }, (_, i) => {
+      const t = (i + n * 37) / 48;
+      return Math.round(a * (Math.sin(t) + 0.5 * Math.sin(2.7 * t) + 0.25 * Math.sin(5.3 * t)) * 1000) / 1000;
+    });
+    return { bands, pitch_hz: 160, wave };
+  }
   let levelAt = 0;
   const show = (view) => () => window.workspace.show(view);
   const SCENARIOS = {
     home: { steps: [] },
+    "recording-spectrum": {
+      change: (d) => { SCENARIOS.recording.change(d); d.recording.display = "spectrum"; },
+      steps: [],
+    },
+    "recording-wave": {
+      change: (d) => { SCENARIOS.recording.change(d); d.recording.display = "wave"; },
+      steps: [],
+    },
     recording: {
       change: (d) => {
         d.recording.recording = { state: "recording", seconds: 767, level_db: -60,
@@ -314,8 +337,11 @@
     meetings: () => data.meetings,
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.
-      if (data.levels && data.recording.recording)
-        data.recording.recording.level_db = LEVELS[levelAt++ % LEVELS.length];
+      if (data.levels && data.recording.recording) {
+        const db = LEVELS[levelAt % LEVELS.length];
+        data.recording.recording.level_db = db;
+        data.recording.recording.viz = sampleViz(db, levelAt++);
+      }
       return data.recording;
     },
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],

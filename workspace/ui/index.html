@@ -106,12 +106,13 @@
           <span id="rec-clock" class="rec-clock"></span>
           <span id="rec-sub" class="rec-sub" hidden></span>
         </div>
-        <div id="rec-level" class="level" role="meter" aria-label="Microphone level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"></div>
+        <div id="rec-level" class="level" role="meter" aria-label="Microphone level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><canvas id="rec-canvas" aria-hidden="true"></canvas></div>
         <p id="rec-middle" class="rec-middle" hidden></p>
         <div class="rec-buttons">
           <button type="button" id="rec-pause">Pause</button>
           <button type="button" id="rec-resume" class="primary">Resume</button>
           <button type="button" id="rec-stop" class="primary">Stop and save</button>
+          <button type="button" id="rec-discard" class="link-plain danger-link">Discard…</button>
         </div>
       </div>
       <p id="rec-note" class="rec-note"></p>
@@ -443,6 +444,14 @@
         <label class="toggle-row top" for="s-speakers"><span class="t-text"><span class="t-label strong">Name speakers after transcription</span>
           <span class="t-note">Works out who spoke when, after the text is ready.</span></span>
           <input type="checkbox" id="s-speakers" class="switch" role="switch"></label>
+        <div class="set-display">
+          <span id="s-display-label" class="t-label strong">While recording, show</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="s-display-label">
+            <label><input type="radio" name="recdisplay" value="flow" class="sr"><span>Flowing wave</span></label>
+            <label><input type="radio" name="recdisplay" value="spectrum" class="sr"><span>Spectrum</span></label>
+            <label><input type="radio" name="recdisplay" value="wave" class="sr"><span>Sound wave</span></label>
+          </div>
+        </div>
         <div id="s-gpu-box" hidden>
           <label class="toggle-row top" for="s-gpu"><span class="t-text"><span class="t-label strong">Use the graphics card</span>
             <span id="s-gpu-note" class="t-note"></span></span>

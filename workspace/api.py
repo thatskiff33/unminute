@@ -29,7 +29,8 @@ API_METHODS = frozenset({
     "verify_model", "cancel_download", "watched_folders", "add_folder_dialog",
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
     "microphone_devices", "start_recording", "pause_recording", "resume_recording",
-    "stop_recording", "recording_status", "discard_recording_report", "test_microphone",
+    "stop_recording", "discard_recording", "recording_status", "discard_recording_report",
+    "test_microphone",
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
 })
 
@@ -286,6 +287,9 @@ def make_api(ws, get_window=lambda: None):
     def stop_recording(self):
         return _safe(ws.stop_recording)
 
+    def discard_recording(self):
+        return _safe(ws.discard_recording)
+
     def recording_status(self):
         return _safe(ws.recording_status)
 
@@ -340,7 +344,8 @@ def make_api(ws, get_window=lambda: None):
                  scan_now=scan_now, set_folder_authority=set_folder_authority, zoom=zoom,
                  microphone_devices=microphone_devices, start_recording=start_recording,
                  pause_recording=pause_recording, resume_recording=resume_recording,
-                 stop_recording=stop_recording, recording_status=recording_status,
+                 stop_recording=stop_recording, discard_recording=discard_recording,
+                 recording_status=recording_status,
                  discard_recording_report=discard_recording_report,
                  test_microphone=test_microphone,
                  retry_recording_import=retry_recording_import,

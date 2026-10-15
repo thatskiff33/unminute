@@ -33,8 +33,8 @@ Microphone recording is off until you turn it on, in Setup or in Settings > Reco
 
 1. **Choose and test the microphone.** **Change or test** lists the microphones. **Test microphone** listens for 3 seconds and shows the level; nothing is kept.
 2. **Tell everyone present that the meeting is being recorded.**
-3. **Start recording.** The recording card shows the input level and the length. **Pause** and **Resume** leave a gap that is not recorded.
-4. **Stop and save.** The recording becomes a meeting and is transcribed like an imported file. Review, holds and cleanup work the same way.
+3. **Start recording.** The recording card shows the length and a live curve of the sound. Settings > Recording and speakers chooses the curve: Flowing wave, Spectrum or Sound wave. **Pause** and **Resume** leave a gap that is not recorded.
+4. **Stop and save.** The recording becomes a meeting and is transcribed like an imported file. Review, holds and cleanup work the same way. To throw a recording away instead (a test, or the wrong meeting), use **Discard…** while recording or paused: after a confirmation the audio is deleted and nothing is transcribed.
 
 How it handles problems:
 
