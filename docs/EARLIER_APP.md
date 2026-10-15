@@ -51,10 +51,10 @@ Rename the detected speakers once a file has finished. The first line each perso
 
 ### 1. Get the code
 
-Download the source zip for the latest release from https://github.com/thatskiff33/whisper-transcriber/releases and extract it. Releases are tagged and tested; the green Code button gives you whatever is on `main` right now. Developers can clone instead:
+Download the source zip for the latest release from https://github.com/thatskiff33/unminute/releases and extract it. Releases are tagged and tested; the green Code button gives you whatever is on `main` right now. Developers can clone instead:
 
 ```bash
-git clone https://github.com/thatskiff33/whisper-transcriber.git
+git clone https://github.com/thatskiff33/unminute.git
 ```
 
 Put the folder somewhere that is not synced by OneDrive, for example `C:\Users\<you>\Local_Repos\whisper-transcriber`. Transcripts are saved into an `extracted` folder next to the app, and you probably do not want those syncing to the cloud. The installer warns you if it detects a OneDrive path.
