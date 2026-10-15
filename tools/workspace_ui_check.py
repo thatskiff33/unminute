@@ -68,10 +68,9 @@ def checks(window, ws, mid, long_mid, report):
                                                  " === 'function').sort();")
         report["setup"] = evaluate(window, WAIT + """
             window.workspace.show('setup');
-            for (let i = 0; i < 50 && !document.querySelector('#setup-cards .card'); i++)
-                await wait(200);
+            for (let i = 0; i < 50 && !window.workspace.state.setup; i++) await wait(200);
             await wait(300);
-            const cards = document.querySelectorAll('#setup-cards .card').length;
+            const cards = window.workspace.state.setup.cards.length;
             const token = document.getElementById('s-token');
             token.value = 'hf_UIcheckNOTreal123';
             document.getElementById('s-download-speakers').click(); await wait(4000);

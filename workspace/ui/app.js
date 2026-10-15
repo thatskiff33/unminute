@@ -73,15 +73,16 @@ const STAGES = {
 };
 
 // -- navigation -------------------------------------------------------------
-const VIEWS = ["meetings", "meeting", "handoff", "settings", "setup", "help"];
+const VIEWS = ["meetings", "meeting", "handoff", "settings", "downloads", "setup", "help"];
 // The sidebar item each view belongs to.
 const NAV_OF = { meetings: "meetings", meeting: "meetings", handoff: "meetings", settings: "settings",
-                 setup: "settings", help: "help" };
+                 downloads: "settings", setup: "settings", help: "help" };
 
 function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   if (view !== "meeting") stopAudio();
   if (view !== "meeting" && view !== "handoff") stopEditing();
+  if (view !== state.view) { suState.sig = ""; state.downloadsSig = ""; }   // rebuilt on arrival
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -1347,107 +1348,310 @@ function wireHandoff() {
 }
 
 // -- setup (#19) ----------------------------------------------------------------------
-// The token is typed into a password field and passed straight to Python;
-// the page never receives it back (only whether one is remembered).
+// First run in five steps. The token is typed into a password field and
+// passed straight to Python; the page never receives it back (only whether
+// one is remembered).
+const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Optional"],
+                  ["Microphone", "Optional"], ["Ready", ""]];
+// returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
+const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, returnTo: null };
+
+// "Parakeet v2" from "Speech to text: Parakeet v2 (recommended)".
+function cardName(c) {
+  return c.title.replace(/^Speech to text:\s*/i, "").replace(/\s*\((recommended|optional)\)\s*$/i, "");
+}
+// A download's progress, when its latest message states one.
+function downloadPercent(message) {
+  const of = /([\d.]+)\s*(?:GB)?\s+of\s+([\d.]+)\s*GB/i.exec(message || "");
+  if (of) return Math.min(100, Math.round((100 * parseFloat(of[1])) / parseFloat(of[2])));
+  const pct = /(\d{1,3})\s*%/.exec(message || "");
+  return pct ? Math.min(100, Number(pct[1])) : null;
+}
+const isRunning = (c) => !!(c && c.download && c.download.state === "running");
+
+function progressBlock(dl, note) {
+  const pct = downloadPercent(dl.message);
+  const bar = el("div", { class: `progress${pct === null ? " busy" : ""}`, role: "progressbar", "aria-label": "Download",
+    ...(pct === null ? {} : { "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100" }) }, el("span", {}));
+  if (pct !== null) bar.firstChild.style.width = `${pct}%`;
+  return el("div", { class: "su-progress" }, bar,
+    el("div", { class: "su-progress-text" }, el("span", { textContent: dl.message }), note ? el("span", { textContent: note }) : null));
+}
+
+function setStep(n) {
+  $("s-token").value = "";                           // a typed token is never kept in the page
+  if (suState.returnTo && n !== 3) {
+    const back = suState.returnTo;
+    suState.returnTo = null;
+    show(back);
+    return;
+  }
+  suState.step = n;
+  for (let i = 1; i <= 5; i++) $(`su-${i}`).hidden = i !== n;
+  renderSuSteps();
+  window.scrollTo(0, 0);
+  if (n === 4) renderSuMic();
+  if (state.setup) renderSummary(state.setup);
+  // Focus moves into the new step (its first control) and the step is announced.
+  const first = [...$(`su-${n}`).querySelectorAll("button, input, select, summary")]
+    .find((c) => !c.disabled && c.offsetParent !== null);
+  if (first) first.focus();
+  say(`Step ${n} of 5: ${$(`su-${n}-title`).textContent}`);
+}
+
+function renderSuSteps() {
+  $("su-steps").replaceChildren(...SU_STEPS.map(([name, note], i) => {
+    const n = i + 1, kind = n < suState.step ? "done" : n === suState.step ? "now" : "";
+    const li = el("li", { class: kind },
+      el("span", { class: "su-dot", "aria-hidden": "true", textContent: kind === "done" ? "✓" : String(n) }),
+      el("span", { class: "su-name", textContent: name },
+         kind === "done" ? el("span", { class: "sr", textContent: ", done" }) : null),
+      note ? el("span", { class: "su-opt", textContent: note }) : null);
+    if (kind === "now") li.setAttribute("aria-current", "step");
+    return li;
+  }));
+}
+
+function modelCard(c, s) {
+  const dl = c.download;
+  const busy = s.cards.some(isRunning);
+  let action;
+  if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download").then(renderSetup)));
+  else if (c.state === "ready")
+    action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
+  else {
+    action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
+    action.disabled = busy;
+  }
+  return el("div", { class: "su-model" },
+    el("div", { class: "su-model-top" },
+      el("div", { class: "su-model-text" },
+        el("span", { class: "su-model-name" }, cardName(c),
+           c.recommended ? el("span", { class: "rec-badge", textContent: "Recommended" }) : null),
+        el("span", { class: "su-model-about", textContent: `${c.about} ${c.size_gb} GB, downloaded once.` })),
+      action),
+    isRunning(c) ? progressBlock(dl, "Each file is checked before use") : null,
+    dl && dl.state === "failed" ? el("span", { class: "su-failed", textContent: dl.message }) : null);
+}
+
+// Rebuilds a list in place, keeping open Details and keyboard focus on the same
+// control (by position), so a download's progress updates do not disturb either.
+function replaceKeeping(box, ...children) {
+  const controls = () => [...box.querySelectorAll("button, summary, a[href], input, select")];
+  const at = controls().indexOf(document.activeElement);
+  const open = [...box.querySelectorAll("details")].map((d) => d.open);
+  box.replaceChildren(...children);
+  box.querySelectorAll("details").forEach((d, i) => { if (open[i]) d.open = true; });
+  if (at >= 0) {
+    const target = controls()[at];
+    if (target && !target.disabled) target.focus();
+  }
+}
+
+// One row per model or component, for Other options and the Downloads page.
+function downloadRow(c, s, inUse) {
+  const dl = c.download;
+  const running = isRunning(c);
+  const busy = s.cards.some(isRunning);
+  const tag = c.role === "speech"
+    ? joinParts(c.recommended ? "Recommended" : null, inUse ? "in use" : null) : "Optional";
+  const about = c.role === "speech" ? `Speech to text. ${c.about}` : c.about.split(/(?<=\.)\s/)[0];
+  const [pillKind, pillText] = running ? ["", "Downloading"]
+    : c.state === "ready" ? ["ready", "Ready"]
+    : dl && dl.state === "failed" ? ["bad", "Needs attention"]
+    : c.state === "invalid" ? ["bad", "Damaged"] : ["", "Not downloaded"];
+  let action;
+  if (running) action = button("Cancel", () => attempt(() => call("cancel_download").then(refresh)));
+  else if (c.state === "ready")
+    action = button("Check every file", () => attempt(() => call("verify_model", c.name).then(refresh)),
+                    { title: "Compare every file with its published checksum" });
+  else if (c.needs_token && c.state === "missing")
+    action = button("Set up…", () => {
+      suState.step = 3;
+      suState.returnTo = state.view === "downloads" ? "downloads" : null;
+      show("setup");
+      setStep(3);
+    }, { primary: true });
+  else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
+  action.disabled = busy && !running;
+  const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
+    title: `Remove ${cardName(c)}?`,
+    body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
+    check: "Remove it from this computer.", limits: false, danger: true,
+    onConfirm: () => attempt(async () => {
+      const gb = await call("remove_model", c.name);
+      say(`Removed. About ${gb} GB freed.`);
+      refresh();
+    }) })) : null;
+  if (remove) remove.disabled = busy;
+  return el("li", { class: "dl-item" },
+    el("div", { class: "dl-row" },
+      el("div", { class: "dl-text" },
+        el("span", { class: "dl-name" }, cardName(c), tag ? el("span", { class: "dl-tag", textContent: ` ${tag}` }) : null),
+        el("span", { class: "dl-desc", textContent: `${about} ${c.size_gb} GB.` })),
+      el("span", { class: `dl-pill ${pillKind}`.trim(), textContent: pillText }),
+      action, remove),
+    running ? progressBlock(dl, null) : null,
+    !running && dl && dl.state === "failed" ? el("span", { class: "dl-msg bad", textContent: dl.message }) : null,
+    el("details", {}, el("summary", { textContent: "Details" }),
+      el("p", { textContent: c.status }),
+      el("p", { textContent: `Licence ${c.licence} · ${c.source} · revision ${c.revision}` })));
+}
+
 async function renderSetup() {
   const s = await call("setup_state");
   state.setup = s;
-  $("setup-cards").replaceChildren(...s.cards.map((c) => {
-    const dl = c.download;
-    const running = dl && dl.state === "running";
-    const busy = s.cards.some((x) => x.download && x.download.state === "running");
-    const action = running
-      ? el("button", { type: "button", textContent: "Cancel",
-                       on: { click: () => attempt(() => call("cancel_download").then(renderSetup)) } })
-      : c.state === "ready"
-        ? el("button", { type: "button", textContent: "Check every file", disabled: busy,
-                         title: "Compare every file with its published checksum",
-                         on: { click: () => attempt(() => call("verify_model", c.name).then(renderSetup)) } })
-        : c.needs_token && c.state === "missing"
-          ? el("span", { class: "muted", textContent: "Download it with the steps below." })
-          : el("button", { type: "button", class: c.recommended ? "primary" : "",
-                           textContent: c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair",
-                           disabled: busy, on: { click: () => startDownload(c.name) } });
-    // Remove a downloaded model from this computer (it can be downloaded again).
-    const remove = c.removable && !running
-      ? el("button", { type: "button", class: "link", textContent: "Remove", disabled: busy,
-                       on: { click: () => confirmDialog({
-                         title: `Remove ${c.title}?`,
-                         body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Setup.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
-                         check: "Remove it from this computer.", limits: false, danger: true,
-                         onConfirm: () => attempt(async () => {
-                           const gb = await call("remove_model", c.name);
-                           say(`Removed. About ${gb} GB freed.`);
-                           renderSetup();
-                         }) }) } })
-      : null;
-    return el("li", { class: "card" },
-      el("h2", { textContent: c.title }),
-      el("p", { textContent: c.about }),
-      el("p", { class: c.state === "ready" ? "ok" : c.state === "invalid" ? "error" : "muted",
-                textContent: running ? dl.message : (dl && dl.state === "failed" ? dl.message : c.status) }),
-      el("p", { class: "muted", textContent: `${c.size_gb} GB · licence ${c.licence} · ${c.source} · revision ${c.revision}` }),
-      el("div", { class: "row" }, action, remove));
-  }));
-  const speaker = s.cards.find((c) => c.role === "speakers");
-  const speakerRunning = speaker.download && speaker.download.state === "running";
+  renderSuSteps();
+  const speech = s.cards.filter((c) => c.role === "speech");
+  const rec = speech.find((c) => c.recommended) || speech[0];
+  const others = speech.filter((c) => c !== rec);
+  const sig = JSON.stringify(s.cards);
+  if (sig !== suState.sig) {                         // unchanged: keep open Details and focus
+    suState.sig = sig;
+    replaceKeeping($("su-model"), modelCard(rec, s));
+    replaceKeeping($("setup-cards"), ...others.map((c) => downloadRow(c, s, false)));
+  }
+  $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
+  $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
+  const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
-  $("s-download-speakers").disabled = speakerRunning;
+  $("s-download-speakers").disabled = isRunning(speaker);
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
   $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready";
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
-  if (!state.setupChoiceTouched) $("s-speakers-on").checked = s.onboarded ? s.speakers : true;
+  $("su-speaker-status").textContent = speaker.state === "ready" ? "The speaker model is downloaded and ready."
+    : speaker.download ? speaker.download.message : "";
+  renderSummary(s);
   $("s-finish").disabled = !s.speech_ready;
-  $("s-finish-note").textContent = s.speech_ready
-    ? (speaker.state === "ready" ? "Everything is ready." : "You can add speaker identification later from Settings.")
-    : "Download a speech model first (Parakeet v2 is recommended).";
+  $("s-finish-note").textContent = s.speech_ready ? "" : "Download a speech model first (Parakeet v2 is recommended).";
+}
+
+function renderSummary(s) {
+  const rec = s.cards.find((c) => c.role === "speech" && c.recommended);
+  const ready = s.cards.find((c) => c.role === "speech" && c.state === "ready");
+  const speaker = s.cards.find((c) => c.role === "speakers") || {};
+  const line = (label, value, on) => el("li", {},
+    el("span", { class: `s-icon${on ? "" : " off"}` }, on ? icon("tick", 14) : el("span", { "aria-hidden": "true", textContent: "–" })),
+    el("span", { class: "s-label", textContent: label }), el("span", { class: "s-value", textContent: value }));
+  const speech = ready ? `${cardName(ready)}, ready` : isRunning(rec) ? "Downloading…" : "Not downloaded yet";
+  const names = speaker.state === "ready" && !suState.skipSpeakers ? "Ready"
+    : suState.skipSpeakers ? "Skipped. Turn on in Settings."
+    : isRunning(speaker) ? "Downloading…" : "Not set up. You can add it later in Settings.";
+  const mic = suState.mic ? "On" : "Skipped. Turn on in Settings.";
+  $("su-summary").replaceChildren(line("Speech model", speech, !!ready),
+    line("Speaker names", names, names === "Ready"), line("Microphone", mic, !!suState.mic));
+}
+
+async function renderSuMic() {
+  const s = await attempt(() => call("settings"));
+  if (!s) return;
+  suState.mic = !!s.microphone;
+  $("su-mic").checked = suState.mic;
+  $("su-mic-row").hidden = !suState.mic;
+  if (!suState.mic) $("su-test-result").hidden = true;
+  if (suState.mic && !suState.devices) {
+    const devices = await attempt(() => call("microphone_devices")) || [];
+    $("su-device").replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
+      textContent: d.name + (d.default ? " (default)" : "") })));
+    const def = devices.find((d) => d.default);
+    if (def) $("su-device").value = String(def.index);
+    suState.devices = devices.length > 0;
+    $("su-test").disabled = !devices.length;
+    if (!devices.length) { $("su-test-result").hidden = false; $("su-test-result").textContent = "No microphone found."; }
+  }
 }
 
 function startDownload(name, extra = {}) {
   return attempt(async () => {
     await call("download_model", name, extra.token || null, extra.remember !== false, !!extra.earlier);
     say("Download started");
-    renderSetup();
+    refresh();
   });
 }
 
 function wireSetup() {
   for (const b of document.querySelectorAll("[data-help]"))
     b.addEventListener("click", () => attempt(() => call("open_help", b.dataset.help)));
-  const speakerName = () => state.setup.cards.find((c) => c.role === "speakers").name;
+  for (const b of document.querySelectorAll("#view-setup [data-go]"))
+    b.addEventListener("click", () => setStep(Number(b.dataset.go)));
+  const speakerName = () => (state.setup.cards.find((c) => c.role === "speakers") || {}).name;
   $("s-download-speakers").addEventListener("click", () => {
     const token = $("s-token").value.trim();
     if (!token) { say("Paste your Hugging Face token first."); return; }
     $("s-token").value = "";                         // never kept in the page
+    suState.skipSpeakers = false;
     startDownload(speakerName(), { token, remember: $("s-remember").checked });
   });
   $("s-use-remembered").addEventListener("click", () => startDownload(speakerName()));
   $("s-use-earlier").addEventListener("click", () =>
     startDownload(speakerName(), { earlier: true, remember: $("s-remember").checked }));
-  $("s-remove-token").addEventListener("click", () => attempt(async () => {
+  const removeToken = () => attempt(async () => {
     await call("remove_token");
     say("Token removed. Downloaded models keep working.");
-    renderSetup();
+    refresh();
+  });
+  $("s-remove-token").addEventListener("click", removeToken);
+  $("dl-remove-token").addEventListener("click", removeToken);
+  $("s-skip-speakers").addEventListener("click", () => { suState.skipSpeakers = true; setStep(4); });
+  $("su-next-3").addEventListener("click", () => { suState.skipSpeakers = false; setStep(4); });
+  $("su-mic").addEventListener("change", () => attempt(async () => {
+    await call("set_settings", { microphone: $("su-mic").checked });
+    suState.devices = suState.devices && $("su-mic").checked;
+    renderSuMic();
   }));
-  $("s-speakers-on").addEventListener("change", () => { state.setupChoiceTouched = true; });
+  $("su-skip-4").addEventListener("click", () => {
+    // First run only: skipping undoes a switch turned on here. Later visits leave Settings alone.
+    if (suState.mic && !state.setup.onboarded)
+      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = false; renderSummary(state.setup); }));
+  });
+  $("su-test").addEventListener("click", () => attempt(async () => {
+    const box = $("su-test-result");
+    box.hidden = false; box.classList.remove("quiet");
+    box.textContent = "Listening for 3 seconds…";
+    const opt = $("su-device").selectedOptions[0];
+    const t = await call("test_microphone", Number($("su-device").value), opt ? opt.dataset.name : "");
+    box.classList.toggle("quiet", !t.heard);
+    box.textContent = t.heard ? `Sound heard (loudest ${t.peak_db} dB).`
+      : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
+  }));
   $("s-finish").addEventListener("click", () => attempt(async () => {
-    await call("finish_setup", $("s-speakers-on").checked);
-    show("meetings");
-  }));
-  $("s-skip-speakers").addEventListener("click", () => attempt(async () => {
-    if (!state.setup.speech_ready) { say("Download a speech model first."); return; }
-    await call("finish_setup", false);
+    const speaker = state.setup.cards.find((c) => c.role === "speakers") || {};
+    // First run: speaker names are on when their model is downloaded or downloading, unless
+    // skipped. Later visits (a speech model went missing) keep the Settings choice.
+    const speakers = state.setup.onboarded ? !!(await call("settings")).speakers
+      : !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker));
+    await call("finish_setup", speakers);
     show("meetings");
   }));
 }
 
+// -- downloads -------------------------------------------------------------------------
+async function renderDownloads() {
+  const s = await call("setup_state");
+  state.setup = s;
+  const settings = await call("settings");
+  const sig = JSON.stringify([s.cards, settings.model]);
+  if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
+    state.downloadsSig = sig;
+    replaceKeeping($("dl-list"), ...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
+  }
+  $("dl-token").hidden = !s.token_remembered;
+  $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
+}
+
 // -- settings ------------------------------------------------------------------
+const MODE_NOTE = {
+  quiet: "Quiet leaves most of the computer free while it transcribes. Recommended.",
+  faster: "Faster uses more of the computer while transcribing.",
+};
+
 async function renderSettings() {
   const s = await call("settings");
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
+  $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
   $("s-battery").checked = s.battery_override;
   $("s-speakers").checked = s.speakers;
   // Graphics card (speaker identification only): shown when an NVIDIA card is present.
@@ -1459,32 +1663,76 @@ async function renderSettings() {
     ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
     : s.gpu.component !== "ready"
       ? (s.gpu_speakers
-        ? "The graphics card component needs repair in Setup; until then speaker identification runs on the processor."
-        : `${s.gpu.card} found. Download "Graphics card acceleration" in Setup to use it.`)
+        ? "The graphics card component needs repair in Downloads; until then speaker names are worked out on the processor."
+        : `${s.gpu.card} found. Download "Graphics card acceleration" in Downloads to use it.`)
       : s.mode !== "faster" && s.gpu_speakers
         ? "Used only in Faster mode (Processing, above)."
-        : `${s.gpu.card}. Transcription always runs on the processor.`;
+        : `${s.gpu.card}. Speeds up speaker names in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   const sel = $("s-model");
   if (document.activeElement !== sel) {
-    sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name, textContent: c.label })));
+    sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name,
+      textContent: `${modelName(c.name)}${/recommended/.test(c.label) ? " (recommended)" : ""}` })));
     sel.value = s.model;
   }
+  const setup = await call("setup_state");
+  const speechReady = setup.cards.filter((c) => c.role === "speech" && c.state === "ready").length;
+  const speakerReady = setup.cards.some((c) => c.role === "speakers" && c.state === "ready");
+  $("s-models-line").replaceChildren(
+    el("span", { class: "tick" }, icon("tick", 11)),
+    `${plural(speechReady, "speech model")}${speakerReady ? " and the speaker model" : ""} downloaded`);
+
   const wf = await call("watched_folders");
-  $("s-folders").replaceChildren(...(wf.folders.length ? wf.folders.map((f) => el("li", {},
-    el("div", { textContent: f.path }),
-    el("div", { class: f.error ? "error" : "muted", textContent: f.error ||
-      [f.active ? "Watching" : "Paused",
-       f.last_scan_at ? `checked ${fmtDate(f.last_scan_at)}` : "not checked yet",
-       f.imported ? `${f.imported} imported` : null,
-       f.waiting ? `${f.waiting} waiting until fully copied` : null,
-       f.cloud ? `${f.cloud} in cloud storage, not on this computer yet` : null,
-       f.duplicates ? `${f.duplicates} already imported` : null,
-       f.unreadable ? `${f.unreadable} could not be read (no permission)` : null,
-       f.failed ? `${f.failed} could not be imported (damaged or unsupported)` : null].filter(Boolean).join(" · ") }),
+  $("s-folders").replaceChildren(...(wf.folders.length ? wf.folders.map(folderItem)
+    : [el("li", { class: "empty-folder", textContent: "No folders are watched yet." })]));
+  const dep = s.deployment || {};
+  const version = dep.version ? `Unminute ${dep.version}` : "Unminute";
+  $("s-version").textContent = version;
+  $("s-about-version").textContent = version;
+  $("s-deployment").textContent = s.update_blockers.length && dep.mode !== "managed"
+    ? "An update needs an empty workspace. Holding one up now:"
+    : dep.mode === "managed"
+    ? "Updates are managed by your IT team."
+    : dep.mode === "self-service"
+      ? "To update, close the app, then run install.cmd from the new package. An update that changes how the workspace is stored waits until the workspace is empty."
+      : "Running from source (development).";
+  $("s-update-blockers").replaceChildren(...(s.update_blockers.length
+    ? s.update_blockers.map((b) => el("li", { textContent: b }))
+    : [el("li", { class: "none", textContent: "Nothing would hold up an update." })]));
+  const receipts = await call("receipts");
+  $("receipts").replaceChildren(...(receipts.length ? receipts.map((r) =>
+    el("li", {}, el("span", { textContent: r.result }), el("span", { class: "when", textContent: dateWord(r.completed_at) })))
+    : [el("li", { class: "none", textContent: "None." })]));
+}
+
+function folderItem(f) {
+  const status = f.error || joinParts(f.active ? "Watching" : "Paused",
+    f.last_scan_at ? `checked ${whenWord(f.last_scan_at)}` : "not checked yet",
+    f.imported ? `${f.imported} imported` : null,
+    f.waiting ? `${f.waiting} waiting until fully copied` : null,
+    f.cloud ? `${f.cloud} in cloud storage, not on this computer yet` : null,
+    f.duplicates ? `${f.duplicates} already imported` : null,
+    f.unreadable ? `${f.unreadable} could not be read (no permission)` : null,
+    f.failed ? `${f.failed} could not be imported (damaged or unsupported)` : null);
+  const folderIcon = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({ width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) folderIcon.setAttribute(k, v);
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
+  folderIcon.append(path);
+  return el("li", {},
+    el("div", { class: "folder-top" }, folderIcon,
+      el("div", { class: "folder-text" }, el("span", { class: "folder-path", textContent: f.path }),
+        el("span", { class: `folder-status${f.error ? " bad" : ""}`, textContent: status })),
+      button(f.active ? "Pause" : "Resume", () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings))),
+      linkButton("Stop watching…", () => confirmDialog({
+        title: "Stop watching this folder?",
+        body: "Recordings already imported stay in the workspace. New recordings in this folder will no longer be imported, and its deletion permission is removed.",
+        check: "Stop watching the folder.", limits: false,
+        onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) }))),
     el("label", {}, el("input", { type: "checkbox", checked: f.fetch_cloud,
       on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
-      " Download recordings that are only in cloud storage (OneDrive and similar)"),
+      "Download recordings that are only in cloud storage (OneDrive and similar)"),
     el("label", {}, el("input", { type: "checkbox", checked: f.delete_originals,
       on: { change: (e) => {
         if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
@@ -1498,30 +1746,7 @@ async function renderSettings() {
           onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then(renderSettings)),
         });
       } } }),
-      " Delete originals from this folder after review (needs confirmation)"),
-    el("button", { type: "button", textContent: f.active ? "Pause" : "Resume",
-                   on: { click: () => attempt(() => call("set_folder_active", f.id, !f.active).then(renderSettings)) } }),
-    " ",
-    el("button", { type: "button", textContent: "Stop watching",
-                   on: { click: () => confirmDialog({
-                     title: "Stop watching this folder?",
-                     body: "Recordings already imported stay in the workspace. New recordings in this folder will no longer be imported, and its deletion permission is removed.",
-                     check: "Stop watching the folder.", limits: false,
-                     onConfirm: () => attempt(() => call("remove_folder", f.id).then(renderSettings)) }) } })))
-    : [el("li", { class: "muted", textContent: "No folders are watched." })]));
-  const dep = s.deployment || {};
-  $("s-deployment").textContent = dep.mode === "managed"
-    ? `Version ${dep.version}. Updates are managed by your IT team.`
-    : dep.mode === "self-service"
-      ? `Version ${dep.version}. To update, close the app, then run install.cmd from the new package. Updates that change how the workspace is stored wait until the workspace is empty; the list below shows what would make one wait.`
-      : "Running from source (development).";
-  $("s-update-blockers").replaceChildren(...(s.update_blockers.length
-    ? s.update_blockers.map((b) => el("li", { textContent: b }))
-    : [el("li", { class: "muted", textContent: "Nothing would hold up an update." })]));
-  const receipts = await call("receipts");
-  $("receipts").replaceChildren(...(receipts.length ? receipts.map((r) =>
-    el("li", { textContent: `${fmtDate(r.completed_at)}: ${r.result}` }))
-    : [el("li", { class: "muted", textContent: "None." })]));
+      "Delete originals from this folder after review…"));
 }
 
 function setSetting(changes) { attempt(() => call("set_settings", changes).then(renderSettings)); }
@@ -1722,6 +1947,7 @@ async function refresh() {
     } else if (state.view === "meeting") await renderMeeting();
     else if (state.view === "settings") await renderSettings();
     else if (state.view === "setup") await renderSetup();
+    else if (state.view === "downloads") await renderDownloads();
   } catch (err) {
     say(String((err && err.message) || err));
   } finally {
@@ -1752,7 +1978,8 @@ function wire() {
   });
   $("menu").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open")));
   $("empty-watch").addEventListener("click", () => show("settings"));
-  $("s-downloads").addEventListener("click", () => show("setup"));
+  $("s-downloads").addEventListener("click", () => show("downloads"));
+  $("dl-back").addEventListener("click", () => show("settings"));
   wireDrop();
   // A title is one line: Enter saves it, and pasted line breaks become spaces.
   $("m-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("m-title").blur(); } });
@@ -1882,13 +2109,17 @@ function wire() {
   });
 }
 
-window.workspace = { call, show, openMeeting, refresh, state, play, say };   // for the check tools
+window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep };   // for the check tools
 
 wire();
 window.addEventListener("pywebviewready", async () => {
   // First run, or no usable speech model: start with Setup.
   let s = null;
   try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }
-  show(s && (!s.onboarded || !s.speech_ready) ? "setup" : "meetings");
+  if (s && (!s.onboarded || !s.speech_ready)) {
+    suState.step = s.onboarded ? 2 : 1;
+    show("setup");
+    setStep(suState.step);
+  } else show("meetings");
   setInterval(refresh, POLL_MS);
 });

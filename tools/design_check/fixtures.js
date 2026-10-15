@@ -48,6 +48,34 @@
                  { start: 26, end: 28, text: "The water tank was the bigger saving." },
                  { start: 72, end: 79, text: "We should check the insurance cover for volunteers before the build day." }],
   };
+  const card = (over) => ({ state: "ready", status: "Downloaded and verified.", licence: "CC BY 4.0",
+    source: "NVIDIA, ONNX export", revision: "0bbb45a", removable: true, needs_token: false, recommended: false,
+    shared_with_earlier_app: false, download: null, ...over });
+  const CARDS = [
+    card({ name: "parakeet-tdt-0.6b-v2", role: "speech", recommended: true, size_gb: 0.66,
+           title: "Speech to text: Parakeet v2 (recommended)",
+           about: "Fast and accurate for English. Runs on this computer's processor." }),
+    card({ name: "parakeet-tdt-0.6b-v3", role: "speech", size_gb: 0.67, title: "Speech to text: Parakeet v3",
+           about: "Newer multilingual version. In our tests it was less accurate for English." }),
+    card({ name: "large-v3-turbo", role: "speech", size_gb: 1.62, state: "missing", status: "Not downloaded.",
+           removable: false, title: "Speech to text: Whisper large-v3 turbo", about: "Alternative engine; slower on a processor." }),
+    card({ name: "pyannote/speaker-diarization-community-1", role: "speakers", recommended: true, size_gb: 0.03,
+           needs_token: true, title: "Speaker identification (optional)",
+           about: "Works out who spoke when. Downloading it needs a free Hugging Face account and token." }),
+    card({ name: "gpu-component", role: "gpu", size_gb: 1.92, state: "missing", status: "Not downloaded.",
+           removable: false, title: "Graphics card acceleration (optional)",
+           about: "Speeds up speaker identification on this computer's NVIDIA RTX 500. Used only in Faster mode." }),
+  ];
+  const SETTINGS = {
+    mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
+    model: "parakeet-tdt-0.6b-v2", onboarded: true,
+    choices: [{ name: "parakeet-tdt-0.6b-v2", label: "parakeet-tdt-0.6b-v2 (recommended)" },
+              { name: "parakeet-tdt-0.6b-v3", label: "parakeet-tdt-0.6b-v3" },
+              { name: "large-v3-turbo", label: "large-v3-turbo" }],
+    gpu: { card: "NVIDIA RTX 500", driver_ok: true, component: "ready" },
+    deployment: { mode: "self-service", version: "0.3.0" },
+    update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
+  };
   const TEMPLATE = { id: "minutes", title: "Meeting minutes (sample)", version: 1, edited: false, builtin: true,
                      prompt: "[Your prompt wording. Edits are saved as a new version; the original wording can always be restored.]" };
   function handoffPreview(anonymise) {
@@ -90,6 +118,8 @@
 
   const data = {
     setup: { onboarded: true, speech_ready: true },
+    cards: CARDS,
+    settings: SETTINGS,
     meetings: [
       { id: "m-garden", title: "Community garden planning (sample)", age_days: 0, action: "Review the transcript",
         held: false, progress: 100, paused: false, error: null, busy: null, stage: "review",
@@ -212,6 +242,31 @@
               () => document.getElementById("ho-edit").click(),
               () => document.activeElement.blur()],
     },
+    "setup-1": { change: firstRun, steps: [] },
+    "setup-2": {
+      change: (d) => {
+        firstRun(d);
+        d.cards[0] = { ...d.cards[0], state: "missing", download: { state: "running", message: "Downloading 0.41 of 0.66 GB" } };
+      },
+      steps: [() => window.workspace.setStep(2)],
+    },
+    "setup-3": { change: firstRun, steps: [() => window.workspace.setStep(3)] },
+    "setup-4": { change: (d) => { firstRun(d); d.micHeard = true; },
+                 steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
+    "setup-5": {
+      change: (d) => { firstRun(d); d.settings.microphone = false; },
+      steps: [() => window.workspace.setStep(4), wait(400), () => window.workspace.setStep(5)],
+    },
+    settings: {
+      change: (d) => {
+        d.folders = [{ id: "f1", path: "Documents\\Meeting recordings (sample)", active: true, last_scan_at: at(14, 28),
+                       imported: 4, fetch_cloud: true, delete_originals: false }];
+        d.receipts = [{ completed_at: at(9, 0) - DAY, result: "Audio and transcript removed (meeting 1)" },
+                      { completed_at: at(9, 0) - 2 * DAY, result: "Audio removed after review (meeting 2)" }];
+      },
+      steps: [show("settings")],
+    },
+    downloads: { steps: [show("downloads")] },
     "meeting-earlier": {
       change: (d) => {
         d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",
@@ -222,6 +277,10 @@
               () => document.querySelector('.wide-tabs [role=tab][data-tab="speakers"]').click()],
     },
   };
+  function firstRun(d) {
+    d.setup = { onboarded: false, speech_ready: true };
+    d.cards = d.cards.map((c) => (c.role === "speakers" ? { ...c, state: "missing", status: "Not downloaded." } : c));
+  }
   function reviewed(d) {
     d.detail["m-garden"] = meeting({ stage: "handoff", reviewed_at: at(15, 12), audio_available: false,
                                      audio_removed_at: at(15, 12), can_undo: false });
@@ -243,8 +302,11 @@
     return { total: rows.length, start, items: rows.slice(start, start + count) };
   }
   const handlers = {
-    setup_state: () => ({ cards: [], token_remembered: false, earlier_token: false,
+    setup_state: () => ({ cards: data.cards, token_remembered: false, earlier_token: false,
                           speakers: true, ...data.setup }),
+    settings: () => data.settings,
+    watched_folders: () => ({ folders: data.folders || [], last_scan: null, interval_minutes: 5 }),
+    test_microphone: () => ({ heard: !!data.micHeard, peak_db: -18 }),
     status: () => data.status,
     reminders: () => data.reminders,
     meetings: () => data.meetings,
@@ -268,7 +330,7 @@
     handoff_templates: () => [TEMPLATE],
     handoff_preview: (mid, tid, anonymise) => handoffPreview(!!anonymise),
     set_handoff_options: (mid, omitted, redactions) => { data.options = { omitted, redactions }; return null; },
-    receipts: () => [],
+    receipts: () => data.receipts || [],
     zoom: () => null,
   };
   const api = new Proxy({}, {
