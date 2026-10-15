@@ -4,7 +4,7 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in [EARLIER_APP.md](EARLIER_APP.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Setup's Repair downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
+This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in [EARLIER_APP.md](EARLIER_APP.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Repair (Settings > Manage downloads) downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
 
 ## What stays on your computer, and what does not
 
@@ -20,20 +20,21 @@ This guide covers the packaged workspace. The earlier source-installed app (`ins
 ## Getting started
 
 1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.
-2. **Set up.** On first start, Setup offers the models:
-   - **Speech to text: Parakeet v2** is recommended (about 0.7 GB).
-   - **Speaker identification** is optional. It needs a free Hugging Face account and token, once. Follow the steps on the Setup screen. The token is remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
-   - You can skip speakers and add them later from Setup.
-3. **Import a recording.** In Inbox, choose **Import recordings…** or drop audio or video files on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)).
+2. **Set up.** On first start, Setup takes you through five steps:
+   - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Other models are under Other options.
+   - **Speaker names** (optional): speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
+   - **Microphone** (optional): turn on recording and test the microphone.
+   - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later.
+3. **Import a recording.** On the Meetings page, choose **Import a recording** or drop audio or video files anywhere on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)).
 
 ## Recording with a microphone
 
-Microphone recording is off by default. To turn it on, open Settings > Microphone. The Inbox then shows a **Record with a microphone** panel.
+Microphone recording is off until you turn it on, in Setup or in Settings > Recording and speakers. The Meetings page then shows **Record a meeting**, with the microphone in use and **Change or test** beneath it.
 
-1. **Choose and test the microphone.** Pick one from the list. **Test microphone** listens for 3 seconds and shows the level; nothing is kept.
+1. **Choose and test the microphone.** **Change or test** lists the microphones. **Test microphone** listens for 3 seconds and shows the level; nothing is kept.
 2. **Tell everyone present that the meeting is being recorded.**
-3. **Start recording.** The meter shows the input level and the timer the length. **Pause** and **Resume** leave a gap that is not recorded.
-4. **Stop and save.** The recording becomes a meeting in the Inbox and is transcribed like an imported file. Review, holds and cleanup work the same way.
+3. **Start recording.** The recording card shows the input level and the length. **Pause** and **Resume** leave a gap that is not recorded.
+4. **Stop and save.** The recording becomes a meeting and is transcribed like an imported file. Review, holds and cleanup work the same way.
 
 How it handles problems:
 
@@ -50,12 +51,14 @@ How it handles problems:
   - **Quiet** (the default) leaves most of the computer free. **Faster** uses more of it.
   - On battery, automatic work waits unless you allow it in Settings.
   - **Pause** stops at the next safe point. **Stop now** stops at once; the part in progress is redone later and nothing already transcribed is lost.
-- **Review.** Open the meeting from Active meetings.
-  - Select a time to play that passage.
-  - Select text to correct it. Edits save automatically, and **Undo edit** (Ctrl+Z) reverses them, even after a restart.
+- **Find your meetings.** The Meetings page groups them by what they need next: **Needs attention**, **Ready for you**, **Transcribing** and **Cleaning up**. The number beside Meetings in the sidebar counts the meetings waiting for you.
+- **Review.** Select **Review** on a meeting. Its steps (Transcribe, Review, Hand off, Clean up) run across the top, with the next action beside them.
+  - Select a time to play from that passage. The player at the bottom carries on through the meeting and the transcript follows along. Space plays or pauses; J and K move between passages.
+  - Select text, or press Enter, to correct it. Edits save automatically, and Ctrl+Z reverses them, even after a restart.
   - Search with Ctrl+F.
-- **Name speakers.** **Name speakers** plays three short clips for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
-- **Transcribe again.** **Transcribe again** with another model keeps your earlier version and its edits. You can still open them read-only.
+- **Name speakers.** **Name speakers** asks "Who's speaking?" and plays short examples for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
+- **Transcribe again.** The **Versions** tab can transcribe again with another model. Your earlier version and its edits are kept, and you can still open them read-only.
+- **Shortcuts.** **Help and shortcuts** in the sidebar lists them all. Press ? anywhere to open it.
 
 ## Handing off and cleaning up
 
@@ -68,9 +71,9 @@ Each meeting shows its steps:
    - The app then removes its own copy of the audio. It also removes the original recording, but only if you allowed that for the watched folder it came from.
    - Playback and editing are no longer available after this step.
 2. **Hand off.**
-   - **Hand off…** shows exactly what will be copied, with three ways out: **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown**.
-   - The templates ask the assistant to keep decisions separate from suggestions, not to invent owners or dates, and to flag anything uncertain.
-   - You can leave out passages or redact words for this handoff only.
+   - **Hand off…** opens a page that shows exactly what will be copied, with three ways out: **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown…**.
+   - The templates ask the assistant to keep decisions separate from suggestions, not to invent owners or dates, and to flag anything uncertain. **Edit template** and **New template** let you adjust them.
+   - For this hand off only, you can replace names with Speaker 1, Speaker 2, redact words, or leave out passages. Select **Apply** to update the preview; copying waits until changes are applied.
    - Long transcripts are never cut short. The app suggests saving the file and attaching it instead.
 3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
 4. **Confirm the final document is saved.** The app then removes the meeting's transcript working content: text, edits, speakers and versions. A minimal receipt (a random number, times and the result) is kept for 30 days.
@@ -88,7 +91,7 @@ Ordinary deletion is also not forensic erasure of the disk.
 
 ## Keeping material (holds)
 
-Anyone can **hold** a meeting's audio, transcript or everything, with a reason. A hold:
+Anyone can **hold** a meeting's audio, transcript or everything, with a reason, from the meeting's **Holds** tab. A hold:
 
 - stops the matching cleanup until it is released;
 - never expires by itself;
@@ -96,7 +99,7 @@ Anyone can **hold** a meeting's audio, transcript or everything, with a reason. 
 
 Releasing a hold deletes nothing by itself. The cleanup it was blocking waits for you to confirm it again.
 
-Ordinary unfinished work shows its age and next step in Active meetings. There are no scheduled reminders.
+Ordinary unfinished work shows its age and next step on the Meetings page. There are no scheduled reminders.
 
 ## Updates
 
@@ -113,15 +116,15 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 
 | Problem | What to do |
 | --- | --- |
-| A model shows "Damaged or incomplete" | Setup > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
-| Speaker identification did not work | The transcript is still usable. Check the speaker model in Setup, then use **Identify again** in the meeting. |
+| A model shows "Damaged" | Settings > **Manage downloads** > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
+| Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. |
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows files waiting for copying to finish, cloud-only files and unreadable files. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 
 For IT support:
 
-- `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Setup for those.
+- `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
@@ -135,7 +138,7 @@ These configurations have been tested:
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
-**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Setup offers "Graphics card acceleration". This is a one-time 1.92 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Speakers > "Use the graphics card for speaker identification".
+**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 1.92 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
 
 - **When it is used:** only in Faster mode. Transcription always runs on the processor.
 - **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.
