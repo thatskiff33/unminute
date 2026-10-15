@@ -1798,17 +1798,17 @@ function renderLevel(rec, tick) {
     box.replaceChildren(...Array.from({ length: fit }, () => el("span", {})));
   }
   if (rec.state === "recording") {
-    // The recorder keeps its recent block levels and a running count, so each
-    // block is drawn once however often the status is read.
+    // The recorder keeps its recent blocks as [number, level], so each block is
+    // drawn once however often, and in whatever order, the status is read.
     let fresh = [];
     if (Array.isArray(rec.levels)) {
-      if (state.levelSeq == null || rec.level_seq < state.levelSeq) {     // a new recording
+      if (rec.id !== state.levelRec) {                  // a new recording
         levels.length = 0;
+        state.levelRec = rec.id;
         state.levelSeq = 0;
       }
-      const n = Math.min(rec.levels.length, rec.level_seq - state.levelSeq);
-      if (n > 0) fresh = rec.levels.slice(-n);
-      state.levelSeq = rec.level_seq;
+      fresh = rec.levels.filter(([n]) => n > state.levelSeq).map(([, db]) => db);
+      if (rec.levels.length) state.levelSeq = Math.max(state.levelSeq, rec.levels[rec.levels.length - 1][0]);
     } else if (tick) fresh = [rec.level_db];
     for (const db of fresh) levels.push(Math.max(-96, Math.min(0, db)));
     while (levels.length > levelBars) levels.shift();
@@ -1867,8 +1867,12 @@ function reportItem(rep) {
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);
 }
 
+let recReading = false;
 async function renderRecorder(tick = false) {
-  const r = await call("recording_status");
+  if (tick && recReading) return;                   // the previous read is still on its way
+  recReading = true;
+  let r;
+  try { r = await call("recording_status"); } finally { recReading = false; }
   const sel = $("rec-device");
   if (r.enabled && !sel.options.length) {
     const devices = await call("microphone_devices");
@@ -1893,7 +1897,11 @@ async function renderRecorder(tick = false) {
   else levels.length = 0;
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
-  $("rec-reports").replaceChildren(...r.reports.map(reportItem));
+  const reportsSig = JSON.stringify(r.reports);
+  if (reportsSig !== state.reportsSig) {             // unchanged: keep buttons and focus
+    state.reportsSig = reportsSig;
+    $("rec-reports").replaceChildren(...r.reports.map(reportItem));
+  }
   // Faster updates for the clock and level meter while recording.
   const live = active && rec.state !== "stopped";
   if (live && !recTimer)

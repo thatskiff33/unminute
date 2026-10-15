@@ -5,6 +5,15 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+## v0.4.1
+
+Fixes from testing v0.4.0. Install: download `Unminute-0.4.1.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.0 updates and keeps your workspace.
+
+- **Readable dropdown lists in dark mode.** Open lists, such as "Move this passage to", showed white text on a white background.
+- **No sideways scrollbar on a meeting's page.** The narrow sidebar was 1 px too narrow for its buttons.
+- **Recording waveform as designed.** Thin bars that scroll by ten times a second, one per tenth of a second of audio, scaled so speech fills the height. They no longer stretch into wide blocks in a wide window.
+- A waiting meeting no longer says "Waiting" twice.
+
 ## v0.4.0
 
 The redesign, in Unlimit colours. Install: download `Unminute-0.4.0.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x or v0.3.0 updates and keeps your workspace: the storage format is unchanged. The known limitations listed for v0.2.0 and v0.2.1 still apply. The new screens have been checked with sample data, automated UI and accessibility checks; they have not yet been tried by pilot users (#27).
