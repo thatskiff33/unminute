@@ -249,7 +249,7 @@ function workRow(m, busyTitle) {
     bar = ["", m.progress];
     actions = [pause("Stops at the next safe point; nothing is lost"), stopNow(), discardLink(m)];
   } else if (m.stage === "inbox") {
-    meta = busyTitle ? `starts after ${busyTitle}` : "Waiting";
+    meta = busyTitle ? `starts after ${busyTitle}` : null;
     pill = ["waiting", "Waiting"];
     actions = [pause("Keeps it from starting until you resume it"), discardLink(m)];
   } else if (m.paused) {
@@ -1770,8 +1770,10 @@ function eventText(e) {
   return `${e.note || e.kind}${at}${len}`;
 }
 
-// The level meter shows the last few seconds as bars, newest on the right.
-const LEVEL_BARS = 36;
+// The level meter scrolls the recent levels past as thin bars, newest on the
+// right: one bar per 0.1 s block of audio, as many as fit the space.
+const BAR_STEP = 7;            // 4 px bar + 3 px gap
+let levelBars = 0;
 const levels = [];
 const REC_KIND = { recording: "", paused: "paused", device_lost: "lost", failed: "lost",
                    stopped: "saving", saving: "saving" };
@@ -1781,20 +1783,43 @@ function deviceName() {
   return opt ? opt.dataset.name : "";
 }
 
+// Speech sits around -45 to -10 dBFS: spread that range over the full height,
+// with a little lift for quiet speech so the bars bounce rather than crawl.
+function barHeight(db) {
+  const x = Math.max(0, Math.min(1, (db + 55) / 47));
+  return Math.round(6 + Math.pow(x, 0.8) * 58);
+}
+
 function renderLevel(rec, tick) {
   const box = $("rec-level");
-  if (box.children.length !== LEVEL_BARS)
-    box.replaceChildren(...Array.from({ length: LEVEL_BARS }, () => el("span", {})));
-  if (rec.state === "recording" && tick) {
-    levels.push(Math.max(-60, Math.min(0, rec.level_db)));
-    if (levels.length > LEVEL_BARS) levels.shift();
+  const fit = Math.max(20, Math.floor((box.clientWidth + 3) / BAR_STEP));
+  if (fit !== levelBars) {
+    levelBars = fit;
+    box.replaceChildren(...Array.from({ length: fit }, () => el("span", {})));
   }
+  if (rec.state === "recording") {
+    // The recorder keeps its recent block levels and a running count, so each
+    // block is drawn once however often the status is read.
+    let fresh = [];
+    if (Array.isArray(rec.levels)) {
+      if (state.levelSeq == null || rec.level_seq < state.levelSeq) {     // a new recording
+        levels.length = 0;
+        state.levelSeq = 0;
+      }
+      const n = Math.min(rec.levels.length, rec.level_seq - state.levelSeq);
+      if (n > 0) fresh = rec.levels.slice(-n);
+      state.levelSeq = rec.level_seq;
+    } else if (tick) fresh = [rec.level_db];
+    for (const db of fresh) levels.push(Math.max(-96, Math.min(0, db)));
+    while (levels.length > levelBars) levels.shift();
+  }
+  const offset = levelBars - levels.length;          // the newest bar is on the right
   [...box.children].forEach((bar, i) => {
-    const db = levels[i];
+    const db = levels[i - offset];
     bar.classList.toggle("on", db !== undefined);
-    bar.style.height = db === undefined ? "" : `${Math.round(8 + ((db + 60) / 60) * 56)}px`;
+    bar.style.height = db === undefined ? "" : `${barHeight(db)}px`;
   });
-  box.setAttribute("aria-valuenow", String(Math.round(levels.length ? levels[levels.length - 1] : -60)));
+  box.setAttribute("aria-valuenow", String(Math.round(levels.length ? Math.max(-60, levels[levels.length - 1]) : -60)));
 }
 
 function renderRecCard(rec, tick) {
@@ -1872,7 +1897,7 @@ async function renderRecorder(tick = false) {
   // Faster updates for the clock and level meter while recording.
   const live = active && rec.state !== "stopped";
   if (live && !recTimer)
-    recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder(true).catch(() => {}); }, 300);
+    recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder(true).catch(() => {}); }, 100);
   if (!live && recTimer) { clearInterval(recTimer); recTimer = null; }
 }
 

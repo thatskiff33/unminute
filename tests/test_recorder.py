@@ -88,6 +88,11 @@ class RecordingTests(unittest.TestCase):
         s.feed(12.3)
         time.sleep(0.5)
         self.assertGreater(rec.level_db, -30)          # a level for the meter
+        status = rec.status()                          # recent block levels, counted
+        self.assertEqual(len(status["levels"]), min(50, status["level_seq"]))
+        self.assertGreater(status["level_seq"], 0)
+        # Reading the status does not use the levels up.
+        self.assertGreaterEqual(len(rec.status()["levels"]), len(status["levels"]))
         journal = rec.stop()
         self.assertTrue(s.stopped and s.closed)
         self.assertEqual(journal["state"], "stopped")
