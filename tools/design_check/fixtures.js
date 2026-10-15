@@ -79,7 +79,7 @@
   const TEMPLATE = { id: "minutes", title: "Meeting minutes (sample)", version: 1, edited: false, builtin: true,
                      prompt: "[Your prompt wording. Edits are saved as a new version; the original wording can always be restored.]" };
   function handoffPreview(anonymise) {
-    const opts = data.options || { omitted: [13], redactions: ["water tank supplier"] };
+    const opts = data.options || { omitted: [13], redactions: ["water tank"] };
     const who = (label) => (anonymise ? { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" } : NAMES)[label];
     const lines = GARDEN.slice(0, 7).map(([t, , label, text]) =>
       `[${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}] ${who(label)}: ${text.replace("water tank", "[redacted]")}`);

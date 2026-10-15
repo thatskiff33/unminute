@@ -5,6 +5,17 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **New look, in Unlimit colours.** Unminute is redesigned throughout, with the Archivo typeface bundled, a light sidebar, dark blue buttons and orange kept for Record. Dark mode follows Windows. The app icon is now dark blue and orange.
+- **One Meetings page.** The Inbox and Active meetings are merged into one page, grouped by what each meeting needs next: Needs attention, Ready for you, Transcribing and Cleaning up. Meetings ready for you show their length, number of speakers and next action. Record a meeting and Import a recording sit at the top, and the sidebar shows how many meetings are waiting for you.
+- **Meeting view.** The four steps run across the top with the next action beside them. Speakers, Versions and Holds are tabs in the side panel.
+- **Continuous playback.** The player plays on through the meeting from any passage, with the transcript following along. Space plays or pauses, and J and K move between passages.
+- **Who's speaking?** Naming speakers shows each speaker as a card with short examples to play.
+- **Hand off page.** Hand off is now a page with the template, the details to remove and a live preview. New: **Replace names with Speaker 1, Speaker 2** for that hand off only, alongside redaction and leaving out passages. Changes are applied before anything can be copied.
+- **Setup in five steps**, with an optional microphone step. Models and the graphics card component moved to Settings > Manage downloads.
+- **Settings** regrouped into Processing, Speech model, Recording and speakers, Watched folders, Updates and Cleanup receipts.
+- **Help and shortcuts** page, opened from the sidebar or with ?.
+- The backend now reports each meeting's length, speaker count and model, and the Speakers tab shows each speaker's share of the talking.
+
 ## v0.3.0
 
 Unminute: the app is renamed. Install: download `Unminute-0.3.0.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x updates and keeps your workspace; uninstalling the old version first and installing this one also keeps your meetings and models, because the uninstaller never removes them. The known limitations listed for v0.2.0 and v0.2.1 still apply.

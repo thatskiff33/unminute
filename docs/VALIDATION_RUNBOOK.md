@@ -82,7 +82,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 
 ## 6. Microphone recording on real hardware (#30)
 
-Turn on Settings > Microphone. Use a USB or Bluetooth headset that can be unplugged or switched off.
+Turn on Settings > Recording and speakers > Record with a microphone. Use a USB or Bluetooth headset that can be unplugged or switched off.
 
 1. Start a recording, speak for 20 seconds, then unplug the headset or switch it off.
 2. Within a few seconds, the panel should say the microphone stopped responding and that recording stopped without switching device. The saved part should become a meeting.

@@ -4,7 +4,7 @@
 
 Unminute turns meeting recordings into reviewed transcripts on your own Windows computer. You review the transcript against the audio, name the speakers, and hand the text to your organisation's approved AI assistant to draft minutes. Then the app clears its working copies away. Transcription and speaker identification run on your computer, and nothing is uploaded.
 
-![The Inbox, with one meeting in review and one paused](docs/screenshots/workspace-inbox.png)
+![The Meetings page, with meetings ready to review and hand off, and one transcribing](docs/screenshots/workspace-meetings.png)
 
 It was built for a professional-services office where recordings are confidential, laptops are locked down (no administrator rights, Intune managed) and nobody wants to learn a command line. It installs per user, without administrator rights.
 
@@ -16,13 +16,13 @@ Unminute was previously called Meeting Workspace, and this repository Whisper Tr
 
 - **Transcribes on your computer.** Uses NVIDIA Parakeet (recommended for English) or OpenAI Whisper, on the processor. Accepts mp3, m4a, wav, mp4, mov, mkv, flac, ogg, aac, wma, webm and avi.
 - **Works out who said what.** Optional speaker identification with pyannote. You name the speakers after listening to short clips.
-- **Review against the audio.** Select a time to play that passage. Correct text in place. Edits save automatically and can be undone, even after a restart.
-- **Hands off safely.** Copies a prompt and the reviewed transcript for your AI assistant, or saves Markdown. You can leave out passages or redact words for the handoff only.
+- **Review against the audio.** Play the meeting from any passage, with the transcript following along. Correct text in place. Edits save automatically and can be undone, even after a restart.
+- **Hands off safely.** Copies a prompt and the reviewed transcript for your AI assistant, or saves Markdown. For the hand off only, you can replace names with Speaker 1, Speaker 2, leave out passages or redact words.
 - **Cleans up in two confirmed steps.** The audio goes once you confirm the transcript is reviewed. The transcript goes once you confirm the final document is saved elsewhere. Holds stop cleanup for as long as you need.
 - **Fits around your work.** Recordings come from Import, drag and drop, watched folders or the microphone. Quiet mode leaves most of the computer free. Pause and resume are safe, and nothing already transcribed is lost after a crash.
 - **Stays offline.** Models are downloaded once, when you choose, and checked against published checksums. No usage statistics are ever sent.
 
-![A meeting in review: transcript on the left, steps and speakers on the right](docs/screenshots/workspace-meeting.png)
+![A meeting in review: the steps across the top, the transcript on the left and the speakers on the right](docs/screenshots/workspace-meeting.png)
 
 ## Requirements
 
@@ -53,47 +53,53 @@ Unattended and Intune deployment, exit codes, detection rules and signing are co
 
 ### First start: Setup
 
-The first start opens Setup. Each model is a one-off download that the app checks before use.
+The first start opens Setup, five short steps. Each model is a one-off download that the app checks before use.
 
-- **Speech to text: Parakeet v2** is recommended (0.66 GB). Parakeet v3 and Whisper large-v3 turbo are also offered.
-- **Speaker identification** is optional (0.03 GB). Its publisher asks you to accept its terms with a free Hugging Face account and a "Read" token, once. Setup links to each page. The token can be remembered in Windows Credential Manager and removed at any time. Downloaded models keep working without it.
-- **Graphics card acceleration** is optional and offered only on computers with an NVIDIA card. It is a 1.92 GB download of the CUDA build of PyTorch, and is used for speaker identification only.
+1. **Welcome:** how a meeting moves through the app.
+2. **Speech model:** Parakeet v2 is recommended (0.66 GB). Parakeet v3 and Whisper large-v3 turbo are under Other options.
+3. **Speaker names (optional, 0.03 GB):** the speaker identification model's publisher asks you to accept its terms with a free Hugging Face account and a "Read" token, once. Setup links to each page. The token can be remembered in Windows Credential Manager and removed at any time. Downloaded models keep working without it.
+4. **Microphone (optional):** turn on recording and test the microphone.
+5. **Ready:** a summary of what is set up.
 
-You can skip speakers and add them later. Setup also checks, repairs and removes downloaded models.
+You can skip the optional steps and turn them on later in Settings. **Graphics card acceleration** is offered only on computers with an NVIDIA card. It is a 1.92 GB download of the CUDA build of PyTorch, used for speaker identification only, and is in Settings > Manage downloads. That page also checks, repairs and removes downloaded models.
 
-![Setup, with the models downloaded and verified](docs/screenshots/workspace-setup.png)
+![Setup, step 2: downloading the recommended speech model](docs/screenshots/workspace-setup.png)
 
 ## Everyday use
 
 ### Bring in a recording
 
-- **Import recordings…** in the Inbox, or drop audio or video files on the window.
+- **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window.
 - **Watched folders** (Settings) pick up new recordings automatically. See [docs/INTAKE.md](docs/INTAKE.md) for synced and cloud folders.
-- **Record with a microphone** is off by default. Turn it on in Settings > Microphone. Tell everyone present that the meeting is being recorded. Only the microphone is recorded, not sound playing on the computer.
+- **Record a meeting** appears once microphone recording is on (Setup, or Settings > Recording and speakers). Tell everyone present that the meeting is being recorded. Only the microphone is recorded, not sound playing on the computer.
 
-Transcription runs in the background, one meeting at a time. **Active meetings** shows progress, with **Pause** and **Stop now**.
+Transcription runs in the background, one meeting at a time. The Meetings page groups meetings by what they need next: **Needs attention**, **Ready for you**, **Transcribing** and **Cleaning up**. Transcribing meetings show progress, with **Pause** and **Stop now**.
 
-![Active meetings](docs/screenshots/workspace-active.png)
+![Recording a meeting, with the level meter and timer](docs/screenshots/workspace-recording.png)
 
 ### Review and name speakers
 
-Open a meeting to review it.
+Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) run across the top, with the next action beside them.
 
-- Select a time to play that passage. Select text to correct it. Undo edit (Ctrl+Z) reverses changes.
-- Search with Ctrl+F. In a wide window the transcript and the steps panel scroll separately, so the search box and steps stay in view.
-- **Name speakers** plays three short clips for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
-- **Transcribe again** with another model keeps your earlier version and its edits.
+- Select a time to play from that passage; the player at the bottom carries on through the meeting. While the audio is kept, Space plays or pauses, and J and K move between passages.
+- Select text, or press Enter, to correct it. Ctrl+Z undoes the last edit.
+- Search with Ctrl+F. In a wide window the transcript and the side panel scroll separately.
+- **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
+- The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**.
+- **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? (outside a text field) to open it.
 
-![Naming speakers from short clips](docs/screenshots/workspace-names.png)
+![Naming speakers from short examples](docs/screenshots/workspace-names.png)
 
 ### Hand off and clean up
 
 Each meeting shows its steps:
 
 1. **Transcript reviewed…** saves the reviewed text and removes the app's copy of the audio. If you allowed it for the watched folder a recording came from, the original there is removed too. Playback and editing end here.
-2. **Hand off…** shows exactly what will be copied: the prompt and transcript, the prompt only, or a Markdown file.
+2. **Hand off…** opens a page that shows exactly what will be copied. Choose a template, then remove details for this hand off only: replace names with Speaker 1, Speaker 2, redact words, or leave out passages, and select **Apply**. Then **Copy prompt and transcript**, **Copy prompt only** or **Save Markdown…**.
 3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
 4. **Final document saved…** removes the meeting's transcript, edits and speaker names. A minimal receipt (a random number, times and the result) is kept for 30 days.
+
+![Hand off: the template, details to remove and a preview of what will be copied](docs/screenshots/workspace-handoff.png)
 
 Copying or saving never deletes anything by itself, and the app does not clear your clipboard. Cleanup cannot reach copies in synced folders, on a phone or recorder, or anything you shared with another service.
 
@@ -105,9 +111,8 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 ## Settings
 
 - **Processing:** Quiet (the default) leaves most of the computer free. Faster uses more of it. On battery, automatic work waits unless you allow it.
-- **Speech model:** which model new meetings use.
-- **Microphone:** turns microphone recording on.
-- **Speakers:** speaker identification, and the graphics card for it (Faster mode only).
+- **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card component.
+- **Recording and speakers:** microphone recording, naming speakers after transcription, and the graphics card for it (Faster mode only).
 - **Watched folders, Updates, Cleanup receipts.**
 
 ![Settings](docs/screenshots/workspace-settings.png)
@@ -116,7 +121,7 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 
 - **Transcription and speaker identification never use the network.** While processing, the app refuses its own Python network connections and DNS lookups to anything outside the computer. This guard is not a firewall: native code opening its own sockets would not be caught. For managed devices, an outbound firewall rule is the stronger control.
 - **No usage statistics are sent.** Before its libraries load, the app forces their telemetry switches off: Hugging Face, pyannote's usage metrics and OpenTelemetry. A setting in your environment cannot turn them back on. It also switches off ONNX Runtime's Windows telemetry events in the processes that use it.
-- **Downloads happen only in Setup, when you choose.** Models come from Hugging Face and the optional graphics card component from download.pytorch.org. Each file is checked against a published checksum.
+- **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face and the optional graphics card component from download.pytorch.org. Each file is checked against a published checksum.
 - **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment.
 - **Outside the app's control:** recordings in synced folders such as OneDrive are already in that service, and anything you paste or upload to an AI assistant is handled by its provider under your organisation's account and policies.
 
@@ -144,8 +149,8 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 | Problem | What to do |
 | --- | --- |
-| A model shows "Damaged or incomplete" | Setup > Repair. The damaged copy is kept aside, not deleted. |
-| Speaker identification did not work | The transcript is still usable. Check the speaker model in Setup, then use Identify again in the meeting. |
+| A model shows "Damaged" or "Needs attention" | Settings > Manage downloads (the Downloads page) > Repair. The damaged copy is kept aside, not deleted. |
+| Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > Manage downloads, then use Identify again in the meeting's Speakers tab. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |
 | The installer says the app is running | Close Unminute and run it again. |
@@ -185,12 +190,12 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 
 | Path | Purpose |
 | --- | --- |
-| `workspace/` | Unminute: SQLite state, durable chunked processing, managed workers, cleanup and holds, intake, recording, the pywebview shell (`workspace/ui/`) |
+| `workspace/` | Unminute: SQLite state, durable chunked processing, managed workers, cleanup and holds, intake, recording, the pywebview shell (`workspace/ui/`, with Archivo bundled under its OFL licence) |
 | `asr_engines.py` | Shared engine interface for Parakeet and Whisper; model manifests, verified install and repair |
 | `offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
 | `packaging/` | Per-user installer and uninstaller for the package |
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.12 runtime |
-| `tools/` | Real-engine checks, UI and accessibility checks, benchmarks |
+| `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `transcribe_ui.py`, `transcriber_core.py`, `install.ps1` | The earlier app |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
@@ -200,6 +205,7 @@ Design and plans:
 - [docs/WORKSPACE_PLAN.md](docs/WORKSPACE_PLAN.md): the target product.
 - [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md): coding and integration sequence.
 - [docs/WORKSPACE_DESIGN.md](docs/WORKSPACE_DESIGN.md): the durable processing core.
+- [docs/design/boards/](docs/design/boards/): the approved UI design boards that `tools/design_check.py` compares the app against.
 - [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md): the desktop shell trial and its security findings.
 - [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release process and hands-on checks.
 
