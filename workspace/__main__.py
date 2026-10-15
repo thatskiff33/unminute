@@ -167,12 +167,24 @@ def main():
         return False
     window.events.closing += closing
 
+    hooked = {"done": False}
+
     def never_block_shutdown():
-        # Windows shutdown or sign-out must not wait for the question; closing
-        # then stops and saves the recording (ws.close()).
+        # Windows shutdown, sign-out or Task Manager must not wait for the
+        # question: a second handler on the form (it runs after pywebview's)
+        # lets those closes through; ws.close() then stops and saves the recording.
+        if hooked["done"]:
+            return
+        hooked["done"] = True
         try:
-            from Microsoft.Win32 import SystemEvents   # pythonnet, loaded by the window
-            SystemEvents.SessionEnding += lambda *a: setattr(window, "unminute_may_close", True)
+            from System.Windows.Forms import CloseReason   # pythonnet, loaded by the window
+
+            def on_form_closing(sender, args):
+                ending = (CloseReason.WindowsShutDown, CloseReason.TaskManagerClosing)
+                if args.CloseReason in ending:
+                    window.unminute_may_close = True
+                    args.Cancel = False
+            window.native.FormClosing += on_form_closing
         except Exception:
             pass
     window.events.shown += never_block_shutdown
