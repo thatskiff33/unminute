@@ -755,7 +755,7 @@ dialog h2 { margin: 0; }
 .confirm-dialog .dlg-foot button:last-child { padding: 0 24px; }
 
 /* -- hand off ------------------------------------------------------------------------- */
-.handoff { padding: 20px 28px; display: flex; flex-direction: column; gap: 16px; line-height: normal; }
+.handoff-page { padding: 20px 28px; display: flex; flex-direction: column; gap: 16px; line-height: normal; }
 .ho-head { display: flex; flex-direction: column; gap: 4px; }
 .ho-head h1 { margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
 .ho-body { display: flex; gap: 24px; }
@@ -816,19 +816,19 @@ button.small { align-self: flex-start; min-height: 36px; padding: 0 14px; border
 .ho-editor-actions button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }
 .ho-editor-actions .link-plain { margin-left: auto; min-height: 0; padding: 0; }
 @media (min-width: 901px) and (min-height: 600px) {
-  .handoff:not([hidden]) { height: 100vh; }
+  .handoff-page:not([hidden]) { height: 100vh; }
   .ho-body { flex: 1; min-height: 0; }
   .ho-steps { overflow-y: auto; }
 }
 @media (max-width: 900px) {
-  .handoff { padding: 20px 24px; }
+  .handoff-page { padding: 20px 24px; }
   .ho-body { flex-direction: column; }
   .ho-steps { width: auto; }
   .ho-pre { min-height: 300px; }
 }
 @media (max-width: 480px) {
-  .handoff { padding: 12px 16px; }
-  .handoff .back-link { display: none; }
+  .handoff-page { padding: 12px 16px; }
+  .handoff-page .back-link { display: none; }
   .ho-head h1 { font-size: 20px; }
   .ho-step.compact { flex-wrap: wrap; }
   .ho-next { flex-direction: column; align-items: stretch; }
