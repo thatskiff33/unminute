@@ -146,7 +146,9 @@
     cleanup: [], age_days: 0, action: "", ...over });
   // Board heights of the level meter's bars, as microphone levels in dB.
   const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
-                  62, 44, 30, 24, 42, 50, 38, 26, 18, 14].map((h) => ((h - 8) / 56) * 60 - 60);
+                  62, 44, 30, 24, 42, 50, 38, 26, 18, 14]
+    // the board's bar heights, as levels (the inverse of barHeight in app.js)
+    .map((h) => Math.pow(Math.max(0, h - 6) / 58, 1 / 0.8) * 47 - 55);
   let levelAt = 0;
   const show = (view) => () => window.workspace.show(view);
   const SCENARIOS = {
@@ -313,7 +315,7 @@
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.
       if (data.levels && data.recording.recording)
-        data.recording.recording.level_db = LEVELS[Math.min(levelAt++, LEVELS.length - 1)];
+        data.recording.recording.level_db = LEVELS[levelAt++ % LEVELS.length];
       return data.recording;
     },
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],

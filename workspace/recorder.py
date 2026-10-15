@@ -19,6 +19,7 @@
 #
 # No audio leaves the computer; the recording folder lives inside the workspace.
 
+import collections
 import json
 import os
 import queue
@@ -176,6 +177,8 @@ class Recording:
         self._lock = threading.Lock()
         self.paused = False
         self.level_db = -96.0
+        self._levels = collections.deque(maxlen=50)   # recent [block number, level], for the meter
+        self._level_seq = 0                           # blocks measured so far
         self._last_audio = clock()
         self._stop = threading.Event()          # the writer's signal to finish
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
@@ -199,6 +202,8 @@ class Recording:
             return
         block = np.array(indata, dtype=np.int16).reshape(-1)
         self.level_db = _level_db(block)
+        self._level_seq += 1
+        self._levels.append((self._level_seq, round(self.level_db, 1)))
         try:
             self._queue.put_nowait(block)
         except queue.Full:
@@ -382,7 +387,9 @@ class Recording:
             events = [dict(e) for e in self.journal["events"]]
         return {"state": "paused" if self.paused and self.journal["state"] == "recording"
                 else self.journal["state"], "seconds": round(seconds, 1),
-                "level_db": round(self.level_db, 1), "device": self.journal["device_name"],
+                "level_db": round(self.level_db, 1), "id": self.journal["id"],
+                "levels": [list(x) for x in list(self._levels)],
+                "device": self.journal["device_name"],
                 "events": events[-10:]}
 
 

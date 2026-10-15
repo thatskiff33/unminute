@@ -68,7 +68,7 @@ main { flex: 1; min-width: 0; position: relative; }
 .wordmark { font-size: 26px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); white-space: nowrap; }
 .wordmark .dot { color: var(--record); }
 .sidebar {
-  width: 224px; flex: none; position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  width: 224px; flex: none; position: sticky; top: 0; height: 100vh; overflow-y: auto; overflow-x: hidden;
   padding: 24px 16px; display: flex; flex-direction: column; gap: 28px;
   background: var(--side-bg); color: var(--side-text); border-right: 1px solid var(--side-line);
 }
@@ -106,7 +106,7 @@ main { flex: 1; min-width: 0; position: relative; }
 
 /* Rail: the meeting view, and windows 800 px wide or less. */
 body[data-view="meeting"] .sidebar,
-body[data-view="handoff"] .sidebar { width: 64px; padding: 20px 10px; align-items: center; gap: 8px; }
+body[data-view="handoff"] .sidebar { width: 64px; padding: 20px 0; align-items: center; gap: 8px; }
 body[data-view="meeting"] .sidebar :is(.wordmark, .side-note),
 body[data-view="handoff"] .sidebar :is(.wordmark, .side-note) { display: none; }
 body[data-view="meeting"] .nav,
@@ -116,7 +116,7 @@ body[data-view="handoff"] .nav-label { position: absolute; width: 1px; height: 1
 body[data-view="meeting"] .count,
 body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px; font-size: 11px; }
 @media (max-width: 800px) {
-  .sidebar { width: 64px; padding: 20px 10px; align-items: center; gap: 8px; }
+  .sidebar { width: 64px; padding: 20px 0; align-items: center; gap: 8px; }
   .sidebar :is(.wordmark, .side-note) { display: none; }
   .nav { width: 44px; padding: 0; justify-content: center; }
   .nav-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -197,9 +197,13 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 .rec-label { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
 .rec-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--record); box-shadow: 0 0 0 5px rgba(229, 102, 0, 0.22); }
 .rec-clock { font-size: 52px; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-.level { flex: 1; min-width: 200px; height: 64px; display: flex; align-items: center; gap: 4px; }
-.level > span { flex: 1; border-radius: 3px; height: 8px; background: var(--line); }
+.level {
+  flex: 1; min-width: 200px; height: 64px; display: flex; align-items: center; justify-content: flex-end;
+  gap: 3px; overflow: hidden;
+}
+.level > span { flex: none; width: 4px; border-radius: 2px; height: 6px; background: var(--line); transition: height 90ms linear; }
 .level > span.on { background: var(--record); }
+@media (prefers-reduced-motion: reduce) { .level > span { transition: none; } }
 .rec-middle { flex: 1; margin: 0; font-size: 15px; color: var(--muted); }
 .rec-buttons { display: flex; gap: 10px; }
 .rec-buttons button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }
