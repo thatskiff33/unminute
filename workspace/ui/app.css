@@ -43,6 +43,10 @@ input, select, textarea {
 input, select { min-height: var(--control-h-sm); padding: 0 12px; }
 textarea { padding: 8px 12px; width: 100%; line-height: 1.5; }
 select { max-width: 100%; }   /* long model names must not force sideways scrolling (#27) */
+/* The open list is drawn by WebView2 from the options' own colours. The select's
+   see-through dark background would leave it white under white text, so give
+   the options solid theme colours. */
+select option, select optgroup { background-color: var(--card); color: var(--text); }
 input[type="checkbox"], input[type="radio"] {
   min-height: 0; width: 18px; height: 18px; margin: 0; padding: 0; accent-color: var(--primary); flex: none;
 }
