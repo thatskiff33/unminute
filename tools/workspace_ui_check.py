@@ -174,7 +174,8 @@ def checks(window, ws, mid, long_mid, report):
             dlg.returnValue = 'ok'; dlg.close('ok'); await wait(4000);
             return {ok_disabled_until_ticked: okBefore, limits_shown: limits.includes('OneDrive'),
                     playback_text: document.getElementById('m-playback').textContent,
-                    final_offered: document.getElementById('m-banner-action').textContent
+                    final_offered: !document.getElementById('m-banner-action').hidden
+                        && document.getElementById('m-banner-action').textContent
                         === 'Final document saved…',
                     time_buttons_disabled: document.querySelectorAll('#transcript .t')[0].disabled,
                     edit_refused: (await window.pywebview.api.edit(window.workspace.state.mid,

@@ -106,8 +106,8 @@ async function openMeeting(mid, { handoff = false } = {}) {
   $("m-again-form").hidden = true;
   $("m-again").setAttribute("aria-expanded", "false");
   const audio = $("player");
-  audio.pause(); audio.removeAttribute("src"); audio.load();
-  clips.generation++; clips.next = null;
+  stopAudio();
+  audio.removeAttribute("src"); audio.load();
   setTab("transcript");
   $("transcript").replaceChildren();
   show("meeting");
