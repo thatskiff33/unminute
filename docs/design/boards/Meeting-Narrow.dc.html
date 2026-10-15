@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Meeting review in a narrow window</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="height: 760px; display: flex; flex-direction: {{dir}}; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966; width: {{w}}">
+
+  <sc-if value="{{rail}}" hint-placeholder-val="{{ true }}">
+    <nav aria-label="Main" style="width: 64px; flex: none; box-sizing: border-box; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 8px; background: #EEF7FD; border-right: 1px solid rgba(20,41,102,0.10)">
+      <a href="Home.dc.html" aria-label="Meetings" aria-current="page" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; background: #B4DDF6; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+      </a>
+      <a href="Settings.dc.html" aria-label="Settings" style="width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+      </a>
+    </nav>
+  </sc-if>
+  <sc-if value="{{topbar}}" hint-placeholder-val="{{ false }}">
+    <header style="flex: none; box-sizing: border-box; padding: 0 8px; height: 56px; display: flex; align-items: center; justify-content: space-between; background: #EEF7FD; border-bottom: 1px solid rgba(20,41,102,0.10)">
+      <a href="Home.dc.html" style="min-height: 44px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; font-size: 15px; font-weight: 700; text-decoration: none; color: #2B61BF">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>Meetings
+      </a>
+      <button aria-label="Menu" style="width: 44px; height: 44px; border: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: #142966">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
+      </button>
+    </header>
+  </sc-if>
+
+  <div style="flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column">
+    <div style="box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: {{pad}}">
+      <div style="display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap">
+        <div style="flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px">
+          <sc-if value="{{rail}}" hint-placeholder-val="{{ true }}">
+            <a href="Home.dc.html" style="font-size: 14px; font-weight: 600; text-decoration: none; color: #2B61BF">‹ Meetings</a>
+          </sc-if>
+          <h1 style="margin: 0; font-weight: 800; letter-spacing: -0.02em; font-size: {{titleSize}}">Community garden planning (sample)</h1>
+          <span style="font-size: 13px; color: #566591">Today · 18 min · 2 speakers</span>
+        </div>
+        <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 18px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF; flex: {{btnFlex}}">Transcript reviewed…</button>
+      </div>
+
+      <sc-if value="{{fullSteps}}" hint-placeholder-val="{{ true }}">
+        <ol aria-label="Steps" style="list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px">
+          <sc-for list="{{steps}}" as="s" hint-placeholder-count="4">
+            <li style="display: flex; flex-direction: column; gap: 6px">
+              <div style="height: 4px; border-radius: 999px; background: {{s.bar}}"></div>
+              <span style="font-size: 13px; font-weight: {{s.weight}}; color: {{s.color}}">{{s.mark}} {{s.label}}</span>
+            </li>
+          </sc-for>
+        </ol>
+      </sc-if>
+      <sc-if value="{{compactSteps}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; align-items: center; gap: 10px">
+          <ol aria-label="Steps" style="list-style: none; margin: 0; padding: 0; display: flex; gap: 6px">
+            <sc-for list="{{steps}}" as="s" hint-placeholder-count="4">
+              <li aria-label="{{s.label}}" style="width: 28px; height: 6px; border-radius: 999px; background: {{s.bar}}"></li>
+            </sc-for>
+          </ol>
+          <span style="font-size: 14px; font-weight: 700">Step 2 of 4: Review</span>
+        </div>
+      </sc-if>
+
+      <div role="tablist" aria-label="Meeting" style="display: flex; padding: 4px; border-radius: 12px; overflow: hidden; background: #EEF7FD">
+        <sc-for list="{{tabs}}" as="b" hint-placeholder-count="4">
+          <button role="tab" aria-selected="{{b.sel}}" style="font: inherit; flex: 1; min-height: 36px; padding: 0 6px; border: 0; border-radius: 9px; font-size: 14px; white-space: nowrap; font-weight: {{b.weight}}; background: {{b.bg}}; color: {{b.fg}}; box-shadow: {{b.shadow}}">{{b.label}}</button>
+        </sc-for>
+      </div>
+    </div>
+
+    <ol aria-label="Transcript" style="list-style: none; margin: 0; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding: {{listPad}}">
+      <sc-for list="{{rows}}" as="r" hint-placeholder-count="8">
+        <li style="display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 10px; background: {{r.bg}}">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: #2B61BF">{{r.time}}</span>
+            <sc-if value="{{r.chip}}" hint-placeholder-val="{{ false }}">
+              <span style="display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px 2px 2px; border-radius: 999px; font-size: 13px; font-weight: 700; background: {{r.spBg}}; color: {{r.spFg}}"><span style="width: 18px; height: 18px; border-radius: 50%; font-size: 9px; display: inline-flex; align-items: center; justify-content: center; background: {{r.spFg}}; color: #FFFFFF">{{r.ini}}</span>{{r.who}}</span>
+            </sc-if>
+          </div>
+          <span style="font-size: 15px; line-height: 1.5">{{r.text}}</span>
+        </li>
+      </sc-for>
+    </ol>
+
+    <div style="box-sizing: border-box; padding: 8px 12px; border-radius: 16px; display: flex; align-items: center; gap: 10px; background: #142966; color: #FFFFFF; margin: {{playerMargin}}">
+      <button aria-label="Pause (Space)" style="width: 44px; height: 44px; flex: none; border: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #E56600; color: #FFFFFF">
+        <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="5" height="16" rx="1" fill="currentColor"/><rect x="14" y="4" width="5" height="16" rx="1" fill="currentColor"/></svg>
+      </button>
+      <span style="font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap">0:24 / 18:05</span>
+      <div role="slider" aria-label="Position in meeting" aria-valuenow="24" aria-valuemin="0" aria-valuemax="1085" tabindex="0" style="flex: 1; min-width: 40px; height: 6px; border-radius: 999px; background: rgba(255,255,255,0.24)"><div style="width: 2.2%; height: 100%; border-radius: 999px; background: #E56600"></div></div>
+      <button aria-label="Playback speed" style="font: inherit; font-size: 14px; font-weight: 700; min-width: 44px; height: 36px; border-radius: 8px; background: transparent; color: #FFFFFF; border: 1px solid rgba(255,255,255,0.24)">1×</button>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"width":{"editor":"enum","options":["900","640","320"],"default":"900"},"$preview":{"width":900,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const w = Number(this.props.width ?? '900') || 900;
+    const narrow = w <= 320;
+    const compact = w <= 640;
+    const step = (label, n) => n < 2
+      ? { label, mark: '✓', bar: '#00A275', weight: 600, color: '#566591' }
+      : n === 2 ? { label, mark: '2', bar: '#E56600', weight: 800, color: '#142966' }
+      : { label, mark: String(n), bar: 'rgba(20,41,102,0.16)', weight: 500, color: '#566591' };
+    const tab = (label, sel) => sel
+      ? { label, sel: 'true', weight: 700, bg: '#FFFFFF', fg: '#142966', shadow: '0 1px 3px rgba(20,41,102,0.16)' }
+      : { label, sel: 'false', weight: 600, bg: 'transparent', fg: '#566591', shadow: 'none' };
+    const sp = { Alex: { bg: '#B4DDF6', fg: '#142966', ini: 'AL' }, Sam: { bg: '#FDCAEA', fg: '#440638', ini: 'SA' } };
+    const raw = [
+      ['0:00', 'Alex', 'Thanks for making time this morning.'],
+      ['0:02', 'Alex', "Let's go through the plan for the community garden project."],
+      ['0:08', 'Sam', 'Sounds good. The main thing from last week is the budget.'],
+      ['0:19', 'Alex', "That's great news. How far under are we?"],
+      ['0:24', 'Sam', 'About 12% overall.', 'playing'],
+      ['0:26', 'Sam', 'The water tank was the bigger saving.']
+    ];
+    let prev = null;
+    const rows = raw.map(([time, who, text, flag]) => {
+      const chip = who !== prev; prev = who;
+      return { time, who, text, chip, ini: sp[who].ini, spBg: sp[who].bg, spFg: sp[who].fg, bg: flag === 'playing' ? '#EEF7FD' : 'transparent' };
+    });
+    return {
+      w: w + 'px', dir: narrow ? 'column' : 'row', rail: !narrow, topbar: narrow,
+      pad: narrow ? '12px 16px 0' : '20px 24px 0', listPad: narrow ? '8px 6px' : '8px 14px',
+      titleSize: narrow ? '20px' : '24px', btnFlex: compact ? '1 1 100%' : '0 0 auto',
+      fullSteps: !compact, compactSteps: compact,
+      playerMargin: narrow ? '8px' : '8px 24px 16px',
+      steps: [step('Transcribe', 1), step('Review', 2), step('Hand off', 3), step('Clean up', 4)],
+      tabs: [tab('Transcript', true), tab('Speakers', false), tab('Versions', false), tab('Holds', false)],
+      rows
+    };
+  }
+}
+</script>
+</body>
+</html>

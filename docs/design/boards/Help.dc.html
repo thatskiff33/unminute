@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Help and shortcuts</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966">
+
+  <nav aria-label="Main" style="width: 224px; flex: none; box-sizing: border-box; padding: 24px 16px; display: flex; flex-direction: column; gap: 28px; background: #EEF7FD; border-right: 1px solid rgba(20,41,102,0.10)">
+    <div style="padding: 0 8px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">Unminute<span style="color: #E56600">.</span></div>
+    <div style="display: flex; flex-direction: column; gap: 4px">
+      <a href="Home.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6h11"/><path d="M9 12h11"/><path d="M9 18h11"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
+        <span style="flex: 1">Meetings</span>
+        <span style="min-width: 22px; height: 22px; padding: 0 6px; box-sizing: border-box; border-radius: 999px; background: #E56600; color: #351503; font-size: 12px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center">3</span>
+      </a>
+      <a href="Settings.dc.html" style="font-size: 15px; font-weight: 500; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h9"/><path d="M17 6h3"/><circle cx="15" cy="6" r="2"/><path d="M4 12h3"/><path d="M11 12h9"/><circle cx="9" cy="12" r="2"/><path d="M4 18h11"/><path d="M19 18h1"/><circle cx="17" cy="18" r="2"/></svg>
+        <span>Settings</span>
+      </a>
+      <a href="Help.dc.html" aria-current="page" style="font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; text-decoration: none; background: #B4DDF6; color: #142966">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.2a2.6 2.6 0 1 1 3.6 2.4c-.7.3-1.1.9-1.1 1.6"/><path d="M12 17h.01"/></svg>
+        <span>Help and shortcuts</span>
+      </a>
+    </div>
+  </nav>
+
+  <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 22px">
+    <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Help and shortcuts</h1>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+      <section style="display: flex; flex-direction: column; gap: 12px">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">How a meeting moves through Unminute</h2>
+        <ol style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px">
+          <sc-for list="{{flow}}" as="f" hint-placeholder-count="4">
+            <li style="display: flex; gap: 12px; padding: 14px; border-radius: 14px; border: 1px solid rgba(20,41,102,0.14)">
+              <span style="width: 28px; height: 28px; flex: none; border-radius: 50%; font-size: 13px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: {{f.bg}}; color: {{f.fg}}">{{f.n}}</span>
+              <div style="display: flex; flex-direction: column; gap: 2px">
+                <span style="font-size: 15px; font-weight: 800">{{f.title}}</span>
+                <span style="font-size: 14px; line-height: 1.45; color: #566591">{{f.text}}</span>
+              </div>
+            </li>
+          </sc-for>
+        </ol>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 12px">
+        <h2 style="margin: 0; font-size: 17px; font-weight: 800">Keyboard shortcuts</h2>
+        <table style="border-collapse: collapse; font-size: 15px">
+          <tbody>
+            <sc-for list="{{keys}}" as="k" hint-placeholder-count="9">
+              <tr style="border-bottom: 1px solid rgba(20,41,102,0.08)">
+                <td style="padding: 9px 12px 9px 0; white-space: nowrap"><kbd style="font-family: inherit; font-size: 13px; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: #EEF7FD; border: 1px solid rgba(20,41,102,0.2)">{{k.key}}</kbd></td>
+                <td style="padding: 9px 0">{{k.what}}</td>
+              </tr>
+            </sc-for>
+          </tbody>
+        </table>
+        <p style="margin: 0; font-size: 14px; color: #566591">Press <kbd style="font-family: inherit; font-weight: 700">?</kbd> anywhere to open this list.</p>
+      </section>
+    </div>
+
+    <section style="margin-top: auto; border-radius: 16px; padding: 16px 20px; display: flex; gap: 12px; background: #EEF7FD; font-size: 14px; line-height: 1.5">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: none; margin-top: 1px"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      <span>Recordings, transcripts and names stay on this computer. Unminute is a temporary workspace: once the final document is saved elsewhere, it removes its own copies.</span>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      flow: [
+        { n: '1', title: 'Transcribe', text: 'Record or import. Unminute transcribes, then works out who spoke.', bg: '#E56600', fg: '#351503' },
+        { n: '2', title: 'Review', text: 'Play passages, fix words, name speakers, then confirm. The audio is then removed.', bg: '#B4DDF6', fg: '#142966' },
+        { n: '3', title: 'Hand off', text: 'Copy the reviewed text to draft the final document outside the app.', bg: '#FDCAEA', fg: '#440638' },
+        { n: '4', title: 'Clean up', text: 'Confirm the final document is saved. The transcript is removed; a receipt stays.', bg: '#62D098', fg: '#003B2A' }
+      ],
+      keys: [
+        { key: 'Space', what: 'Play or pause' },
+        { key: 'J / K', what: 'Next or previous passage' },
+        { key: 'Enter', what: 'Edit the selected passage; Enter again to finish' },
+        { key: 'Shift+Enter', what: 'New line while editing' },
+        { key: 'Esc', what: 'Stop editing' },
+        { key: 'Ctrl+F', what: 'Search the transcript' },
+        { key: 'Ctrl+Z', what: 'Undo the last edit' },
+        { key: 'Ctrl + / Ctrl -', what: 'Zoom in or out (Ctrl+0 resets)' },
+        { key: '?', what: 'Show these shortcuts' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

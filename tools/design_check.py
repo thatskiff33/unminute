@@ -1,0 +1,183 @@
+# tools/design_check.py
+# Design fidelity check (#89). Renders each approved design board
+# (docs/design/boards) and the matching app screen in headless Microsoft Edge
+# at the same window size, then writes board | app | difference images and a
+# score: the share of pixels that differ visibly. The app runs from
+# workspace/ui with a fake bridge (tools/design_check/fixtures.js) that serves
+# fixed sample data, so no workspace, model or network is involved.
+#
+#   python tools/design_check.py <out-dir> [case ...]
+#
+# Needs Microsoft Edge and Pillow. Development tool only; not shipped.
+
+import argparse
+import http.server
+import json
+import subprocess
+import sys
+import tempfile
+import threading
+from pathlib import Path
+from urllib.parse import quote, urlsplit
+
+from PIL import Image, ImageChops
+
+ROOT = Path(__file__).resolve().parents[1]
+UI = ROOT / "workspace" / "ui"
+SERVED = ("docs/design/", "docs/screenshots/", "tools/design_check/", "workspace/ui/")
+EDGE = [Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")]
+VISIBLE = 40          # a channel difference above this counts as a visible change
+
+# Each case pairs a board (and its props) with an app scenario from fixtures.js.
+# An empty "app" renders the board only (no app screen to compare yet).
+CASES = [
+    {"name": "brand", "board": "Main.dc.html", "app": ""},
+    {"name": "home", "board": "Home.dc.html", "app": "inbox"},
+    {"name": "recording", "board": "Recording.dc.html", "app": ""},
+    {"name": "home-empty", "board": "Home-Empty.dc.html", "app": ""},
+    {"name": "home-drop", "board": "Home-Drop.dc.html", "app": ""},
+    {"name": "home-states", "board": "Home-States.dc.html", "app": "", "h": 1180},
+    {"name": "recording-states", "board": "Recording-States.dc.html", "app": "", "h": 1180},
+    {"name": "meeting", "board": "Meeting.dc.html", "app": ""},
+    {"name": "meeting-transcribing", "board": "Meeting-Transcribing.dc.html", "app": ""},
+    {"name": "meeting-edit", "board": "Meeting-Edit.dc.html", "app": ""},
+    {"name": "meeting-reviewed", "board": "Meeting-Reviewed.dc.html", "app": ""},
+    {"name": "meeting-earlier", "board": "Meeting-Earlier.dc.html", "app": ""},
+    {"name": "meeting-panels", "board": "Meeting-Panels.dc.html", "app": "", "w": 1340},
+    {"name": "names", "board": "Names.dc.html", "app": ""},
+    {"name": "confirm", "board": "Confirm.dc.html", "app": ""},
+    {"name": "handoff", "board": "Handoff.dc.html", "app": ""},
+    {"name": "handoff-template", "board": "Handoff-Template.dc.html", "app": ""},
+    {"name": "setup-1", "board": "Setup-1.dc.html", "app": ""},
+    {"name": "setup-2", "board": "Setup.dc.html", "app": ""},
+    {"name": "setup-3", "board": "Setup-3.dc.html", "app": ""},
+    {"name": "setup-4", "board": "Setup-4.dc.html", "app": ""},
+    {"name": "setup-5", "board": "Setup-5.dc.html", "app": ""},
+    {"name": "settings", "board": "Settings.dc.html", "app": "", "h": 1320},
+    {"name": "downloads", "board": "Models.dc.html", "app": ""},
+    {"name": "help", "board": "Help.dc.html", "app": ""},
+    {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "", "w": 900},
+    {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "", "w": 640},
+    {"name": "meeting-320", "board": "Meeting-320.dc.html", "app": "", "w": 320},
+    {"name": "home-640", "board": "Home-640.dc.html", "app": "", "w": 640},
+    {"name": "home-320", "board": "Home-320.dc.html", "app": "", "w": 320},
+    {"name": "home-dark", "board": "Home-Dark.dc.html", "app": "", "dark": True},
+    {"name": "meeting-dark", "board": "Meeting-Dark.dc.html", "app": "", "dark": True},
+]
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    """Serves the app under /app/ with the fake bridge, and a few repo folders."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        path = urlsplit(self.path).path.lstrip("/")
+        if path.startswith("app/"):
+            rel = path[4:] or "index.html"
+            target = UI / rel
+            if rel == "index.html":
+                html = target.read_text(encoding="utf-8").replace(
+                    '<script src="app.js"></script>',
+                    '<script src="/tools/design_check/fixtures.js"></script>\n'
+                    '<script src="app.js"></script>')
+                return self._send(html.encode("utf-8"), "text/html; charset=utf-8")
+        elif path.startswith(SERVED):
+            target = ROOT / path
+        else:
+            return self.send_error(404)
+        target = target.resolve()
+        if ROOT not in target.parents or not target.is_file():
+            return self.send_error(404)
+        return self._send(target.read_bytes(), self.guess_type(str(target)))
+
+    def _send(self, body, ctype):
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def edge():
+    for p in EDGE:
+        if p.is_file():
+            return p
+    sys.exit("Microsoft Edge was not found.")
+
+
+def shoot(url, out, width, height, dark=False):
+    """Screenshot a page in headless Edge at width x height CSS pixels."""
+    with tempfile.TemporaryDirectory() as profile:
+        cmd = [str(edge()), "--headless=new", "--disable-gpu", "--hide-scrollbars",
+               "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
+               "--force-device-scale-factor=1", f"--window-size={width},{height}",
+               "--virtual-time-budget=15000", f"--screenshot={out}",
+               # prefers-color-scheme: 0 dark, 1 light (headless otherwise follows Windows)
+               f"--blink-settings=preferredColorScheme={0 if dark else 1}", url]
+        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+    if not Path(out).is_file():
+        raise RuntimeError(f"Edge made no screenshot of {url}")
+
+
+def compare(board_png, app_png, out_png):
+    """Board | app | difference (red where they differ). Returns % of pixels changed."""
+    a = Image.open(board_png).convert("RGB")
+    b = Image.open(app_png).convert("RGB")
+    if b.size != a.size:
+        bigger = b.width >= a.width and b.height >= a.height
+        b = b.crop((0, 0, *a.size)) if bigger else b.resize(a.size)
+    diff = ImageChops.difference(a, b)
+    channels = diff.split()
+    mask = ImageChops.lighter(ImageChops.lighter(channels[0], channels[1]), channels[2])
+    mask = mask.point(lambda v: 255 if v > VISIBLE else 0)
+    changed = mask.histogram()[255] / (a.width * a.height) * 100
+    red = Image.new("RGB", a.size, (229, 0, 0))
+    faded = Image.blend(a, Image.new("RGB", a.size, "white"), 0.7)
+    overlay = Image.composite(red, faded, mask)
+    sheet = Image.new("RGB", (a.width * 3 + 40, a.height), "white")
+    for i, img in enumerate((a, b, overlay)):
+        sheet.paste(img, (i * (a.width + 20), 0))
+    sheet.save(out_png)
+    return round(changed, 2)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("out", type=Path)
+    parser.add_argument("cases", nargs="*", help="case names (default: all)")
+    args = parser.parse_args()
+    cases = [c for c in CASES if not args.cases or c["name"] in args.cases]
+    if not cases:
+        sys.exit("No such case. Known: " + ", ".join(c["name"] for c in CASES))
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    results = []
+    try:
+        for c in cases:
+            w, h = c.get("w", 1100), c.get("h", 760)
+            props = "".join(f"&{k}={quote(str(v))}" for k, v in c.get("props", {}).items())
+            board_png = args.out / f"{c['name']}-board.png"
+            shoot(f"{base}/tools/design_check/render.html?board={quote(c['board'])}{props}",
+                  board_png, w, h, c.get("dark", False))
+            row = {"case": c["name"], "board": c["board"], "size": f"{w}x{h}"}
+            if c["app"]:
+                app_png = args.out / f"{c['name']}-app.png"
+                shoot(f"{base}/app/index.html#{c['app']}", app_png, w, h, c.get("dark", False))
+                row["changed_percent"] = compare(board_png, app_png,
+                                                 args.out / f"{c['name']}-compare.png")
+            results.append(row)
+            print(json.dumps(row))
+    finally:
+        server.shutdown()
+    (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

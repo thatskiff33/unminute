@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Unminute brand system</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2B61BF}a:hover{color:#142966}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; box-sizing: border-box; padding: 40px 48px; background: #FFFFFF; color: #142966; font-family: 'Archivo', 'Segoe UI', sans-serif; display: flex; flex-direction: column; gap: 28px; overflow: hidden">
+  <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 24px">
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="font-size: 13px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #566591">Design tokens</div>
+      <h1 style="margin: 0; font-size: 34px; font-weight: 800; letter-spacing: -0.02em">Unminute<span style="color: #E56600">.</span> brand system</h1>
+    </div>
+    <img src="/_blob/db54b5564615ab70ce9e211b583e7378" alt="Unlimit" style="height: 22px; width: auto">
+  </div>
+
+  <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; flex: 1; min-height: 0">
+
+    <div style="display: flex; flex-direction: column; gap: 14px">
+      <h2 style="margin: 0; font-size: 15px; font-weight: 700">Colour roles</h2>
+      <sc-for list="{{swatches}}" as="s" hint-placeholder-count="8">
+        <div style="display: flex; align-items: center; gap: 12px">
+          <div style="width: 44px; height: 44px; border-radius: 10px; flex: none; background: {{s.hex}}; border: 1px solid rgba(20,41,102,0.14)"></div>
+          <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+            <div style="font-size: 14px; font-weight: 600">{{s.name}} <span style="font-weight: 400; color: #566591">{{s.hex}}</span></div>
+            <div style="font-size: 13px; color: #566591">{{s.role}}</div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 18px">
+      <h2 style="margin: 0; font-size: 15px; font-weight: 700">Type: Archivo, bundled</h2>
+      <div style="display: flex; flex-direction: column; gap: 6px; padding-bottom: 6px; border-bottom: 1px solid rgba(20,41,102,0.14)">
+        <div style="font-size: 28px; font-weight: 800; letter-spacing: -0.02em">Page title 28</div>
+        <div style="font-size: 18px; font-weight: 700">Section heading 18</div>
+        <div style="font-size: 15px">Body 15. Plain words, one idea per line.</div>
+        <div style="font-size: 13px; color: #566591">Caption 13, muted dark blue</div>
+      </div>
+
+      <h2 style="margin: 0; font-size: 15px; font-weight: 700">Buttons</h2>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+        <button style="font: inherit; font-size: 15px; font-weight: 700; padding: 10px 18px; min-height: 44px; border-radius: 10px; border: 0; background: #142966; color: #FFFFFF">Review</button>
+        <button style="font: inherit; font-size: 15px; font-weight: 600; padding: 10px 18px; min-height: 44px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.28); background: #FFFFFF; color: #142966">Pause</button>
+        <a href="#" style="font-size: 15px; font-weight: 600; color: #2B61BF">Discard…</a>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center">
+        <button style="font: inherit; font-size: 19px; font-weight: 700; padding: 10px 18px; min-height: 44px; border-radius: 10px; border: 0; background: #E56600; color: #FFFFFF">Record</button>
+        <button style="font: inherit; font-size: 15px; font-weight: 700; padding: 10px 18px; min-height: 44px; border-radius: 10px; border: 0; background: #B3261E; color: #FFFFFF">Delete</button>
+        <span style="font-size: 13px; color: #566591">Orange is for Record only; red only for deleting.</span>
+      </div>
+
+      <h2 style="margin: 0; font-size: 15px; font-weight: 700">Speakers and stages</h2>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center">
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border-radius: 999px; background: #B4DDF6; color: #142966; font-size: 14px; font-weight: 600"><span style="width: 22px; height: 22px; border-radius: 50%; background: #142966; color: #FFFFFF; font-size: 11px; display: inline-flex; align-items: center; justify-content: center">AL</span>Alex</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border-radius: 999px; background: #FDCAEA; color: #440638; font-size: 14px; font-weight: 600"><span style="width: 22px; height: 22px; border-radius: 50%; background: #440638; color: #FFFFFF; font-size: 11px; display: inline-flex; align-items: center; justify-content: center">SA</span>Sam</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 4px; border-radius: 999px; background: #62D098; color: #003B2A; font-size: 14px; font-weight: 600"><span style="width: 22px; height: 22px; border-radius: 50%; background: #003B2A; color: #FFFFFF; font-size: 11px; display: inline-flex; align-items: center; justify-content: center">S3</span>Speaker 3</span>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px">
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(20,41,102,0.2); font-size: 13px; font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: #2B61BF"></span>Transcribing</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(20,41,102,0.2); font-size: 13px; font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: #E56600"></span>Ready to review</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(20,41,102,0.2); font-size: 13px; font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: #DD5EB9"></span>Ready to hand off</span>
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(20,41,102,0.2); font-size: 13px; font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 50%; background: #00A275"></span>Cleanup</span>
+      </div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 14px">
+      <h2 style="margin: 0; font-size: 15px; font-weight: 700">Contrast (approx., to confirm in build)</h2>
+      <div style="display: flex; flex-direction: column; border: 1px solid rgba(20,41,102,0.14); border-radius: 12px; overflow: hidden">
+        <sc-for list="{{pairs}}" as="p" hint-placeholder-count="9">
+          <div style="display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-bottom: 1px solid rgba(20,41,102,0.08)">
+            <div style="width: 52px; height: 30px; border-radius: 6px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; background: {{p.bg}}; color: {{p.fg}}; border: 1px solid rgba(20,41,102,0.12)">Aa</div>
+            <div style="flex: 1; min-width: 0; font-size: 13px">{{p.label}}</div>
+            <div style="font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums">{{p.ratio}}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="font-size: 13px; line-height: 1.5; color: #566591">Rules: white on orange only at 19 px bold or larger (the Record card). Orange badges and step markers use dark brown text. Links use true blue, never orange.</div>
+    </div>
+
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      swatches: [
+        { name: 'Orange', hex: '#E56600', role: 'Record, current step, count badge, focus ring' },
+        { name: 'Light blue', hex: '#B4DDF6', role: 'Selected nav item, speaker 1, dark-mode buttons' },
+        { name: 'Lilac pink', hex: '#FDCAEA', role: 'Speaker 2, hand-off reminder, search hits' },
+        { name: 'Spearmint', hex: '#62D098', role: 'Success, speaker 3' },
+        { name: 'Dark blue', hex: '#142966', role: 'Text, main buttons, player bar' },
+        { name: 'True blue', hex: '#2B61BF', role: 'Links, time stamps, progress' },
+        { name: 'Dark brown', hex: '#351503', role: 'Text on orange badges and step markers' },
+        { name: 'Pale blue', hex: '#EEF7FD', role: 'Sidebar, tabs and highlighted rows' }
+      ],
+      pairs: [
+        { bg: '#FFFFFF', fg: '#142966', label: 'Dark blue on white', ratio: '13.7:1' },
+        { bg: '#FFFFFF', fg: '#2B61BF', label: 'True blue on white', ratio: '5.9:1' },
+        { bg: '#E56600', fg: '#351503', label: 'Dark brown on orange', ratio: '4.9:1' },
+        { bg: '#E56600', fg: '#FFFFFF', label: 'White on orange (large only)', ratio: '3.4:1' },
+        { bg: '#142966', fg: '#FFFFFF', label: 'White on dark blue', ratio: '13.7:1' },
+        { bg: '#B4DDF6', fg: '#142966', label: 'Dark blue on light blue', ratio: '9.5:1' },
+        { bg: '#FDCAEA', fg: '#440638', label: 'Dark purple on lilac pink', ratio: '11.1:1' },
+        { bg: '#62D098', fg: '#003B2A', label: 'Dark green on spearmint', ratio: '6.6:1' },
+        { bg: '#B3261E', fg: '#FFFFFF', label: 'White on red (Delete)', ratio: '6.5:1' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-10-15T14:30:00+13:00"},
+  "title": "Unminute redesign",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 1100, "h": 760, "title": "Brand system"},
+    "Today-Inbox.dc.html": {"x": 1180, "y": 0, "w": 1100, "h": 760, "title": "Today: Inbox"},
+    "Today-Meeting.dc.html": {"x": 2360, "y": 0, "w": 1100, "h": 760, "title": "Today: Meeting"},
+
+    "Home.dc.html": {"x": 0, "y": 1140, "w": 1100, "h": 760, "title": "Meetings"},
+    "Recording.dc.html": {"x": 1180, "y": 1140, "w": 1100, "h": 760, "title": "Recording in progress"},
+    "Home-Empty.dc.html": {"x": 2360, "y": 1140, "w": 1100, "h": 760, "title": "No meetings yet"},
+    "Home-Drop.dc.html": {"x": 3540, "y": 1140, "w": 1100, "h": 760, "title": "Dropping files to import"},
+    "Home-States.dc.html": {"x": 4720, "y": 1140, "w": 1100, "h": 1180, "title": "Every meeting row state, reminders and import errors"},
+    "Recording-States.dc.html": {"x": 5900, "y": 1140, "w": 1100, "h": 1180, "title": "Record card states"},
+
+    "Meeting.dc.html": {"x": 0, "y": 2700, "w": 1100, "h": 760, "title": "Review"},
+    "Meeting-Transcribing.dc.html": {"x": 1180, "y": 2700, "w": 1100, "h": 760, "title": "Still transcribing"},
+    "Meeting-Edit.dc.html": {"x": 2360, "y": 2700, "w": 1100, "h": 760, "title": "Editing, moving a passage, searching, Saved toast"},
+    "Meeting-Reviewed.dc.html": {"x": 3540, "y": 2700, "w": 1100, "h": 760, "title": "Reviewed: ready to hand off"},
+    "Meeting-Earlier.dc.html": {"x": 4720, "y": 2700, "w": 1100, "h": 760, "title": "Earlier version (read only)"},
+    "Meeting-Panels.dc.html": {"x": 5900, "y": 2700, "w": 1340, "h": 760, "title": "Side panel tabs and states"},
+
+    "Names.dc.html": {"x": 0, "y": 3840, "w": 1100, "h": 760, "title": "Name speakers"},
+    "Confirm.dc.html": {"x": 1180, "y": 3840, "w": 1100, "h": 760, "title": "Confirmation dialog"},
+    "Handoff.dc.html": {"x": 2360, "y": 3840, "w": 1100, "h": 760, "title": "Hand off"},
+    "Handoff-Template.dc.html": {"x": 3540, "y": 3840, "w": 1100, "h": 760, "title": "Hand off: editing a template"},
+
+    "Setup-1.dc.html": {"x": 0, "y": 4980, "w": 1100, "h": 760, "title": "Setup 1: Welcome"},
+    "Setup.dc.html": {"x": 1180, "y": 4980, "w": 1100, "h": 760, "title": "Setup 2: Speech model"},
+    "Setup-3.dc.html": {"x": 2360, "y": 4980, "w": 1100, "h": 760, "title": "Setup 3: Speaker names"},
+    "Setup-4.dc.html": {"x": 3540, "y": 4980, "w": 1100, "h": 760, "title": "Setup 4: Microphone"},
+    "Setup-5.dc.html": {"x": 4720, "y": 4980, "w": 1100, "h": 760, "title": "Setup 5: Ready"},
+
+    "Settings.dc.html": {"x": 0, "y": 6120, "w": 1100, "h": 1320, "title": "Settings (full page, scrolls)"},
+    "Models.dc.html": {"x": 1180, "y": 6120, "w": 1100, "h": 760, "title": "Settings: Downloads"},
+    "Help.dc.html": {"x": 2360, "y": 6120, "w": 1100, "h": 760, "title": "Help and shortcuts"},
+
+    "Meeting-Narrow.dc.html": {"x": 0, "y": 7820, "w": 900, "h": 760, "title": "Meeting at 900 px"},
+    "Meeting-640.dc.html": {"x": 980, "y": 7820, "w": 640, "h": 760, "title": "Meeting at 640 px"},
+    "Meeting-320.dc.html": {"x": 1700, "y": 7820, "w": 320, "h": 760, "title": "Meeting at 320 px"},
+    "Home-640.dc.html": {"x": 2100, "y": 7820, "w": 640, "h": 760, "title": "Meetings at 640 px"},
+    "Home-320.dc.html": {"x": 2820, "y": 7820, "w": 320, "h": 760, "title": "Meetings at 320 px"},
+
+    "Home-Dark.dc.html": {"x": 0, "y": 8960, "w": 1100, "h": 760, "title": "Meetings, dark"},
+    "Meeting-Dark.dc.html": {"x": 1180, "y": 8960, "w": 1100, "h": 760, "title": "Review, dark"},
+
+    "Home-B.dc.html": {"x": 0, "y": 10100, "w": 1100, "h": 760, "title": "Explored: Direction B sidebar"},
+    "Meeting-B.dc.html": {"x": 1180, "y": 10100, "w": 1100, "h": 760, "title": "Explored: Direction B"}
+  },
+  "order": [
+    "Main.dc.html", "Today-Inbox.dc.html", "Today-Meeting.dc.html",
+    "Home.dc.html", "Recording.dc.html", "Home-Empty.dc.html", "Home-Drop.dc.html", "Home-States.dc.html", "Recording-States.dc.html",
+    "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html",
+    "Names.dc.html", "Confirm.dc.html", "Handoff.dc.html", "Handoff-Template.dc.html",
+    "Setup-1.dc.html", "Setup.dc.html", "Setup-3.dc.html", "Setup-4.dc.html", "Setup-5.dc.html",
+    "Settings.dc.html", "Models.dc.html", "Help.dc.html",
+    "Meeting-Narrow.dc.html", "Meeting-640.dc.html", "Meeting-320.dc.html", "Home-640.dc.html", "Home-320.dc.html",
+    "Home-Dark.dc.html", "Meeting-Dark.dc.html",
+    "Home-B.dc.html", "Meeting-B.dc.html"
+  ],
+  "notes": {
+    "row1": {"x": 0, "y": -260, "text": "1. Brand system, and the app today", "kind": "title1", "maxW": 3460},
+    "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 7000},
+    "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 7240},
+    "row4": {"x": 0, "y": 3580, "text": "4. Name speakers, confirm and hand off", "kind": "title1", "maxW": 4640},
+    "row5": {"x": 0, "y": 4720, "text": "5. First-run setup", "kind": "title1", "maxW": 5820},
+    "row6": {"x": 0, "y": 5860, "text": "6. Settings and help", "kind": "title1", "maxW": 3460},
+    "row7": {"x": 0, "y": 7560, "text": "7. Narrow windows and zoom", "kind": "title1", "maxW": 3140},
+    "row8": {"x": 0, "y": 8700, "text": "8. Dark theme", "kind": "title1", "maxW": 2280},
+    "row9": {"x": 0, "y": 9840, "text": "Explored, not chosen", "kind": "title1", "maxW": 2280}
+  },
+  "designSystems": []
+}

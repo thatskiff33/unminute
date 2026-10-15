@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Name speakers</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="width: 1100px; height: 760px; overflow: hidden; position: relative; font-family: 'Archivo', 'Segoe UI', sans-serif; color: #142966">
+  <dc-import name="Meeting" direction="H" hint-size="1100px,760px"></dc-import>
+  <div style="position: absolute; inset: 0; background: rgba(20,41,102,0.45); display: flex; align-items: center; justify-content: center">
+    <div role="dialog" aria-labelledby="names-title" style="width: 820px; box-sizing: border-box; padding: 28px; border-radius: 20px; background: #FFFFFF; box-shadow: 0 24px 64px rgba(20,41,102,0.35); display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <h2 id="names-title" style="margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.01em">Who's speaking?</h2>
+        <p style="margin: 0; font-size: 15px; line-height: 1.5; color: #566591">Play a few examples and type each person's name. Names stay with this meeting only and are removed at cleanup.</p>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
+        <sc-for list="{{speakers}}" as="p" hint-placeholder-count="2">
+          <div style="border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14); background: {{p.tint}}">
+            <div style="display: flex; align-items: center; gap: 12px">
+              <span style="width: 44px; height: 44px; flex: none; border-radius: 50%; font-size: 15px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: {{p.bg}}; color: {{p.fg}}">{{p.ini}}</span>
+              <label style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px">
+                <span style="font-size: 13px; font-weight: 600; color: #566591">{{p.label}} · {{p.count}}</span>
+                <input value="{{p.who}}" style="font: inherit; font-size: 17px; font-weight: 700; min-height: 40px; padding: 0 12px; border-radius: 10px; border: {{p.inputBorder}}; color: #142966; background: #FFFFFF; box-sizing: border-box; width: 100%">
+              </label>
+            </div>
+            <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
+              <sc-for list="{{p.examples}}" as="e" hint-placeholder-count="3">
+                <li style="display: flex; align-items: flex-start; gap: 10px">
+                  <button aria-label="{{e.label}}" style="font: inherit; flex: none; width: 72px; min-height: 36px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">
+                    <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l16 9-16 9z" fill="currentColor"/></svg>{{e.time}}
+                  </button>
+                  <span style="font-size: 14px; line-height: 1.45; padding-top: 7px">{{e.text}}</span>
+                </li>
+              </sc-for>
+            </ul>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid rgba(20,41,102,0.10)">
+              <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: #2B61BF">More examples</button>
+              <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 14px">
+                Same person as
+                <select style="font: inherit; font-size: 14px; min-height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(20,41,102,0.28); color: #142966; background: #FFFFFF"><option>{{p.other}}</option></select>
+              </label>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
+        <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 16px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Undo last change
+        </button>
+        <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 28px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      speakers: [
+        {
+          who: 'Alex', label: 'Speaker 1', count: '15 passages', ini: 'AL', bg: '#B4DDF6', fg: '#142966', tint: '#F5FAFE', other: 'Sam',
+          inputBorder: '2px solid #E56600',
+          examples: [
+            { time: '0:00', text: 'Thanks for making time this morning.', label: 'Play 0:00' },
+            { time: '0:52', text: 'Who is organising the volunteers for the build day?', label: 'Play 0:52' },
+            { time: '1:19', text: "I'll ask about that this week and report back at our next catch-up.", label: 'Play 1:19' }
+          ]
+        },
+        {
+          who: 'Sam', label: 'Speaker 2', count: '17 passages', ini: 'SA', bg: '#FDCAEA', fg: '#440638', tint: '#FFF7FC', other: 'Alex',
+          inputBorder: '1px solid rgba(20,41,102,0.28)',
+          examples: [
+            { time: '0:10', text: 'The main thing from last week is the budget.', label: 'Play 0:10' },
+            { time: '0:26', text: 'The water tank was the bigger saving.', label: 'Play 0:26' },
+            { time: '1:12', text: 'We should check the insurance cover for volunteers before the build day.', label: 'Play 1:12' }
+          ]
+        }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

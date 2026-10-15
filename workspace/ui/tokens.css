@@ -1,0 +1,137 @@
+/* Unminute design tokens (#89). Values come from the approved design boards
+   in docs/design/boards; change them there first. Unlimit palette: dark blue
+   text and main buttons, a light sidebar, orange only for Record (and the
+   focus ring, current step and count badge), true blue links, red only for
+   deleting. */
+
+@font-face {
+  font-family: "Archivo"; font-weight: 100 900; font-style: normal; font-display: block;
+  src: url("fonts/Archivo-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Archivo"; font-weight: 100 900; font-style: normal; font-display: block;
+  src: url("fonts/Archivo-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  color-scheme: light;
+  --font: "Archivo", "Segoe UI", system-ui, sans-serif;
+  --mono: Consolas, "Cascadia Mono", monospace;
+
+  /* Surfaces and text */
+  --page: #FFFFFF;
+  --card: #FFFFFF;
+  --text: #142966;
+  --muted: #566591;
+  --line: rgba(20, 41, 102, 0.14);
+  --line-soft: rgba(20, 41, 102, 0.08);
+  --pill-line: rgba(20, 41, 102, 0.2);
+  --control-line: rgba(20, 41, 102, 0.28);
+  --input-bg: #FFFFFF;
+  --link: #2B61BF;
+  --link-hover: #142966;
+
+  /* Sidebar */
+  --side-bg: #EEF7FD;
+  --side-text: #142966;
+  --side-sel: #B4DDF6;
+  --side-sel-text: #142966;
+  --side-line: rgba(20, 41, 102, 0.10);
+  --side-note: #FFFFFF;
+
+  /* Buttons */
+  --primary: #142966;
+  --primary-fg: #FFFFFF;
+  --secondary: #FFFFFF;
+  --secondary-fg: #142966;
+  --record: #E56600;
+  --record-fg: #FFFFFF;
+  --danger: #B3261E;
+  --danger-fg: #FFFFFF;
+
+  /* Accents */
+  --accent: #E56600;          /* focus ring, current step, count badge */
+  --accent-fg: #351503;       /* text on orange below 19 px bold */
+  --soft: #EEF7FD;            /* tabs, highlighted rows, quiet panels */
+  --soft-strong: #B4DDF6;
+  --hit: #FDCAEA;             /* search matches */
+  --track: rgba(20, 41, 102, 0.12);
+  --fill: #2B61BF;
+  --done: #00A275;
+  --done-fg: #FFFFFF;
+  --upcoming: rgba(20, 41, 102, 0.16);
+  --success: #62D098;
+  --success-fg: #003B2A;
+  --hold: #FDCAEA;
+  --hold-fg: #440638;
+  --hold-line: rgba(68, 6, 56, 0.3);
+  --error: #B3261E;
+
+  /* Speakers: tone-on-tone pairs, cycled */
+  --sp1: #B4DDF6; --sp1-fg: #142966;
+  --sp2: #FDCAEA; --sp2-fg: #440638;
+  --sp3: #62D098; --sp3-fg: #003B2A;
+
+  /* Player */
+  --player: #142966;
+  --player-fg: #FFFFFF;
+  --player-muted: rgba(255, 255, 255, 0.78);
+  --player-track: rgba(255, 255, 255, 0.24);
+
+  /* Shape */
+  --r-sm: 8px;
+  --r: 10px;
+  --r-md: 12px;
+  --r-lg: 14px;
+  --r-xl: 16px;
+  --r-dialog: 20px;
+  --shadow-card: 0 8px 24px rgba(20, 41, 102, 0.10);
+  --shadow-tab: 0 1px 3px rgba(20, 41, 102, 0.16);
+  --shadow-pop: 0 8px 24px rgba(20, 41, 102, 0.14);
+  --shadow-dialog: 0 24px 64px rgba(20, 41, 102, 0.35);
+  --scrim: rgba(20, 41, 102, 0.45);
+  --control-h: 44px;
+  --control-h-sm: 40px;
+}
+
+/* Dark theme: follows Windows. Main buttons turn light blue, because dark
+   blue disappears on a dark page; orange keeps its roles. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #101F4E;
+    --card: #142966;
+    --text: #FFFFFF;
+    --muted: rgba(255, 255, 255, 0.74);
+    --line: rgba(255, 255, 255, 0.14);
+    --line-soft: rgba(255, 255, 255, 0.08);
+    --pill-line: rgba(255, 255, 255, 0.2);
+    --control-line: rgba(255, 255, 255, 0.32);
+    --input-bg: rgba(255, 255, 255, 0.06);
+    --link: #B4DDF6;
+    --link-hover: #FFFFFF;
+    --side-bg: #0B1638;
+    --side-text: #FFFFFF;
+    --side-sel: rgba(180, 221, 246, 0.16);
+    --side-sel-text: #FFFFFF;
+    --side-line: rgba(255, 255, 255, 0.08);
+    --side-note: rgba(255, 255, 255, 0.06);
+    --primary: #B4DDF6;
+    --primary-fg: #142966;
+    --secondary: transparent;
+    --secondary-fg: #FFFFFF;
+    --soft: rgba(255, 255, 255, 0.06);
+    --soft-strong: rgba(180, 221, 246, 0.2);
+    --hit: rgba(253, 202, 234, 0.24);
+    --track: rgba(255, 255, 255, 0.14);
+    --fill: #B4DDF6;
+    --done: #62D098;
+    --done-fg: #003B2A;
+    --upcoming: rgba(255, 255, 255, 0.18);
+    --error: #F2A49E;
+    --player: #0B1638;
+    --scrim: rgba(5, 12, 33, 0.6);
+  }
+}
