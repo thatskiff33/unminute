@@ -500,14 +500,17 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual((row["speaker_count"], bool(row["model"])), (2, True))
         d = ws.detail(mid)
         self.assertEqual((d["duration_s"], d["speaker_count"]), (row["duration_s"], 2))
+        self.assertEqual((row["audio_available"], row["cleanup"]), (True, []))
         self.assertIn(ws.status()["mode"], ("quiet", "faster"))
         [a, b] = ws.speakers(mid)["speakers"]
         self.assertTrue(a["seconds"] > 0 and b["seconds"] > 0)
         ws.rename_speaker(mid, a["label"], "Aroha")
-        ws.rename_speaker(mid, b["label"], "Ben")
+        ws.rename_speaker(mid, b["label"], "Benny")
+        ws.rename_speaker(mid, b["label"], "Ben")            # an earlier name is replaced too
+        tid = ws.save_template(None, "Ours", "Write minutes for Aroha's team. Benny chairs.")
         first = ws.transcript(mid)["items"][0]
         self.assertEqual(first["who"], "Aroha")               # Aroha speaks first
-        ws.edit(mid, first["id"], "Thanks aroha and BEN, welcome. Benefits next.")
+        ws.edit(mid, first["id"], "Thanks aroha and BEN, welcome. Benefits next, says Benny.")
         ws.rename(mid, "Catch-up with Aroha")
         ws.confirm_reviewed(mid)
         self.assertTrue(ws.wait_idle(60))
@@ -519,10 +522,13 @@ class WorkspaceTests(unittest.TestCase):
         self.assertNotIn("aroha", anon["combined"].casefold())
         self.assertIn("**Speaker 1:**", anon["markdown"])
         # Whole words only: "Benefits" is not a name.
-        self.assertIn("Thanks Speaker 1 and Speaker 2, welcome. Benefits next.", anon["markdown"])
+        self.assertIn("Thanks Speaker 1 and Speaker 2, welcome. Benefits next, says Speaker 2.",
+                      anon["markdown"])
         self.assertIn("# Catch-up with Speaker 1", anon["markdown"])
         self.assertNotIn("Aroha", anon["filename"])
-        self.assertIn("speaker names were replaced", anon["markdown"])
+        self.assertIn("full names were replaced", anon["markdown"])
+        ours = ws.handoff_preview(mid, tid, True)
+        self.assertIn("Write minutes for Speaker 1's team. Speaker 2 chairs.", ours["prompt_only"])
         copied = []
         real = clipboard.copy_text
         clipboard.copy_text = copied.append

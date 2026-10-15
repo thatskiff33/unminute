@@ -1067,7 +1067,11 @@ class Workspace:
             done, total = self.store.progress(v["id"]) if v else (0, 0)
             busy = self._busy and self._busy[0] == row["id"] and self._busy[1]
             stage = self._stage(m, v)
-            out.append({**row, **self._facts(v),
+            out.append({**row, **self._facts(v), "audio_available": self._audio_available(m),
+                        "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
+                                     "note": j["error"]} for j in self.store._all(
+                            "SELECT * FROM cleanup_jobs WHERE meeting_id = ? ORDER BY intent_at",
+                            (row["id"],))],
                         "progress": round(100 * done / total) if total else 0,
                         "paused": bool(m["paused"]), "error": m["last_error"]
                         if m["phase"] == "error" else None,
@@ -1080,10 +1084,24 @@ class Workspace:
         if v is None:
             return {"duration_s": None, "speaker_count": None, "model": None}
         src = self.store.source(v["source_id"])
-        view = speaker_names.resolve(self.store, v["id"])
         return {"duration_s": round(src["samples"] / src["sample_rate"], 1) if src else None,
-                "speaker_count": len(view["order"]) if view["run"] else None,
-                "model": v["model"]}
+                "speaker_count": self._speaker_count(v["id"]), "model": v["model"]}
+
+    def _speaker_count(self, vid):
+        """Speakers in the current identification. The meeting list is polled
+        every 2 s, so the count is kept until the run or its corrections change."""
+        run = speaker_names.current_run(self.store, vid)
+        if run is None:
+            return None
+        last = self.store._one("SELECT MAX(id) AS n FROM speaker_corrections WHERE run_id = ?",
+                               (run["id"],))["n"]
+        key = (vid, run["id"], last)
+        cache = self.__dict__.setdefault("_speaker_counts", {})
+        if key not in cache:
+            if len(cache) > 100:
+                cache.clear()
+            cache[key] = len(speaker_names.resolve(self.store, vid)["order"])
+        return cache[key]
 
     @staticmethod
     def _action(m, stage):

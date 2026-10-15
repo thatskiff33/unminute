@@ -25,7 +25,7 @@ import time
 import unicodedata
 from pathlib import Path
 
-from workspace.speaker_names import resolve
+from workspace.speaker_names import given_names, resolve
 
 LONG_CHARS = 50_000          # above this, recommend file handoff (no truncation ever)
 MAX_PROMPT_CHARS = 20_000
@@ -228,32 +228,48 @@ def _stamp(t):
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
 
 
-def _pseudonyms(view, rows):
-    """Speaker 1, Speaker 2... for each speaker, numbered by first appearance."""
+def _pseudonyms(view, rows, omitted):
+    """Speaker 1, Speaker 2... numbered by first appearance in the passages
+    being handed off, so the numbers show no gap for a left-out speaker.
+    Speakers heard only in left-out passages are numbered after them (their
+    names can still be mentioned in the text)."""
     out = {}
-    for row in rows:
+    for row in sorted(rows, key=lambda r: r["id"] in omitted):   # stable: included first
         lbl = view["labels"].get(row["id"])
         if lbl and lbl not in out:
             out[lbl] = f"Speaker {len(out) + 1}"
     return out
 
 
-def _name_replacer(view, pseudo):
-    """Replaces each speaker's given name where it appears in the text, as a
-    whole word, any spacing, case-insensitive; longest name first. Default
-    "Speaker N" names are left alone: they identify no one."""
-    pairs = {}
+_APOSTROPHES = "'’"
+
+
+def _name_replacer(names, pseudo):
+    """Replaces every name each speaker has had (see speaker_names.given_names)
+    with that speaker's pseudonym wherever the full name appears: whole words,
+    any spacing, either apostrophe, ignoring case, longest name first. Names
+    are compared after the same NFKC normalisation as the text. Each name has
+    its own group, so a match can only ever become a pseudonym. Default
+    "Speaker N" names are left alone (they identify no one); if two speakers
+    share a name, the first one's pseudonym is used."""
+    entries = {}
     for lbl, alias in pseudo.items():
-        name = " ".join(view["names"].get(lbl, "").split())
-        if name and not re.fullmatch(r"Speaker \d+", name):
-            pairs.setdefault(name.casefold(), alias)
-    if not pairs:
+        for name in names.get(lbl, []):
+            n = _one_line(name)
+            if (n and not re.fullmatch(r"Speaker \d+", n, re.IGNORECASE)
+                    and n.casefold() not in {k.casefold() for k in entries}):
+                entries[n] = alias
+    if not entries:
         return lambda text: text
-    parts = [r"\s+".join(re.escape(w) for w in n.split())
-             for n in sorted(pairs, key=len, reverse=True)]
+
+    def word(w):
+        return "".join(f"[{_APOSTROPHES}]" if ch in _APOSTROPHES else re.escape(ch) for ch in w)
+    order = sorted(entries, key=len, reverse=True)
+    parts = [f"(?P<n{i}>" + r"\s+".join(word(w) for w in n.split()) + ")"
+             for i, n in enumerate(order)]
+    alias = {f"n{i}": entries[n] for i, n in enumerate(order)}
     pattern = re.compile(r"(?<!\w)(?:" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
-    return lambda text: pattern.sub(
-        lambda m: pairs.get(" ".join(m.group(0).split()).casefold(), m.group(0)), text)
+    return lambda text: pattern.sub(lambda m: alias[m.lastgroup], text)
 
 
 def build(store, mid, template, anonymise=False):
@@ -271,8 +287,9 @@ def build(store, mid, template, anonymise=False):
     omitted = set(opts["omitted"])
     view = resolve(store, v["id"])
     rows = store.transcript(v["id"])
-    pseudo = _pseudonyms(view, rows) if anonymise else {}
-    rename = _name_replacer(view, pseudo) if anonymise else (lambda text: text)
+    pseudo = _pseudonyms(view, rows, omitted) if anonymise else {}
+    rename = (_name_replacer(given_names(store, v["id"], view), pseudo) if anonymise
+              else (lambda text: text))
     count = 0
 
     def r(text):
@@ -306,13 +323,16 @@ def build(store, mid, template, anonymise=False):
                     f"{count} word{'s' if count != 1 else ''} or phrase"
                     f"{'s' if count != 1 else ''} redacted as {REDACTED}.")
     if anonymise:
-        head.append("- For this handoff, speaker names were replaced with Speaker 1, "
-                    "Speaker 2 and so on.")
+        head.append("- For this handoff, speaker labels and speakers' full names were "
+                    "replaced with Speaker 1, Speaker 2 and so on. Other mentions of "
+                    "people, such as a first name on its own, were not changed.")
     markdown = "\n".join(head + ["", "## Transcript", ""] + lines) + "\n"
     # Framing lines carry a marker derived from the content itself, so text in
     # the transcript cannot reproduce them (it would change the marker).
     mark = hashlib.sha256(markdown.encode("utf-8")).hexdigest()[:12]
     prompt = template["prompt"].strip()
+    if anonymise:                    # a template can name people too
+        prompt = rename(unicodedata.normalize("NFKC", prompt))
     combined = (f"{prompt}\n\n{DATA_NOTE.format(mark=mark)}\n\n"
                 f"BEGIN TRANSCRIPT {mark}\n{markdown}END TRANSCRIPT {mark}\n")
     prompt_only = f"{prompt}\n\n{FILE_NOTE}\n"
