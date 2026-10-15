@@ -42,11 +42,12 @@ CASES = [
     {"name": "home-drop", "board": "Home-Drop.dc.html", "app": "home-drop"},
     {"name": "home-states", "board": "Home-States.dc.html", "app": "home-states", "h": 1180},
     {"name": "recording-states", "board": "Recording-States.dc.html", "app": "", "h": 1180},
-    {"name": "meeting", "board": "Meeting.dc.html", "app": ""},
-    {"name": "meeting-transcribing", "board": "Meeting-Transcribing.dc.html", "app": ""},
-    {"name": "meeting-edit", "board": "Meeting-Edit.dc.html", "app": ""},
-    {"name": "meeting-reviewed", "board": "Meeting-Reviewed.dc.html", "app": ""},
-    {"name": "meeting-earlier", "board": "Meeting-Earlier.dc.html", "app": ""},
+    {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
+    {"name": "meeting-transcribing", "app": "meeting-transcribing",
+     "board": "Meeting-Transcribing.dc.html"},
+    {"name": "meeting-edit", "app": "meeting-edit", "board": "Meeting-Edit.dc.html"},
+    {"name": "meeting-reviewed", "app": "meeting-reviewed", "board": "Meeting-Reviewed.dc.html"},
+    {"name": "meeting-earlier", "app": "meeting-earlier", "board": "Meeting-Earlier.dc.html"},
     {"name": "meeting-panels", "board": "Meeting-Panels.dc.html", "app": "", "w": 1340},
     {"name": "names", "board": "Names.dc.html", "app": ""},
     {"name": "confirm", "board": "Confirm.dc.html", "app": ""},
@@ -60,13 +61,13 @@ CASES = [
     {"name": "settings", "board": "Settings.dc.html", "app": "", "h": 1320},
     {"name": "downloads", "board": "Models.dc.html", "app": ""},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
-    {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "", "w": 900},
-    {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "", "w": 640},
-    {"name": "meeting-320", "board": "Meeting-320.dc.html", "app": "", "w": 320},
+    {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},
+    {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "meeting", "w": 640},
+    {"name": "meeting-320", "board": "Meeting-320.dc.html", "app": "meeting", "w": 320},
     {"name": "home-640", "board": "Home-640.dc.html", "app": "home", "w": 640},
     {"name": "home-320", "board": "Home-320.dc.html", "app": "home", "w": 320},
     {"name": "home-dark", "board": "Home-Dark.dc.html", "app": "home", "dark": True},
-    {"name": "meeting-dark", "board": "Meeting-Dark.dc.html", "app": "", "dark": True},
+    {"name": "meeting-dark", "board": "Meeting-Dark.dc.html", "app": "meeting", "dark": True},
 ]
 
 
@@ -125,6 +126,7 @@ def shoot(url, out, width, height, dark=False):
         cmd = [str(edge()), "--headless=new", "--disable-gpu", "--hide-scrollbars",
                "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
                "--force-device-scale-factor=1", f"--window-size={width},{height}",
+               "--autoplay-policy=no-user-gesture-required", "--mute-audio",
                "--virtual-time-budget=15000", f"--screenshot={out}",
                # prefers-color-scheme: 0 dark, 1 light (headless otherwise follows Windows)
                f"--blink-settings=preferredColorScheme={0 if dark else 1}", url]

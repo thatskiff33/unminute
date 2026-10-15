@@ -73,27 +73,13 @@ const STAGES = {
 };
 
 // -- navigation -------------------------------------------------------------
-// The meeting view's two scrolling panes fill the window below the toolbar.
-function fitMeeting() {
-  if (state.view !== "meeting") return;
-  const top = document.querySelector(".meeting-body").getBoundingClientRect().top + window.scrollY;
-  document.documentElement.style.setProperty("--meeting-top", `${Math.round(top)}px`);
-}
-window.addEventListener("resize", fitMeeting);
-// Anything above the panes changing height (a banner, a wrapped toolbar or
-// search count) moves them: refit at once rather than at the next refresh.
-const meetingTopObserver = new ResizeObserver(() => fitMeeting());
-for (const el of document.querySelectorAll("body > header, body > .banner")) meetingTopObserver.observe(el);
-for (let el = document.querySelector(".meeting-body").previousElementSibling; el; el = el.previousElementSibling) {
-  meetingTopObserver.observe(el);
-}
-
 const VIEWS = ["meetings", "meeting", "settings", "setup", "help"];
 // The sidebar item each view belongs to.
 const NAV_OF = { meetings: "meetings", meeting: "meetings", settings: "settings", setup: "settings", help: "help" };
 
 function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
+  if (view !== "meeting") $("player").pause();
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -114,8 +100,14 @@ async function openMeeting(mid, { handoff = false } = {}) {
   stopEditing();
   state.pendingHandoff = handoff;
   state.mid = mid; state.total = -1; state.signature = ""; state.hits = []; state.hit = -1;
-  state.version = null;
-  $("m-search").value = ""; $("m-hits").textContent = "";
+  state.version = null; state.items = []; state.speakerList = []; state.playingRow = null;
+  $("m-search").value = ""; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true;
+  $("m-search").closest(".search").classList.remove("active");
+  $("m-again-form").hidden = true;
+  const audio = $("player");
+  audio.pause(); audio.removeAttribute("src"); audio.load();
+  clips.generation++; clips.next = null;
+  setTab("transcript");
   $("transcript").replaceChildren();
   show("meeting");
 }
@@ -348,6 +340,34 @@ function signatureOf(d) {
           d.audio_available].join("|");
 }
 
+// "Parakeet v2" for "parakeet-tdt-0.6b-v2"; other names as they are.
+function modelName(m) {
+  if (!m) return null;
+  const s = String(m).toLowerCase();
+  if (s.includes("parakeet")) return s.includes("v3") ? "Parakeet v3" : s.includes("v2") ? "Parakeet v2" : m;
+  if (s.includes("turbo")) return "Whisper large-v3 turbo";
+  return m;
+}
+function whenWord(epoch) {
+  const d = new Date(epoch * 1000), now = new Date();
+  const time = d.toLocaleTimeString("en-NZ", { hour: "numeric", minute: "2-digit" });
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  if (epoch >= day) return `today, ${time}`;
+  if (epoch >= day - DAY) return `yesterday, ${time}`;
+  return `${d.toLocaleDateString("en-NZ")}, ${time}`;
+}
+const dateWord = (epoch) => new Date(epoch * 1000).toLocaleDateString("en-NZ");
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+function metaLine(d) {
+  if (state.version !== null) {
+    const v = d.older_versions.find((x) => x.index === state.version);
+    return v ? `Earlier version: ${modelName(v.model)} (${dateWord(v.created_at)}) · ${plural(v.edits, "edited passage")}` : "";
+  }
+  const when = d.reviewed_at ? `Reviewed ${whenWord(d.reviewed_at)}` : `Imported ${whenWord(d.created_at)}`;
+  return joinParts(when, lengthWord(d.duration_s), speakersWord(d.speaker_count), modelName(d.model));
+}
+
 async function renderMeeting() {
   if (!state.mid) return;
   let d;
@@ -358,112 +378,256 @@ async function renderMeeting() {
     state.pendingHandoff = false;
     if (d.reviewed_at && !d.final_saved_at) openHandoff();
   }
-  requestAnimationFrame(fitMeeting);     // banners or errors above may have changed
-  if (document.activeElement !== $("m-title")) $("m-title").value = d.title;
-  const badges = [el("span", { class: "badge", textContent: STAGES[d.stage] })];
-  if (d.holds.length) badges.push(el("span", { class: "badge hold", textContent: "Held" }));
-  $("m-badges").replaceChildren(...badges);
-  const bits = [`Imported ${fmtDate(d.created_at)}`];
-  if (d.stage === "inbox") bits.push(`${d.progress}% transcribed${d.paused ? " (paused)" : ""}`);
-  if (d.busy) bits.push(d.busy === "speakers" ? "identifying speakers…" : `${d.busy}…`);
-  $("m-state").textContent = bits.join(" · ");
-  $("m-error").hidden = !d.error; $("m-error").textContent = d.error || "";
-  $("m-pause").hidden = d.stage !== "inbox" || d.paused || !!d.error;
-  $("m-stop").hidden = $("m-pause").hidden;
-  $("m-resume").hidden = !(d.paused || d.error) || !!d.reviewed_at;
-  $("m-resume").textContent = d.error ? "Try again" : "Resume";
-  $("m-undo").disabled = !d.can_undo;
-  $("m-playback").textContent = d.audio_available ? "Select a time to play that passage."
-    : "The audio was removed after the transcript review was confirmed, so playback and transcribing again are no longer available.";
+  const s = d.speakers;
+  const list = s && s.status === "done" ? await attempt(() => call("speakers", state.mid)) : null;
+  state.speakerList = list ? list.speakers : [];
+  state.speakerUndo = !!(list && list.can_undo);
+  if (document.activeElement !== $("m-title")) { $("m-title").value = d.title; fitTitle(); }
+  $("m-badges").textContent = d.holds.length ? "Held" : "";
+  $("m-meta").textContent = metaLine(d);
+  $("m-meta-short").textContent = state.version !== null ? metaLine(d)
+    : joinParts(dayWord(Math.floor((Date.now() / 1000 - d.created_at) / DAY)), lengthWord(d.duration_s), speakersWord(d.speaker_count));
+  renderHead(d);
   renderSteps(d);
+  renderBanner(d);
+  $("m-error").hidden = !d.error;
+  $("m-error").textContent = d.error || "";
+  const transcribing = d.stage === "inbox";
+  $("m-progress").hidden = !transcribing;
+  if (transcribing) {
+    $("m-progress").querySelector(".progress > span").style.width = `${d.progress}%`;
+    $("m-progress").querySelector(".progress").setAttribute("aria-valuenow", String(d.progress));
+    $("m-progress-text").textContent = joinParts(`${d.progress}% transcribed`, d.paused ? "paused" : MODE[state.mode]);
+  }
+  const readOnly = !!d.reviewed_at || state.version !== null;
+  $("m-hint").textContent = readOnly ? ""
+    : transcribing ? "Transcribing. You can play and correct the finished parts now."
+    : "Play passages and correct any words. Select text to edit it. Changes save as you go.";
+  $("m-undo").hidden = readOnly;
+  $("m-toolbar").hidden = readOnly;   // locked or an earlier version: nothing to edit
+  $("m-undo").disabled = !d.can_undo;
+  $("m-more").hidden = !transcribing;
+  $("m-player").hidden = !d.audio_available;
+  if (!d.audio_available) $("player").pause();
   renderSpeakers(d);
-  renderHolds(d);
   renderVersions(d);
-  $("m-retranscribe").disabled = !d.audio_available || !!d.reviewed_at || d.stage === "inbox";
+  renderHolds(d);
+  $("m-retranscribe").disabled = !d.audio_available || !!d.reviewed_at || transcribing;
 
-  const sig = signatureOf(d) + "|" + state.version;
+  const sig = signatureOf(d) + "|" + state.version + "|" + state.speakerList.map((x) => x.label + x.name).join(",");
   if (sig !== state.signature && !state.editing) {
     state.signature = sig;
     await renderTranscript();
   }
 }
 
-function step(text, done, ...extra) {
-  return el("li", { class: done ? "done" : "" }, done ? `✓ ${text}` : text, ...extra);
+// The title box grows with the title, so a long one wraps like a heading.
+function fitTitle() {
+  const t = $("m-title");
+  t.style.height = "auto";
+  t.style.height = `${t.scrollHeight}px`;
 }
 
+// The header's action: Pause and Stop now while transcribing, Resume or Try
+// again when stopped, otherwise the step's main action.
+function renderHead(d) {
+  const transcribing = d.stage === "inbox";
+  $("m-pause").hidden = !transcribing || d.paused || !!d.error;
+  $("m-stop").hidden = $("m-pause").hidden;
+  $("m-resume").hidden = !(d.paused || d.error) || !!d.reviewed_at;
+  $("m-resume").textContent = d.error ? "Try again" : "Resume";
+  const action = state.version !== null || transcribing ? null
+    : d.stage === "review" ? "review" : d.stage === "handoff" ? "handoff" : null;
+  $("m-primary").hidden = !action;
+  $("m-primary").dataset.action = action || "";
+  $("m-primary-label").textContent = action === "review" ? "Transcript reviewed…" : "Hand off…";
+  $("m-primary-tick").toggleAttribute("hidden", action !== "review");   // SVG: the attribute, not .hidden
+  $("m-primary-arrow").toggleAttribute("hidden", action !== "handoff");
+}
+
+const STEP_NAMES = ["Transcribe", "Review", "Hand off", "Clean up"];
 function renderSteps(d) {
-  const steps = [];
-  const jobs = Object.fromEntries(d.cleanup.map((j) => [j.phase, j]));
-  const jobNote = (phase) => {
-    const j = jobs[phase];
-    if (!j) return null;
-    if (j.state === "awaiting_confirmation")
-      return el("div", {}, el("span", { class: "muted", textContent: "A hold was released. " }),
-        el("button", { type: "button", textContent: "Confirm cleanup…",
-                       on: { click: () => confirmDialog({
-                         title: `Confirm the ${phase} cleanup`,
-                         body: "The hold on this material was released. Nothing was removed when it was released; this confirmation lets the cleanup go ahead.",
-                         check: `Remove the ${phase === "audio" ? "audio" : "transcript working content"} now.`,
-                         onConfirm: () => attempt(() => call("confirm_cleanup", j.id).then(refresh)),
-                       }) } }));
-    if (j.state === "failed")
-      return el("div", {}, el("span", { class: "error", textContent: `Cleanup failed: ${j.note} ` }),
-        el("button", { type: "button", textContent: "Try again",
-                       on: { click: () => attempt(() => call("retry_cleanup", j.id).then(refresh)) } }));
-    return el("div", { class: "muted", textContent: j.note || "Cleanup pending…" });
-  };
-  steps.push(step("Transcribe", d.stage !== "inbox"));
-  steps.push(step("Review the transcript against the audio, then confirm", !!d.reviewed_at,
-    d.reviewed_at ? jobNote("audio")
-      : el("div", {}, el("button", { type: "button", textContent: "Transcript reviewed…",
-          disabled: d.stage === "inbox", on: { click: () => confirmReviewed(d) } }))));
-  steps.push(step("Hand off the reviewed text and create the final document outside the app",
-    !!d.final_saved_at, d.reviewed_at && !d.final_saved_at
-      ? el("div", {}, el("button", { type: "button", class: "primary", textContent: "Hand off…",
-                                     on: { click: openHandoff } }))
-      : null));
-  steps.push(step("Confirm the final document is reviewed and saved", !!d.final_saved_at,
-    d.final_saved_at ? jobNote("transcript")
-      : el("div", {}, el("button", { type: "button", textContent: "Final document saved…",
-          disabled: !d.reviewed_at, on: { click: () => confirmFinal(d) } }))));
-  $("steps").replaceChildren(...steps);
+  const done = [d.stage !== "inbox", !!d.reviewed_at, !!d.final_saved_at, false];
+  const now = done.indexOf(false);
+  $("steps").replaceChildren(...STEP_NAMES.map((name, i) => {
+    const kind = done[i] ? "done" : i === now ? "now" : "";
+    const li = el("li", { class: kind },
+      el("span", { class: "step-bar" }),
+      el("span", { class: "step-label" },
+        el("span", { class: "step-dot", "aria-hidden": "true", textContent: done[i] ? "✓" : String(i + 1) }),
+        el("span", { textContent: name + (done[i] ? " (done)" : "") })));
+    if (i === now) li.setAttribute("aria-current", "step");
+    return li;
+  }));
+  // The done marks are for screen readers; the tick shows it on screen.
+  for (const label of $("steps").querySelectorAll("li.done .step-label > span:last-child"))
+    label.textContent = label.textContent.replace(" (done)", "");
+  for (const li of $("steps").querySelectorAll("li.done")) li.setAttribute("aria-label", `${li.textContent.replace("✓", "").trim()}, done`);
+  $("m-step-short").textContent = `Step ${now + 1} of 4: ${STEP_NAMES[now]}`;
+}
+
+// One banner under the steps: an earlier version, cleanup, or the review lock.
+function renderBanner(d) {
+  const jobs = d.cleanup || [];
+  const failed = jobs.find((j) => j.state === "failed");
+  const waiting = jobs.find((j) => j.state === "awaiting_confirmation");
+  let kind = "", text = "", icon = "lock", action = null;
+  if (state.version !== null) {
+    kind = "hold"; icon = "clock";
+    text = "You are viewing an earlier version (read only). Its edits are kept as they were.";
+    action = ["Back to the current version", () => viewVersion(null)];
+  } else if (failed) {
+    kind = "bad"; icon = "clock";
+    text = `Cleanup failed: ${failed.note || "unknown reason"}`;
+    action = ["Try again", () => attempt(() => call("retry_cleanup", failed.id).then(refresh))];
+  } else if (waiting) {
+    kind = "hold"; icon = "clock";
+    text = `A hold was released. The ${waiting.phase} cleanup is waiting for your confirmation.`;
+    action = ["Confirm cleanup…", () => confirmCleanup(waiting)];
+  } else if (d.final_saved_at) {
+    text = "Final document saved. Unminute is removing this meeting's working copies.";
+  } else if (d.reviewed_at) {
+    text = d.audio_available
+      ? "Reviewed and locked. The text can no longer be edited. The audio is kept while a hold covers it."
+      : "Reviewed and locked. The audio was removed after the transcript review was confirmed, so playback and transcribing again are no longer available.";
+  }
+  $("m-banner").hidden = !text;
+  $("m-banner").className = `m-banner ${kind}`.trim();
+  $("m-playback").textContent = text;
+  $("m-banner-lock").toggleAttribute("hidden", icon !== "lock");
+  $("m-banner-clock").toggleAttribute("hidden", icon !== "clock");
+  $("m-banner-action").hidden = !action;
+  if (action) $("m-banner-action").textContent = action[0];
+  state.bannerAction = action ? action[1] : null;
+}
+
+function confirmCleanup(j) {
+  confirmDialog({
+    title: `Confirm the ${j.phase} cleanup`,
+    body: "The hold on this material was released. Nothing was removed when it was released; this confirmation lets the cleanup go ahead.",
+    check: `Remove the ${j.phase === "audio" ? "audio" : "transcript working content"} now.`,
+    onConfirm: () => attempt(() => call("confirm_cleanup", j.id).then(refresh)),
+  });
+}
+
+// -- side panel -------------------------------------------------------------------
+function setTab(tab) {
+  state.tab = tab;
+  $("view-meeting").dataset.tab = tab;
+  const side = tab === "transcript" ? (state.sideTab || "speakers") : tab;
+  if (tab !== "transcript") state.sideTab = tab;
+  for (const b of document.querySelectorAll("#view-meeting [role=tab]")) {
+    const on = b.closest(".wide-tabs") ? b.dataset.tab === side : b.dataset.tab === tab;
+    b.setAttribute("aria-selected", String(on));
+  }
+  for (const name of ["speakers", "versions", "holds"]) $(`tab-${name}`).hidden = name !== side;
+}
+
+function speakerClass(label) {
+  const i = state.speakerList.findIndex((s) => s.label === label);
+  return i < 0 ? "none" : `sp${(i % 3) + 1}`;
+}
+function initials(name) {
+  const n = String(name || "").trim();
+  const numbered = /^Speaker (\d+)$/i.exec(n);
+  if (numbered) return `S${numbered[1]}`;
+  const words = n.split(/\s+/).filter(Boolean);
+  if (!words.length) return "?";
+  return (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
 }
 
 function renderSpeakers(d) {
   const s = d.speakers;
-  let text = "Not identified yet.";
-  if (s && s.status === "done") text = "Speakers identified. Labels are machine estimates; check them while reviewing.";
-  else if (s && s.status === "failed") text = `Speaker identification did not work: ${s.error || "unknown reason"}. The transcript is still usable.`;
-  else if (s && s.status === "interrupted") text = s.error || "Speaker identification was interrupted and will start again from the beginning.";
-  else if (s && s.status === "running") text = "Identifying speakers…";
+  const box = $("m-speakers");
+  const card = (cls, title, text, ...extra) => el("div", { class: `panel-card ${cls}` },
+    title, text ? el("span", { class: "panel-text", textContent: text }) : null, ...extra);
+  let content = null;
+  if (!s && d.stage === "inbox")
+    content = card("soft", el("span", { class: "panel-title", textContent: "Not identified yet" }),
+      "Speakers are worked out once the text is ready. You can review the words in the meantime.");
+  else if (!s)
+    content = card("soft", el("span", { class: "panel-title", textContent: "Not identified" }),
+      "Speaker identification runs after transcription when it is downloaded and turned on in Settings.");
+  else if (s.status === "running")
+    content = card("soft", el("span", { class: "running" }, el("span", { class: "spinner", "aria-hidden": "true" }),
+        "Identifying speakers…"),
+      "The transcript is ready to review while this runs.",
+      d.busy ? button("Pause", () => attempt(() => call("pause", state.mid).then(refresh)),
+                      { title: "Stops speaker identification now; Resume starts it again from the beginning." }) : null);
+  else if (s.status === "failed")
+    content = card("bad", el("span", { class: "panel-title", textContent: "Speaker identification did not work" }),
+      `${s.error || "Unknown reason"}. The transcript is still usable.`);
+  else if (s.status === "interrupted")
+    content = card("soft", el("span", { class: "panel-title", textContent: "Interrupted" }),
+      s.error || "Speaker identification was interrupted and will start again from the beginning.");
+  box.replaceChildren(...(content ? [content] : []));
+  box.hidden = !content;
+
+  const total = state.speakerList.reduce((a, x) => a + (x.seconds || 0), 0);
+  $("m-speaker-list").replaceChildren(...state.speakerList.map((sp) => {
+    const share = total ? Math.round((100 * (sp.seconds || 0)) / total) : null;
+    return el("li", { class: speakerClass(sp.label) },
+      el("span", { class: "sp-avatar", "aria-hidden": "true", textContent: initials(sp.name) }),
+      el("span", { class: "sp-text" }, el("span", { class: "sp-name", textContent: sp.name }),
+        el("span", { class: "sp-count", textContent: joinParts(plural(sp.passages, "passage"), share === null ? null : `${share}%`) })),
+      d.audio_available ? el("button", { type: "button", class: "round-btn", "aria-label": `Play an example of ${sp.name}`,
+        on: { click: () => playExample(sp.label) } }, playIcon()) : null);
+  }));
+  // Where it actually ran, including an honest fallback note.
+  let device = "";
   if (s && s.status === "done" && s.device) {
-    // Where it actually ran, including an honest fallback note.
-    if (s.device.startsWith("cuda")) text += " Ran on the graphics card.";
-    else if (s.device.includes("graphics card not used")) text += " Ran on the processor: the graphics card could not be used this time.";
+    if (s.device.startsWith("cuda")) device = "Ran on the graphics card.";
+    else if (s.device.includes("graphics card not used")) device = "Ran on the processor: the graphics card could not be used this time.";
   }
-  $("m-speakers").textContent = text;
-  $("m-names").disabled = !canName();
-  $("m-undo-speakers").disabled = !canName();
-  $("m-rerun").disabled = !d.audio_available || d.stage === "inbox" || !!d.reviewed_at
-    || !!d.busy || state.version !== null;
+  if (device) $("m-speaker-list").append(el("li", { class: "device-note", textContent: device }));
+  const naming = canName();
+  $("m-name-tools").hidden = !naming && !canRerun(d);
+  $("m-names").hidden = !naming;
+  $("m-names").disabled = !naming;
+  $("m-undo-speakers").hidden = !(naming && state.speakerUndo);
+  $("m-again").closest(".again-row").hidden = !canRerun(d);
+  if (!canRerun(d)) $("m-again-form").hidden = true;
+}
+
+function canRerun(d) {
+  return d.audio_available && d.stage !== "inbox" && !d.reviewed_at && !d.busy && state.version === null;
+}
+
+function playIcon() {
+  const s = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({ width: 14, height: 14, viewBox: "0 0 24 24", "aria-hidden": "true" })) s.setAttribute(k, v);
+  const p = document.createElementNS(SVG_NS, "path");
+  p.setAttribute("d", "M7 4l13 8-13 8z");
+  p.setAttribute("fill", "currentColor");
+  s.append(p);
+  return s;
+}
+
+async function playExample(label) {
+  const ex = await attempt(() => call("speaker_examples", state.mid, label, 0));
+  const it = ex && ex.items[0];
+  if (it) play(it.start, it.end, true);
 }
 
 function renderVersions(d) {
   const viewing = state.version !== null;
-  const current = `Current: ${d.model || "no model yet"} · ${d.edits} edited passage${d.edits === 1 ? "" : "s"}`;
-  const items = [el("li", {}, viewing
-    ? el("button", { type: "button", class: "link", textContent: current,
-                     on: { click: () => viewVersion(null) } })
-    : el("strong", { textContent: current }))];
+  const card = (eyebrow, model, edits, open) => {
+    const kids = [el("span", { class: "ver-eyebrow", textContent: eyebrow }),
+                  el("span", { class: "ver-model", textContent: model }),
+                  el("span", { class: "ver-edits", textContent: edits })];
+    return open ? el("button", { type: "button", class: "ver-card", on: { click: open } }, ...kids)
+      : el("div", { class: "ver-card now" }, ...kids);
+  };
+  const items = [el("li", {}, card("Current", modelName(d.model) || "No model yet", plural(d.edits, "edited passage"),
+    viewing ? () => viewVersion(null) : null))];
   for (const v of d.older_versions) {
-    const label = `Earlier: ${v.model} (${fmtDate(v.created_at)}) · ${v.edits} edited passage${v.edits === 1 ? "" : "s"}`;
-    items.push(el("li", {}, state.version === v.index ? el("strong", { textContent: label })
-      : el("button", { type: "button", class: "link", textContent: label,
-                       on: { click: () => viewVersion(v.index) } })));
+    const mine = state.version === v.index;
+    items.push(el("li", {}, card(mine ? "Earlier · viewing" : "Earlier · read only",
+      `${modelName(v.model)} (${dateWord(v.created_at)})`,
+      mine ? plural(v.edits, "edited passage") : `${plural(v.edits, "edited passage")} · Open`,
+      mine ? null : () => viewVersion(v.index))));
   }
   $("m-versions").replaceChildren(...items);
-  $("m-viewing").hidden = !viewing;
 }
 
 function viewVersion(index) {
@@ -471,35 +635,48 @@ function viewVersion(index) {
   state.version = index;
   state.signature = "";
   $("m-search").value = ""; state.hits = []; $("m-hits").textContent = "";
+  $("m-hit-nav").hidden = true;
+  $("m-search").closest(".search").classList.remove("active");
   renderMeeting();
 }
 
 function renderHolds(d) {
   $("m-holds").replaceChildren(...d.holds.map((h) => el("li", {},
-    el("div", { textContent: `Keeping ${SCOPES[h.scope]}: ${h.reason}` }),
-    el("div", { class: "muted", textContent: `Since ${fmtDate(h.created_at)}${h.due_review ? " · due for review" : ""}` }),
-    h.due_review ? el("button", { type: "button", textContent: "Keep",
-      on: { click: () => attempt(() => call("keep_hold", h.id).then(refresh)) } }) : null,
-    " ",
-    el("button", { type: "button", textContent: "Release",
-      title: "Releasing a hold deletes nothing by itself; cleanup still needs your confirmation.",
-      on: { click: () => attempt(() => call("release_hold", h.id).then(refresh)) } }))));
+    el("span", { class: "hold-title", textContent: `Keeping ${SCOPES[h.scope]}` }),
+    el("span", { class: "hold-text", textContent: `Reason: ${h.reason}. ` +
+      (h.due_review ? "Due for review now." : `Review due ${dateWord(h.review_due_at)}.`) }),
+    el("div", { class: "row" },
+      button("Keep", () => attempt(() => call("keep_hold", h.id).then(refresh)),
+             { title: "You looked at it and still need it" }),
+      linkButton("Release…", () => confirmDialog({
+        title: "Release this hold?",
+        body: "Releasing a hold deletes nothing by itself. Any cleanup it was holding back waits for your confirmation.",
+        check: "Release the hold.", limits: false,
+        onConfirm: () => attempt(() => call("release_hold", h.id).then(refresh)),
+      }))))));
+  const waiting = (d.cleanup || []).filter((j) => j.state === "awaiting_confirmation");
+  $("m-cleanup-notes").replaceChildren(...waiting.map((j) => el("div", { class: "panel-card soft" },
+    el("span", { class: "panel-text", textContent: `A hold was released. The ${j.phase} cleanup is waiting for your confirmation.` }),
+    button("Confirm cleanup…", () => confirmCleanup(j), { primary: true }))));
 }
 
 // -- transcript ----------------------------------------------------------------
-function transcriptRow(item, audio) {
+// A passage shows its speaker's label when the speaker changes; the others
+// show theirs on hover or focus, so any passage can be moved.
+function transcriptRow(item, audio, turn) {
   const t = el("button", { type: "button", class: "t", textContent: fmtTime(item.t),
-    disabled: !audio, title: audio ? "Play this passage" : "Audio removed after review",
-    on: { click: () => play(item.t, item.end) } });
+    disabled: !audio, title: audio ? "Play from here" : "Audio removed after review",
+    on: { click: () => playFrom(item.t) } });
   const text = el("span", { class: "text" + (item.edited ? " edited" : ""), textContent: item.text,
     title: "Select to edit", tabIndex: 0 });
   text.dataset.id = item.id;
   text.addEventListener("click", () => startEditing(text));
   text.addEventListener("keydown", (e) => { if (e.key === "Enter" && !text.isContentEditable) { e.preventDefault(); startEditing(text); } });
-  const li = el("li", {}, t,
-    item.who || canName() ? whoButton(item) : null,
-    text,
-    item.overlap ? el("span", { class: "overlap", textContent: "(overlapping speech)" }) : null);
+  const chip = item.who || canName();
+  const li = el("li", { class: turn ? "turn" : "" }, t,
+    el("div", { class: "row-body" }, chip && turn ? whoButton(item, false) : null, text,
+       item.overlap ? el("span", { class: "overlap", textContent: "(overlapping speech)" }) : null),
+    chip && !turn ? whoButton(item, true) : null);
   li.dataset.id = item.id;
   return li;
 }
@@ -510,10 +687,12 @@ function canName() {
   return d && !d.reviewed_at && state.version === null && d.speakers && d.speakers.status === "done";
 }
 
-function whoButton(item) {
-  const b = el("button", { type: "button", class: "who" + (item.who ? "" : " muted"),
-                           textContent: (item.who || "No speaker") + ":",
-                           title: "Change the speaker of this passage" });
+function whoButton(item, again) {
+  const name = item.who || "No speaker";
+  const b = el("button", { type: "button", class: `who ${item.label ? speakerClass(item.label) : "none"}${again ? " again" : ""}`,
+                           title: "Change the speaker of this passage" },
+    el("span", { class: "avatar", "aria-hidden": "true", textContent: item.who ? initials(item.who) : "?" }),
+    el("span", { class: "who-name", textContent: name }));
   b.addEventListener("click", () => reassign(b, item));
   return b;
 }
@@ -528,22 +707,25 @@ async function reassign(button, item) {
     ...list.speakers.map((s) => el("option", { value: s.label, textContent: s.name,
                                                  selected: s.label === item.label })),
     el("option", { value: "new", textContent: "Someone else (new speaker)" }));
-  const box = el("span", { class: "reassign" }, sel);
-  const restore = () => { if (box.isConnected) box.replaceWith(button); };
-  const move = el("button", { type: "button", textContent: "Move", on: { click: () => attempt(async () => {
+  const body = button.closest("li").querySelector(".row-body");
+  const box = el("div", { class: "reassign" }, el("label", {}, "Move this passage to ", sel));
+  const restore = () => { if (box.isConnected) { box.remove(); button.hidden = false; } };
+  const move = el("button", { type: "button", class: "primary", textContent: "Move", on: { click: () => attempt(async () => {
     await call("assign_speaker", state.mid, item.id, sel.value);
     restore();
     state.signature = "";
     say("Speaker changed. Undo speaker change reverses it.");
     renderMeeting();
   }) } });
-  const cancel = el("button", { type: "button", textContent: "Cancel", on: { click: restore } });
-  box.append(" ", move, " ", cancel);
+  const cancel = el("button", { type: "button", class: "cancel", textContent: "Cancel", on: { click: restore } });
+  box.append(move, cancel);
   box.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.preventDefault(); restore(); button.focus(); }
     if (e.key === "Enter" && e.target === sel) { e.preventDefault(); move.click(); }
   });
-  button.replaceWith(box);
+  // A label shown on hover makes way for the box; a speaker's first label stays above it.
+  if (button.classList.contains("again")) { button.hidden = true; body.prepend(box); }
+  else button.after(box);
   sel.focus();
 }
 
@@ -616,13 +798,13 @@ async function renderTranscript() {
   const audio = state.detail && state.detail.audio_available;
   const scroll = document.scrollingElement.scrollTop;
   const paneScroll = document.querySelector(".transcript-wrap").scrollTop;   // wide windows
-  const rows = [];
+  const items = [];
   const mid = state.mid, version = state.version;
   let start = 0, total = 1;
   while (start < total) {
     const page = await call("transcript", mid, start, PAGE, version);
     total = page.total;
-    for (const item of page.items) rows.push(transcriptRow(item, audio));
+    items.push(...page.items);
     start += page.items.length;
     if (!page.items.length) break;
   }
@@ -632,13 +814,22 @@ async function renderTranscript() {
     state.signature = "";
     return;
   }
-  list.replaceChildren(...rows);
+  let prev;
+  list.replaceChildren(...items.map((item, i) => {
+    const turn = !!item.label && (i === 0 || item.label !== prev);
+    prev = item.label;
+    return transcriptRow(item, audio, turn);
+  }));
+  state.items = items;
   state.total = total;
+  state.playingRow = null;
   document.scrollingElement.scrollTop = scroll;
   document.querySelector(".transcript-wrap").scrollTop = paneScroll;
   if ($("m-search").value) runSearch(false);
+  updatePlayer();
 }
 
+const EDIT_HINT = "Enter or Esc to finish · Shift+Enter for a new line · saves as you type";
 function startEditing(span) {
   const d = state.detail;
   if (!d || d.reviewed_at) { say("The transcript review is confirmed, so it can no longer be edited."); return; }
@@ -647,6 +838,7 @@ function startEditing(span) {
   stopEditing();
   state.editing = span;
   span.contentEditable = "plaintext-only";
+  span.after(el("span", { class: "edit-hint", textContent: EDIT_HINT }));
   span.focus();
   span.addEventListener("input", scheduleSave);
   span.addEventListener("blur", stopEditing, { once: true });
@@ -687,6 +879,8 @@ function stopEditing() {
   span.removeEventListener("input", scheduleSave);
   span.removeEventListener("keydown", editKeys);
   span.contentEditable = "false";
+  const hint = span.nextElementSibling;
+  if (hint && hint.classList.contains("edit-hint")) hint.remove();
   save(span);
 }
 
@@ -707,10 +901,12 @@ async function undo() {
 async function runSearch(jump = true) {
   for (const li of document.querySelectorAll("#transcript li.hit")) li.classList.remove("hit", "current");
   const q = $("m-search").value.trim();
-  if (!q) { state.hits = []; $("m-hits").textContent = ""; return; }
+  $("m-search").closest(".search").classList.toggle("active", !!q);
+  if (!q) { state.hits = []; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true; return; }
   state.hits = await attempt(() => call("search", state.mid, q, state.version)) || [];
   for (const id of state.hits) { const row = rowFor(id); if (row) row.classList.add("hit"); }
   $("m-hits").textContent = state.hits.length ? `${state.hits.length} found` : "No matches";
+  $("m-hit-nav").hidden = state.hits.length === 0;
   if (jump) { state.hit = -1; nextHit(1); }
 }
 
@@ -727,16 +923,125 @@ function nextHit(dir) {
 }
 
 // -- playback ------------------------------------------------------------------
-// exact: play precisely [start, end] (speaker examples must stop at their
-// bounds); otherwise at least a second, at most 30 s, from a passage start.
-async function play(start, end, exact = false) {
-  const player = $("player");
-  player.pause();
-  const stop = exact ? Math.max(end, start + 0.05) : Math.min(Math.max(end, start + 1), start + 30);
-  const url = await attempt(() => call("clip", state.mid, start, stop));
-  if (!url) return;
-  player.src = url;
-  await attempt(() => player.play());
+// The bridge serves at most 30 s of audio at a time, so the player plays
+// clips back to back, fetching the next one while the current one plays.
+// Speaker examples play exactly their passage and stop.
+const SPEEDS = [1, 1.25, 1.5, 2, 0.75];
+const clips = { start: 0, end: 0, exact: false, generation: 0, next: null };
+
+function meetingLength() {
+  const d = state.detail;
+  const last = state.items && state.items.length ? state.items[state.items.length - 1].end : 0;
+  return Math.max((d && d.duration_s) || 0, last || 0);
+}
+
+function fetchClip(start, end) {
+  return call("clip", state.mid, start, end).catch((err) => { say(String(err.message || err)); return null; });
+}
+
+async function playFrom(t, { exact = false, end = null } = {}) {
+  const audio = $("player");
+  const length = meetingLength();
+  const start = Math.max(0, Math.min(t, Math.max(0, length - 0.05)));
+  const stop = exact ? Math.max(end, start + 0.05) : Math.min(start + 30, length);
+  if (stop - start < 0.05) return;
+  const generation = ++clips.generation;
+  audio.pause();
+  const pre = clips.next && clips.next.start === start && clips.next.end === stop ? clips.next.url : null;
+  clips.next = null;
+  const url = await (pre || fetchClip(start, stop));
+  if (!url || generation !== clips.generation) return;
+  Object.assign(clips, { start, end: stop, exact });
+  audio.src = url;
+  audio.playbackRate = exact ? 1 : state.speed || 1;
+  await attempt(() => audio.play());
+  if (!exact && stop < length - 0.05) {
+    const nextEnd = Math.min(stop + 30, length);
+    clips.next = { start: stop, end: nextEnd, url: fetchClip(stop, nextEnd) };
+  }
+}
+
+// play(start, end, exact): exact plays just [start, end]; otherwise it plays on.
+function play(start, end, exact = false) { return playFrom(start, { exact, end }); }
+
+function position() {
+  const audio = $("player");
+  return audio.src ? clips.start + (audio.currentTime || 0) : 0;
+}
+
+function itemAt(t) {
+  const items = state.items || [];
+  let found = null;
+  for (const it of items) { if (it.t <= t + 0.01) found = it; else break; }
+  return found;
+}
+
+function updatePlayer() {
+  const audio = $("player");
+  const length = meetingLength();
+  const pos = Math.min(position(), length);
+  const playing = !audio.paused && !audio.ended;
+  $("p-icon-play").style.display = playing ? "none" : "";
+  $("p-icon-pause").style.display = playing ? "" : "none";
+  $("p-play").setAttribute("aria-label", playing ? "Pause (Space)" : "Play (Space)");
+  $("p-time").textContent = `${fmtTime(pos)} / ${fmtTime(length)}`;
+  $("p-fill").style.width = length ? `${(100 * pos) / length}%` : "0";
+  $("p-seek").setAttribute("aria-valuemax", String(Math.round(length)));
+  $("p-seek").setAttribute("aria-valuenow", String(Math.round(pos)));
+  $("p-seek").setAttribute("aria-valuetext", `${fmtTime(pos)} of ${fmtTime(length)}`);
+  const it = audio.src ? itemAt(pos) : null;
+  $("p-who").textContent = it ? joinParts(it.who, fmtTime(it.t)) : "";
+  const row = it ? rowFor(it.id) : null;
+  if (row !== state.playingRow) {
+    if (state.playingRow) state.playingRow.classList.remove("playing");
+    if (row) row.classList.add("playing");
+    state.playingRow = row;
+  }
+}
+
+function togglePlay() {
+  const audio = $("player");
+  if (!audio.paused) { audio.pause(); return; }
+  if (audio.src && !audio.ended && !clips.exact) attempt(() => audio.play());
+  else playFrom(position());
+}
+
+function nextPassage(dir) {
+  const items = state.items || [];
+  if (!items.length) return;
+  const cur = itemAt(position());
+  const i = cur ? items.indexOf(cur) : -1;
+  const target = items[Math.max(0, Math.min(items.length - 1, i + dir))];
+  if (target) playFrom(target.t);
+}
+
+function wirePlayer() {
+  const audio = $("player");
+  for (const ev of ["play", "pause", "timeupdate", "emptied"]) audio.addEventListener(ev, updatePlayer);
+  audio.addEventListener("ended", () => {
+    if (!clips.exact && clips.end < meetingLength() - 0.05) playFrom(clips.end);
+    else updatePlayer();
+  });
+  $("p-play").addEventListener("click", togglePlay);
+  $("p-back").addEventListener("click", () => playFrom(position() - 5));
+  $("p-speed").addEventListener("click", () => {
+    const i = SPEEDS.indexOf(state.speed || 1);
+    state.speed = SPEEDS[(i + 1) % SPEEDS.length];
+    $("p-speed").textContent = `${state.speed}×`;
+    $("p-speed").setAttribute("aria-label", `Playback speed ${state.speed} times`);
+    if (!clips.exact) audio.playbackRate = state.speed;
+  });
+  const seek = $("p-seek");
+  seek.addEventListener("click", (e) => {
+    const r = seek.getBoundingClientRect();
+    playFrom(((e.clientX - r.left) / r.width) * meetingLength());
+  });
+  seek.addEventListener("keydown", (e) => {
+    const step = { ArrowLeft: -5, ArrowRight: 5, PageDown: -30, PageUp: 30 }[e.key];
+    if (step) { e.preventDefault(); playFrom(position() + step); }
+    if (e.key === "Home") { e.preventDefault(); playFrom(0); }
+    if (e.key === "End") { e.preventDefault(); playFrom(Math.max(0, meetingLength() - 5)); }
+  });
 }
 
 // -- confirmations ---------------------------------------------------------------
@@ -1342,12 +1647,50 @@ function wire() {
   $("empty-watch").addEventListener("click", () => show("settings"));
   $("s-downloads").addEventListener("click", () => show("setup"));
   wireDrop();
+  // A title is one line: Enter saves it, and pasted line breaks become spaces.
+  $("m-title").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("m-title").blur(); } });
+  $("m-title").addEventListener("input", () => {
+    const t = $("m-title");
+    if (/[\r\n]/.test(t.value)) t.value = t.value.replace(/[\r\n]+/g, " ");
+    fitTitle();
+  });
+  window.addEventListener("resize", fitTitle);
   $("m-title").addEventListener("change", () => attempt(() => call("rename", state.mid, $("m-title").value).then(refresh)));
   $("m-pause").addEventListener("click", () => attempt(() => call("pause", state.mid).then(refresh)));
   $("m-stop").addEventListener("click", () => attempt(() => call("stop_now", state.mid).then(refresh)));
   $("m-resume").addEventListener("click", () => attempt(() => call("resume", state.mid).then(refresh)));
   $("m-undo").addEventListener("click", undo);
   $("m-names").addEventListener("click", openNames);
+  $("m-primary").addEventListener("click", () => {
+    const d = state.detail;
+    if (!d) return;
+    if ($("m-primary").dataset.action === "review") confirmReviewed(d);
+    else if ($("m-primary").dataset.action === "handoff") openHandoff();
+  });
+  $("m-banner-action").addEventListener("click", () => { if (state.bannerAction) state.bannerAction(); });
+  for (const t of document.querySelectorAll("#view-meeting [role=tab]")) {
+    t.addEventListener("click", () => setTab(t.dataset.tab));
+    // Arrow keys move between tabs in the same tab list.
+    t.addEventListener("keydown", (e) => {
+      if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+      const tabs = [...t.parentElement.querySelectorAll("[role=tab]")];
+      const next = tabs[(tabs.indexOf(t) + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+      next.focus(); next.click();
+    });
+  }
+  setTab("transcript");
+  $("m-again").addEventListener("click", () => {
+    const open = $("m-again-form").hidden;
+    $("m-again-form").hidden = !open;
+    $("m-again").setAttribute("aria-expanded", String(open));
+    if (open) $("m-count").focus();
+  });
+  $("m-again-cancel").addEventListener("click", () => {
+    $("m-again-form").hidden = true;
+    $("m-again").setAttribute("aria-expanded", "false");
+    $("m-again").focus();
+  });
+  wirePlayer();
   $("n-close").addEventListener("click", () => { $("player").pause(); $("names").close(); });
   $("names").addEventListener("close", () => $("player").pause());
   $("n-undo").addEventListener("click", undoSpeakers);
@@ -1376,6 +1719,8 @@ function wire() {
       limits: false,
       onConfirm: () => attempt(async () => {
         await call("rerun_speakers", state.mid, v ? Number(v) : null);
+        $("m-again-form").hidden = true;
+        $("m-again").setAttribute("aria-expanded", "false");
         say("Identifying speakers again");
       }),
     });
@@ -1405,6 +1750,14 @@ function wire() {
       e.preventDefault(); show("help"); return;
     }
     if (e.key === "Escape" && document.body.classList.contains("menu-open")) { setMenu(false); $("menu").focus(); }
+    // The player: Space plays or pauses, J and K move to the next or previous passage.
+    if (state.view === "meeting" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey
+        && !document.querySelector("dialog[open]") && state.detail && state.detail.audio_available) {
+      const onControl = e.target instanceof HTMLButtonElement || (e.target instanceof HTMLElement && e.target.getAttribute("role") === "slider");
+      if (e.key === " " && !onControl) { e.preventDefault(); togglePlay(); return; }
+      if (e.key === "j" || e.key === "J") { e.preventDefault(); nextPassage(1); return; }
+      if (e.key === "k" || e.key === "K") { e.preventDefault(); nextPassage(-1); return; }
+    }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "z" && !state.editing
         && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); undo(); }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); $("m-search").focus(); }
@@ -1416,7 +1769,7 @@ function wire() {
   });
 }
 
-window.workspace = { call, show, openMeeting, refresh, state };   // for the UI check tool
+window.workspace = { call, show, openMeeting, refresh, state, play, say };   // for the check tools
 
 wire();
 window.addEventListener("pywebviewready", async () => {
