@@ -169,6 +169,8 @@ On an otherwise idle Intel Core Ultra 7 255H laptop (32 GB), with 5 minutes of s
 
 Word error rate on 148 public clips (21.5 minutes): Parakeet v2 15.9%, Whisper turbo 14.8%, Parakeet v3 18.9%. That is a small public sample, not New Zealand business audio. Parakeet v2 on the processor is the default. The graphics card is used for speaker identification only: on a 15-minute test recording it took 80 s instead of 435 s. Details are in issue #12 and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
+On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error rate of 24.0% at 20 times real time; Qwen3-ASR-1.7B, a candidate engine not yet in the app, had 19.4% at 3 times real time but needed about 11 GB of memory. The NPU on the test laptop could not run any engine reliably. Method and full results: [docs/ENGINE_EVALUATION.md](docs/ENGINE_EVALUATION.md).
+
 ## Known limitations
 
 - Not yet tested on a clean standard-user Windows profile, through Intune on a managed device, or on Windows 10 (#10, #11).
