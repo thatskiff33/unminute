@@ -83,10 +83,10 @@ def checks(window, ws, mid, long_mid, report):
                     remove_visible: !document.getElementById('s-remove-token').hidden};""")
         report["setup_vault"] = sorted(VAULT)
         report["lists"] = evaluate(window, WAIT + """
-            window.workspace.show('active'); await wait(800);
-            return {active: [...document.querySelectorAll('#active-list li')].map(l =>
+            window.workspace.show('meetings'); await wait(800);
+            return {active: [...document.querySelectorAll('#groups li')].map(l =>
                 l.textContent),
-                    inbox_empty_shown: !document.getElementById('inbox-empty').hidden};""")
+                    empty_shown: !document.getElementById('meetings-empty').hidden};""")
         report["open_meeting"] = evaluate(window, WAIT + f"""
             await window.workspace.openMeeting('{mid}'); await wait(1500);
             const rows = document.querySelectorAll('#transcript li');

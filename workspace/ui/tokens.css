@@ -54,6 +54,10 @@
   /* Accents */
   --accent: #E56600;          /* focus ring, current step, count badge */
   --accent-fg: #351503;       /* text on orange below 19 px bold */
+  --drop-line: rgba(43, 97, 191, 0.55);   /* Import card's dashed border */
+  --drop-bg: #FFFFFF;
+  --import-icon: #B4DDF6;
+  --import-icon-fg: #142966;
   --soft: #EEF7FD;            /* tabs, highlighted rows, quiet panels */
   --soft-strong: #B4DDF6;
   --hit: #FDCAEA;             /* search matches */
@@ -123,6 +127,10 @@
     --primary-fg: #142966;
     --secondary: transparent;
     --secondary-fg: #FFFFFF;
+    --drop-line: rgba(180, 221, 246, 0.5);
+    --drop-bg: transparent;
+    --import-icon: rgba(180, 221, 246, 0.2);
+    --import-icon-fg: #B4DDF6;
     --soft: rgba(255, 255, 255, 0.06);
     --soft-strong: rgba(180, 221, 246, 0.2);
     --hit: rgba(253, 202, 234, 0.24);

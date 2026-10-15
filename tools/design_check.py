@@ -36,11 +36,11 @@ VISIBLE = 40         # a channel difference above this counts as a visible chang
 # An empty "app" renders the board only (no app screen to compare yet).
 CASES = [
     {"name": "brand", "board": "Main.dc.html", "app": ""},
-    {"name": "home", "board": "Home.dc.html", "app": "inbox"},
-    {"name": "recording", "board": "Recording.dc.html", "app": ""},
-    {"name": "home-empty", "board": "Home-Empty.dc.html", "app": ""},
-    {"name": "home-drop", "board": "Home-Drop.dc.html", "app": ""},
-    {"name": "home-states", "board": "Home-States.dc.html", "app": "", "h": 1180},
+    {"name": "home", "board": "Home.dc.html", "app": "home"},
+    {"name": "recording", "board": "Recording.dc.html", "app": "recording"},
+    {"name": "home-empty", "board": "Home-Empty.dc.html", "app": "home-empty"},
+    {"name": "home-drop", "board": "Home-Drop.dc.html", "app": "home-drop"},
+    {"name": "home-states", "board": "Home-States.dc.html", "app": "home-states", "h": 1180},
     {"name": "recording-states", "board": "Recording-States.dc.html", "app": "", "h": 1180},
     {"name": "meeting", "board": "Meeting.dc.html", "app": ""},
     {"name": "meeting-transcribing", "board": "Meeting-Transcribing.dc.html", "app": ""},
@@ -59,13 +59,13 @@ CASES = [
     {"name": "setup-5", "board": "Setup-5.dc.html", "app": ""},
     {"name": "settings", "board": "Settings.dc.html", "app": "", "h": 1320},
     {"name": "downloads", "board": "Models.dc.html", "app": ""},
-    {"name": "help", "board": "Help.dc.html", "app": ""},
+    {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "", "w": 900},
     {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "", "w": 640},
     {"name": "meeting-320", "board": "Meeting-320.dc.html", "app": "", "w": 320},
-    {"name": "home-640", "board": "Home-640.dc.html", "app": "", "w": 640},
-    {"name": "home-320", "board": "Home-320.dc.html", "app": "", "w": 320},
-    {"name": "home-dark", "board": "Home-Dark.dc.html", "app": "", "dark": True},
+    {"name": "home-640", "board": "Home-640.dc.html", "app": "home", "w": 640},
+    {"name": "home-320", "board": "Home-320.dc.html", "app": "home", "w": 320},
+    {"name": "home-dark", "board": "Home-Dark.dc.html", "app": "home", "dark": True},
     {"name": "meeting-dark", "board": "Meeting-Dark.dc.html", "app": "", "dark": True},
 ]
 
@@ -181,7 +181,11 @@ def main():
             row = {"case": c["name"], "board": c["board"], "size": f"{w}x{h}"}
             if c["app"]:
                 app_png = args.out / f"{c['name']}-app.png"
-                shoot(f"{base}/app/index.html#{c['app']}", app_png, w, h, c.get("dark", False))
+                url = f"{base}/app/index.html#{c['app']}"
+                if w < 500:     # Edge's narrowest window: use a frame of the exact width
+                    url = (f"{base}/tools/design_check/frame.html?w={w}&h={h}"
+                           f"&src={quote(url, safe='')}")
+                shoot(url, app_png, w, h, c.get("dark", False))
                 row["changed_percent"] = compare(board_png, app_png,
                                                  args.out / f"{c['name']}-compare.png")
             results.append(row)

@@ -175,9 +175,10 @@ def checks(window, ws, mid, report):
                                           "('aria-live')};")
         views = {
             "setup": "window.workspace.show('setup'); await wait(1200);",
-            "inbox": "window.workspace.show('inbox'); await wait(1500);",
-            "active": "window.workspace.show('active'); await wait(800);",
+            "meetings": "window.workspace.show('meetings'); await wait(1500);",
+            "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
             "settings": "window.workspace.show('settings'); await wait(800);",
+            "help": "window.workspace.show('help'); await wait(400);",
             "meeting": f"await window.workspace.openMeeting('{mid}'); await wait(1500);",
             "names dialog": "document.getElementById('m-names').click(); await wait(1500);",
             "confirm dialog": "document.getElementById('names').close(); await wait(300);"

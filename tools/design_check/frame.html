@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Narrow app frame</title>
+<!-- Headless Edge will not make a window narrower than about 500 px, so
+     narrow cases load the app in a frame of the exact size. -->
+<style>body { margin: 0; } iframe { border: 0; display: block; }</style>
+</head>
+<body>
+<script>
+  const p = new URLSearchParams(location.search);
+  const f = document.createElement("iframe");
+  f.width = p.get("w"); f.height = p.get("h"); f.src = p.get("src");
+  document.body.append(f);
+</script>
+</body>
+</html>
