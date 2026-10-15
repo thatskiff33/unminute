@@ -288,8 +288,12 @@ def build(store, mid, template, anonymise=False):
     view = resolve(store, v["id"])
     rows = store.transcript(v["id"])
     pseudo = _pseudonyms(view, rows, omitted) if anonymise else {}
-    rename = (_name_replacer(given_names(store, v["id"], view), pseudo) if anonymise
-              else (lambda text: text))
+    rename = lambda text: text      # noqa: E731
+    if anonymise:
+        given = given_names(store, v["id"], view)
+        for lbl in given:           # named, but every passage moved to someone else
+            pseudo.setdefault(lbl, f"Speaker {len(pseudo) + 1}")
+        rename = _name_replacer(given, pseudo)
     count = 0
 
     def r(text):
