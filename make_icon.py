@@ -1,4 +1,7 @@
-"""Generate a modern app icon (mic + soundwave) as a multi-resolution .ico.
+"""Generate the Unminute app icon (mic + soundwave) as a multi-resolution .ico.
+
+Unlimit colours: a flat dark blue (#142966) tile, a white microphone and orange
+(#E56600) sound bars, matching the redesigned app.
 
 Draws everything on a 1024px supersampled canvas, then downsamples with LANCZOS
 to each target size so edges stay crisp. Pillow only.
@@ -7,10 +10,8 @@ import sys
 from PIL import Image, ImageDraw
 
 S = 1024  # supersample canvas size
-
-
-def lerp(a, b, t):
-    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+DARK_BLUE = (20, 41, 102)        # #142966
+ORANGE = (229, 102, 0, 255)      # #E56600
 
 
 def rounded_mask(size, radius):
@@ -21,31 +22,10 @@ def rounded_mask(size, radius):
     return m
 
 
-def diagonal_gradient(size, c0, c1):
-    """Diagonal (top-left -> bottom-right) gradient image."""
-    base = Image.new("RGB", (size, size), c0)
-    px = base.load()
-    maxd = (size - 1) * 2
-    for y in range(size):
-        for x in range(size):
-            px[x, y] = lerp(c0, c1, (x + y) / maxd)
-    return base
-
-
 def build():
-    # --- background: rounded tile with diagonal violet/indigo gradient ---
-    top = (124, 92, 255)    # #7C5CFF
-    bot = (67, 38, 201)     # #4326C9
-    grad = diagonal_gradient(S, top, bot)
+    # --- background: flat dark blue rounded tile ---
     tile = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    tile.paste(grad, (0, 0), rounded_mask(S, int(S * 0.225)))
-
-    # subtle top sheen
-    sheen = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ds = ImageDraw.Draw(sheen)
-    ds.ellipse([-S * 0.3, -S * 0.75, S * 1.3, S * 0.35], fill=(255, 255, 255, 28))
-    tile = Image.alpha_composite(tile, Image.composite(
-        sheen, Image.new("RGBA", (S, S), (0, 0, 0, 0)), rounded_mask(S, int(S * 0.225))))
+    tile.paste(Image.new("RGB", (S, S), DARK_BLUE), (0, 0), rounded_mask(S, int(S * 0.225)))
 
     d = ImageDraw.Draw(tile)
     W = (255, 255, 255, 255)
@@ -86,7 +66,7 @@ def build():
             step = side * i * gap
             d.rounded_rectangle([bx + step - bar_w // 2, midy - hh // 2,
                                  bx + step + bar_w // 2, midy + hh // 2],
-                                radius=bar_w // 2, fill=(255, 255, 255, 235))
+                                radius=bar_w // 2, fill=ORANGE)
 
     return tile
 
