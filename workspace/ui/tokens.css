@@ -78,6 +78,7 @@
   --sp1: #B4DDF6; --sp1-fg: #142966;
   --sp2: #FDCAEA; --sp2-fg: #440638;
   --sp3: #62D098; --sp3-fg: #003B2A;
+  --sp1-tint: #F5FAFE; --sp2-tint: #FFF7FC; --sp3-tint: #F3FBF7;   /* Name speakers cards */
 
   /* Player */
   --player: #142966;
@@ -142,6 +143,7 @@
     --upcoming: rgba(255, 255, 255, 0.18);
     --error: #F2A49E;
     --player: #0B1638;
+    --sp1-tint: rgba(180, 221, 246, 0.08); --sp2-tint: rgba(253, 202, 234, 0.08); --sp3-tint: rgba(98, 208, 152, 0.08);
     --scrim: rgba(5, 12, 33, 0.6);
   }
 }

@@ -354,6 +354,81 @@
     <ul id="receipts" class="receipts"></ul>
   </section>
 
+  <!-- Hand off: template, details to remove, copy or save; the preview is
+       exactly what is copied. Nothing is sent anywhere by the app. -->
+  <section id="view-handoff" class="view handoff" aria-labelledby="ho-title" hidden>
+    <div class="ho-head">
+      <button type="button" id="ho-close" class="back-link link-plain">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span id="ho-meeting"></span>
+      </button>
+      <h1 id="ho-title">Hand off the reviewed transcript</h1>
+      <p class="lede">Copy it into your approved drafting tool to write the final document. Nothing is sent from Unminute.</p>
+    </div>
+
+    <div class="ho-body">
+      <ol class="ho-steps">
+        <li class="ho-step done compact">
+          <span class="ho-n" aria-hidden="true">✓</span>
+          <label class="ho-template" for="ho-template"><span class="eyebrow">Template</span>
+            <select id="ho-template"></select></label>
+          <span class="ho-template-links">
+            <button type="button" id="ho-edit" class="link-plain">Edit template</button>
+            <button type="button" id="ho-new" class="link-plain">New template</button>
+          </span>
+        </li>
+        <li class="ho-step now">
+          <h2 class="ho-step-title"><span class="ho-n" aria-hidden="true">2</span>Remove details <span class="ho-note">(this hand off only)</span></h2>
+          <label class="ho-check"><input type="checkbox" id="ho-anon"> <span>Replace names with Speaker 1, Speaker 2</span></label>
+          <label class="ho-field" for="ho-redactions">Words or phrases to redact, one per line
+            <textarea id="ho-redactions" rows="2"></textarea></label>
+          <div class="ho-field">
+            <span id="ho-passages-label">Leave out passages <span id="ho-left-out" class="ho-note"></span></span>
+            <ul id="ho-passages" class="ho-passages" aria-labelledby="ho-passages-label"></ul>
+          </div>
+          <button type="button" id="ho-apply" class="small">Apply</button>
+        </li>
+        <li class="ho-step">
+          <h2 class="ho-step-title"><span class="ho-n" aria-hidden="true">3</span>Copy or save</h2>
+          <button type="button" id="ho-copy" class="primary wide-btn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>Copy prompt and transcript
+          </button>
+          <div class="ho-pair">
+            <button type="button" id="ho-copy-prompt">Copy prompt only</button>
+            <button type="button" id="ho-save">Save Markdown…</button>
+          </div>
+        </li>
+      </ol>
+
+      <section id="ho-preview-pane" class="ho-preview-pane" aria-labelledby="ho-preview-title">
+        <div class="ho-preview-head">
+          <h2 id="ho-preview-title">Preview</h2>
+          <span id="ho-info" class="ho-info"></span>
+        </div>
+        <p id="ho-dirty" class="ho-notice" hidden>You changed what is left out or redacted. Select Apply to update the preview before copying or saving.</p>
+        <p id="ho-long" class="ho-notice" hidden>This handoff is long. It is never shortened, but some assistants cut off long pasted text: prefer Save Markdown, attach the file and use Copy prompt only.</p>
+        <pre id="ho-preview" class="ho-pre" tabindex="0" aria-label="Exact preview of what is copied"></pre>
+        <div class="ho-next">
+          <span>Next: once the final document is reviewed and saved, come back and confirm. Unminute then clears this transcript.</span>
+          <button type="button" id="ho-final">Final document saved…</button>
+        </div>
+      </section>
+
+      <section id="ho-editor" class="ho-editor" aria-labelledby="ho-editor-title" hidden>
+        <h2 id="ho-editor-title">Edit template</h2>
+        <label class="ho-field" for="ho-t-title">Name
+          <input id="ho-t-title" maxlength="120" autocomplete="off"></label>
+        <label class="ho-field grow-field" for="ho-t-prompt">Prompt
+          <textarea id="ho-t-prompt"></textarea></label>
+        <div class="ho-editor-actions">
+          <button type="button" id="ho-t-save" class="primary">Save as new version</button>
+          <button type="button" id="ho-t-reset">Restore original wording</button>
+          <button type="button" id="ho-t-cancel" class="link-plain">Cancel</button>
+        </div>
+      </section>
+    </div>
+    <p id="ho-status" class="sr" role="status" aria-live="polite"></p>
+  </section>
+
   <!-- Help and shortcuts -->
   <section id="view-help" class="view page help-page" aria-labelledby="h-help" hidden>
     <h1 id="h-help">Help and shortcuts</h1>
@@ -396,67 +471,31 @@
 <!-- Short messages ("Saved", "Copied", errors). Announced politely. -->
 <p id="status" class="toast" role="status" aria-live="polite"></p>
 
-<dialog id="names" aria-labelledby="n-title">
-  <h2 id="n-title">Name speakers</h2>
-  <p class="muted">Listen to each speaker's examples and give them a name. Names are for this meeting only and are removed with the transcript at cleanup. To move one passage to a different speaker, select its speaker label in the transcript.</p>
-  <div id="n-list"></div>
-  <div class="row end">
-    <button type="button" id="n-undo">Undo last change</button>
-    <button type="button" id="n-close" class="primary">Done</button>
+<dialog id="names" class="names-dialog" aria-labelledby="n-title">
+  <h2 id="n-title">Who's speaking?</h2>
+  <p class="dlg-lede">Play a few examples and type each person's name. Names stay with this meeting only and are removed at cleanup.</p>
+  <div id="n-list" class="n-grid"></div>
+  <div class="dlg-foot">
+    <button type="button" id="n-undo" class="with-icon">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Undo last change
+    </button>
+    <button type="button" id="n-close" class="primary wide-pad">Done</button>
   </div>
 </dialog>
 
-<dialog id="handoff" aria-labelledby="ho-title">
-  <h2 id="ho-title">Hand off the reviewed transcript</h2>
-  <p class="muted">Copy or save the prompt and transcript, then use them in your organisation's approved AI assistant. The app sends nothing anywhere. Check you are using your business account, and review everything the assistant produces before you rely on it.</p>
-  <div class="row">
-    <label>Template <select id="ho-template"></select></label>
-    <button type="button" id="ho-edit">Edit template</button>
-    <button type="button" id="ho-new">New template</button>
-  </div>
-  <div id="ho-editor" class="hold-form" hidden>
-    <label>Name <input id="ho-t-title" maxlength="120" autocomplete="off"></label>
-    <label>Prompt <textarea id="ho-t-prompt" rows="10"></textarea></label>
-    <div class="row">
-      <button type="button" id="ho-t-save" class="primary">Save as new version</button>
-      <button type="button" id="ho-t-reset">Restore original wording</button>
-      <button type="button" id="ho-t-cancel">Cancel</button>
-    </div>
-  </div>
-  <details>
-    <summary>Leave out passages or redact words (this handoff only)</summary>
-    <p class="muted">These change only what is copied or saved. The reviewed transcript stays as it is.</p>
-    <label>Words or phrases to redact, one per line
-      <textarea id="ho-redactions" rows="3"></textarea></label>
-    <p>Passages to leave out:</p>
-    <ul id="ho-passages" class="passages"></ul>
-    <button type="button" id="ho-apply">Apply</button>
-  </details>
-  <p id="ho-info" class="muted"></p>
-  <p id="ho-dirty" class="banner" hidden>You changed what is left out or redacted. Select Apply to update the preview before copying or saving.</p>
-  <label>Preview <select id="ho-show">
-    <option value="combined">Prompt and transcript (Copy prompt and transcript)</option>
-    <option value="prompt_only">Prompt only (Copy prompt only)</option>
-    <option value="markdown">Markdown file (Save Markdown)</option>
-  </select></label>
-  <p id="ho-long" class="banner" hidden>This handoff is long. It is never shortened, but some assistants cut off long pasted text: prefer Save Markdown, attach the file and use Copy prompt only.</p>
-  <pre id="ho-preview" class="preview" tabindex="0" aria-label="Exact preview of what is copied"></pre>
-  <div class="row">
-    <button type="button" id="ho-copy" class="primary">Copy prompt and transcript</button>
-    <button type="button" id="ho-copy-prompt">Copy prompt only</button>
-    <button type="button" id="ho-save">Save Markdown…</button>
-    <button type="button" id="ho-close">Close</button>
-  </div>
-  <p id="ho-status" role="status" aria-live="polite"></p>
-</dialog>
-
-<dialog id="confirm" aria-labelledby="c-title" aria-describedby="c-body">
+<dialog id="confirm" class="confirm-dialog" aria-labelledby="c-title" aria-describedby="c-body">
   <form method="dialog">
-    <h2 id="c-title"></h2>
+    <div class="c-head">
+      <span id="c-icon" class="c-icon">
+        <svg id="c-icon-ok" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>
+        <svg id="c-icon-danger" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/></svg>
+      </span>
+      <h2 id="c-title"></h2>
+    </div>
     <p id="c-body"></p>
-    <p id="c-limits" class="muted"></p>
+    <p id="c-limits" class="c-limits"></p>
     <label class="check"><input type="checkbox" id="c-check"> <span id="c-check-text"></span></label>
-    <div class="row end">
+    <div class="dlg-foot end">
       <button value="cancel" type="submit">Cancel</button>
       <button value="ok" type="submit" id="c-ok" class="primary" disabled>Confirm</button>
     </div>

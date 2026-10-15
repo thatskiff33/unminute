@@ -40,6 +40,28 @@
   const NAMES = { SPEAKER_00: "Alex", SPEAKER_01: "Sam" };
   const SPEAKERS = [{ label: "SPEAKER_00", name: "Alex", passages: 15, seconds: 520 },
                     { label: "SPEAKER_01", name: "Sam", passages: 17, seconds: 480 }];
+  const EXAMPLES = {
+    SPEAKER_00: [{ start: 0, end: 2, text: "Thanks for making time this morning." },
+                 { start: 52, end: 56, text: "Who is organising the volunteers for the build day?" },
+                 { start: 79, end: 84, text: "I'll ask about that this week and report back at our next catch-up." }],
+    SPEAKER_01: [{ start: 10, end: 13, text: "The main thing from last week is the budget." },
+                 { start: 26, end: 28, text: "The water tank was the bigger saving." },
+                 { start: 72, end: 79, text: "We should check the insurance cover for volunteers before the build day." }],
+  };
+  const TEMPLATE = { id: "minutes", title: "Meeting minutes (sample)", version: 1, edited: false, builtin: true,
+                     prompt: "[Your prompt wording. Edits are saved as a new version; the original wording can always be restored.]" };
+  function handoffPreview(anonymise) {
+    const opts = data.options || { omitted: [13], redactions: ["water tank supplier"] };
+    const who = (label) => (anonymise ? { SPEAKER_00: "Speaker 1", SPEAKER_01: "Speaker 2" } : NAMES)[label];
+    const lines = GARDEN.slice(0, 7).map(([t, , label, text]) =>
+      `[${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}] ${who(label)}: ${text.replace("water tank", "[redacted]")}`);
+    const combined = "[Template prompt appears here: the wording saved in the selected template]\n\n" +
+      "## Transcript\nCommunity garden planning (sample)\n\n" + lines.join("\n");
+    return { combined, prompt_only: "[prompt]", markdown: "[markdown]", chars: combined.length, long: false,
+             omitted: opts.omitted.length, redactions: opts.redactions.length, anonymised: anonymise,
+             digests: { combined: "a", prompt_only: "b", markdown: "c" },
+             template: { id: "minutes", title: TEMPLATE.title, version: 1 }, filename: "x.md", options: opts };
+  }
   // Silence of a given length, as the bridge's audio clips are data URLs.
   function silence(seconds) {
     const rate = 8000, n = Math.max(1, Math.round(seconds * rate));
@@ -173,6 +195,23 @@
       },
       steps: [openGarden],
     },
+    names: { steps: [...openAndPlay(), () => document.getElementById("m-names").click(), wait(600),
+                     () => document.querySelector("#n-list input").focus()] },
+    confirm: { steps: [...openAndPlay(), () => document.getElementById("m-primary").click()] },
+    handoff: {
+      change: reviewed,
+      steps: [openGarden, () => document.getElementById("m-primary").click(), wait(800),
+              () => document.getElementById("ho-anon").click(),
+              () => document.getElementById("ho-apply").click(), wait(500)],
+    },
+    "handoff-template": {
+      change: reviewed,
+      steps: [openGarden, () => document.getElementById("m-primary").click(), wait(800),
+              () => document.getElementById("ho-anon").click(),
+              () => document.getElementById("ho-apply").click(), wait(500),
+              () => document.getElementById("ho-edit").click(),
+              () => document.activeElement.blur()],
+    },
     "meeting-earlier": {
       change: (d) => {
         d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",
@@ -183,6 +222,10 @@
               () => document.querySelector('.wide-tabs [role=tab][data-tab="speakers"]').click()],
     },
   };
+  function reviewed(d) {
+    d.detail["m-garden"] = meeting({ stage: "handoff", reviewed_at: at(15, 12), audio_available: false,
+                                     audio_removed_at: at(15, 12), can_undo: false });
+  }
   function wait(ms) { return () => new Promise((r) => setTimeout(r, ms)); }
   function openGarden() { return window.workspace.openMeeting("m-garden").then(wait(800)); }
   function openAndPlay() {
@@ -220,6 +263,11 @@
     speaker_examples: (mid, label) => ({ total: 3, items: transcriptPage(mid, 0, 1000).items
       .filter((it) => it.label === label).slice(0, 3).map((it) => ({ id: it.id, start: it.t, end: it.end, text: it.text })) }),
     clip: (mid, start, end) => silence(end - start),
+    speaker_panel: (mid) => ({ can_undo: false, speakers: SPEAKERS.map((sp) => ({ ...sp, offset: 0,
+      examples: { total: 6, items: EXAMPLES[sp.label] } })) }),
+    handoff_templates: () => [TEMPLATE],
+    handoff_preview: (mid, tid, anonymise) => handoffPreview(!!anonymise),
+    set_handoff_options: (mid, omitted, redactions) => { data.options = { omitted, redactions }; return null; },
     receipts: () => [],
     zoom: () => null,
   };

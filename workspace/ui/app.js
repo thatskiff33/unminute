@@ -73,13 +73,15 @@ const STAGES = {
 };
 
 // -- navigation -------------------------------------------------------------
-const VIEWS = ["meetings", "meeting", "settings", "setup", "help"];
+const VIEWS = ["meetings", "meeting", "handoff", "settings", "setup", "help"];
 // The sidebar item each view belongs to.
-const NAV_OF = { meetings: "meetings", meeting: "meetings", settings: "settings", setup: "settings", help: "help" };
+const NAV_OF = { meetings: "meetings", meeting: "meetings", handoff: "meetings", settings: "settings",
+                 setup: "settings", help: "help" };
 
 function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   if (view !== "meeting") stopAudio();
+  if (view !== "meeting" && view !== "handoff") stopEditing();
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -596,9 +598,21 @@ function canRerun(d) {
   return d.audio_available && d.stage !== "inbox" && !d.reviewed_at && !d.busy && state.version === null;
 }
 
-function playIcon() {
+function mergeIcon() {
   const s = document.createElementNS(SVG_NS, "svg");
-  for (const [k, v] of Object.entries({ width: 14, height: 14, viewBox: "0 0 24 24", "aria-hidden": "true" })) s.setAttribute(k, v);
+  for (const [k, v] of Object.entries({ width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" })) s.setAttribute(k, v);
+  for (const d of ["M6 4v6a6 6 0 0 0 6 6h6", "M15 13l3 3-3 3", "M6 20v-4"]) {
+    const p = document.createElementNS(SVG_NS, "path");
+    p.setAttribute("d", d);
+    s.append(p);
+  }
+  return s;
+}
+
+function playIcon(size = 14) {
+  const s = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({ width: size, height: size, viewBox: "0 0 24 24", "aria-hidden": "true" })) s.setAttribute(k, v);
   const p = document.createElementNS(SVG_NS, "path");
   p.setAttribute("d", "M7 4l13 8-13 8z");
   p.setAttribute("fill", "currentColor");
@@ -756,10 +770,10 @@ async function renderNames() {
   const data = await attempt(() => call("speaker_panel", state.mid, namesState.offsets));
   if (!data || generation !== namesState.generation) return;
   $("n-undo").disabled = !data.can_undo;
-  $("n-list").replaceChildren(...data.speakers.map((sp) => speakerBlock(sp, data.speakers)));
+  $("n-list").replaceChildren(...data.speakers.map((sp, i) => speakerBlock(sp, data.speakers, i)));
 }
 
-function speakerBlock(sp, all) {
+function speakerBlock(sp, all, index) {
   const name = el("input", { value: sp.name, maxLength: 80, "aria-label": `Name for ${sp.name}` });
   // Renaming does not rebuild the panel, so focus and typing elsewhere are kept.
   name.addEventListener("change", () => attempt(async () => {
@@ -768,28 +782,31 @@ function speakerBlock(sp, all) {
     afterNamesChange(false);
   }));
   const ex = sp.examples;
-  const examples = el("ul", { class: "examples" }, ...ex.items.map((it) =>
-    el("li", {}, el("button", { type: "button", textContent: `▶ ${fmtTime(it.start)}`,
-                                title: "Play exactly this passage",
-                                on: { click: () => play(it.start, it.end, true) } }),
-       el("span", { textContent: it.text }))));
+  const examples = el("ul", { class: "examples" }, ...ex.items.map((it) => {
+    const b = el("button", { type: "button", class: "ex-play", title: "Play exactly this passage",
+                             "aria-label": `Play ${fmtTime(it.start)}`,
+                             on: { click: () => play(it.start, it.end, true) } }, playIcon(10), fmtTime(it.start));
+    return el("li", {}, b, el("span", { textContent: it.text }));
+  }));
   const page = (offset) => () => { namesState.offsets[sp.label] = offset; renderNames(); };
   const more = ex.total > sp.offset + 3
-    ? el("button", { type: "button", textContent: "More examples", on: { click: page(sp.offset + 3) } })
-    : (sp.offset ? el("button", { type: "button", textContent: "First examples", on: { click: page(0) } }) : null);
+    ? el("button", { type: "button", class: "n-more", textContent: "More examples", on: { click: page(sp.offset + 3) } })
+    : (sp.offset ? el("button", { type: "button", class: "n-more", textContent: "First examples", on: { click: page(0) } }) : null);
   const others = all.filter((o) => o.label !== sp.label);
   const into = el("select", { "aria-label": `Merge ${sp.name} into` },
     ...others.map((o) => el("option", { value: o.label, textContent: o.name })));
-  const merge = others.length ? el("div", { class: "row" }, "Same person as ", into,
-    el("button", { type: "button", textContent: "Merge",
-                   on: { click: () => attempt(async () => {
+  const merge = others.length ? el("label", { class: "n-merge" }, "Same person as", into,
+    el("button", { type: "button", class: "n-merge-btn", "aria-label": `Merge ${sp.name} into the chosen speaker`,
+                   title: "Merge into the chosen speaker", on: { click: () => attempt(async () => {
                      await call("merge_speakers", state.mid, sp.label, into.value);
                      afterNamesChange(true);
-                   }) } })) : null;
-  return el("section", { class: "speaker" },
-    el("div", { class: "row" }, name,
-       el("span", { class: "muted", textContent: `${sp.passages} passage${sp.passages === 1 ? "" : "s"}` })),
-    examples, more, merge);
+                   }) } }, mergeIcon())) : null;
+  return el("section", { class: `speaker sp${(index % 3) + 1}` },
+    el("div", { class: "n-head" },
+      el("span", { class: "n-avatar", "aria-hidden": "true", textContent: initials(sp.name) }),
+      el("label", { class: "n-label" }, `Speaker ${index + 1} · ${plural(sp.passages, "passage")}`, name)),
+    examples,
+    more || merge ? el("div", { class: "n-foot" }, more || el("span", {}), merge) : null);
 }
 
 function afterNamesChange(rebuildPanel) {
@@ -1073,6 +1090,9 @@ function confirmDialog({ title, body, check, onConfirm, limits = true, limitsTex
   $("c-check").checked = false;
   $("c-ok").disabled = true;
   $("c-ok").className = danger ? "danger" : "primary";
+  $("c-icon").classList.toggle("danger", danger);
+  $("c-icon-ok").toggleAttribute("hidden", danger);
+  $("c-icon-danger").toggleAttribute("hidden", !danger);
   dlg.returnValue = "";
   dlg.onclose = () => { if (dlg.returnValue === "ok") onConfirm(); };
   dlg.showModal();
@@ -1100,20 +1120,30 @@ function confirmFinal(d) {
 }
 
 // -- handoff (#22) ------------------------------------------------------------------
-// The preview is exactly what Copy or Save produces. Nothing is sent anywhere
-// by the app: the user pastes or attaches it in their approved assistant.
+// A page in three steps: template, details to remove, copy or save. The
+// preview is exactly what Copy or Save produces. Nothing is sent anywhere by
+// the app: the user pastes or attaches it in their approved assistant.
+// "Replace names" applies to this handoff only and is not stored.
 const handoffState = { template: "minutes", templates: [], preview: null, generation: 0,
-                       dirty: false, show: "combined" };
+                       dirty: false, anonymise: false, total: 0 };
 
 async function openHandoff() {
   handoffState.templates = await attempt(() => call("handoff_templates")) || [];
   if (!handoffState.templates.some((t) => t.id === handoffState.template))
     handoffState.template = "minutes";
   renderTemplateSelect();
-  $("ho-editor").hidden = true;
+  closeTemplateEditor();
+  $("ho-meeting").textContent = state.detail ? state.detail.title : "Meeting";
+  $("ho-status").textContent = "";
+  $("ho-anon").checked = handoffState.anonymise;
+  show("handoff");
   await renderHandoffOptions();
   await renderHandoffPreview();
-  $("handoff").showModal();
+}
+
+function closeHandoff() {
+  closeTemplateEditor();
+  show("meeting");
 }
 
 function renderTemplateSelect() {
@@ -1134,45 +1164,54 @@ async function renderHandoffPreview() {
   handoffState.preview = null;
   setHandoffButtons();
   let p;
-  try { p = await call("handoff_preview", state.mid, handoffState.template); }
+  try { p = await call("handoff_preview", state.mid, handoffState.template, handoffState.anonymise); }
   catch (err) {
     if (generation !== handoffState.generation) return;
     $("ho-preview").textContent = "";
-    $("ho-status").textContent = String(err.message || err);
+    say(String(err.message || err));
     return;
   }
   if (generation !== handoffState.generation) return;
   handoffState.preview = p;
   setHandoffButtons();
-  $("ho-preview").textContent = p[handoffState.show];
-  const size = `${p.chars.toLocaleString()} characters`;
-  const parts = [`Template: ${p.template.title}, version ${p.template.version}`, size];
-  if (p.omitted) parts.push(`${p.omitted} passage${p.omitted === 1 ? "" : "s"} left out`);
-  if (p.redactions) parts.push(`${p.redactions} redaction${p.redactions === 1 ? "" : "s"}`);
-  $("ho-info").textContent = parts.join(" · ");
+  $("ho-preview").textContent = p.combined;
+  const total = handoffState.total;
+  const d = state.detail;
+  const parts = [d ? lengthWord(d.duration_s) : null,
+                 total ? `${total - p.omitted} of ${plural(total, "passage")}` : null,
+                 p.anonymised ? "names replaced" : null,
+                 p.redactions ? plural(p.redactions, "redaction") : null];
+  $("ho-info").textContent = joinParts(...parts);
   $("ho-long").hidden = !p.long;
 }
 
 async function renderHandoffOptions() {
-  const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template));
+  const p = await attempt(() => call("handoff_preview", state.mid, handoffState.template, handoffState.anonymise));
   if (!p) return;
   handoffState.dirty = false;
   $("ho-redactions").value = p.options.redactions.join("\n");
   const omitted = new Set(p.options.omitted);
-  const page = await attempt(() => call("transcript", state.mid, 0, 2000));
   const rows = [];
-  let start = 0, total = page ? page.total : 0, items = page ? page.items : [];
-  while (true) {
-    for (const it of items)
-      rows.push(el("li", {}, el("label", {},
+  let start = 0, total = 0;
+  do {
+    const page = await attempt(() => call("transcript", state.mid, start, 2000));
+    if (!page || !page.items.length) break;
+    total = page.total;
+    for (const it of page.items)
+      rows.push(el("li", {}, el("label", { title: `${it.who ? it.who + ": " : ""}${it.text}` },
         el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id) }),
-        ` [${fmtTime(it.t)}] ${it.who ? it.who + ": " : ""}${it.text}`)));
-    start += items.length;
-    if (start >= total || !items.length) break;
-    const next = await attempt(() => call("transcript", state.mid, start, 2000));
-    items = next ? next.items : [];
-  }
+        el("span", { class: "t-mark", textContent: fmtTime(it.t) }),
+        el("span", { class: "p-text", textContent: it.text }))));
+    start += page.items.length;
+  } while (start < total);
+  handoffState.total = total;
   $("ho-passages").replaceChildren(...rows);
+  countLeftOut();
+}
+
+function countLeftOut() {
+  const n = document.querySelectorAll("#ho-passages input:checked").length;
+  $("ho-left-out").textContent = n ? `· ${n} left out` : "";
 }
 
 async function applyHandoffOptions() {
@@ -1180,42 +1219,57 @@ async function applyHandoffOptions() {
   const redactions = $("ho-redactions").value.split("\n").map((s) => s.trim()).filter(Boolean);
   await attempt(async () => {
     await call("set_handoff_options", state.mid, omitted, redactions);
+    handoffState.anonymise = $("ho-anon").checked;
     handoffState.dirty = false;
-    say("Handoff options saved. The transcript itself is unchanged.");
+    say("Saved. The transcript itself is unchanged.");
     await renderHandoffPreview();
   });
+}
+
+function handoffSaid(message) {
+  $("ho-status").textContent = message;
+  say(message);
 }
 
 async function copyHandoff(kind) {
   let r;
   const p = handoffState.preview;
   if (!p || handoffState.dirty) return;
-  try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind]); }
-  catch (err) { $("ho-status").textContent = String(err.message || err); return; }
-  $("ho-status").textContent = kind === "combined"
-    ? `Copied the prompt and transcript (${r.chars.toLocaleString()} characters). Paste it into your organisation's approved AI assistant.` +
+  try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind], handoffState.anonymise); }
+  catch (err) { handoffSaid(String(err.message || err)); return; }
+  handoffSaid(kind === "combined"
+    ? `Copied the prompt and transcript (${r.chars.toLocaleString("en-NZ")} characters). Paste it into your organisation's approved AI assistant.` +
       (r.long ? " It is long: if the assistant cuts it off, use Save Markdown and Copy prompt only instead." : "")
-    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.";
+    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.");
 }
 
 async function saveHandoff() {
   let r;
   const p = handoffState.preview;
   if (!p || handoffState.dirty) return;
-  try { r = await call("save_handoff", state.mid, handoffState.template, p.digests.markdown); }
-  catch (err) { $("ho-status").textContent = String(err.message || err); return; }
-  if (r) $("ho-status").textContent = `Saved ${r.name}. The app keeps no record of this file; file or delete it yourself when you no longer need it.`;
+  try { r = await call("save_handoff", state.mid, handoffState.template, p.digests.markdown, handoffState.anonymise); }
+  catch (err) { handoffSaid(String(err.message || err)); return; }
+  if (r) handoffSaid(`Saved ${r.name}. The app keeps no record of this file; file or delete it yourself when you no longer need it.`);
 }
 
+// Editing a template replaces the preview with the editor.
 function editTemplate(isNew) {
   const t = handoffState.templates.find((x) => x.id === handoffState.template);
   if (!t && !isNew) return;
   $("ho-editor").hidden = false;
+  $("ho-preview-pane").hidden = true;
   $("ho-editor").dataset.id = isNew ? "" : t.id;
+  $("ho-editor-title").textContent = isNew ? "New template" : "Edit template";
   $("ho-t-title").value = isNew ? "" : t.title;
   $("ho-t-prompt").value = isNew ? (t ? t.prompt : "") : t.prompt;
   $("ho-t-reset").textContent = !isNew && t.builtin ? "Restore original wording" : "Delete template";
   $("ho-t-reset").hidden = isNew || (t.builtin && !t.edited);
+  $("ho-t-title").focus();
+}
+
+function closeTemplateEditor() {
+  $("ho-editor").hidden = true;
+  $("ho-preview-pane").hidden = false;
 }
 
 async function saveTemplate() {
@@ -1225,7 +1279,7 @@ async function saveTemplate() {
   handoffState.template = saved;
   handoffState.templates = await attempt(() => call("handoff_templates")) || handoffState.templates;
   renderTemplateSelect();
-  $("ho-editor").hidden = true;
+  closeTemplateEditor();
   say("Template saved as a new version");
   renderHandoffPreview();
 }
@@ -1235,29 +1289,31 @@ async function resetTemplate() {
   handoffState.templates = await attempt(() => call("handoff_templates")) || handoffState.templates;
   if (!handoffState.templates.some((t) => t.id === handoffState.template)) handoffState.template = "minutes";
   renderTemplateSelect();
-  $("ho-editor").hidden = true;
+  closeTemplateEditor();
   renderHandoffPreview();
 }
 
 function wireHandoff() {
-  $("ho-template").addEventListener("change", () => { handoffState.template = $("ho-template").value; $("ho-editor").hidden = true; renderHandoffPreview(); });
+  $("ho-template").addEventListener("change", () => {
+    handoffState.template = $("ho-template").value;
+    closeTemplateEditor();
+    renderHandoffPreview();
+  });
   $("ho-edit").addEventListener("click", () => editTemplate(false));
   $("ho-new").addEventListener("click", () => editTemplate(true));
   $("ho-t-save").addEventListener("click", saveTemplate);
-  $("ho-t-cancel").addEventListener("click", () => { $("ho-editor").hidden = true; });
+  $("ho-t-cancel").addEventListener("click", closeTemplateEditor);
   $("ho-t-reset").addEventListener("click", resetTemplate);
   $("ho-apply").addEventListener("click", applyHandoffOptions);
   const markDirty = () => { handoffState.dirty = true; setHandoffButtons(); };
   $("ho-redactions").addEventListener("input", markDirty);
-  $("ho-passages").addEventListener("change", markDirty);
-  $("ho-show").addEventListener("change", () => {
-    handoffState.show = $("ho-show").value;
-    if (handoffState.preview) $("ho-preview").textContent = handoffState.preview[handoffState.show];
-  });
+  $("ho-anon").addEventListener("change", markDirty);
+  $("ho-passages").addEventListener("change", () => { countLeftOut(); markDirty(); });
   $("ho-copy").addEventListener("click", () => copyHandoff("combined"));
   $("ho-copy-prompt").addEventListener("click", () => copyHandoff("prompt_only"));
   $("ho-save").addEventListener("click", saveHandoff);
-  $("ho-close").addEventListener("click", () => $("handoff").close());
+  $("ho-close").addEventListener("click", closeHandoff);
+  $("ho-final").addEventListener("click", () => { if (state.detail) confirmFinal(state.detail); });
 }
 
 // -- setup (#19) ----------------------------------------------------------------------
