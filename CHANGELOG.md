@@ -5,6 +5,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **Pinned shortcuts follow updates.** A taskbar or Start pin is a copy of the shortcut from when it was pinned, so after an update it kept opening the old version (and would break once that version was removed). Installing or rolling back now repoints pins to this app at the new version. Pins to anything else are left alone.
+
 ## v0.4.1
 
 Fixes from testing v0.4.0. Install: download `Unminute-0.4.1.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.0 updates and keeps your workspace.

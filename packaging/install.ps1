@@ -339,6 +339,7 @@ function Get-VersionAppName([string]$Target) {
 }
 
 function New-Shortcut([string]$Target) {
+    Update-PinnedShortcut $Target
     if ($Options.SkipShortcut) { return }
     $name = Get-VersionAppName $Target
     $programs = [Environment]::GetFolderPath("Programs")
@@ -354,6 +355,43 @@ function New-Shortcut([string]$Target) {
     try { Set-ShortcutAppId $link.FullName $AppId }
     catch { Write-Warning "Could not set the taskbar identity on the shortcut: $($_.Exception.Message)" }
     Remove-OtherShortcut $programs $shell $name
+}
+
+# Pinning copies the Start menu shortcut, so a taskbar or Start pin keeps pointing at
+# the version that was current when it was pinned, and breaks once that folder is
+# removed. Repoint pins that run this install's pythonw.exe at the new version. Pins
+# to anything else are left alone. Failures only warn.
+function Update-PinnedShortcut([string]$Target, [string[]]$Folders = @()) {
+    if (-not $Folders) {
+        $pinned = Join-Path $env:APPDATA "Microsoft\Internet Explorer\Quick Launch\User Pinned"
+        $Folders = @((Join-Path $pinned "TaskBar"), (Join-Path $pinned "StartMenu"))
+    }
+    $dir = $Options.InstallDir
+    try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
+    $prefix = (Join-Path $dir.TrimEnd("\") "versions") + "\"
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($folder in $Folders) {
+        if (-not (Test-Path -LiteralPath $folder)) { continue }
+        foreach ($file in Get-ChildItem -LiteralPath $folder -Filter "*.lnk" -File) {
+            $sc = $null
+            try {
+                $sc = $shell.CreateShortcut($file.FullName)
+                $old = [string]$sc.TargetPath
+                $ours = $old.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
+                    $old.EndsWith("\runtime\pythonw.exe", [StringComparison]::OrdinalIgnoreCase)
+                if (-not $ours) { continue }
+                $sc.TargetPath = Join-Path $Target "runtime\pythonw.exe"
+                $sc.Arguments = "-m workspace"
+                $sc.WorkingDirectory = Join-Path $Target "app"
+                $icon = Join-Path $Target "app\whisper.ico"
+                if (Test-Path -LiteralPath $icon) { $sc.IconLocation = "$icon,0" }
+                $sc.Save()
+                [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
+                Set-ShortcutAppId $file.FullName $AppId
+            } catch { Write-Warning "Could not update the pinned shortcut $($file.Name): $($_.Exception.Message)" }
+            finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
+        }
+    }
 }
 
 # Remove Start menu shortcuts this app made under its other names (after a rename or a
