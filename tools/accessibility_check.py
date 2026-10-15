@@ -191,7 +191,7 @@ def checks(window, ws, mid, report):
                               "document.getElementById('m-primary').click();"
                               "await wait(500);",
             # The handoff opens only after the review confirmation.
-            "handoff dialog": "document.getElementById('c-check').click();"
+            "handoff page": "document.getElementById('c-check').click();"
                               "const c = document.getElementById('confirm');"
                               "c.returnValue = 'ok'; c.close('ok'); await wait(4000);"
                               "document.getElementById('m-primary').click(); await wait(2500);",
