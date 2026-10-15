@@ -1,6 +1,6 @@
 # The earlier app (source-installed Whisper Transcriber)
 
-This is the original desktop app: a file queue with a tkinter window, installed from source with `install.cmd`. It still works and is kept in the repository, but [Meeting Workspace](../README.md) is the current app. The two keep separate outputs and share the downloaded models.
+This is the original desktop app: a file queue with a tkinter window, installed from source with `install.cmd`. It still works and is kept in the repository, but [Unminute](../README.md) (previously called Meeting Workspace) is the current app. The two keep separate outputs and share the downloaded models.
 
 ![Whisper Transcriber, light theme, mid-run](screenshots/main-light.png)
 

@@ -45,21 +45,21 @@ The workflow tags the current `main` commit, builds the release notes from the c
 
 Pushing a `vX.Y.Z` tag by hand also triggers the workflow and publishes the release for that tag.
 
-## Meeting Workspace package releases
+## Unminute package releases
 
 The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the same commit the workflow tags:
 
 1. **Changelog.** Merge the `## vX.Y.Z` section, then check out that commit of `main`.
 2. **Build.** Run `python tools/build_package.py --version X.Y.Z` on Windows with 64-bit CPython 3.12, from a clean working tree. The command prints the zip's SHA-256 and writes the `.sha256` file to `dist/`.
 3. **Test the build.**
-   - Install it with `install.ps1 -Package dist\WhisperWorkspace-X.Y.Z.zip`.
+   - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
 4. **Publish.**
    - Before running the workflow, check that `main` is still at the commit you built. The workflow tags the current `main`, and `version.json` in the zip records the commit built.
    - Run the Release workflow for `X.Y.Z`.
-   - Attach the zip and its `.sha256`: `gh release upload vX.Y.Z dist/WhisperWorkspace-X.Y.Z.zip dist/WhisperWorkspace-X.Y.Z.zip.sha256`.
+   - Attach the zip and its `.sha256`: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256`.
 5. **Release type.** The workflow publishes every release as a full release, so a full release becomes Latest, the default download. For a preview, run `gh release edit vX.Y.Z --prerelease --latest=false`.
 
 ## Why there is no PyPI package or installer executable

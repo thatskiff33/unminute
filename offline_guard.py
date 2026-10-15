@@ -111,7 +111,7 @@ def _check(host, port):
 def _refuse(host, port):
     return NetworkBlockedError(
         errno.EACCES,
-        f"Network access blocked: {host}:{port}. Whisper Transcriber works offline; "
+        f"Network access blocked: {host}:{port}. This app works offline; "
         f"only Update / repair and model downloads may go online.")
 
 

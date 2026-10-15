@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Installs the Meeting Workspace for the current Windows user (#11).
+  Installs Unminute for the current Windows user (#11).
 
 .DESCRIPTION
   Run from the extracted package folder (or pass -Package with the zip and its
@@ -50,10 +50,13 @@ $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
-$AppName = "Meeting Workspace"
+$AppName = "Unminute"
+# Start menu names used by earlier versions; an update replaces them.
+$LegacyShortcutNames = @("Meeting Workspace")
 $script:TempExtract = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
-# Must match APP_ID in workspace/__main__.py (taskbar grouping and icon).
+# Must match APP_ID in workspace/__main__.py (taskbar grouping and icon). Kept from the
+# earlier name on purpose: changing it would split existing taskbar pins.
 $AppId = "WhisperTranscriber.MeetingWorkspace"
 $WebView2Client = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
@@ -337,6 +340,31 @@ function New-Shortcut([string]$Target) {
     $link.Save()
     try { Set-ShortcutAppId $link.FullName $AppId }
     catch { Write-Warning "Could not set the taskbar identity on the shortcut: $($_.Exception.Message)" }
+    Remove-LegacyShortcut $programs $shell
+}
+
+# Remove a Start menu shortcut left by an earlier version under its old name, but
+# only one that points into this install: a same-named shortcut to anything else
+# is not ours and is left alone.
+function Remove-LegacyShortcut([string]$Programs, $Shell) {
+    # Long form: a .lnk stores its target as a long path, so a short (8.3) InstallDir
+    # would otherwise never match.
+    $dir = $Options.InstallDir
+    try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
+    $prefix = $dir.TrimEnd("\") + "\"
+    foreach ($name in $LegacyShortcutNames) {
+        $path = Join-Path $Programs "$name.lnk"
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            # Release the shortcut object first: while alive it keeps the .lnk open.
+            $sc = $Shell.CreateShortcut($path)
+            $old = $sc.TargetPath
+            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc)
+            if ($old -and $old.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                Remove-Item -LiteralPath $path -Force
+            }
+        } catch { Write-Warning "Could not remove the old shortcut $($name): $($_.Exception.Message)" }
+    }
 }
 
 function Register-Uninstall([string]$Target, [string]$Version) {
@@ -344,7 +372,7 @@ function Register-Uninstall([string]$Target, [string]$Version) {
     $uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`" -InstallDir `"$($Options.InstallDir)`""
     New-Item -Path $RegKey -Force | Out-Null
     $values = @{
-        DisplayName = $AppName; DisplayVersion = $Version; Publisher = "Whisper Transcriber project"
+        DisplayName = $AppName; DisplayVersion = $Version; Publisher = "Unminute project"
         InstallLocation = $Options.InstallDir; UninstallString = $uninstall
         QuietUninstallString = "$uninstall -Silent"; EstimatedSize = $sizeKb
         NoModify = 1; NoRepair = 1
@@ -399,6 +427,7 @@ try {
     New-Shortcut $target
     Register-Uninstall $target $version
     Write-Step "$AppName $version is installed. Open it from the Start menu."
+    Write-Step "Unminute: unlimit your meeting minutes."
     Write-Step "Your workspace and downloaded models are kept separately and are not affected by updates or uninstalling."
     exit 0
 } catch {

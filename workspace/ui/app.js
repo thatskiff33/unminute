@@ -1,4 +1,4 @@
-// Meeting workspace UI (#20). All meeting text is rendered with textContent,
+// Unminute UI (#20). All meeting text is rendered with textContent,
 // never innerHTML, so markup in a transcript is shown as text, not executed.
 // The page holds no file paths: recordings arrive through the native file
 // dialog or a native drop, handled in Python.

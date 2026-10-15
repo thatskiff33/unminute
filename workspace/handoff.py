@@ -265,7 +265,7 @@ def build(store, mid, template):
     head = [f"# {title}", "",
             f"- Date imported: {time.strftime('%d %B %Y', time.localtime(m['created_at']))}",
             f"- Speakers (as labelled): {', '.join(speakers) if speakers else 'not identified'}",
-            "- Source: transcript reviewed in the meeting workspace. Transcription and "
+            "- Source: transcript reviewed in Unminute. Transcription and "
             "speaker labels were produced by software and can contain errors."]
     if skipped or opts["redactions"]:
         head.append(f"- For this handoff, {skipped} passage{'s' if skipped != 1 else ''} "

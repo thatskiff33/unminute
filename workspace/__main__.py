@@ -1,5 +1,5 @@
 # workspace/__main__.py
-# Start the meeting workspace window (#20):  python -m workspace
+# Start the Unminute window (#20):  python -m workspace
 #
 # The state-owning process: it installs the offline network guard before
 # anything else, owns the database and runs processing on background threads;
@@ -27,7 +27,8 @@ import offline_guard  # noqa: E402
 offline_guard.disable_telemetry()
 offline_guard.install()
 
-APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1
+APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1; kept from
+                                                   # the earlier name so taskbar pins still group
 MODEL_CACHE = Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper-models"
 
 
@@ -119,7 +120,7 @@ def main():
         # e.g. a workspace from a newer version, or one that cannot be migrated:
         # explain instead of disappearing (pythonw has no console).
         import ctypes
-        ctypes.windll.user32.MessageBoxW(None, str(exc), "Meeting workspace", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, str(exc), "Unminute", 0x10)
         return 1
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),

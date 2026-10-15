@@ -1,9 +1,11 @@
 # Changelog
 
-Release notes for Whisper Transcriber. The Release workflow reads the section
+Release notes for Unminute (formerly Whisper Transcriber). The Release workflow reads the section
 for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
+
+- **New name: Unminute.** "Unlimit your meeting minutes." The app previously called Meeting Workspace is now Unminute: the window title, Start menu shortcut, Settings > Apps entry, installer messages, handoff source line and package name (`Unminute-<version>.zip`). Updating replaces the old "Meeting Workspace" Start menu shortcut, but only one that points into this install. Meetings, settings, models, the install folder, the uninstall registry key used for Intune detection and the taskbar identity are unchanged, so nothing moves and no migration is needed.
 
 ## v0.2.3
 

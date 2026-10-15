@@ -13,7 +13,7 @@ The legacy source app (`install.cmd` at the repository root) is unchanged and st
 
 ## What the package contains
 
-One versioned zip, `WhisperWorkspace-<version>.zip`, and its checksum file, `WhisperWorkspace-<version>.zip.sha256`.
+One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<version>.zip.sha256`. Releases up to v0.2.3 used the earlier name, `WhisperWorkspace-<version>.zip`; the installer treats both the same.
 
 | Path | Contents |
 | --- | --- |
@@ -57,7 +57,7 @@ Publishing the zip is part of release publication. Follow [RELEASING.md](RELEASI
 Alternatively, without extracting first:
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package WhisperWorkspace-0.2.0.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package Unminute-<version>.zip
 ```
 
 The installer runs as the current user and needs no administrator rights. It:
@@ -74,7 +74,7 @@ The installer runs as the current user and needs no administrator rights. It:
   - Nothing is installed if any check fails.
 - **Installs side by side** to `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`. It keeps the previous version for rollback and removes older ones.
 - **Refuses to install while the app is running.**
-- **Creates a Start menu shortcut,** "Meeting Workspace", and a per-user uninstall entry in Settings > Apps.
+- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps. An update from a version that used the earlier name, "Meeting Workspace", replaces that shortcut. The install folder, uninstall registry key and taskbar identity keep their earlier names (`WhisperWorkspace`), so Intune detection rules and pinned shortcuts keep working.
 
 Exit codes:
 
@@ -123,7 +123,7 @@ It runs the same check with the previous version, so it refuses if that version 
 
 ## Uninstalling
 
-Use Settings > Apps > Meeting Workspace, or `uninstall.ps1` (with `-Silent` for unattended removal).
+Use Settings > Apps > Unminute, or `uninstall.ps1` (with `-Silent` for unattended removal).
 
 Uninstalling removes the program, the shortcut and the uninstall entry. It does not remove:
 
