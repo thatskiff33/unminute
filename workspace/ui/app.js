@@ -11,7 +11,7 @@ const PAGE = 1000;           // transcript rows per bridge call
 const SAVE_DELAY_MS = 800;   // autosave after typing stops
 
 const state = {
-  view: "inbox", mid: null, detail: null, total: -1, signature: "",
+  view: "meetings", mid: null, detail: null, total: -1, signature: "",
   hits: [], hit: -1, editing: null, saveTimer: null,
   version: null,                 // null = current version; else an earlier one (read only)
   saving: Promise.resolve(),     // edits are saved strictly in order
@@ -26,7 +26,23 @@ async function call(name, ...args) {
   return r.value;
 }
 
-function say(message) { $("status").textContent = message || ""; }
+// Short messages appear as a toast. Confirmations ("Saved") clear after a few
+// seconds, other messages after longer; a sticky one (an import in progress)
+// stays until the app replaces it.
+const OK_MESSAGE = /^(Saved|Copied|Name saved|Template saved|Download started|Folder added|Meeting discarded|Recording saved|Edit undone|Speaker change undone|Token removed|Removed)/;
+let toastTimer = null;
+function say(message, { sticky = false } = {}) {
+  const t = $("status");
+  clearTimeout(toastTimer);
+  t.textContent = message || "";
+  t.classList.toggle("ok", OK_MESSAGE.test(message || ""));
+  t.dataset.sticky = sticky && message ? "1" : "";
+  if (message && !sticky)
+    toastTimer = setTimeout(() => {
+      if (state.statusLine) say(state.statusLine, { sticky: true });   // a lasting status returns
+      else say("");
+    }, OK_MESSAGE.test(message) ? 3000 : 8000);
+}
 
 async function attempt(fn) {
   try { return await fn(); } catch (err) { say(String((err && err.message) || err)); }
@@ -39,7 +55,6 @@ function fmtTime(t) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 function fmtDate(epoch) { return new Date(epoch * 1000).toLocaleString(); }
-function age(days) { return days === 0 ? "today" : days === 1 ? "1 day old" : `${days} days old`; }
 function el(tag, props = {}, ...children) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(props)) {
@@ -73,16 +88,31 @@ for (let el = document.querySelector(".meeting-body").previousElementSibling; el
   meetingTopObserver.observe(el);
 }
 
+const VIEWS = ["meetings", "meeting", "settings", "setup", "help"];
+// The sidebar item each view belongs to.
+const NAV_OF = { meetings: "meetings", meeting: "meetings", settings: "settings", setup: "settings", help: "help" };
+
 function show(view) {
+  if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   state.view = view;
-  for (const v of ["inbox", "active", "meeting", "settings", "setup"]) $(`view-${v}`).hidden = v !== view;
+  document.body.dataset.view = view;
+  setMenu(false);
+  for (const v of VIEWS) $(`view-${v}`).hidden = v !== view;
   for (const b of document.querySelectorAll(".nav"))
-    b.setAttribute("aria-current", b.dataset.view === view ? "page" : "false");
+    b.setAttribute("aria-current", b.dataset.view === NAV_OF[view] ? "page" : "false");
+  window.scrollTo(0, 0);
   refresh();
 }
 
-async function openMeeting(mid) {
+function setMenu(open) {
+  document.body.classList.toggle("menu-open", open);
+  $("menu").setAttribute("aria-expanded", String(open));
+}
+
+// handoff: open the Hand off as soon as the meeting has loaded (from the list).
+async function openMeeting(mid, { handoff = false } = {}) {
   stopEditing();
+  state.pendingHandoff = handoff;
   state.mid = mid; state.total = -1; state.signature = ""; state.hits = []; state.hit = -1;
   state.version = null;
   $("m-search").value = ""; $("m-hits").textContent = "";
@@ -90,100 +120,225 @@ async function openMeeting(mid) {
   show("meeting");
 }
 
-// -- lists --------------------------------------------------------------------
-function meetingRow(m) {
-  const name = el("div", { class: "name" },
-    el("button", { type: "button", class: "link", textContent: m.title,
-                   on: { click: () => openMeeting(m.id) } }),
-    m.held ? el("span", { class: "badge hold", textContent: "Held" }) : null,
-    el("div", { class: "muted", textContent: `${age(m.age_days)} · Next: ${m.action}` }));
-  const row = el("li", {}, name);
-  const discard = el("button", { type: "button", class: "link", textContent: "Discard…",
-    title: "Delete a meeting you do not need (for example a test recording)",
-    on: { click: () => attempt(async () => {
-      const d = await call("detail", m.id);            // its own deletion limits
-      confirmDialog({
-        title: "Discard this meeting?",
-        body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
-        check: "Delete this meeting and everything in it.", limitsText: d.limits,
-        onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
-      });
-    }) } });
-  if (m.stage === "inbox") {
-    row.append(el("progress", { max: 100, value: m.progress, title: `${m.progress}% transcribed` }));
-    const label = m.error ? "Needs attention" : m.paused ? "Paused"
-      : m.busy === "transcribing" ? "Transcribing" : "Waiting";
-    row.append(el("span", { class: m.error ? "error" : "muted", textContent: label }));
-    row.append(m.paused || m.error
-      ? el("button", { type: "button", textContent: m.error ? "Try again" : "Resume",
-                       on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } })
-      : el("button", { type: "button", textContent: "Pause",
-                       title: "Stops at the next safe point; nothing is lost",
-                       on: { click: () => attempt(() => call("pause", m.id).then(refresh)) } }));
-    if (!m.paused && !m.error)
-      row.append(el("button", { type: "button", textContent: "Stop now",
-                                title: "Stops at once; the part in progress is redone later",
-                                on: { click: () => attempt(() => call("stop_now", m.id).then(refresh)) } }));
-    row.append(discard);
-  } else {
-    row.append(el("span", { class: "badge", textContent: STAGES[m.stage] }));
-    // Speaker identification runs after transcription; it can be paused too.
-    // It has no safe point inside, so Pause stops the pass and Resume restarts it.
-    if (m.busy === "speakers" || m.busy === "rerun") {
-      row.append(el("span", { class: "muted", textContent: "Identifying speakers" }));
-      row.append(el("button", { type: "button", textContent: "Pause",
-                                title: "Stops speaker identification now; Resume starts it again from the beginning (with the same number of people, if you gave one). The transcript is not affected.",
-                                on: { click: () => attempt(() => call("pause", m.id).then(refresh)) } }));
-    } else if (m.paused && m.stage === "review") {
-      row.append(el("span", { class: "muted", textContent: "Paused" }));
-      row.append(el("button", { type: "button", textContent: "Resume",
-                                on: { click: () => attempt(() => call("resume", m.id).then(refresh)) } }));
+// -- small builders ---------------------------------------------------------------
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  alert: ["M12 8v5", "M12 16h.01", "circle:12,12,9"],
+  clock: ["M12 7v5l3 2", "circle:12,12,9"],
+  tick: ["M5 12l5 5 9-10"],
+};
+function icon(name, size = 20) {
+  const s = document.createElementNS(SVG_NS, "svg");
+  for (const [k, v] of Object.entries({ width: size, height: size, viewBox: "0 0 24 24", fill: "none",
+    stroke: "currentColor", "stroke-width": name === "tick" ? 3 : 2, "stroke-linecap": "round",
+    "stroke-linejoin": "round", "aria-hidden": "true" })) s.setAttribute(k, v);
+  for (const d of ICONS[name]) {
+    let p;
+    if (d.startsWith("circle:")) {
+      const [cx, cy, r] = d.slice(7).split(",");
+      p = document.createElementNS(SVG_NS, "circle");
+      p.setAttribute("cx", cx); p.setAttribute("cy", cy); p.setAttribute("r", r);
+    } else {
+      p = document.createElementNS(SVG_NS, "path");
+      p.setAttribute("d", d);
     }
-    if (m.stage === "review") row.append(discard);       // before review is confirmed only
+    s.append(p);
   }
-  return row;
+  return s;
 }
+const button = (text, onClick, { primary = false, title = "" } = {}) =>
+  el("button", { type: "button", class: primary ? "primary" : "", textContent: text, title,
+                 on: { click: onClick } });
+const linkButton = (text, onClick, title = "") =>
+  el("button", { type: "button", class: "link-plain", textContent: text, title, on: { click: onClick } });
+function notice(kind, text, ...actions) {
+  const lead = kind === "alert" ? icon("alert") : kind === "hold" ? icon("clock")
+    : el("span", { class: "tick" }, icon("tick", 12));
+  return el("li", { class: `notice ${kind}` }, lead, el("span", { class: "notice-text", textContent: text }),
+            ...actions);
+}
+const joinParts = (...parts) => parts.filter(Boolean).join(" · ");
+
+// -- meetings page -----------------------------------------------------------------
+function dayWord(days) { return days === 0 ? "Today" : days === 1 ? "Yesterday" : `${days} days old`; }
+function lengthWord(s) { return s == null ? null : s < 60 ? "under 1 min" : `${Math.round(s / 60)} min`; }
+function speakersWord(n) { return n ? `${n} speaker${n === 1 ? "" : "s"}` : null; }
+const MODE = { quiet: "Quiet mode", faster: "Faster mode" };
+
+function discardLink(m) {
+  return linkButton("Discard…", () => attempt(async () => {
+    const d = await call("detail", m.id);            // its own deletion limits
+    confirmDialog({
+      title: "Discard this meeting?",
+      body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
+      check: "Delete this meeting and everything in it.", limitsText: d.limits, danger: true,
+      onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
+    });
+  }), "Delete a meeting you do not need (for example a test recording)");
+}
+
+function titleLine(m) {
+  return el("div", { class: "row-title" },
+    el("button", { type: "button", class: "open", textContent: m.title, on: { click: () => openMeeting(m.id) } }),
+    m.held ? el("span", { class: "held", textContent: "Held" }) : null);
+}
+
+// What a meeting needs next decides its group: needs attention, ready for
+// you (review or hand off), transcribing (including speaker identification)
+// or cleaning up.
+function groupOf(m) {
+  if (m.stage === "cleanup") return "cleanup";
+  if (m.stage === "inbox") return m.error ? "attention" : "work";
+  if (m.busy === "speakers" || m.busy === "rerun" || (m.paused && m.stage === "review")) return "work";
+  return "ready";
+}
+
+function readyRow(m) {
+  const review = m.stage === "review";
+  const meta = joinParts(dayWord(m.age_days), lengthWord(m.duration_s), speakersWord(m.speaker_count),
+                         !review && m.audio_available === false ? "audio removed" : null);
+  return el("li", {},
+    el("div", { class: "row-main" }, titleLine(m), el("span", { class: "row-meta", textContent: meta })),
+    el("span", { class: `pill ${review ? "review" : "handoff"}`,
+                 textContent: review ? "Ready to review" : "Ready to hand off" }),
+    el("div", { class: "row-actions" },
+      review ? button("Review", () => openMeeting(m.id), { primary: true })
+             : button("Hand off…", () => openMeeting(m.id, { handoff: true })),
+      review ? discardLink(m) : null));
+}
+
+function attentionRow(m) {
+  return el("li", {},
+    el("div", { class: "row-main" }, titleLine(m),
+       el("span", { class: "row-meta bad", textContent: joinParts(dayWord(m.age_days), m.error) })),
+    el("span", { class: "pill bad", textContent: "Needs attention" }),
+    el("div", { class: "row-actions" },
+      button("Try again", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true }),
+      discardLink(m)));
+}
+
+function cleanupRow(m) {
+  const jobs = m.cleanup || [];
+  const failed = jobs.find((j) => j.state === "failed");
+  const waiting = jobs.find((j) => j.state === "awaiting_confirmation");
+  const open = jobs.find((j) => j.state !== "done");
+  const meta = failed ? `Cleanup failed: ${failed.note || "unknown reason"}`
+    : waiting ? "A hold was released. Open the meeting to confirm the cleanup."
+    : joinParts(dayWord(m.age_days), open ? `removing the ${open.phase === "audio" ? "audio" : "transcript"}` : "cleanup pending");
+  return el("li", {},
+    el("div", { class: "row-main" }, titleLine(m),
+       el("span", { class: `row-meta${failed ? " bad" : ""}`, textContent: meta })),
+    el("span", { class: `pill ${failed ? "bad" : "cleanup"}`, textContent: failed ? "Cleanup failed" : "Cleanup pending" }),
+    failed ? el("div", { class: "row-actions" },
+      button("Try again", () => attempt(() => call("retry_cleanup", failed.id).then(refresh)), { primary: true }))
+      : null);
+}
+
+// Transcribing and speaker identification: a card per meeting with its
+// progress under the title. Speaker identification has no safe point inside,
+// so Pause stops the pass and Resume restarts it.
+function workRow(m, busyTitle) {
+  const pause = (title) => button("Pause", () => attempt(() => call("pause", m.id).then(refresh)), { title });
+  const resume = () => button("Resume", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true });
+  const stopNow = () => button("Stop now", () => attempt(() => call("stop_now", m.id).then(refresh)),
+                               { title: "Stops at once; the part in progress is redone later" });
+  let meta, pill = null, bar = null, actions;
+  if (m.stage === "inbox" && m.paused) {
+    meta = `${m.progress}% · paused by you`;
+    pill = ["paused", "Paused"];
+    bar = ["paused", m.progress];
+    actions = [resume(), discardLink(m)];
+  } else if (m.stage === "inbox" && m.busy === "transcribe") {
+    meta = joinParts(`${m.progress}%`, MODE[state.mode]);
+    bar = ["", m.progress];
+    actions = [pause("Stops at the next safe point; nothing is lost"), stopNow(), discardLink(m)];
+  } else if (m.stage === "inbox") {
+    meta = busyTitle ? `starts after ${busyTitle}` : "Waiting";
+    pill = ["waiting", "Waiting"];
+    actions = [pause("Keeps it from starting until you resume it"), discardLink(m)];
+  } else if (m.paused) {
+    meta = "text ready · speaker identification paused";
+    pill = ["paused", "Paused"];
+    actions = [resume(), discardLink(m)];
+  } else {
+    meta = "text ready · working out who spoke";
+    pill = ["", "Identifying speakers"];
+    bar = ["busy", null];
+    actions = [pause("Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected."),
+               discardLink(m)];
+  }
+  const progress = bar ? el("div", { class: `progress ${bar[0]}`, role: "progressbar",
+    "aria-label": `${m.title}: ${bar[1] === null ? "working" : `${bar[1]}% transcribed`}`,
+    ...(bar[1] === null ? {} : { "aria-valuenow": String(bar[1]), "aria-valuemin": "0", "aria-valuemax": "100" }) },
+    el("span", {})) : null;
+  if (progress && bar[1] !== null) progress.firstChild.style.width = `${bar[1]}%`;
+  return el("li", {},
+    el("div", { class: "row-main" },
+      el("div", { class: "row-top" }, titleLine(m), el("span", { class: "row-meta", textContent: meta })),
+      progress),
+    pill ? el("span", { class: `pill ${pill[0]}`, textContent: pill[1] }) : null,
+    el("div", { class: "row-actions" }, ...actions));
+}
+
+const GROUPS = [
+  ["attention", "Needs attention", "rows"],
+  ["ready", "Ready for you", "rows"],
+  ["work", "Transcribing", "work"],
+  ["cleanup", "Cleaning up", "rows"],
+];
 
 async function renderLists() {
   const items = await call("meetings");
-  const inbox = items.filter((m) => m.stage === "inbox");
-  const active = items.filter((m) => m.stage !== "inbox");
-  $("inbox-list").replaceChildren(...inbox.map(meetingRow));
-  $("active-list").replaceChildren(...active.map(meetingRow));
-  $("inbox-empty").hidden = inbox.length > 0;
-  $("active-empty").hidden = active.length > 0;
+  // The sidebar count: meetings waiting for the user.
+  const waiting = items.filter((m) => ["attention", "ready"].includes(groupOf(m))).length;
+  $("nav-count").hidden = !waiting;
+  $("nav-count").textContent = String(waiting);
+  $("nav-count-sr").textContent = waiting ? `, ${waiting} waiting for you` : "";
+  if (state.view !== "meetings") return;
+  const busy = items.find((m) => m.busy === "transcribe");
+  const sections = [];
+  for (const [key, title, kind] of GROUPS) {
+    const mine = items.filter((m) => groupOf(m) === key);
+    if (!mine.length) continue;
+    const row = { attention: attentionRow, ready: readyRow, cleanup: cleanupRow,
+                  work: (m) => workRow(m, busy && busy.id !== m.id ? busy.title : null) }[key];
+    sections.push(el("section", { class: "group", "aria-labelledby": `g-${key}` },
+      el("h2", { id: `g-${key}`, textContent: title }),
+      el("ul", { class: kind }, ...mine.map(row))));
+  }
+  $("groups").replaceChildren(...sections);
+  $("meetings-empty").hidden = items.length > 0;
 }
 
 async function renderStatus() {
   const s = await call("status");
+  state.mode = s.mode;
   const parts = [];
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
   if (s.message) parts.push(s.message);
-  say(parts.join(" · "));
-  $("import-errors").replaceChildren(...s.import_errors.map((e) => el("li", {}, e, " ",
-    el("button", { type: "button", class: "link", textContent: "Dismiss",
-                   on: { click: () => attempt(() => call("clear_import_errors").then(refresh)) } }))));
+  const line = parts.join(" · ");
+  if (line !== state.statusLine) {
+    state.statusLine = line;
+    if (line) say(line, { sticky: true });
+    else if ($("status").dataset.sticky) say("");
+  }
+  $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,
+    linkButton("Dismiss", () => attempt(() => call("clear_import_errors").then(refresh))))));
 }
 
 async function renderReminders() {
   const r = await call("reminders");
-  const box = $("reminders");
   const lines = [];
   for (const h of r.holds_due)
-    lines.push(el("p", {},
-      `Hold due for review: "${h.title}" (kept because: ${h.reason}). `,
-      el("button", { type: "button", textContent: "Keep",
-                     on: { click: () => attempt(() => call("keep_hold", h.id).then(refresh)) } }),
-      " ",
-      el("button", { type: "button", class: "link", textContent: "Open meeting",
-                     on: { click: () => openMeeting(h.meeting) } })));
+    lines.push(notice("hold", `Hold due for review: ${h.title}.`,
+      button("Keep", () => attempt(() => call("keep_hold", h.id).then(refresh)),
+             { title: `Kept because: ${h.reason}` }),
+      linkButton("Open meeting", () => openMeeting(h.meeting))));
   for (const j of r.awaiting_confirmation)
-    lines.push(el("p", {},
-      `"${j.title}": a hold was released. The ${j.phase} cleanup is waiting for your confirmation. `,
-      el("button", { type: "button", class: "link", textContent: "Open meeting",
-                     on: { click: () => openMeeting(j.meeting) } })));
-  box.replaceChildren(...lines);
-  box.hidden = lines.length === 0;
+    lines.push(notice("hold", `${j.title}: a hold was released. The ${j.phase} cleanup is waiting for your confirmation.`,
+      linkButton("Open meeting", () => openMeeting(j.meeting))));
+  $("reminders").replaceChildren(...lines);
+  $("reminders").hidden = lines.length === 0;
 }
 
 // -- one meeting ---------------------------------------------------------------
@@ -197,8 +352,12 @@ async function renderMeeting() {
   if (!state.mid) return;
   let d;
   try { d = await call("detail", state.mid); }
-  catch (err) { say(String(err.message || err)); show("active"); return; }
+  catch (err) { say(String(err.message || err)); show("meetings"); return; }
   state.detail = d;
+  if (state.pendingHandoff) {
+    state.pendingHandoff = false;
+    if (d.reviewed_at && !d.final_saved_at) openHandoff();
+  }
   requestAnimationFrame(fitMeeting);     // banners or errors above may have changed
   if (document.activeElement !== $("m-title")) $("m-title").value = d.title;
   const badges = [el("span", { class: "badge", textContent: STAGES[d.stage] })];
@@ -581,7 +740,8 @@ async function play(start, end, exact = false) {
 }
 
 // -- confirmations ---------------------------------------------------------------
-function confirmDialog({ title, body, check, onConfirm, limits = true, limitsText = null }) {
+// danger: the confirm button is red, for deleting (discard, delete, remove).
+function confirmDialog({ title, body, check, onConfirm, limits = true, limitsText = null, danger = false }) {
   const dlg = $("confirm");
   $("c-title").textContent = title;
   $("c-body").textContent = body;
@@ -589,6 +749,7 @@ function confirmDialog({ title, body, check, onConfirm, limits = true, limitsTex
   $("c-check-text").textContent = check;
   $("c-check").checked = false;
   $("c-ok").disabled = true;
+  $("c-ok").className = danger ? "danger" : "primary";
   dlg.returnValue = "";
   dlg.onclose = () => { if (dlg.returnValue === "ok") onConfirm(); };
   dlg.showModal();
@@ -611,7 +772,7 @@ function confirmFinal(d) {
     body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers, handoff options and versions. Copying or exporting alone never does this. " +
       "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them.",
     check: "The final document is reviewed and saved outside this app.",
-    onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => show("active"))),
+    onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => show("meetings"))),
   });
 }
 
@@ -804,7 +965,7 @@ async function renderSetup() {
                        on: { click: () => confirmDialog({
                          title: `Remove ${c.title}?`,
                          body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Setup.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
-                         check: "Remove it from this computer.", limits: false,
+                         check: "Remove it from this computer.", limits: false, danger: true,
                          onConfirm: () => attempt(async () => {
                            const gb = await call("remove_model", c.name);
                            say(`Removed. About ${gb} GB freed.`);
@@ -865,12 +1026,12 @@ function wireSetup() {
   $("s-speakers-on").addEventListener("change", () => { state.setupChoiceTouched = true; });
   $("s-finish").addEventListener("click", () => attempt(async () => {
     await call("finish_setup", $("s-speakers-on").checked);
-    show("inbox");
+    show("meetings");
   }));
   $("s-skip-speakers").addEventListener("click", () => attempt(async () => {
     if (!state.setup.speech_ready) { say("Download a speech model first."); return; }
     await call("finish_setup", false);
-    show("inbox");
+    show("meetings");
   }));
 }
 
@@ -975,53 +1136,135 @@ function eventText(e) {
   return `${e.note || e.kind}${at}${len}`;
 }
 
-async function renderRecorder() {
+// The level meter shows the last few seconds as bars, newest on the right.
+const LEVEL_BARS = 36;
+const levels = [];
+const REC_KIND = { recording: "", paused: "paused", device_lost: "lost", failed: "lost",
+                   stopped: "saving", saving: "saving" };
+
+function deviceName() {
+  const opt = $("rec-device").selectedOptions[0];
+  return opt ? opt.dataset.name : "";
+}
+
+function renderLevel(rec, tick) {
+  const box = $("rec-level");
+  if (box.children.length !== LEVEL_BARS)
+    box.replaceChildren(...Array.from({ length: LEVEL_BARS }, () => el("span", {})));
+  if (rec.state === "recording" && tick) {
+    levels.push(Math.max(-60, Math.min(0, rec.level_db)));
+    if (levels.length > LEVEL_BARS) levels.shift();
+  }
+  [...box.children].forEach((bar, i) => {
+    const db = levels[i];
+    bar.classList.toggle("on", db !== undefined);
+    bar.style.height = db === undefined ? "" : `${Math.round(8 + ((db + 60) / 60) * 56)}px`;
+  });
+  box.setAttribute("aria-valuenow", String(Math.round(levels.length ? levels[levels.length - 1] : -60)));
+}
+
+function renderRecCard(rec, tick) {
+  const kind = REC_KIND[rec.state] ?? "saving";
+  $("rec-card").className = `rec-card ${kind}`.trim();
+  $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
+  state.recSeconds = rec.seconds;
+  $("rec-clock").textContent = fmtSeconds(rec.seconds);
+  $("rec-icon").hidden = kind !== "lost";
+  $("rec-spinner").hidden = kind !== "saving";
+  $("rec-level").hidden = kind !== "";
+  if (kind === "") renderLevel(rec, tick);
+  $("rec-middle").hidden = kind !== "paused";
+  $("rec-middle").textContent = "Nothing is being recorded. Resume to carry on in the same recording.";
+  $("rec-sub").hidden = kind !== "lost" && kind !== "saving";
+  $("rec-sub").textContent = kind === "saving"
+    ? "The recording is then imported and transcribed like any other."
+    : rec.state === "failed" ? "The recording stopped. Saving what was recorded."
+    : `${fmtSeconds(rec.seconds)} recorded before it disconnected. Saving what was recorded.`;
+  $("rec-pause").hidden = kind !== "";
+  $("rec-resume").hidden = kind !== "paused";
+  $("rec-stop").hidden = kind === "saving" || kind === "lost";   // a lost microphone saves by itself
+  $("rec-stop").className = kind === "paused" ? "" : "primary";
+  $("rec-note").hidden = kind !== "" && kind !== "paused";
+  $("rec-note").textContent = `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
+    "Tell everyone present the meeting is being recorded.";
+}
+
+function reportItem(rep) {
+  const dismiss = linkButton("Dismiss",
+    () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)));
+  const events = rep.events.length ? ` ${rep.events.map(eventText).join("; ")}.` : "";
+  if (rep.pending)
+    return notice("alert", `Recording: ${fmtSeconds(rep.seconds)}. ${rep.note}${events}`,
+      button("Try again", () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)),
+             { primary: true }),
+      linkButton("Delete recording…", () => confirmDialog({ title: "Delete this recording?",
+        body: "The saved audio of this recording is deleted from this computer. It cannot be recovered.",
+        check: "Delete the recording.", limits: false, danger: true,
+        onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })),
+      dismiss);
+  const done = rep.note ? ` ${rep.note}` : rep.meeting ? " It is in Meetings now." : " It is being imported.";
+  if (rep.events.some((e) => e.kind === "device_lost"))
+    return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
+  return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);
+}
+
+async function renderRecorder(tick = false) {
   const r = await call("recording_status");
-  $("rec-panel").hidden = !r.enabled;
-  if (!r.enabled) return;
   const sel = $("rec-device");
-  if (!sel.options.length) {
+  if (r.enabled && !sel.options.length) {
     const devices = await call("microphone_devices");
     sel.replaceChildren(...devices.map((d) => el("option", { value: String(d.index), "data-name": d.name,
       textContent: d.name + (d.default ? " (default)" : "") })));
     const def = devices.find((d) => d.default);
     if (def) sel.value = String(def.index);
-    if (!devices.length) $("rec-state").textContent = "No microphone found.";
+    if (!devices.length) $("rec-test-result").textContent = "No microphone found.";
   }
-  const rec = r.recording;
-  const active = !!rec && (rec.state === "recording" || rec.state === "paused");
-  $("rec-start").hidden = active;
-  $("rec-pause").hidden = !active || rec.state === "paused";
-  $("rec-resume").hidden = !active || rec.state !== "paused";
-  $("rec-stop").hidden = !active;
-  sel.disabled = $("rec-test").disabled = active;
-  $("rec-level").value = active ? Math.max(-60, rec.level_db) : -60;
-  $("rec-state").textContent = rec ? `${REC_TEXT[rec.state] || rec.state} ${fmtSeconds(rec.seconds)}` : "";
+  const now = r.recording || {};
+  const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || state.recSeconds || 0, events: now.events || [] }
+    : r.recording;
+  const active = !!rec;
+  $("start").hidden = active;
+  $("rec-card").hidden = !active;
+  $("rec-start").hidden = !r.enabled;
+  $("mic-line").hidden = !r.enabled;
+  if (!r.enabled) $("mic-chooser").hidden = true;
+  $("mic-name").textContent = $("rec-start-device").textContent = deviceName() || "No microphone";
+  $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
+  if (active) renderRecCard(rec, tick);
+  else levels.length = 0;
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
-  $("rec-reports").replaceChildren(...r.reports.map((rep) => el("li", {},
-    el("span", { textContent: `${rep.title || "Recording"}: ${fmtSeconds(rep.seconds)} saved` +
-      (rep.note ? `. ${rep.note}` : "") + (rep.events.length ? ". " + rep.events.map(eventText).join("; ") : "") }),
-    rep.pending ? el("button", { type: "button", class: "link", textContent: "Try again",
-                    on: { click: () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)) } }) : null,
-    rep.pending ? " " : null,
-    rep.pending ? el("button", { type: "button", class: "link", textContent: "Delete recording",
-                    on: { click: () => confirmDialog({ title: "Delete this recording?",
-                      body: "The saved audio of this recording is deleted from this computer. It cannot be recovered.",
-                      check: "Delete the recording.", limits: false,
-                      onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) }) } }) : null,
-    " ", el("button", { type: "button", class: "link", textContent: "Dismiss",
-                        on: { click: () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)) } }))));
-  // Faster updates for the level meter while recording.
-  if (active && !recTimer) recTimer = setInterval(() => { if (state.view === "inbox") renderRecorder().catch(() => {}); }, 300);
-  if (!active && recTimer) { clearInterval(recTimer); recTimer = null; }
+  $("rec-reports").replaceChildren(...r.reports.map(reportItem));
+  // Faster updates for the clock and level meter while recording.
+  const live = active && rec.state !== "stopped";
+  if (live && !recTimer)
+    recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder(true).catch(() => {}); }, 300);
+  if (!live && recTimer) { clearInterval(recTimer); recTimer = null; }
 }
 
 function wireRecorder() {
   const device = () => Number($("rec-device").value);
-  const deviceName = () => $("rec-device").selectedOptions[0]?.dataset.name || "";
   // A changed device list means choosing again: reload it.
   const relist = (err) => { if (/changed/.test(String(err && err.message))) $("rec-device").replaceChildren(); throw err; };
+  const start = (btn) => attempt(async () => {
+    btn.disabled = true;           // one recording per click
+    try { await call("start_recording", device(), deviceName()).catch(relist); }
+    finally { btn.disabled = false; }
+    $("mic-chooser").hidden = true;
+    $("mic-change").setAttribute("aria-expanded", "false");
+    renderRecorder();
+  });
+  $("rec-start").addEventListener("click", () => start($("rec-start")));
+  $("rec-start-chosen").addEventListener("click", () => start($("rec-start-chosen")));
+  $("mic-change").addEventListener("click", () => {
+    const open = $("mic-chooser").hidden;
+    $("mic-chooser").hidden = !open;
+    $("mic-change").setAttribute("aria-expanded", String(open));
+    if (open) $("rec-device").focus();
+  });
+  $("rec-device").addEventListener("change", () => {
+    $("mic-name").textContent = $("rec-start-device").textContent = deviceName();
+  });
   $("rec-test").addEventListener("click", () => attempt(async () => {
     $("rec-test-result").textContent = "Listening for 3 seconds…";
     const t = await call("test_microphone", device(), deviceName()).catch(relist);
@@ -1029,17 +1272,33 @@ function wireRecorder() {
       ? `Sound heard (loudest ${t.peak_db} dB).`
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
-  $("rec-start").addEventListener("click", () => attempt(async () => {
-    $("rec-start").disabled = true;           // one recording per click
-    try { await call("start_recording", device(), deviceName()).catch(relist); }
-    finally { $("rec-start").disabled = false; }
-    renderRecorder();
-  }));
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
   $("rec-stop").addEventListener("click", () => attempt(async () => {
-    await call("stop_recording"); say("Recording saved. It is being imported."); renderRecorder();
+    state.recSaving = true;               // stopping can take a while: show Saving meanwhile
+    $("rec-stop").disabled = true;
+    renderRecorder().catch(() => {});
+    try { await call("stop_recording"); }
+    finally { state.recSaving = false; $("rec-stop").disabled = false; }
+    say("Recording saved. It is being imported.");
+    renderRecorder();
   }));
+}
+
+// While files are dragged over the window, show where to let go. The drop
+// itself is handled natively; dragover repeats while over the window, so the
+// overlay hides shortly after it stops (dragged away, dropped or cancelled).
+let dragTimer = null;
+function wireDrop() {
+  const overlay = $("drop-overlay");
+  const hide = () => { overlay.hidden = true; };
+  document.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+    overlay.hidden = false;
+    clearTimeout(dragTimer);
+    dragTimer = setTimeout(hide, 400);
+  });
+  document.addEventListener("drop", () => { clearTimeout(dragTimer); hide(); });
 }
 
 async function refresh() {
@@ -1047,10 +1306,11 @@ async function refresh() {
   refreshing = true;
   try {
     await renderStatus();
-    await renderReminders();
-    if (state.view === "inbox" || state.view === "active") await renderLists();
-    if (state.view === "inbox") await renderRecorder();
-    else if (state.view === "meeting") await renderMeeting();
+    await renderLists();                 // also keeps the sidebar count current
+    if (state.view === "meetings") {
+      await renderReminders();
+      await renderRecorder();
+    } else if (state.view === "meeting") await renderMeeting();
     else if (state.view === "settings") await renderSettings();
     else if (state.view === "setup") await renderSetup();
   } catch (err) {
@@ -1076,7 +1336,12 @@ function wire() {
     if (r.accepted) say(`Importing ${r.accepted} recording${r.accepted > 1 ? "s" : ""}`);
     refresh();
   }));
-  $("back").addEventListener("click", () => { stopEditing(); show(state.detail && state.detail.stage === "inbox" ? "inbox" : "active"); });
+  $("back").addEventListener("click", () => { stopEditing(); show("meetings"); });
+  $("top-back").addEventListener("click", () => { stopEditing(); show("meetings"); });
+  $("menu").addEventListener("click", () => setMenu(!document.body.classList.contains("menu-open")));
+  $("empty-watch").addEventListener("click", () => show("settings"));
+  $("s-downloads").addEventListener("click", () => show("setup"));
+  wireDrop();
   $("m-title").addEventListener("change", () => attempt(() => call("rename", state.mid, $("m-title").value).then(refresh)));
   $("m-pause").addEventListener("click", () => attempt(() => call("pause", state.mid).then(refresh)));
   $("m-stop").addEventListener("click", () => attempt(() => call("stop_now", state.mid).then(refresh)));
@@ -1134,6 +1399,12 @@ function wire() {
   wireRecorder();
   $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }));
   document.addEventListener("keydown", (e) => {
+    const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement
+      || e.target instanceof HTMLSelectElement || (e.target instanceof HTMLElement && e.target.isContentEditable);
+    if (e.key === "?" && !typing && !e.ctrlKey && !e.metaKey && !document.querySelector("dialog[open]")) {
+      e.preventDefault(); show("help"); return;
+    }
+    if (e.key === "Escape" && document.body.classList.contains("menu-open")) { setMenu(false); $("menu").focus(); }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "z" && !state.editing
         && !(e.target instanceof HTMLInputElement)) { e.preventDefault(); undo(); }
     if (state.view === "meeting" && (e.ctrlKey || e.metaKey) && e.key === "f") { e.preventDefault(); $("m-search").focus(); }
@@ -1152,6 +1423,6 @@ window.addEventListener("pywebviewready", async () => {
   // First run, or no usable speech model: start with Setup.
   let s = null;
   try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }
-  show(s && (!s.onboarded || !s.speech_ready) ? "setup" : "inbox");
+  show(s && (!s.onboarded || !s.speech_ready) ? "setup" : "meetings");
   setInterval(refresh, POLL_MS);
 });

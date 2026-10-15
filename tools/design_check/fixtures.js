@@ -58,28 +58,82 @@
     meetings: [
       { id: "m-garden", title: "Community garden planning (sample)", age_days: 0, action: "Review the transcript",
         held: false, progress: 100, paused: false, error: null, busy: null, stage: "review",
-        duration_s: 1085, speaker_count: 2, model: "parakeet-tdt-0.6b-v2", mode: "quiet" },
+        duration_s: 1085, speaker_count: 2, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
       { id: "m-quarterly", title: "Quarterly planning (sample)", age_days: 1,
         action: "Hand off, then confirm the final document is saved", held: false, progress: 100,
         paused: false, error: null, busy: null, stage: "handoff",
-        duration_s: 2520, speaker_count: 4, model: "parakeet-tdt-0.6b-v2", mode: "quiet" },
+        duration_s: 2520, speaker_count: 4, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
       { id: "m-catchup", title: "Team catch-up (sample)", age_days: 0, action: "Transcribing",
-        held: false, progress: 46, paused: false, error: null, busy: "transcribing", stage: "inbox",
-        duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", mode: "quiet" },
+        held: false, progress: 46, paused: false, error: null, busy: "transcribe", stage: "inbox",
+        duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
     recording: { enabled: true, recording: null, reports: [] },
-    status: { busy: null, message: "", import_errors: [], importing: 0 },
+    status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet" },
     reminders: { holds_due: [], awaiting_confirmation: [] },
   };
 
   // -- scenarios -----------------------------------------------------------------------
   // Each changes the data and lists steps to run once the page is ready.
+  const row = (over) => ({ held: false, progress: 100, paused: false, error: null, busy: null,
+    duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true,
+    cleanup: [], age_days: 0, action: "", ...over });
+  // Board heights of the level meter's bars, as microphone levels in dB.
+  const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
+                  62, 44, 30, 24, 42, 50, 38, 26, 18, 14].map((h) => ((h - 8) / 56) * 60 - 60);
+  let levelAt = 0;
+  const show = (view) => () => window.workspace.show(view);
   const SCENARIOS = {
-    inbox: { steps: [] },
+    home: { steps: [] },
+    recording: {
+      change: (d) => {
+        d.recording.recording = { state: "recording", seconds: 767, level_db: -60,
+                                  device: "Laptop microphone", events: [] };
+        d.levels = true;
+      },
+      steps: [],
+    },
+    "home-empty": { change: (d) => { d.meetings = []; }, steps: [] },
+    "home-drop": {
+      steps: [() => {
+        const drag = () => {
+          const dt = new DataTransfer();
+          dt.items.add(new File(["x"], "meeting.wav", { type: "audio/wav" }));
+          document.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true }));
+        };
+        drag();
+        setInterval(drag, 100);
+      }],
+    },
+    "home-states": {
+      change: (d) => {
+        d.reminders.holds_due = [{ id: "h1", meeting: "m-quarterly", title: "Quarterly planning (sample)",
+                                   reason: "Waiting for the board's approval" }];
+        d.status.import_errors = ["notes.docx could not be imported: it is not an audio or video file."];
+        d.meetings = [
+          row({ id: "m-site", title: "Site visit notes (sample)", stage: "inbox", progress: 0,
+                error: "Could not be transcribed: the recording could not be read." }),
+          row({ id: "m-catchup", title: "Team catch-up (sample)", stage: "inbox", progress: 46, busy: "transcribe" }),
+          row({ id: "m-client", title: "Client call (sample)", stage: "inbox", progress: 20, paused: true }),
+          row({ id: "m-workshop", title: "Workshop (sample)", stage: "inbox", progress: 0 }),
+          row({ id: "m-planning", title: "Planning session (sample)", stage: "review", busy: "speakers" }),
+          row({ id: "m-garden", title: "Community garden planning (sample)", stage: "review",
+                duration_s: 1085, speaker_count: 2 }),
+          row({ id: "m-quarterly", title: "Quarterly planning (sample)", stage: "handoff", age_days: 1,
+                duration_s: 2520, speaker_count: 4, held: true, audio_available: false }),
+          row({ id: "m-board", title: "Board meeting (sample)", stage: "cleanup", age_days: 3,
+                cleanup: [{ id: "j1", phase: "transcript", state: "pending", note: null }] }),
+          row({ id: "m-strategy", title: "Strategy day (sample)", stage: "cleanup", age_days: 3,
+                cleanup: [{ id: "j2", phase: "transcript", state: "failed",
+                            note: "a file is in use. Close it and try again." }] }),
+        ];
+      },
+      steps: [],
+    },
+    help: { steps: [show("help")] },
   };
-  const name = location.hash.slice(1) || "inbox";
+  const name = location.hash.slice(1) || "home";
   const scenario = SCENARIOS[name] || { steps: [] };
   if (scenario.change) scenario.change(data);
 
@@ -95,7 +149,12 @@
     status: () => data.status,
     reminders: () => data.reminders,
     meetings: () => data.meetings,
-    recording_status: () => data.recording,
+    recording_status: () => {
+      // While "recording", each poll reports the next of the board's levels.
+      if (data.levels && data.recording.recording)
+        data.recording.recording.level_db = LEVELS[Math.min(levelAt++, LEVELS.length - 1)];
+      return data.recording;
+    },
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],
     detail: (mid) => data.detail[mid],
     transcript: (mid, start = 0, count = 500) => transcriptPage(mid, start, count),
