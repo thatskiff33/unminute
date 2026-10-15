@@ -412,6 +412,7 @@ class Recording:
             if self._writer.is_alive():
                 raise RecorderError("Saving the recording did not finish. It is kept and "
                                     "will be imported when the app next starts.")
+        self._viz = None              # nothing of the sound is kept for display
         if self.journal["state"] == "recording":
             self.journal["state"] = "stopped"
         try:
@@ -480,17 +481,30 @@ def unfinished(root):
     return [(d, read_journal(d)) for d in sorted(p for p in base.iterdir() if p.is_dir())]
 
 
+DISCARDED = "discarded"        # marker: the user discarded it; delete, never import
+
+
+def mark_discarded(folder):
+    (Path(folder) / DISCARDED).write_text("Discarded by the user. Delete, do not import.\n",
+                                          encoding="utf-8")
+
+
+def is_discarded(folder):
+    return (Path(folder) / DISCARDED).exists()
+
+
 def remove_folder(folder):
-    """Remove a recording folder, journal last: if this stops part-way, the
-    journal still marks the folder for the next start."""
+    """Remove a recording folder, journal (and any discard marker) last: if this
+    stops part-way, they still mark the folder for the next start."""
     folder = Path(folder)
     for p in folder.iterdir():
-        if p.name != "journal.json":
+        if p.name not in ("journal.json", DISCARDED):
             if p.is_dir():
                 shutil.rmtree(p)
             else:
                 p.unlink()
     (folder / "journal.json").unlink(missing_ok=True)
+    (folder / DISCARDED).unlink(missing_ok=True)
     folder.rmdir()
 
 

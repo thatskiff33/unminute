@@ -98,8 +98,14 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(len(viz["wave"]), recorder.VIZ_WAVE_POINTS)
         self.assertLess(abs(viz["pitch_hz"] - 220), 15)   # the 220 Hz test tone
         self.assertGreater(max(viz["bands"]), -20)
+        for rate in (16000, 44100, 48000):                # any device rate, short blocks, silence
+            for n in (rate // 10, 100, 40):
+                v = recorder.visual(np.zeros(n, dtype=np.int16), rate)
+                self.assertEqual(len(v["bands"]), recorder.VIZ_BANDS)
+                self.assertEqual(v["pitch_hz"], 0)
         journal = rec.stop()
         self.assertTrue(s.stopped and s.closed)
+        self.assertIsNone(rec.status()["viz"])            # nothing of the sound kept after stop
         self.assertEqual(journal["state"], "stopped")
         self.assertGreaterEqual(len(journal["chunks"]), 3)
         wav, seconds = recorder.assemble_wav(rec.folder, journal)
@@ -309,6 +315,29 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(self.ws.meetings(), [])
         with self.assertRaises(WorkspaceError):
             self.ws.discard_recording()                 # nothing left to discard
+
+    def test_a_discard_that_cannot_delete_yet_is_never_imported(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3)
+        self.holder["stream"].feed(3)
+        real = recorder.remove_folder
+        with mock.patch.object(recorder, "remove_folder", side_effect=OSError("in use")):
+            with self.assertRaises(WorkspaceError):
+                self.ws.discard_recording()
+        report = self.ws.recording_status()["reports"][-1]
+        self.assertTrue(report["discarded"])
+        with self.assertRaises(WorkspaceError):
+            self.ws.retry_recording_import(report["id"])   # no Try again for a discard
+        folder = self.ws.root / "recordings" / report["pending"]
+        self.assertTrue(recorder.is_discarded(folder))
+        self.ws.close()
+        self.ws = self.make()                              # the next start deletes it
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.ws.meetings(), [])
+        self.assertIs(recorder.remove_folder, real)
 
     def test_recording_display_setting(self):
         self.assertEqual(self.ws.recording_status()["display"], "flow")

@@ -1779,6 +1779,13 @@ function eventText(e) {
 const viz = { mode: "flow", target: null, db: -96, amp: 0, k: 2.5, phase: 0, bands: [], wave: [],
               gain: 4, raf: 0, last: 0, said: 0 };
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+const vizColours = { accent: "", quiet: "" };
+function readVizColours() {
+  const css = getComputedStyle(document.documentElement);
+  vizColours.accent = css.getPropertyValue("--record").trim() || "#E56600";
+  vizColours.quiet = css.getPropertyValue("--line").trim() || "rgba(20,41,102,0.14)";
+}
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readVizColours);
 
 // Speech sits around -50 to -10 dBFS: spread -60..-10 over 0..1, so loud speech
 // still has room to move rather than sitting at the top.
@@ -1798,6 +1805,7 @@ function feedViz(rec, display) {
 }
 
 function stopViz() {
+  $("rec-level").setAttribute("aria-valuenow", "-60");
   if (viz.raf) cancelAnimationFrame(viz.raf);
   viz.raf = 0; viz.target = null; viz.amp = 0; viz.bands = []; viz.wave = [];
 }
@@ -1818,9 +1826,8 @@ function drawViz(t) {
   const g = c.getContext("2d");
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
-  const css = getComputedStyle(document.documentElement);
-  const accent = css.getPropertyValue("--record").trim() || "#E56600";
-  const quiet = css.getPropertyValue("--line").trim() || "rgba(20,41,102,0.14)";
+  if (!vizColours.accent) readVizColours();
+  const { accent, quiet } = vizColours;
   const mid = h / 2;
   viz.amp = ease(viz.amp, levelAmount(viz.db), 0.3);
   const tg = viz.target;
@@ -1869,9 +1876,7 @@ function drawSpectrum(g, w, h, mid, tg, accent, quiet) {
     g.lineTo(w, mid);
   };
   g.beginPath(); shape(1); shape(-1);
-  const fill = g.createLinearGradient(0, 0, 0, h);
-  fill.addColorStop(0, accent); fill.addColorStop(0.5, accent); fill.addColorStop(1, accent);
-  g.globalAlpha = 0.35; g.fillStyle = fill; g.fill();
+  g.globalAlpha = 0.35; g.fillStyle = accent; g.fill();
   g.globalAlpha = 1;
   g.beginPath(); shape(1); line(g, accent, 2); g.stroke();
   g.beginPath(); shape(-1); line(g, accent, 2); g.stroke();
@@ -1941,6 +1946,9 @@ function reportItem(rep) {
   const dismiss = linkButton("Dismiss",
     () => attempt(() => call("discard_recording_report", rep.id).then(renderRecorder)));
   const events = rep.events.length ? ` ${rep.events.map(eventText).join("; ")}.` : "";
+  if (rep.pending && rep.discarded)                 // discarded: it can only be deleted
+    return notice("alert", `Discarded recording (${fmtSeconds(rep.seconds)}) could not be deleted yet. ${rep.note}`,
+      linkButton("Delete now", () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder))));
   if (rep.pending)
     return notice("alert", `Recording: ${fmtSeconds(rep.seconds)}. ${rep.note}${events}`,
       button("Try again", () => attempt(() => call("retry_recording_import", rep.id).then(renderRecorder)),
@@ -2035,9 +2043,11 @@ function wireRecorder() {
     body: "Recording stops and the audio recorded so far is deleted from this computer. It is not transcribed and cannot be recovered.",
     check: "Delete this recording.", limits: false, danger: true,
     onConfirm: () => attempt(async () => {
-      await call("discard_recording");
-      say("Recording discarded.");
-      renderRecorder();
+      const busy = ["rec-discard", "rec-stop", "rec-pause", "rec-resume"];
+      for (const id of busy) $(id).disabled = true;
+      say("Discarding the recording…", { sticky: true });
+      try { await call("discard_recording"); say("Recording discarded."); }
+      finally { for (const id of busy) $(id).disabled = false; renderRecorder(); }
     }),
   }));
   $("rec-stop").addEventListener("click", () => attempt(async () => {
