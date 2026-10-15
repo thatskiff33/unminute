@@ -13,7 +13,7 @@ requires separate authorisation from merging roadmap or implementation changes.
 
 These settings cannot be applied from a script that only has push access, so set them once in the GitHub UI.
 
-1. Open https://github.com/thatskiff33/whisper-transcriber/settings/rules and click New ruleset, then New branch ruleset.
+1. Open https://github.com/thatskiff33/unminute/settings/rules and click New ruleset, then New branch ruleset.
 2. Name it `Protect main`. Set Enforcement status to Active.
 3. Under Target branches, click Add target and choose Include default branch.
 4. Tick these rules:
@@ -38,7 +38,7 @@ CI proves the code parses and the pins resolve. It does not run the models. Befo
 Releases are cut by the Release workflow in `.github/workflows/release.yml`.
 
 1. Add a `## vX.Y.Z` section to `CHANGELOG.md` on a branch and merge it to `main`.
-2. Open https://github.com/thatskiff33/whisper-transcriber/actions/workflows/release.yml and click Run workflow.
+2. Open https://github.com/thatskiff33/unminute/actions/workflows/release.yml and click Run workflow.
 3. Enter the version without the leading v, for example `0.1.0`, and run it against `main`.
 
 The workflow tags the current `main` commit, builds the release notes from the changelog section, and publishes the release. GitHub attaches the source zip and tarball automatically. If the changelog section is missing the workflow fails before anything is tagged.

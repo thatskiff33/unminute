@@ -1,6 +1,6 @@
 # Meeting workspace: target product and delivery scope
 
-This is the public, generic product plan for roadmap [#7](https://github.com/thatskiff33/whisper-transcriber/issues/7).
+This is the public, generic product plan for roadmap [#7](https://github.com/thatskiff33/unminute/issues/7).
 It describes planned behaviour, not shipped functionality. The README describes the current app.
 Child issue acceptance criteria supply implementation detail; resolve material contradictions before coding.
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for coding order and review gates.

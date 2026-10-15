@@ -1,7 +1,7 @@
 # Coding and integration plan
 
 Read [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md), [AGENTS.md](../AGENTS.md) and the live
-[roadmap #7](https://github.com/thatskiff33/whisper-transcriber/issues/7). This is a
+[roadmap #7](https://github.com/thatskiff33/unminute/issues/7). This is a
 coding sequence, not a claim that the planned features or hardware have been validated.
 Live child issues and reviewed acceptance evidence govern completion.
 

@@ -36,7 +36,7 @@ You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own
 
 ## Install
 
-1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [latest release](https://github.com/thatskiff33/whisper-transcriber/releases/latest).
+1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [latest release](https://github.com/thatskiff33/unminute/releases/latest).
 2. Extract the zip.
 3. Double-click `install.cmd`.
 
