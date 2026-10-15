@@ -32,14 +32,27 @@
     [26, 33, "SPEAKER_01", "The water tank was the bigger saving, because the supplier included delivery and installation."],
     [33, 39, "SPEAKER_00", "Then I suggest we keep that margin as a contingency rather than spending it straight away.", true],
     [39, 42, "SPEAKER_00", "Weather delays could push the timeline out."],
-    [42, 44, "SPEAKER_01", "Agreed."],
-    [44, 45, "SPEAKER_01", "On the timeline."],
-    [45, 52, "SPEAKER_01", "The beds can go in during the first week of next month."],
+    [42, 52, "SPEAKER_01", "Agreed. The beds can go in during the first week of next month, within budget."],
     [52, 56, "SPEAKER_00", "Who is organising the volunteers for the build day?"],
     [72, 79, "SPEAKER_01", "We should check the insurance cover for volunteers before the build day."],
     [79, 84, "SPEAKER_00", "I'll ask about that this week and report back at our next catch-up."],
   ];
   const NAMES = { SPEAKER_00: "Alex", SPEAKER_01: "Sam" };
+  const SPEAKERS = [{ label: "SPEAKER_00", name: "Alex", passages: 15, seconds: 520 },
+                    { label: "SPEAKER_01", name: "Sam", passages: 17, seconds: 480 }];
+  // Silence of a given length, as the bridge's audio clips are data URLs.
+  function silence(seconds) {
+    const rate = 8000, n = Math.max(1, Math.round(seconds * rate));
+    const buf = new Uint8Array(44 + n), v = new DataView(buf.buffer);
+    const tag = (o, s) => { for (let i = 0; i < s.length; i++) buf[o + i] = s.charCodeAt(i); };
+    tag(0, "RIFF"); v.setUint32(4, 36 + n, true); tag(8, "WAVE"); tag(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate, true); v.setUint16(32, 1, true);
+    v.setUint16(34, 8, true); tag(36, "data"); v.setUint32(40, n, true); buf.fill(128, 44);
+    let s = "";
+    for (let i = 0; i < buf.length; i += 8192) s += String.fromCharCode(...buf.subarray(i, i + 8192));
+    return `data:audio/wav;base64,${btoa(s)}`;
+  }
 
   function meeting(over) {
     return {
@@ -132,7 +145,50 @@
       steps: [],
     },
     help: { steps: [show("help")] },
+    // Meeting review: playing from 0:24, so the passage is highlighted. The
+    // slowest speed keeps the clock at 0:24 while the page is captured.
+    meeting: { steps: openAndPlay() },
+    "meeting-transcribing": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ stage: "inbox", progress: 46, busy: "transcribe", speakers: null,
+                                         speaker_count: null, edits: 0, can_undo: false });
+        d.transcript["m-garden"] = GARDEN.slice(0, 6).map(([a, b, , text]) => [a, b, null, text]);
+      },
+      steps: [openGarden],
+    },
+    "meeting-edit": {
+      steps: [...openAndPlay(), () => {
+        const box = document.getElementById("m-search");
+        box.value = "budget";
+        box.dispatchEvent(new Event("input"));
+      }, wait(400), () => document.getElementById("m-next").click(),
+      () => document.querySelector('#transcript li[data-id="8"] .who:not(.again)').click(), wait(300),
+      () => document.querySelector('#transcript li[data-id="10"] .text').click(),
+      () => window.workspace.say("Saved")],
+    },
+    "meeting-reviewed": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ stage: "handoff", reviewed_at: at(15, 12), audio_available: false,
+                                         audio_removed_at: at(15, 12), can_undo: false });
+      },
+      steps: [openGarden],
+    },
+    "meeting-earlier": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",
+                                                            created_at: at(1, 20), edits: 2 }] });
+      },
+      steps: [...openAndPlay(), () => document.querySelector('[role=tab][data-tab="versions"]').click(),
+              () => document.querySelector("#m-versions button.ver-card").click(), wait(400),
+              () => document.querySelector('.wide-tabs [role=tab][data-tab="speakers"]').click()],
+    },
   };
+  function wait(ms) { return () => new Promise((r) => setTimeout(r, ms)); }
+  function openGarden() { return window.workspace.openMeeting("m-garden").then(wait(800)); }
+  function openAndPlay() {
+    return [openGarden, () => { window.workspace.play(24, 26); }, wait(500),
+            () => { document.getElementById("player").playbackRate = 0.0625; }];
+  }
   const name = location.hash.slice(1) || "home";
   const scenario = SCENARIOS[name] || { steps: [] };
   if (scenario.change) scenario.change(data);
@@ -158,7 +214,12 @@
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],
     detail: (mid) => data.detail[mid],
     transcript: (mid, start = 0, count = 500) => transcriptPage(mid, start, count),
-    search: () => [],
+    search: (mid, q) => transcriptPage(mid, 0, 1000).items
+      .filter((it) => it.text.toLowerCase().includes(String(q).toLowerCase())).map((it) => it.id),
+    speakers: () => ({ speakers: SPEAKERS, can_undo: false }),
+    speaker_examples: (mid, label) => ({ total: 3, items: transcriptPage(mid, 0, 1000).items
+      .filter((it) => it.label === label).slice(0, 3).map((it) => ({ id: it.id, start: it.t, end: it.end, text: it.text })) }),
+    clip: (mid, start, end) => silence(end - start),
     receipts: () => [],
     zoom: () => null,
   };
@@ -174,7 +235,7 @@
   // Tell app.js the bridge is ready, then run the scenario's steps in order.
   window.addEventListener("load", () => {
     window.dispatchEvent(new Event("pywebviewready"));
-    let chain = new Promise((r) => setTimeout(r, 300));
+    let chain = new Promise((r) => setTimeout(r, 600));
     for (const step of scenario.steps) chain = chain.then(step).then(() => new Promise((r) => setTimeout(r, 300)));
     chain.then(() => { document.documentElement.dataset.ready = "1"; });
   });

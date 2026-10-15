@@ -1153,7 +1153,9 @@ class Workspace:
                           "count": runs[-1]["hint_count"],
                           "started_at": runs[-1]["started_at"]} if runs else None),
             "holds": [{"id": h["id"], "scope": h["scope"], "reason": h["reason"],
-                       "created_at": h["created_at"], "due_review": h["id"] in due}
+                       "created_at": h["created_at"], "due_review": h["id"] in due,
+                       "review_due_at": (h["reviewed_at"] or h["created_at"])
+                       + holds.HOLD_REVIEW_DAYS * 86400}
                       for h in holds.active_holds(self.store, mid)],
             "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
                          "note": j["error"]} for j in self.store._all(

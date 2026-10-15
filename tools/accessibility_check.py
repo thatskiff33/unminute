@@ -180,17 +180,21 @@ def checks(window, ws, mid, report):
             "settings": "window.workspace.show('settings'); await wait(800);",
             "help": "window.workspace.show('help'); await wait(400);",
             "meeting": f"await window.workspace.openMeeting('{mid}'); await wait(1500);",
+            "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
+                            "await wait(300);",
+            "holds tab": "document.querySelector('.wide-tabs [data-tab=holds]').click();"
+                         "await wait(300);",
+            "identify again": "document.querySelector('.wide-tabs [data-tab=speakers]').click();"
+                              "document.getElementById('m-again').click(); await wait(300);",
             "names dialog": "document.getElementById('m-names').click(); await wait(1500);",
             "confirm dialog": "document.getElementById('names').close(); await wait(300);"
-                              "[...document.querySelectorAll('#steps button')].find(b => "
-                              "b.textContent.startsWith('Transcript reviewed')).click();"
+                              "document.getElementById('m-primary').click();"
                               "await wait(500);",
             # The handoff opens only after the review confirmation.
             "handoff dialog": "document.getElementById('c-check').click();"
                               "const c = document.getElementById('confirm');"
                               "c.returnValue = 'ok'; c.close('ok'); await wait(4000);"
-                              "[...document.querySelectorAll('#steps button')].find(b => "
-                              "b.textContent.startsWith('Hand off')).click(); await wait(2500);",
+                              "document.getElementById('m-primary').click(); await wait(2500);",
         }
         report["views"] = {}
         for name, go in views.items():

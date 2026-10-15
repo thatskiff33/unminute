@@ -144,12 +144,12 @@ def checks(window, ws, mid, long_mid, report):
             if (more) { more.click(); await wait(1000); }
             const after_more = dlg.querySelector('.speaker .examples li span')?.textContent;
             document.getElementById('n-close').click(); await wait(1500);
-            const who = document.querySelector('#transcript .who')?.textContent;
+            const who = document.querySelector('#transcript .who .who-name')?.textContent;
             return {speakers: sections.length, examples, clip_s, after_more,
                     open_after_close: dlg.open, first_label: who};""")
         report["reassign"] = evaluate(window, WAIT + """
             const btn = [...document.querySelectorAll('#transcript .who')]
-                .find(b => b.textContent !== 'Aroha:');
+                .find(b => b.querySelector('.who-name').textContent !== 'Aroha');
             const id = btn.closest('li').dataset.id;
             btn.click(); await wait(800);
             const sel = document.querySelector('#transcript select');
@@ -159,10 +159,13 @@ def checks(window, ws, mid, long_mid, report):
                 .find(b => b.textContent === 'Move').click();
             await wait(2000);
             if (!unchanged) return 'moved without Move';
-            return document.querySelector(`#transcript li[data-id="${id}"] .who`)?.textContent;""")
+            const row = document.querySelector(`#transcript li[data-id="${id}"]`);
+            return row?.querySelector('.who .who-name')?.textContent;""")
         report["confirm_review"] = evaluate(window, WAIT + """
-            [...document.querySelectorAll('#steps button')].find(b =>
-                b.textContent.startsWith('Transcript reviewed')).click();
+            const primary = document.getElementById('m-primary');
+            if (!primary.textContent.includes('Transcript reviewed'))
+                return {no_review_button: true};
+            primary.click();
             await wait(300);
             const dlg = document.getElementById('confirm');
             const okBefore = document.getElementById('c-ok').disabled;
@@ -171,14 +174,18 @@ def checks(window, ws, mid, long_mid, report):
             dlg.returnValue = 'ok'; dlg.close('ok'); await wait(4000);
             return {ok_disabled_until_ticked: okBefore, limits_shown: limits.includes('OneDrive'),
                     playback_text: document.getElementById('m-playback').textContent,
+                    final_offered: !document.getElementById('m-banner-action').hidden
+                        && document.getElementById('m-banner-action').textContent
+                        === 'Final document saved…',
                     time_buttons_disabled: document.querySelectorAll('#transcript .t')[0].disabled,
                     edit_refused: (await window.pywebview.api.edit(window.workspace.state.mid,
                         Number(document.querySelector('#transcript .text').dataset.id),
                             'x')).error};""",
                                        timeout=90)
         report["handoff"] = evaluate(window, WAIT + """
-            [...document.querySelectorAll('#steps button')]
-                .find(b => b.textContent.startsWith('Hand off')).click();
+            const primary = document.getElementById('m-primary');
+            if (!primary.textContent.includes('Hand off')) return {no_handoff_button: true};
+            primary.click();
             await wait(2500);
             const pre = document.getElementById('ho-preview');
             const before = pre.textContent;
@@ -296,7 +303,8 @@ def main():
         bad.append("playback")
     c = report.get("confirm_review") or {}
     if not (c.get("ok_disabled_until_ticked") and c.get("limits_shown")
-            and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")):
+            and c.get("time_buttons_disabled") and "removed" in c.get("playback_text", "")
+            and c.get("final_offered")):
         bad.append("review confirmation")
     st = report.get("setup") or {}
     from workspace import gpu          # the graphics card component card needs NVIDIA
@@ -306,9 +314,9 @@ def main():
             and st.get("remove_visible") and report.get("setup_vault") == ["token"]):
         bad.append("setup")
     n = report.get("names") or {}
-    if not (n.get("examples") == 3 and n.get("clip_s") == 3 and n.get("first_label") == "Aroha:"):
+    if not (n.get("examples") == 3 and n.get("clip_s") == 3 and n.get("first_label") == "Aroha"):
         bad.append("speaker naming")
-    if report.get("reassign") != "Speaker 3:":
+    if report.get("reassign") != "Speaker 3":
         bad.append("passage reassignment")
     h = report.get("handoff") or {}
     if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")

@@ -201,6 +201,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(30))
         self.assertTrue(ws.detail(mid)["audio_available"])
         self.assertTrue(ws.meetings()[0]["held"])
+        [h] = ws.detail(mid)["holds"]                           # review due 30 days after adding
+        self.assertAlmostEqual(h["review_due_at"] - h["created_at"], 30 * 86400, delta=1)
         self.assertEqual(len(ws.release_hold(hid)), 1)
         self.assertTrue(ws.wait_idle(30))
         self.assertTrue(ws.detail(mid)["audio_available"])       # nothing removed silently
