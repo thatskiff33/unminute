@@ -84,6 +84,29 @@ class ParseTests(unittest.TestCase):
         self.assertIsInstance(invalid, tuple)
 
 
+class AdmxTests(unittest.TestCase):
+    """The ADMX template IT imports into Intune matches the values the app reads."""
+
+    def test_template_covers_every_policy_value_with_text(self):
+        import re
+        import xml.etree.ElementTree as ET
+        root = Path(__file__).resolve().parents[1] / "packaging" / "policy"
+        ns = "{http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions}"
+        admx_text = (root / "Unminute.admx").read_text(encoding="utf-8")
+        admx = ET.fromstring(admx_text.encode("utf-8"))
+        adml = ET.parse(root / "en-US" / "Unminute.adml").getroot()
+        names = {p.get("name") for p in admx.iter(ns + "policy")}
+        self.assertEqual(names, set(policy.SPEC))
+        for p in admx.iter(ns + "policy"):
+            self.assertEqual(p.get("key"), policy.POLICY_KEY)
+            self.assertEqual(p.get("class"), "Machine")
+        strings = {s.get("id") for s in adml.iter(ns + "string")}
+        presentations = {s.get("id") for s in adml.iter(ns + "presentation")}
+        self.assertLessEqual(set(re.findall(r"\$\(string\.(\w+)\)", admx_text)), strings)
+        self.assertLessEqual(set(re.findall(r"\$\(presentation\.(\w+)\)", admx_text)),
+                             presentations)
+
+
 import importlib.util as _ilu  # noqa: E402
 
 HAVE_DEPS = all(_ilu.find_spec(m) for m in ("numpy", "av"))
