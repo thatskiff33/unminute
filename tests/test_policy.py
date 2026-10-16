@@ -397,6 +397,8 @@ class WorkspacePolicyTests(unittest.TestCase):
         imported.assert_not_called()                               # unreadable: grants nothing
         held.assert_called_once()
 
+    @unittest.skipUnless(sys.platform == "win32",
+                         "imports use Windows path rules (the app is Windows-only)")
     def test_turning_watched_folders_off_stops_a_scan_part_way(self):
         import os
         from workspace import intake
