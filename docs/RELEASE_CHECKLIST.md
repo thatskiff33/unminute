@@ -7,10 +7,12 @@ This lists what a workspace release needs, what has been verified, and what stil
 
 ## Every change (automated, in CI)
 
-- [x] **Syntax check and unit tests** on Linux, about 270 tests. Some Windows-only tests are skipped there.
-- [x] **Ruff, CodeQL, requirements resolution** (wheels only, Windows, Python 3.12) and PSScriptAnalyzer on all installer scripts.
+- [x] **Every job in `.github/workflows/ci.yml` and `codeql.yml`.** These include unit tests on Linux and Windows; the Windows job fails if a test is skipped for an unlisted reason. The required jobs are listed in [RELEASING.md](RELEASING.md).
+- [x] **The gates in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), Part B, that are marked "In place".**
 
 ## Verified on the development machine
+
+Most of this evidence was gathered on the 0.2.0 previews (14 October 2026). It has not been re-run in full on later releases. #124 (performance) and #111 slice B3 (release evidence) will make each release produce its own evidence against its own package.
 
 Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy transcription app was running, so the timings in PR #47 and #56 are pessimistic.
 
@@ -91,7 +93,4 @@ Findings:
 
 ## Publishing (when authorised)
 
-1. Merge a `## vX.Y.Z` section into `CHANGELOG.md`.
-2. Build the package on a clean Windows build machine: `python tools/build_package.py --version X.Y.Z`. Record its SHA-256.
-3. Install it once with `-Package` and run `--self-test`.
-4. Follow [RELEASING.md](RELEASING.md) to tag and publish. Attach the zip and the `.sha256` file to the release.
+Follow "Unminute package releases" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.
