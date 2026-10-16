@@ -84,6 +84,8 @@ def sanity(results):
     for mode, r in results.items():
         if r.get("page_errors"):
             problems.append(f"{mode}: the page threw: {'; '.join(r['page_errors'][:3])}")
+    if "hidden" in results and not results["hidden"].get("catch_up_calls"):
+        problems.append("hidden: the page did not refresh within 1 s of being shown again")
     visible = results.get("visible", {})
     if not visible.get("bridge_calls_per_minute") or not visible.get("meeting_rows"):
         problems.append("visible: the page made no bridge calls or showed no meetings, so it "

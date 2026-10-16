@@ -242,7 +242,7 @@ Status is one of:
 | UI process imports only allowlisted packages, and no heavy library | 3 | Unit test on Linux and Windows (`tests/test_import_hygiene.py`); module count budget on Windows | In place |
 | Worker starts on demand and unloads after idle | 3 | Unit tests (`tests/test_workers.py`) | In place |
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
-| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | `tools/ui_idle_check.py` in headless Edge with the design fixtures; the "UI idle (headless Edge)" job in `.github/workflows/quality.yml`; ratchets in `tests/budgets.json` | In place, not yet required; tightened in R6 (#127) |
+| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | `tools/ui_idle_check.py` in headless Edge with the design fixtures; the "UI idle (headless Edge)" job in `.github/workflows/quality.yml`; ratchets in `tests/budgets.json` | In place, not yet required; ratchets lowered by R6 (#127) |
 | WebView2 hidden, suspended and low-memory when minimised | 2, 3 | Release-time performance run | Planned: R8 (#129) |
 | Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; enforced by security plan B3 |
 | Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
