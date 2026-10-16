@@ -68,6 +68,7 @@ The workflow publishes the notes and the source archives only. The Windows packa
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
+   - Measure it against the budgets in `docs/perf-budgets.json`. From a checkout of the tagged commit, run `<installed version>\runtime\python.exe -B tools\perf_check.py perf-X.Y.Z.json --app <installed version>\app --zip dist\Unminute-X.Y.Z.zip`. Leave the laptop idle, on mains power, with the window visible for about an hour. Expect WITHIN BUDGET, and attach the JSON to the release.
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
 4. **Publish.**

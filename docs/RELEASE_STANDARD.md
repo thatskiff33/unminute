@@ -215,8 +215,8 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 | --- | --- |
 | Reference machine (budgets) | Recommended spec: 8 cores, 16 GB. A named, managed laptop is still to be chosen (#121). |
 | Information-only machine | Installer minimum: 4 cores, 8 GB. |
-| Budget numbers | `docs/perf-budgets.json`, the only place they live. Planned: R3 (#124). Proposed targets are in #124. |
-| Measurement tool | `tools/perf_check.py`, planned: R3 (#124). Until then, `tools/packaged_check.py` records idle figures, but it sums working sets and measures for 60 s, so its figures are not comparable with section 2. |
+| Budget numbers | `docs/perf-budgets.json`, the only place they live, with the baseline they came from and the targets. Provisional until the reference laptop is measured. |
+| Measurement tool | `tools/perf_check.py`: start-up, idle CPU and private bytes per state, worker unload time and the leak check, measured as section 2 describes. The worker's peak memory and speed need real models and come from `tools/packaged_check.py`, whose idle figures sum working sets and are not comparable. |
 
 ### Gates
 
@@ -243,7 +243,8 @@ Status is one of:
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
 | UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | CI job (headless browser with the design fixtures; to confirm in R4) | Planned: R4 (#125), tightened in R6 (#127) |
 | WebView2 hidden, suspended and low-memory when minimised | 2, 3 | Release-time performance run | Planned: R8 (#129) |
-| Idle CPU, private bytes, start-up, worker peak, leak check | 2 | Release-time run on the reference machine | Planned: R3 (#124); enforced by security plan B3 |
+| Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; enforced by security plan B3 |
+| Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
 | Durable processing; crash and resume give identical results | 4 | Unit tests; `tools/packaged_crash_check.py` | Unit tests in place; packaged check manual |
 | Integrity check after an unclean shutdown | 4 | Unit tests; `--status` | Planned: R11 (#132) |
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
