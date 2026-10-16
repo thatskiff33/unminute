@@ -335,7 +335,7 @@ Failure reasons are stored without file paths.
 - A token is remembered only after a download has shown that it works.
 - Model work waits while a model is being downloaded or checked. The two are coordinated with the processing thread under one lock, and processing resumes when the download ends.
 - A download can be cancelled.
-- Check every file re-verifies an installed model against its SHA-256 manifest. For the graphics card component a failure is remembered for the session: the component is not used, and shows as damaged, until a later full check passes or Repair replaces it (#153).
+- Check every file re-verifies an installed model against its SHA-256 manifest. For the graphics card component a failure is remembered for the rest of the app session: the component is not used, and shows as damaged, until Check every file passes or Repair replaces it, and speaker passes run on the processor with the reason recorded (#153).
 
 ### Help pages
 - Help links (sign-up, model terms, tokens) are a fixed allowlist, opened in the user's own browser.

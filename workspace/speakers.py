@@ -68,7 +68,10 @@ def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
     graphics memory, a crashed GPU worker) falls back to the CPU for this pass,
     and the result says so. A deliberate stop is never retried."""
     if device != "cuda":
-        return worker_diarize(handle, model, audio_path, hint, threads)
+        # "cpu", or "cpu (graphics card not used: why)" when the card was
+        # wanted but refused before the pass (#153): recorded as it is.
+        turns, exclusive, ran, had = worker_diarize(handle, model, audio_path, hint, threads)
+        return turns, exclusive, device if device.startswith("cpu (") else ran, had
     from workspace.worker import WorkerCrashed, WorkerError, safe_message
     try:
         return worker_diarize(handle, model, audio_path, hint, threads, device="cuda",

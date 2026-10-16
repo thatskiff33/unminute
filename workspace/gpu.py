@@ -298,8 +298,11 @@ def install(cache_dir, log, fetch):
 
 
 # Full checks in this app session, by installation: True passed (later GPU
-# runs use the quick check), False failed (no GPU run until a full check passes
-# again). A repair writes a new installed.json, so it starts afresh.
+# runs use the quick check), False failed (no GPU run until Check every file
+# passes or a repair replaces the component; it is not hashed again before each
+# run). A repair writes a new installed.json, so it starts afresh. Kept in
+# memory only: after a restart, the check before the first GPU run finds a
+# damaged component again.
 _full_checks = {}
 
 
@@ -315,16 +318,21 @@ def full_check(cache_dir):
     """The full check (every file's SHA-256 and no added file anywhere, a
     few seconds), remembered for this installation in this app session."""
     key = _install_key(cache_dir)
+    _full_checks.pop(key, None)          # no earlier pass stands while this runs
     problems = check(cache_dir, full=True)
     _full_checks[key] = not problems
     return problems
 
 
 def verified_for_use(cache_dir):
-    """The full check before the first GPU run of an app session, and again
-    after any full check that failed (from Check every file too). Once one has
-    passed, later runs use the quick check."""
-    if _full_checks.get(_install_key(cache_dir)):
+    """The full check before the first GPU run of an app session. Once one
+    has passed, later runs use the quick check; once one has failed (here or in
+    Check every file), the component is not used until a full check passes
+    again or it is repaired."""
+    recorded = _full_checks.get(_install_key(cache_dir))
+    if recorded is False:
+        return False
+    if recorded:
         return not check(cache_dir)
     return not full_check(cache_dir)
 

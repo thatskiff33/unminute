@@ -1077,13 +1077,18 @@ class Workspace:
     def _speaker_device(self):
         """The graphics card for speaker identification only when the user
         turned it on, in Faster mode, with the component verified. Otherwise
-        the processor."""
-        if (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
+        the processor; when the card was wanted but its component is missing or
+        failed its check, the pass records why (#153), and the meeting says so."""
+        if not (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
                 and self._allowed("AllowGpuComponent")
-                and self.downloads._running != gpu.COMPONENT     # not while it is replaced
-                and gpu.verified_for_use(self.cache_dir)):
+                and self.downloads._running != gpu.COMPONENT):   # not while it is replaced
+            return "cpu", None
+        if gpu.verified_for_use(self.cache_dir):
             return "cuda", str(gpu.site_dir(self.cache_dir))
-        return "cpu", None
+        why = ("the graphics card component is not downloaded"
+               if gpu.status(self.cache_dir)[0] == "missing" else
+               "the graphics card component failed its check; repair it in Downloads")
+        return f"cpu (graphics card not used: {why})", None
 
     # -- controls -------------------------------------------------------------------------
 
