@@ -261,7 +261,7 @@ Status is one of:
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` | Manual; extended by security plan C7 |
 | Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
 | Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
-| Hash-locked dependencies | 8 | `tools/lock.py --check` (each lock resolved again, with hashes taken afresh) and `pip download --require-hashes` in `ci.yml` (Requirements resolve); `tools/build_package.py` installs with `--require-hashes --no-deps`; `tests/test_dependency_locks.py` | In place |
+| Hash-locked dependencies | 8 | `tools/lock.py --check` (each lock resolved again, with hashes taken afresh), `tools/lock.py --compare` (version changes against the base branch) and `pip download --require-hashes` in `ci.yml` (Requirements resolve); `tools/build_package.py` installs with `--require-hashes --no-deps`; `tests/test_dependency_locks.py` | In place |
 | Vulnerability audit | 8 | `tools/audit.py` (pip-audit over every lock) in `audit.yml` on every pull request and daily, with expiring ignores in `requirements/audit-ignore.json` | In place, not yet required |
 | Reproducible, pruned build with SBOM and third-party notices; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 |
 | CI-built, attested release behind an approval; evidence present and naming the zip SHA-256 | 8, 14 | Release job | Security plan: B3 |

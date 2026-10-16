@@ -9,13 +9,18 @@
 #   python tools/lock.py --upgrade-package X   move X (not pinned with == in its .in
 #                                              file) to the newest version allowed
 #   python tools/lock.py --allow-newer X       let X skip the cooldown (a security fix)
+#                                              and move it to the newest version
 #   python tools/lock.py --outdated            list newer versions past the cooldown
+#   python tools/lock.py --compare REF         list version changes against the locks
+#                                              at git REF; fail on an unpinned downgrade
 #   python tools/lock.py --subset numpy av     print the hashed lines for these
 #                                              packages and all their dependencies
 #
 # A lock keeps its versions unless its .in file changes or a package is
 # upgraded, so a re-lock changes only what was asked for, and it never moves
-# a package to an older version. Only versions public for COOLDOWN_DAYS are
+# a package to an older version unless the .in file pins that version with ==.
+# Every lock is resolved before any is written. Only versions public for
+# COOLDOWN_DAYS are
 # chosen: the cut-off (UTC) is written into each lock, with any --allow-newer
 # exception, and --check reuses them. Hashes are always taken
 # afresh from PyPI for the exact pinned versions (never copied from the lock),
@@ -99,6 +104,24 @@ def recorded_cutoff(text):
 def recorded_exceptions(text):
     return dict(re.findall(r"^# By exception, (\S+) may be newer: published before (\S+)\.$",
                            text, re.M))
+
+
+def checked_exceptions(recorded, cutoff, now):
+    """(exceptions still needed, problems): an exception must be an exact UTC
+    time no later than now (a hand-written far-future one would lift the
+    cooldown for good); one the cooldown now covers is no longer needed."""
+    keep, problems = {}, []
+    for name, stamp in sorted(recorded.items()):
+        try:
+            datetime.datetime.strptime(stamp, STAMP)
+        except ValueError:
+            problems.append(f"the exception for {name} is not an exact UTC time ({stamp})")
+            continue
+        if stamp > now:
+            problems.append(f"the exception for {name} is dated in the future ({stamp})")
+        elif stamp > cutoff:
+            keep[name] = stamp
+    return keep, problems
 
 
 def body(text):
@@ -195,16 +218,35 @@ def fresh_lock(uv, source, options, pinned_text, cutoff, exceptions, workdir):
     return body(drop_constraint_notes(out.read_text(encoding="utf-8")))
 
 
-def write_lock(uv, source, target, options, purpose, upgrade, allow_newer, now):
-    """Re-lock: versions from the current lock where they still fit (uv reads
-    them as preferences), upgrades as asked, then fresh hashes."""
+def in_pins(source):
+    """{name: version} for the packages an .in file pins with ==."""
+    found = {}
+    for line in (ROOT / source).read_text(encoding="utf-8").split("\n"):
+        m = re.match(r"^([A-Za-z0-9][\w.-]*)==([^\s;#]+)", line.strip())
+        if m:
+            found[norm(m.group(1))] = m.group(2)
+    return found
+
+
+def unpinned_downgrades(source, before, after):
+    """Version moves to an older version that the .in file does not pin."""
+    pinned = in_pins(source)
+    return [(n, a, b) for n, a, b, older in versions_moved(before, after)
+            if older and pinned.get(n) != b]
+
+
+def prepare_lock(uv, source, target, options, purpose, upgrade, allow_newer, now):
+    """Re-lock, without writing: versions from the current lock where they still
+    fit (uv reads them as preferences), upgrades as asked, then fresh hashes.
+    Returns (path, new content, version moves)."""
     lock = ROOT / target
     current = lock.read_text(encoding="utf-8") if lock.exists() else ""
     cutoff = latest_cutoff()
-    exceptions = {name: stamp for name, stamp in recorded_exceptions(current).items()
-                  if stamp > cutoff}                     # until the cooldown covers it
+    exceptions, problems = checked_exceptions(recorded_exceptions(current), cutoff, now)
+    if problems:
+        raise LockError(f"{target}: " + "; ".join(problems) + ".")
     exceptions.update({norm(n): now for n in allow_newer})
-    extra = [arg for name in upgrade for arg in ("--upgrade-package", name)]
+    extra = [arg for name in [*upgrade, *allow_newer] for arg in ("--upgrade-package", name)]
     with tempfile.TemporaryDirectory() as tmp:
         resolved = Path(tmp) / lock.name
         if lock.exists():
@@ -213,17 +255,14 @@ def write_lock(uv, source, target, options, purpose, upgrade, allow_newer, now):
                + cooldown_args(cutoff, exceptions) + extra)
         text = fresh_lock(uv, source, options, resolved.read_text(encoding="utf-8"), cutoff,
                           exceptions, tmp)
-    moved = versions_moved(current, text)
-    older = [m for m in moved if m[3]]
+    older = unpinned_downgrades(source, current, text)
     if older:
         raise LockError(f"{target}: refusing to move to older versions: " + ", ".join(
-            f"{n} {a} -> {b}" for n, a, b, _ in older) + ". A pin newer than the cooldown "
-            "allows needs --allow-newer, or change it in the .in file.")
-    for name, was, now_v, _ in moved:
-        print(f"{target}: {name} {was or '(new)'} -> {now_v or '(removed)'}")
+            f"{n} {a} -> {b}" for n, a, b in older) + ". To roll one back, pin that "
+            "version with == in the .in file; a locked version newer than the cooldown "
+            "allows needs --allow-newer.")
     used = {name: stamp for name, stamp in exceptions.items() if name in entries(text)}
-    lock.write_text(header(source, purpose, cutoff, used) + text, encoding="utf-8",
-                    newline="\n")
+    return lock, header(source, purpose, cutoff, used) + text, versions_moved(current, text)
 
 
 def check_lock(uv, source, target, options, purpose):
@@ -239,6 +278,11 @@ def check_lock(uv, source, target, options, purpose):
     if cutoff > latest:
         return f"its cut-off {cutoff} is later than the cooldown allows ({latest})"
     exceptions = recorded_exceptions(current)
+    _, problems = checked_exceptions(exceptions, "", utc_now().strftime(STAMP))
+    if problems:
+        return "; ".join(problems)
+    for name, stamp in sorted(exceptions.items()):
+        print(f"{target}: {name} may be newer than the cooldown (published before {stamp})")
     try:
         with tempfile.TemporaryDirectory() as tmp:
             text = fresh_lock(uv, source, options, current, cutoff, exceptions, tmp)
@@ -254,9 +298,17 @@ def versions(text):
             entries(text).items()}
 
 
+def version_class():
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:            # pip's own copy, always present where pip is
+        from pip._vendor.packaging.version import InvalidVersion, Version
+    return Version, InvalidVersion
+
+
 def versions_moved(before, after):
     """[(name, was, now, older)] for every version that changed."""
-    from pip._vendor.packaging.version import Version
+    Version, _ = version_class()
     was, now = versions(before), versions(after)
     return [(n, was.get(n), now.get(n),
              bool(was.get(n) and now.get(n) and Version(now[n]) < Version(was[n])))
@@ -283,30 +335,62 @@ def subset(text, names):
     return "".join("\n".join(found[n][0]) + "\n" for n in found if n in wanted)
 
 
-def outdated(target):
-    """Newer final releases on PyPI, published before the lock's cut-off."""
-    from pip._vendor.packaging.version import InvalidVersion, Version
-    text = (ROOT / target).read_text(encoding="utf-8")
-    cutoff = recorded_cutoff(text)
+def pypi_releases(name):
+    try:
+        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30) as r:
+            return json.load(r)["releases"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise LockError(f"Could not read {name}'s releases from PyPI "
+                        f"({type(exc).__name__}).") from None
+
+
+def outdated(text, cutoff, releases=pypi_releases):
+    """Newer final releases, published before `cutoff` (the latest the
+    cooldown allows now), for each package in a lock."""
+    Version, InvalidVersion = version_class()
     found = []
     for name, (block, _) in entries(text).items():
         locked = Version(block[0].split("==")[1].split()[0])
-        with urllib.request.urlopen(f"https://pypi.org/pypi/{name}/json", timeout=30) as r:
-            releases = json.load(r)["releases"]
         best = None
-        for raw, files in releases.items():
+        for raw, files in releases(name).items():
             try:
                 v = Version(raw)
             except InvalidVersion:
                 continue
             live = [f for f in files if not f.get("yanked")]
-            if v.is_prerelease or not live or min(f["upload_time"] for f in live) >= cutoff:
+            # PyPI gives UTC times without a zone: "2026-10-09T19:46:38".
+            if v.is_prerelease or not live or min(
+                    f["upload_time"][:19] + "Z" for f in live) >= cutoff:
                 continue
             if v > locked and (best is None or v > best):
                 best = v
         if best:
             found.append(f"{name}: {locked} -> {best}")
     return found
+
+
+def git_show(ref, path):
+    """A file at a git ref, or None where it does not exist."""
+    r = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT, capture_output=True,
+                       text=True, encoding="utf-8")
+    return r.stdout if r.returncode == 0 else None
+
+
+def compare(ref):
+    """(report lines, failures): every version change in each lock against
+    the same lock at git `ref`; an older version not pinned with == fails."""
+    lines, failures = [], []
+    for source, target, _, _ in LOCKS:
+        base = git_show(ref, target)
+        if base is None:
+            lines.append(f"{target}: new")
+            continue
+        current = (ROOT / target).read_text(encoding="utf-8")
+        for name, was, now, _ in versions_moved(base, current):
+            lines.append(f"{target}: {name} {was or '(new)'} -> {now or '(removed)'}")
+        failures += [f"{target}: {n} {a} -> {b} is older and not pinned in {source}"
+                     for n, a, b in unpinned_downgrades(source, base, current)]
+    return lines, failures
 
 
 def main(argv=None):
@@ -317,17 +401,19 @@ def main(argv=None):
                    help="let NAME skip the cooldown (for a security fix); recorded in the lock")
     p.add_argument("--outdated", action="store_true",
                    help="list newer versions past the cooldown (requirements.txt)")
+    p.add_argument("--compare", metavar="REF",
+                   help="list version changes against the locks at a git ref (CI)")
     p.add_argument("--subset", nargs="+", metavar="NAME",
                    help="these packages and their dependencies from requirements.txt")
     p.add_argument("--output", help="with --subset: write here (UTF-8) instead of printing")
     args = p.parse_args(argv)
     if args.output and not args.subset:
         p.error("--output goes with --subset")
-    modes = [bool(args.check), bool(args.subset), bool(args.outdated),
+    modes = [bool(args.check), bool(args.subset), bool(args.outdated), bool(args.compare),
              bool(args.upgrade_package or args.allow_newer)]
     if sum(modes) > 1:
-        p.error("--check, --subset, --outdated and --upgrade-package/--allow-newer are "
-                "separate tasks: use one at a time")
+        p.error("--check, --subset, --outdated, --compare and --upgrade-package/--allow-newer "
+                "are separate tasks: use one at a time")
     try:
         if args.subset:
             text = subset((ROOT / "requirements.txt").read_text(encoding="utf-8"), args.subset)
@@ -337,9 +423,17 @@ def main(argv=None):
                 sys.stdout.write(text)
             return 0
         if args.outdated:
-            for line in outdated("requirements.txt") or ["Nothing newer past the cooldown."]:
+            text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+            for line in outdated(text, latest_cutoff()) or ["Nothing newer past the cooldown."]:
                 print(line)
             return 0
+        if args.compare:
+            lines, failures = compare(args.compare)
+            for line in lines or ["No version changes."]:
+                print(line)
+            for line in failures:
+                print("Refused: " + line)
+            return 1 if failures else 0
         uv = uv_command()
         if args.check:
             stale = [(target, why) for source, target, options, purpose in LOCKS
@@ -352,10 +446,16 @@ def main(argv=None):
             print("Every lock matches its input, with hashes checked against PyPI.")
             return 0
         now = utc_now().strftime(STAMP)
-        for source, target, options, purpose in LOCKS:
-            write_lock(uv, source, target, options, purpose, args.upgrade_package,
-                       args.allow_newer, now)
-            print(f"{target}: written")
+        # Every lock is resolved before any is written: a refusal changes nothing.
+        prepared = [prepare_lock(uv, source, target, options, purpose, args.upgrade_package,
+                                 args.allow_newer, now)
+                    for source, target, options, purpose in LOCKS]
+        for lock, text, moved in prepared:
+            lock.write_text(text, encoding="utf-8", newline="\n")
+            for name, was, now_v, _ in moved:
+                print(f"{lock.relative_to(ROOT).as_posix()}: {name} {was or '(new)'} -> "
+                      f"{now_v or '(removed)'}")
+            print(f"{lock.relative_to(ROOT).as_posix()}: written")
         return 0
     except LockError as exc:
         print(exc, file=sys.stderr)

@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -164,6 +165,17 @@ class CheckTests(unittest.TestCase):
         code, _ = self.run_check(tamper)
         self.assertEqual(code, 1)
 
+    def test_a_future_exception_fails(self):
+        # One hand-written header line must not lift the cooldown for good.
+        def tamper(path, text):
+            if path.name == "requirements.txt" and path.parent == ROOT:
+                return text.replace(" (a 7-day cooldown).\n", " (a 7-day cooldown).\n# By "
+                                    "exception, numpy may be newer: published before "
+                                    "2999-01-01T00:00:00Z.\n", 1)
+            return text
+        code, _ = self.run_check(tamper)
+        self.assertEqual(code, 1)
+
     def test_a_later_cut_off_than_the_cooldown_allows_fails(self):
         def tamper(path, text):
             if path.name == "requirements.txt" and path.parent == ROOT:
@@ -172,6 +184,59 @@ class CheckTests(unittest.TestCase):
             return text
         code, _ = self.run_check(tamper)
         self.assertEqual(code, 1)
+
+
+class RelockRuleTests(unittest.TestCase):
+    LOCK_A = ("demo==2.0 \\\n    --hash=sha256:" + "a" * 64 + "\n    # via -r x.in\n"
+              "dep==1.5 \\\n    --hash=sha256:" + "b" * 64 + "\n    # via demo\n")
+
+    def lock_with(self, demo, dep):
+        return (self.LOCK_A.replace("demo==2.0", f"demo=={demo}")
+                .replace("dep==1.5", f"dep=={dep}"))
+
+    def test_exceptions_must_be_exact_and_not_in_the_future(self):
+        cutoff, now = "2026-10-09T00:00:00Z", "2026-10-16T00:00:00Z"
+        keep, problems = lock.checked_exceptions(
+            {"a": "2026-10-10T00:00:00Z", "b": "2026-10-01T00:00:00Z",
+             "c": "2999-01-01T00:00:00Z", "d": "soon"}, cutoff, now)
+        self.assertEqual(keep, {"a": "2026-10-10T00:00:00Z"})       # b: the cooldown covers it
+        self.assertEqual(len(problems), 2)                           # c in the future, d malformed
+
+    def test_a_rollback_is_allowed_only_when_the_in_file_pins_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "x.in"
+            source.write_text("demo==1.9\n", encoding="utf-8")
+            before, after = self.lock_with("2.0", "1.5"), self.lock_with("1.9", "1.4")
+            self.assertEqual(lock.unpinned_downgrades(str(source), before, after),
+                             [("dep", "1.5", "1.4")])                # demo is pinned: allowed
+
+    def test_compare_lists_changes_and_refuses_an_unpinned_downgrade(self):
+        base = read("requirements.txt")
+        current = re.sub(r"^colorama==0\.4\.6 ", "colorama==0.4.5 ", base, count=1, flags=re.M)
+        self.assertNotEqual(base, current)
+        real_read = Path.read_text
+
+        def read_text(path, *a, **kw):
+            text = real_read(path, *a, **kw)
+            return current if path == ROOT / "requirements.txt" else text
+        with mock.patch.object(lock, "git_show",
+                               lambda ref, path: base if path == "requirements.txt" else
+                               real_read(ROOT / path, encoding="utf-8")), \
+                mock.patch.object(Path, "read_text", read_text):
+            lines, failures = lock.compare("FETCH_HEAD")
+        self.assertIn("requirements.txt: colorama 0.4.6 -> 0.4.5", lines)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("colorama", failures[0])
+
+    def test_outdated_looks_past_the_lock_to_the_current_cooldown(self):
+        cutoff = "2026-10-09T00:00:00Z"
+        files = {"1.9": "2026-01-01T00:00:00", "2.0": "2026-02-01T00:00:00",
+                 "2.1": "2026-10-01T00:00:00", "2.2": "2026-10-12T00:00:00",
+                 "3.0rc1": "2026-09-01T00:00:00"}
+        releases = {v: [{"upload_time": t, "yanked": False}] for v, t in files.items()}
+        found = lock.outdated(self.lock_with("2.0", "1.5"), cutoff,
+                              lambda name: releases if name == "demo" else {})
+        self.assertEqual(found, ["demo: 2.0 -> 2.1"])     # 2.2 too new; 3.0rc1 a pre-release
 
 
 class AuditIgnoreTests(unittest.TestCase):

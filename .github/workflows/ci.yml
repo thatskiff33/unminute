@@ -104,8 +104,10 @@ jobs:
     # Prove the locks are current and complete (#111 B1). tools/lock.py --check
     # resolves requirements.in and the CI tool inputs again, to the locked
     # versions with hashes taken afresh from PyPI, and must reproduce each lock
-    # exactly (catching a hand edit to a version, a hash or a line, or an input
-    # changed without a re-lock). Then pip downloads every Windows wheel in requirements.txt with
+    # exactly (catching an edited hash or line, or an input changed without a
+    # re-lock). On a pull request, --compare lists every version change against
+    # the base branch for review and fails on a downgrade not pinned in the
+    # .in file. Then pip downloads every Windows wheel in requirements.txt with
     # its hash checked, exactly as the package build installs them. proxy_tools
     # has no published wheel; it comes from the hash-checked copy in
     # packaging/wheels.
@@ -128,6 +130,14 @@ jobs:
           --require-hashes -r requirements/ci-lock.txt
       - name: Every lock matches its input
         run: python tools/lock.py --check
+      - name: Version changes against the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$env:BASE_REF"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tools/lock.py --compare FETCH_HEAD
       - name: Download every pinned wheel, hashes checked
         run: >
           python -m pip download --disable-pip-version-check --only-binary=:all:
