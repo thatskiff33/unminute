@@ -79,7 +79,10 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
         return result
 
     spec = asr_engines.SPEAKER_MODEL
-    folder = asr_engines.find_verified(spec, cache_dir)
+    # Full SHA-256 of every file (about 33 MB) before each load, not the
+    # size-and-date marker: pyannote unpickles its checkpoints and imports the
+    # class its config names, so a changed file must never reach torch.load.
+    folder = asr_engines.find_verified(spec, cache_dir, full=True)
     if folder is None:
         raise ModelLoadError("The speaker identification model is not installed or failed "
                              "verification. Repair it in Setup.")

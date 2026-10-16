@@ -121,7 +121,7 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 
 - **Transcription and speaker identification never use the network.** While processing, the app refuses its own Python network connections and DNS lookups to anything outside the computer. This guard is not a firewall: native code opening its own sockets would not be caught. For managed devices, an outbound firewall rule is the stronger control.
 - **No usage statistics are sent.** Before its libraries load, the app forces their telemetry switches off: Hugging Face, pyannote's usage metrics and OpenTelemetry. A setting in your environment cannot turn them back on. It also switches off ONNX Runtime's Windows telemetry events in the processes that use it.
-- **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face and the optional graphics card component from download.pytorch.org. Each file is checked against a published checksum.
+- **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face (huggingface.co and its download hosts under huggingface.co and hf.co) and the optional graphics card component from download-r2.pytorch.org. The download process can reach only those hosts and any proxy configured for you, and checks certificates against the Windows certificate store, so it works behind a firm's inspecting proxy. Each file is checked against a published checksum.
 - **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment.
 - **Outside the app's control:** recordings in synced folders such as OneDrive are already in that service, and anything you paste or upload to an AI assistant is handled by its provider under your organisation's account and policies.
 
@@ -239,7 +239,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | istupakov/silero-vad-onnx | MIT | Silero voice-activity detection. Verified 13 October 2026. |
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
-| PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Setup from download.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
+| PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Setup from download-r2.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
 | sounddevice | MIT | Optional microphone recording in the meeting workspace. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
 

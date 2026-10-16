@@ -138,5 +138,102 @@ class NetworkGuardTests(unittest.TestCase):
         self.assertEqual(og.blocked[-1][0], f"host{og.MAX_RECORDED + 19}.example")
 
 
+class GuardGapTests(unittest.TestCase):
+    """Paths that bypass socket.connect (#111 A4): UDP datagrams and asyncio's
+    Windows event loop, which connects with ConnectEx/WSAConnect directly and
+    skips DNS for IP literals."""
+
+    def setUp(self):
+        og.install()
+        og.blocked.clear()
+
+    def tearDown(self):
+        og.uninstall()
+
+    def test_udp_datagram_to_a_remote_address_is_refused(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            with self.assertRaises(og.NetworkBlockedError):
+                s.sendto(b"x", (TEST_NET, 53))
+            with self.assertRaises(og.NetworkBlockedError):
+                s.sendto(b"x", 0, (TEST_NET, 53))
+        self.assertEqual(og.blocked, [(TEST_NET, 53), (TEST_NET, 53)])
+
+    def test_udp_to_loopback_still_works(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx, \
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+            rx.bind(("127.0.0.1", 0))
+            tx.sendto(b"hi", rx.getsockname())
+            self.assertEqual(rx.recv(10), b"hi")
+
+    def test_asyncio_connection_to_an_ip_literal_is_refused(self):
+        import asyncio
+
+        async def attempt():
+            await asyncio.wait_for(asyncio.open_connection(TEST_NET, 443), 5)
+        with self.assertRaises(og.NetworkBlockedError):
+            asyncio.run(attempt())
+        self.assertIn((TEST_NET, 443), og.blocked)
+
+    def test_asyncio_udp_to_an_ip_literal_is_refused(self):
+        import asyncio
+
+        async def attempt():
+            loop = asyncio.get_running_loop()
+            transport, _ = await loop.create_datagram_endpoint(
+                asyncio.DatagramProtocol, remote_addr=(TEST_NET, 53))
+            transport.close()
+        with self.assertRaises(og.NetworkBlockedError):
+            asyncio.run(attempt())
+
+    def test_uninstall_restores_asyncio_and_sendto(self):
+        og.uninstall()
+        self.assertIsNot(socket.socket.sendto, og._guarded_sendto)
+        proactor = og._iocp_proactor()
+        if proactor is not None:
+            self.assertIsNot(proactor.connect, og._guarded_iocp_connect)
+        og.install()
+
+
+class AllowHostsTests(unittest.TestCase):
+    """The download process may reach only the listed hosts (and addresses
+    they resolved to): a redirect elsewhere fails at its DNS lookup."""
+
+    def setUp(self):
+        self.saved = (og._allowed_names, set(og._allowed_addresses))
+        og.install()
+        og.blocked.clear()
+        self.fake = {"huggingface.co": "198.51.100.7", "cdn-lfs.hf.co": "198.51.100.8"}
+        real = og._orig["getaddrinfo"]
+
+        def fake_resolver(host, port, *args, **kwargs):
+            if host in self.fake:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.fake[host], port))]
+            return real(host, port, *args, **kwargs)
+        og._orig["getaddrinfo"] = fake_resolver
+
+    def tearDown(self):
+        og.uninstall()
+        og._allowed_names, og._allowed_addresses = self.saved[0], self.saved[1]
+
+    def test_listed_hosts_and_subdomains_resolve_and_connect(self):
+        og.allow_hosts(("huggingface.co", "hf.co"))
+        self.assertEqual(socket.getaddrinfo("huggingface.co", 443)[0][4][0], "198.51.100.7")
+        self.assertEqual(socket.getaddrinfo("cdn-lfs.hf.co", 443)[0][4][0], "198.51.100.8")
+        self.assertTrue(og._check("198.51.100.7", 443))
+        self.assertTrue(og._check("198.51.100.8", 443))
+
+    def test_other_hosts_lookalikes_and_unresolved_addresses_are_refused(self):
+        og.allow_hosts(("huggingface.co", "hf.co"))
+        for host in ("evil.example", "huggingface.co.evil.example", "nothf.co", "otel.pyannote.ai"):
+            with self.assertRaises(og.NetworkBlockedError, msg=host):
+                socket.getaddrinfo(host, 443)
+        s = socket.socket()
+        try:
+            with self.assertRaises(og.NetworkBlockedError):
+                s.connect((TEST_NET, 443))         # never resolved from an allowed name
+        finally:
+            s.close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -85,6 +85,7 @@ def self_test():
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
                  "torch", "pyannote.audio", "huggingface_hub", "webview", "clr_loader",
                  "sounddevice",                    # loads PortAudio (microphone, #30)
+                 "truststore",                     # Windows certificates for downloads
                  "workspace.app", "workspace.api", "asr_engines"):
         try:
             importlib.import_module(name)
@@ -92,15 +93,35 @@ def self_test():
         except Exception as exc:              # report every failure, not just the first
             ok = False
             print(f"FAILED  import {name}: {type(exc).__name__}: {exc}")
-    try:
-        socket.create_connection(("example.com", 443), timeout=5).close()
-        ok = False
-        print("FAILED  network guard: a connection succeeded")
-    except offline_guard.NetworkBlockedError:
-        print("ok      network guard blocks outside connections")
-    except OSError as exc:      # e.g. no internet: says nothing about the guard
-        ok = False
-        print(f"FAILED  network guard did not intercept ({type(exc).__name__})")
+    # The guard must stop each kind of attempt before it reaches Windows. The
+    # target is 192.0.2.1 (TEST-NET-1, reserved for documentation): if the
+    # guard ever failed, nothing real would be contacted and no DNS lookup
+    # would leave the computer.
+    import asyncio
+
+    def tcp():
+        socket.create_connection(("192.0.2.1", 443), timeout=3).close()
+
+    def udp():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.sendto(b"x", ("192.0.2.1", 53))
+
+    def async_tcp():
+        async def attempt():
+            _, writer = await asyncio.wait_for(asyncio.open_connection("192.0.2.1", 443), 3)
+            writer.close()
+        asyncio.run(attempt())
+
+    for label, attempt in (("TCP", tcp), ("UDP", udp), ("asyncio TCP", async_tcp)):
+        try:
+            attempt()
+            ok = False
+            print(f"FAILED  network guard: {label} reached the network")
+        except offline_guard.NetworkBlockedError:
+            print(f"ok      network guard blocks {label}")
+        except OSError as exc:              # incl. TimeoutError: reached Windows, not blocked
+            ok = False
+            print(f"FAILED  network guard did not intercept {label} ({type(exc).__name__})")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

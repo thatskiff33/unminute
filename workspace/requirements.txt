@@ -13,4 +13,5 @@ pycparser==3.11
 pythonnet==3.2.0
 pywebview==6.2.1
 sounddevice==0.5.6
+truststore==0.10.4
 typing_extensions==4.15.0

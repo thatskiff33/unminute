@@ -124,14 +124,32 @@ def _friendly(exc):
     return "The download did not finish. Nothing was changed; try again."
 
 
+# The only hosts the download process may reach (and their subdomains), plus
+# any proxy configured for this user. Hugging Face serves files from
+# huggingface.co and its CDN hosts under huggingface.co and hf.co; the
+# optional GPU component comes from the pinned PyTorch host. A redirect
+# anywhere else fails at its DNS lookup (offline_guard.allow_hosts).
+DOWNLOAD_HOSTS = ("huggingface.co", "hf.co", "download-r2.pytorch.org")
+
+
 def _download_main(conn, name, cache_dir):
-    """Runs in the download process. Network is allowed here only."""
+    """Runs in the download process. Network is allowed here only, and only
+    to DOWNLOAD_HOSTS."""
     import sys
 
     import offline_guard
     offline_guard.disable_telemetry()
     os.environ["HF_HUB_OFFLINE"] = "0"          # this process exists to download
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    # hf_xet is a native downloader: it would bypass the guard below and use
+    # its own TLS and proxy handling. Plain HTTPS downloads are used instead.
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    offline_guard.install()
+    offline_guard.allow_hosts(DOWNLOAD_HOSTS)
+    # Check certificates against the Windows certificate store, so downloads
+    # work behind a firm's TLS-inspecting proxy without unsafe workarounds.
+    import truststore
+    truststore.inject_into_ssl()
     if sys.stderr is None or sys.stdout is None:   # pythonw: no console
         sys.stdout = sys.stderr = open(os.devnull, "w")
     token = conn.recv()                          # via the pipe, never argv/env
