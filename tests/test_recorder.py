@@ -265,7 +265,8 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws = self.make()
 
     def make(self):
-        ws = Workspace(self.root / "ws", self.root / "models", start=False, battery=False)
+        ws = Workspace(self.root / "ws", self.root / "models", start=False,
+                       allow_test_engines=True, battery=False)
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         ws.open_stream = opener(self.holder)
         return ws

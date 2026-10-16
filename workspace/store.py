@@ -249,8 +249,28 @@ class MigrationBlocked(StoreError):
     place (#26). The installer's gate normally prevents this ever happening."""
 
 
+def local_appdata():
+    """%LOCALAPPDATA%, which must be an absolute local path outside OneDrive.
+    Meetings must never end up in the current folder, a synced folder or a
+    network location because the variable is missing or redirected: refuse
+    instead of guessing."""
+    base = os.environ.get("LOCALAPPDATA", "")
+    path = Path(base)
+    if not base or not path.is_absolute() or base.startswith(("\\\\", "//")):
+        raise StoreError("Unminute cannot find this account's local app data folder "
+                         "(LOCALAPPDATA). Ask your IT team.")
+    resolved = os.path.normcase(os.path.abspath(base)).rstrip("\\/") + os.sep
+    for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        synced = os.environ.get(var, "")
+        if synced and resolved.startswith(os.path.normcase(os.path.abspath(synced))
+                                          .rstrip("\\/") + os.sep):
+            raise StoreError("This account's local app data folder is inside OneDrive. "
+                             "Unminute keeps meetings out of synced folders. Ask your IT team.")
+    return path
+
+
 def default_root():
-    return Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper" / "workspace"
+    return local_appdata() / "whisper" / "workspace"
 
 
 def new_id():
@@ -276,6 +296,9 @@ class Store:
             self.db.execute("PRAGMA foreign_keys=ON")
             # Deleted rows are overwritten, not just unlinked (#17 cleanup).
             self.db.execute("PRAGMA secure_delete=ON")
+            # Temporary tables and indices (VACUUM builds a copy of the whole
+            # database) stay in memory, never in %TEMP% outside the workspace.
+            self.db.execute("PRAGMA temp_store=MEMORY")
             self._migrate_if_needed()
             self.db.executescript(SCHEMA)       # outside any transaction; idempotent
             with self.tx() as db:

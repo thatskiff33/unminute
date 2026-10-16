@@ -40,7 +40,8 @@ class SetupTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.ws = Workspace(self.root / "ws", self.root / "models", start=False, battery=False)
+        self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
+                            allow_test_engines=True, battery=False)
         # Fake download process and an in-memory credential store.
         self.ws.downloads.target = fake_worker_engines.fake_download
         self.vault = {}

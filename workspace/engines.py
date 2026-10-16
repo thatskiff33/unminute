@@ -14,11 +14,19 @@ from asr_engines import ModelLoadError
 TEST_PREFIX = "test:"      # "test:module:function" loads a test engine factory
 
 
-def load_engine(name, cache_dir, threads):
+def _test_factory(name, allow_test):
+    """The factory named by a "test:module:function" engine. Only tests set
+    allow_test: otherwise any stored model name could import any module."""
+    if not allow_test:
+        raise ModelLoadError("Unknown speech model.")
+    module, func = name[len(TEST_PREFIX):].split(":")
+    return getattr(importlib.import_module(module), func)
+
+
+def load_engine(name, cache_dir, threads, allow_test=False):
     """Return a loaded engine with transcribe(waveform) -> (segments, duration)."""
     if name.startswith(TEST_PREFIX):
-        module, func = name[len(TEST_PREFIX):].split(":")
-        return getattr(importlib.import_module(module), func)(threads)
+        return _test_factory(name, allow_test)(threads)
 
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
@@ -53,7 +61,7 @@ class GpuUnavailable(RuntimeError):
     """The CUDA build or a usable NVIDIA card/driver is not available."""
 
 
-def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu"):
+def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allow_test=False):
     """Speaker separation over a meeting's decoded audio file (16 kHz float32).
     Returns (turns, exclusive_turns, device); turns are (start, end, label).
     Offline only: loads the hash-verified pyannote folder by path."""
@@ -63,10 +71,10 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu"):
     mm._mmap.close()                # release the file handle now (cleanup, #17)
     del mm
     if model.startswith(TEST_PREFIX):
-        module, func = model[len(TEST_PREFIX):].split(":")
-        result = getattr(importlib.import_module(module), func)(audio, hint)
+        factory = _test_factory(model, allow_test)
+        result = factory(audio, hint)
         if device == "cuda":              # tests: the fake reports where it "ran"
-            return result[0], result[1], getattr(importlib.import_module(module),
+            return result[0], result[1], getattr(importlib.import_module(factory.__module__),
                                                  "GPU_LABEL", "cuda")
         return result
 

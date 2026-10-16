@@ -34,7 +34,7 @@ class SpeakerTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.store = Store(root / "db.sqlite")
-        self.handle = WorkerHandle(root)
+        self.handle = WorkerHandle(root, allow_test_engines=True)
         self.audio = root / "audio.f32"
         np.zeros(60 * SR, dtype="<f4").tofile(self.audio)
         mid = self.store.create_meeting("t")

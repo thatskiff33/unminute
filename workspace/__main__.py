@@ -16,7 +16,6 @@
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -27,9 +26,21 @@ import offline_guard  # noqa: E402
 offline_guard.disable_telemetry()
 offline_guard.install()
 
+from workspace import credentials  # noqa: E402
+
+# A Hugging Face token the earlier app left in the user's environment is taken
+# out of this process's environment before anything starts, so no child
+# process (workers, WebView2, nvidia-smi) inherits it.
+credentials.adopt_earlier_token()
+
 APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1; kept from
                                                    # the earlier name so taskbar pins still group
-MODEL_CACHE = Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper-models"
+
+
+def model_cache():
+    """%LOCALAPPDATA%\\whisper-models (refuses a missing or synced location)."""
+    from workspace.store import local_appdata
+    return local_appdata() / "whisper-models"
 
 
 def package_version():
@@ -115,12 +126,11 @@ def main():
     from workspace.app import Workspace
     from workspace.store import StoreError
     try:
-        ws = Workspace(cache_dir=MODEL_CACHE)
+        ws = Workspace(cache_dir=model_cache())
     except StoreError as exc:
         # e.g. a workspace from a newer version, or one that cannot be migrated:
         # explain instead of disappearing (pythonw has no console).
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, str(exc), "Unminute", 0x10)
+        _message(str(exc))
         return 1
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),
@@ -189,10 +199,21 @@ def main():
             pass
     window.events.shown += never_block_shutdown
     try:
-        shell.run()
+        # The WebView2 profile lives inside the workspace (and is wiped at the
+        # next start if a crash left it), not in %TEMP%.
+        shell.run(storage_path=shell.storage_folder(ws.root))
+    except shell.ShellError as exc:
+        _message(str(exc))
+        return 1
     finally:
         ws.close()
     return 0
+
+
+def _message(text):
+    """A Windows message box: pythonw has no console to print to."""
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, text, "Unminute", 0x10)
 
 
 if __name__ == "__main__":

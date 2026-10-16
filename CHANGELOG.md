@@ -5,6 +5,16 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+Security hardening (#111, slice A2):
+
+- **Settings are checked when the app starts.** A value in `settings.json` that the app would not accept from Settings (for example an unknown speech model) is replaced by its default.
+- **The window refuses to open unsafely.** The app now stops with a message if Windows would fall back to the old Internet Explorer engine instead of WebView2, or if its window protections cannot be put in place.
+- **Tighter limits on what the page can ask for.** The page can show only the app's own screen, drag and drop accepts only files Windows reports as dropped, and calls with the wrong arguments are refused before they run.
+- **Less left behind.** The window's browser data is kept inside the workspace folder and cleared at the next start if the app did not close cleanly, and SQLite keeps its temporary data in memory rather than in the Windows temp folder.
+- **The handoff Save dialog starts in Documents** and suggests a file name with the meeting date only (`Meeting transcript YYYY-MM-DD.md`), so client names in titles do not end up in file names by default.
+- **A Hugging Face token left by the earlier app is no longer passed on** to the app's other processes. The "use the token from the earlier app" option still works.
+- **The app refuses a missing or synced app data folder** instead of falling back to the current folder.
+
 ## v0.4.3
 
 Safer recording. Install: download `Unminute-0.4.3.zip` and its `.sha256` file, then follow the README or docs/PACKAGING.md. An installed v0.2.x, v0.3.0 or v0.4.x updates and keeps your workspace.

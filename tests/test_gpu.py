@@ -47,7 +47,8 @@ def make_wheel(name, version, files):
 class DetectTests(unittest.TestCase):
     def run_smi(self, stdout, code=0):
         result = subprocess.CompletedProcess([], code, stdout=stdout, stderr="")
-        with mock.patch.object(gpu.subprocess, "run", return_value=result):
+        with mock.patch.object(gpu.subprocess, "run", return_value=result), \
+                mock.patch.object(gpu, "_nvidia_smi", return_value="nvidia-smi.exe"):
             return gpu.detect()
 
     def test_card_and_driver(self):
@@ -60,8 +61,11 @@ class DetectTests(unittest.TestCase):
 
     def test_no_card_or_no_driver(self):
         self.assertIsNone(self.run_smi("", code=9))
-        with mock.patch.object(gpu.subprocess, "run", side_effect=OSError):
+        with mock.patch.object(gpu.subprocess, "run", side_effect=OSError), \
+                mock.patch.object(gpu, "_nvidia_smi", return_value="nvidia-smi.exe"):
             self.assertIsNone(gpu.detect())
+        with mock.patch.object(gpu, "_nvidia_smi", return_value=None):
+            self.assertIsNone(gpu.detect())          # no driver installed
 
 
 class InstallTests(unittest.TestCase):
@@ -253,7 +257,8 @@ class WorkspaceGpuTests(unittest.TestCase):
         from workspace.app import Workspace
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+        self.ws = Workspace(root / "ws", root / "models", start=False,
+                            allow_test_engines=True, battery=False,
                             speaker_model="test:fake_worker_engines:fake_diarizer")
 
     def tearDown(self):

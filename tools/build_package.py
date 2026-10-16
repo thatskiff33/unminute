@@ -164,8 +164,11 @@ def copy_app(app):
     app.mkdir(parents=True)
     for name in APP_FILES:
         shutil.copy2(ROOT / name, app / name)
+    # The shell trial page (tools/webview_trial.py) is a development tool: it
+    # is left out so the package holds no page other than the app's own.
     shutil.copytree(ROOT / "workspace", app / "workspace",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "requirements.txt"))
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "requirements.txt",
+                                                  "trial.html", "trial.js", "trial.css"))
 
 
 def git_commit():

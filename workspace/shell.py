@@ -53,13 +53,59 @@ def _norm_url(uri):
     return urllib.parse.unquote(str(uri)).replace("\\", "/").lower()
 
 
-def _allowed(uri):
-    """Only the bundled UI folder may be shown; everything else is refused.
-    pywebview injects the bridge into whatever page is loaded, so a remote
-    page must never load. Both sides are percent-decoded, because Python and
-    Chromium encode characters such as ( ) ' ! differently."""
-    base = _norm_url(UI_DIR.as_uri()).rstrip("/") + "/"
-    return _norm_url(uri).startswith(base)
+def _allowed(uri, page="index.html"):
+    """Only the window's own bundled page may be shown; everything else is
+    refused, including other files in the UI folder. pywebview injects the
+    bridge into whatever page is loaded, so no other page must ever load. A
+    #fragment or ?query on the page itself is allowed. Both sides are
+    percent-decoded, because Python and Chromium encode characters such as
+    ( ) ' ! differently."""
+    target = _norm_url(uri).split("#", 1)[0].split("?", 1)[0]
+    return target == _norm_url(ui_url(page))
+
+
+class ShellError(RuntimeError):
+    """The window cannot be opened safely (message is safe to show)."""
+
+
+def _clean_dom_event(param):
+    """The only DOM events the app listens to are dragover and drop on the
+    document (workspace.api.enable_drop). Rebuild the event from the few
+    fields pywebview needs, so a page-supplied pywebviewFullPath never
+    survives: pywebview adds the real path only for files the native drop
+    handler saw. Returns None for anything else."""
+    if not isinstance(param, dict) or param.get("nodeId") != "document":
+        return None
+    event = param.get("event")
+    if not isinstance(event, dict) or event.get("type") not in ("dragover", "drop"):
+        return None
+    clean = {"type": event["type"]}
+    if event["type"] == "drop":
+        transfer = event.get("dataTransfer")
+        files = transfer.get("files") if isinstance(transfer, dict) else None
+        if not isinstance(files, list):
+            return None
+        clean["dataTransfer"] = {"files": [{"name": f["name"][:260]} for f in files[:100]
+                                           if isinstance(f, dict)
+                                           and isinstance(f.get("name"), str)]}
+    return {"event": clean, "nodeId": "document"}
+
+
+def _arguments_fit(window, func_name, param):
+    """True if the page's arguments bind to the bridge method's signature.
+    pywebview would otherwise call it, catch the TypeError and send the full
+    stack trace (with install paths) back to the page."""
+    import inspect
+    if func_name in _PYWEBVIEW_INTERNAL:
+        return True
+    func = getattr(getattr(window, "_js_api", None), func_name, None)
+    if func is None or not isinstance(param, (list, tuple)):
+        return False
+    try:
+        inspect.signature(func).bind(*param)
+    except TypeError:
+        return False
+    return True
 
 
 def install_dispatch_guard(allowed):
@@ -80,9 +126,20 @@ def install_dispatch_guard(allowed):
         if not isinstance(func_name, str) or func_name not in permitted:
             blocked_calls.append(str(func_name)[:80])
             return None
+        if func_name == "pywebviewEventHandler":
+            param = _clean_dom_event(param)
+            if param is None:
+                blocked_calls.append(func_name)
+                return None
+        elif window is not None and not _arguments_fit(window, func_name, param):
+            # Refused before pywebview calls it; the page's promise stays
+            # unresolved, which only a broken or hostile page would notice.
+            blocked_calls.append(f"{func_name}(arguments)")
+            return None
         return original(window, func_name, param, value_id)
 
     guarded.__wrapped__ = original
+    guarded.unminute_guard = True
     util.js_bridge_call = guarded
     backend = sys.modules.get("webview.platforms.edgechromium")
     if backend is not None:            # already imported: patch its reference too
@@ -118,15 +175,16 @@ def set_zoom(window, direction):
     return box["zoom"]
 
 
-def lock_navigation(window):
-    """Cancel any navigation outside the bundled UI (WebView2 NavigationStarting).
-    Attached at before_load, i.e. after the first (bundled) page navigation,
-    and stays attached to the control for every later navigation and reload."""
+def lock_navigation(window, page="index.html"):
+    """Cancel any navigation away from the window's bundled page (WebView2
+    NavigationStarting). Attached at before_load, i.e. after the first
+    (bundled) page navigation, and stays attached to the control for every
+    later navigation and reload."""
     control = window.native.browser.webview
 
     def on_navigation_starting(sender, args):
         uri = str(args.Uri)
-        if not _allowed(uri):
+        if not _allowed(uri, page):
             args.Cancel = True
             blocked_navigations.append(uri.split("?")[0][:200])
 
@@ -155,18 +213,92 @@ def create_window(bridge, title="Unminute", hidden=False, harden=True,
                                    # Ctrl+wheel zoom (#27); pywebview turns it off
                                    # by default. Ctrl+plus/minus/0: set_zoom().
                                    zoomable=True)
+    window.unminute_page = page
     window.events.before_load += lambda: _lock_once(window)
     return window
 
 
 def _lock_once(window):
-    if not getattr(window, "_nav_locked", False):
-        lock_navigation(window)
+    if getattr(window, "_nav_locked", False):
+        return
+    try:
+        lock_navigation(window, getattr(window, "unminute_page", "index.html"))
         window._nav_locked = True
+    except Exception:
+        # Without the lock any page could get the bridge: close instead.
+        blocked_navigations.append("navigation lock failed; window closed")
+        window.destroy()
 
 
-def run(func=None, args=None, debug=False):
+def check_backend():
+    """Fail closed before any window opens. pywebview silently falls back to
+    the old Internet Explorer engine (MSHTML) when it cannot find WebView2;
+    that engine ignores the page's Content-Security-Policy and has no
+    navigation lock. The dispatch guard must also be in place in the WebView2
+    backend, which imports the bridge entry point by name."""
+    import importlib
+    import sys
+
+    # webview/__init__ has a global named guilib that hides the module.
+    guilib = importlib.import_module("webview.guilib")
+    backend = guilib.initialize("edgechromium")
+    if getattr(backend, "renderer", None) != "edgechromium":
+        raise ShellError("Unminute needs the Microsoft Edge WebView2 Runtime, which was not "
+                         "found on this computer. Ask your IT team to install it.")
+    chromium = sys.modules.get("webview.platforms.edgechromium")
+    if not getattr(getattr(chromium, "js_bridge_call", None), "unminute_guard", False):
+        raise ShellError("Unminute could not secure its window and will not start. "
+                         "Reinstall it, or ask your IT team.")
+
+
+def storage_folder(root):
+    """A new, empty WebView2 profile folder inside the workspace, after
+    removing any left by an earlier run that did not close cleanly. In
+    private mode pywebview deletes the folder on a clean close; without this
+    a crash would leave it in %TEMP%, outside the workspace's own cleanup."""
+    import shutil
+    import uuid
+    base = Path(root) / "webview"
+    base.mkdir(parents=True, exist_ok=True)
+    for old in base.iterdir():
+        try:
+            if old.is_symlink() or not old.is_dir():
+                old.unlink()
+            else:
+                shutil.rmtree(old)       # a junction is unlinked, never followed
+        except OSError:
+            pass                         # still in use: removed at a later start
+    return base / uuid.uuid4().hex
+
+
+def documents_folder():
+    """The user's Documents folder (wherever Windows has it), or "" to let the
+    dialog choose. Used as the save dialog's starting folder, so a handoff is
+    not saved wherever a dialog was last pointed."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        guid = (ctypes.c_byte * 16).from_buffer_copy(
+            bytes.fromhex("d0 9a d3 fd 8f 23 af 46 ad b4 6c 85 48 03 69 c7".replace(" ", "")))
+        out = ctypes.c_wchar_p()
+        shell32 = ctypes.WinDLL("shell32")
+        ole32 = ctypes.WinDLL("ole32")
+        shell32.SHGetKnownFolderPath.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                                 wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out)) != 0:
+            return ""
+        try:
+            return out.value or ""
+        finally:
+            ole32.CoTaskMemFree(out)
+    except (AttributeError, OSError):
+        return ""
+
+
+def run(func=None, args=None, debug=False, storage_path=None):
     import webview
+    check_backend()
     webview.start(func, args, gui="edgechromium", http_server=False,
                   private_mode=True, debug=debug,
+                  storage_path=None if storage_path is None else str(storage_path),
                   icon=str(ICON) if ICON.is_file() else None)

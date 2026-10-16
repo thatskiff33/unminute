@@ -79,11 +79,31 @@ def site_dir(cache_dir):
     return component_dir(cache_dir) / "site"
 
 
+def _nvidia_smi():
+    """nvidia-smi from where the NVIDIA driver installs it, by absolute path
+    only: never found through PATH or the current folder, either of which
+    could make the app run a planted program at every start."""
+    import ctypes
+    try:
+        buf = ctypes.create_unicode_buffer(260)
+        n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260)
+        system32 = buf.value if 0 < n < 260 else None
+    except (AttributeError, OSError):
+        system32 = None
+    candidates = [os.path.join(system32, "nvidia-smi.exe")] if system32 else []
+    program_files = os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles")
+    if program_files:          # older drivers
+        candidates.append(os.path.join(program_files, "NVIDIA Corporation", "NVSMI",
+                                       "nvidia-smi.exe"))
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def detect():
     """The NVIDIA card and driver, from nvidia-smi (installed with the driver):
     {"name", "driver", "memory_mb", "driver_ok"} or None if there is none."""
-    exe = shutil.which("nvidia-smi") or os.path.join(
-        os.environ.get("SystemRoot", r"C:\Windows"), "System32", "nvidia-smi.exe")
+    exe = _nvidia_smi()
+    if exe is None:
+        return None
     try:
         out = subprocess.run([exe, "--query-gpu=name,driver_version,memory.total",
                               "--format=csv,noheader,nounits"], capture_output=True,
