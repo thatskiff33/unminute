@@ -67,7 +67,7 @@ def read_fragment(path):
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         raise ChangelogError(f"{FRAGMENTS}/{name}: not UTF-8 text") from None
-    lines = [line.rstrip() for line in _lines(text.lstrip("﻿"))]
+    lines = [line.rstrip() for line in _lines(text.lstrip("\ufeff"))]
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -112,7 +112,7 @@ def notes(root=ROOT):
 def _check_summary(summary):
     text = summary.strip()
     if "\n" in text or "\r" in text:
-        raise ChangelogError("The summary is one line")
+        raise ChangelogError("The summary must be one line")
     if HEADING.match(text):
         raise ChangelogError("The summary cannot be a '#' or '##' heading (it would end the "
                              "release notes)")

@@ -374,7 +374,7 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
                              "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
         # Invisible format characters (a right-to-left override) cannot disguise the name.
-        self.assertEqual(handoff.title_filename("Notes‮gnp.exe\x7f\x85", "x"),
+        self.assertEqual(handoff.title_filename("Notes\u202egnp.exe\x7f\x85", "x"),
                          "Notes gnp.exe - transcript.md")
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
 

@@ -112,12 +112,12 @@ class FragmentTests(unittest.TestCase):
         self.assertEqual(self.changelog(), "# Changelog\n\nIntro.\n\n## v0.1.0\n\n- **X.** Y.\n")
 
     def test_other_line_separators_are_left_alone(self):
-        (self.root / "CHANGELOG.md").write_bytes((HEAD + "Page\x0cbreak and   kept.\n")
+        (self.root / "CHANGELOG.md").write_bytes((HEAD + "Page\x0cbreak and \u2028 kept.\n")
                                                  .encode())
-        self.add("1-x.md", "- **X.** a b\n")
+        self.add("1-x.md", "- **X.** a\u2028b\n")
         changelog.release("v0.5.0", root=self.root)
-        self.assertIn("Page\x0cbreak and   kept.", self.changelog())
-        self.assertIn("- **X.** a b", self.changelog())
+        self.assertIn("Page\x0cbreak and \u2028 kept.", self.changelog())
+        self.assertIn("- **X.** a\u2028b", self.changelog())
 
     def test_release_refusals(self):
         with self.assertRaisesRegex(ChangelogError, "nothing to release"):
@@ -163,14 +163,14 @@ class FragmentTests(unittest.TestCase):
                 ("4-prose.md", "Just a sentence.\n", "bullet"),
                 ("5-group-only.md", "Security hardening:\n\n", "nothing under it"),
                 ("6-notes.txt", "- **X.** Y.\n", ".md files"),
-                ("7-bom-heading.md", "﻿## v9.9.9\n", "headings"),
+                ("7-bom-heading.md", "\ufeff## v9.9.9\n", "headings"),
                 ("8-trailing.md", "- **X.** Y.\n##\t\n", "headings")):
             self.add(name, text)
             with self.assertRaisesRegex(ChangelogError, re.escape(name) + ".*" + reason):
                 changelog.check(self.root)
             (self.root / "changelog.d" / name).unlink()
         self.add("9-subheading.md", "- **X.** Y.\n\n### Details\n\n- more\n")   # level 3 is fine
-        self.add("10-bom.md", "﻿- **X.** Y.\n")
+        self.add("10-bom.md", "\ufeff- **X.** Y.\n")
         changelog.check(self.root)
 
     def test_command_line(self):
