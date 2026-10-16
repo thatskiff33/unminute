@@ -164,10 +164,9 @@ class StorageFolderTests(unittest.TestCase):
             (precious / "client.docx").write_text("keep me")
             ws = Path(tmp) / "ws"
             ws.mkdir()
-            for link, target in ((ws / "webview", precious),):
-                r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                                   capture_output=True, text=True)
-                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(ws / "webview"),
+                                str(precious)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             shell.storage_folder(ws)                       # "webview" itself is a junction
             self.assertTrue((precious / "client.docx").exists())
             self.assertTrue((precious / "inner").is_dir())
@@ -229,8 +228,12 @@ class StartUpTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows named mutex")
     def test_only_one_copy_holds_the_workspace(self):
-        r = self.run_main("import workspace.__main__ as m; a = m._single_instance();"
-                          "b = m._single_instance(); print(a is not None, b is None)")
+        # A unique name: an installed, running copy of the app holds the real one.
+        name = f"Local\\Unminute.Test.{os.getpid()}"
+        r = self.run_main("import workspace.__main__ as m; "
+                          f"a = m._single_instance({name!r}); "
+                          f"b = m._single_instance({name!r}); "
+                          "print(a is not None, b is None)")
         self.assertEqual(r.stdout.strip(), "True True", r.stderr)
 
 
@@ -257,6 +260,22 @@ class WorkspaceLocationTests(unittest.TestCase):
                          "OneDriveCommercial": "C:\\Users\\a\\OneDrive - Firm"})
         self.assertEqual(ok, Path("C:\\Users\\a\\AppData\\Local"))
 
+    @unittest.skipUnless(os.name == "nt", "Windows paths")
+    def test_volume_paths_are_local_and_unc_paths_are_not(self):
+        from workspace import store
+        self.assertFalse(store._network_path("\\\\?\\Volume{1234}\\Users\\a\\AppData"))
+        self.assertFalse(store._network_path("C:\\Users\\a\\AppData\\Local"))
+        for unc in ("\\\\server\\share\\a", "\\\\?\\UNC\\server\\share\\a", "//server/share"):
+            self.assertTrue(store._network_path(unc), unc)
+
+    @unittest.skipUnless(os.name == "nt", "Windows paths")
+    def test_a_onedrive_variable_at_the_profile_or_a_drive_root_is_ignored(self):
+        local = "C:\\Users\\a\\AppData\\Local"
+        for synced in ("C:\\Users\\a", "C:\\Users\\a\\", "C:\\", "C:\\Users"):
+            got = self.check({"LOCALAPPDATA": local, "OneDrive": synced,
+                              "USERPROFILE": "C:\\Users\\a"})
+            self.assertEqual(got, Path(local), synced)
+
     @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
     def test_a_junction_into_onedrive_is_refused(self):
         import subprocess
@@ -274,6 +293,7 @@ class WorkspaceLocationTests(unittest.TestCase):
             finally:
                 os.rmdir(link)
 
+    @unittest.skipUnless(os.name == "nt", "Windows paths")
     def test_a_mapped_network_drive_is_refused(self):
         from workspace import store
         from workspace.store import StoreError

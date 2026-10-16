@@ -10,6 +10,7 @@
 #   --version     the installed package version
 #   --status      workspace contents as JSON counts (meetings, holds, pending
 #                 cleanup); used by installers and updates (#26). No content.
+#                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency and check the offline guard
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
@@ -226,17 +227,23 @@ def main():
     return 0
 
 
-def _single_instance():
+MUTEX_NAME = "Local\\Unminute.Workspace"
+
+
+def _single_instance(name=MUTEX_NAME):
     """Hold a named mutex for the life of the process, so a second copy never
     opens the same workspace (or clears the first copy's window data). Returns
     the handle, or None if another copy holds it. If Windows cannot create the
-    mutex at all, the app still starts."""
+    mutex for another reason, the app still starts."""
     import ctypes
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
-    handle = kernel32.CreateMutexW(None, False, "Local\\Unminute.Workspace")
-    if handle and ctypes.get_last_error() == 183:      # ERROR_ALREADY_EXISTS
+    handle = kernel32.CreateMutexW(None, False, name)
+    error = ctypes.get_last_error()
+    if handle and error == 183:                    # ERROR_ALREADY_EXISTS
         kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+    if not handle and error == 5:                  # held by a copy run as administrator
         return None
     return handle or True
 

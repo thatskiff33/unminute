@@ -262,17 +262,45 @@ def local_appdata():
         raise missing
     # Compare real paths: short (8.3) names and junctions must not hide that
     # the folder is inside OneDrive or on a network share.
-    real = os.path.realpath(base)
-    if real.startswith(("\\\\", "//")) or _remote_drive(real):
+    real = _real(base)
+    if _network_path(real) or _remote_drive(real):
         raise StoreError("This account's local app data folder is on a network drive. "
                          "Unminute keeps meetings on this computer. Ask your IT team.")
     resolved = _folder_key(real)
+    profile = os.environ.get("USERPROFILE", "")
     for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
         synced = os.environ.get(var, "")
-        if synced and resolved.startswith(_folder_key(os.path.realpath(synced))):
+        if not synced or not os.path.isabs(synced):
+            continue
+        synced_key = _folder_key(_real(synced))
+        # A variable pointing at a drive root, or at or above the user's
+        # profile, is a misconfiguration, not a synced AppData: ignore it
+        # rather than refuse every normal setup.
+        if os.path.dirname(synced_key.rstrip("\\/")) == synced_key.rstrip("\\/") or (
+                profile and _folder_key(_real(profile)).startswith(synced_key)):
+            continue
+        if resolved.startswith(synced_key):
             raise StoreError("This account's local app data folder is inside OneDrive. "
                              "Unminute keeps meetings out of synced folders. Ask your IT team.")
     return path
+
+
+def _real(path):
+    try:
+        return os.path.realpath(path)
+    except OSError:              # an error realpath does not handle itself
+        return os.path.abspath(path)
+
+
+def _network_path(path):
+    """\\\\server\\share and \\\\?\\UNC\\ paths; not local device or volume
+    paths such as \\\\?\\Volume{...} (virtual desktop profile disks)."""
+    low = path.replace("/", "\\").lower()
+    if low.startswith("\\\\?\\unc\\") or low.startswith("\\\\.\\unc\\"):
+        return True
+    if low.startswith("\\\\?\\") or low.startswith("\\\\.\\"):
+        return False
+    return low.startswith("\\\\")
 
 
 def _folder_key(path):
