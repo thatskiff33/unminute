@@ -2,12 +2,17 @@
 # Release notes from changelog fragments. Each pull request adds its own file
 # to changelog.d/ instead of editing CHANGELOG.md, so open pull requests never
 # conflict over the same lines. When a release is prepared, this script moves
-# the fragments into a "## vX.Y.Z" section of CHANGELOG.md (the section the
-# Release workflow reads) and deletes them.
+# the fragments into a dated "## vX.Y.Z (YYYY-MM-DD)" section of CHANGELOG.md
+# (the section the Release workflow reads), sets VERSION to X.Y.Z (or
+# X.Y.Z-preview.N), and deletes
+# the fragments. VERSION is the single source of the version: the build reads
+# it, and the Release workflow refuses a tag that differs (#131).
 #
 #   python tools/changelog.py --check                 check the fragments
 #   python tools/changelog.py --preview               print the unreleased notes
-#   python tools/changelog.py vX.Y.Z [--summary TEXT] write the section, delete the fragments
+#   python tools/changelog.py vX.Y.Z [--summary TEXT] [--date YYYY-MM-DD]
+#                                                     write the section and VERSION,
+#                                                     delete the fragments
 #
 # A fragment is Markdown: one or more "- **Summary.** Detail." bullets, and
 # optionally a first line naming a group, ending with a colon (for example
@@ -17,6 +22,7 @@
 # explains the format and is not a fragment. Stdlib only.
 
 import argparse
+import datetime
 import re
 import sys
 from pathlib import Path
@@ -24,6 +30,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRAGMENTS = "changelog.d"
 CHANGELOG = "CHANGELOG.md"
+VERSION_FILE = "VERSION"
+DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 NOT_FRAGMENTS = {"readme.md"}
 # The tags the Release workflow accepts (.github/workflows/release.yml), ASCII
 # digits only as there.
@@ -119,11 +127,26 @@ def _check_summary(summary):
     return text
 
 
-def release(version, summary=None, root=ROOT):
-    """Write "## <version>" with the fragments' notes into CHANGELOG.md, above
-    the newest version, then delete the fragments. Returns the section."""
+def is_heading(line, version):
+    """Is this line the changelog heading for version? Headings are
+    "## vX.Y.Z (YYYY-MM-DD)"; releases before #131 have no date."""
+    return line == f"## {version}" or line.startswith(f"## {version} (")
+
+
+def release(version, summary=None, root=ROOT, date=None):
+    """Write "## <version> (<date>)" with the fragments' notes into CHANGELOG.md,
+    above the newest version, set VERSION, then delete the fragments. date is
+    YYYY-MM-DD, today by default. Returns the section."""
     if not VERSION.fullmatch(version):
         raise ChangelogError(f"'{version}' is not vX.Y.Z or vX.Y.Z-preview.N")
+    if date is None:
+        date = datetime.date.today().isoformat()
+    try:
+        if not DATE.fullmatch(date):
+            raise ValueError(date)
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        raise ChangelogError(f"'{date}' is not a date (YYYY-MM-DD)") from None
     summary = _check_summary(summary) if summary else None
     path = Path(root) / CHANGELOG
     text = path.read_bytes().decode("utf-8")      # bytes: keep the file's own line endings
@@ -131,9 +154,9 @@ def release(version, summary=None, root=ROOT):
     lines = _lines(text)
     if lines and lines[-1] == "":
         lines.pop()                               # the final newline is added back below
-    heading = f"## {version}"
-    if heading in lines:
-        raise ChangelogError(f"{CHANGELOG} already has '{heading}'")
+    heading = f"## {version} ({date})"
+    if any(is_heading(line, version) for line in lines):
+        raise ChangelogError(f"{CHANGELOG} already has a '## {version}' section")
     if "## Unreleased" in lines:
         raise ChangelogError(f"{CHANGELOG} still has '## Unreleased': move its entries into "
                              f"{FRAGMENTS}/ first")
@@ -151,6 +174,12 @@ def release(version, summary=None, root=ROOT):
             section.insert(0, "")
     out = lines[:at] + section + lines[at:]
     path.write_bytes((newline.join(out) + newline).encode("utf-8"))
+    try:
+        (Path(root) / VERSION_FILE).write_bytes((version[1:] + "\n").encode("ascii"))
+    except OSError as exc:
+        raise ChangelogError(f"{CHANGELOG} has '{heading}', but {VERSION_FILE} could not be "
+                             f"written ({exc}). Set it to {version[1:]} by hand, then delete "
+                             f"the fragments in {FRAGMENTS}/.") from None
     left = []
     for fragment in fragment_files(root):
         try:
@@ -158,7 +187,8 @@ def release(version, summary=None, root=ROOT):
         except OSError:
             left.append(fragment.name)            # keep going: delete all that can be
     if left:
-        raise ChangelogError(f"{CHANGELOG} has '{heading}', but these fragments could not be "
+        raise ChangelogError(f"{CHANGELOG} has '{heading}' and {VERSION_FILE} is set, but "
+                             "these fragments could not be "
                              f"deleted (open in another program?): {', '.join(left)}. Delete "
                              "them by hand before committing, or they are released again.")
     return "\n".join(section)
@@ -172,6 +202,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Release notes from changelog.d fragments.")
     parser.add_argument("version", nargs="?", help="vX.Y.Z or vX.Y.Z-preview.N to release")
     parser.add_argument("--summary", help="a one-line summary under the version heading")
+    parser.add_argument("--date", help="the release date, YYYY-MM-DD (default: today)")
     parser.add_argument("--preview", action="store_true", help="print the unreleased notes")
     parser.add_argument("--check", action="store_true", help="check the fragments only")
     args = parser.parse_args(argv)
@@ -181,9 +212,9 @@ def main(argv=None):
         elif args.preview:
             print(notes() or f"(no fragments in {FRAGMENTS}/)")
         elif args.version:
-            print(release(args.version, args.summary))
-            print(f"\nWritten to {CHANGELOG}; the fragments were deleted. Review, commit both, "
-                  "and merge before tagging.")
+            print(release(args.version, args.summary, date=args.date))
+            print(f"\nWritten to {CHANGELOG} and {VERSION_FILE}; the fragments were deleted. "
+                  "Review, commit them, and merge before tagging.")
         else:
             parser.error("give a version, --preview or --check")
     except ChangelogError as exc:

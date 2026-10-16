@@ -1,7 +1,9 @@
 # tools/build_package.py
 # Build the preassembled Windows package for Unminute (#11).
 #
-#   python tools/build_package.py --version 0.2.0 [--out dist] [--cache DIR]
+#   python tools/build_package.py [--version X.Y.Z] [--out dist] [--cache DIR]
+#
+# The version comes from the VERSION file (#131); --version, if given, must match it.
 #
 # Run on a build machine (this is a deliberate download step; end users never
 # assemble anything). The result is one versioned zip plus a .sha256 file:
@@ -19,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -249,13 +252,34 @@ def build(version, out, cache):
         shutil.rmtree(work, ignore_errors=True)
 
 
+VERSION_SHAPE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?")
+
+
+def release_version(asked=None, root=ROOT):
+    """The version to build: VERSION's, which --version may repeat but not change."""
+    path = Path(root) / "VERSION"
+    try:
+        version = path.read_text(encoding="utf-8-sig").strip()   # a byte-order mark is dropped
+    except OSError as exc:
+        raise SystemExit(f"Cannot read {path} ({exc}). It is set by tools/changelog.py "
+                         "when a release is prepared.") from None
+    # The installer accepts version names up to 16 characters (packaging/install.ps1).
+    if not VERSION_SHAPE.fullmatch(version) or len(version) > 16:
+        raise SystemExit(f"VERSION holds {version!r}, not X.Y.Z or X.Y.Z-preview.N "
+                         "(16 characters at most).")
+    if asked is not None and asked != version:
+        raise SystemExit(f"--version {asked} does not match VERSION ({version}). "
+                         "VERSION is set by tools/changelog.py when a release is prepared.")
+    return version
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--version", required=True)
+    ap.add_argument("--version", help="must match the VERSION file, if given")
     ap.add_argument("--out", default=str(ROOT / "dist"))
     ap.add_argument("--cache", default=str(Path(tempfile.gettempdir()) / "wwbuild-cache"))
     a = ap.parse_args()
-    build(a.version, Path(a.out), Path(a.cache))
+    build(release_version(a.version), Path(a.out), Path(a.cache))
 
 
 if __name__ == "__main__":

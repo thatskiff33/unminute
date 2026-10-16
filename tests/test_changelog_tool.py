@@ -23,11 +23,11 @@ HEAD = INTRO + "## v0.4.3\n\n- **Older.** Kept.\n"
 
 
 def workflow_notes(text, version):
-    """The Release workflow's awk, line for line: lines after '## <tag>' up to
-    the next line starting '## '."""
+    """The Release workflow's awk, line for line: lines after the dated heading
+    '## <tag> (' up to the next line starting '## '."""
     out, on = [], False
     for line in text.replace("\r\n", "\n").split("\n"):
-        if line == f"## {version}":
+        if line.startswith(f"## {version} ("):
             on = True
             continue
         if on and line.startswith("## "):
@@ -45,10 +45,13 @@ class RepositoryFragmentsTests(unittest.TestCase):
         lines = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8").splitlines()
         self.assertNotIn("## Unreleased", lines)
 
-    def test_workflow_still_reads_the_version_heading_exactly(self):
-        # tools/changelog.py writes "## vX.Y.Z"; the workflow must look for that.
+    def test_workflow_reads_the_dated_version_heading(self):
+        # tools/changelog.py writes "## vX.Y.Z (YYYY-MM-DD)"; the workflow's awk
+        # (mirrored by workflow_notes above) takes only that dated heading.
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn('awk -v h="## $TAG"', workflow)
+        self.assertIn('index($0, h " (") == 1 {on=1; next}', workflow)
+        self.assertNotIn("$0 == h", workflow)
         self.assertIn("CHANGELOG.md", workflow)
 
 
@@ -85,31 +88,38 @@ class FragmentTests(unittest.TestCase):
     def test_release_writes_the_section_the_workflow_reads(self):
         self.add("117-skip.md", "- **Skip speaker identification.** For one or two people.\n")
         self.add("111-a5.md", "Security hardening (#111, slice A5):\n\n- **Policy.** Managed.\n")
-        changelog.release("v0.5.0", "Managed settings for IT.", root=self.root)
+        changelog.release("v0.5.0", "Managed settings for IT.", root=self.root,
+                          date="2026-10-20")
         self.assertEqual(self.changelog(), INTRO + (
-            "## v0.5.0\n\nManaged settings for IT.\n\n"
+            "## v0.5.0 (2026-10-20)\n\nManaged settings for IT.\n\n"
             "- **Skip speaker identification.** For one or two people.\n\n"
             "Security hardening (#111, slice A5):\n\n- **Policy.** Managed.\n\n"
             "## v0.4.3\n\n- **Older.** Kept.\n"))
         self.assertIn("- **Policy.** Managed.", workflow_notes(self.changelog(), "v0.5.0"))
-        self.assertEqual(workflow_notes(self.changelog(), "v0.4.3"), "\n- **Older.** Kept.\n")
+        # v0.4.3 has an undated heading from before #131: it was released already,
+        # and the workflow reads only dated headings.
+        self.assertEqual(workflow_notes(self.changelog(), "v0.4.3"), "")
         self.assertEqual([p.name for p in (self.root / "changelog.d").iterdir()], [])
+        self.assertEqual((self.root / "VERSION").read_bytes(), b"0.5.0\n")
 
     def test_release_keeps_crlf_endings_and_the_readme(self):
         (self.root / "CHANGELOG.md").write_bytes(HEAD.replace("\n", "\r\n").encode())
         self.add("README.md", "Format notes.\n")
         self.add("1-x.md", "- **X.** Y.\n")
-        changelog.release("v0.5.0-preview.1", root=self.root)
-        self.assertEqual(self.changelog(), (INTRO + "## v0.5.0-preview.1\n\n- **X.** Y.\n\n"
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        self.assertEqual(self.changelog(), (INTRO + "## v0.5.0-preview.1 (2026-10-20)\n\n"
+                                            "- **X.** Y.\n\n"
                                             "## v0.4.3\n\n- **Older.** Kept.\n")
                          .replace("\n", "\r\n"))
         self.assertTrue((self.root / "changelog.d" / "README.md").exists())
+        self.assertEqual((self.root / "VERSION").read_bytes(), b"0.5.0-preview.1\n")
 
     def test_a_changelog_without_versions_gets_the_section_at_the_end(self):
         (self.root / "CHANGELOG.md").write_bytes(b"# Changelog\n\nIntro.\n")
         self.add("1-x.md", "- **X.** Y.\n")
-        changelog.release("v0.1.0", root=self.root)
-        self.assertEqual(self.changelog(), "# Changelog\n\nIntro.\n\n## v0.1.0\n\n- **X.** Y.\n")
+        changelog.release("v0.1.0", root=self.root, date="2026-10-20")
+        self.assertEqual(self.changelog(),
+                         "# Changelog\n\nIntro.\n\n## v0.1.0 (2026-10-20)\n\n- **X.** Y.\n")
 
     def test_other_line_separators_are_left_alone(self):
         (self.root / "CHANGELOG.md").write_bytes((HEAD + "Page\x0cbreak and \u2028 kept.\n")
@@ -131,7 +141,16 @@ class FragmentTests(unittest.TestCase):
             with self.assertRaisesRegex(ChangelogError, reason):
                 changelog.release("v0.5.0", summary, root=self.root)
         with self.assertRaisesRegex(ChangelogError, "already has"):
-            changelog.release("v0.4.3", root=self.root)
+            changelog.release("v0.4.3", root=self.root)          # undated, from before #131
+        for bad in ("2026-13-01", "20-10-2026", "2026-10-20 ", "today", ""):
+            with self.assertRaisesRegex(ChangelogError, "not a date"):
+                changelog.release("v0.5.0", root=self.root, date=bad)
+        (self.root / "CHANGELOG.md").write_text(
+            HEAD.replace("## v0.4.3", "## v0.4.4 (2026-10-01)\n\n- **N.** M.\n\n## v0.4.3"),
+            encoding="utf-8")
+        with self.assertRaisesRegex(ChangelogError, "already has"):
+            changelog.release("v0.4.4", root=self.root)          # dated
+        self.assertFalse((self.root / "VERSION").exists())       # nothing written on refusal
         (self.root / "CHANGELOG.md").write_text(HEAD.replace("## v0.4.3", "## Unreleased\n\n"
                                                              "- old\n\n## v0.4.3"),
                                                 encoding="utf-8")

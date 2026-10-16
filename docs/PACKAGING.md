@@ -32,8 +32,10 @@ Users never need Python, Git, FFmpeg or GPU tools.
 On a Windows build machine with Python 3.12 and network access:
 
 ```
-python tools/build_package.py --version 0.2.0 --out dist
+python tools/build_package.py --out dist
 ```
+
+The version comes from the `VERSION` file, which `tools/changelog.py` sets when a release is prepared (see [RELEASING.md](RELEASING.md)). A `--version` that differs from it is refused.
 
 The build:
 
