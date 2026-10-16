@@ -2282,7 +2282,9 @@ window.addEventListener("error", (e) => reportUiError("error", e.lineno, e.colno
 window.addEventListener("unhandledrejection", () => reportUiError("rejection", 0, 0));
 window.addEventListener("pywebviewready", () => {
   bridgeReady = true;
-  if (earlyError) reportUiError(...earlyError);
+  const early = earlyError;
+  earlyError = null;
+  if (early) reportUiError(...early);
 });
 
 function wire() {

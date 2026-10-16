@@ -77,15 +77,18 @@ def _pattern(regex):
 
 
 def _frames(value):
+    def text(v, regex):
+        return v if isinstance(v, str) and regex.fullmatch(v) and not SECRET.search(v) else "?"
     out = []
     for item in list(value)[:40] if isinstance(value, (list, tuple)) else []:
         try:
             file, line, func = item
         except (TypeError, ValueError):
             continue
-        out.append([file if isinstance(file, str) and FRAME_FILE.fullmatch(file) else "?",
-                    line if isinstance(line, int) and not isinstance(line, bool) else 0,
-                    func if isinstance(func, str) and FUNC.fullmatch(func) else "?"])
+        out.append([text(file, FRAME_FILE),
+                    line if isinstance(line, int) and not isinstance(line, bool)
+                    and 0 <= line < BIG else 0,
+                    text(func, FUNC)])
     return out
 
 

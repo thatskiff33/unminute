@@ -372,7 +372,8 @@ class SharingTests(unittest.TestCase):
                  "area": f"C:/Users/{MARKER}", "log": MARKER, MARKER: 1, "error": token,
                  "count": 10 ** 40, "line": float("nan"),
                  "frames": [[f"C:/Users/{MARKER}/x.py", 1, "run"],
-                            [f"Users/{MARKER}/Clients/notes.txt", 2, "run"]]},
+                            [f"Users/{MARKER}/Clients/notes.txt", 2, "run"],
+                            [f"{token}/x.py", 10 ** 15, token]]},
                 {"t": "2020-01-01T00:00:01Z", "kind": MARKER, "code": "U-ABCDEF"},
                 {"t": MARKER, "kind": "crash"},                     # no valid time
             ):
@@ -388,7 +389,8 @@ class SharingTests(unittest.TestCase):
                                        "frames"})
         self.assertEqual((edited["log"], edited["area"], edited["error"], edited["count"],
                           edited["line"]), ("app", "?", "?", "?", "?"))
-        self.assertEqual([f[0] for f in edited["frames"]], ["?", "?"])
+        self.assertEqual([f[0] for f in edited["frames"]], ["?", "?", "?"])
+        self.assertEqual(edited["frames"][2][1:], [0, "?"])     # line bounded, no token
         self.assertNotIn(MARKER, json.dumps(shared))
         self.assertNotIn(token, json.dumps(shared))
         self.assertEqual(diag.recent_crashes(log.folder), 0)   # undated: not counted
@@ -396,12 +398,16 @@ class SharingTests(unittest.TestCase):
     def test_shared_records_read_no_more_than_a_log_can_hold(self):
         log = self.ws.log
         log.folder.mkdir(exist_ok=True)
+        early = json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "timing"})
+        part = json.dumps({"t": "2020-01-01T00:00:01Z", "kind": "stop"})   # the read starts here
+        last = json.dumps({"t": "2020-01-01T00:00:02Z", "kind": "start"})
         with mock.patch.object(diag, "MAX_BYTES", 1000):
-            with open(log.path, "w", encoding="ascii") as f:
-                f.write(json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "stop"}) + "\n")
-                f.write(json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "timing"}) + "\n")
-                f.write("x" * 5000 + "\n")              # beyond what a log can hold
-                f.write(json.dumps({"t": "2020-01-01T00:00:01Z", "kind": "start"}) + "\n")
+            tail = 2 * diag.MAX_BYTES                   # the most a log can hold
+            last += " " * (tail - len(part) - 1 - len(last) - 1)
+            with open(log.path, "w", encoding="ascii", newline="\n") as f:
+                # Beyond the tail: two whole records, then a line that the
+                # read starts part way through, where it happens to parse.
+                f.write(f"{early}\n{early}\n{'x' * 5000}{part}\n{last}\n")
             self.assertEqual([r["kind"] for r in diag.shareable_records(log.folder)],
                              ["start"])
 
@@ -535,10 +541,15 @@ class SharingTests(unittest.TestCase):
         with mock.patch.object(main, "_app_running", return_value=False):   # another session
             report = main.health(self.ws.root)
             self.assertEqual((report["running"], report["last_run"]), (True, "clean"))
-        child = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
-                               capture_output=True, text=True, check=True)
-        marker.write_text(json.dumps({"pid": int(child.stdout), "created": diag.process_created()}))
-        self.assertFalse(diag.run_owner_alive(marker))  # ended
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            owner = {"pid": child.pid, "created": diag.process_created(child.pid)}
+            marker.write_text(json.dumps(owner))
+            self.assertTrue(diag.run_owner_alive(marker))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(diag.run_owner_alive(marker))  # the same process, ended
         self.ws.log.close_run()
 
 
