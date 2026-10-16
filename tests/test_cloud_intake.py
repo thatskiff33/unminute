@@ -123,7 +123,7 @@ class AuthorityFlowTests(unittest.TestCase):
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             fid = ws.add_watched_folder(str(folder), False)
             if authority:
-                ws.set_folder_authority(fid, delete_originals=True)
+                ws.set_folder_authority(fid, delete_originals=True, confirmed=True)
             original = wav(folder / "Synthetic.wav", seconds=6, seed=21)
             ws._import_one(original, fid)
             mid = ws.meetings()[0]["id"]
@@ -163,7 +163,7 @@ class AuthorityFlowTests(unittest.TestCase):
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             pid = ws.add_watched_folder(str(parent), False)
             cid = ws.add_watched_folder(str(child), False)
-            ws.set_folder_authority(pid, delete_originals=True)    # parent allowed
+            ws.set_folder_authority(pid, delete_originals=True, confirmed=True)    # parent allowed
             original = wav(child / "Board.wav", seconds=6, seed=23)
             ws._import_one(original, cid)                           # came from the child
             mid = ws.meetings()[0]["id"]

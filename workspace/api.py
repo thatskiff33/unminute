@@ -11,6 +11,7 @@
 
 import base64
 import threading
+import time
 
 from workspace import consent
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
@@ -70,24 +71,34 @@ def _report_id(value):
 
 
 CANCELLED = {"cancelled": True}           # the person chose No in a Windows confirmation
+# After a No, the same question is not asked again for this long: a page
+# cannot reopen it straight away until someone clicks Yes.
+DECLINE_PAUSE_S = 3.0
 
 
-def make_api(ws, get_window=lambda: None, confirm=None):
+def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_PAUSE_S):
     """Return the js_api facade for Workspace `ws`. `get_window()` returns the
     pywebview window (for the native file dialog). `confirm(title, text)` asks
     a Yes/No question outside the page (tests pass their own); by default a
-    Windows message box, and No when there is no window."""
+    Windows dialog, and No when there is no window."""
+    declined = {}                         # question title -> when it was last answered No
 
     def ask(title, text):
+        if time.monotonic() - declined.get(title, float("-inf")) < decline_pause_s:
+            return False
         if confirm is not None:
-            return bool(confirm(title, text))
-        window = get_window()
-        if window is None:
-            return False                  # no window to own the question: not confirmed
-        from workspace import shell
-        return shell.native_confirm(window, title, text)
+            answer = bool(confirm(title, text))
+        else:
+            window = get_window()
+            if window is None:
+                return False              # no window to own the question: not confirmed
+            from workspace import shell
+            answer = shell.native_confirm(window, title, text)
+        if not answer:
+            declined[title] = time.monotonic()
+        return answer
 
-    def indicate(recording):
+    def indicate(recording):                # called by the Workspace, never by the page
         window = get_window()
         if window is not None:
             from workspace import shell
@@ -284,11 +295,16 @@ def make_api(ws, get_window=lambda: None, confirm=None):
 
     def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
         def run():
-            # Granting deletion needs a Windows confirmation the page cannot give.
-            # Checked first, so a refused request never shows the question.
-            if delete_originals is True and ws.may_grant_deletion(fid):
-                if not ask(consent.DELETE_ORIGINALS_TITLE, consent.DELETE_ORIGINALS_TEXT):
-                    return CANCELLED
+            # Granting deletion needs a Windows confirmation the page cannot give,
+            # naming the folder from the app's records. A refused request (bad id,
+            # unknown folder, policy) never shows the question.
+            if delete_originals is True:
+                folder = ws.deletion_grant_folder(fid)
+                if folder is not None:
+                    if not ask(consent.DELETE_ORIGINALS_TITLE,
+                               consent.delete_originals_text(folder)):
+                        return CANCELLED
+                    return ws.set_folder_authority(fid, True, fetch_cloud, confirmed=True)
             return ws.set_folder_authority(fid, delete_originals, fetch_cloud)
         return _safe(run)
 
@@ -312,7 +328,7 @@ def make_api(ws, get_window=lambda: None, confirm=None):
     def start_recording(self, device, name):
         def run():
             index, label = _int(device, 0, 10_000), _device_name(name)
-            ws.check_can_record()             # a refused request never shows the question
+            ws.check_can_record(index, label)  # a refused request never shows the question
             record = None
             if ws.consent_required():
                 if not ask(consent.RECORDING_TITLE, consent.RECORDING_TEXT):
@@ -347,8 +363,8 @@ def make_api(ws, get_window=lambda: None, confirm=None):
 
     def discard_meeting(self, mid):
         def run():
-            title = ws.meeting_title(mid)     # also checks the meeting exists
-            if not ask(consent.DISCARD_TITLE, consent.discard_text(title)):
+            title, imported_at = ws.meeting_for_discard(mid)   # also checks it exists
+            if not ask(consent.DISCARD_TITLE, consent.discard_text(title, imported_at)):
                 return CANCELLED
             return ws.discard_meeting(mid)
         return _safe(run)

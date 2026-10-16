@@ -334,10 +334,15 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.recording_indicator = shown.append
         self.ws.start_recording(3, consent=CONSENT)
         folder = self.ws._recording.folder
-        self.assertEqual(recorder.read_journal(folder)["consent"], CONSENT)
+        self.assertEqual(recorder.read_journal(folder)["consent"], CONSENT)   # also after a crash
         self.assertEqual(shown, [True])
+        self.holder["stream"].feed(4)
         self.ws.stop_recording()
         self.assertEqual(shown, [True, False])
+        self.assertTrue(self.ws.wait_idle(120))
+        [m] = self.ws.meetings()                       # kept with the imported meeting
+        sidecar = json.loads((self.ws.media / m["id"] / "recording.json").read_text("utf-8"))
+        self.assertEqual(sidecar["consent"], CONSENT)
 
     def test_policy_can_turn_the_confirmation_off(self):
         self.ws.close()
@@ -350,15 +355,26 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.stop_recording()
 
     def test_the_indicator_follows_every_way_a_recording_ends(self):
+        from workspace import policy
         self.ws.settings.update(microphone=True)
         self.ws.start()
         shown = []
         self.ws.recording_indicator = shown.append
         self.ws.start_recording(3, consent=CONSENT)
-        self.ws.discard_recording()
+        self.ws.discard_recording()                     # discarded
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._recording._device_lost()               # stops itself (microphone lost)
+        deadline = time.time() + 10
+        while self.ws._recording is not None and time.time() < deadline:
+            time.sleep(0.05)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.policy = policy.PolicySource(               # IT turns recording off
+            reader=lambda: ({"AllowMicrophoneRecording": False}, ()))
+        self.ws._policy_tick()
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
         self.ws.start_recording(3, consent=CONSENT)
         self.ws.close()                                 # saved at close
-        self.assertEqual(shown, [True, False, True, False])
+        self.assertEqual(shown, [True, False] * 4)
 
         def broken(on):
             raise RuntimeError("window gone")

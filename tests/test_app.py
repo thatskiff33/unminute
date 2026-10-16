@@ -892,7 +892,7 @@ class NativeConfirmationTests(unittest.TestCase):
         def confirm(title, text):
             self.asked.append((title, text))
             return self.answer
-        return api.make_api(self.ws, confirm=confirm, **kw)
+        return api.make_api(self.ws, confirm=confirm, **{"decline_pause_s": 0, **kw})
 
     def test_recording_asks_first_and_passes_the_record_on(self):
         from unittest import mock
@@ -933,33 +933,79 @@ class NativeConfirmationTests(unittest.TestCase):
         b = self.bridge()
         self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
         self.assertIsNotNone(self.ws.store.meeting(self.mid))          # still there
-        self.assertIn(self.ws.meeting_title(self.mid), self.asked[0][1])
+        title = self.ws.meeting_for_discard(self.mid)[0]
+        self.assertIn(title, self.asked[0][1])
+        self.assertTrue(self.asked[0][1].startswith("Its audio, transcript"))   # warning first
         self.answer = True
         self.assertTrue(b.discard_meeting(self.mid)["ok"])
         self.assertFalse(b.discard_meeting("0" * 32)["ok"])            # unknown: not asked
         self.assertEqual(len(self.asked), 2)
 
-    def test_allowing_deletion_asks_but_turning_it_off_does_not(self):
-        from unittest import mock
+    def test_allowing_deletion_names_the_folder_and_turning_it_off_does_not_ask(self):
+        import os
         b = self.bridge()
-        fid = "f" * 32
-        with mock.patch.object(self.ws, "set_folder_authority") as grant:
-            self.assertEqual(b.set_folder_authority(fid, True, None)["value"], api.CANCELLED)
-            grant.assert_not_called()
-            b.set_folder_authority(fid, False, None)               # taking it away: no question
-            b.set_folder_authority(fid, None, True)                # cloud downloads: no question
-            self.assertEqual(len(self.asked), 1)
-            self.answer = True
-            b.set_folder_authority(fid, True, None)
-            grant.assert_called_with(fid, True, None)
+        folder = Path(self.tmp.name) / "Recordings"
+        folder.mkdir()
+        fid = self.ws.add_watched_folder(str(folder), False)
+        self.assertEqual(b.set_folder_authority(fid, True, None)["value"], api.CANCELLED)
+        self.assertIn(os.path.realpath(folder), self.asked[0][1])   # the folder, from the app
+        b.set_folder_authority(fid, False, None)                   # taking it away: no question
+        b.set_folder_authority(fid, None, True)                    # cloud downloads: no question
+        self.assertEqual(len(self.asked), 1)
+        self.answer = True
+        self.assertTrue(b.set_folder_authority(fid, True, None)["ok"])
+        self.assertEqual(len(self.asked), 2)
         self.ws.policy = policy.PolicySource(reader=lambda: ({"AllowDeleteOriginals": False}, ()))
         self.assertIn("organisation", b.set_folder_authority(fid, True, None)["error"])
         self.assertEqual(len(self.asked), 2)                       # refused before asking
 
+    def test_refused_grants_never_ask(self):
+        b = self.bridge()
+        self.assertFalse(b.set_folder_authority("f" * 32, True, None)["ok"])   # unknown folder
+        self.assertFalse(b.set_folder_authority("../x", True, None)["ok"])     # not an id
+        self.assertFalse(b.set_folder_authority("f" * 32, 1, None)["ok"])      # not a yes/no
+        self.assertEqual(self.asked, [])
+
+    def test_the_app_refuses_a_grant_nobody_confirmed(self):
+        folder = Path(self.tmp.name) / "Recordings"
+        folder.mkdir()
+        fid = self.ws.add_watched_folder(str(folder), False)
+        with self.assertRaisesRegex(WorkspaceError, "confirmation"):
+            self.ws.set_folder_authority(fid, True)
+        self.ws.set_folder_authority(fid, False)                   # taking it away needs none
+
+    def test_after_a_no_the_same_question_waits_a_moment(self):
+        b = self.bridge(decline_pause_s=60)
+        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
+        self.answer = True
+        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)   # not asked again
+        self.assertEqual(len(self.asked), 1)
+        self.assertIsNotNone(self.ws.store.meeting(self.mid))
+
     def test_without_a_window_nothing_is_confirmed(self):
+        from unittest import mock
         b = api.make_api(self.ws)                                  # no window, no test hook
         self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
         self.assertIsNotNone(self.ws.store.meeting(self.mid))
+        folder = Path(self.tmp.name) / "Recordings"
+        folder.mkdir()
+        fid = self.ws.add_watched_folder(str(folder), False)
+        self.assertEqual(b.set_folder_authority(fid, True, None)["value"], api.CANCELLED)
+        with mock.patch.object(self.ws, "check_can_record"), \
+                mock.patch.object(self.ws, "start_recording") as start:
+            self.assertEqual(b.start_recording(3, "Mic")["value"], api.CANCELLED)
+        start.assert_not_called()
+
+    def test_the_app_checks_the_consent_record(self):
+        from unittest import mock
+
+        from workspace import consent
+        good = consent.recording_record()
+        for bad in ({}, {"confirmed": "yes", "wording": 1, "at": 1.0},
+                    {**good, "wording": 999}, "yes"):
+            with mock.patch.object(self.ws, "_need_microphone"), \
+                    self.assertRaisesRegex(WorkspaceError, "not valid"):
+                self.ws.start_recording(3, consent=bad)
 
     def test_the_bridge_drives_the_recording_indicator(self):
         shown = []
@@ -973,8 +1019,11 @@ class NativeConfirmationTests(unittest.TestCase):
         api.make_api(self.ws, lambda: window, confirm=lambda t, x: True)
         with mock.patch.object(shell, "show_recording",
                                side_effect=lambda w, on: shown.append((w, on))):
-            self.ws._indicate(True)
-            self.ws._indicate(False)
+            self.ws._recording = object()             # stands in for an open recording
+            self.ws._indicate()
+            self.ws._indicate()                       # already shown: not repeated
+            self.ws._recording = None
+            self.ws._indicate()
         self.assertEqual(shown, [(window, True), (window, False)])
 
 

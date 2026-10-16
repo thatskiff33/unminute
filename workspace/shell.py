@@ -495,23 +495,85 @@ def run(func=None, args=None, debug=False, storage_path=None):
 
 # -- native confirmations and the recording indicator (#111 A6) -------------------
 
+# Yes stays disabled this long after the question appears, so a click or key
+# press meant for the page cannot land on it.
+CONFIRM_DELAY_MS = 1000
+
 
 def native_confirm(window, title, text):
-    """Ask a Yes/No question in a Windows message box owned by the app window.
-    It is outside the web page, so page script cannot answer it. No is the
-    default button; True only for Yes."""
-    from System import Action
-    from System.Windows.Forms import (DialogResult, MessageBox, MessageBoxButtons,
-                                      MessageBoxDefaultButton, MessageBoxIcon)
-    form = window.native
+    """Ask a Yes/No question in a small Windows dialog owned by the app window.
+    It is outside the web page, so page script cannot answer it. Its buttons
+    have no keyboard shortcuts; Enter and Esc mean No; Yes is disabled for
+    CONFIRM_DELAY_MS after it appears. True only for Yes."""
+    from System import Action, EventHandler
+    from System.Drawing import Size, SystemFonts
+    from System.Windows.Forms import (AutoSizeMode, Button, DialogResult, DockStyle,
+                                      FlowDirection, FlowLayoutPanel, Form, FormBorderStyle,
+                                      FormStartPosition, Label, Padding, TableLayoutPanel,
+                                      Timer)
+    owner = window.native
     box = {}
 
     def ask():
-        box["answer"] = MessageBox.Show(form, text, title, MessageBoxButtons.YesNo,
-                                        MessageBoxIcon.Question,
-                                        MessageBoxDefaultButton.Button2)
+        dialog, timer = Form(), Timer()
+        try:
+            dialog.Text = title
+            dialog.Font = SystemFonts.MessageBoxFont
+            dialog.FormBorderStyle = FormBorderStyle.FixedDialog
+            dialog.StartPosition = FormStartPosition.CenterParent
+            dialog.MinimizeBox = dialog.MaximizeBox = False
+            dialog.ShowInTaskbar = False
+            dialog.AutoSize = True
+            dialog.AutoSizeMode = AutoSizeMode.GrowAndShrink
+            dialog.Padding = Padding(18)
+            message = Label()
+            message.Text = text
+            message.UseMnemonic = False           # an "&" in a title stays text
+            message.AutoSize = True
+            message.MaximumSize = Size(460, 0)
+            message.Margin = Padding(0, 0, 0, 18)
+            no, yes = Button(), Button()
+            for button, label, result in ((no, "No", DialogResult.No),
+                                          (yes, "Yes", DialogResult.Yes)):
+                button.Text = label                # no "&": no keyboard shortcut
+                button.UseMnemonic = False
+                button.DialogResult = result
+                button.AutoSize = True
+                button.MinimumSize = Size(88, 0)
+            yes.Enabled = False
+            buttons = FlowLayoutPanel()
+            buttons.FlowDirection = FlowDirection.RightToLeft
+            buttons.AutoSize = True
+            buttons.Dock = DockStyle.Fill
+            buttons.Margin = Padding(0)
+            buttons.Controls.Add(no)               # right to left: No last, as Windows does
+            buttons.Controls.Add(yes)
+            layout = TableLayoutPanel()
+            layout.AutoSize = True
+            layout.ColumnCount, layout.RowCount = 1, 2
+            layout.Controls.Add(message, 0, 0)
+            layout.Controls.Add(buttons, 0, 1)
+            dialog.Controls.Add(layout)
+            dialog.AcceptButton = no               # Enter means No
+            dialog.CancelButton = no               # Esc and the close box mean No
+            timer.Interval = CONFIRM_DELAY_MS
 
-    form.Invoke(Action(ask))            # a message box belongs to the UI thread
+            def enable(sender, args):
+                timer.Stop()
+                yes.Enabled = True
+
+            def shown(sender, args):
+                no.Focus()
+                timer.Start()
+
+            timer.Tick += EventHandler(enable)
+            dialog.Shown += EventHandler(shown)
+            box["answer"] = dialog.ShowDialog(owner)
+        finally:
+            timer.Dispose()
+            dialog.Dispose()
+
+    owner.Invoke(Action(ask))                     # a dialog belongs to the UI thread
     return box.get("answer") == DialogResult.Yes
 
 
@@ -520,43 +582,86 @@ RECORDING_MARK = "● Recording - "
 
 def show_recording(window, recording):
     """While recording, the window title starts with a red-dot "Recording"
-    mark and the taskbar icon gets a red dot, so recording is visible even
-    when the window is behind others or minimised."""
+    mark and the taskbar button carries a red-dot overlay (also for a pinned
+    button, whose icon comes from the shortcut). Returns True if Windows took
+    the overlay."""
     from System import Action
     form = window.native
     plain = getattr(window, "unminute_title", None)
     if plain is None:
         plain = window.unminute_title = window.title
     window.set_title(RECORDING_MARK + plain if recording else plain)
+    box = {}
 
-    def icon():
-        normal = getattr(window, "unminute_icon", None)
-        if normal is None:
-            normal = window.unminute_icon = form.Icon
-        if not recording:
-            form.Icon = normal
-            return
-        marked = getattr(window, "unminute_recording_icon", None)
-        if marked is None:
-            marked = window.unminute_recording_icon = _with_red_dot(normal)
-        form.Icon = marked
+    def overlay():
+        if getattr(window, "unminute_dot", None) is None:
+            window.unminute_dot = _red_dot_icon()
+        hicon = window.unminute_dot.Handle.ToInt64() if recording else 0
+        box["ok"] = _set_overlay(form.Handle.ToInt64(), hicon,
+                                 "Recording" if recording else None)
 
-    form.Invoke(Action(icon))
+    form.Invoke(Action(overlay))                  # the taskbar wants the UI thread
+    return box.get("ok", False)
 
 
-def _with_red_dot(icon):
-    """The window icon with a red dot in its lower-right quarter."""
+def _red_dot_icon():
+    """A 16 px red dot for the taskbar overlay. The icon is cloned and its
+    original handle released (the pattern pywebview uses for its own icon)."""
+    import ctypes
+
     from System.Drawing import Bitmap, Color, Graphics, Icon, SolidBrush
     from System.Drawing.Drawing2D import SmoothingMode
-    size = max(icon.Width, 32)
-    image = Bitmap(icon.ToBitmap(), size, size)
+    image = Bitmap(16, 16)
     pen = Graphics.FromImage(image)
+    white, red = SolidBrush(Color.White), SolidBrush(Color.FromArgb(220, 30, 30))
     try:
         pen.SmoothingMode = SmoothingMode.AntiAlias
-        dot = size // 2
-        pen.FillEllipse(SolidBrush(Color.White), size - dot - 1, size - dot - 1, dot + 1, dot + 1)
-        pen.FillEllipse(SolidBrush(Color.FromArgb(220, 30, 30)), size - dot, size - dot,
-                        dot - 1, dot - 1)
+        pen.FillEllipse(white, 0, 0, 15, 15)
+        pen.FillEllipse(red, 2, 2, 11, 11)
+        handle = image.GetHicon()
+        try:
+            return Icon.FromHandle(handle).Clone()
+        finally:
+            ctypes.WinDLL("user32").DestroyIcon(ctypes.c_void_p(handle.ToInt64()))
     finally:
+        white.Dispose()
+        red.Dispose()
         pen.Dispose()
-    return Icon.FromHandle(image.GetHicon())
+        image.Dispose()
+
+
+def _set_overlay(hwnd, hicon, description):
+    """ITaskbarList3::SetOverlayIcon through COM (on the UI thread, which is
+    an STA). hicon 0 removes the overlay. True if Windows accepted it."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD),
+                    ("d", ctypes.c_ubyte * 8)]
+
+    def guid(text):
+        g = GUID()
+        ctypes.OleDLL("ole32").CLSIDFromString(ctypes.c_wchar_p(text), ctypes.byref(g))
+        return g
+
+    clsid = guid("{56FDF344-FD6D-11d0-958A-006097C9A090}")      # CLSID_TaskbarList
+    iid = guid("{EA1AFB91-9E28-4B86-90E9-9E9F8A5EEFAF}")        # IID_ITaskbarList3
+    unknown = ctypes.c_void_p()
+    try:
+        ctypes.OleDLL("ole32").CoCreateInstance(ctypes.byref(clsid), None, 1,
+                                                ctypes.byref(iid), ctypes.byref(unknown))
+    except OSError:
+        return False
+    vtable = ctypes.cast(unknown, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+
+    def method(index, *argtypes):
+        return ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(vtable[index])
+
+    try:
+        if method(3)(unknown) != 0:                              # HrInit
+            return False
+        return method(18, wintypes.HWND, wintypes.HICON, wintypes.LPCWSTR)(   # SetOverlayIcon
+            unknown, hwnd, hicon or None, description) == 0
+    finally:
+        method(2)(unknown)                                       # Release

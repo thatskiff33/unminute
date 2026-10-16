@@ -56,38 +56,96 @@ def evaluate(window, js, timeout=60):
 WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
 
 
-def answer_dialog(title, button, timeout=15):
-    """Press a button of a Windows message box with this title, as a person
-    would (#111 A6): the page has no way to do this. IDYES = 6, IDNO = 7."""
+def find_dialog(title, timeout=15):
+    """The top-level window of a confirmation with this title, once shown."""
     import ctypes
     user32 = ctypes.WinDLL("user32")
     end = time.time() + timeout
     while time.time() < end:
-        hwnd = user32.FindWindowW("#32770", title)
-        if hwnd:
-            user32.PostMessageW(hwnd, 0x0111, button, 0)        # WM_COMMAND
-            return True
-        time.sleep(0.1)
-    return False
+        hwnd = user32.FindWindowW(None, title)
+        if hwnd and user32.IsWindowVisible(hwnd):
+            return hwnd
+        time.sleep(0.05)
+    return 0
 
 
-def native_checks(window):
-    """The Windows confirmation answers Yes and No correctly, and the
-    recording indicator changes the window title and icon and restores them."""
+def dialog_button(hwnd, text):
+    """A button inside the dialog, by its text (they sit in layout panels)."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32")
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(child, _):
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetWindowTextW(child, buf, 64)
+        if buf.value == text:
+            found.append(child)
+            return False
+        return True
+    user32.EnumChildWindows(hwnd, each, 0)
+    return found[0] if found else 0
+
+
+def press(script, title):
+    """Act on the confirmation as a person would, through Windows messages
+    (the page has no way to): "click:Yes", "enter", "wait:1.3"."""
+    import ctypes
+    user32 = ctypes.WinDLL("user32")
+    hwnd = find_dialog(title)
+    if not hwnd:
+        return False
+    for step in script:
+        kind, _, arg = step.partition(":")
+        if kind == "wait":
+            time.sleep(float(arg))
+        elif kind == "click":
+            user32.SendMessageW(dialog_button(hwnd, arg), 0x00F5, 0, 0)       # BM_CLICK
+            time.sleep(0.2)
+        elif kind == "enter":                                                 # No has focus
+            user32.PostMessageW(dialog_button(hwnd, "No"), 0x0100, 0x0D, 0)   # WM_KEYDOWN Enter
+            user32.PostMessageW(dialog_button(hwnd, "No"), 0x0101, 0x0D, 0)
+    return True
+
+
+def native_checks(window, ws, mid):
+    """The Windows confirmation: Yes is ignored at first, Enter means No, the
+    bridge reports a No without acting, and Yes works after the delay. The
+    recording indicator changes the title and the taskbar overlay and
+    restores them."""
     import ctypes
     import threading
 
     from System import Func, IntPtr
+
+    from workspace import consent
     out = {}
-    title = "Workspace UI check: confirm"
-    for button, key in ((7, "no"), (6, "yes")):
-        pressed = {}
-        clicker = threading.Thread(target=lambda b=button, p=pressed: p.update(
-            ok=answer_dialog(title, b)), daemon=True)
+
+    def run_with(script, title, call):
+        done = {}
+        clicker = threading.Thread(target=lambda: done.update(ok=press(script, title)),
+                                   daemon=True)
         clicker.start()
-        out[key] = shell.native_confirm(window, title, "Synthetic check. Nothing changes.")
-        clicker.join(5)
-        out[key + "_pressed"] = pressed.get("ok", False)
+        result = call()
+        clicker.join(10)
+        return result, done.get("ok", False)
+
+    title = "Workspace UI check: confirm"
+    # An immediate click on Yes is ignored (disabled); Enter then means No.
+    out["early_yes_then_enter"], out["pressed_1"] = run_with(
+        ["click:Yes", "enter"], title,
+        lambda: shell.native_confirm(window, title, "Synthetic check. Nothing changes."))
+    # Through the bridge: a No for Discard leaves the meeting in place.
+    bridge = api.make_api(ws, lambda: window, decline_pause_s=0)
+    result, out["pressed_2"] = run_with(["enter"], consent.DISCARD_TITLE,
+                                        lambda: bridge.discard_meeting(mid))
+    out["bridge_no"] = result.get("value") == api.CANCELLED
+    out["meeting_kept"] = ws.store.meeting(mid) is not None
+    # After the delay, Yes answers Yes.
+    out["yes_after_delay"], out["pressed_3"] = run_with(
+        ["wait:1.3", "click:Yes"], title,
+        lambda: shell.native_confirm(window, title, "Synthetic check. Nothing changes."))
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -96,18 +154,12 @@ def native_checks(window):
         ctypes.WinDLL("user32").GetWindowTextW(ctypes.c_void_p(hwnd), buf, 256)
         return buf.value
     before = caption()
-
-    def icon_handle():                  # .NET returns a new wrapper each time: compare handles
-        return form.Invoke(Func[IntPtr](lambda: form.Icon.Handle)).ToInt64()
-    icon_before = icon_handle()
-    shell.show_recording(window, True)
+    out["overlay_on"] = shell.show_recording(window, True)
     time.sleep(0.5)
     out["title_recording"] = caption()
-    out["icon_changed"] = icon_handle() != icon_before
-    shell.show_recording(window, False)
+    out["overlay_off"] = shell.show_recording(window, False)
     time.sleep(0.5)
     out["title_restored"] = caption() == before
-    out["icon_restored"] = icon_handle() == icon_before
     return out
 
 
@@ -295,7 +347,7 @@ def checks(window, ws, mid, long_mid, report):
                     render_ms: Math.round(render_ms),
                     hit: document.getElementById('m-hits').textContent}};""", timeout=120)
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
-        report["native"] = native_checks(window)
+        report["native"] = native_checks(window, ws, long_mid)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
@@ -394,11 +446,12 @@ def main():
             and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
     nv = report.get("native") or {}
-    if not (nv.get("no") is False and nv.get("yes") is True and nv.get("no_pressed")
-            and nv.get("yes_pressed")):
+    if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
+            and nv.get("bridge_no") and nv.get("meeting_kept")
+            and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")):
         bad.append("native confirmation")
     if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
-            and nv.get("icon_changed") and nv.get("icon_restored")):
+            and nv.get("overlay_on") and nv.get("overlay_off")):
         bad.append("recording indicator")
     lt = report.get("long_transcript") or {}
     if lt.get("rows") != 5000:
