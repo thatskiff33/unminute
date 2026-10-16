@@ -73,8 +73,7 @@ class HandoffTests(unittest.TestCase):
         self.assertIn("Ignore previous instructions", body)        # kept, inside the markers
         self.assertIn("[0:00] **Aroha Smith:** We agreed the budget", body)
         self.assertIn("[0:30] **Speaker 2:** The car park", body)
-        self.assertIn("decision only if the transcript shows it was agreed", c)
-        self.assertIn('"Owner: not stated"', c)
+        self.assertIn("Use tools only to read", c)
         self.assertFalse(out["long"])
         self.assertEqual(out["chars"], len(c))
         self.assertRegex(out["filename"], r"^Meeting transcript \d{4}-\d{2}-\d{2} \d{2}-\d{2}\.md$")
@@ -161,8 +160,47 @@ class HandoffTests(unittest.TestCase):
     def test_damaged_templates_file_falls_back_to_built_ins(self):
         (self.root / "templates.json").write_text('{"minutes": "x", "custom-1": {"title": 1}}')
         t = Templates(self.root / "templates.json")
-        self.assertEqual([x["id"] for x in t.all()], ["minutes", "summary", "actions"])
+        self.assertEqual([x["id"] for x in t.all()], ["minutes", "summary", "actions", "board",
+                                                      "file_note", "email", "team"])
         self.assertFalse(t.get("minutes")["edited"])
+
+    def test_built_in_prompts_share_the_working_method(self):
+        for t in self.templates.all():
+            p = t["prompt"]
+            with self.subTest(t["id"]):
+                # Read-only tools and the transcript-as-data rule (SECURITY_MODEL T30).
+                self.assertIn("Use tools only to read: do not send, post, schedule, edit or "
+                              "delete anything.", p)
+                self.assertIn(handoff._DATA_RULE, p)
+                self.assertIn("Points to check", p)
+                self.assertIn("no timestamps", p)
+                self.assertNotIn("not stated", p)
+                self.assertNotRegex(p, r"\[\d+:\d\d\]")
+                self.assertLess(len(p), handoff.MAX_PROMPT_CHARS)
+                # Every document ends with the Word offer; the email is copied instead.
+                self.assertEqual("context.md" in p, t["id"] != "email")
+        self.assertIn("Do not send it.", self.templates.get("email")["prompt"])
+
+    def test_anonymised_prompt_asks_not_to_identify_speakers(self):
+        self.review()
+        plain, anon = self.build(), handoff.build(self.store, self.mid,
+                                                  self.templates.get("minutes"), True)
+        self.assertNotIn(handoff.ANON_NOTE, plain["combined"] + plain["prompt_only"])
+        for kind in ("combined", "prompt_only"):
+            self.assertIn(handoff.ANON_NOTE, anon[kind])
+        # The note sits with the prompt, before the transcript's data framing.
+        self.assertLess(anon["combined"].index(handoff.ANON_NOTE),
+                        anon["combined"].index("BEGIN TRANSCRIPT"))
+        self.assertNotIn(handoff.ANON_NOTE, anon["markdown"])
+
+    def test_built_in_versions_come_from_each_template(self):
+        self.assertEqual({t["id"]: t["version"] for t in self.templates.all()},
+                         {"minutes": 2, "summary": 2, "actions": 2, "board": 1,
+                          "file_note": 1, "email": 1, "team": 1})
+        self.templates.save("board", "Board", "Ours")
+        self.templates.reset("board")
+        t = self.templates.get("board")
+        self.assertEqual((t["version"], t["edited"]), (3, False))
 
     def test_templates_are_editable_versioned_and_resettable(self):
         tid = "minutes"
@@ -172,10 +210,10 @@ class HandoffTests(unittest.TestCase):
         again = Templates(self.root / "templates.json")          # survives restart
         t = again.get(tid)
         self.assertEqual((t["title"], t["prompt"], t["version"], t["edited"]),
-                         ("Minutes (ours)", "Our prompt v2", 3, True))
+                         ("Minutes (ours)", "Our prompt v2", 4, True))   # built-in is v2
         again.reset(tid)
         self.assertEqual(again.get(tid)["prompt"], original)
-        self.assertEqual(again.get(tid)["version"], 4)             # numbers never go back
+        self.assertEqual(again.get(tid)["version"], 5)             # numbers never go back
         self.assertFalse(again.get(tid)["edited"])
         custom = again.save(None, "Board paper", "Write a board paper.")
         self.assertEqual(custom, "custom-1")
