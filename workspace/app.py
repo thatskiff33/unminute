@@ -22,8 +22,8 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import (cleanup, clipboard, credentials, gpu, handoff, holds, intake, media,
-                       recorder,
+from workspace import (cleanup, clipboard, credentials, engines, gpu, handoff, holds, intake,
+                       media, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
@@ -67,36 +67,55 @@ def _clean_text(text, limit):
 
 
 class Settings:
-    """Configuration only (no content), kept beside the database."""
+    """Configuration only (no content), kept beside the database.
 
-    def __init__(self, path):
+    Values read from settings.json pass the same checks as values set from
+    the page: the file is writable by anything running as the user, so an
+    invalid value falls back to its default instead of being trusted. Test
+    engines ("test:module:function") are accepted only when the tests ask for
+    them (allow_test_engines); they would otherwise let a settings value
+    import any module in the worker."""
+
+    def __init__(self, path, allow_test_engines=False):
         self.path = Path(path)
+        self.allow_test_engines = allow_test_engines
         self.values = dict(DEFAULT_SETTINGS)
+        self.repaired = []                 # keys whose saved value was refused
         try:
             saved = json.loads(self.path.read_text(encoding="utf-8"))
-            self.values.update({k: v for k, v in saved.items() if k in DEFAULT_SETTINGS})
         except (OSError, ValueError):
-            pass
+            saved = {}
+        for key, value in (saved.items() if isinstance(saved, dict) else ()):
+            if key not in DEFAULT_SETTINGS:
+                continue
+            try:
+                self._check(key, value)
+                self.values[key] = value
+            except WorkspaceError:
+                self.repaired.append(key)
 
     def __getitem__(self, key):
         return self.values[key]
 
+    def _check(self, key, value):
+        if key not in DEFAULT_SETTINGS:
+            raise WorkspaceError("Unknown setting.")
+        if key == "mode" and value not in (resources.QUIET, resources.FASTER):
+            raise WorkspaceError("Choose Quiet or Faster.")
+        if key == "recording_display" and value not in RECORDING_DISPLAYS:
+            raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
+        if key == "model" and not (isinstance(value, str) and (
+                asr_engines.is_parakeet(value) or asr_engines.is_whisper(value)
+                or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
+            raise WorkspaceError("Unknown speech model.")
+        if (key in ("speakers", "battery_override", "onboarded", "microphone",
+                    "gpu_speakers")
+                and not isinstance(value, bool)):
+            raise WorkspaceError("Expected on or off.")
+
     def update(self, **changes):
         for key, value in changes.items():
-            if key not in DEFAULT_SETTINGS:
-                raise WorkspaceError("Unknown setting.")
-            if key == "mode" and value not in (resources.QUIET, resources.FASTER):
-                raise WorkspaceError("Choose Quiet or Faster.")
-            if key == "recording_display" and value not in RECORDING_DISPLAYS:
-                raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
-            if key == "model" and not (asr_engines.is_parakeet(value)
-                                       or asr_engines.is_whisper(value)
-                                       or str(value).startswith("test:")):
-                raise WorkspaceError("Unknown speech model.")
-            if (key in ("speakers", "battery_override", "onboarded", "microphone",
-                        "gpu_speakers")
-                    and not isinstance(value, bool)):
-                raise WorkspaceError("Expected on or off.")
+            self._check(key, value)
             self.values[key] = value
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
@@ -105,19 +124,26 @@ class Settings:
 
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
-                 idle_unload_s=None, battery=None, start=True):
+                 idle_unload_s=None, battery=None, start=True, allow_test_engines=False):
+        """allow_test_engines: tests and the UI check tools only. Lets the
+        settings, the speaker model and the worker use "test:module:function"
+        engines; never set by the app itself."""
+        if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
+            raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
         self.root.mkdir(parents=True, exist_ok=True)
         self.media = self.root / "media"
         self.store = Store(self.root / "workspace.db")
-        self.settings = Settings(self.root / "settings.json")
+        self.settings = Settings(self.root / "settings.json",
+                                 allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
         self.cache_dir = Path(cache_dir or self.root / "models")
         self.handle = WorkerHandle(self.cache_dir,
-                                   quiet=self.settings["mode"] == resources.QUIET, **kw)
+                                   quiet=self.settings["mode"] == resources.QUIET,
+                                   allow_test_engines=allow_test_engines, **kw)
         # Downloads replace model files: the inference worker is unloaded first.
         self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
                                          before_gpu_install=self.handle.release_gpu)
@@ -1385,9 +1411,8 @@ class Workspace:
         for c in cards:
             c["download"] = self.downloads.state.get(c["name"])
         speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
-        import os
         return {"cards": cards, "token_remembered": credentials.has_token(),
-                "earlier_token": bool(os.environ.get("HF_TOKEN")),
+                "earlier_token": bool(credentials.earlier_token()),
                 "onboarded": self.settings["onboarded"], "speech_ready": speech_ready,
                 "speakers": self.settings["speakers"]}
 
@@ -1395,7 +1420,6 @@ class Workspace:
         """Download or repair a model. For the speaker model the token is the
         one given now (remembered in Credential Manager unless the user
         unticks Remember), the remembered one, or the earlier app's one."""
-        import os
         if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
         gpu_only = name == gpu.COMPONENT     # used by no running work unless a GPU pass
@@ -1405,7 +1429,7 @@ class Workspace:
         if name in asr_engines.MANAGED_MODELS and asr_engines.MANAGED_MODELS[name].gated:
             try:
                 if token or use_earlier:
-                    token = (token or "").strip() or os.environ.get("HF_TOKEN") or None
+                    token = (token or "").strip() or credentials.earlier_token() or None
                     if token and remember:
                         # Remembered only once a download has shown it works.
                         on_success = (lambda t=token: credentials.save_token(t))

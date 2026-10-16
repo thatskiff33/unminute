@@ -249,8 +249,76 @@ class MigrationBlocked(StoreError):
     place (#26). The installer's gate normally prevents this ever happening."""
 
 
+def local_appdata():
+    """%LOCALAPPDATA%, which must be an absolute local path outside OneDrive.
+    Meetings must never end up in the current folder, a synced folder or a
+    network location because the variable is missing or redirected: refuse
+    instead of guessing."""
+    base = os.environ.get("LOCALAPPDATA", "")
+    path = Path(base)
+    missing = StoreError("Unminute cannot find this account's local app data folder "
+                         "(LOCALAPPDATA). Ask your IT team.")
+    if not base or not path.is_absolute() or base.startswith(("\\\\", "//")):
+        raise missing
+    # Compare real paths: short (8.3) names and junctions must not hide that
+    # the folder is inside OneDrive or on a network share.
+    real = _real(base)
+    if _network_path(real) or _remote_drive(real):
+        raise StoreError("This account's local app data folder is on a network drive. "
+                         "Unminute keeps meetings on this computer. Ask your IT team.")
+    resolved = _folder_key(real)
+    profile = os.environ.get("USERPROFILE", "")
+    for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
+        synced = os.environ.get(var, "")
+        if not synced or not os.path.isabs(synced):
+            continue
+        synced_key = _folder_key(_real(synced))
+        # A variable pointing at a drive root, or at or above the user's
+        # profile, is a misconfiguration, not a synced AppData: ignore it
+        # rather than refuse every normal setup.
+        if os.path.dirname(synced_key.rstrip("\\/")) == synced_key.rstrip("\\/") or (
+                profile and _folder_key(_real(profile)).startswith(synced_key)):
+            continue
+        if resolved.startswith(synced_key):
+            raise StoreError("This account's local app data folder is inside OneDrive. "
+                             "Unminute keeps meetings out of synced folders. Ask your IT team.")
+    return path
+
+
+def _real(path):
+    try:
+        return os.path.realpath(path)
+    except OSError:              # an error realpath does not handle itself
+        return os.path.abspath(path)
+
+
+def _network_path(path):
+    """\\\\server\\share and \\\\?\\UNC\\ paths; not local device or volume
+    paths such as \\\\?\\Volume{...} (virtual desktop profile disks)."""
+    low = path.replace("/", "\\").lower()
+    if low.startswith("\\\\?\\unc\\") or low.startswith("\\\\.\\unc\\"):
+        return True
+    if low.startswith("\\\\?\\") or low.startswith("\\\\.\\"):
+        return False
+    return low.startswith("\\\\")
+
+
+def _folder_key(path):
+    return os.path.normcase(os.path.abspath(path)).rstrip("\\/") + os.sep
+
+
+def _remote_drive(path):
+    """True if the path's drive letter is a mapped network drive (Windows)."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    import ntpath
+    root = ntpath.splitdrive(path)[0] + "\\"
+    return ctypes.WinDLL("kernel32").GetDriveTypeW(ctypes.c_wchar_p(root)) == 4  # REMOTE
+
+
 def default_root():
-    return Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper" / "workspace"
+    return local_appdata() / "whisper" / "workspace"
 
 
 def new_id():
@@ -276,6 +344,9 @@ class Store:
             self.db.execute("PRAGMA foreign_keys=ON")
             # Deleted rows are overwritten, not just unlinked (#17 cleanup).
             self.db.execute("PRAGMA secure_delete=ON")
+            # Temporary tables and indices (VACUUM builds a copy of the whole
+            # database) stay in memory, never in %TEMP% outside the workspace.
+            self.db.execute("PRAGMA temp_store=MEMORY")
             self._migrate_if_needed()
             self.db.executescript(SCHEMA)       # outside any transaction; idempotent
             with self.tx() as db:

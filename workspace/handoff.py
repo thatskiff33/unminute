@@ -346,13 +346,16 @@ def build(store, mid, template, anonymise=False):
             "digests": {k: digest(t) for k, t in texts.items()},
             "template": {"id": template["id"], "title": template["title"],
                          "version": template["version"]},
-            "filename": _filename(title)}
+            "filename": _filename(m["created_at"])}
 
 
 def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _filename(title):
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title).strip(" .")[:80] or "Meeting"
-    return f"{safe} - transcript.md"
+def _filename(created_at):
+    """The suggested file name: the date and time the meeting was imported
+    (so two meetings on one day do not collide), never the title. A title
+    often names the client, and file names travel further than file contents
+    (Recent items, jump lists, search indexes, sync logs)."""
+    return f"Meeting transcript {time.strftime('%Y-%m-%d %H-%M', time.localtime(created_at))}.md"

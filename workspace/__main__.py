@@ -10,13 +10,13 @@
 #   --version     the installed package version
 #   --status      workspace contents as JSON counts (meetings, holds, pending
 #                 cleanup); used by installers and updates (#26). No content.
+#                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency and check the offline guard
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -27,9 +27,21 @@ import offline_guard  # noqa: E402
 offline_guard.disable_telemetry()
 offline_guard.install()
 
+from workspace import credentials  # noqa: E402
+
+# A Hugging Face token the earlier app left in the user's environment is taken
+# out of this process's environment before anything starts, so no child
+# process (workers, WebView2, nvidia-smi) inherits it.
+credentials.adopt_earlier_token()
+
 APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1; kept from
                                                    # the earlier name so taskbar pins still group
-MODEL_CACHE = Path(os.environ.get("LOCALAPPDATA", os.getcwd())) / "whisper-models"
+
+
+def model_cache():
+    """%LOCALAPPDATA%\\whisper-models (refuses a missing or synced location)."""
+    from workspace.store import local_appdata
+    return local_appdata() / "whisper-models"
 
 
 def package_version():
@@ -97,8 +109,13 @@ def main():
     if "--version" in sys.argv:
         print(package_version())
         return 0
+    from workspace.store import StoreError
     if "--status" in sys.argv:
-        print(json.dumps(status()))
+        try:
+            print(json.dumps(status()))
+        except StoreError as exc:           # e.g. LOCALAPPDATA missing or in OneDrive
+            print(json.dumps({"error": str(exc)}))
+            return 1
         return 0
     if "--self-test" in sys.argv:
         return self_test()
@@ -108,19 +125,25 @@ def main():
         schema = SCHEMA_VERSION
         if "--schema" in sys.argv:          # for a version too old to check itself
             schema = int(sys.argv[sys.argv.index("--schema") + 1])
-        result = update.gate(default_root() / "workspace.db", schema)
+        try:
+            result = update.gate(default_root() / "workspace.db", schema)
+        except StoreError as exc:
+            result = {"code": update.TOO_NEW, "kind": "location", "current_schema": None,
+                      "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
     from workspace import api, shell
     from workspace.app import Workspace
-    from workspace.store import StoreError
+    instance = _single_instance()
+    if instance is None:
+        _message("Unminute is already open. Look for its window on the taskbar.")
+        return 0
     try:
-        ws = Workspace(cache_dir=MODEL_CACHE)
+        ws = Workspace(cache_dir=model_cache())
     except StoreError as exc:
         # e.g. a workspace from a newer version, or one that cannot be migrated:
         # explain instead of disappearing (pythonw has no console).
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, str(exc), "Unminute", 0x10)
+        _message(str(exc))
         return 1
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),
@@ -189,10 +212,46 @@ def main():
             pass
     window.events.shown += never_block_shutdown
     try:
-        shell.run()
+        # The WebView2 profile lives inside the workspace (and is wiped at the
+        # next start if a crash left it), not in %TEMP%.
+        shell.run(storage_path=shell.storage_folder(ws.root))
+    except shell.ShellError as exc:
+        _message(str(exc))
+        return 1
     finally:
         ws.close()
+    if shell.lock_failed:
+        _message("Unminute closed its window because it could not secure it. "
+                 "Reinstall it, or ask your IT team.")
+        return 1
     return 0
+
+
+MUTEX_NAME = "Local\\Unminute.Workspace"
+
+
+def _single_instance(name=MUTEX_NAME):
+    """Hold a named mutex for the life of the process, so a second copy never
+    opens the same workspace (or clears the first copy's window data). Returns
+    the handle, or None if another copy holds it. If Windows cannot create the
+    mutex for another reason, the app still starts."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, name)
+    error = ctypes.get_last_error()
+    if handle and error == 183:                    # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+    if not handle and error == 5:                  # held by a copy run as administrator
+        return None
+    return handle or True
+
+
+def _message(text):
+    """A Windows message box: pythonw has no console to print to."""
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, text, "Unminute", 0x10)
 
 
 if __name__ == "__main__":

@@ -278,7 +278,8 @@ class WorkspaceIntakeTests(unittest.TestCase):
             folder.mkdir()
             saved = (intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S)
             intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = 1, 0, 0
-            ws = app.Workspace(root / "ws", root / "models", start=False, battery=False)
+            ws = app.Workspace(root / "ws", root / "models", start=False,
+                               allow_test_engines=True, battery=False)
             try:
                 ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
                 ws.add_watched_folder(str(folder), False)

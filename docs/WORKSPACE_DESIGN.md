@@ -332,7 +332,7 @@ Failure reasons are stored without file paths.
 - It is never written to settings, logs or the database, and never returned to the page. The page learns only whether a token is remembered, and clears the input after use.
 - Removing the token does not affect models already downloaded: they load offline.
 - A token from the earlier app (the `HF_TOKEN` user variable) can be used once, or moved into Credential Manager.
-- A legacy `HF_TOKEN` user variable stays in the environment that Windows gives every process, until the user removes it. Child processes therefore inherit it. That is harmless: public downloads pass `token=False`, and inference workers are offline-guarded. New tokens never go into the environment.
+- A legacy `HF_TOKEN` user variable stays in the user's Windows environment until the user removes it. At start the app moves it out of its own environment into memory (`credentials.adopt_earlier_token`), so its worker, download and WebView2 processes do not inherit it (#111 A2). New tokens never go into the environment.
 - A token is remembered only after a download has shown that it works.
 - Model work waits while a model is being downloaded or checked. The two are coordinated with the processing thread under one lock, and processing resumes when the download ends.
 - A download can be cancelled.

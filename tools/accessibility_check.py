@@ -220,7 +220,8 @@ def main():
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+        ws = Workspace(root / "ws", root / "models", start=False,
+                       allow_test_engines=True, battery=False,
                        speaker_model=FAKE + "fake_diarizer")
         # Microphone on, so the Inbox's recording panel (#30) is audited too.
         ws.settings.update(model=FAKE + "sentences", speakers=True, microphone=True)

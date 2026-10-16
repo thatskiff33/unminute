@@ -117,7 +117,8 @@ class AuthorityFlowTests(unittest.TestCase):
         root = Path(tmp.name)
         folder = root / "Recordings"
         folder.mkdir()
-        ws = app.Workspace(root / "ws", root / "models", start=False, battery=False)
+        ws = app.Workspace(root / "ws", root / "models", start=False,
+                           allow_test_engines=True, battery=False)
         try:
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             fid = ws.add_watched_folder(str(folder), False)
@@ -156,7 +157,8 @@ class AuthorityFlowTests(unittest.TestCase):
         parent = root / "All recordings"
         child = parent / "Board"
         child.mkdir(parents=True)
-        ws = app.Workspace(root / "ws", root / "models", start=False, battery=False)
+        ws = app.Workspace(root / "ws", root / "models", start=False,
+                           allow_test_engines=True, battery=False)
         try:
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             pid = ws.add_watched_folder(str(parent), False)

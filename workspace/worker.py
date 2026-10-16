@@ -66,7 +66,7 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
-def _worker_main(conn, cache_dir, quiet, gpu_site=None):
+def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False):
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker.
     import sys
@@ -101,7 +101,8 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None):
                 _, name, threads = msg
                 if loaded != (name, threads):
                     engine, loaded = None, None      # a failed load leaves nothing stale
-                    engine = load_engine(name, cache_dir, threads)
+                    engine = load_engine(name, cache_dir, threads,
+                                         allow_test=allow_test_engines)
                     loaded = (name, threads)
                 conn.send(("ok", getattr(engine, "description", name),
                            getattr(engine, "device", None), getattr(engine, "precision", None)))
@@ -122,7 +123,8 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None):
                 gc.collect()
                 from workspace.engines import diarize_file
                 turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
-                                                        threads, device=device)
+                                                        threads, device=device,
+                                                        allow_test=allow_test_engines)
                 gc.collect()
                 conn.send(("ok", turns, exclusive, device, had_asr))
             elif op == "exit":
@@ -138,9 +140,11 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None):
 class WorkerHandle:
     """Owned by the state-owning process. One meeting at a time uses it."""
 
-    def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S, gpu_site=None):
+    def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S, gpu_site=None,
+                 allow_test_engines=False):
         self.cache_dir, self.quiet, self.idle_unload_s = str(cache_dir), quiet, idle_unload_s
         self.gpu_site = gpu_site
+        self.allow_test_engines = bool(allow_test_engines)   # tests only (engines.TEST_PREFIX)
         self._gpu = None             # companion GPU worker (speaker identification only)
         self._ctx = mp.get_context("spawn")
         self._proc = self._conn = None
@@ -168,7 +172,8 @@ class WorkerHandle:
     def _start(self):
         parent, child = self._ctx.Pipe()
         self._proc = self._ctx.Process(target=_worker_main,
-                                       args=(child, self.cache_dir, self.quiet, self.gpu_site),
+                                       args=(child, self.cache_dir, self.quiet, self.gpu_site,
+                                             self.allow_test_engines),
                                        daemon=True, name="whisper-gpu-worker" if self.gpu_site
                                        else "whisper-worker")
         self._proc.start()
@@ -192,7 +197,8 @@ class WorkerHandle:
             if self._gpu is not None:
                 self._gpu.close()
             self._gpu = WorkerHandle(self.cache_dir, quiet=self.quiet,
-                                     idle_unload_s=self.idle_unload_s, gpu_site=str(site))
+                                     idle_unload_s=self.idle_unload_s, gpu_site=str(site),
+                                     allow_test_engines=self.allow_test_engines)
         self._gpu.quiet = self.quiet
         # Clear the companion's old stop first, then carry over a stop that is
         # in force now, so a stop that lands meanwhile is never lost.

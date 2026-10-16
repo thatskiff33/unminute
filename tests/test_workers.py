@@ -68,7 +68,7 @@ class QuietDefaultTests(unittest.TestCase):
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.h = WorkerHandle(self.tmp.name, quiet=True)
+        self.h = WorkerHandle(self.tmp.name, quiet=True, allow_test_engines=True)
 
     def tearDown(self):
         self.h.close()
@@ -116,7 +116,7 @@ class WorkerTests(unittest.TestCase):
         self.assertIsNone(self.h.pid)
 
     def test_idle_worker_unloads(self):
-        h = WorkerHandle(self.tmp.name, idle_unload_s=0.5)
+        h = WorkerHandle(self.tmp.name, idle_unload_s=0.5, allow_test_engines=True)
         try:
             h.load(fake("echo"), 1)
             self.assertIsNotNone(h.pid)
@@ -163,7 +163,7 @@ class WorkerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - t, 20)   # well under the 30 s sleep
 
     def test_reloads_by_itself_after_an_idle_unload(self):
-        h = WorkerHandle(self.tmp.name, idle_unload_s=0.5)
+        h = WorkerHandle(self.tmp.name, idle_unload_s=0.5, allow_test_engines=True)
         try:
             h.load(fake("echo"), 2)
             self.assertTrue(wait_until(lambda: h.pid is None))
@@ -192,7 +192,7 @@ class RunnerWithWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.tmp.name) / "db.sqlite")
-        self.h = WorkerHandle(self.tmp.name)
+        self.h = WorkerHandle(self.tmp.name, allow_test_engines=True)
 
     def tearDown(self):
         self.h.close()

@@ -54,7 +54,7 @@ class WorkspaceTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def open(self, start=True, model="sentences", speakers=True):
-        ws = Workspace(self.root / "ws", self.root / "models", start=False,
+        ws = Workspace(self.root / "ws", self.root / "models", start=False, allow_test_engines=True,
                        speaker_model=fake("fake_diarizer"), battery=False)
         ws.settings.update(model=fake(model), speakers=speakers)
         if start:
@@ -163,7 +163,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(ws.meetings()[0]["stage"], "review")
 
     def test_battery_waits_for_automatic_work(self):
-        ws = Workspace(self.root / "ws", self.root / "models", start=False, battery=True)
+        ws = Workspace(self.root / "ws", self.root / "models", start=False,
+                       allow_test_engines=True, battery=True)
         self.ws = ws
         ws.settings.update(model=fake("sentences"))
         ws._import_one(self.rec)
@@ -632,7 +633,8 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False)
+        self.ws = Workspace(root / "ws", root / "models", start=False,
+                            allow_test_engines=True, battery=False)
         self.ws.settings.update(model=fake("sentences"), speakers=False)
         self.ws._import_one(write_wav(root / "a.wav", 20))
         self.mid = self.ws.meetings()[0]["id"]
