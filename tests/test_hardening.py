@@ -115,6 +115,160 @@ class DispatchGuardTests(unittest.TestCase):
         self.assertTrue(getattr(self.util.js_bridge_call, "unminute_guard", False))
 
 
+class PageAlertTests(unittest.TestCase):
+    def test_only_the_alert_message_is_recognised(self):
+        self.assertTrue(shell._page_alert(json.dumps(["_pywebviewAlert", json.dumps("hi"),
+                                                      "alert"])))
+        for other in (json.dumps(["meetings", "[]", "1"]), json.dumps("FilesDropped"),
+                      "not json", None, "[]", json.dumps({"a": 1})):
+            self.assertFalse(shell._page_alert(other), other)
+
+
+class AlertGuardTests(unittest.TestCase):
+    """The page's window.alert never reaches pywebview's native message box."""
+
+    def fake_backend(self):
+        seen = []
+
+        class EdgeChrome:
+            def on_script_notify(self, sender, args):
+                seen.append(args.get_WebMessageAsJson())
+
+            def on_webview_ready(self, sender, args):
+                settings = sender.CoreWebView2.Settings
+                seen.append(("settings", settings.AreDefaultScriptDialogsEnabled))
+                sender.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = True  # as pywebview
+                self.load_url("file:///index.html")
+
+            def load_url(self, url):
+                seen.append(("load", url, self.sender.CoreWebView2.Settings
+                             .AreDefaultScriptDialogsEnabled))
+
+            def load_html(self, html, base):
+                seen.append(("html",))
+
+        module = type(sys)("webview.platforms.edgechromium")
+        module.EdgeChrome = EdgeChrome
+        return module, seen
+
+    def test_alert_is_dropped_and_calls_still_reach_pywebview(self):
+        module, seen = self.fake_backend()
+
+        class Args:
+            def __init__(self, message):
+                self.message = message
+
+            def get_WebMessageAsJson(self):
+                return self.message
+        alert = json.dumps(["_pywebviewAlert", json.dumps("Tick the box, then Allow"), "alert"])
+        call = json.dumps(["meetings", "[]", "1"])
+        with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}):
+            shell.install_alert_guard()
+            shell.install_alert_guard()                     # twice: still one wrapper
+            view = module.EdgeChrome()
+            view.on_script_notify(None, Args(alert))
+            view.on_script_notify(None, Args(call))
+        self.assertEqual(seen, [call])
+        self.assertIn("_pywebviewAlert", shell.blocked_calls)
+        self.assertTrue(module.EdgeChrome.on_script_notify.unminute_guard)
+
+    def test_browser_dialogs_are_off_before_the_first_page_loads(self):
+        module, seen = self.fake_backend()
+
+        class Settings:
+            AreDefaultScriptDialogsEnabled = True
+
+        class Event:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+        class Core:
+            def __init__(self):
+                self.Settings = Settings()
+                self.ScriptDialogOpening = Event()
+                self.PermissionRequested = Event()
+                self.ScreenCaptureStarting = Event()
+
+        class Control:
+            def __init__(self):
+                self.CoreWebView2 = Core()
+        control = Control()
+        with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}), \
+                mock.patch.object(shell, "_permission_deny", return_value="DENY"):
+            shell.install_alert_guard()
+            view = module.EdgeChrome()
+            view.sender = control
+            view.on_webview_ready(control, None)
+        # pywebview turned them on, but the page loaded with them off, and
+        # any dialog, permission or screen capture asked for is refused.
+        self.assertEqual(seen[-1], ("load", "file:///index.html", False))
+        core = control.CoreWebView2
+        self.assertFalse(core.Settings.AreDefaultScriptDialogsEnabled)
+        self.assertEqual(core.ScriptDialogOpening.handlers, [shell._refuse_script_dialog])
+        self.assertEqual(core.ScreenCaptureStarting.handlers, [shell._refuse_screen_capture])
+        [refuse_permission] = core.PermissionRequested.handlers               # each once
+
+        class Request:                        # the page asks for the microphone
+            PermissionKind = "Microphone"
+            State = "Default"
+        request = Request()
+        refuse_permission(None, request)
+        self.assertEqual(request.State, "DENY")
+        self.assertIn("permission Microphone", shell.blocked_calls)
+
+        class Capture:                        # the page asks to capture the screen
+            Cancel = False
+        capture = Capture()
+        shell._refuse_screen_capture(None, capture)
+        self.assertTrue(capture.Cancel)
+        self.assertIn("screen capture", shell.blocked_calls)
+        self.assertNotIn("load_url", view.__dict__)              # the instance is left as it was
+        self.assertTrue(module.EdgeChrome.on_webview_ready.unminute_guard)
+
+    def test_no_page_loads_when_the_guard_cannot_attach(self):
+        # An older WebView2 Runtime without the screen-capture event: the
+        # page never loads and the window closes, with no error escaping into
+        # WebView2's start-up.
+        module, seen = self.fake_backend()
+
+        class Settings:
+            AreDefaultScriptDialogsEnabled = True
+
+        class Event:
+            def __iadd__(self, handler):
+                return self
+
+        class Core:
+            def __init__(self):
+                self.Settings = Settings()
+                self.ScriptDialogOpening = Event()
+                self.PermissionRequested = Event()
+
+        class Control:
+            def __init__(self):
+                self.CoreWebView2 = Core()
+        control = Control()
+        closed = []
+        try:
+            with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}), \
+                    mock.patch.object(shell, "_permission_deny", return_value="DENY"), \
+                    mock.patch.object(shell, "_close_now", closed.append):
+                shell.install_alert_guard()
+                view = module.EdgeChrome()
+                view.sender = control
+                view.pywebview_window = "the window"
+                view.on_webview_ready(control, None)
+            self.assertFalse([s for s in seen if s[0] == "load"])
+            self.assertEqual(closed, ["the window"])             # once
+            self.assertTrue(shell.lock_failed)
+        finally:
+            shell.lock_failed.clear()
+
+
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class BackendCheckTests(unittest.TestCase):
     def test_refuses_the_internet_explorer_fallback(self):
@@ -139,6 +293,22 @@ class BackendCheckTests(unittest.TestCase):
             renderer = "edgechromium"
         fake = type(sys)("webview.platforms.edgechromium")
         fake.js_bridge_call = lambda *a: None
+        with mock.patch.object(guilib, "initialize", return_value=Chromium()), \
+                mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": fake}):
+            with self.assertRaises(shell.ShellError):
+                shell.check_backend()
+
+    def test_refuses_a_backend_whose_alert_cannot_be_guarded(self):
+        guilib = importlib.import_module("webview.guilib")
+
+        class Chromium:
+            renderer = "edgechromium"
+
+        def guarded(*a):
+            return None
+        guarded.unminute_guard = True
+        fake = type(sys)("webview.platforms.edgechromium")
+        fake.js_bridge_call = guarded                       # calls guarded, alert not
         with mock.patch.object(guilib, "initialize", return_value=Chromium()), \
                 mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": fake}):
             with self.assertRaises(shell.ShellError):

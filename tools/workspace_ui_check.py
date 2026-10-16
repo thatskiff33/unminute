@@ -56,6 +56,26 @@ def evaluate(window, js, timeout=60):
 WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
 
 
+def page_dialogs():
+    """Visible top-level dialog windows (#32770) of this process."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32")
+    found, pid = set(), os.getpid()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if owner.value == pid and name.value == "#32770" and user32.IsWindowVisible(hwnd):
+            found.add(hwnd)
+        return True
+    user32.EnumWindows(each, 0)
+    return found
+
+
 def find_dialog(title, timeout=15):
     """The top-level window of a confirmation with this title, once shown."""
     import ctypes
@@ -251,6 +271,54 @@ def checks(window, ws, mid, long_mid, report):
             return {img: document.querySelectorAll('#transcript img, #transcript script').length,
                     pwned: window.__pwned || 0,
                     shown_as_text: text.textContent.includes('<img src=x')};""")
+        # The page cannot put its own text in a native or browser box: its
+        # alert is dropped and the browser's dialogs are off (confirm answers
+        # false at once instead of waiting for a person).
+        before = page_dialogs()
+        report["page_dialogs"] = evaluate(window, """
+            window.alert('Synthetic: tick the box, then Allow');
+            window.chrome.webview.postMessage(['_pywebviewAlert', '"Synthetic"', 'alert']);
+            const t0 = performance.now();
+            const answer = window.confirm('Synthetic: allow?');
+            const confirm_ms = Math.round(performance.now() - t0);
+            // The browser's own alert and prompt, reached through a fresh frame
+            // (pywebview's alert replacement is not there): each returns at once.
+            const frame = document.createElement('iframe');
+            document.body.appendChild(frame);
+            const t1 = performance.now();
+            frame.contentWindow.alert('Synthetic');
+            const prompted = frame.contentWindow.prompt('Synthetic', 'x');
+            const native_ms = Math.round(performance.now() - t1);
+            frame.remove();
+            // Browser permissions and screen capture are refused at once, with
+            // no prompt or picker: the page can never record or notify outside
+            // the app (#111 A6), from the page or from a frame of its own.
+            const outcome = async (ask) => {
+                try { await ask(); return 'granted'; } catch (err) { return err.name; }
+            };
+            const t2 = performance.now();
+            const microphone = await outcome(
+                () => navigator.mediaDevices.getUserMedia({audio: true}));
+            const inner = document.createElement('iframe');
+            document.body.appendChild(inner);
+            const frame_microphone = await outcome(
+                () => inner.contentWindow.navigator.mediaDevices.getUserMedia({audio: true}));
+            inner.remove();
+            const screen = await outcome(
+                () => navigator.mediaDevices.getDisplayMedia({video: true, audio: true}));
+            const notifications = await Notification.requestPermission();
+            const permission_ms = Math.round(performance.now() - t2);
+            return {confirm: answer, confirm_ms, prompt: prompted, native_ms,
+                    microphone, frame_microphone, screen, notifications, permission_ms};""")
+        time.sleep(1.0)
+        report["page_dialogs"]["new_windows"] = sorted(page_dialogs() - before)
+        report["page_dialogs"]["alert_blocked"] = "_pywebviewAlert" in shell.blocked_calls
+        # The refusals came from the app's handlers, not from Windows privacy
+        # settings or a missing device.
+        report["page_dialogs"]["refused"] = sorted(
+            {c for c in shell.blocked_calls if c.startswith(("permission", "screen"))})
+        report["page_dialogs"]["microphone_refusals"] = shell.blocked_calls.count(
+            "permission Microphone")
         report["edit_autosave"] = evaluate(window, WAIT + """
             const span = document.querySelectorAll('#transcript .text')[0];
             span.click(); span.textContent = 'Edited in the page'; span.dispatchEvent(new
@@ -460,6 +528,16 @@ def main():
     h = report.get("hostile") or {}
     if h.get("img") or h.get("pwned") or not h.get("shown_as_text"):
         bad.append("hostile markup")
+    pd = report.get("page_dialogs") or {}
+    if not (pd.get("confirm") is False and pd.get("confirm_ms", 9999) < 1000
+            and pd.get("prompt") is None and pd.get("native_ms", 9999) < 1000
+            and pd.get("microphone") == pd.get("frame_microphone") == "NotAllowedError"
+            and pd.get("screen") == "NotAllowedError" and pd.get("notifications") == "denied"
+            and {"screen capture", "permission Notifications"} <= set(pd.get("refused", []))
+            and pd.get("microphone_refusals", 0) >= 2               # the page and its frame
+            and pd.get("permission_ms", 9999) < 2000
+            and pd.get("new_windows") == [] and pd.get("alert_blocked")):
+        bad.append("page dialogs")
     if report.get("edit_in_db") != "Edited in the page":
         bad.append("autosave")
     if report.get("undo", "").startswith("Edited"):

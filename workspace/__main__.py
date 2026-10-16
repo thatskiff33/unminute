@@ -273,7 +273,8 @@ def main():
         ws.close()
     if shell.lock_failed:
         _message("Unminute closed its window because it could not secure it. "
-                 "Reinstall it, or ask your IT team.")
+                 "Update the Microsoft Edge WebView2 Runtime or reinstall Unminute, "
+                 "or ask your IT team.")
         return 1
     return 0
 

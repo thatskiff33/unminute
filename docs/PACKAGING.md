@@ -66,7 +66,7 @@ The installer runs as the current user and needs no administrator rights. It:
 
 - **Checks prerequisites:**
   - 64-bit Windows 10 1809 or later, or Windows 11;
-  - the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and present on most managed Windows 10 devices;
+  - the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and present on most managed Windows 10 devices. It must be recent enough to report screen-capture requests (added in WebView2 SDK 1.0.2903.40), which the Evergreen runtime is when Windows keeps it updated; with an older runtime the app closes its window rather than open a page it cannot secure;
   - about 6 GB free disk space;
   - processor cores and memory: the minimum is 4 cores and 8 GB, and 8 cores and 16 GB are recommended (#28). Below the minimum, the installer warns and asks before continuing; an unattended (`-Silent`) install records the warning and continues.
 - **Verifies the package.**
@@ -150,7 +150,7 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
   ```
 - **Return codes:** map 2, 3 and 4 to Failed. Code 3 (app running) is worth a retry.
 - **Detection rule:** Registry; key path `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace`; value name `DisplayVersion`; detection method "String comparison", equals, `<version>`. Associated with a 32-bit app on 64-bit clients: No.
-- **Requirements:** Windows 10 1809 or later, x64. If WebView2 cannot be assumed, deploy the WebView2 Evergreen runtime as a dependency.
+- **Requirements:** Windows 10 1809 or later, x64. If WebView2 cannot be assumed, deploy the WebView2 Evergreen runtime as a dependency, and keep it updated (see the prerequisites above).
 
 For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content.
 

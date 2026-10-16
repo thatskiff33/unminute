@@ -7,6 +7,7 @@
 # trial (tools/webview_trial.py) verifies that by listing listening sockets.
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
+import json
 import os
 import threading
 import time
@@ -344,6 +345,134 @@ def bring_to_front(window):
     form.Invoke(Action(apply))
 
 
+def _page_alert(message):
+    """True for pywebview's alert message: the page's window.alert, which
+    pywebview shows in a Windows message box before the dispatch guard sees
+    it. Page text must never appear in a native box, where it could pose as
+    instructions from the app (#111, follow-up to A6)."""
+    try:
+        data = json.loads(message)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, list) and bool(data) and data[0] == "_pywebviewAlert"
+
+
+def install_alert_guard():
+    """In the WebView2 backend: drop pywebview's alert message; before the
+    first page loads, turn off WebView2's own alert, confirm and prompt
+    dialogs and refuse every permission request and screen capture. Both
+    handlers are bound when each window is created, so this runs before any
+    window (check_backend calls it)."""
+    import importlib
+    view = importlib.import_module("webview.platforms.edgechromium").EdgeChrome
+    notify = getattr(view.on_script_notify, "__wrapped__", view.on_script_notify)
+    ready = getattr(view.on_webview_ready, "__wrapped__", view.on_webview_ready)
+
+    def on_script_notify(self, sender, args):
+        try:
+            message = args.get_WebMessageAsJson()
+        except Exception:
+            return                                   # unreadable: nothing runs
+        if _page_alert(message):
+            blocked_calls.append("_pywebviewAlert")
+            return
+        return notify(self, sender, args)
+
+    def on_webview_ready(self, sender, args):
+        # pywebview turns the browser's dialogs on and then loads the page in
+        # this one handler; the setting is read when a navigation starts, so
+        # it is turned off just before each load it makes.
+        loads = {name: getattr(self, name) for name in ("load_url", "load_html")}
+        guard = {"on": False, "failed": False}     # once per window (this handler runs once)
+
+        def quiet():
+            """True once the page may load."""
+            core = getattr(sender, "CoreWebView2", None)
+            if core is None or guard["failed"]:
+                return False                       # WebView2 failed to start: nothing loads
+            try:
+                _dialogs_off(core)
+                if not guard["on"]:
+                    core.ScriptDialogOpening += _refuse_script_dialog
+                    core.PermissionRequested += _permission_refuser()
+                    core.ScreenCaptureStarting += _refuse_screen_capture
+                    guard["on"] = True
+            except Exception:
+                # Never a page that could ask for the microphone or the screen
+                # (an older WebView2 Runtime has no screen-capture event):
+                # nothing loads, and the window closes with a message.
+                guard["failed"] = True
+                _guard_failed(self.pywebview_window)
+                return False
+            return True
+
+        def before(load):
+            def wrapped(*a, **kw):
+                if quiet():
+                    return load(*a, **kw)
+            return wrapped
+        for name, load in loads.items():
+            setattr(self, name, before(load))
+        try:
+            return ready(self, sender, args)
+        finally:
+            for name in loads:
+                self.__dict__.pop(name, None)        # back to the class methods
+            quiet()
+
+    for handler, original in ((on_script_notify, notify), (on_webview_ready, ready)):
+        handler.__wrapped__ = original
+        handler.unminute_guard = True
+    view.on_script_notify = on_script_notify
+    view.on_webview_ready = on_webview_ready
+
+
+def _permission_deny():
+    from Microsoft.Web.WebView2.Core import CoreWebView2PermissionState
+    return CoreWebView2PermissionState.Deny
+
+
+def _permission_refuser():
+    """A PermissionRequested handler that refuses every request at once, with
+    no prompt: the microphone and camera (recording goes only through the
+    app's own confirmed path, #111 A6), notifications, location and the rest."""
+    deny = _permission_deny()                      # resolved now: no failure later
+
+    def refuse(sender, args):
+        args.State = deny
+        blocked_calls.append(f"permission {args.PermissionKind}")
+    return refuse
+
+
+def _refuse_screen_capture(sender, args):
+    # getDisplayMedia: no screen picker, and the page's call fails.
+    args.Cancel = True
+    blocked_calls.append("screen capture")
+
+
+def _guard_failed(window):
+    lock_failed.append(True)
+    blocked_navigations.append("browser guard failed; window closed")
+    _close_now(window)
+
+
+def _refuse_script_dialog(sender, args):
+    # Not accepted: alert returns, confirm answers false, prompt null.
+    blocked_calls.append("script dialog")
+
+
+def _dialogs_off(core):
+    """Turn off WebView2's own alert, confirm and prompt dialogs, which would
+    show page text in a browser window (the page uses its own dialogs)."""
+    core.Settings.AreDefaultScriptDialogsEnabled = False
+
+
+def quiet_script_dialogs(window):
+    """The same setting checked again once the window's page has loaded (the
+    refusing handler is attached once, when WebView2 starts)."""
+    _dialogs_off(window.native.browser.webview.CoreWebView2)
+
+
 def lock_navigation(window, page="index.html"):
     """Cancel any navigation away from the window's bundled page (WebView2
     NavigationStarting). Attached at before_load, i.e. after the first
@@ -395,6 +524,7 @@ def _lock_once(window):
         return
     try:
         lock_navigation(window, getattr(window, "unminute_page", "index.html"))
+        quiet_script_dialogs(window)
         window._nav_locked = True
     except Exception:
         # Without the lock any page could get the bridge: close instead.
@@ -438,7 +568,14 @@ def check_backend():
         raise ShellError("Unminute needs the Microsoft Edge WebView2 Runtime, which was not "
                          "found on this computer. Ask your IT team to install it.")
     chromium = sys.modules.get("webview.platforms.edgechromium")
-    if not getattr(getattr(chromium, "js_bridge_call", None), "unminute_guard", False):
+    try:
+        install_alert_guard()
+    except Exception:
+        pass                                         # checked just below
+    view = getattr(chromium, "EdgeChrome", None)
+    if not (getattr(getattr(chromium, "js_bridge_call", None), "unminute_guard", False)
+            and getattr(getattr(view, "on_script_notify", None), "unminute_guard", False)
+            and getattr(getattr(view, "on_webview_ready", None), "unminute_guard", False)):
         raise ShellError("Unminute could not secure its window and will not start. "
                          "Reinstall it, or ask your IT team.")
 
