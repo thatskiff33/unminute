@@ -67,6 +67,10 @@ class ParseTests(unittest.TestCase):
                                   ("AllowWatchedFolders", "1", winreg.REG_SZ),
                                   ("ClipboardClearMinutes", 99999, winreg.REG_DWORD),
                                   ("HandoffDefaultFolder", "relative\\path", winreg.REG_SZ),
+                                  ("HandoffDefaultFolder", "\\\\server\\share\\Clients",
+                                   winreg.REG_SZ),
+                                  ("HandoffDefaultFolder", "%NO_SUCH_VAR%\\x",
+                                   winreg.REG_EXPAND_SZ),
                                   ("HandoffDefaultFolder", 5, winreg.REG_DWORD)):
             with self.assertRaises(ValueError, msg=(name, value)):
                 policy._parse(name, value, kind)
@@ -82,6 +86,26 @@ class ParseTests(unittest.TestCase):
         values, invalid = policy.read_registry()     # dev machines have no policy key
         self.assertIsInstance(values, dict)
         self.assertIsInstance(invalid, tuple)
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows clipboard")
+class ClipboardClearTests(unittest.TestCase):
+    def test_clears_only_the_apps_own_copy(self):
+        from workspace import clipboard
+        try:
+            previous = clipboard.read_text()
+        except clipboard.ClipboardError:
+            self.skipTest("clipboard busy")
+        try:
+            ours = clipboard.copy_text("handoff text")
+            self.assertTrue(clipboard.clear_if_unchanged(ours))
+            self.assertEqual(clipboard.read_text(), "")
+            ours = clipboard.copy_text("handoff text")
+            clipboard.copy_text("something the user copied since")
+            self.assertFalse(clipboard.clear_if_unchanged(ours))
+            self.assertEqual(clipboard.read_text(), "something the user copied since")
+        finally:
+            clipboard.copy_text(previous or "")       # put the user's text back
 
 
 class AdmxTests(unittest.TestCase):
@@ -198,6 +222,18 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
                              "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
+
+    def test_network_sources_only_by_policy(self):
+        from workspace import app as app_module
+        for values, expected in (({}, False), ({"AllowNetworkSources": True}, True)):
+            if expected:                                     # second pass: a fresh workspace
+                self.ws.close()
+                self.tmp.cleanup()
+            ws = self.open(**values)
+            with mock.patch.object(app_module, "validate_input_file",
+                                   side_effect=app_module.UnsafePathError("no")) as check:
+                ws.import_paths(["Z:\\meeting.wav"])
+            self.assertIs(check.call_args.kwargs["allow_network"], expected)
 
     def test_without_policy_nothing_changes(self):
         ws = self.open()

@@ -255,9 +255,11 @@ class Workspace:
         Paths come from the operating system, never from page script, and are
         validated again here. Returns the number accepted."""
         accepted, refused = 0, []
+        network = self._allowed("AllowNetworkSources")
         for p in list(paths)[:50]:
             try:
-                real = validate_input_file(p, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES)
+                real = validate_input_file(p, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
+                                           allow_network=network)
             except UnsafePathError as exc:
                 refused.append(str(exc))
                 continue
@@ -1482,7 +1484,12 @@ class Workspace:
     def _schedule_clipboard_clear(self, sequence, delay_s):
         """Clear the app's own copy later (policy), unless something else was
         copied since. Pending clears also run when the app closes."""
-        timer = threading.Timer(delay_s, clipboard.clear_if_unchanged, (sequence,))
+        def clear():
+            try:
+                clipboard.clear_if_unchanged(sequence)
+            except clipboard.ClipboardError:
+                pass                    # busy: the copy stays, as without the policy
+        timer = threading.Timer(delay_s, clear)
         timer.daemon = True
         self._clipboard_clears = [(t, s) for t, s in self._clipboard_clears if t.is_alive()]
         self._clipboard_clears.append((timer, sequence))

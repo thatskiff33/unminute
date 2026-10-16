@@ -89,8 +89,15 @@ def _parse(name, value, regtype):
     if regtype not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) or not isinstance(value, str):
         raise ValueError(name)
     path = os.path.expandvars(value) if regtype == winreg.REG_EXPAND_SZ else value
-    if not path or "\x00" in path or not os.path.isabs(path) or len(path) > 400:
+    if len(path) > 400:
         raise ValueError(name)
+    # Drive-letter paths only (a mapped drive is fine), the same rule as the
+    # save itself: a \\server\share folder would be contacted just to check it.
+    from workspace.safe_paths import UnsafePathError, check_raw
+    try:
+        check_raw(path)
+    except UnsafePathError:
+        raise ValueError(name) from None
     return path
 
 

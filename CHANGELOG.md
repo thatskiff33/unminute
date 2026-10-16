@@ -9,6 +9,13 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 - **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
 - **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
 
+Security hardening (#111, slice A5):
+
+- **IT can manage the app's settings.** On managed computers the app reads policy values from `HKLM\SOFTWARE\Policies\Unminute` (at start and every 15 minutes), which standard users cannot change. IT can turn off model downloads, the graphics card component, microphone recording, watched folders and deleting originals; allow recordings on mapped network drives; set a starting folder for saved handoffs; allow the meeting title in handoff file names; and have the app clear its handoff copy from the clipboard after a set time. An administrative template for Intune is in `packaging/policy/`.
+- **A bad policy value never grants a permission.** A value of the wrong type or out of range turns that permission off rather than on.
+- **Settings shows what is managed.** Managed controls are disabled with "Turned off by your organisation", and Setup shows "Installed by your IT team" where downloads are off. The app enforces each value itself, whatever the page shows.
+- **Without a policy the app behaves as before.**
+
 Security hardening (#111, slice A4):
 
 - **The network block covers more.** Besides ordinary connections and name lookups, the app's Python processes now also refuse UDP datagrams and the Windows asyncio connection path, which went around the block before. `--self-test` checks all three against a reserved address that is never contacted.

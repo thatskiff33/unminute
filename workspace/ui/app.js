@@ -1287,10 +1287,13 @@ async function copyHandoff(kind) {
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind], handoffState.anonymise); }
   catch (err) { handoffSaid(String(err.message || err)); return; }
-  handoffSaid(kind === "combined"
+  const clears = r.clears_in_minutes
+    ? ` Your organisation clears it from the clipboard after ${r.clears_in_minutes} minute${r.clears_in_minutes === 1 ? "" : "s"} or when you close the app.`
+    : "";
+  handoffSaid((kind === "combined"
     ? `Copied the prompt and transcript (${r.chars.toLocaleString("en-NZ")} characters). Paste it into your organisation's approved AI assistant.` +
       (r.long ? " It is long: if the assistant cuts it off, use Save Markdown and Copy prompt only instead." : "")
-    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.");
+    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.") + clears);
 }
 
 async function saveHandoff() {
@@ -1439,7 +1442,7 @@ function modelCard(c, s) {
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
   else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
-    action = itManaged();
+    action = itManaged(c);
   else {
     action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
     action.disabled = busy;
@@ -1494,7 +1497,7 @@ function downloadRow(c, s, inUse) {
       setStep(3);
     }, { primary: true });
   else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
-    action = itManaged();
+    action = itManaged(c);
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
   if (action.tagName === "BUTTON") action.disabled = busy && !running;
   const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
@@ -1675,7 +1678,11 @@ function allowed(name) {
   return !m || !m.allow || m.allow[name] !== false;
 }
 const MANAGED_NOTE = "Turned off by your organisation.";
-function itManaged() { return el("span", { class: "su-ready", textContent: "Installed by your IT team" }); }
+// A component the organisation switched off, or models IT installs instead of downloads.
+function itManaged(c) {
+  return el("span", { class: "su-ready", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
+    ? "Turned off by your organisation" : "Installed by your IT team" });
+}
 
 // -- settings ------------------------------------------------------------------
 const MODE_NOTE = {

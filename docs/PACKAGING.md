@@ -152,6 +152,26 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
 
 For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content.
 
+### Managed settings (policy)
+
+From v0.5 the app reads policy values from `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` (64-bit view), at start and every 15 minutes. Standard users cannot change this key. Policy overrides the user's settings; Settings shows managed controls as turned off, and the app enforces each value itself.
+
+The administrative template is in `packaging/policy/` (`Unminute.admx` and `en-US/Unminute.adml`; it needs no other ADMX file). In Intune, import both files under Devices > Manage devices > Configuration > Import ADMX, then create a Windows configuration profile from Templates > Imported Administrative templates and choose the "Unminute" category. Microsoft marks custom ADMX import as a preview feature, and Intune does not overwrite an imported template: to take a later version, delete the profiles that use it and the old template, then import again. The values can also be set directly in the registry.
+
+| Value | Type | Not set | Effect when set |
+| --- | --- | --- | --- |
+| `AllowModelDownloads` | DWORD 0/1 | Allowed | 0: the app refuses model downloads and repairs; Setup shows "Installed by your IT team" |
+| `AllowGpuComponent` | DWORD 0/1 | Allowed | 0: the graphics card component cannot be downloaded or used; speaker identification runs on the processor |
+| `AllowMicrophoneRecording` | DWORD 0/1 | Allowed | 0: microphone recording is off and cannot be turned on; imports still work |
+| `AllowWatchedFolders` | DWORD 0/1 | Allowed | 0: no folders can be added, and existing watched folders are not checked |
+| `AllowDeleteOriginals` | DWORD 0/1 | Allowed | 0: no folder can be given authority to delete originals, and originals are kept even where authority was given before |
+| `AllowNetworkSources` | DWORD 0/1 | Refused | 1: recordings on mapped network drives, or reached through a symbolic link, can be imported. `\\server\share` paths and watched folders on network drives stay refused |
+| `HandoffFilenameIncludesTitle` | DWORD 0/1 | Date and time only | 1: Save suggests the meeting title as the file name, except when speaker names are replaced |
+| `ClipboardClearMinutes` | DWORD 0 to 1440 | Never cleared | N: a handoff copied with the app's Copy button is cleared after N minutes and when the app closes, unless something else was copied since |
+| `HandoffDefaultFolder` | REG_SZ or REG_EXPAND_SZ | The dialog's usual folder | The Save dialog starts here. A full drive-letter path (a mapped drive is fine); `\\server\share` paths are not accepted |
+
+A value of the wrong type or out of range is treated as not allowed for the `Allow` values, and as not set for the others. Settings then says some settings are managed. Policy values are machine-wide: they apply to every user of the computer.
+
 ## Signing and trust
 
 The build does not sign anything, and this guide does not assume a particular signing provider. Integrity currently rests on two checks:

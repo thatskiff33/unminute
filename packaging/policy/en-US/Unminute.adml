@@ -39,7 +39,7 @@ Disabled: that permission cannot be given, and originals are never deleted, incl
       <string id="AllowNetworkSources">Allow recordings on network drives</string>
       <string id="AllowNetworkSources_Help">Disabled or not configured: recordings on mapped network drives, or reached through a symbolic link, are refused; users copy them to the computer first. Synced folders such as OneDrive are not affected.
 
-Enabled: such recordings can be imported. Opening them connects to the file server with the user's Windows credentials.</string>
+Enabled: such recordings can be imported with Import or by dragging them onto the window. Opening them connects to the file server with the user's Windows credentials. Users open them through the mapped drive letter; a \\server\share path chosen directly is still refused. Watched folders must still be on the computer.</string>
 
       <string id="HandoffFilenameIncludesTitle">Suggest the meeting title as the handoff file name</string>
       <string id="HandoffFilenameIncludesTitle_Help">Disabled or not configured: Save suggests "Meeting transcript" with the date and time, because meeting titles often name the client and file names are recorded in many places (recent items, search indexes, sync logs).
@@ -50,7 +50,7 @@ Enabled: Save suggests the meeting title, except when speaker names are being re
       <string id="ClipboardClearMinutes_Help">Enabled: a handoff copied with the app's Copy button is removed from the clipboard after this many minutes (1 to 1440), and when the app closes, unless something else was copied in the meantime. 0 or not configured: the app never clears the clipboard.</string>
 
       <string id="HandoffDefaultFolder">Starting folder for saved handoffs</string>
-      <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
+      <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Use a full path that starts with a drive letter; a mapped drive is fine, but \\server\share paths are not accepted. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
 
 Not configured: the dialog starts in its usual place.</string>
     </stringTable>
