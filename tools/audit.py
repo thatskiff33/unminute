@@ -53,7 +53,9 @@ def active_ignores(entries, today):
 def main():
     entries = json.loads(IGNORES.read_text(encoding="utf-8"))
     ids = active_ignores(entries, datetime.date.today())
-    cmd = [sys.executable, "-m", "pip_audit", "--require-hashes", "--disable-pip",
+    # --strict: a package that cannot be looked up (as when PyPI takes down a
+    # malicious release) fails the audit instead of being skipped.
+    cmd = [sys.executable, "-m", "pip_audit", "--require-hashes", "--disable-pip", "--strict",
            "--progress-spinner", "off", "--desc", "on", "--aliases", "on"]
     for vid in ids:
         cmd += ["--ignore-vuln", vid]

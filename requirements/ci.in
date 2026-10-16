@@ -1,0 +1,4 @@
+# ruff (lint) and zizmor (workflow lint) for CI. Adopt a new version only after
+# it has been public for at least 7 days.
+ruff==0.17.0
+zizmor==1.30.1

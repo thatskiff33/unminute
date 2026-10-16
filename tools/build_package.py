@@ -170,7 +170,7 @@ def copy_app(app):
     # The shell trial page (tools/webview_trial.py) is a development tool: it
     # is left out so the package holds no page other than the app's own.
     shutil.copytree(ROOT / "workspace", app / "workspace",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "requirements.txt",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc",
                                                   "trial.html", "trial.js", "trial.css"))
 
 

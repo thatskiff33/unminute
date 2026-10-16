@@ -1,0 +1,3 @@
+# coverage for the report-only job in .github/workflows/quality.yml (#125).
+# Adopt a new version only after it has been public for at least 7 days.
+coverage==7.16.2

@@ -1,12 +1,14 @@
 # Unminute's direct runtime dependencies, for Windows x64 and CPython 3.12.
-# requirements.lock is generated from this file by tools/lock.py and pins every
+# requirements.txt is generated from this file by tools/lock.py and pins every
 # package, direct or not, with its SHA-256 hashes. Edit this file, then run
 #   python tools/lock.py
 # and commit both. Change dependencies only as a compatible set with Windows
 # wheels (AGENTS.md, "Checks"), and adopt a new version only after it has been
 # public for at least 7 days.
 
-# Speech recognition
+# Speech recognition. onnx-asr is installed without extras: onnxruntime is
+# pinned here and shared with faster-whisper's voice detection. onnx-asr's [cpu]
+# extra excludes onnxruntime 1.24.1, 1.25.* and 1.26.0, so stay off those.
 faster-whisper==1.2.1
 onnx-asr==0.12.0
 onnxruntime==1.30.0
@@ -15,6 +17,7 @@ onnxruntime==1.30.0
 pyannote-audio==4.0.4
 torch==2.13.0
 torchaudio==2.11.0
+torchcodec==0.14.0
 # Security floor for a dependency of pyannote.audio (CVE-2026-58659, #118).
 pytorch-lightning>=2.6.6
 

@@ -2,9 +2,10 @@
 # from requirements/ci-audit.txt, on every pull request, on pushes to main and
 # daily, so a vulnerability published after a merge is still found. Ignores
 # expire (requirements/audit-ignore.json, read by tools/audit.py). Not a required
-# status check yet: it moves into ci.yml and the list in docs/RELEASING.md after
-# 10 consecutive green runs, which needs the owner account. The same
-# supply-chain rules as ci.yml apply (see its header).
+# status check yet: after 10 consecutive green runs it joins the list in
+# docs/RELEASING.md, staying in this workflow for its daily run (as the changelog
+# job stays in changelog.yml); that ruleset change needs the owner account. The
+# same supply-chain rules as ci.yml apply (see its header).
 name: Dependency audit
 
 on:
@@ -22,6 +23,7 @@ jobs:
   audit:
     name: Dependency audit (pip-audit)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

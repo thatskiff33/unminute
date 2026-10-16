@@ -3,7 +3,7 @@
 # Unminute's runtime: Windows x64, CPython 3.12, wheels only. The package build
 # installs it with pip install --require-hashes --no-deps --only-binary=:all:
 # --find-links packaging/wheels -r requirements.txt
-# Only versions published before 2026-10-10 (a 7-day cooldown).
+# Only versions published before 2026-10-09T19:48:40Z (a 7-day cooldown).
 aiohappyeyeballs==2.6.2 \
     --hash=sha256:4708045e2d7a6c6bdf8aafa8ed39649eaf926a4543b54560659129e3365953c4 \
     --hash=sha256:e202810ee718bd01fc6ef49e8ea53d023d5cb6b581076d7925aa499fa55dbe64
@@ -2313,7 +2313,7 @@ torchcodec==0.14.0 \
     --hash=sha256:f11ec6d25ee47d03eed0763d92bfc884402f583cc71f5697d7fd519be39e7f90 \
     --hash=sha256:fa5af195c92b1bfdefaaee6de5bd2691d56662ba56901bfa5b26c4f8ffb50c0b \
     --hash=sha256:fe875e2d2474abe1ef95fef4188a7a8b7d7cfdb70bb7a89ff6a9154e7c378f94
-    # via pyannote-audio
+    # via pyannote-audio, -r requirements.in
 torchmetrics==1.9.0 \
     --hash=sha256:a488609948600df52d3db4fcdab02e62aab2a85ef34da67037dc3e65b8512faa \
     --hash=sha256:bfdcbff3dd1d96b3374bb2496eb39f23c4b28b8a845b6a18c313688e0d2d9ca1

@@ -102,9 +102,10 @@ jobs:
 
   resolve:
     # Prove the locks are current and complete (#111 B1). tools/lock.py --check
-    # resolves requirements.in and the CI tool inputs again and must reproduce
-    # each lock exactly (catching a hand edit, or an input changed without a
-    # re-lock). Then pip downloads every Windows wheel in requirements.txt with
+    # resolves requirements.in and the CI tool inputs again, to the locked
+    # versions with hashes taken afresh from PyPI, and must reproduce each lock
+    # exactly (catching a hand edit to a version, a hash or a line, or an input
+    # changed without a re-lock). Then pip downloads every Windows wheel in requirements.txt with
     # its hash checked, exactly as the package build installs them. proxy_tools
     # has no published wheel; it comes from the hash-checked copy in
     # packaging/wheels.
