@@ -1,0 +1,41 @@
+# Known-vulnerability audit of the hash-locked requirements (#111 B1): pip-audit,
+# from requirements/ci-audit.txt, on every pull request, on pushes to main and
+# daily, so a vulnerability published after a merge is still found. Ignores
+# expire (requirements/audit-ignore.json, read by tools/audit.py). Not a required
+# status check yet: it moves into ci.yml and the list in docs/RELEASING.md after
+# 10 consecutive green runs, which needs the owner account. The same
+# supply-chain rules as ci.yml apply (see its header).
+name: Dependency audit
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 17 * * *"   # daily, 06:23 New Zealand daylight time
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit (hash-locked)
+        # Block scalar: ":all:" followed by a space is a YAML mapping indicator
+        # in a plain scalar.
+        run: >
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci-audit.txt
+      - name: Audit every lock
+        run: python tools/audit.py

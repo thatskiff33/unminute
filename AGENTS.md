@@ -157,7 +157,8 @@ or GitHub owner settings. Check the live repository settings before an authorise
 - Budgets: lower one when it improves; raise one only with a reason in the PR, and never from a
   single quick run on a development laptop (use `tools/perf_check.py` medians).
 - Dependencies change as a compatible set with Windows wheels only (especially torch,
-  torchaudio, pyannote.audio and huggingface_hub). Engine, model or dependency changes also need
+  torchaudio, pyannote.audio and huggingface_hub): edit `requirements.in` and run
+  `python tools/lock.py`; never edit a lock by hand. Engine, model or dependency changes also need
   `tools/compare_engines.py` and an end-to-end run with speaker identification on a
   non-sensitive recording. CI does not run the models.
 - GPU: validate the exact model, export, precision and runtime (processor INT8 support proves

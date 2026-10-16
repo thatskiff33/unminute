@@ -90,9 +90,10 @@ def check_signatures(runtime):
 
 
 def install_wheels(site, wheel_cache):
-    """Pinned requirements, wheels only, for Windows x64 CPython 3.12. The one
-    package without a published wheel comes from packaging/wheels (hash-checked)."""
-    reqs = [ROOT / "requirements.txt", ROOT / "workspace" / "requirements.txt"]
+    """The hash-locked requirements (tools/lock.py), wheels only, for Windows
+    x64 CPython 3.12: every file must match a pinned SHA-256, and nothing
+    outside the lock is installed (--no-deps). The one package without a
+    published wheel comes from packaging/wheels (also hash-checked)."""
     pip = [sys.executable, "-m", "pip", "--disable-pip-version-check"]
     vendored = PACKAGING / "wheels"
     for name, digest in VENDORED.items():
@@ -100,9 +101,8 @@ def install_wheels(site, wheel_cache):
             sys.exit(f"{name} does not match its pinned SHA-256.")
     cmd = pip + ["install", "--no-compile", "--target", str(site), "--platform",
                  "win_amd64", "--python-version", "3.12", "--implementation", "cp",
-                 "--only-binary=:all:", "--find-links", str(vendored)]
-    for r in reqs:
-        cmd += ["-r", str(r)]
+                 "--only-binary=:all:", "--require-hashes", "--no-deps",
+                 "--find-links", str(vendored), "-r", str(ROOT / "requirements.txt")]
     subprocess.run(cmd, check=True)
 
 

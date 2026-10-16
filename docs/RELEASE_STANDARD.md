@@ -233,7 +233,7 @@ Status is one of:
 | Bridge methods: the allowlist matches the implementation | 1 | Unit test (`tests/test_app.py`) | In place |
 | Bridge methods: the page and the design fixtures call only allowlisted names | 1 | Unit test (`tests/test_consistency.py`) | In place |
 | Model IDs and hashes: one manifest, docs generated from it | 1 | Unit test (`tests/test_asr_engines.py`) | In place |
-| GPU wheel pins match the requirements pins | 1 | Unit test (`tests/test_consistency.py`) | In place |
+| GPU wheel pins match the lock (`requirements.txt`) | 1 | Unit test (`tests/test_consistency.py`) | In place |
 | Install identity (taskbar ID, exit codes, name, install folder, registry key) agrees across app, build and installer | 1 | Unit test (`tests/test_consistency.py`); later `packaging/identity.json` with Pester tests | In place; security plan B6 replaces the copies |
 | Docs' required-checks lists match the CI job names; no partial job lists; no hard-coded test counts | 1, 10 | Unit test (`tests/test_consistency.py`) | In place |
 | Raw colours in `app.css` at or below the ratchet | 1 | Unit test (`tests/test_consistency.py`, ratchet in `tests/budgets.json`) | In place; reaches 0 in R12 (#133) |
@@ -261,7 +261,8 @@ Status is one of:
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` | Manual; extended by security plan C7 |
 | Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
 | Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
-| Hash-locked dependencies, vulnerability audit | 8 | CI | Security plan: B1 |
+| Hash-locked dependencies | 8 | `tools/lock.py --check` (lock drift) and `pip download --require-hashes` in `ci.yml` (Requirements resolve); `tools/build_package.py` installs with `--require-hashes --no-deps`; `tests/test_dependency_locks.py` | In place |
+| Vulnerability audit | 8 | `tools/audit.py` (pip-audit over every lock) in `audit.yml` on every pull request and daily, with expiring ignores in `requirements/audit-ignore.json` | In place, not yet required |
 | Reproducible, pruned build with SBOM and third-party notices; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 |
 | CI-built, attested release behind an approval; evidence present and naming the zip SHA-256 | 8, 14 | Release job | Security plan: B3 |
 | Update gate, rollback and migration | 9 | Unit tests (`tests/test_update.py`); installer end to end | Unit tests in place; installer check manual |

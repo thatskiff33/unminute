@@ -1,0 +1,32 @@
+# Unminute's direct runtime dependencies, for Windows x64 and CPython 3.12.
+# requirements.lock is generated from this file by tools/lock.py and pins every
+# package, direct or not, with its SHA-256 hashes. Edit this file, then run
+#   python tools/lock.py
+# and commit both. Change dependencies only as a compatible set with Windows
+# wheels (AGENTS.md, "Checks"), and adopt a new version only after it has been
+# public for at least 7 days.
+
+# Speech recognition
+faster-whisper==1.2.1
+onnx-asr==0.12.0
+onnxruntime==1.30.0
+
+# Speaker identification (torch, torchaudio and pyannote.audio move together)
+pyannote-audio==4.0.4
+torch==2.13.0
+torchaudio==2.11.0
+# Security floor for a dependency of pyannote.audio (CVE-2026-58659, #118).
+pytorch-lightning>=2.6.6
+
+# Media, audio and arrays
+av==17.1.0
+numpy==2.4.6
+sounddevice==0.5.6
+
+# Model downloads (the separate download process)
+huggingface_hub==1.18.0
+truststore==0.10.4
+
+# The window. proxy_tools, which pywebview needs, has no published wheel: its
+# pinned wheel is in packaging/wheels (tools/lock.py and the build find it there).
+pywebview==6.2.1

@@ -1,0 +1,3 @@
+# pip-audit, for tools/audit.py. Adopt a new version only after it has been
+# public for at least 7 days.
+pip-audit==2.10.1
