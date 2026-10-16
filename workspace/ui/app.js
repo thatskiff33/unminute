@@ -18,6 +18,7 @@ const state = {
   saving: Promise.resolve(),     // edits are saved strictly in order
   listsSig: "",                  // the meeting list last drawn
   active: false,                 // something is being processed or imported
+  wasActive: false,              // ...at the poll before
   recordingLive: false,          // a recording is open and running
 };
 
@@ -301,7 +302,7 @@ async function renderLists() {
   $("nav-count").textContent = String(waiting);
   $("nav-count-sr").textContent = waiting ? `, ${waiting} waiting for you` : "";
   if (state.view !== "meetings") return;
-  const sig = JSON.stringify(items);
+  const sig = JSON.stringify([items, state.mode]);     // workRow shows the mode
   if (sig === state.listsSig) return;           // unchanged: keep the rows, buttons and focus
   state.listsSig = sig;
   const busy = items.find((m) => m.busy === "transcribe");
@@ -322,6 +323,7 @@ async function renderLists() {
 async function renderStatus() {
   const s = await call("status");
   state.mode = s.mode;
+  state.wasActive = state.active;      // one more fast poll across the gap between jobs
   state.active = !!(s.busy || s.importing);
   const parts = [];
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
@@ -2164,11 +2166,17 @@ function wireDrop() {
     clearTimeout(dragTimer);
     dragTimer = setTimeout(hide, 400);
   });
-  document.addEventListener("drop", () => { clearTimeout(dragTimer); hide(); });
+  document.addEventListener("drop", () => { clearTimeout(dragTimer); hide(); pollSoon(); });
 }
 
+let refreshAgain = false;
+
 async function refresh() {
-  if (refreshing || !window.pywebview) return;
+  if (!window.pywebview) return;
+  if (refreshing) {                    // one is running: run again when it ends, so an
+    refreshAgain = true;               // action's refresh is never lost
+    return;
+  }
   refreshing = true;
   try {
     await renderStatus();
@@ -2185,6 +2193,11 @@ async function refresh() {
   } finally {
     refreshing = false;
   }
+  if (refreshAgain) {
+    refreshAgain = false;
+    await refresh();
+    return;
+  }
   if (pollTimer && pollDelay() < pollTimerDelay) schedulePoll();
 }
 
@@ -2196,9 +2209,19 @@ let pollTimer = null;
 let pollTimerDelay = 0;
 
 function pollDelay() {
-  const active = state.active || state.recordingLive || state.view === "setup" ||
-                 state.view === "downloads";
+  const active = state.active || state.wasActive ||
+                 (state.recordingLive && state.view === "meetings") ||
+                 state.view === "setup" || state.view === "downloads";
   return active ? POLL_MS : IDLE_POLL_MS;
+}
+
+// Soon, not in up to 10 s: after something the page did not start itself (a
+// recording dropped on the window is imported by Python directly).
+function pollSoon() {
+  if (document.hidden) return;
+  clearTimeout(pollTimer);
+  pollTimerDelay = 500;
+  pollTimer = setTimeout(pollNow, pollTimerDelay);
 }
 
 function schedulePoll() {
@@ -2226,9 +2249,13 @@ function wire() {
   $("s-add-folder").addEventListener("click", () => attempt(async () => {
     const added = await call("add_folder_dialog", $("s-include-existing").checked);
     if (added) say("Folder added. It will be checked now.");
-    renderSettings();
+    await refresh();
   }));
-  $("s-scan").addEventListener("click", () => attempt(async () => { await call("scan_now"); say("Checking watched folders"); }));
+  $("s-scan").addEventListener("click", () => attempt(async () => {
+    await call("scan_now");
+    say("Checking watched folders");
+    await refresh();
+  }));
   wireSetup();
   wireHandoff();
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
@@ -2307,6 +2334,7 @@ function wire() {
       await call("retranscribe", state.mid);
       viewVersion(null);
       say("Transcribing again. The previous version and its edits are kept.");
+      await refresh();
     }),
   }));
   $("m-rerun").addEventListener("click", () => {
@@ -2323,6 +2351,7 @@ function wire() {
         $("m-again-form").hidden = true;
         $("m-again").setAttribute("aria-expanded", "false");
         say("Identifying speakers again");
+        await refresh();
       }),
     });
   });

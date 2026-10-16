@@ -64,25 +64,41 @@
       document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
     }
     realSetTimeout(() => {
-      const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
-      const calls = Object.fromEntries(Object.entries(perf.calls).map(([k, v]) => [k, perMinute(v)]));
-      const live = [...perf.intervals.values()];
-      const result = {
-        mode: perfMode, page_ms: ms, calls_per_minute: calls,
-        bridge_calls_per_minute: perMinute(Object.values(perf.calls).reduce((a, b) => a + b, 0)),
-        timeouts_per_minute: perMinute(perf.timeouts),
-        pending_animation_frames: perf.pendingFrames.size,
-        list_rebuilds_per_minute: perMinute(perf.rebuilds),
-        live_intervals: live.length,
-        fastest_interval_ms: live.length ? Math.min(...live) : null,
-        meeting_rows: groups ? groups.querySelectorAll("li").length : 0,
-        page_errors: perf.errors,
-      };
-      const out = document.createElement("pre");
-      out.id = "perf-result";
-      out.textContent = JSON.stringify(result);
-      document.body.append(out);
+      const seen = snapshot();
+      if (perfMode !== "hidden") return finish(ms, seen, null);
+      // Shown again: the page must catch up by itself, promptly. Counted
+      // separately, so the hidden figures above stay what the hidden page did.
+      const before = total(perf.calls);
+      pageHidden = false;
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+      realSetTimeout(() => finish(ms, seen, total(perf.calls) - before), 1000);
     }, ms);
+  }
+  function total(calls) { return Object.values(calls).reduce((a, b) => a + b, 0); }
+  function snapshot() {
+    return { calls: { ...perf.calls }, timeouts: perf.timeouts, rebuilds: perf.rebuilds,
+             intervals: [...perf.intervals.values()], frames: perf.pendingFrames.size,
+             rows: document.querySelectorAll("#groups li").length };
+  }
+  function finish(ms, seen, catchUp) {
+    const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
+    const calls = Object.fromEntries(Object.entries(seen.calls).map(([k, v]) => [k, perMinute(v)]));
+    const result = {
+      mode: perfMode, page_ms: ms, calls_per_minute: calls,
+      bridge_calls_per_minute: perMinute(total(seen.calls)),
+      timeouts_per_minute: perMinute(seen.timeouts),
+      pending_animation_frames: seen.frames,
+      list_rebuilds_per_minute: perMinute(seen.rebuilds),
+      live_intervals: seen.intervals.length,
+      fastest_interval_ms: seen.intervals.length ? Math.min(...seen.intervals) : null,
+      meeting_rows: seen.rows,
+      catch_up_calls: catchUp,
+      page_errors: perf.errors,
+    };
+    const out = document.createElement("pre");
+    out.id = "perf-result";
+    out.textContent = JSON.stringify(result);
+    document.body.append(out);
   }
 
   // A fixed clock: 15 Oct 2026, 2:30 pm local time.

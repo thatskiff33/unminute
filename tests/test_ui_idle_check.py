@@ -43,11 +43,21 @@ class RatchetTests(unittest.TestCase):
 
     def test_a_page_that_threw_or_is_not_running_fails(self):
         running = {"bridge_calls_per_minute": 120, "meeting_rows": 3, "page_errors": []}
-        self.assertEqual([], ui_idle_check.sanity({"visible": running, "hidden": running}))
-        threw = dict(running, page_errors=["TypeError: x is undefined"])
+        hidden = {"bridge_calls_per_minute": 0, "page_errors": [], "catch_up_calls": 4}
+        self.assertEqual([], ui_idle_check.sanity({"visible": running, "hidden": hidden}))
+        threw = dict(hidden, page_errors=["TypeError: x is undefined"])
         self.assertEqual(1, len(ui_idle_check.sanity({"visible": running, "hidden": threw})))
         silent = {"bridge_calls_per_minute": 0, "meeting_rows": 0, "page_errors": []}
-        self.assertEqual(1, len(ui_idle_check.sanity({"visible": silent, "hidden": silent})))
+        self.assertEqual(1, len(ui_idle_check.sanity({"visible": silent, "hidden": hidden})))
+
+    def test_a_page_that_does_not_catch_up_when_shown_again_fails(self):
+        # Hidden pages must stop polling, but come back by themselves (#127).
+        running = {"bridge_calls_per_minute": 24, "meeting_rows": 3, "page_errors": []}
+        for stuck in (0, None):
+            hidden = {"bridge_calls_per_minute": 0, "page_errors": [], "catch_up_calls": stuck}
+            problems = ui_idle_check.sanity({"visible": running, "hidden": hidden})
+            self.assertEqual(1, len(problems), stuck)
+            self.assertIn("shown again", problems[0])
 
     def test_ratchet_file_covers_both_modes_with_known_metrics(self):
         data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
