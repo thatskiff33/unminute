@@ -7,6 +7,7 @@
 # trial (tools/webview_trial.py) verifies that by listing listening sockets.
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
+import json
 import os
 import threading
 import time
@@ -344,6 +345,92 @@ def bring_to_front(window):
     form.Invoke(Action(apply))
 
 
+def _page_alert(message):
+    """True for pywebview's alert message: the page's window.alert, which
+    pywebview shows in a Windows message box before the dispatch guard sees
+    it. Page text must never appear in a native box, where it could pose as
+    instructions from the app (#111, follow-up to A6)."""
+    try:
+        data = json.loads(message)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, list) and bool(data) and data[0] == "_pywebviewAlert"
+
+
+def install_alert_guard():
+    """In the WebView2 backend: drop pywebview's alert message, and turn off
+    WebView2's own alert, confirm and prompt dialogs before the first page
+    loads. Both handlers are bound when each window is created, so this runs
+    before any window (check_backend calls it)."""
+    import importlib
+    view = importlib.import_module("webview.platforms.edgechromium").EdgeChrome
+    notify = getattr(view.on_script_notify, "__wrapped__", view.on_script_notify)
+    ready = getattr(view.on_webview_ready, "__wrapped__", view.on_webview_ready)
+
+    def on_script_notify(self, sender, args):
+        try:
+            message = args.get_WebMessageAsJson()
+        except Exception:
+            return                                   # unreadable: nothing runs
+        if _page_alert(message):
+            blocked_calls.append("_pywebviewAlert")
+            return
+        return notify(self, sender, args)
+
+    def on_webview_ready(self, sender, args):
+        # pywebview turns the browser's dialogs on and then loads the page in
+        # this one handler; the setting is read when a navigation starts, so
+        # it is turned off just before each load it makes.
+        loads = {name: getattr(self, name) for name in ("load_url", "load_html")}
+
+        def before(load):
+            def wrapped(*a, **kw):
+                quiet_script_dialogs_on(sender)
+                return load(*a, **kw)
+            return wrapped
+        for name, load in loads.items():
+            setattr(self, name, before(load))
+        try:
+            return ready(self, sender, args)
+        finally:
+            for name in loads:
+                self.__dict__.pop(name, None)        # back to the class methods
+            quiet_script_dialogs_on(sender)
+
+    for handler, original in ((on_script_notify, notify), (on_webview_ready, ready)):
+        handler.__wrapped__ = original
+        handler.unminute_guard = True
+    view.on_script_notify = on_script_notify
+    view.on_webview_ready = on_webview_ready
+
+
+def _refuse_script_dialog(sender, args):
+    # Not accepted: alert returns, confirm answers false, prompt null.
+    blocked_calls.append("script dialog")
+
+
+def quiet_script_dialogs_on(control):
+    """Turn off WebView2's own alert, confirm and prompt dialogs, which would
+    show page text in a browser window (the page uses its own dialogs), and
+    refuse any that are still asked for."""
+    core = getattr(control, "CoreWebView2", None)
+    if core is None:
+        return
+    core.Settings.AreDefaultScriptDialogsEnabled = False
+    if not getattr(control, "unminute_dialogs_refused", False):
+        core.ScriptDialogOpening += _refuse_script_dialog
+        try:
+            control.unminute_dialogs_refused = True
+        except Exception:
+            pass
+
+
+def quiet_script_dialogs(window):
+    """The same, for a window already open (checked again once its page has
+    loaded)."""
+    quiet_script_dialogs_on(window.native.browser.webview)
+
+
 def lock_navigation(window, page="index.html"):
     """Cancel any navigation away from the window's bundled page (WebView2
     NavigationStarting). Attached at before_load, i.e. after the first
@@ -395,6 +482,7 @@ def _lock_once(window):
         return
     try:
         lock_navigation(window, getattr(window, "unminute_page", "index.html"))
+        quiet_script_dialogs(window)
         window._nav_locked = True
     except Exception:
         # Without the lock any page could get the bridge: close instead.
@@ -438,7 +526,14 @@ def check_backend():
         raise ShellError("Unminute needs the Microsoft Edge WebView2 Runtime, which was not "
                          "found on this computer. Ask your IT team to install it.")
     chromium = sys.modules.get("webview.platforms.edgechromium")
-    if not getattr(getattr(chromium, "js_bridge_call", None), "unminute_guard", False):
+    try:
+        install_alert_guard()
+    except Exception:
+        pass                                         # checked just below
+    view = getattr(chromium, "EdgeChrome", None)
+    if not (getattr(getattr(chromium, "js_bridge_call", None), "unminute_guard", False)
+            and getattr(getattr(view, "on_script_notify", None), "unminute_guard", False)
+            and getattr(getattr(view, "on_webview_ready", None), "unminute_guard", False)):
         raise ShellError("Unminute could not secure its window and will not start. "
                          "Reinstall it, or ask your IT team.")
 

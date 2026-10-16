@@ -56,6 +56,26 @@ def evaluate(window, js, timeout=60):
 WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
 
 
+def page_dialogs():
+    """Visible top-level dialog windows (#32770) of this process."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32")
+    found, pid = set(), os.getpid()
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        name = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, name, 64)
+        if owner.value == pid and name.value == "#32770" and user32.IsWindowVisible(hwnd):
+            found.add(hwnd)
+        return True
+    user32.EnumWindows(each, 0)
+    return found
+
+
 def find_dialog(title, timeout=15):
     """The top-level window of a confirmation with this title, once shown."""
     import ctypes
@@ -251,6 +271,19 @@ def checks(window, ws, mid, long_mid, report):
             return {img: document.querySelectorAll('#transcript img, #transcript script').length,
                     pwned: window.__pwned || 0,
                     shown_as_text: text.textContent.includes('<img src=x')};""")
+        # The page cannot put its own text in a native or browser box: its
+        # alert is dropped and the browser's dialogs are off (confirm answers
+        # false at once instead of waiting for a person).
+        before = page_dialogs()
+        report["page_dialogs"] = evaluate(window, """
+            window.alert('Synthetic: tick the box, then Allow');
+            window.chrome.webview.postMessage(['_pywebviewAlert', '"Synthetic"', 'alert']);
+            const t0 = performance.now();
+            const answer = window.confirm('Synthetic: allow?');
+            return {confirm: answer, confirm_ms: Math.round(performance.now() - t0)};""")
+        time.sleep(1.0)
+        report["page_dialogs"]["new_windows"] = sorted(page_dialogs() - before)
+        report["page_dialogs"]["alert_blocked"] = "_pywebviewAlert" in shell.blocked_calls
         report["edit_autosave"] = evaluate(window, WAIT + """
             const span = document.querySelectorAll('#transcript .text')[0];
             span.click(); span.textContent = 'Edited in the page'; span.dispatchEvent(new
@@ -460,6 +493,10 @@ def main():
     h = report.get("hostile") or {}
     if h.get("img") or h.get("pwned") or not h.get("shown_as_text"):
         bad.append("hostile markup")
+    pd = report.get("page_dialogs") or {}
+    if not (pd.get("confirm") is False and pd.get("confirm_ms", 9999) < 1000
+            and pd.get("new_windows") == [] and pd.get("alert_blocked")):
+        bad.append("page dialogs")
     if report.get("edit_in_db") != "Edited in the page":
         bad.append("autosave")
     if report.get("undo", "").startswith("Edited"):
