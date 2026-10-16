@@ -1380,7 +1380,12 @@ class Workspace:
         from workspace import update
         info = gpu.detected()
         self.policy.refresh()             # Settings opening re-reads the policy
-        return {**self.settings.values, "choices": choices, "managed": self.managed(),
+        effective = dict(self.settings.values)
+        if not self._allowed("AllowMicrophoneRecording"):
+            effective["microphone"] = False
+        if not self._allowed("AllowGpuComponent"):
+            effective["gpu_speakers"] = False
+        return {**effective, "choices": choices, "managed": self.managed(),
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
                         "component": gpu.status(self.cache_dir)[0] if info else "missing"},
@@ -1445,8 +1450,8 @@ class Workspace:
         template = self._handoff(self.templates.get, tid)
         out = self._handoff(handoff.build, self.store, mid, template, anonymise)
         if self._allowed("HandoffFilenameIncludesTitle") and not anonymise:
-            out["filename"] = handoff.title_filename(self.store.meeting(mid)["title"],
-                                                     out["filename"])
+            out = {**out, "filename": handoff.title_filename(self.store.meeting(mid)["title"],
+                                                             out["filename"])}
         return {**out, "options": handoff.options(self.store, mid)}
 
     def set_handoff_options(self, mid, omitted, redactions):

@@ -6,6 +6,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -81,6 +82,106 @@ class ParseTests(unittest.TestCase):
         values, invalid = policy.read_registry()     # dev machines have no policy key
         self.assertIsInstance(values, dict)
         self.assertIsInstance(invalid, tuple)
+
+
+import importlib.util as _ilu  # noqa: E402
+
+HAVE_DEPS = all(_ilu.find_spec(m) for m in ("numpy", "av"))
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class WorkspacePolicyTests(unittest.TestCase):
+    """Each policy value is enforced by the app, whatever the page shows."""
+
+    def open(self, **values):
+        import tempfile
+        from workspace.app import Workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                            allow_test_engines=True, policy_reader=lambda: (values, ()))
+        return self.ws
+
+    def tearDown(self):
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def refused(self, fn, *args):
+        from workspace.app import WorkspaceError
+        with self.assertRaises(WorkspaceError) as ctx:
+            fn(*args)
+        return str(ctx.exception)
+
+    def test_downloads_off(self):
+        ws = self.open(AllowModelDownloads=False)
+        self.assertIn("Downloads are turned off", self.refused(ws.download_model,
+                                                              "parakeet-tdt-0.6b-v2"))
+        self.assertFalse(ws.setup_state()["managed"]["allow"]["AllowModelDownloads"])
+
+    def test_gpu_component_off(self):
+        from workspace import gpu
+        ws = self.open(AllowGpuComponent=False)
+        self.assertIn("graphics card", self.refused(ws.download_model, gpu.COMPONENT))
+        self.assertIn("organisation", self.refused(ws.set_settings, {"gpu_speakers": True}))
+        ws.settings.update(gpu_speakers=True, mode="faster")
+        with mock.patch.object(gpu, "verified_for_use", return_value=True):
+            self.assertEqual(ws._speaker_device(), ("cpu", None))
+        self.assertFalse(ws.get_settings()["gpu_speakers"])     # shown as off
+
+    def test_microphone_off(self):
+        ws = self.open(AllowMicrophoneRecording=False)
+        ws.settings.update(microphone=True)                      # saved before the policy
+        self.assertIn("organisation", self.refused(ws.microphone_devices))
+        self.assertIn("organisation", self.refused(ws.set_settings, {"microphone": True}))
+        self.assertFalse(ws.get_settings()["microphone"])
+
+    def test_watched_folders_and_deletion_authority_off(self):
+        ws = self.open(AllowWatchedFolders=False, AllowDeleteOriginals=False)
+        self.assertIn("Watched folders", self.refused(ws.add_watched_folder, "C:\\x", False))
+        self.assertIn("Deleting original", self.refused(
+            ws.set_folder_authority, "a" * 32, True, None))
+        seen = {}
+        with mock.patch("workspace.cleanup.run_job",
+                        side_effect=lambda *a, **kw: seen.update(kw)), \
+                mock.patch("workspace.intake.deletion_roots", return_value=["C:\\rec"]):
+            ws._run("cleanup", "m" * 32, "job")
+        self.assertEqual(seen["original_roots"], [])             # originals are kept
+
+    def test_clipboard_is_cleared_later_only_by_policy(self):
+        from workspace import clipboard
+        ws = self.open(ClipboardClearMinutes=5)
+        out = {"combined": "text", "long": False}
+        with mock.patch.object(ws, "_checked", return_value=out), \
+                mock.patch.object(clipboard, "copy_text", return_value=42), \
+                mock.patch.object(clipboard, "clear_if_unchanged") as clear:
+            self.assertEqual(ws.copy_handoff("m" * 32, "t", "combined", "x")["clears_in_minutes"],
+                             5)
+            clear.assert_not_called()
+            ws._flush_clipboard_clears()                         # closing runs pending clears
+            clear.assert_called_once_with(42)
+
+    def test_handoff_file_name_and_folder(self):
+        import tempfile
+        from workspace import handoff
+        ws = self.open(HandoffFilenameIncludesTitle=True,
+                       HandoffDefaultFolder=tempfile.gettempdir())
+        mid = ws.store.create_meeting("Client: budget review")
+        built = {"filename": "Meeting transcript 2026-10-16 10-00.md"}
+        with mock.patch.object(handoff, "build", return_value=built), \
+                mock.patch.object(ws.templates, "get", return_value={}), \
+                mock.patch.object(handoff, "options", return_value={}):
+            self.assertEqual(ws.handoff_preview(mid, "t")["filename"],
+                             "Client  budget review - transcript.md")
+            self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
+                             "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
+        self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
+
+    def test_without_policy_nothing_changes(self):
+        ws = self.open()
+        managed = ws.get_settings()["managed"]
+        self.assertEqual(managed["managed"], [])
+        self.assertTrue(all(v for k, v in managed["allow"].items()
+                            if k not in ("AllowNetworkSources", "HandoffFilenameIncludesTitle")))
 
 
 if __name__ == "__main__":

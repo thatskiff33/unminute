@@ -1438,6 +1438,8 @@ function modelCard(c, s) {
   if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download").then(renderSetup)));
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
+  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+    action = itManaged();
   else {
     action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
     action.disabled = busy;
@@ -1491,8 +1493,10 @@ function downloadRow(c, s, inUse) {
       show("setup");
       setStep(3);
     }, { primary: true });
+  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+    action = itManaged();
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
-  action.disabled = busy && !running;
+  if (action.tagName === "BUTTON") action.disabled = busy && !running;
   const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
     title: `Remove ${cardName(c)}?`,
     body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
@@ -1520,6 +1524,7 @@ function downloadRow(c, s, inUse) {
 async function renderSetup() {
   const s = await call("setup_state");
   state.setup = s;
+  state.managed = s.managed;
   renderSuSteps();
   const speech = s.cards.filter((c) => c.role === "speech");
   const rec = speech.find((c) => c.recommended) || speech[0];
@@ -1650,6 +1655,7 @@ function wireSetup() {
 async function renderDownloads() {
   const s = await call("setup_state");
   state.setup = s;
+  state.managed = s.managed;
   const settings = await call("settings");
   const sig = JSON.stringify([s.cards, settings.model]);
   if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
@@ -1660,6 +1666,17 @@ async function renderDownloads() {
   $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
 }
 
+// -- managed policy (#111 A5) ------------------------------------------------------
+// What the organisation's policy allows (from settings and setup_state). Until
+// the first answer arrives everything is treated as allowed; the app itself
+// enforces the policy whatever the page shows.
+function allowed(name) {
+  const m = state.managed;
+  return !m || !m.allow || m.allow[name] !== false;
+}
+const MANAGED_NOTE = "Turned off by your organisation.";
+function itManaged() { return el("span", { class: "su-ready", textContent: "Installed by your IT team" }); }
+
 // -- settings ------------------------------------------------------------------
 const MODE_NOTE = {
   quiet: "Quiet leaves most of the computer free while it transcribes. Recommended.",
@@ -1668,6 +1685,8 @@ const MODE_NOTE = {
 
 async function renderSettings() {
   const s = await call("settings");
+  state.managed = s.managed;
+  $("s-managed").hidden = !(s.managed && s.managed.managed.length);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
@@ -1677,8 +1696,9 @@ async function renderSettings() {
   $("s-gpu-box").hidden = !s.gpu.card;
   $("s-gpu").checked = !!s.gpu_speakers;
   // Always possible to turn off; turning on needs the component and driver.
-  $("s-gpu").disabled = !s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok);
-  $("s-gpu-note").textContent = !s.gpu.card ? "" : !s.gpu.driver_ok
+  $("s-gpu").disabled = !allowed("AllowGpuComponent")
+    || (!s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok));
+  $("s-gpu-note").textContent = !s.gpu.card ? "" : !allowed("AllowGpuComponent") ? MANAGED_NOTE : !s.gpu.driver_ok
     ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
     : s.gpu.component !== "ready"
       ? (s.gpu_speakers
@@ -1688,6 +1708,8 @@ async function renderSettings() {
         ? "Used only in Faster mode (Processing, above)."
         : `${s.gpu.card}. Speeds up speaker names in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
+  $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
+  $("s-add-folder").disabled = $("s-include-existing").disabled = !allowed("AllowWatchedFolders");
   const sel = $("s-model");
   if (document.activeElement !== sel) {
     sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name,
@@ -1753,6 +1775,7 @@ function folderItem(f) {
       on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
       "Download recordings that are only in cloud storage (OneDrive and similar)"),
     el("label", {}, el("input", { type: "checkbox", checked: f.delete_originals,
+      disabled: !f.delete_originals && !allowed("AllowDeleteOriginals"),
       on: { change: (e) => {
         if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
         e.target.checked = false;
