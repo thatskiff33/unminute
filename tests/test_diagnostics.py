@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -322,6 +323,8 @@ class SharingTests(unittest.TestCase):
         self.assertFalse(page.report_ui_error(f"{MARKER} text", 1, 1)["ok"])   # refused
         self.assertFalse(page.report_ui_error("error", MARKER, 1)["ok"])
         page.report_ui_error("rejection", 0, 0)                 # within a second: dropped
+        self.assertEqual(len([r for r in records(self.ws.log.folder)
+                              if r.get("area") == "page"]), 1)
         for _ in range(40):
             self.now[0] += 2
             page.report_ui_error("rejection", 0, 0)
@@ -336,12 +339,17 @@ class SharingTests(unittest.TestCase):
         with open(self.ws.log.path, "a", encoding="ascii") as f:     # a hand-edited line
             f.write(json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "incident",
                                 "title": MARKER, "area": f"C:/Users/{MARKER}",
+                                "log": MARKER,
                                 "frames": [[f"C:/Users/{MARKER}/x.py", 1, "run"]]}) + "\n")
+            f.write(json.dumps({"t": MARKER, "kind": "crash"}) + "\n")   # no valid time
             f.write("not json\n")
         shared = diag.shareable_records(self.ws.log.folder)
-        self.assertEqual([r["kind"] for r in shared], ["incident", "start"])
-        self.assertEqual((shared[0]["title"], shared[0]["area"]), ("?", "?"))
+        self.assertEqual([r["kind"] for r in shared], ["incident", "start", "crash"])
+        self.assertEqual((shared[0]["title"], shared[0]["area"], shared[0]["log"]),
+                         ("?", "?", self.ws.log.path.stem))
+        self.assertEqual(shared[2]["t"], "?")
         self.assertNotIn(MARKER, json.dumps(shared))
+        self.assertEqual(diag.recent_crashes(self.ws.log.folder), 0)   # undated: not counted
 
     def test_diagnostics_show_settings_and_policy_values_never_paths(self):
         from workspace import clipboard, policy
@@ -352,6 +360,8 @@ class SharingTests(unittest.TestCase):
         self.assertIn("HandoffDefaultFolder=set", text)
         self.assertIn("mode=quiet", text)
         self.assertNotIn(MARKER, text)
+        self.ws.settings.values["model"] = f"{MARKER} text"     # past validation somehow
+        self.assertIn("model=?", self.ws.diagnostics())
         with mock.patch.object(clipboard, "copy_text") as copy:
             self.assertEqual(self.ws.copy_diagnostics()["chars"], len(copy.call_args.args[0]))
 
@@ -365,10 +375,18 @@ class SharingTests(unittest.TestCase):
         with mock.patch.object(main, "_app_running", return_value=False):
             self.assertEqual(main.health(root)["last_run"], "did_not_close")
             self.assertFalse(main.health(root)["healthy"])
+        with mock.patch.object(main, "_app_running", return_value=True):   # open now
+            self.assertEqual(main.health(root)["last_run"], "clean")
         self.ws.log.close_run()
+        self.ws.log.write("worker_exit", code="U-ABCDE0", process="worker", hung=True)
+        self.assertEqual(main.health(root)["crashes_7d"], 0)   # stopped by the app
         self.ws.log.write("crash", code="U-ABCDEF", process="worker", fatal="x")
         report = main.health(root)
         self.assertEqual((report["crashes_7d"], report["healthy"]), (1, False))
+        self.ws.log.write("worker_exit", code="U-ABCDE1", process="worker", exitcode=3)
+        self.assertEqual(main.health(root)["crashes_7d"], 2)
+        later = time.time() + 8 * 86400
+        self.assertEqual(diag.recent_crashes(self.ws.log.folder, now=later), 0)
         self.assertEqual(set(report), {"version", "workspace", "running", "last_run",
                                        "crashes_7d", "schema", "healthy"})
 

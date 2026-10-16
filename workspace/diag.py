@@ -575,7 +575,7 @@ def shareable_records(folder, limit=60):
                       "kind": raw.get("kind") if raw.get("kind") in KINDS else "?",
                       "log": path.stem}
             for key, value in raw.items():
-                if key not in ("t", "kind") and WORD.fullmatch(str(key)):
+                if key not in ("t", "kind", "log") and WORD.fullmatch(str(key)):
                     record[key] = _clean(key, value)
             out.append(record)
     out.sort(key=lambda r: r["t"])
@@ -587,7 +587,7 @@ def recent_crashes(folder, days=7, now=None):
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
                            time.gmtime((now or time.time()) - days * 86400))
     return sum(1 for r in shareable_records(folder, limit=100000)
-               if r["t"] >= cutoff and (r["kind"] == "crash" or (
+               if r["t"] != "?" and r["t"] >= cutoff and (r["kind"] == "crash" or (
                    r["kind"] == "worker_exit" and not r.get("hung"))))
 
 
