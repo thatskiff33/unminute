@@ -8,7 +8,7 @@ Settings > Watched folders > **Watch a folder…** adds a folder. Tick **Also im
 
 How watching works:
 
-- **When folders are checked.** The app checks each folder 30 seconds after it starts and every few minutes while it is open. **Check now** checks at once. If the app closes during a folder's first check, that check starts again next time, and a recording that arrives before it finishes counts as already there. If the app was closed, it catches up when it is next opened. No background service runs while the app is closed.
+- **When folders are checked.** The app checks each folder 30 seconds after it starts and every few minutes while it is open. **Check now** checks at once. If the app closes during the first check of a folder added without its existing recordings, that check starts again next time, and a recording that arrives before it finishes counts as already there. If the app was closed, it catches up when it is next opened. No background service runs while the app is closed.
 - **What counts as new.** A recording is new because it was not in the folder before, whatever its date. An old recording copied in today is imported.
 - **Renames and moves are not new.** Renaming or moving a recording within the folder does not make it new.
 - **Edited files count as new.** A file whose content changes, for example one saved over with a new recording or one with edited tags, is compared by content and imported if the content is new.
