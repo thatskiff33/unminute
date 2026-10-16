@@ -252,7 +252,12 @@ class ReproducibleBuildTests(unittest.TestCase):
 
     def test_the_model_manifest_has_every_pinned_file(self):
         import asr_engines as ae
-        m = bp.model_manifest(bp.ROOT / "asr_engines.py")      # the file being packaged
+        packaged = self.root / "app" / "asr_engines.py"            # the file being packaged
+        packaged.parent.mkdir()
+        packaged.write_bytes((bp.ROOT / "asr_engines.py").read_bytes())
+        m = bp.model_manifest(packaged)
+        # Nothing is written beside it: a .pyc would ship, with the time it was made.
+        self.assertEqual([p.name for p in packaged.parent.iterdir()], ["asr_engines.py"])
         self.assertEqual({x["name"] for x in m["models"]},
                          {*ae.PARAKEET_MODELS, ae.SILERO_VAD.name, *ae.WHISPER_MODELS,
                           ae.SPEAKER_MODEL.name})

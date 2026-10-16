@@ -614,15 +614,16 @@ def signer_name(signed, path):
 
 def model_manifest(source):
     """The pinned model files, for IT to verify a pre-staged copy (#111 B7), from
-    the asr_engines.py being packaged."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_packaged_asr_engines", source)
-    ae = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = ae          # dataclasses look their module up by name
+    the asr_engines.py being packaged. Compiled in memory: an import would write
+    a .pyc beside it, into the package, stamped with the file's time."""
+    import types
+    ae = types.ModuleType("_packaged_asr_engines")
+    ae.__file__ = str(source)
+    sys.modules[ae.__name__] = ae        # dataclasses look their module up by name
     try:
-        spec.loader.exec_module(ae)
+        exec(compile(Path(source).read_bytes(), str(source), "exec"), ae.__dict__)
     finally:
-        sys.modules.pop(spec.name, None)
+        sys.modules.pop(ae.__name__, None)
     specs = [*ae.PARAKEET_MODELS.values(), ae.SILERO_VAD, *ae.WHISPER_MODELS.values(),
              ae.SPEAKER_MODEL]
     return {"_about": "Models are not in the package. These are the files each model "
