@@ -53,6 +53,18 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual([("worker", "exit_after_last_use_s", perf_check.WORKER_WAIT_S, 125)],
                          over)
 
+    def test_one_failed_unload_in_three_runs_fails(self):
+        # The median of [240, 121, 121] would pass; unloading is pass or fail.
+        runs = [{"worker": {"exited": True, "exit_after_last_use_s": 121.0}},
+                {"worker": {"exited": False, "exit_after_last_use_s": perf_check.WORKER_WAIT_S}},
+                {"worker": {"exited": True, "exit_after_last_use_s": 121.0}}]
+        worst = perf_check.worst_worker(runs)
+        self.assertEqual(perf_check.WORKER_WAIT_S, worst)
+        over, _ = perf_check.compare({"worker": {"exit_after_last_use_s": worst}},
+                                     {"worker": {"exit_after_last_use_s": 125}})
+        self.assertEqual(1, len(over))
+        self.assertIsNone(perf_check.worst_worker([{"meetings": {}}]))
+
     def test_proposed_budgets_add_the_margin_and_round_up(self):
         proposed = perf_check.propose({"meetings": {"cpu_percent_of_one_core": 1.0,
                                                     "private_mb": 1000, "processes": 9},

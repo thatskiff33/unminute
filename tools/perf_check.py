@@ -107,6 +107,15 @@ def compare(figures, budgets, skip=()):
 BUDGETED = ("cpu_percent_of_one_core", "private_mb", "startup_s")
 
 
+def worst_worker(runs):
+    """The slowest worker unload across runs (a run whose worker never unloaded
+    is recorded at the wait limit), or None when no run had a worker. Unloading
+    is pass or fail, so one failed run must fail the whole check."""
+    values = [r["worker"]["exit_after_last_use_s"] for r in runs
+              if _number((r.get("worker") or {}).get("exit_after_last_use_s"))]
+    return max(values) if values else None
+
+
 def propose(figures, margin=0.2):
     """Budgets from a baseline: each budgeted figure plus the margin."""
     out = {}
@@ -202,7 +211,7 @@ def sample(pid):
             if psapi.GetProcessMemoryInfo(h, ctypes.byref(c), size):
                 break
         else:
-            return {"cpu_s": secs}
+            return None              # no memory figures: retried, then unmeasurable
         return {"cpu_s": secs, "private": c.PrivateUsage, "working_set": c.WorkingSetSize,
                 "private_ws": c.PrivateWorkingSetSize if c.cb == ctypes.sizeof(Counters)
                 else None}
@@ -402,7 +411,10 @@ def one_run(args, settle, window, leak_minutes=0):
 
     result = {}
     try:
-        job = Job(proc)
+        try:
+            job = Job(proc)
+        except OSError as exc:
+            raise Unmeasurable(f"could not set up the measuring job: {exc}") from exc
         threading.Thread(target=pump, daemon=True).start()
         ready = read(READY_TIMEOUT_S)
         result["startup"] = {k: ready[k] for k in ("imports_s", "window_to_interactive_s",
@@ -474,13 +486,16 @@ def parent(args):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1
             results.append(one_run(args, settle, window, args.leak_minutes if last else 0))
-    except Unmeasurable as exc:
+    except Exception as exc:          # anything that stops a run means "not measured"
         report["each_run"], report["error"] = results, str(exc)
         Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"COULD NOT MEASURE: {exc}")
         return 2
     report["each_run"] = results
     figures = median_report(results)
+    worst = worst_worker(results)       # pass or fail, not a noisy figure: the worst run counts
+    if worst is not None:
+        figures["worker"] = {"exit_after_last_use_s": worst}
     report["median"] = figures
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8")) if BUDGETS.exists() else {}
     skip = () if args.leak_minutes >= LEAK_BUDGET_MINUTES else ("leak",)
