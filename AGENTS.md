@@ -9,8 +9,8 @@ source of truth instead of restating values that change.
 - Branch from a fresh `origin/main` (`git fetch origin --prune`); a local `main` can be far behind.
 - Read the issue and all its comments: they hold the acceptance criteria. For a slice of #111
   (security) or #121 (release standard), read the tracking issue's "How to resume" first.
-- `README.md` describes shipped behaviour. Then read only what "Where the rules live" names.
-- Unminute (`workspace/`) is the shipped product; the earlier tkinter app is legacy (last section).
+- `README.md` describes shipped behaviour (`workspace/`; the earlier tkinter app is legacy, see
+  the last section). Then read only what "Where the rules live" names.
 
 ## Invariants
 
@@ -76,6 +76,14 @@ Cleanup and retention
   Guard: `tests/test_cleanup.py`.
 - **C4** A storage-format change waits for an empty workspace; never expire a hold, delete
   content or back up content to let an update proceed. Guard: `tests/test_update.py`.
+
+Recording and confirmations
+
+- **R1** Recording, granting delete-originals authority and discarding a meeting each need a
+  confirmation drawn outside the page (`workspace/shell.py`, wording in `workspace/consent.py`).
+  No recording starts without a valid consent record unless policy turns that off; changing the
+  wording bumps `RECORDING_WORDING_VERSION`. Guard: `tests/test_app.py`, `tests/test_recorder.py`,
+  `tests/test_policy.py`; `tools/workspace_ui_check.py` end to end.
 
 Compatibility, installation and policy
 

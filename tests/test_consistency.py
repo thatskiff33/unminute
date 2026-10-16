@@ -281,6 +281,10 @@ INVARIANT_GUARDS = {
     "C3": {"tests/test_cleanup.py": [
         "test_original_deleted_only_with_authority_root_and_same_identity"]},
     "C4": {"tests/test_update.py": ["test_workspace_with_content_is_never_migrated"]},
+    "R1": {"tests/test_app.py": ["NativeConfirmationTests"],
+           "tests/test_recorder.py": ["test_a_recording_needs_the_confirmation_and_keeps_it",
+                                      "test_the_indicator_follows_every_way_a_recording_ends"],
+           "tests/test_policy.py": ["test_a_bad_value_keeps_the_recording_confirmation"]},
     "K1": {"tests/test_consistency.py": ["InstallIdentityTests"]},
     "K2": {},
     "K3": {"tests/test_policy.py": ["WorkspacePolicyTests",
