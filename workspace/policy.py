@@ -22,6 +22,7 @@ import time
 
 POLICY_KEY = r"SOFTWARE\Policies\Unminute"
 REFRESH_S = 900.0
+UNREADABLE_RETRY_S = 30.0       # an unreadable key is often mid-rewrite: read again soon
 
 # name -> (kind, app default, permission or not). kind "bool" is a DWORD 0/1,
 # "int" a DWORD in range, "path" a REG_SZ or REG_EXPAND_SZ folder.
@@ -69,6 +70,12 @@ class Policy:
         if name in self.invalid and permission:
             return False                     # withheld, never granted by a bad value
         return default
+
+    @property
+    def unreadable(self):
+        """The key exists but could not be read: everything is withheld, but
+        that is not an explicit decision by IT."""
+        return not self.values and self.invalid == UNREADABLE
 
     def summary(self):
         """For Settings: which values are managed (no paths)."""
@@ -155,6 +162,9 @@ class PolicySource:
     def current(self):
         with self._lock:
             policy, read_at = self._policy, self._read_at
-        if policy is None or self._clock() - read_at >= self._refresh_s:
+        if policy is None:
+            return self.refresh()
+        wait = UNREADABLE_RETRY_S if policy.unreadable else self._refresh_s
+        if self._clock() - read_at >= wait:
             return self.refresh()
         return policy

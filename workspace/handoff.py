@@ -358,8 +358,9 @@ def title_filename(title, fallback):
     policy allows it (HandoffFilenameIncludesTitle, #111 A5). Characters
     Windows refuses, control characters and invisible format characters
     (such as right-to-left overrides, which can disguise a name) become spaces."""
-    text = "".join(" " if unicodedata.category(ch) == "Cf" else ch for ch in title or "")
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', " ", text).strip(" .")[:80]
+    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch
+                   for ch in title or "")
+    safe = re.sub(r'[<>:"/\\|?*]', " ", text).strip(" .")[:80]
     return f"{safe} - transcript.md" if safe else fallback
 
 

@@ -1685,8 +1685,8 @@ function allowed(name) {
 const MANAGED_NOTE = "Turned off by your organisation.";
 // A component the organisation switched off, or models IT installs instead of downloads.
 function itManaged(c) {
-  return el("span", { class: "su-ready", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
-    ? "Turned off by your organisation" : "Installed by your IT team" });
+  return el("span", { class: "set-text", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
+    ? "Turned off by your organisation" : "Ask your IT team" });
 }
 
 // -- settings ------------------------------------------------------------------

@@ -55,6 +55,19 @@ class PolicyTests(unittest.TestCase):
         src.refresh()
         self.assertEqual(len(calls), 3)
 
+    def test_an_unreadable_key_is_read_again_soon(self):
+        calls, now = [], [0.0]
+
+        def reader():
+            calls.append(1)
+            return ({}, policy.UNREADABLE) if len(calls) == 1 else ({}, ())
+        src = policy.PolicySource(reader=reader, refresh_s=900, clock=lambda: now[0])
+        self.assertTrue(src.current().unreadable)
+        self.assertFalse(src.current().get("AllowModelDownloads"))   # withheld meanwhile
+        now[0] = policy.UNREADABLE_RETRY_S
+        self.assertTrue(src.current().get("AllowModelDownloads"))
+        self.assertEqual(len(calls), 2)
+
 
 @unittest.skipUnless(sys.platform == "win32", "Windows registry types")
 class ParseTests(unittest.TestCase):
@@ -244,9 +257,32 @@ class WorkspacePolicyTests(unittest.TestCase):
             ws.policy.refresh()
             self.assertIn("organisation", self.refused(ws.resume_recording))
             ws._policy_tick()
-        finish.assert_called_once_with(rec)
-        self.assertEqual(rec._event.call_args.args[0], "policy_stop")
+        finish.assert_called_once()
+        self.assertIs(finish.call_args.args[0], rec)
+        self.assertEqual(finish.call_args.kwargs["event"][0], "policy_stop")
         ws._recording = None
+
+    def test_an_unreadable_policy_refuses_new_recordings_but_does_not_cut_one_short(self):
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        ws.settings.update(microphone=True)
+        self.assertIn("organisation", self.refused(ws.start_recording, None))
+        ws._recording = mock.Mock()
+        with mock.patch.object(ws, "_finish_recording") as finish:
+            ws._policy_tick()
+        finish.assert_not_called()
+        ws._recording = None
+
+    def test_only_the_path_that_finishes_a_recording_notes_why(self):
+        ws = self.open()
+        rec = mock.Mock()
+        ws._recording = None                                     # the user's Stop got there first
+        self.assertFalse(ws._finish_recording(rec, event=("policy_stop", "x")))
+        rec._event.assert_not_called()
+        ws._recording = rec
+        with mock.patch.object(ws._imports, "put"):
+            ws._finish_recording(rec, event=("policy_stop", "x"))
+        rec._event.assert_called_once_with("policy_stop", note="x")
 
     def test_watched_folders_and_deletion_authority_off(self):
         ws = self.open(AllowWatchedFolders=False, AllowDeleteOriginals=False)
@@ -335,7 +371,7 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
                              "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
         # Invisible format characters (a right-to-left override) cannot disguise the name.
-        self.assertEqual(handoff.title_filename("Notes‮gnp.exe\x7f", "x"),
+        self.assertEqual(handoff.title_filename("Notes‮gnp.exe\x7f\x85", "x"),
                          "Notes gnp.exe - transcript.md")
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
 

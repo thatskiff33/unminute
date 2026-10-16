@@ -160,7 +160,7 @@ The administrative template is in `packaging/policy/` (`Unminute.admx` and `en-U
 
 | Value | Type | Not set | Effect when set |
 | --- | --- | --- | --- |
-| `AllowModelDownloads` | DWORD 0/1 | Allowed | 0: the app refuses model downloads and repairs; Setup shows "Installed by your IT team" |
+| `AllowModelDownloads` | DWORD 0/1 | Allowed | 0: the app refuses model downloads and repairs; Setup and Downloads show "Ask your IT team" instead of a Download button |
 | `AllowGpuComponent` | DWORD 0/1 | Allowed | 0: the graphics card component cannot be downloaded or used; speaker identification runs on the processor |
 | `AllowMicrophoneRecording` | DWORD 0/1 | Allowed | 0: microphone recording is off and cannot be turned on; a recording in progress is stopped and saved when the app reads the change; imports still work |
 | `AllowWatchedFolders` | DWORD 0/1 | Allowed | 0: no folders can be added, and existing watched folders are not checked |

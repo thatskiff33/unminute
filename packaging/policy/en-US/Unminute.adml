@@ -14,7 +14,7 @@
       <string id="AllowModelDownloads">Allow model downloads in the app</string>
       <string id="AllowModelDownloads_Help">Enabled or not configured: users can download and repair speech and speaker models in Setup and Downloads.
 
-Disabled: the app refuses downloads and shows "Installed by your IT team". Use this when IT installs the models (for example with the Unminute models package), so the app never needs the network.</string>
+Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models, so the app never needs the network (a models package for Intune is planned).</string>
 
       <string id="AllowGpuComponent">Allow the graphics card component</string>
       <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card component (about 1.9 GB of PyTorch and CUDA libraries into their profile) and use it for speaker identification.

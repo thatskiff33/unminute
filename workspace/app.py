@@ -189,7 +189,8 @@ class Workspace:
     def start(self):
         for target, name in ((self._process_loop, "workspace-processing"),
                              (self._intake_loop, "workspace-intake"),
-                             (self._watch_loop, "workspace-watch")):
+                             (self._watch_loop, "workspace-watch"),
+                             (self._policy_loop, "workspace-policy")):
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
             self._threads.append(t)
@@ -207,9 +208,9 @@ class Workspace:
             if not self._rec_starting:
                 break
             time.sleep(0.1)
-        rec = self._recording
+        with self._lock:                 # claimed once: the policy tick may race
+            rec, self._recording = self._recording, None
         if rec is not None:              # saved now; imported at the next start
-            self._recording = None
             try:
                 rec.stop()
             except recorder.RecorderError:
@@ -400,11 +401,13 @@ class Workspace:
         if self._recording is rec and not self._closing.is_set():
             self._finish_recording(rec)
 
-    def _finish_recording(self, rec):
+    def _finish_recording(self, rec, event=None):
         with self._lock:
             if self._recording is not rec:
                 return False             # already finished by the other path
             self._recording = None
+        if event:                        # noted only by the path that finishes it
+            rec._event(event[0], note=event[1])
         try:
             rec.stop()
         except recorder.RecorderError as exc:
@@ -698,10 +701,6 @@ class Workspace:
         open. Sleep counts as elapsed time, so waking from sleep scans at once."""
         last = 0.0
         while not self._closing.is_set():
-            try:
-                self._policy_tick()
-            except Exception:            # never stops watching; tried again next second
-                pass
             if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
                 self._scan_requested = False
                 last = time.monotonic()
@@ -1515,16 +1514,28 @@ class Workspace:
     def _flush_clipboard_clears(self):
         self._run_clipboard_clears(everything=True)
 
+    def _policy_loop(self):
+        """Its own thread, so a long folder scan never delays a clear or a stop."""
+        while not self._closing.is_set():
+            try:
+                self._policy_tick()
+            except Exception:            # tried again next second
+                pass
+            self._closing.wait(1.0)
+
     def _policy_tick(self):
         """Every second: due clipboard clears, and a recording that policy no
-        longer allows is stopped and saved (the policy is re-read at most every
-        15 minutes, or when Settings or Downloads is open)."""
+        longer allows is stopped and saved (the policy is re-read every 15
+        minutes, or on each refresh while Settings or Downloads is open). A key
+        that cannot be read refuses new recordings but does not cut one short:
+        it is read again within 30 seconds."""
         self._run_clipboard_clears()
-        rec = self._recording
-        if rec is not None and not self._allowed("AllowMicrophoneRecording"):
-            rec._event("policy_stop", note="Stopped because your organisation turned off "
-                                           "microphone recording")
-            self._finish_recording(rec)
+        p = self.policy.current()
+        stop = not p.get("AllowMicrophoneRecording") and not p.unreadable
+        if stop and self._recording is not None:
+            self._finish_recording(self._recording, event=(
+                "policy_stop", "Stopped because your organisation turned off microphone "
+                               "recording"))
 
     def handoff_folder(self):
         """Where the handoff Save dialog starts: the organisation's folder if
