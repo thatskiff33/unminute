@@ -1,84 +1,76 @@
-# Cuts a GitHub release.
+# Cuts a GitHub release when a version tag is pushed.
 #
-# Two ways to run it:
-#   1. Actions tab > Release > Run workflow, enter a version such as 0.1.0.
-#      The workflow tags the current main commit as v0.1.0 and publishes the
-#      release. This is the normal route.
-#   2. Push a tag matching v* by hand. The workflow publishes the release for
-#      that tag.
+#   git tag -a v0.5.0 -m "Unminute v0.5.0" <commit on main>
+#   git push origin v0.5.0
 #
-# Release notes come from the matching "## v<version>" section of CHANGELOG.md.
-# GitHub attaches the source zip and tarball automatically. No other assets are
-# built: the app is installed from source by install.cmd (see README).
+# The tag must be vX.Y.Z (optionally -preview.N) and must point at a commit
+# already on main. Release notes come from the matching "## vX.Y.Z" section of
+# CHANGELOG.md; the job fails before publishing if it is missing.
+#
+# The Windows package is still built and attached by hand (docs/RELEASING.md).
+# #111 slice B3 replaces this with a CI build, signed provenance and an
+# approval step. Values from the event are passed through environment
+# variables, never pasted into the script, so a crafted tag name cannot run
+# commands.
 name: Release
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release, without the leading v (for example 0.1.0). Must match a CHANGELOG.md heading."
-        required: true
-        type: string
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # create the release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      # Work out the tag from either trigger.
-      - name: Resolve tag
-        id: tag
+      # Accept only vX.Y.Z or vX.Y.Z-preview.N, and only a commit on main.
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            v="${{ inputs.version }}"; v="${v#v}"
-            echo "tag=v$v" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$'; then
+            echo "Tag '$TAG' is not vX.Y.Z or vX.Y.Z-preview.N"; exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag $TAG points at $GITHUB_SHA, which is not on main"; exit 1
           fi
 
       # Pull the notes for this version out of CHANGELOG.md. Fails if missing,
       # so a release can never go out with empty notes.
       - name: Extract release notes
-        id: notes
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          awk -v h="## $tag" '
+          awk -v h="## $TAG" '
             $0 == h {on=1; next}
             on && /^## / {exit}
             on {print}
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
-            echo "No section '## $tag' found in CHANGELOG.md"; exit 1
+            echo "No section '## $TAG' found in CHANGELOG.md"; exit 1
           fi
           cat notes.md
-
-      # On manual runs, create the tag on the checked-out commit (main by default).
-      - name: Create tag
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "Tag $tag already exists"; exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$tag" -m "Unminute $tag"
-          git push origin "$tag"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          tag="${{ steps.tag.outputs.tag }}"
-          gh release create "$tag" \
-            --title "Unminute $tag" \
+          # A -preview.N tag is published as a pre-release that does not
+          # become Latest; a plain vX.Y.Z tag is a full release.
+          kind=()
+          case "$TAG" in *-preview.*) kind=(--prerelease --latest=false) ;; esac
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Unminute $TAG" \
             --notes-file notes.md \
-            --verify-tag
+            --verify-tag \
+            "${kind[@]}"

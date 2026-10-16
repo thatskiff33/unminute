@@ -1,0 +1,36 @@
+# Tools for CI only (lint and workflow audit). Hash-locked: CI installs this
+# file with --require-hashes, so a replaced package on PyPI fails the job.
+# Regenerate the hashes from PyPI when bumping a version, and adopt a new
+# version only after it has been public for at least 7 days.
+
+ruff==0.17.0 \
+    --hash=sha256:0e271826af9a20d18c6cfae8c51e82959167c24859686ddd3eb9a7f0842ce81e \
+    --hash=sha256:13ee90156522998c3037059d8f66885c8adeeaf7643bdce2caceee196ecd23e0 \
+    --hash=sha256:3d8cc360e666d1914e47b0777c6906d70cf18891a55532bd0a16844195d70859 \
+    --hash=sha256:3d8e4a002a94cd9d0dc48b51dc69d807a172b5b9bf2b668e656424dc5b55ead1 \
+    --hash=sha256:5cd03240d8208a557c2a9655a5cb07ebe36aa6bb35065f97d48c1f6adef5a322 \
+    --hash=sha256:5e50aa5b84decd9fe5b0bb0e6f71c3b592f1767ed09faa4b7207d933961e35cd \
+    --hash=sha256:5f0ca4a40f81403689c04f12966e22f44e329ae362072d8f1587b7bda87f603b \
+    --hash=sha256:7bb08489e234876fa2da67ae3ea938e9a2156da80293e0e4365abd6973d98329 \
+    --hash=sha256:864b6c1acb6b0bccf94b5a3938a1531fd09aaca5e5659a2e7bf0f3cf2a685540 \
+    --hash=sha256:8ab76bcda86dfd28e13776cb5de3c7bcdcf1ae3d37ed761113d1a5a415dc134c \
+    --hash=sha256:a330178bdffc4205dbf3bda11d93e059e388fd6546f8cdd304501a9160363c0d \
+    --hash=sha256:bc73e7c133e82d55b5f15897b2a442d72c0cb4a0c886c46801ce3c247150b60c \
+    --hash=sha256:c0b8a60c06a218c337e1161638d34757f83449243e2db161483ddf948e53ad14 \
+    --hash=sha256:c154c73ff43f9854395e24cac507af13078962e53d2b511605058d22af1fdb88 \
+    --hash=sha256:c3f268baf004aea944f040623327119527ea231af15f7fb7890e82cea0679589 \
+    --hash=sha256:cbf7149e0927dc3295d5d64679a4765576eef71b00782b2ae969ef82274d6bb9 \
+    --hash=sha256:d66de796b726c4801e05fa99a2a8d7a780e107be222486c304ab61765561e866 \
+    --hash=sha256:db4f74c533403ab70fe4007873f6ae0c9f94a8b03158cf48d78788e47cdbe399
+zizmor==1.30.1 \
+    --hash=sha256:06e039fae8e185e2a1a8b002f2d95a6f5c3b548048bdd79e004dcb501fcd0868 \
+    --hash=sha256:15679642e8c4f825ba3f22537c698b1bbbad19ead23640f62ec45ebbe7abc803 \
+    --hash=sha256:17fda74e15fe41a6aa354ea4cf71fc7ff3cd025cda6584bb6d7466b3f1d00fe6 \
+    --hash=sha256:42512bb4a1bce4c787d221d1572ff6b691fa52a3d129b2910be8afaf860c5871 \
+    --hash=sha256:4a5ef2fa4fbd2984f794cfc2f95790bd03fa0bae801487ed550e044675874e60 \
+    --hash=sha256:5e8a3d54c3d9d51307371f4d1d49f8f9e56de00205c6cc660c6846a95ad4e135 \
+    --hash=sha256:92906f448365672ebb657fb50d36f997290a3aaba8cac723214741ea9054845d \
+    --hash=sha256:bf63099a27ef3bf1329dbab44bb9d1027124855c71bd0eca864d5c8e1c5c0db1 \
+    --hash=sha256:cbb7e5cb2fec471066d5c326bcaa69ed3eefdcf6a76d7ad38335b924acf86c07 \
+    --hash=sha256:eee12266b793cb87ad4a7e3af2e72404f8a63e3de5eb099b80bf7b1cfd232a8e \
+    --hash=sha256:f9eb092f089e35fa9fb3b70aeec0a19eca7dacf2ab161f1d50b18351895f085c
