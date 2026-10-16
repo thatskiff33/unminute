@@ -235,7 +235,7 @@ Delete these and you are back to a clean machine:
 | `test_diarization.py` | End-to-end command-line check of diarisation plus transcription on one file |
 | `make_icon.py` | Regenerates `whisper.ico` with Pillow |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
-| `.github/workflows/` | `ci.yml` runs the automated checks on pull requests (the required ones are listed in [docs/RELEASING.md](RELEASING.md)); `codeql.yml` scans weekly; `release.yml` tags and publishes a release. See [docs/RELEASING.md](RELEASING.md). |
+| `.github/workflows/` | `ci.yml` runs the automated checks on pull requests and pushes to main; `codeql.yml` scans on pull requests, pushes to main and weekly; `release.yml` tags and publishes a release. [docs/RELEASING.md](RELEASING.md) lists the required checks. |
 | `ruff.toml`, `.github/dependabot.yml` | Lint rule set and Dependabot schedule (monthly, grouped; torch family patch-only) |
 
 Run from source without the shortcut:
