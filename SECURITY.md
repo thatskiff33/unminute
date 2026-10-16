@@ -25,6 +25,6 @@ In scope: the Meeting Workspace app, its private runtime and installer, model do
 
 Out of scope:
 
-- The earlier source-installed app (Whisper Transcriber), which is no longer maintained.
+- The earlier source-installed app (Whisper Transcriber), which is being retired (#111 slice A7).
 - Windows, WebView2 and third-party packages themselves. Report those upstream; where we pin a package, we will update the pin.
 - Attacks that need administrator rights on the device, or code already running as the signed-in user (see "What the controls do not cover" in the threat model).
