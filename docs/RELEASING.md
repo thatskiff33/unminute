@@ -83,7 +83,11 @@ The workflow accepts only `vX.Y.Z` or `vX.Y.Z-preview.N`, only a commit that is 
 The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the commit that is tagged:
 
 1. **Changelog and version.** Merge the `## vX.Y.Z` section and `VERSION` made by `tools/changelog.py` (step 1 of "Cutting a release"), then check out that commit of `main`.
-2. **Build.** Run `python tools/build_package.py --release` on Windows with 64-bit CPython 3.12. It refuses a working tree with any change or untracked file, and a HEAD that is not the commit tagged `vX.Y.Z`. It takes the version from `VERSION`; a `--version` that differs is refused. The command prints the zip's SHA-256 and writes the `.sha256` file and the bill of materials (`Unminute-<version>.cdx.json`) to `dist/`. The build is reproducible: building the same commit again gives the same SHA-256.
+2. **Tag locally, then build.**
+   - Create the tag on that commit, but do not push it yet (pushing publishes the release): `git tag -a vX.Y.Z -m "Unminute vX.Y.Z"`. If the build or its tests fail, delete it with `git tag -d vX.Y.Z` and fix forward.
+   - Run `python tools/build_package.py --release` on Windows with 64-bit CPython 3.12. It refuses a working tree with any change or untracked file, and a HEAD that is not the commit of tag `vX.Y.Z`. It packages the committed files exported by git, never the working folder, and takes the version from `VERSION` (a `--version` that differs is refused).
+   - The command prints the zip's SHA-256 and writes the `.sha256` file and the bill of materials (`Unminute-X.Y.Z.cdx.json`) to `dist/`. The zip's `version.json` says `"release": true`; a build without `--release` says `false` and is never published.
+   - The build is reproducible: building the same commit again with the same Python, pip and zlib versions (listed in the bill of materials) gives the same SHA-256.
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
@@ -91,8 +95,8 @@ The workflow publishes the notes and the source archives only. The Windows packa
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
 4. **Publish.**
-   - Tag the commit you built (`version.json` in the zip records it) and push the tag, as above.
-   - Attach the zip and its `.sha256`: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256`.
+   - Push the tag made in step 2: `git push origin vX.Y.Z`. The Release workflow publishes the release.
+   - Attach the zip, its `.sha256` and the bill of materials: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256 dist/Unminute-X.Y.Z.cdx.json`.
 5. **Release type.** A `vX.Y.Z` tag publishes a full release, which becomes Latest, the default download. A `vX.Y.Z-preview.N` tag publishes a pre-release that does not.
 
 ## Withdrawing a bad release
