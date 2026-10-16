@@ -1,6 +1,9 @@
 # CodeQL static analysis of the Python code and of the GitHub Actions
 # workflows themselves (injection, permissions). Results go to the Security
 # tab; the branch ruleset blocks merging on high or higher security alerts.
+#
+# The Python job keeps its original id and no category, so its results stay
+# the same code-scanning configuration that the branch ruleset expects.
 name: CodeQL
 
 on:
@@ -15,22 +18,31 @@ permissions: {}
 
 jobs:
   analyze:
-    name: Analyse ${{ matrix.language }}
+    name: Analyse Python
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [python, actions]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
         with:
-          languages: ${{ matrix.language }}
+          languages: python
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+
+  analyze-actions:
+    name: Analyse workflows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          category: /language:${{ matrix.language }}
+          persist-credentials: false
+      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        with:
+          languages: actions
+      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3

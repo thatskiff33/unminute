@@ -7,9 +7,9 @@
 version: 2
 updates:
   - package-ecosystem: pip
-    directories:
-      - /
-      - /workspace
+    # "/" also reads requirement files one folder down (workspace/,
+    # requirements/), so workspace/requirements.txt is covered.
+    directory: /
     schedule:
       interval: monthly
     cooldown:

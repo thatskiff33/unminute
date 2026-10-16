@@ -31,7 +31,7 @@ Already enabled at repository level (Settings > Advanced Security): Dependabot a
 
 ## Workflow supply-chain rules
 
-The workflows run with the repository's token, so they are held to these rules. The `Workflow lint` job (zizmor) enforces the first three on every pull request.
+The workflows run with the repository's token, so they are held to these rules. On every pull request the `Workflow lint` job (zizmor) flags unpinned actions, `${{ }}` expressions inside `run:` blocks, a missing default `permissions` block and checkouts that keep credentials. Asking for more permissions than a job needs, and the tool pinning, are checked in review.
 
 - No permissions by default (`permissions: {}`); each job asks only for what it needs.
 - Every action is pinned to a full commit SHA, with its version in a comment. To update one, resolve the new tag to its commit (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`, and follow an annotated tag to its commit) and update both.
@@ -48,7 +48,7 @@ CI proves the code parses and the pins resolve. It does not run the models. Befo
 
 Releases are cut by the Release workflow in `.github/workflows/release.yml` when a version tag is pushed. There is no manual "Run workflow" route: the tag is the single record of what was released.
 
-1. Add a `## vX.Y.Z` section to `CHANGELOG.md` on a branch and merge it to `main`.
+1. Add a `## vX.Y.Z` section (for a preview, `## vX.Y.Z-preview.N`) to `CHANGELOG.md` on a branch and merge it to `main`.
 2. Tag the merged commit and push the tag:
 
    ```
@@ -60,7 +60,7 @@ The workflow accepts only `vX.Y.Z` or `vX.Y.Z-preview.N`, and only a commit that
 
 ## Unminute package releases
 
-The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the same commit the workflow tags:
+The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the commit that is tagged:
 
 1. **Changelog.** Merge the `## vX.Y.Z` section, then check out that commit of `main`.
 2. **Build.** Run `python tools/build_package.py --version X.Y.Z` on Windows with 64-bit CPython 3.12, from a clean working tree. The command prints the zip's SHA-256 and writes the `.sha256` file to `dist/`.

@@ -4,12 +4,14 @@
 # release (see docs/RELEASING.md). Every job name below is a required status
 # check in the branch ruleset.
 #
-# Supply-chain rules for this file (checked by the Workflow lint job):
+# Supply-chain rules for this file (docs/RELEASING.md):
 # - no permissions by default; each job asks only for what it needs;
 # - every action is pinned to a full commit SHA, with its version in a comment;
 # - checkouts do not keep the token in .git/config;
 # - tools are installed from hash-locked files (requirements/ci.txt) or pinned
 #   to an exact version with a publisher check.
+# The Workflow lint job (zizmor) flags unpinned actions, template injection,
+# missing default permissions and persisted credentials; the rest is review.
 name: CI
 
 on:
@@ -143,7 +145,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ruff (hash-locked)
-        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements/ci.txt
+        run: python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements/ci.txt
       - name: Lint
         run: ruff check --output-format github .
 
@@ -166,10 +168,18 @@ jobs:
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force -Confirm:$false
           $module = Get-Module -ListAvailable PSScriptAnalyzer | Where-Object Version -eq '1.25.0' | Select-Object -First 1
-          $signature = Get-AuthenticodeSignature (Join-Path $module.ModuleBase 'PSScriptAnalyzer.psd1')
-          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
-            Write-Error "PSScriptAnalyzer is not signed by Microsoft: $($signature.Status) $($signature.SignerCertificate.Subject)"; exit 1
-          }
+          # Every file that runs must carry a valid signature; the module's own
+          # files must be Microsoft's (its bundled Newtonsoft.Json is signed by
+          # the .NET Foundation).
+          $unsigned = Get-ChildItem $module.ModuleBase -Recurse -Include *.dll, *.psm1, *.psd1, *.ps1xml |
+            ForEach-Object {
+              $sig = Get-AuthenticodeSignature $_.FullName
+              $microsoft = $sig.SignerCertificate.Subject -match 'O=Microsoft Corporation'
+              if ($sig.Status -ne 'Valid' -or (-not $microsoft -and $_.Name -notlike 'Newtonsoft.*')) {
+                "$($_.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+              }
+            }
+          if ($unsigned) { $unsigned | ForEach-Object { Write-Error $_ }; exit 1 }
           Import-Module $module.Path
           $findings = git ls-files '*.ps1' |
             ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error `
@@ -194,6 +204,6 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install zizmor (hash-locked)
-        run: python -m pip install --disable-pip-version-check --require-hashes -r requirements/ci.txt
+        run: python -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r requirements/ci.txt
       - name: Audit workflows
         run: zizmor --offline --format github .

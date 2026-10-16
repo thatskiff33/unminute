@@ -45,7 +45,7 @@ def main():
         for test, reason in result.skipped:
             mark = "  " if reason in ALLOWED_SKIPS else "! "
             print(f"{mark}{test.id()}: {reason}")
-    if not result.wasSuccessful():
+    if not result.wasSuccessful() or result.testsRun == 0:
         return 1
     if args.strict_skips and unexpected:
         print(f"\n{len(unexpected)} test(s) skipped for a reason not allowed in a strict run.")
