@@ -120,6 +120,15 @@ def press(script, title, seen=None):
             cancel = dialog_button(hwnd, "Cancel")
             user32.PostMessageW(cancel, 0x0100, 0x0D, 0)                      # WM_KEYDOWN Enter
             user32.PostMessageW(cancel, 0x0101, 0x0D, 0)
+        elif kind == "tab":                                               # to the next control
+            user32.PostMessageW(hwnd, 0x0100, 0x09, 0)
+            user32.PostMessageW(hwnd, 0x0101, 0x09, 0)
+            time.sleep(0.2)
+        elif kind == "enter-on":                                          # Enter on that button
+            button = dialog_button(hwnd, arg)
+            user32.PostMessageW(button, 0x0100, 0x0D, 0)
+            user32.PostMessageW(button, 0x0101, 0x0D, 0)
+            time.sleep(0.2)
     return True
 
 
@@ -171,6 +180,15 @@ def native_checks(window, ws, mid):
          "click:Confirm", "open?", "wait:1.3", "click:Confirm"], ticked["title"],
         lambda: shell.native_confirm(window, ticked), seen)
     out["open_until_ticked"] = seen
+    # Keyboard (and Narrator or voice control): tick, wait, move to the action
+    # with Tab; Enter at once is ignored, Enter after holding the focus answers.
+    keyed = dict(ticked, title="Workspace UI check: keyboard")
+    seen_keys = []
+    out["keyboard_after_hold"], out["pressed_5"] = run_with(
+        ["click:I have read this synthetic question.", "wait:1.3", "tab", "tab",
+         "enter-on:Confirm", "open?", "wait:1.3", "enter-on:Confirm"], keyed["title"],
+        lambda: shell.native_confirm(window, keyed), seen_keys)
+    out["open_after_quick_enter"] = seen_keys
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -474,8 +492,10 @@ def main():
     if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
             and nv.get("bridge_no") and nv.get("meeting_kept")
             and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
+            and nv.get("keyboard_after_hold") is True
+            and nv.get("open_after_quick_enter") == [True]
             and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")
-            and nv.get("pressed_4")):
+            and nv.get("pressed_4") and nv.get("pressed_5")):
         bad.append("native confirmation")
     if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
             and nv.get("overlay_on") and nv.get("overlay_off")):

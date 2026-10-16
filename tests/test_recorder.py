@@ -29,7 +29,7 @@ if HAVE_DEPS:
     from workspace.app import Workspace, WorkspaceError
 
 
-# What the bridge passes after the Windows confirmation (#111 A6).
+# What the bridge passes after the app's own confirmation (#111 A6).
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
 
 

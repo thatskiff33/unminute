@@ -9,6 +9,7 @@
 
 import os
 import threading
+import time
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -552,22 +553,45 @@ def native_confirm(window, question, theme=None):
     - Enter and Esc mean Cancel; no button has a keyboard shortcut.
     - A statement to tick, if the question has one, must be ticked.
     - The action button is enabled only CONFIRM_DELAY_MS after the window
-      appears or returns to the front, and after any click or key press
-      before then; it answers only a mouse button released over it, never
-      the keyboard.
+      appears or returns to the front, and after any click, key press or
+      tick before then.
+    - It answers a mouse button released over it; or, for keyboard, Narrator
+      and voice control, Enter, Space or Invoke once it has kept the focus
+      for CONFIRM_DELAY_MS (moved there on purpose, then held).
+    - Windows high contrast uses the system colours; a minimised app is
+      restored first, so the question opens centred over it.
     True only for the action."""
     if not _asking.acquire(blocking=False):
         return False
     try:
-        return _ask(window, question, theme or app_theme())
+        return _ask(window, question, theme or _system_theme())
     finally:
         _asking.release()
 
 
+def _system_theme():
+    from System.Windows.Forms import SystemInformation
+    return "contrast" if SystemInformation.HighContrast else app_theme()
+
+
+def _contrast_theme():
+    """Windows high contrast: the user's own system colours."""
+    from System.Drawing import SystemColors
+    window, text = SystemColors.Window, SystemColors.WindowText
+    highlight = (SystemColors.Highlight, SystemColors.HighlightText)
+    return {"card": window, "text": text, "muted": text, "soft": window, "line": text,
+            "scrim": text, "scrim_opacity": 0.45, "focus": SystemColors.Highlight,
+            "secondary": (SystemColors.Control, SystemColors.ControlText),
+            "primary": highlight, "danger": highlight, "record": highlight,
+            "icon": {"tick": highlight, "mic": highlight, "bin": highlight}}
+
+
 def _colour(value, under="#FFFFFF"):
     from System.Drawing import Color, ColorTranslator
+    if not isinstance(value, (str, tuple)):
+        return value                                  # already a colour (high contrast)
     if isinstance(value, tuple):
-        base = ColorTranslator.FromHtml(under)
+        base = ColorTranslator.FromHtml(under) if isinstance(under, str) else under
         r, g, b, a = value
         return Color.FromArgb(int(r * a + base.R * (1 - a)), int(g * a + base.G * (1 - a)),
                               int(b * a + base.B * (1 - a)))
@@ -602,13 +626,17 @@ def _ask(window, question, theme):
     from System.Drawing.Drawing2D import LineCap, SmoothingMode
     from System.Windows.Forms import (Button, CheckBox, DialogResult, Form, FormBorderStyle,
                                       FormStartPosition, FormWindowState, KeyEventHandler,
-                                      Label, MouseEventHandler, PaintEventHandler, Panel,
+                                      Label, MouseEventHandler, PaintEventHandler, Panel, Screen,
                                       TextFormatFlags, TextRenderer, Timer)
     owner = window.native
-    t = _THEMES[theme]
+    t = _contrast_theme() if theme == "contrast" else _THEMES[theme]
     box = {}
 
     def ask():
+        if owner.WindowState == FormWindowState.Minimized:
+            # Restored first, so the question opens centred over the app.
+            ctypes.windll.user32.ShowWindow(ctypes.c_void_p(owner.Handle.ToInt64()), 9)
+            owner.Activate()
         scale = getattr(owner, "DeviceDpi", 96) / 96.0
 
         def px(value):
@@ -648,6 +676,10 @@ def _ask(window, question, theme):
             width = min(px(580), (owner.ClientSize.Width if scrim else px(580)) - px(32))
             pad, inner = px(28), min(px(580), max(px(360), width)) - 2 * px(28)
             y = pad
+            content = Panel()                            # scrolls if the screen is too short
+            content.BackColor = card
+            content.AutoScroll = True
+            content.Location = Point(0, 0)
 
             def label(text, f, colour, w, back=card):
                 item = Label()
@@ -695,19 +727,19 @@ def _ask(window, question, theme):
                 pen.Dispose()
             icon.Paint += PaintEventHandler(paint_icon)
             title = label(question["title"], fonts["title"], text_c, inner - px(58))
-            dialog.Controls.Add(icon)
-            dialog.Controls.Add(title)
+            content.Controls.Add(icon)
+            content.Controls.Add(title)
             title.Location = Point(pad + px(58),
                                    y + max(0, (px(44) - title.PreferredSize.Height) // 2))
             y += max(px(44), title.PreferredSize.Height) + px(16)
             body = label(question["body"], fonts["body"], text_c, inner)
             body.Location = Point(pad, y)
-            dialog.Controls.Add(body)
+            content.Controls.Add(body)
             y += body.PreferredSize.Height + px(16)
             if question.get("detail"):
                 detail = label(question["detail"], fonts["detail"], text_c, inner)
                 detail.Location = Point(pad, y)
-                dialog.Controls.Add(detail)
+                content.Controls.Add(detail)
                 y += detail.PreferredSize.Height + px(16)
             if question.get("limits"):
                 limits = Panel()
@@ -726,7 +758,7 @@ def _ask(window, question, theme):
                     path.Dispose()
                     brush.Dispose()
                 limits.Paint += PaintEventHandler(paint_limits)
-                dialog.Controls.Add(limits)
+                content.Controls.Add(limits)
                 y += limits.Height + px(16)
             check = None
             if question.get("check"):
@@ -772,7 +804,7 @@ def _ask(window, question, theme):
                                           text_c, TextFormatFlags.WordBreak
                                           | TextFormatFlags.VerticalCenter)
                 check.Paint += PaintEventHandler(paint_check)
-                dialog.Controls.Add(check)
+                content.Controls.Add(check)
                 y += check.Height + px(20)
             else:
                 y += px(4)
@@ -827,11 +859,16 @@ def _ask(window, question, theme):
             cancel.DialogResult = DialogResult.Cancel
             act.Enabled = False
             total = pad + inner
-            act.Location = Point(total - act.Width, y)
-            cancel.Location = Point(total - act.Width - px(10) - cancel.Width, y)
+            footer = px(44) + pad
+            room = Screen.FromControl(owner).WorkingArea.Height - px(48)
+            height = min(y + footer, max(room, px(240)))
+            content.Size = Size(inner + 2 * pad, height - footer)
+            act.Location = Point(total - act.Width, height - footer)
+            cancel.Location = Point(total - act.Width - px(10) - cancel.Width, height - footer)
+            dialog.Controls.Add(content)
             dialog.Controls.Add(cancel)
             dialog.Controls.Add(act)
-            dialog.ClientSize = Size(inner + 2 * pad, y + px(44) + pad)
+            dialog.ClientSize = Size(inner + 2 * pad, height)
             dialog.AcceptButton = cancel                 # Enter means Cancel
             dialog.CancelButton = cancel                 # Esc means Cancel
             timer.Interval = CONFIRM_DELAY_MS
@@ -859,6 +896,24 @@ def _ask(window, question, theme):
                 if act.Enabled and act.ClientRectangle.Contains(args.Location):
                     dialog.DialogResult = DialogResult.Yes
 
+            focused = {"since": None}
+
+            def focus_in(sender, args):
+                focused["since"] = time.monotonic()
+                act.Invalidate()
+
+            def focus_out(sender, args):
+                focused["since"] = None
+                act.Invalidate()
+
+            def act_clicked(sender, args):
+                # Enter, Space or Invoke (keyboard, Narrator, voice control):
+                # only once the button has held the focus for the full wait.
+                since = focused["since"]
+                if (act.Enabled and since is not None
+                        and time.monotonic() - since >= CONFIRM_DELAY_MS / 1000):
+                    dialog.DialogResult = DialogResult.Yes
+
             def made(sender, args):
                 # Windows 11 rounds the card's corners and draws its edge.
                 dwm = ctypes.WinDLL("dwmapi")
@@ -871,12 +926,16 @@ def _ask(window, question, theme):
             dialog.Activated += EventHandler(activated)
             dialog.HandleCreated += EventHandler(made)
             act.MouseUp += MouseEventHandler(mouse_up_on_action)
+            act.Click += EventHandler(act_clicked)
+            act.GotFocus += EventHandler(focus_in)
+            act.LostFocus += EventHandler(focus_out)
             if check is not None:
                 check.CheckedChanged += EventHandler(lambda s, e: (restart(), check.Invalidate()))
                 check.GotFocus += EventHandler(lambda s, e: check.Invalidate())
                 check.LostFocus += EventHandler(lambda s, e: check.Invalidate())
             dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not act.Enabled else None)
-            for control in [dialog, cancel, body, title, icon] + ([check] if check else []):
+            watched = [dialog, content, cancel, body, title, icon] + ([check] if check else [])
+            for control in watched:
                 control.MouseDown += MouseEventHandler(
                     lambda s, e: restart() if not act.Enabled else None)
             box["answer"] = dialog.ShowDialog(scrim or owner)

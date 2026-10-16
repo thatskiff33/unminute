@@ -233,7 +233,7 @@ function cleanupRow(m) {
       : null);
 }
 
-// A Windows confirmation answered No, or asked again too soon after a No (#111 A6).
+// The app's own confirmation cancelled, or asked again too soon after a Cancel (#111 A6).
 function declined(r, text) {
   return r.retry_soon ? "Wait a moment, then try again." : text;
 }
