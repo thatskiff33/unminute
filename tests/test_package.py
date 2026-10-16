@@ -223,6 +223,10 @@ class ReproducibleBuildTests(unittest.TestCase):
                   {"signer": 'CN="Example, Ltd", O=Example', "thumbprint": "", "timestamped": 0},
                   f"{lib}/onnxruntime/capi/onnxruntime.dll":
                   {"signer": "CN=Microsoft Corporation, O=Microsoft Corporation"}}
+        # Every DLL must have a signature result; one without stops the build.
+        with self.assertRaisesRegex(SystemExit, "libmp3lame-0-def.dll is not in the signature"):
+            bp.notices(installed, site, folder, "0.5.0", signed)
+        signed[f"{lib}/av.libs/libmp3lame-0-def.dll"] = {"signer": ""}
         text = bp.notices(installed, site, folder, "0.5.0", signed)
         self.assertIn("numpy 2.4.6\n  Licence: BSD-3-Clause", text)
         self.assertIn(f"{lib}/numpy-2.4.6.dist-info/licenses/LICENSE.txt", text)
@@ -248,7 +252,7 @@ class ReproducibleBuildTests(unittest.TestCase):
 
     def test_the_model_manifest_has_every_pinned_file(self):
         import asr_engines as ae
-        m = bp.model_manifest()
+        m = bp.model_manifest(bp.ROOT / "asr_engines.py")      # the file being packaged
         self.assertEqual({x["name"] for x in m["models"]},
                          {*ae.PARAKEET_MODELS, ae.SILERO_VAD.name, *ae.WHISPER_MODELS,
                           ae.SPEAKER_MODEL.name})
@@ -321,6 +325,18 @@ class ReproducibleBuildTests(unittest.TestCase):
                     self.assertRaisesRegex(SystemExit, "bad or unreadable signature"):
                 bp.signers(folder, paths)
 
+    def test_a_signature_from_the_machines_catalog_is_refused(self):
+        # Get-AuthenticodeSignature falls back to the system catalogs: such a
+        # signer belongs to this machine, not to the file that ships.
+        def fake_powershell(script, **files):
+            Path(files["out"]).write_text(json.dumps([
+                {"status": "Valid", "signer": "CN=Microsoft Windows", "thumbprint": "AB",
+                 "timestamped": True, "type": "Catalog"}]), encoding="utf-8-sig")
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                self.assertRaisesRegex(SystemExit, "catalog"):
+            bp.signers(self.root, ["runtime/msvcp140.dll"])
+
     def test_the_inventory_records_facts_not_verdicts(self):
         folder = self.root / "pkg"
         (folder / "runtime").mkdir(parents=True)
@@ -347,14 +363,17 @@ class ReproducibleBuildTests(unittest.TestCase):
             if "install" in cmd:
                 Path(cmd[cmd.index("--report") + 1]).write_text('{"install": []}')
             return subprocess.CompletedProcess(cmd, 0)
+        lock = self.root / "committed-requirements.txt"
         with mock.patch.object(bp.subprocess, "run", fake_run):
             self.assertEqual(bp.install_wheels(self.root / "lib", self.root / "cache",
-                                               self.root / "report.json"), [])
+                                               self.root / "report.json", lock), [])
         download, install = calls
         for cmd in calls:
-            self.assertEqual(cmd[1:5], ["-m", "pip", "--isolated", "--disable-pip-version-check"])
+            self.assertEqual(cmd[1:6], ["-I", "-m", "pip", "--isolated",
+                                        "--disable-pip-version-check"])
             for flag in ("--require-hashes", "--no-deps", "--only-binary=:all:"):
                 self.assertIn(flag, cmd)
+            self.assertEqual(cmd[cmd.index("-r") + 1], str(lock))     # the lock it was given
         self.assertIn("--no-index", install)
         self.assertIn("--no-compile", install)
 
@@ -368,9 +387,11 @@ class ReproducibleBuildTests(unittest.TestCase):
         (site / "tool").mkdir()
         (site / "tool" / "__init__.py").write_text("")
         (site / "tool" / "a,b.txt").write_text("")
+        (self.root / "outside.txt").write_text("exists, but not in the package folder")
         info = site / "tool-1.0.dist-info"
         info.mkdir()
         (info / "RECORD").write_bytes(b"tool/__init__.py,sha256=abc,10\r\n"
+                                      b"../outside.txt,sha256=mno,5\r\n"
                                       b"../../bin/tool.exe,sha256=xyz,2\r\n"
                                       b"../../share/man/tool.1,sha256=def,3\r\n"
                                       b"tool/pruned.dll,sha256=ghi,4\r\n"
@@ -419,18 +440,26 @@ class ReproducibleBuildTests(unittest.TestCase):
             bp.source_date_epoch()
 
     def test_a_release_builds_only_the_tagged_commit_from_a_clean_tree(self):
-        def fake(status="", head="f" * 40, tag="f" * 40):
+        def fake(status="", head="f" * 40, tag="f" * 40, flags="H asr_engines.py\nH VERSION"):
             answers = {("status", "--porcelain", "--untracked-files=all"): status,
-                       ("rev-parse", "HEAD"): head,
+                       ("ls-files", "-v"): flags, ("rev-parse", "HEAD"): head,
                        ("rev-parse", "--verify", "--quiet", "refs/tags/v0.5.0^{commit}"): tag}
             # Any other question (a branch named v0.5.0, say) has no answer.
             return lambda *args: answers.get(args)
-        with mock.patch.object(bp, "git", fake()):
-            bp.release_guard("0.5.0")                                       # passes
+        stored = mock.patch.object(bp, "committed", return_value=b"0.5.0\r\n")
+        with mock.patch.object(bp, "git", fake()), stored:
+            self.assertEqual(bp.release_guard("0.5.0"), "f" * 40)          # the commit
         for bad in (dict(status="?? workspace/stray.py"), dict(status=" M asr_engines.py"),
-                    dict(tag=None), dict(head="0" * 40)):
-            with mock.patch.object(bp, "git", fake(**bad)), self.assertRaises(SystemExit):
+                    dict(tag=None), dict(head="0" * 40),
+                    dict(flags="h requirements.txt"),                       # assume-unchanged
+                    dict(flags="S packaging/binary-allowlist.json")):       # skip-worktree
+            with mock.patch.object(bp, "git", fake(**bad)), stored, \
+                    self.assertRaises(SystemExit):
                 bp.release_guard("0.5.0")
+        with mock.patch.object(bp, "git", fake()), \
+                mock.patch.object(bp, "committed", return_value=b"0.4.9\n"), \
+                self.assertRaisesRegex(SystemExit, "VERSION in commit"):
+            bp.release_guard("0.5.0")                   # the commit's VERSION is the one
         with mock.patch.object(bp, "git", return_value=None), self.assertRaises(SystemExit):
             bp.release_guard("0.5.0")                                       # no git: refused
 
@@ -449,43 +478,100 @@ class ReproducibleBuildTests(unittest.TestCase):
                 mock.patch.object(bp, "check_host"):
             bp.build("0.5.0", self.root, self.root, release=True, update_allowlist=True)
 
-    def test_a_release_packages_the_committed_tree_with_fixed_line_endings(self):
+    def test_crlf_files_match_the_gitattributes(self):
+        rules = (bp.ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+        crlf = {line.split()[0].removeprefix("*") for line in rules if "eol=crlf" in line}
+        self.assertEqual(crlf, set(bp.CRLF_SUFFIXES))
+
+    def _repo(self):
+        """A committed fixture repo with a clean git setup (no user or system
+        settings), then local state git status cannot see or that git would
+        apply on export: a Windows checkout setting, info/attributes and a
+        smudge filter."""
         repo = self.root / "repo"
         files = {"workspace/app.py": "a = 1\nb = 2\n", "workspace/ui/index.html": "<p>\n",
-                 "workspace/ui/trial.html": "trial\n", "LICENSE": "MIT\n",
-                 "packaging/install.ps1": "Write-Host 1\nWrite-Host 2\n",
-                 ".gitattributes": "* text=auto\n*.ps1 text eol=crlf\n",
-                 ".gitignore": "*.log\n"}
+                 "workspace/ui/trial.html": "trial\n", "workspace/consent.py": "c = 1\n",
+                 "LICENSE": "MIT\n", "packaging/install.ps1": "Write-Host 1\nWrite-Host 2\n",
+                 ".gitattributes": "* text=auto\n*.ps1 text eol=crlf\n", ".gitignore": "*.log\n"}
         for rel, text in files.items():
             (repo / rel).parent.mkdir(parents=True, exist_ok=True)
             (repo / rel).write_bytes(text.encode())
-        # A clean git setup (no user or system settings), then a Windows-style
-        # checkout setting that would otherwise turn LF into CRLF.
         empty = self.root / "gitconfig"
         empty.write_text("")
-        env = {"GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1"}
-        with mock.patch.dict(os.environ, env):
-            git(repo, "init", "-q")
-            git(repo, "config", "core.autocrlf", "true")
-            git(repo, "add", "-A")
-            git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-                "commit", "-q", "-m", "fixture")
-            (repo / "workspace" / "app.py").write_bytes(b"a = 'changed, not committed'\n")
-            (repo / "workspace" / "notes.log").write_text("ignored file")
-            (repo / "workspace" / "stray.py").write_text("untracked file")
-            app = self.root / "out" / "Unminute-0.5.0" / "app"
-            with mock.patch.object(bp, "ROOT", repo), \
-                    mock.patch.object(bp, "APP_FILES", ["LICENSE"]), \
-                    mock.patch.object(bp, "PACKAGED_SCRIPTS", ("install.ps1",)):
-                bp.export_app(app)
+        env = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty),
+                                           "GIT_CONFIG_NOSYSTEM": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+        git(repo, "init", "-q")
+        git(repo, "config", "core.autocrlf", "true")
+        git(repo, "add", "-A")
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+            "commit", "-q", "-m", "fixture")
+        sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                             capture_output=True, text=True).stdout.strip()
+        info = repo / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("workspace/consent.py export-ignore\n*.py eol=crlf\n"
+                                         "*.html filter=swap\n")
+        git(repo, "config", "filter.swap.smudge", "echo swapped")
+        (repo / "workspace" / "app.py").write_bytes(b"a = 'changed, not committed'\n")
+        (repo / "workspace" / "notes.log").write_text("ignored file")
+        (repo / "workspace" / "stray.py").write_text("untracked file")
+        return repo, sha
+
+    def _patched(self, repo):
+        stack = mock.patch.multiple(bp, ROOT=repo, APP_FILES=["LICENSE"],
+                                    PACKAGED_SCRIPTS=("install.ps1",))
+        return stack
+
+    def test_a_release_packages_the_commit_as_stored(self):
+        repo, sha = self._repo()
+        # HEAD moves on after the commit was checked: the export keeps to it.
+        (repo / "workspace" / "later.py").write_text("x = 2\n")
+        git(repo, "add", "workspace/later.py")
+        git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+            "commit", "-q", "-m", "later")
+        app = self.root / "out" / "Unminute-0.5.0" / "app"
+        with self._patched(repo):
+            bp.export_app(app, sha)
         shipped = sorted(p.relative_to(app.parent).as_posix()
                          for p in app.parent.rglob("*") if p.is_file())
         self.assertEqual(shipped, ["app/LICENSE", "app/workspace/app.py",
-                                   "app/workspace/ui/index.html", "install.ps1"])
+                                   "app/workspace/consent.py", "app/workspace/ui/index.html",
+                                   "install.ps1"])
         self.assertEqual((app / "workspace" / "app.py").read_bytes(), b"a = 1\nb = 2\n")
+        self.assertEqual((app / "workspace" / "ui" / "index.html").read_bytes(), b"<p>\n")
         self.assertEqual((app.parent / "install.ps1").read_bytes(),
                          b"Write-Host 1\r\nWrite-Host 2\r\n")
 
+    def test_a_release_refuses_a_link_or_a_missing_path_in_the_commit(self):
+        repo, sha = self._repo()
+        with self._patched(repo):
+            with self.assertRaisesRegex(SystemExit, "README.md is not in commit"), \
+                    mock.patch.object(bp, "APP_FILES", ["README.md"]):
+                bp.export_app(self.root / "a" / "app", sha)
+            blob = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"],
+                                  input=b"../../etc", capture_output=True, check=True)
+            git(repo, "update-index", "--add", "--cacheinfo",
+                f"120000,{blob.stdout.decode().strip()},workspace/link")
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "commit", "-q", "-m", "link")
+            head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+            with self.assertRaisesRegex(SystemExit, "workspace/link .*not a regular file"):
+                bp.export_app(self.root / "b" / "app", head)
+
+    def test_a_development_build_leaves_ignored_files_out(self):
+        repo, _ = self._repo()
+        (repo / "packaging" / "install.cmd").write_text("x")
+        app = self.root / "dev" / "Unminute-0.5.0" / "app"
+        with self._patched(repo):
+            bp.copy_app(app)
+        shipped = sorted(p.relative_to(app).as_posix() for p in app.rglob("*") if p.is_file())
+        self.assertEqual(shipped, ["LICENSE", "workspace/app.py", "workspace/consent.py",
+                                   "workspace/stray.py", "workspace/ui/index.html"])
+        self.assertEqual((app / "workspace" / "app.py").read_bytes(),
+                         b"a = 'changed, not committed'\n")        # as it is in the folder
 
 if __name__ == "__main__":
     unittest.main()

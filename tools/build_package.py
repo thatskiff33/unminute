@@ -5,10 +5,14 @@
 #                                 [--release] [--update-binary-allowlist]
 #
 # The version comes from the VERSION file (#131); --version, if given, must match it.
-# --release refuses a working tree with any change or untracked file and a HEAD
-# that is not the commit tagged vX.Y.Z, and packages the committed tree exported
-# by git with fixed line endings, never the working folder (#111 B2). A
-# development build packages the working folder and says so in version.json.
+# --release refuses a working tree with any change, untracked file or file
+# hidden from git status, and a HEAD that is not the commit of tag vX.Y.Z. It
+# resolves that commit once and reads everything it packages or obeys (the app
+# files, the lock, VERSION and the binary allowlist) from it as stored, with no
+# git filters, attributes or line-ending settings applied; .cmd and .ps1 get
+# CRLF, as .gitattributes says (#111 B2). A development build packages the
+# working folder's tracked and untracked files (never ignored ones) and says so
+# in version.json.
 #
 # A release build is reproducible: the same commit and lock, built with the same
 # Python, pip and zlib (recorded in the SBOM), give the same zip, byte for byte.
@@ -56,7 +60,6 @@ import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))                 # asr_engines, for the model manifest
 
 PYTHON_VERSION = "3.12.10"
 EMBED_URL = (f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
@@ -80,8 +83,15 @@ VENDORED = {"proxy_tools-0.1.0-py3-none-any.whl":
             "b299ba191b86e8173bf116ee9b2324aa58622bdb4d58b26ec18379b713007ffa"}
 BINARY_SUFFIXES = (".exe", ".dll", ".pyd", ".so", ".dylib")
 PACKAGED_SCRIPTS = ("install.ps1", "install.cmd", "uninstall.ps1")
+# Files git checks out with CRLF (.gitattributes "eol=crlf"; a test keeps the two
+# the same). A release writes these with CRLF and every other file as stored.
+CRLF_SUFFIXES = (".cmd", ".ps1")
+# The shell trial page (tools/webview_trial.py) is a development tool: it is
+# left out so the package holds no page other than the app's own.
+TRIAL_PAGE = re.compile(r"(^|/)trial\.(html|js|css)$")
 # Signature states a package binary may have; anything else (a hash mismatch, an
-# untrusted or unreadable signature) fails the build.
+# untrusted or unreadable signature) fails the build, and so does a signature
+# found in this machine's catalogs rather than in the file itself.
 SIGNATURE_OK = ("Valid", "NotSigned")
 ALLOWLIST = PACKAGING / "binary-allowlist.json"
 ZIP_EPOCH_MIN = 315532800      # 1980-01-01, the earliest time a zip entry can hold
@@ -139,7 +149,7 @@ TARGET = ["--platform", "win_amd64", "--python-version", "3.12", "--implementati
           "--only-binary=:all:", "--require-hashes", "--no-deps"]
 
 
-def install_wheels(site, wheel_cache, report):
+def install_wheels(site, wheel_cache, report, lock_file):
     """The hash-locked requirements (tools/lock.py), wheels only, for Windows
     x64 CPython 3.12: every file must match a pinned SHA-256, and nothing
     outside the lock is installed (--no-deps). The wheels are downloaded into
@@ -147,13 +157,14 @@ def install_wheels(site, wheel_cache, report):
     names the exact file used for each package (for the SBOM and notices). The
     one package without a published wheel comes from packaging/wheels (also
     hash-checked)."""
-    # --isolated: no PIP_* variables or pip configuration can steer the build.
-    pip = [sys.executable, "-m", "pip", "--isolated", "--disable-pip-version-check"]
+    # -I: no PYTHON* variables, user site-packages or current folder on the
+    # import path; --isolated: no PIP_* variables or pip configuration.
+    pip = [sys.executable, "-I", "-m", "pip", "--isolated", "--disable-pip-version-check"]
     vendored = PACKAGING / "wheels"
     for name, digest in VENDORED.items():
         if sha256(vendored / name) != digest:
             sys.exit(f"{name} does not match its pinned SHA-256.")
-    lock = ["-r", str(ROOT / "requirements.txt")]
+    lock = ["-r", str(lock_file)]
     wheel_cache.mkdir(parents=True, exist_ok=True)
     subprocess.run(pip + ["download", "--dest", str(wheel_cache), "--find-links",
                           str(vendored)] + TARGET + lock, check=True)
@@ -267,51 +278,103 @@ def drop_launchers(site):
 
 
 def copy_app(app):
-    """A development build: the working folder as it is (not reproducible)."""
+    """A development build: the app as it is in the working folder, tracked and
+    untracked files only, so an ignored file (a recording or log left in
+    workspace/) never ships. Not reproducible."""
     app.mkdir(parents=True)
     for name in APP_FILES:
         shutil.copy2(ROOT / name, app / name)
-    # The shell trial page (tools/webview_trial.py) is a development tool: it
-    # is left out so the package holds no page other than the app's own.
-    shutil.copytree(ROOT / "workspace", app / "workspace",
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc",
-                                                  "trial.html", "trial.js", "trial.css"))
+    listed = git("ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+                 "workspace")
+    if listed is None:
+        sys.exit("A development build needs git, to leave ignored files out.")
+    for rel in sorted(filter(None, listed.split("\0"))):
+        source = ROOT / rel
+        if TRIAL_PAGE.search(rel) or not source.is_file():   # deleted, not yet committed
+            continue
+        (app / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, app / rel)
     for script in PACKAGED_SCRIPTS:
         shutil.copy2(PACKAGING / script, app.parent / script)
 
 
-def export_app(app):
-    """A release build: the committed tree at HEAD, exported by git with fixed
-    line endings (LF, and CRLF where .gitattributes says so), so no ignored,
-    untracked or locally changed file can ship and the bytes do not depend on
-    this machine's git settings."""
-    paths = ["workspace", *APP_FILES, *(f"packaging/{s}" for s in PACKAGED_SCRIPTS)]
-    r = subprocess.run(["git", "-C", str(ROOT), "-c", "core.autocrlf=false", "-c",
-                        "core.eol=lf", "archive", "--format=zip", "HEAD", "--", *paths],
-                       capture_output=True)
+def git_bytes(*args, data=None):
+    """Raw git output; replace refs are ignored so a commit means what it says."""
+    r = subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
+                       input=data, capture_output=True)
     if r.returncode:
-        sys.exit("git could not export the committed tree: "
-                 + r.stderr.decode("utf-8", "replace").strip())
-    with zipfile.ZipFile(io.BytesIO(r.stdout)) as z:
-        for entry in z.infolist():
-            name = entry.filename
-            if entry.is_dir() or re.search(r"(^|/)trial\.(html|js|css)$", name):
-                continue
-            if name.startswith("packaging/"):
-                target = app.parent / name.split("/", 1)[1]
-            else:
-                target = app / name
-            if ".." in name.split("/") or name.startswith("/"):
-                sys.exit(f"Unexpected path in the exported tree: {name}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(z.read(entry))
+        sys.exit(f"git {args[0]} failed: " + r.stderr.decode("utf-8", "replace").strip())
+    return r.stdout
+
+
+def committed(sha, path):
+    """A file's bytes in a commit, exactly as stored (no filters or conversion)."""
+    return git_bytes("cat-file", "blob", f"{sha}:{path}")
+
+
+def committed_tree(sha, paths):
+    """{path: bytes} for every file under `paths` in a commit, as stored. Only
+    regular files: a symbolic link or submodule stops the build, and so does a
+    requested path the commit does not have."""
+    listing = git_bytes("ls-tree", "-r", "-z", "--full-tree", sha, "--", *paths)
+    blobs = {}
+    for entry in filter(None, listing.split(b"\0")):
+        meta, name = entry.split(b"\t", 1)
+        mode, kind, oid = meta.decode("ascii").split()
+        name = name.decode("utf-8")
+        if mode not in ("100644", "100755") or kind != "blob":
+            sys.exit(f"{name} in the commit is not a regular file ({mode}).")
+        if ".." in name.split("/") or name.startswith("/"):
+            sys.exit(f"Unexpected path in the commit: {name}")
+        blobs[name] = oid
+    for p in paths:
+        if not any(n == p or n.startswith(p + "/") for n in blobs):
+            sys.exit(f"{p} is not in commit {sha}.")
+    out = {}
+    # One cat-file process reads every blob: "<oid> blob <size>\n<bytes>\n" each.
+    stream = git_bytes("cat-file", "--batch",
+                       data="".join(f"{oid}\n" for oid in blobs.values()).encode("ascii"))
+    pos = 0
+    for name, oid in blobs.items():
+        end = stream.index(b"\n", pos)
+        got, kind, size = stream[pos:end].decode("ascii").split()
+        if got != oid or kind != "blob":
+            sys.exit(f"git returned {got} {kind} for {name}.")
+        start = end + 1
+        out[name] = stream[start:start + int(size)]
+        pos = start + int(size) + 1
+    return out
+
+
+def checkout_bytes(name, data):
+    """A file as a checkout with this repo's .gitattributes writes it."""
+    if name.lower().endswith(CRLF_SUFFIXES):
+        return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    return data
+
+
+def export_app(app, sha):
+    """A release build: the app and installer files of commit `sha`, as stored
+    in git (so no ignored, untracked, locally changed or hidden file can ship,
+    and no git setting on this machine changes a byte)."""
+    paths = ["workspace", *APP_FILES, *(f"packaging/{s}" for s in PACKAGED_SCRIPTS)]
+    for name, data in sorted(committed_tree(sha, paths).items()):
+        if TRIAL_PAGE.search(name):
+            continue
+        if name.startswith("packaging/"):
+            target = app.parent / name.split("/", 1)[1]
+        else:
+            target = app / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(checkout_bytes(name, data))
 
 
 def git(*args):
     """git output, or None when git is missing or the command fails."""
     try:
-        return subprocess.run(["git", "-C", str(ROOT), *args], check=True,
-                              capture_output=True, text=True).stdout.strip()
+        return subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
+                              check=True, capture_output=True, encoding="utf-8",
+                              errors="replace").stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -329,18 +392,38 @@ def clean_tree():
 
 def release_guard(version):
     """A release builds only the commit of tag vX.Y.Z (a tag, not a branch of
-    that name), from a tree with no change and no untracked file."""
+    that name), from a tree with no change, no untracked file and no file hidden
+    from git status (assume-unchanged or skip-worktree). Returns the commit."""
     status = git("status", "--porcelain", "--untracked-files=all")
     if status is None:
         sys.exit("--release needs git, to check the working tree and the tag.")
     if status:
         sys.exit("--release refuses a working tree with changes or untracked files:\n"
                  + status)
+    flags = git("ls-files", "-v") or ""
+    hidden = [line[2:] for line in flags.splitlines()
+              if line[:1].islower() or line[:1] == "S"]
+    if hidden:
+        sys.exit("--release refuses files hidden from git status (assume-unchanged or "
+                 "skip-worktree):\n" + "\n".join(hidden))
     head = git("rev-parse", "HEAD")
     tagged = git("rev-parse", "--verify", "--quiet", f"refs/tags/v{version}^{{commit}}")
     if not tagged or head != tagged:
         sys.exit(f"--release builds only the commit tagged v{version} "
                  f"(HEAD is {head}, the tag is {tagged or 'missing'}).")
+    stored = committed(head, "VERSION").decode("utf-8-sig").strip()
+    if stored != version:
+        sys.exit(f"VERSION in commit {head} is {stored!r}, not {version}.")
+    return head
+
+
+def same_as_commit(sha, path):
+    """A file this build runs or trusts from the working folder must match the
+    commit (line endings aside, for text)."""
+    here = (ROOT / path).read_bytes()
+    stored = committed(sha, path)
+    if here != stored and here.replace(b"\r\n", b"\n") != stored.replace(b"\r\n", b"\n"):
+        sys.exit(f"{path} differs from commit {sha}.")
 
 
 def source_date_epoch():
@@ -399,10 +482,9 @@ def packages(installed):
 
 def build_tools():
     """The build's own tool versions, which the bytes of the zip depend on."""
-    git_version = (git("--version") or "git unknown").removeprefix("git version ").strip()
     return [("python", platform.python_version()),
             ("pip", importlib.metadata.version("pip")),
-            ("zlib", zlib.ZLIB_RUNTIME_VERSION), ("git", git_version)]
+            ("zlib", zlib.ZLIB_RUNTIME_VERSION)]
 
 
 def sbom(installed, app_name, version, commit, epoch, runtime_sha, release=False,
@@ -506,14 +588,25 @@ def notices(installed, site, folder, version, signed):
 
 
 def signer_name(signed, path):
-    info = signed.get(path) or {}
+    if path not in signed:
+        sys.exit(f"{path} is not in the signature results (a path that differs only "
+                 "in case?).")
+    info = signed[path]
     cn = re.search(r"CN=(\"[^\"]+\"|[^,]+)", info.get("signer") or "")
     return f"signed by {cn.group(1).strip(chr(34))}" if cn else "unsigned"
 
 
-def model_manifest():
-    """The pinned model files, for IT to verify a pre-staged copy (#111 B7)."""
-    import asr_engines as ae
+def model_manifest(source):
+    """The pinned model files, for IT to verify a pre-staged copy (#111 B7), from
+    the asr_engines.py being packaged."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_packaged_asr_engines", source)
+    ae = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = ae          # dataclasses look their module up by name
+    try:
+        spec.loader.exec_module(ae)
+    finally:
+        sys.modules.pop(spec.name, None)
     specs = [*ae.PARAKEET_MODELS.values(), ae.SILERO_VAD, *ae.WHISPER_MODELS.values(),
              ae.SPEAKER_MODEL]
     return {"_about": "Models are not in the package. These are the files each model "
@@ -590,7 +683,8 @@ def signers(folder, paths):
             " [pscustomobject]@{ status = [string]$s.Status;"
             " signer = if ($s.SignerCertificate) { $s.SignerCertificate.Subject } else { '' };"
             " thumbprint = if ($s.SignerCertificate) { $s.SignerCertificate.Thumbprint }"
-            " else { '' }; timestamped = [bool]$s.TimeStamperCertificate } };"
+            " else { '' }; timestamped = [bool]$s.TimeStamperCertificate;"
+            " type = [string]$s.SignatureType } };"
             " ConvertTo-Json -InputObject @($r) -Compress | Set-Content -LiteralPath"
             " $env:UNMINUTE_OUT -Encoding UTF8", list=listed, out=out)
         if r.returncode or not out.is_file():
@@ -601,6 +695,8 @@ def signers(folder, paths):
     result = dict(zip(paths, rows, strict=True))
     bad = [f"{p}: {r['status'] or 'no result'}" for p, r in result.items()
            if r["status"] not in SIGNATURE_OK]
+    bad += [f"{p}: signature from this machine's catalog, not the file" for p, r
+            in result.items() if r["status"] == "Valid" and r.get("type") == "Catalog"]
     if bad:
         sys.exit("Binaries with a bad or unreadable signature:\n" + "\n".join(bad))
     return result
@@ -655,10 +751,9 @@ def build(version, out, cache, release=False, update_allowlist=False):
     check_host()
     if release and update_allowlist:
         sys.exit("A release build cannot rewrite the binary allowlist.")
-    if release:
-        release_guard(version)
+    sha = release_guard(version) if release else None
     epoch = source_date_epoch()
-    commit = git_commit()
+    commit = sha or git_commit()
     name = f"Unminute-{version}"
     # Build in an extended-length path (\\?\): the temp folder plus the
     # deepest wheel files can pass 260 characters on the build machine, and
@@ -671,17 +766,31 @@ def build(version, out, cache, release=False, update_allowlist=False):
     runtime = folder / "runtime"
     site = runtime / SITE
     try:
+        work.mkdir(exist_ok=True)
+        # What the build obeys: from the commit for a release, else the folder.
+        lock_file, allowlist = ROOT / "requirements.txt", ALLOWLIST
+        if release:
+            lock_file, allowlist = work / "requirements.txt", work / "binary-allowlist.json"
+            lock_file.write_bytes(committed(sha, "requirements.txt"))
+            allowlist.write_bytes(committed(sha, "packaging/binary-allowlist.json"))
+            for path in ("tools/build_package.py",
+                         *(f"packaging/wheels/{w}" for w in VENDORED)):
+                same_as_commit(sha, path)
         embed = fetch_runtime(cache)
         with zipfile.ZipFile(embed) as z:
             z.extractall(runtime)
         check_signatures(runtime)
         write_pth(runtime)
-        installed = install_wheels(site, cache / "wheels", work / "pip-report.json")
+        installed = install_wheels(site, cache / "wheels", work / "pip-report.json",
+                                   lock_file)
         flatten_licences(site)
         prune_portaudio(site)
         drop_launchers(site)
         sync_records(site)
-        (export_app if release else copy_app)(folder / "app")
+        if release:
+            export_app(folder / "app", sha)
+        else:
+            copy_app(folder / "app")
         info = {
             # "name": Start menu and Settings > Apps name; installers read it so a
             # rollback recreates what this version's uninstaller removes.
@@ -697,11 +806,12 @@ def build(version, out, cache, release=False, update_allowlist=False):
             # Installers check for features before relying on them (#26).
             "features": ["gate"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
-        (folder / "model-manifest.json").write_text(json.dumps(model_manifest(), indent=1),
-                                                    encoding="utf-8")
+        (folder / "model-manifest.json").write_text(
+            json.dumps(model_manifest(folder / "app" / "asr_engines.py"), indent=1),
+            encoding="utf-8")
         found = binaries(folder)
         signed = signers(folder, found)
-        problems = check_binaries(signed, update=update_allowlist)
+        problems = check_binaries(signed, allowlist, update=update_allowlist)
         if problems:
             sys.exit("The package's binaries differ from packaging/binary-allowlist.json "
                      "(review, then rebuild with --update-binary-allowlist):\n"
@@ -718,6 +828,8 @@ def build(version, out, cache, release=False, update_allowlist=False):
         if too_long:
             sys.exit("Paths too long for Windows installs:\n" + "\n".join(too_long))
         count = manifest(folder)
+        if release and release_guard(version) != sha:
+            sys.exit("HEAD or the tree changed during the build; nothing was written.")
         out.mkdir(parents=True, exist_ok=True)
         zpath = out / f"{name}.zip"
         write_zip(folder, zpath, epoch)

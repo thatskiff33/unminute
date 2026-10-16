@@ -69,10 +69,11 @@ Releases are cut by the Release workflow in `.github/workflows/release.yml` when
    - `--summary "One line"` adds a line under the heading. `--date` sets the date if it should not be today.
    - Review both files, then merge them to `main`. `VERSION` is the one source of the version: the package build reads it, and the workflow refuses a tag that differs.
    - **Promoting a preview to a full release:** run `python tools/changelog.py vX.Y.Z` as usual. The full section brings in the notes of every `## vX.Y.Z-preview.N` section (oldest first, each group's notes kept together) and any fragments added since, so users on Latest see everything since the last full release, as long as the previews were numbered `vX.Y.Z-preview.N` (notes from an abandoned preview of another version are not brought in: add a fragment if they still apply). The preview sections stay as they were; leave them as the script wrote them, and put install notes in `--summary`. A preview's summary is not carried over; give the full release its own. `python tools/changelog.py --preview vX.Y.Z` shows the notes first.
-2. Tag the merged commit and push the tag:
+2. Tag the merged commit locally, build and test the package from it (steps 2 and 3 of "Unminute package releases" below), and only then push the tag. Pushing the tag publishes the release.
 
    ```
    git tag -a vX.Y.Z -m "Unminute vX.Y.Z" <commit on main>
+   (build and test the package)
    git push origin vX.Y.Z
    ```
 
@@ -84,8 +85,8 @@ The workflow publishes the notes and the source archives only. The Windows packa
 
 1. **Changelog and version.** Merge the `## vX.Y.Z` section and `VERSION` made by `tools/changelog.py` (step 1 of "Cutting a release"), then check out that commit of `main`.
 2. **Tag locally, then build.**
-   - Create the tag on that commit, but do not push it yet (pushing publishes the release): `git tag -a vX.Y.Z -m "Unminute vX.Y.Z"`. If the build or its tests fail, delete it with `git tag -d vX.Y.Z` and fix forward.
-   - Run `python tools/build_package.py --release` on Windows with 64-bit CPython 3.12. It refuses a working tree with any change or untracked file, and a HEAD that is not the commit of tag `vX.Y.Z`. It packages the committed files exported by git, never the working folder, and takes the version from `VERSION` (a `--version` that differs is refused).
+   - Create the tag on that commit (step 2 of "Cutting a release"), but do not push it yet: `git tag -a vX.Y.Z -m "Unminute vX.Y.Z"`. If the build or its tests fail, delete it with `git tag -d vX.Y.Z` and fix forward.
+   - Run `python -I tools/build_package.py --release` on Windows with 64-bit CPython 3.12. It refuses a working tree with any change, untracked file or file hidden from `git status`, and a HEAD that is not the commit of tag `vX.Y.Z`. It packages that commit's files as git stores them, never the working folder, and takes the version from `VERSION` (a `--version` that differs is refused; see PACKAGING.md).
    - The command prints the zip's SHA-256 and writes the `.sha256` file and the bill of materials (`Unminute-X.Y.Z.cdx.json`) to `dist/`. The zip's `version.json` says `"release": true`; a build without `--release` says `false` and is never published.
    - The build is reproducible: building the same commit again with the same Python, pip and zlib versions (listed in the bill of materials) gives the same SHA-256.
 3. **Test the build.**

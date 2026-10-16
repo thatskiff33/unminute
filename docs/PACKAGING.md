@@ -37,10 +37,12 @@ On a Windows build machine with Python 3.12 and network access:
 
 ```
 python tools/build_package.py --out dist             (a development build)
-python tools/build_package.py --out dist --release   (a release build)
+python -I tools/build_package.py --out dist --release   (a release build)
 ```
 
-`--release` refuses a working tree with any change or untracked file, and a HEAD that is not the commit of tag `vX.Y.Z` (a tag, not a branch of that name). It packages the files committed at HEAD, exported by `git archive` with fixed line endings (LF, and CRLF for `.cmd` and `.ps1` as `.gitattributes` says), so no ignored or local file can ship and the bytes do not depend on the machine's git settings. A development build copies the working folder as it is, and `version.json` says so.
+`--release` refuses a working tree with any change or untracked file, a file hidden from `git status` (assume-unchanged or skip-worktree), and a HEAD that is not the commit of tag `vX.Y.Z` (a tag, not a branch of that name), whose `VERSION` must match. It resolves that commit once and reads what it packages and obeys from the commit itself: the app and installer files, the lock and the binary allowlist, as git stores them, with no git filter, attribute file or line-ending setting applied. `.cmd` and `.ps1` files get CRLF line endings, as `.gitattributes` says; every other file is written as stored. So no ignored, untracked, locally changed or hidden file can ship, and no git setting on the build machine changes a byte. The build script and the vendored wheel must also match the commit, and the build stops without writing the zip if HEAD or the tree changes while it runs. Run it with `python -I`, so no `PYTHON*` variable, user site-packages or file in the current folder can change it.
+
+A development build copies the app from the working folder: tracked and untracked files, never ignored ones (such as a recording or log left in `workspace/`). `version.json` says it is not a release, and whether the working tree had changes.
 
 A release build is reproducible: the same commit and lock, built with the same Python, pip and zlib versions (recorded in the bill of materials), give the same zip, byte for byte. Every file in the zip carries one time stamp, `SOURCE_DATE_EPOCH` if set or else the source commit's time, and entries are written in a fixed order with fixed compression. A build outside a git checkout needs `SOURCE_DATE_EPOCH`.
 
@@ -54,8 +56,8 @@ The build:
    - Console launchers, C headers and man pages written by pip (`runtime\lib\bin`, `include` and `share`) are removed; the launchers embed the build machine's paths. Each package's `RECORD` is then trimmed to the files that ship, and licence files moved out of very deep folders are recorded at their new place.
    - pip runs with `--isolated`, so no `PIP_*` variable or pip configuration file can change what it installs.
    - `runtime\sitecustomize.py` registers `runtime\lib` as a site directory, so packages that rely on `.pth` files work.
-3. Copies the app and installer files (a release build exports them from the commit), then writes `version.json` and `model-manifest.json`.
-4. Reads the Authenticode signature of every executable file and checks each against `packaging/binary-allowlist.json`, which lists every file with its signer. A file that is not listed, a listed one that is missing, a changed signer, or a signature that is neither valid nor absent (for example a hash mismatch) fails the build. When a dependency change adds, renames or re-signs binaries, rebuild with `--update-binary-allowlist` and review the list's diff in the pull request; a release build cannot rewrite it.
+3. Copies the app and installer files (a release build takes them from the commit), then writes `version.json` and `model-manifest.json` (from the `asr_engines.py` being packaged).
+4. Reads the Authenticode signature of every executable file and checks each against `packaging/binary-allowlist.json`, which lists every file with its signer. A file that is not listed, a listed one that is missing, a changed signer, a signature that is neither valid nor absent (for example a hash mismatch), or a signature that Windows found in this machine's catalogs rather than in the file fails the build. "Valid" depends on the build machine's certificate store and clock: a rebuild of an old version may stop if a bundled file's certificate has since been revoked, or has expired without a time stamp. When a dependency change adds, renames or re-signs binaries, rebuild with `--update-binary-allowlist` and review the list's diff in the pull request; a release build cannot rewrite it.
 5. Writes `binary-inventory.json`, `THIRD_PARTY_NOTICES.txt`, `sbom.cdx.json` and `package-manifest.json`.
 6. Zips the result and writes the `.sha256` file and `Unminute-<version>.cdx.json`.
 

@@ -110,7 +110,12 @@ class LockTests(unittest.TestCase):
             self.assertIn(flag, build.TARGET)
         self.assertEqual(body.count("+ TARGET + lock"), 2)      # the download and the install
         self.assertIn('"--no-index"', body)
-        self.assertIn('ROOT / "requirements.txt"', body)
+        self.assertIn('lock = ["-r", str(lock_file)]', body)
+        # build() gives it the root lock, or for a release the commit's copy of it.
+        body = source[source.index("def build("):source.index("def release_version")]
+        self.assertIn('lock_file, allowlist = ROOT / "requirements.txt", ALLOWLIST', body)
+        self.assertIn('lock_file.write_bytes(committed(sha, "requirements.txt"))', body)
+        self.assertIn("lock_file)", body[body.index("install_wheels("):])
         self.assertFalse((ROOT / "workspace" / "requirements.txt").exists())
 
 
