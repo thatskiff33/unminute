@@ -158,6 +158,162 @@ class FragmentTests(unittest.TestCase):
             changelog.release("v0.5.0", root=self.root)
         self.assertTrue((self.root / "changelog.d" / "1-x.md").exists())   # nothing removed
 
+    # -- a full release brings in its previews' notes (#147) ----------------------
+
+    def test_a_full_release_brings_in_its_preview(self):
+        self.add("1-a.md", "- **A.** In the preview.\n")
+        self.add("2-g.md", "Security hardening:\n\n- **G1.** In the preview.\n")
+        changelog.release("v0.5.0-preview.1", "Try it first.", root=self.root,
+                          date="2026-10-20")
+        preview = workflow_notes(self.changelog(), "v0.5.0-preview.1")
+        self.add("3-b.md", "- **B.** Since the preview.\n")
+        changelog.release("v0.5.0", "Everything since v0.4.3.", root=self.root,
+                          date="2026-10-27")
+        self.assertEqual(workflow_notes(self.changelog(), "v0.5.0"),
+                         "\nEverything since v0.4.3.\n\n"
+                         "- **A.** In the preview.\n- **B.** Since the preview.\n\n"
+                         "Security hardening:\n\n- **G1.** In the preview.\n")
+        self.assertNotIn("Try it first.", workflow_notes(self.changelog(), "v0.5.0"))
+        self.assertEqual(workflow_notes(self.changelog(), "v0.5.0-preview.1"), preview)
+        self.assertEqual((self.root / "VERSION").read_bytes(), b"0.5.0\n")
+
+    def test_two_previews_and_no_new_fragments(self):
+        self.add("1-a.md", "- **A.** First preview.\n")
+        self.add("2-g.md", "Security hardening:\n\n- **G1.** First preview.\n")
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        self.add("3-b.md", "- **B.** Second preview.\n")
+        self.add("4-g.md", "Security hardening:\n\n- **G2.** Second preview.\n")
+        changelog.release("v0.5.0-preview.2", root=self.root, date="2026-10-22")
+        changelog.release("v0.5.0", root=self.root, date="2026-10-27")   # nothing new
+        self.assertEqual(workflow_notes(self.changelog(), "v0.5.0"),
+                         "\n- **A.** First preview.\n- **B.** Second preview.\n\n"
+                         "Security hardening:\n\n- **G1.** First preview.\n"
+                         "- **G2.** Second preview.\n")
+
+    def test_only_this_versions_previews_and_a_preview_gets_only_its_fragments(self):
+        (self.root / "CHANGELOG.md").write_text(HEAD.replace(
+            "## v0.4.3", "## v0.4.3-preview.1 (2026-10-01)\n\n- **Old.** Earlier version.\n\n"
+                         "## v0.4.3"), encoding="utf-8")
+        self.add("1-a.md", "- **A.** First.\n")
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        self.add("2-b.md", "- **B.** Second.\n")
+        changelog.release("v0.5.0-preview.2", root=self.root, date="2026-10-22")
+        self.assertEqual(workflow_notes(self.changelog(), "v0.5.0-preview.2"),
+                         "\n- **B.** Second.\n")                 # previews: the changes since
+        changelog.release("v0.5.0", root=self.root, date="2026-10-27")
+        notes = workflow_notes(self.changelog(), "v0.5.0")
+        self.assertIn("- **A.** First.\n- **B.** Second.", notes)
+        self.assertNotIn("Earlier version", notes)
+
+    def test_a_preview_with_multi_line_notes_is_brought_in_whole(self):
+        self.add("1-a.md", "- **A.** Detail:\n\n  more about A.\n- **A2.** Next.\n")
+        self.add("2-g.md", "Group one:\n\n- **G.** Indented\n  continuation ending:\n\n"
+                           "- **G2.** After a blank line.\n")
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        changelog.release("v0.5.0", root=self.root, date="2026-10-27")
+        self.assertEqual(workflow_notes(self.changelog(), "v0.5.0"),
+                         workflow_notes(self.changelog(), "v0.5.0-preview.1"))
+
+    def test_a_full_release_with_no_preview_and_no_fragments_is_refused(self):
+        (self.root / "CHANGELOG.md").write_text(HEAD.replace(
+            "## v0.4.3", "## v0.4.4-preview.1 (2026-10-01)\n\n- **P.** Other.\n\n## v0.4.3"),
+            encoding="utf-8")
+        with self.assertRaisesRegex(ChangelogError, "nothing to release"):
+            changelog.release("v0.5.0", root=self.root)
+        with self.assertRaisesRegex(ChangelogError, "nothing to release"):
+            changelog.release("v0.5.0-preview.2", root=self.root)   # previews: fragments only
+        self.add("1-x.md", "- **X.** Y.\n")
+        with self.assertRaisesRegex(ChangelogError, "end with ':'"):
+            changelog.release("v0.5.0", "Changes:", root=self.root)
+
+    def test_the_repository_fragments_reach_the_full_release(self):
+        # #147 done when: a full release after its preview covers every change
+        # since the last full release. Run on a copy of this repository's
+        # changelog and fragments, at a version it can never have (the test
+        # must pass on release commits too). A release commit has no
+        # fragments, so one synthetic fragment is added (never a skip: the
+        # Windows job fails on unexpected skips).
+        text = (ROOT / "CHANGELOG.md").read_bytes()
+        lines = text.decode("utf-8").replace("\r\n", "\n").split("\n")
+        self.assertFalse(any(line.startswith("## v999.0.0") for line in lines))
+        (self.root / "CHANGELOG.md").write_bytes(text)
+        for f in changelog.fragment_files(ROOT):
+            (self.root / "changelog.d" / f.name).write_bytes(f.read_bytes())
+        self.add("0-synthetic.md", "Synthetic group:\n\n- **Synthetic.** Always present.\n")
+        everything = changelog.notes(self.root)
+        changelog.release("v999.0.0-preview.1", root=self.root, date="2026-10-20")
+        self.add("999-late.md", "- **Late.** After the preview.\n")
+        changelog.release("v999.0.0", root=self.root, date="2026-10-27")
+        full = workflow_notes(self.changelog(), "v999.0.0")
+        for line in everything.split("\n"):
+            self.assertIn(line, full)
+        self.assertIn("- **Late.** After the preview.", full)
+
+    def test_a_preview_heading_is_found_as_the_workflow_finds_it(self):
+        # The workflow matches "## <tag> (" by prefix, so a trailing space
+        # still publishes; it must still be brought in, not silently lost.
+        self.add("1-a.md", "- **A.** First.\n")
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        (self.root / "CHANGELOG.md").write_text(self.changelog().replace(
+            "## v0.5.0-preview.1 (2026-10-20)", "## v0.5.0-preview.1 (2026-10-20) "),
+            encoding="utf-8")
+        self.assertIn("- **A.** First.", changelog.planned("v0.5.0", root=self.root))
+
+    def test_hand_edited_preview_sections_are_refused_not_guessed(self):
+        self.add("1-a.md", "- **A.** First.\n")
+        changelog.release("v0.5.0-preview.1", "Try it.", root=self.root, date="2026-10-20")
+        good = self.changelog()
+        for edit, why in (("Try it.\n\nInstall: download the zip.\n", "is not a bullet"),
+                          ("Try it.\nInstall: download the zip.\n", "more than one line")):
+            (self.root / "CHANGELOG.md").write_text(good.replace("Try it.\n", edit),
+                                                    encoding="utf-8")
+            with self.assertRaisesRegex(ChangelogError, why):
+                changelog.release("v0.5.0", root=self.root)
+        self.assertFalse((self.root / "VERSION").read_bytes() == b"0.5.0\n")
+        # Trailing spaces and doubled blank lines from an editor are fine.
+        (self.root / "CHANGELOG.md").write_text(
+            good.replace("- **A.** First.\n", "- **A.** First.   \n\n\n"), encoding="utf-8")
+        self.assertEqual(changelog.planned("v0.5.0", root=self.root), "- **A.** First.")
+
+    def test_summaries_and_fragments_must_read_back_as_written(self):
+        self.add("1-x.md", "- **X.** Y.\n")
+        with self.assertRaisesRegex(ChangelogError, "start with '- '"):
+            changelog.release("v0.5.0", "- Try this preview", root=self.root)
+        for name, text, reason in (
+                ("2-para.md", "- **A.** Detail.\n\nThe following changed:\n\n- **A2.** B.\n",
+                 "reads as a group line"),
+                ("3-indented.md", "  Group:\n\n- **G.** H.\n", "cannot be indented")):
+            self.add(name, text)
+            with self.assertRaisesRegex(ChangelogError, re.escape(name) + ".*" + reason):
+                changelog.check(self.root)
+            (self.root / "changelog.d" / name).unlink()
+        self.add("5-blanks.md", "- **A.** Detail.\n\nNote:\n\n\n- **A2.** B.\n")   # two blanks
+        with self.assertRaisesRegex(ChangelogError, "5-blanks.md.*reads as a group line"):
+            changelog.check(self.root)
+        (self.root / "changelog.d" / "5-blanks.md").unlink()
+        self.add("4-ok.md", "- **A.** Detail:\n\n  - indented sub-point\n- **A2.** B.\n")
+        changelog.check(self.root)
+
+    def test_a_preview_with_only_a_summary_says_so(self):
+        (self.root / "CHANGELOG.md").write_text(HEAD.replace(
+            "## v0.4.3", "## v0.5.0-preview.1 (2026-10-20)\n\nNothing yet.\n\n## v0.4.3"),
+            encoding="utf-8")
+        with self.assertRaisesRegex(ChangelogError, "have no notes to bring in"):
+            changelog.release("v0.5.0", root=self.root)
+
+    def test_preview_of_a_full_release_shows_its_folded_notes(self):
+        self.add("1-a.md", "- **A.** In the preview.\n")
+        changelog.release("v0.5.0-preview.1", root=self.root, date="2026-10-20")
+        self.add("2-b.md", "- **B.** Since.\n")
+        self.assertEqual(changelog.planned(root=self.root), "- **B.** Since.")
+        self.assertEqual(changelog.planned("v0.5.0", root=self.root),
+                         "- **A.** In the preview.\n- **B.** Since.")
+        self.assertEqual(changelog.planned("v0.5.0-preview.2", root=self.root),
+                         "- **B.** Since.")
+        with self.assertRaisesRegex(ChangelogError, "not vX.Y.Z"):
+            changelog.planned("v0.5.0-rc.1", root=self.root)
+        self.assertTrue((self.root / "changelog.d" / "2-b.md").exists())     # nothing written
+
     def test_a_fragment_that_cannot_be_deleted_is_named_and_the_rest_go(self):
         for n in (1, 2, 3):
             self.add(f"{n}-x.md", f"- **X{n}.** Y.\n")
@@ -198,6 +354,10 @@ class FragmentTests(unittest.TestCase):
             self.assertEqual(changelog.main(["--check"]), 0)
             self.assertEqual(changelog.main(["--preview"]), 0)
         self.assertIn("fragment(s) OK", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(changelog.main(["--preview", "v999.0.0"]), 0)
+        self.assertTrue(out.getvalue().strip())
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             changelog.main([])
 

@@ -4,12 +4,16 @@
 # conflict over the same lines. When a release is prepared, this script moves
 # the fragments into a dated "## vX.Y.Z (YYYY-MM-DD)" section of CHANGELOG.md
 # (the section the Release workflow reads), sets VERSION to X.Y.Z (or
-# X.Y.Z-preview.N), and deletes
-# the fragments. VERSION is the single source of the version: the build reads
-# it, and the Release workflow refuses a tag that differs (#131).
+# X.Y.Z-preview.N), and deletes the fragments. A full release also brings in
+# the notes of its own previews (## vX.Y.Z-preview.N), whose fragments were
+# used up then, so its notes cover everything since the last full release
+# (#147); the preview sections stay as they were. VERSION is the single
+# source of the version: the build reads it, and the Release workflow refuses
+# a tag that differs (#131).
 #
 #   python tools/changelog.py --check                 check the fragments
-#   python tools/changelog.py --preview               print the unreleased notes
+#   python tools/changelog.py --preview [vX.Y.Z]      print the unreleased notes (with a
+#                                                     version: as that release would have them)
 #   python tools/changelog.py vX.Y.Z [--summary TEXT] [--date YYYY-MM-DD]
 #                                                     write the section and VERSION,
 #                                                     delete the fragments
@@ -46,6 +50,16 @@ class ChangelogError(Exception):
     """A fragment or the changelog cannot be used. The message says why."""
 
 
+def _group_at(lines, i):
+    """Does lines[i] read as a group line, as notes() writes one: an
+    unindented line, not a bullet, ending in ":", then a blank line, then a
+    bullet?"""
+    line = lines[i]
+    return (bool(line) and not line[0].isspace() and not BULLET.match(line)
+            and line.endswith(":") and i + 2 < len(lines) and not lines[i + 1]
+            and bool(BULLET.match(lines[i + 2])))
+
+
 def _lines(text):
     # Line breaks only: str.splitlines() would also split on form feeds and
     # Unicode separators, silently rewriting them.
@@ -75,7 +89,11 @@ def read_fragment(path):
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError:
         raise ChangelogError(f"{FRAGMENTS}/{name}: not UTF-8 text") from None
-    lines = [line.rstrip() for line in _lines(text.lstrip("\ufeff"))]
+    lines = []
+    for line in _lines(text.lstrip("\ufeff")):
+        line = line.rstrip()
+        if line or (lines and lines[-1]):         # runs of blank lines count as one,
+            lines.append(line)                    # as when the notes are read back
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
@@ -87,6 +105,8 @@ def read_fragment(path):
             raise ChangelogError(f"{FRAGMENTS}/{name}: no '#' or '##' headings in a fragment "
                                  "(the version heading is added at release)")
     group = None
+    if lines[0][:1].isspace():
+        raise ChangelogError(f"{FRAGMENTS}/{name}: the first line cannot be indented")
     if not BULLET.match(lines[0]) and lines[0].endswith(":"):
         group = lines.pop(0)
         while lines and not lines[0]:
@@ -96,6 +116,12 @@ def read_fragment(path):
     if not BULLET.match(lines[0]):
         raise ChangelogError(f"{FRAGMENTS}/{name}: start with a '- ' bullet (after the "
                              "optional group line ending in ':')")
+    for i in range(1, len(lines)):
+        if _group_at(lines, i):
+            # It would be read as a group line when a full release brings in
+            # a preview's notes (#147).
+            raise ChangelogError(f"{FRAGMENTS}/{name}: '{lines[i]}' reads as a group line; "
+                                 "indent it, or end it without ':'")
     return group, lines
 
 
@@ -104,17 +130,84 @@ def check(root=ROOT):
     return [read_fragment(p) for p in fragment_files(root)]
 
 
-def notes(root=ROOT):
+def notes(root=ROOT, released=()):
     """The combined Markdown body of every fragment, or "" if there are none:
-    the ungrouped fragments as one list, then each group."""
+    the ungrouped fragments as one list, then each group. released: bodies of
+    sections already released (previews, oldest first), brought in ahead of
+    the fragments, each group's notes with the same group. Each is (heading,
+    body lines)."""
     loose, groups = [], {}
+    parts = [_released_notes(body, heading) for heading, body in released]
+    parts.append(([], {}))
     for group, lines in check(root):
         if group is None:
-            loose.extend(lines)
+            parts[-1][0].extend(lines)
         else:
+            parts[-1][1].setdefault(group, []).extend(lines)
+    for part_loose, part_groups in parts:
+        loose.extend(part_loose)
+        for group, lines in part_groups.items():
             groups.setdefault(group, []).extend(lines)
     blocks = ([loose] if loose else []) + [[g, ""] + body for g, body in groups.items()]
     return "\n\n".join("\n".join(b) for b in blocks)
+
+
+def _released_notes(body, heading="a preview"):
+    """(ungrouped lines, {group line: lines}) from the body of a released
+    section, the reverse of notes(). Its one-line summary, if any, is left
+    out: it described that release. A section that is not as this script
+    wrote it (more than one line before the notes, or a block that does not
+    start with a bullet) is refused rather than guessed at."""
+    lines = []
+    for line in body:
+        line = line.rstrip()                      # hand-edited trailing spaces
+        if line or (lines and lines[-1]):         # runs of blank lines count as one
+            lines.append(line)
+    while lines and not lines[-1]:
+        lines.pop()
+    i = 0
+    if lines and not BULLET.match(lines[0]) and not _group_at(lines, 0):
+        if len(lines) > 1 and lines[1]:
+            raise ChangelogError(
+                f"{CHANGELOG}: the '{heading}' section has more than one line before its "
+                "notes, so it is not as tools/changelog.py wrote it and its notes cannot be "
+                "brought into the full release. Restore it, or write the full section by hand.")
+        i = 2                                     # the summary, then its blank line
+    loose, groups = [], {}
+    current, started = loose, False
+    while i < len(lines):
+        if _group_at(lines, i):
+            current, started = groups.setdefault(lines[i], []), False
+            i += 2
+            continue
+        if not lines[i] and i + 1 < len(lines) and _group_at(lines, i + 1):
+            i += 1                                # the blank line between blocks
+            continue
+        if not started and not BULLET.match(lines[i]):
+            raise ChangelogError(
+                f"{CHANGELOG}: the '{heading}' section is not as tools/changelog.py wrote it "
+                f"('{lines[i]}' is not a bullet), so its notes cannot be brought into the full "
+                "release. Restore it, or write the full section by hand.")
+        started = True
+        current.append(lines[i])
+        i += 1
+    return loose, groups
+
+
+def _preview_bodies(lines, version):
+    """(heading, body) for each of version's released previews, oldest first.
+    A heading is "## vX.Y.Z-preview.N", alone or followed by " (": by prefix,
+    as is_heading() and the Release workflow match. The body is the lines up
+    to the next "## " line."""
+    heading = re.compile(rf"## {re.escape(version)}-preview\.([0-9]+)(?:$| \()")
+    found = []
+    for i, line in enumerate(lines):
+        m = heading.match(line)
+        if m:
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].startswith("## ")),
+                       len(lines))
+            found.append((int(m.group(1)), line, lines[i + 1:end]))
+    return [(h, body) for _, h, body in sorted(found, key=lambda t: t[0])]
 
 
 def _check_summary(summary):
@@ -124,6 +217,12 @@ def _check_summary(summary):
     if HEADING.match(text):
         raise ChangelogError("The summary cannot be a '#' or '##' heading (it would end the "
                              "release notes)")
+    if text.endswith(":"):
+        raise ChangelogError("The summary cannot end with ':' (it would read as a group line "
+                             "when a full release brings in a preview's notes)")
+    if BULLET.match(text):
+        raise ChangelogError("The summary cannot start with '- ' or '* ' (it would read as a "
+                             "note when a full release brings in a preview's notes)")
     return text
 
 
@@ -135,8 +234,9 @@ def is_heading(line, version):
 
 def release(version, summary=None, root=ROOT, date=None):
     """Write "## <version> (<date>)" with the fragments' notes into CHANGELOG.md,
-    above the newest version, set VERSION, then delete the fragments. date is
-    YYYY-MM-DD, today by default. Returns the section."""
+    above the newest version, set VERSION, then delete the fragments. A full
+    release also brings in its previews' notes. date is YYYY-MM-DD, today by
+    default. Returns the section."""
     if not VERSION.fullmatch(version):
         raise ChangelogError(f"'{version}' is not vX.Y.Z or vX.Y.Z-preview.N")
     if date is None:
@@ -160,9 +260,12 @@ def release(version, summary=None, root=ROOT, date=None):
     if "## Unreleased" in lines:
         raise ChangelogError(f"{CHANGELOG} still has '## Unreleased': move its entries into "
                              f"{FRAGMENTS}/ first")
-    body = notes(root)
+    previews = [] if "-" in version else _preview_bodies(lines, version)
+    body = notes(root, previews)
     if not body:
-        raise ChangelogError(f"No fragments in {FRAGMENTS}/: nothing to release")
+        raise ChangelogError(f"No fragments in {FRAGMENTS}/" + (
+            f", and the {version}-preview.N sections have no notes to bring in"
+            if previews else "") + ": nothing to release")
     section = [heading, ""]
     if summary:
         section += [summary, ""]
@@ -194,6 +297,17 @@ def release(version, summary=None, root=ROOT, date=None):
     return "\n".join(section)
 
 
+def planned(version=None, root=ROOT):
+    """The notes a release of version would have (the fragments, plus its
+    previews' notes for a full release), without writing anything."""
+    if version and not VERSION.fullmatch(version):
+        raise ChangelogError(f"'{version}' is not vX.Y.Z or vX.Y.Z-preview.N")
+    if not version or "-" in version:
+        return notes(root)
+    text = (Path(root) / CHANGELOG).read_bytes().decode("utf-8")
+    return notes(root, _preview_bodies(_lines(text), version))
+
+
 def main(argv=None):
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # notes have macrons; a pipe may be cp1252
@@ -210,7 +324,7 @@ def main(argv=None):
         if args.check:
             print(f"{len(check())} fragment(s) OK")
         elif args.preview:
-            print(notes() or f"(no fragments in {FRAGMENTS}/)")
+            print(planned(args.version) or f"(no fragments in {FRAGMENTS}/)")
         elif args.version:
             print(release(args.version, args.summary, date=args.date))
             print(f"\nWritten to {CHANGELOG} and {VERSION_FILE}; the fragments were deleted. "
