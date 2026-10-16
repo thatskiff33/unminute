@@ -607,7 +607,8 @@ class ReproducibleBuildTests(unittest.TestCase):
             root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
                                        f"040000 tree {packaging}\tpackaging\n"
                                        f"040000 tree {workspace}\tworkspace\n").encode())
-            sha = run("commit-tree", root, "-m", "crafted")
+            sha = run("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                      "commit-tree", root, "-m", "crafted")
             with self._patched(repo), self.assertRaisesRegex(SystemExit, "Unexpected path"):
                 bp.export_app(self.root / "c" / "Unminute-0.5.0" / "app", sha)
             self.assertFalse((self.root / "c" / "runtime").exists())
