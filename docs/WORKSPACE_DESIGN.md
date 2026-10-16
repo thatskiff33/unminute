@@ -350,7 +350,8 @@ Failure reasons are stored without file paths.
 
 ### Scanning
 - Folders are watched explicitly. Existing contents are imported only if the user chooses.
-- A scanner thread reconciles each folder at launch, every 5 minutes while the app is open, and on wake. Sleep counts as elapsed time.
+- A scanner thread reconciles each folder 30 seconds after launch (so start-up is not slowed), every 5 minutes while the app is open, and at once on Check now or when a folder is added. Between scans it sleeps until the next scan is due. Sleep counts as elapsed time, so a scan that fell due while the computer slept runs within a minute of waking.
+- When nothing is new, a scan writes one database transaction per folder, plus one to keep the suppression data bounded. Changes are committed early only before an import is queued, and never held in a transaction while a file is hashed.
 - Polling was chosen over change notifications because notifications are lost while the app is closed and are unreliable on synced folders. A reconciliation scan is needed anyway.
 - Files are identified by keyed path hash, file ID, size and modification time, never by date.
 - A file is imported once it has been stable across two scans. Its content is hashed once per new identity.

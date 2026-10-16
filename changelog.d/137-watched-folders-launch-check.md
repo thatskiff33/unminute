@@ -1,1 +1,1 @@
-- **Watched folders are checked as soon as the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check.
+- **Watched folders are checked shortly after the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check. It now checks 30 seconds after opening, so start-up is not slowed.

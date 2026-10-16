@@ -332,22 +332,33 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.assertEqual((row["delete_original"], row["original_path"]), (0, None))
 
     def test_watch_loop_reads_no_folder_while_turned_off(self):
-        import threading
+        from workspace import intake
         ws = self.open(AllowWatchedFolders=False)
-        # Just after boot the monotonic clock is below the scan interval; the
-        # launch check must still happen at once (it waited 5 minutes before).
+        # A fake clock whose waits move it on. It starts just after boot (12 s),
+        # where the monotonic clock is still small: the launch check must still
+        # happen (it once waited until 5 minutes of uptime).
+        clock = [12.0]
+
+        def wait(timeout):
+            clock[0] += timeout
+            if clock[0] > 12.0 + intake.LAUNCH_SCAN_DELAY_S:
+                ws._closing.set()
+            return False
+        ws._clock = lambda: clock[0]
         with mock.patch("workspace.intake.scan") as scan, \
-                mock.patch("workspace.app.time.monotonic", return_value=12.0):
-            t = threading.Thread(target=ws._watch_loop, daemon=True)
-            t.start()
-            for _ in range(50):
-                if ws.last_scan == {"managed_off": True}:
-                    break
-                threading.Event().wait(0.05)
-            ws._closing.set()
-            t.join(5)
+                mock.patch.object(ws._scan_wake, "wait", side_effect=wait):
+            ws._watch_loop()
         scan.assert_not_called()
         self.assertEqual(ws.last_scan, {"managed_off": True})
+
+    def test_closing_runs_a_pending_clipboard_clear(self):
+        from workspace import clipboard
+        ws = self.open(ClipboardClearMinutes=5)
+        ws._schedule_clipboard_clear(44, 300)                     # due in 5 minutes
+        with mock.patch.object(clipboard, "clear_if_unchanged") as clear:
+            ws.close()
+        clear.assert_called_once_with(44)
+        ws.close = lambda: None                                  # tearDown: already closed
 
     def test_clipboard_is_cleared_later_only_by_policy(self):
         from workspace import clipboard
