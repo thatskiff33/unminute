@@ -6,7 +6,8 @@
 
 const $ = (id) => document.getElementById(id);
 const DAY = 86400;
-const POLL_MS = 2000;
+const POLL_MS = 2000;        // while something is happening (docs/RELEASE_STANDARD.md, section 3)
+const IDLE_POLL_MS = 10000;  // when nothing is; never while the window is hidden
 const PAGE = 1000;           // transcript rows per bridge call
 const SAVE_DELAY_MS = 800;   // autosave after typing stops
 
@@ -15,6 +16,9 @@ const state = {
   hits: [], hit: -1, editing: null, saveTimer: null,
   version: null,                 // null = current version; else an earlier one (read only)
   saving: Promise.resolve(),     // edits are saved strictly in order
+  listsSig: "",                  // the meeting list last drawn
+  active: false,                 // something is being processed or imported
+  recordingLive: false,          // a recording is open and running
 };
 
 // -- bridge -----------------------------------------------------------------
@@ -82,7 +86,8 @@ function show(view) {
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   if (view !== "meeting") stopAudio();
   if (view !== "meeting" && view !== "handoff") stopEditing();
-  if (view !== state.view) { suState.sig = ""; state.downloadsSig = ""; }   // rebuilt on arrival
+  if (view !== state.view) { suState.sig = ""; state.downloadsSig = ""; state.listsSig = ""; }   // rebuilt on arrival
+  if (view !== "meetings") stopRecTimer();
   state.view = view;
   document.body.dataset.view = view;
   setMenu(false);
@@ -296,6 +301,9 @@ async function renderLists() {
   $("nav-count").textContent = String(waiting);
   $("nav-count-sr").textContent = waiting ? `, ${waiting} waiting for you` : "";
   if (state.view !== "meetings") return;
+  const sig = JSON.stringify(items);
+  if (sig === state.listsSig) return;           // unchanged: keep the rows, buttons and focus
+  state.listsSig = sig;
   const busy = items.find((m) => m.busy === "transcribe");
   const sections = [];
   for (const [key, title, kind] of GROUPS) {
@@ -314,6 +322,7 @@ async function renderLists() {
 async function renderStatus() {
   const s = await call("status");
   state.mode = s.mode;
+  state.active = !!(s.busy || s.importing);
   const parts = [];
   if (s.importing) parts.push(`Importing ${s.importing} recording${s.importing > 1 ? "s" : ""}`);
   if (s.message) parts.push(s.message);
@@ -2077,9 +2086,14 @@ async function renderRecorder(tick = false) {
   }
   // Faster updates for the clock and level meter while recording.
   const live = active && rec.state !== "stopped";
-  if (live && !recTimer)
+  state.recordingLive = live;
+  if (live && !recTimer && !document.hidden && state.view === "meetings")
     recTimer = setInterval(() => { if (state.view === "meetings") renderRecorder(true).catch(() => {}); }, 100);
-  if (!live && recTimer) { clearInterval(recTimer); recTimer = null; }
+  if (!live) stopRecTimer();
+}
+
+function stopRecTimer() {
+  if (recTimer) { clearInterval(recTimer); recTimer = null; }
 }
 
 function wireRecorder() {
@@ -2171,7 +2185,42 @@ async function refresh() {
   } finally {
     refreshing = false;
   }
+  if (pollTimer && pollDelay() < pollTimerDelay) schedulePoll();
 }
+
+// -- polling (docs/RELEASE_STANDARD.md, section 3) -----------------------------------
+// Every 2 s while something is happening (a meeting being processed, an import,
+// a recording) or Setup or Downloads is open; every 10 s otherwise; never while
+// the window is hidden or minimised. Showing it again refreshes at once.
+let pollTimer = null;
+let pollTimerDelay = 0;
+
+function pollDelay() {
+  const active = state.active || state.recordingLive || state.view === "setup" ||
+                 state.view === "downloads";
+  return active ? POLL_MS : IDLE_POLL_MS;
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+  if (document.hidden) return;
+  pollTimerDelay = pollDelay();
+  pollTimer = setTimeout(pollNow, pollTimerDelay);
+}
+
+async function pollNow() {
+  await refresh();
+  schedulePoll();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+    stopRecTimer();
+  } else pollNow();
+});
 
 function wire() {
   $("s-add-folder").addEventListener("click", () => attempt(async () => {
@@ -2361,5 +2410,5 @@ window.addEventListener("pywebviewready", async () => {
     show("setup");
     setStep(suState.step);
   } else show("meetings");
-  setInterval(refresh, POLL_MS);
+  schedulePoll();
 });
