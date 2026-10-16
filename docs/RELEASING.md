@@ -61,7 +61,7 @@ Releases are cut by the Release workflow in `.github/workflows/release.yml` when
    - It moves the fragments in `changelog.d/` into a new `## vX.Y.Z (YYYY-MM-DD)` section at the top of `CHANGELOG.md`, sets `VERSION` to `X.Y.Z` (or `X.Y.Z-preview.N`), and deletes the fragments.
    - `--summary "One line"` adds a line under the heading. `--date` sets the date if it should not be today.
    - Review both files, then merge them to `main`. `VERSION` is the one source of the version: the package build reads it, and the workflow refuses a tag that differs.
-   - **Promoting a preview to a full release:** the preview used up its fragments, so until #147 is done, write the full section by hand. Add a dated `## vX.Y.Z (YYYY-MM-DD)` section at the top that brings together the notes of its `-preview.N` sections and any new fragments. Set `VERSION` to `X.Y.Z`, delete those fragments, and merge.
+   - **Promoting a preview to a full release:** run `python tools/changelog.py vX.Y.Z` as usual. The full section brings in the notes of every `## vX.Y.Z-preview.N` section (oldest first, each group's notes kept together) and any fragments added since, so users on Latest see everything since the last full release, as long as the previews were numbered `vX.Y.Z-preview.N` (notes from an abandoned preview of another version are not brought in: add a fragment if they still apply). The preview sections stay as they were; leave them as the script wrote them, and put install notes in `--summary`. A preview's summary is not carried over; give the full release its own. `python tools/changelog.py --preview vX.Y.Z` shows the notes first.
 2. Tag the merged commit and push the tag:
 
    ```
