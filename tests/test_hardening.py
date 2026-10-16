@@ -191,6 +191,14 @@ class AlertGuardTests(unittest.TestCase):
             def ScriptDialogOpening(self, value):
                 pass
 
+            @property
+            def PermissionRequested(self):
+                return self
+
+            @PermissionRequested.setter
+            def PermissionRequested(self, value):
+                pass
+
             def __iadd__(self, handler):
                 self.handlers.append(handler)
                 return self
@@ -199,7 +207,8 @@ class AlertGuardTests(unittest.TestCase):
             def __init__(self):
                 self.CoreWebView2 = Core()
         control = Control()
-        with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}):
+        with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": module}), \
+                mock.patch.object(shell, "_permission_deny", return_value="DENY"):
             shell.install_alert_guard()
             view = module.EdgeChrome()
             view.sender = control
@@ -208,7 +217,16 @@ class AlertGuardTests(unittest.TestCase):
         # any dialog still asked for is refused.
         self.assertEqual(seen[-1], ("load", "file:///index.html", False))
         self.assertFalse(control.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled)
-        self.assertEqual(control.CoreWebView2.handlers, [shell._refuse_script_dialog])
+        refuse_dialog, refuse_permission = control.CoreWebView2.handlers     # each once
+        self.assertIs(refuse_dialog, shell._refuse_script_dialog)
+
+        class Request:                        # the page asks for the microphone
+            PermissionKind = "Microphone"
+            State = "Default"
+        request = Request()
+        refuse_permission(None, request)
+        self.assertEqual(request.State, "DENY")
+        self.assertIn("permission Microphone", shell.blocked_calls)
         self.assertNotIn("load_url", view.__dict__)              # the instance is left as it was
         self.assertTrue(module.EdgeChrome.on_webview_ready.unminute_guard)
 

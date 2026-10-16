@@ -382,10 +382,23 @@ def install_alert_guard():
         # this one handler; the setting is read when a navigation starts, so
         # it is turned off just before each load it makes.
         loads = {name: getattr(self, name) for name in ("load_url", "load_html")}
+        refusing = {"on": False}                   # once per window (this handler runs once)
+
+        def quiet():
+            core = getattr(sender, "CoreWebView2", None)
+            if core is None:
+                return                             # WebView2 failed to start: nothing loads
+            _dialogs_off(core)
+            if not refusing["on"]:
+                # An error here stops the page loading at all: never a page
+                # that can ask for the microphone.
+                core.ScriptDialogOpening += _refuse_script_dialog
+                core.PermissionRequested += _permission_refuser()
+                refusing["on"] = True
 
         def before(load):
             def wrapped(*a, **kw):
-                quiet_script_dialogs_on(sender)
+                quiet()
                 return load(*a, **kw)
             return wrapped
         for name, load in loads.items():
@@ -395,7 +408,7 @@ def install_alert_guard():
         finally:
             for name in loads:
                 self.__dict__.pop(name, None)        # back to the class methods
-            quiet_script_dialogs_on(sender)
+            quiet()
 
     for handler, original in ((on_script_notify, notify), (on_webview_ready, ready)):
         handler.__wrapped__ = original
@@ -404,31 +417,38 @@ def install_alert_guard():
     view.on_webview_ready = on_webview_ready
 
 
+def _permission_deny():
+    from Microsoft.Web.WebView2.Core import CoreWebView2PermissionState
+    return CoreWebView2PermissionState.Deny
+
+
+def _permission_refuser():
+    """A PermissionRequested handler that refuses every request at once, with
+    no prompt: the microphone and camera (recording goes only through the
+    app's own confirmed path, #111 A6), notifications, location and the rest."""
+    deny = _permission_deny()                      # resolved now: no failure later
+
+    def refuse(sender, args):
+        args.State = deny
+        blocked_calls.append(f"permission {args.PermissionKind}")
+    return refuse
+
+
 def _refuse_script_dialog(sender, args):
     # Not accepted: alert returns, confirm answers false, prompt null.
     blocked_calls.append("script dialog")
 
 
-def quiet_script_dialogs_on(control):
+def _dialogs_off(core):
     """Turn off WebView2's own alert, confirm and prompt dialogs, which would
-    show page text in a browser window (the page uses its own dialogs), and
-    refuse any that are still asked for."""
-    core = getattr(control, "CoreWebView2", None)
-    if core is None:
-        return
+    show page text in a browser window (the page uses its own dialogs)."""
     core.Settings.AreDefaultScriptDialogsEnabled = False
-    if not getattr(control, "unminute_dialogs_refused", False):
-        core.ScriptDialogOpening += _refuse_script_dialog
-        try:
-            control.unminute_dialogs_refused = True
-        except Exception:
-            pass
 
 
 def quiet_script_dialogs(window):
-    """The same, for a window already open (checked again once its page has
-    loaded)."""
-    quiet_script_dialogs_on(window.native.browser.webview)
+    """The same setting checked again once the window's page has loaded (the
+    refusing handler is attached once, when WebView2 starts)."""
+    _dialogs_off(window.native.browser.webview.CoreWebView2)
 
 
 def lock_navigation(window, page="index.html"):
