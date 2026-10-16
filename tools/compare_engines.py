@@ -16,6 +16,9 @@
 #   python tools/compare_engines.py run   --engine parakeet-tdt-0.6b-v2 --out v2.jsonl m.jsonl
 #   python tools/compare_engines.py score v2.jsonl v3.jsonl turbo.jsonl --side-by-side sbs.md
 #
+# Manifest paths must be local files you trust: this tool decodes them in its
+# own process, not in the app's sandboxed decode process.
+#
 # Keep real recordings, transcripts and per-clip results private; publish only
 # aggregate figures (see issue #12). Run heavy engines one at a time.
 

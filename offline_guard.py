@@ -9,18 +9,19 @@
 #   2. install() patches the socket layer so any DNS lookup, TCP connection or
 #      UDP datagram to a non-loopback address is refused, including asyncio's
 #      Windows path (ConnectEx and WSASendTo, which bypass socket.connect),
-#      unless the caller is inside permit() (the earlier app's download path)
-#      or the host is on the allow_hosts() list (the workspace's download
-#      process). Refusals are recorded in `blocked` so tests can prove nothing
-#      tried to reach the network.
+#      unless the caller is inside permit() (a deliberate download in the
+#      same process; the app itself no longer uses it) or the host is on the
+#      allow_hosts() list (the workspace's download process). Refusals are
+#      recorded in `blocked` so tests can prove nothing tried to reach the
+#      network.
 #
 # This is a tripwire for Python code, not a firewall: native libraries with
 # their own sockets are not covered. On managed devices an outbound firewall
 # rule for the runtime is the enforcing control (#111 B7).
 #
 # The guard is process-wide: while one thread holds permit() (a deliberate
-# download), other threads are not blocked. The legacy app only downloads while
-# its single worker is preparing a model, so nothing else is running then.
+# download), other threads are not blocked, so hold it only while nothing else
+# in the process is running.
 # Stdlib only, so it is importable (and testable) without the app's packages.
 
 import contextlib

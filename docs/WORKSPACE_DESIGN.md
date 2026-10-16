@@ -331,7 +331,7 @@ Failure reasons are stored without file paths.
 - By default it is remembered in the user's Windows Credential Manager. The user can untick Remember to use it once. Remove the remembered token removes it.
 - It is never written to settings, logs or the database, and never returned to the page. The page learns only whether a token is remembered, and clears the input after use.
 - Removing the token does not affect models already downloaded: they load offline.
-- A legacy `HF_TOKEN` user variable, left by the earlier app (removed in #111 A7), stays in the user's Windows environment until the user removes it. At start the app removes it from its own environment (`credentials.drop_environment_token`), so its worker, download and WebView2 processes do not inherit it (#111 A2), and never uses it. New tokens never go into the environment.
+- A legacy `HF_TOKEN` user variable, left by the earlier app (removed in #111 A7), stays in the user's Windows environment until the user removes it. At start the app removes it (and `HUGGING_FACE_HUB_TOKEN`, an older name the Hugging Face library also reads) from its own environment (`credentials.drop_environment_token`), so its worker, download and WebView2 processes do not inherit it (#111 A2), and never uses it. New tokens never go into the environment.
 - A token is remembered only after a download has shown that it works.
 - Model work waits while a model is being downloaded or checked. The two are coordinated with the processing thread under one lock, and processing resumes when the download ends.
 - A download can be cancelled.

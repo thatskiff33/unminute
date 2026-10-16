@@ -464,8 +464,9 @@ def _download(spec, dest):
     """Fetch exactly the pinned files of one revision into `dest`."""
     # Deferred import: honours the offline flags the caller has set.
     from huggingface_hub import snapshot_download
-    # Public repos: never send a stored token. Gated repos: let huggingface_hub
-    # pick up the user's token implicitly (HF_TOKEN), as the app always has.
+    # Public repos: never send a stored token. Gated repos: huggingface_hub
+    # takes the token the caller provides (the app's download process passes it
+    # explicitly; only this module's own command line falls back to HF_TOKEN).
     snapshot_download(spec.repo, revision=spec.revision, local_dir=str(dest),
                       allow_patterns=[f.name for f in spec.files],
                       token=None if spec.gated else False)
@@ -499,12 +500,12 @@ def install_model(spec, cache_dir, log=print, download=_download, has_token=None
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
     # has_token: the caller passes the token to `download` itself (workspace
-    # setup, #19); None keeps the legacy behaviour of reading HF_TOKEN.
+    # setup, #19); None (this module's command line only) reads HF_TOKEN.
     token_ok = os.environ.get("HF_TOKEN") if has_token is None else has_token
     if spec.gated and not token_ok and not staging_dir(spec, cache_dir).is_dir():
         raise ModelLoadError(
             f"{spec.name} needs downloading again, which needs your Hugging Face token. "
-            f"Run install.cmd and follow the token step.")
+            f"Download it in Unminute's Setup.")
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
         # A verified download from an attempt whose final move failed.
@@ -702,7 +703,7 @@ class WhisperEngine:
 
     def transcribe(self, audio):
         """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
-        if not self.word_timestamps:     # legacy app: settings unchanged
+        if not self.word_timestamps:     # without word times (the app always asks for them)
             segments, info = self.model.transcribe(
                 audio, language=self.language, vad_filter=True, beam_size=self.beam_size)
             return (Segment(s.start, s.end, s.text.strip()) for s in segments), info.duration

@@ -113,12 +113,15 @@ def remove_token(target=TARGET):
 
 # The earlier source-installed app (removed in #111 A7) asked users to keep
 # their token in the HF_TOKEN environment variable, where it may still be. The
-# app takes it out of its own environment at start, so worker, download and
-# WebView2 processes never inherit it. It is not used: Setup asks for a token.
+# app takes it (and the older name the Hugging Face library also reads) out of
+# its own environment at start, so worker, download and WebView2 processes
+# never inherit it. It is not used: Setup asks for a token.
+ENVIRONMENT_TOKENS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 
 def drop_environment_token():
-    """Remove HF_TOKEN from this process's environment. Call once, before
-    any child process starts."""
+    """Remove any Hugging Face token from this process's environment. Call
+    once, before any child process starts."""
     import os
-    os.environ.pop("HF_TOKEN", None)
+    for name in ENVIRONMENT_TOKENS:
+        os.environ.pop(name, None)

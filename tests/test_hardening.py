@@ -536,9 +536,11 @@ class SettingsAndTestEngineTests(unittest.TestCase):
 
 class EnvironmentTokenTests(unittest.TestCase):
     def test_token_leaves_the_environment_and_is_not_kept(self):
-        with mock.patch.dict(os.environ, {"HF_TOKEN": " hf_example "}):
+        with mock.patch.dict(os.environ, {"HF_TOKEN": " hf_example ",
+                                          "HUGGING_FACE_HUB_TOKEN": "hf_example"}):
             credentials.drop_environment_token()
             self.assertNotIn("HF_TOKEN", os.environ)
+            self.assertNotIn("HUGGING_FACE_HUB_TOKEN", os.environ)
         self.assertFalse(hasattr(credentials, "earlier_token"))
         self.assertNotIn("hf_example", repr(vars(credentials)))
 
@@ -547,13 +549,25 @@ class EnvironmentTokenTests(unittest.TestCase):
             credentials.drop_environment_token()
             self.assertNotIn("HF_TOKEN", os.environ)
 
-    def test_the_window_process_drops_it_before_anything_starts(self):
-        # workspace.__main__ runs this at import, before any child process.
-        source = (Path(__file__).resolve().parents[1] / "workspace" / "__main__.py").read_text(
-            encoding="utf-8")
-        self.assertIn("credentials.drop_environment_token()", source)
-        self.assertLess(source.index("credentials.drop_environment_token()"),
-                        source.index("def main("))
+    def test_the_window_process_and_its_children_never_see_it(self):
+        # Importing workspace.__main__ (as the app starts) drops it before any
+        # child process starts; run in a child so this process keeps its guard off.
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        code = ("import os, subprocess, sys\n"
+                "import workspace.__main__\n"
+                "names = ('HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN')\n"
+                "print(any(n in os.environ for n in names))\n"
+                "r = subprocess.run([sys.executable, '-c', "
+                "'import os; print(any(n in os.environ for n in "
+                "(\"HF_TOKEN\", \"HUGGING_FACE_HUB_TOKEN\")))'], "
+                "capture_output=True, text=True)\n"
+                "print(r.stdout.strip())\n")
+        env = dict(os.environ, HF_TOKEN="hf_example", HUGGING_FACE_HUB_TOKEN="hf_example")
+        r = subprocess.run([sys.executable, "-c", code], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.stdout.split(), ["False", "False"], r.stderr)
+        self.assertNotIn("hf_example", r.stdout + r.stderr)
 
 
 class NvidiaSmiTests(unittest.TestCase):

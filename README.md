@@ -186,7 +186,7 @@ What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.
 
 ## The earlier app
 
-The original source-installed app, Whisper Transcriber (a file queue with a tkinter window), was retired and removed from this repository (#111). If it is still installed on a computer, the [user guide](docs/WORKSPACE_GUIDE.md#if-the-earlier-app-is-still-installed) explains how to remove it safely. Unminute never deletes anything the earlier app created.
+The original source-installed app, Whisper Transcriber (a file queue with a tkinter window), was retired and removed from this repository (#111). If it is still installed on a computer, the [user guide](docs/WORKSPACE_GUIDE.md#if-the-earlier-app-is-still-installed) explains how to remove it safely. Unminute deletes nothing the earlier app created, except a shared model you choose to remove in Settings > Manage downloads.
 
 ## For developers
 

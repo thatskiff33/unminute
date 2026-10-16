@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
-# The microphone icon the earlier app uses; next to the app code in the package.
+# The app's microphone icon (whisper.ico, a kept name); next to the app code in the package.
 ICON = Path(__file__).resolve().parents[1] / "whisper.ico"
 
 
