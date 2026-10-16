@@ -26,7 +26,7 @@ from pathlib import Path
 import asr_engines
 from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, handoff, holds,
                        intake,
-                       media, policy, recorder,
+                       media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
@@ -204,7 +204,8 @@ class Workspace:
         self.recording_indicator = None
         self._indicator_lock = threading.Lock()
         self._indicated = False
-        self._yielded = False              # a worker stop caused by recording, not the user
+        self.keep_awake = power.KeepAwake()  # held while a recording is open; tests use a fake
+        self._yielded = False             # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
@@ -321,9 +322,14 @@ class Workspace:
 
     def _indicate(self):
         """Show the current state (a recording is open, paused or not), so
-        racing starts and ends always settle on the truth."""
+        racing starts and ends always settle on the truth. The computer is
+        kept awake for the same span (workspace.power)."""
         with self._indicator_lock:
             on = self._recording is not None
+            if on and not self.keep_awake.held:
+                self.keep_awake.hold()       # refused: recording carries on regardless
+            elif not on and self.keep_awake.held:
+                self.keep_awake.release()
             hook = self.recording_indicator
             if hook is None or on == self._indicated:
                 return

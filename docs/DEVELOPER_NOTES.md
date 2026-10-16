@@ -37,6 +37,12 @@ real time, and remove it when the cause is fixed.
 - **Clicking WinForms buttons in UI automation.** Post `WM_LBUTTONDOWN` and `WM_LBUTTONUP` at the
   control's centre. `BM_CLICK` uses the current pointer position, so a button that checks where
   the mouse was released ignores it, and the check hangs with a dialog open on the user's screen.
+- **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
+  against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
+  the power button or chooses Sleep, and on Modern Standby on battery five minutes after the
+  sleep timeout. `powercfg /requests` shows the request while recording. On Intune-managed
+  laptops the lid action can be set by policy (`SelectLidCloseAction*`); on one such laptop
+  `powercfg /q` did not list the lid setting, though `PowerReadACValueIndex` still read it.
 
 ## Claude Code hooks on Windows
 

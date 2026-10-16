@@ -1828,7 +1828,8 @@ let refreshing = false;
 // -- microphone recording (#30) ---------------------------------------------------
 
 const REC_TEXT = { recording: "Recording", paused: "Paused", stopped: "Saving",
-                   saving: "Saving", device_lost: "Microphone lost", failed: "Could not save" };
+                   saving: "Saving", device_lost: "Microphone lost", slept: "Computer went to sleep",
+                   failed: "Could not save" };
 let recTimer = null;
 
 function fmtSeconds(s) {
@@ -1977,7 +1978,7 @@ function drawWave(g, w, h, mid, tg, accent, quiet) {
   g.stroke();
 }
 
-const REC_KIND = { recording: "", paused: "paused", device_lost: "lost", failed: "lost",
+const REC_KIND = { recording: "", paused: "paused", device_lost: "lost", slept: "lost", failed: "lost",
                    stopped: "saving", saving: "saving" };
 
 function deviceName() {
@@ -2009,6 +2010,7 @@ function renderRecCard(rec, display) {
   $("rec-sub").textContent = kind === "saving"
     ? "The recording is then imported and transcribed like any other."
     : rec.state === "failed" ? "The recording stopped. Saving what was recorded."
+    : rec.state === "slept" ? `${fmtSeconds(rec.seconds)} recorded before the computer went to sleep. Saving what was recorded.`
     : `${fmtSeconds(rec.seconds)} recorded before it disconnected. Saving what was recorded.`;
   $("rec-pause").hidden = kind !== "";
   $("rec-resume").hidden = kind !== "paused";
@@ -2047,6 +2049,8 @@ function reportItem(rep) {
         onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })),
       dismiss);
   const done = rep.note ? ` ${rep.note}` : rep.meeting ? " It is in Meetings now." : " It is being imported.";
+  if (rep.events.some((e) => e.kind === "sleep"))
+    return notice("alert", `The computer went to sleep, so the recording stopped. ${fmtSeconds(rep.seconds)} recorded before that was saved. To record with the lid closed, set Windows to do nothing when the lid is closed.${done}`, dismiss);
   if (rep.events.some((e) => e.kind === "device_lost"))
     return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);

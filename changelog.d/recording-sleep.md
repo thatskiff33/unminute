@@ -1,0 +1,2 @@
+- **The computer stays awake while recording.** A long meeting in which nobody touches the computer no longer ends when Windows' idle sleep timer runs out. Windows still decides what closing the lid does: to record with the lid closed, set it to do nothing.
+- **A recording stopped by sleep says so.** If the computer goes to sleep, for example because the lid was closed, the recording stops, keeps what was recorded and says the computer went to sleep, instead of reporting a lost microphone.

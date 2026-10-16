@@ -36,6 +36,9 @@ CHUNK_S = 5                  # durable unit; also the most a crash can lose (plu
 QUEUE_S = 20                 # seconds of audio buffered between callback and writer
 BLOCK_S = 0.1                # PortAudio block length
 SILENT_DEVICE_S = 3.0        # no audio at all for this long while recording: device lost
+# The writer runs at least every QUEUE wait (0.2 s). A longer gap in its own
+# loop means the whole app was frozen, which on a laptop is sleep (the lid
+# closed, the power button): reported as such, not as a lost microphone.
 HEARTBEAT_S = 1.0            # how often the "still recording" time is noted
 MAX_HOURS = 8                # a forgotten recording stops itself
 
@@ -247,7 +250,8 @@ class Recording:
         self._display_block = None                    # (block number, latest block) to draw
         self._viz_cache = None                        # (block number, its display data)
         self._last_audio = clock()
-        self._stop = threading.Event()          # the writer's signal to finish
+        self._last_loop = clock()               # the writer's latest pass (sleep detection)
+        self._stop = threading.Event()         # the writer's signal to finish
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
         self._writer = None
         self._stream = None
@@ -349,6 +353,7 @@ class Recording:
                     if now - self.journal["started_at"] > MAX_HOURS * 3600:
                         self._event("time_limit", note=f"Stopped after {MAX_HOURS} hours.")
                         self._stop.set()
+                self._last_loop = self._clock()
             self._flush_chunk()
         except OSError as exc:
             # Disk full or unwritable: keep every chunk already saved, stop
@@ -368,6 +373,16 @@ class Recording:
 
     def _device_lost(self):
         if self.journal["state"] != "recording":
+            return
+        # The writer has not run for a while: the computer was asleep, and the
+        # audio stopped because of that, not because the microphone went.
+        if self._clock() - self._last_loop > SILENT_DEVICE_S:
+            self._event("sleep", note="The computer went to sleep, for example because the "
+                                      "lid was closed. Recording stopped; what was recorded "
+                                      "before that is kept.")
+            self.journal["state"] = "slept"
+            self._display_block = None
+            self._stop.set()
             return
         # Windows reports an overrun at the moment a device disappears; that is
         # part of the disconnection, not the computer falling behind.
@@ -419,7 +434,7 @@ class Recording:
             raise RecorderError("The microphone could not be started. Check that it is "
                                 "connected and that Windows allows apps to use it "
                                 "(Settings > Privacy > Microphone).") from exc
-        self._last_audio = self._clock()
+        self._last_audio = self._last_loop = self._clock()
         self._writer = threading.Thread(target=self._write_loop, name="recorder-writer",
                                         daemon=True)
         self._writer.start()

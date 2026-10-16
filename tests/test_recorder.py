@@ -222,6 +222,40 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(rec.stopped)
         self.assertEqual(rec.stop()["state"], "device_lost")
 
+    def test_sleep_is_reported_as_sleep_not_a_lost_microphone(self):
+        # The lid closes: the whole app is frozen, then wakes to find no audio.
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
+            rec, s = self.start()
+            s.feed(2)
+            real_get = rec._queue.get
+
+            def asleep(*args, **kwargs):
+                rec._queue.get = real_get
+                time.sleep(1.5)
+                return real_get(*args, **kwargs)
+            rec._queue.get = asleep
+            deadline = time.time() + 10
+            while not rec.stopped and time.time() < deadline:
+                time.sleep(0.1)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "slept")
+        self.assertEqual([e["kind"] for e in journal["events"]], ["sleep"])
+        self.assertIn("went to sleep", journal["events"][0]["note"])
+        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        self.assertAlmostEqual(seconds, 2.0, places=1)    # everything before it is kept
+
+    def test_driver_ending_the_stream_after_sleep_is_sleep(self):
+        offset = [0.0]
+        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}),
+                                 clock=lambda: time.time() + offset[0])
+        rec._callback(np.zeros((1600, 1), dtype=np.int16), 1600, None, None)
+        offset[0] = 120.0                              # two minutes asleep, no writer pass
+        rec._finished()
+        self.assertEqual(rec.journal["state"], "slept")
+        self.assertTrue(rec.stopped)
+        self.assertEqual([e["kind"] for e in rec.journal["events"]], ["sleep"])
+
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
         real = recorder._write_atomic
         calls = {"n": 0}
@@ -387,6 +421,43 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.recording_indicator = later.append      # the next change is applied anyway
         self.ws.stop_recording()
         self.assertEqual(later, [False])
+
+    def test_the_computer_is_kept_awake_exactly_while_recording(self):
+        from test_power import FakeKernel32
+
+        from workspace import power, policy
+        api = FakeKernel32()
+        self.ws.keep_awake = power.KeepAwake(api)
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        seen = []
+        self.ws.recording_indicator = lambda on: seen.append((on, api.active))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.stop_recording()                        # stopped
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.discard_recording()                     # discarded
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._recording._device_lost()               # stops itself
+        deadline = time.time() + 10
+        while self.ws._recording is not None and time.time() < deadline:
+            time.sleep(0.05)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.policy = policy.PolicySource(               # IT turns recording off
+            reader=lambda: ({"AllowMicrophoneRecording": False}, ()))
+        self.ws._policy_tick()
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.close()                                 # saved at close
+        self.assertEqual(seen, [(True, 1), (False, 0)] * 5)
+        self.assertEqual(api.open, 0)
+
+        refused = FakeKernel32(set_ok=0)                # Windows says no: recording goes on
+        self.ws = self.make()
+        self.ws.keep_awake = power.KeepAwake(refused)
+        self.ws.settings.update(microphone=True)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertIsNotNone(self.ws._recording)
+        self.ws.stop_recording()
 
     def test_off_by_default(self):
         self.ws.start()

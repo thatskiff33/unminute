@@ -42,6 +42,8 @@ How it handles problems:
 - **Closing asks first.** Closing the window while recording asks whether to stop and save, discard, or keep recording.
 - **Gaps are reported, never hidden.** If the computer falls behind or the disk fills up, the recording says when audio was lost and, where known, for how long.
 - **The microphone never changes on its own.** If the microphone is disconnected, recording stops and keeps what was saved. It does not move to another microphone.
+- **Stays awake while recording.** The computer does not go to sleep on its idle timer while a recording is open, even if nobody touches it. On some laptops running on battery, Windows still sleeps a few minutes after its usual sleep time.
+- **Closing the lid.** Windows decides what closing the lid does, and Unminute cannot override that. If the lid is set to Sleep, closing it stops the recording; the app keeps what was recorded and says the computer went to sleep. To record with the lid closed, set Windows to do nothing when the lid is closed (Settings > System > Power & battery > Lid & power button controls), or ask your IT team if the setting is managed. Some laptops also switch off their built-in microphone when the lid is closed; use an external microphone for those.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
 - **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded, and there is no live transcription.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
