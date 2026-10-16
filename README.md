@@ -198,7 +198,7 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `asr_engines.py` | Shared engine interface for Parakeet and Whisper; model manifests, verified install and repair |
 | `offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
 | `packaging/` | Per-user installer and uninstaller for the package |
-| `tools/build_package.py` | Builds the versioned zip with a private CPython 3.12 runtime |
+| `tools/build_package.py` | Builds the versioned zip with a private CPython 3.14 runtime |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |

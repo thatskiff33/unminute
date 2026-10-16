@@ -1,4 +1,4 @@
-# Unminute's direct runtime dependencies, for Windows x64 and CPython 3.12.
+# Unminute's direct runtime dependencies, for Windows x64 and CPython 3.14.
 # requirements.txt is generated from this file by tools/lock.py and pins every
 # package, direct or not, with its SHA-256 hashes. Edit this file, then run
 #   python tools/lock.py
@@ -14,9 +14,12 @@ onnx-asr==0.12.0
 onnxruntime==1.30.0
 
 # Speaker identification (torch, torchaudio, torchcodec and pyannote.audio move
-# together)
+# together). torch 2.14.1: the PyTorch index publishes a SHA-256 for its CUDA
+# wheel for CPython 3.14 on Windows (workspace/gpu.py); for 2.13.0 it publishes
+# none. torchcodec 0.12 and later work with torch 2.11 and later, and torchaudio
+# 2.11 does not pin torch.
 pyannote-audio==4.0.4
-torch==2.13.0
+torch==2.14.1
 torchaudio==2.11.0
 torchcodec==0.14.0
 # Security floor for a dependency of pyannote.audio (CVE-2026-58659, #118).

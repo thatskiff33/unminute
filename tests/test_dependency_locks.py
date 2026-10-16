@@ -34,6 +34,23 @@ def read(path):
     return (ROOT / path).read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
+class OnePythonTests(unittest.TestCase):
+    """#111 B4: the Python the package ships, the locks target, CI tests on and
+    ruff lints for is one version, so a move to the next one changes them all."""
+
+    def test_every_copy_of_the_python_version_agrees(self):
+        self.assertEqual(build.PYTHON_MINOR, lock.PYTHON)
+        self.assertEqual(build.PYTHON_TAG, lock.PYTHON.replace(".", ""))
+        self.assertIn('"--python-version", PYTHON_MINOR', read("tools/build_package.py"))
+        for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+            text = read(workflow.relative_to(ROOT))
+            for found in re.findall(r'python-version:\s*"([^"]+)"', text):
+                self.assertEqual(found, lock.PYTHON, workflow.name)
+        self.assertRegex(read("ruff.toml"), rf'target-version = "py{build.PYTHON_TAG}"')
+        self.assertIn(f"CPython {lock.PYTHON}", read("requirements.in").splitlines()[0])
+        self.assertIn(f"CPython {lock.PYTHON}", read("requirements.txt"))
+
+
 class LockTests(unittest.TestCase):
     def test_every_lock_pins_every_package_with_hashes(self):
         for _, target, _, _ in lock.LOCKS:

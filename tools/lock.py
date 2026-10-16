@@ -1,7 +1,7 @@
 # tools/lock.py
 # Hash-locked dependencies (#111 B1). requirements.in lists Unminute's direct
 # runtime dependencies; requirements.txt is generated from it and pins every
-# package, for Windows x64 and CPython 3.12, wheels only, with its SHA-256
+# package, for Windows x64 and CPython 3.14, wheels only, with its SHA-256
 # hashes. The CI tool locks in requirements/ are generated the same way.
 #
 #   python tools/lock.py                       regenerate every lock
@@ -43,14 +43,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COOLDOWN_DAYS = 7
 
-WINDOWS = ["--python-platform", "x86_64-pc-windows-msvc", "--python-version", "3.12",
+# The Python the package ships (tools/build_package.py PYTHON_VERSION) and CI
+# runs; tests/test_dependency_locks.py keeps every copy the same.
+PYTHON = "3.14"
+WINDOWS = ["--python-platform", "x86_64-pc-windows-msvc", "--python-version", PYTHON,
            "--only-binary", ":all:", "--find-links", "packaging/wheels"]
-ANY_PLATFORM = ["--universal", "--python-version", "3.12", "--only-binary", ":all:"]
+ANY_PLATFORM = ["--universal", "--python-version", PYTHON, "--only-binary", ":all:"]
 
 # (input, lock, uv target options, what the lock is for)
 LOCKS = [
     ("requirements.in", "requirements.txt", WINDOWS,
-     "Unminute's runtime: Windows x64, CPython 3.12, wheels only. The package build\n"
+     f"Unminute's runtime: Windows x64, CPython {PYTHON}, wheels only. The package build\n"
      "# installs it with pip install --require-hashes --no-deps --only-binary=:all:\n"
      "# --find-links packaging/wheels -r requirements.txt"),
     ("requirements/ci.in", "requirements/ci.txt", ANY_PLATFORM,
