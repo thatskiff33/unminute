@@ -699,7 +699,9 @@ class Workspace:
     def _watch_loop(self):
         """Reconcile watched folders at launch, then every SCAN_INTERVAL_S while
         open. Sleep counts as elapsed time, so waking from sleep scans at once."""
-        last = 0.0
+        # Not 0.0: the monotonic clock starts at boot, so a launch within
+        # SCAN_INTERVAL_S of starting the computer would skip the launch scan.
+        last = float("-inf")
         while not self._closing.is_set():
             if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
                 self._scan_requested = False

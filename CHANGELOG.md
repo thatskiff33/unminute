@@ -6,6 +6,7 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 ## Unreleased
 
 - **Skip speaker identification for a meeting.** For a recording of one or two people, select **Skip speakers** on the meeting's row or **Skip speaker identification** in its speaker panel. The meeting goes straight to review and hand off without speaker labels, and a pass already running stops at once. **Identify again…** still works later while the audio is kept.
+- **Watched folders are checked as soon as the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check.
 - **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
 - **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
 

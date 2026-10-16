@@ -326,7 +326,10 @@ class WorkspacePolicyTests(unittest.TestCase):
     def test_watch_loop_reads_no_folder_while_turned_off(self):
         import threading
         ws = self.open(AllowWatchedFolders=False)
-        with mock.patch("workspace.intake.scan") as scan:
+        # Just after boot the monotonic clock is below the scan interval; the
+        # launch check must still happen at once (it waited 5 minutes before).
+        with mock.patch("workspace.intake.scan") as scan, \
+                mock.patch("workspace.app.time.monotonic", return_value=12.0):
             t = threading.Thread(target=ws._watch_loop, daemon=True)
             t.start()
             for _ in range(50):
