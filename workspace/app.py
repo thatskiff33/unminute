@@ -40,6 +40,11 @@ MAX_TITLE_CHARS = 200
 FAILED_RETRY_S = 60.0               # a failed cleanup is retried at most this often
 RECEIPT_PURGE_S = 3600.0
 SR = 16000
+# Background threads wait for work rather than waking every second (R7). A
+# wait does not count time asleep on Windows, so long waits are capped: the
+# clock is checked again within the cap after the computer wakes.
+WATCH_MAX_WAIT_S = 60.0             # watched folders: a scan is at most this late
+POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
 
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
@@ -146,6 +151,8 @@ class Workspace:
         self.policy = policy.PolicySource(reader=policy_reader or policy.read_registry)
         self._clipboard_clears = []       # (due, sequence) for ClipboardClearMinutes
         self._clipboard_lock = threading.Lock()
+        self._policy_wake = threading.Event()   # a clear was scheduled, or closing
+        self._clock = time.monotonic      # counts time asleep; tests use a fake
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
@@ -170,7 +177,7 @@ class Workspace:
         self._rerun_count = None          # the count of the rerun now running
         self._gpu_pass = False            # a speaker pass on the graphics card is running
         self._removing = None             # a model being removed: no job starts meanwhile
-        self._scan_requested = False
+        self._scan_wake = threading.Event()     # Check now (scan_now), or closing
         self.last_scan = None
         self._threads = []
         # Microphone recording (#30): one at a time; heavy processing waits.
@@ -226,6 +233,8 @@ class Workspace:
         self._flush_clipboard_clears()
         self._closing.set()
         self._wake.set()
+        self._scan_wake.set()
+        self._policy_wake.set()
         self._imports.put(None)
         self.handle.close()
         for t in self._threads:
@@ -429,6 +438,7 @@ class Workspace:
                 raise WorkspaceError("A recording is already running.")
             self._rec_starting = True
             busy = self._busy
+        self._policy_wake.set()              # policy is checked every second while recording
         try:
             # Heavy processing waits while recording. Work in progress is
             # stopped; it was never committed and is redone afterwards.
@@ -765,27 +775,33 @@ class Workspace:
     # -- watched folders (#23) -------------------------------------------------------
 
     def _watch_loop(self):
-        """Reconcile watched folders at launch, then every SCAN_INTERVAL_S while
-        open. Sleep counts as elapsed time, so waking from sleep scans at once."""
-        # Not 0.0: the monotonic clock starts at boot, so a launch within
-        # SCAN_INTERVAL_S of starting the computer would skip the launch scan.
-        last = float("-inf")
+        """Reconcile watched folders LAUNCH_SCAN_DELAY_S after launch (so
+        start-up is not slowed), then every SCAN_INTERVAL_S while open, and at
+        once on Check now (scan_now) or when a folder is added or turned on.
+        Between scans the thread sleeps until the next one is due; the clock
+        counts time asleep, so after the computer wakes a scan that fell due
+        runs within WATCH_MAX_WAIT_S."""
+        due = self._clock() + intake.LAUNCH_SCAN_DELAY_S
         while not self._closing.is_set():
-            if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
-                self._scan_requested = False
-                last = time.monotonic()
-                try:
-                    if not self._allowed("AllowWatchedFolders"):
-                        self.last_scan = {"managed_off": True}      # nothing is read
-                    else:
-                        self.last_scan = intake.scan(
-                            self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
-                            lambda p, fid, key, content: self._imports.put((p, fid, key,
-                                                                            content)),
-                            stop=self._closing.is_set)
-                except Exception as exc:     # a scan problem must not stop watching
-                    self.last_scan = {"error": safe_message(exc)}
-            self._closing.wait(1.0)
+            now = self._clock()
+            if not self._scan_wake.is_set() and now < due:
+                self._scan_wake.wait(min(due - now, WATCH_MAX_WAIT_S))
+                continue
+            self._scan_wake.clear()          # a request made during the scan scans again
+            due = self._clock() + intake.SCAN_INTERVAL_S
+            self._scan_folders()
+
+    def _scan_folders(self):
+        try:
+            if not self._allowed("AllowWatchedFolders"):
+                self.last_scan = {"managed_off": True}      # nothing is read
+            else:
+                self.last_scan = intake.scan(
+                    self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
+                    lambda p, fid, key, content: self._imports.put((p, fid, key, content)),
+                    stop=self._closing.is_set)
+        except Exception as exc:             # a scan problem must not stop watching
+            self.last_scan = {"error": safe_message(exc)}
 
     def watched_folders(self):
         return {"folders": intake.summary(self.store), "last_scan": self.last_scan,
@@ -833,7 +849,7 @@ class Workspace:
         intake.remove_folder(self.store, _hold_id(fid))
 
     def scan_now(self):
-        self._scan_requested = True
+        self._scan_wake.set()
 
     # -- processing thread ------------------------------------------------------------
 
@@ -1612,15 +1628,16 @@ class Workspace:
 
     def _schedule_clipboard_clear(self, sequence, delay_s):
         """Clear the app's own copy later (policy), unless something else was
-        copied since. Checked every second by the watch loop against the
-        monotonic clock, which counts time asleep (a plain timer's wait does
-        not, so it would clear late after sleep). Pending clears also run when
-        the app closes."""
+        copied since. The policy thread waits until it is due, checking at
+        least every POLICY_IDLE_WAIT_S against the monotonic clock, which
+        counts time asleep (a plain timer's wait does not, so it would clear
+        late after sleep). Pending clears also run when the app closes."""
         with self._clipboard_lock:
-            self._clipboard_clears.append((time.monotonic() + delay_s, sequence))
+            self._clipboard_clears.append((self._clock() + delay_s, sequence))
+        self._policy_wake.set()
 
     def _run_clipboard_clears(self, everything=False):
-        now = time.monotonic()
+        now = self._clock()
         with self._clipboard_lock:
             due = [s for t, s in self._clipboard_clears if everything or t <= now]
             self._clipboard_clears = [] if everything else [
@@ -1636,15 +1653,34 @@ class Workspace:
 
     def _policy_loop(self):
         """Its own thread, so a long folder scan never delays a clear or a stop."""
-        while not self._closing.is_set():
+        while True:
+            # Cleared before the closing check: a clear scheduled, or close(),
+            # after this point ends the wait below at once.
+            self._policy_wake.clear()
+            if self._closing.is_set():
+                return
             try:
                 self._policy_tick()
-            except Exception:            # tried again next second
+            except Exception:            # tried again at the next tick
                 pass
-            self._closing.wait(1.0)
+            self._policy_wake.wait(self._policy_wait_s())
+
+    def _policy_wait_s(self):
+        """Every second while recording or opening a recording (start_recording
+        wakes the thread), so a policy change read meanwhile stops it at once.
+        Otherwise until the next clipboard clear is due, capped at
+        POLICY_IDLE_WAIT_S: on time while awake, and at most that late after
+        the computer wakes (a wait does not count time asleep)."""
+        if self._capturing():
+            return 1.0
+        with self._clipboard_lock:
+            due = min((t for t, _ in self._clipboard_clears), default=None)
+        if due is None:
+            return POLICY_IDLE_WAIT_S
+        return max(0.0, min(due - self._clock(), POLICY_IDLE_WAIT_S))
 
     def _policy_tick(self):
-        """Every second: due clipboard clears, and a recording that policy no
+        """Due clipboard clears, and a recording that policy no
         longer allows is stopped and saved (the policy is re-read every 15
         minutes, or on each refresh while Settings or Downloads is open). A key
         that cannot be read refuses new recordings but does not cut one short:

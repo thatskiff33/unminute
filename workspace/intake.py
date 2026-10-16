@@ -4,11 +4,12 @@
 #
 # Watching is explicit: the user adds a folder, and chooses whether recordings
 # already in it are imported too. The app then reconciles each folder by
-# scanning it (at launch, every few minutes while open, and on wake from
-# sleep): a fully closed app simply catches up on its next launch. Polling was
-# chosen over change notifications because notifications are lost while the
-# app is closed and are unreliable on synced folders; a reconciliation scan is
-# needed anyway, and a bounded folder makes it cheap (see LIMITS below).
+# scanning it (soon after launch, every few minutes while open, and on wake
+# from sleep): a fully closed app simply catches up on its next launch.
+# Polling was chosen over change notifications because notifications are lost
+# while the app is closed and are unreliable on synced folders; a
+# reconciliation scan is needed anyway, and a bounded folder makes it cheap
+# (see LIMITS below).
 #
 # A file counts as new by its identity (path, file ID, size and modification
 # time), never by its date, so an old recording copied in today is picked up.
@@ -38,6 +39,7 @@ from workspace.safe_paths import (CloudPlaceholderError, UnsafePathError, check_
                                   validate_input_file)
 
 SCAN_INTERVAL_S = 300          # while the app is open
+LAUNCH_SCAN_DELAY_S = 30       # the first scan waits for start-up to finish
 STABLE_S = 5                   # a file must look the same this long apart (two scans)
 STABLE_RECENT_S = 60           # ...and not have been written in the last minute
 MAX_DEPTH = 2                  # subfolder levels below a watched folder
@@ -290,28 +292,35 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
         # and size), so an old recording renamed today is not "new".
         missing = {(r["file_id"], r["size"]): r for k, r in seen.items()
                    if k not in present and r["file_id"]}
+        # Row changes wait in `writes` and are committed together: one
+        # transaction per folder when nothing is new, not one per file. They
+        # are committed early only before an import is queued, because the
+        # import updates its row when it finishes. No transaction is held
+        # while a file is checked or hashed.
+        writes, stopped = [], False
         for path, key, ident in stats_files:
             if stop and stop():
+                stopped = True
                 break
             row = seen.get(key)
             if row is None:
                 moved = missing.pop((ident[2], ident[0]), None) if ident[2] else None
                 if moved is not None:
-                    _put(store, f["id"], key, ident, moved["state"], now, first=True)
+                    _put(writes, f["id"], key, ident, moved["state"], now)
                     continue
                 state = "baseline" if baseline else "waiting"
-                _put(store, f["id"], key, ident, state, now, first=True)
+                _put(writes, f["id"], key, ident, state, now)
                 if state == "waiting":
                     stats["waiting"] += 1
                 continue
             if not _same(row, ident):
                 # Still copying, or replaced at the same path: wait for it to
                 # settle, then compare content (a new recording is imported).
-                _put(store, f["id"], key, ident, "waiting", now)
+                _put(writes, f["id"], key, ident, "waiting", now)
                 stats["waiting"] += 1
                 continue
             if row["state"] not in RETRY_STATES:
-                _touch(store, f["id"], key, now)
+                _touch(writes, f["id"], key, now)
                 continue
             # Stable: unchanged since the previous scan, and not written recently
             # (a stalled copy is not mistaken for a finished one).
@@ -322,16 +331,18 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 os.stat(path)
                 real = validate_input_file(path, extensions, max_bytes,
                                            allow_cloud=bool(f["fetch_cloud"]))
+            except FileNotFoundError:
+                continue                 # gone since the walk: its row goes next scan
             except PermissionError:
-                _put(store, f["id"], key, ident, "unreadable", now)
+                _put(writes, f["id"], key, ident, "unreadable", now)
                 stats["errors"] += 1
                 continue
             except CloudPlaceholderError:
-                _put(store, f["id"], key, ident, "cloud", now)
+                _put(writes, f["id"], key, ident, "cloud", now)
                 stats["cloud"] += 1
                 continue
             except UnsafePathError:
-                _put(store, f["id"], key, ident, "refused", now)
+                _put(writes, f["id"], key, ident, "refused", now)
                 stats["errors"] += 1
                 continue
             try:
@@ -339,22 +350,31 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 # sync client fetch it; no write access is ever needed.
                 content = hasher(real)
             except PermissionError:
-                _put(store, f["id"], key, ident, "unreadable", now)
+                _put(writes, f["id"], key, ident, "unreadable", now)
                 stats["errors"] += 1
                 continue
             except OSError:
                 # e.g. paused sync or offline: the file is checked again next scan.
-                _put(store, f["id"], key, ident, "cloud", now)
+                _put(writes, f["id"], key, ident, "cloud", now)
                 stats["cloud"] += 1
                 continue
             if already_imported(store, content):
-                _put(store, f["id"], key, ident, "duplicate", now)
+                _put(writes, f["id"], key, ident, "duplicate", now)
                 stats["duplicates"] += 1
                 continue
-            _put(store, f["id"], key, ident, "importing", now, content=content)
+            _put(writes, f["id"], key, ident, "importing", now, content=content)
+            if not _commit(store, f["id"], writes):
+                break                    # removed during the scan: nothing more from it
             enqueue(real, f["id"], key, content)
             stats["queued"] += 1
+        if stopped:
+            # Closing part-way: keep what was seen, but the folder is not marked
+            # scanned. A baseline marked done here would make the files not yet
+            # reached look new next time, and import them.
+            _commit(store, f["id"], writes)
+            break
         with store.tx() as db:
+            _apply(db, f["id"], writes)
             if complete:
                 # Files that left the folder: forget their rows (bounded). Only
                 # after a complete walk; otherwise unseen files are kept.
@@ -369,20 +389,42 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
     return stats
 
 
-def _put(store, fid, key, ident, state, now, first=False, content=None):
-    with store.tx() as db:
-        db.execute("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
-                   "first_seen, last_seen, content) VALUES (?,?,?,?,?,?,?,?,?) "
-                   "ON CONFLICT(folder_id, key) DO UPDATE SET size = excluded.size, "
-                   "mtime_ns = excluded.mtime_ns, file_id = excluded.file_id, "
-                   "state = excluded.state, last_seen = excluded.last_seen, "
-                   "content = excluded.content", (fid, key, *ident, state, now, now, content))
+_PUT = ("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
+        "first_seen, last_seen, content) VALUES (?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(folder_id, key) DO UPDATE SET size = excluded.size, "
+        "mtime_ns = excluded.mtime_ns, file_id = excluded.file_id, "
+        "state = excluded.state, last_seen = excluded.last_seen, "
+        "content = excluded.content")
+_TOUCH = "UPDATE intake_seen SET last_seen = ? WHERE folder_id = ? AND key = ?"
 
 
-def _touch(store, fid, key, now):
+def _put(writes, fid, key, ident, state, now, content=None):
+    writes.append((_PUT, (fid, key, *ident, state, now, now, content)))
+
+
+def _touch(writes, fid, key, now):
+    writes.append((_TOUCH, (now, fid, key)))
+
+
+def _apply(db, fid, writes):
+    """Write the waiting row changes, unless the folder was removed during
+    the scan: its rows went with it, and these would be left behind. False
+    if it was removed."""
+    watched = db.execute("SELECT 1 FROM watched_folders WHERE id = ?", (fid,)).fetchone()
+    if watched:
+        for sql, args in writes:
+            db.execute(sql, args)
+    writes.clear()
+    return bool(watched)
+
+
+def _commit(store, fid, writes):
+    """Commit the waiting row changes now (one transaction), if any. False if
+    the folder was removed during the scan."""
+    if not writes:
+        return True
     with store.tx() as db:
-        db.execute("UPDATE intake_seen SET last_seen = ? WHERE folder_id = ? AND key = ?",
-                   (now, fid, key))
+        return _apply(db, fid, writes)
 
 
 def _folder_note(store, fid, now, message):

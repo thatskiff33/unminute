@@ -10,6 +10,7 @@ import time
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -202,6 +203,101 @@ class IntakeTests(unittest.TestCase):
         self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
         self.settle()
         self.assertEqual(self.queued, [])                           # history not imported
+
+    def count_transactions(self):
+        """Patch the store so each transaction is counted (R7: each one is a
+        disk flush with synchronous=FULL)."""
+        real, count = self.store.tx, []
+
+        def counting():
+            count.append(1)
+            return real()
+        return mock.patch.object(self.store, "tx", new=counting), count
+
+    def test_unchanged_files_share_one_transaction_per_folder(self):
+        intake.add_folder(self.store, str(self.folder))
+        for i in range(200):
+            (self.folder / f"old {i}.wav").write_bytes(b"synthetic")
+        patch, count = self.count_transactions()
+        with patch:
+            self.scan()                                             # baseline of 200
+        self.assertLessEqual(len(count), 3)             # + the salt, made by the first scan
+        count.clear()
+        with patch:
+            self.scan()                                             # nothing new
+        self.assertLessEqual(len(count), 2)             # the folder, the purge (was 202)
+        self.assertEqual(self.queued, [])
+
+    def test_closing_part_way_through_a_baseline_finishes_it_next_time(self):
+        intake.add_folder(self.store, str(self.folder))
+        for i in range(20):
+            (self.folder / f"old {i}.wav").write_bytes(b"synthetic")
+        calls = []
+
+        def stop():                     # two checks before the files, then one each
+            calls.append(1)
+            return len(calls) > 12
+        self.scan(stop=stop)
+        self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
+        self.assertEqual(self.states(), {"baseline": 10})          # what was seen is kept
+        self.settle()
+        self.assertTrue(intake.folders(self.store)[0]["baseline_done"])
+        self.assertEqual(self.queued, [])           # files not reached were not "new"
+
+    def states(self):
+        return {r["state"]: r["n"] for r in self.store._all(
+            "SELECT state, COUNT(*) AS n FROM intake_seen GROUP BY state")}
+
+    def test_same_content_twice_in_one_scan_is_imported_once(self):
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "a.wav", seed=38)
+        wav(self.folder / "b.wav", seed=38)
+        self.scan()
+        queued = []                     # the app imports later: nothing reported back
+        self.now += 10
+        stats = intake.scan(self.store, EXT, BIG, lambda *a: queued.append(a), now=self.now)
+        self.assertEqual((len(queued), stats["duplicates"]), (1, 1))
+
+    def test_an_import_that_finishes_during_the_scan_is_recorded(self):
+        # Its row is written before the import is queued, so the import's
+        # report (here at once, inside enqueue) is not overwritten afterwards.
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "new.wav", seed=39)
+        self.settle()
+        row = self.store._one("SELECT state, content FROM intake_seen")
+        self.assertEqual((row["state"], row["content"]), ("imported", None))
+
+    def test_a_file_gone_since_the_walk_does_not_stop_the_scan(self):
+        from workspace.media import sha256_file
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        a, b = wav(self.folder / "a.wav", seed=40), wav(self.folder / "b.wav", seed=41)
+        self.scan()
+
+        def hasher(path):               # the other file is deleted while one is hashed
+            other = b if Path(path).name == "a.wav" else a
+            other.unlink(missing_ok=True)
+            return sha256_file(path)
+        self.scan(hasher=hasher)
+        self.assertEqual(len(self.queued), 1)
+        self.assertEqual(intake.folders(self.store)[0]["last_scan_at"], self.now)  # finished
+
+    def test_a_folder_removed_during_a_scan_leaves_nothing_behind(self):
+        from workspace.media import sha256_file
+        fid = intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        for i in range(3):
+            wav(self.folder / f"new {i}.wav", seed=50 + i)
+        self.scan()
+
+        def hasher(path):               # the user removes the folder meanwhile
+            intake.remove_folder(self.store, fid)
+            return sha256_file(path)
+        self.scan(hasher=hasher)
+        self.assertEqual(self.queued, [])                           # nothing imported
+        self.assertEqual(self.states(), {})                         # no rows left behind
 
     def test_partial_read_keeps_rows_for_unseen_files(self):
         wav(self.folder / "history.wav", seed=34)

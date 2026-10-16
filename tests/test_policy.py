@@ -331,24 +331,6 @@ class WorkspacePolicyTests(unittest.TestCase):
         row = ws.store.source(sid)
         self.assertEqual((row["delete_original"], row["original_path"]), (0, None))
 
-    def test_watch_loop_reads_no_folder_while_turned_off(self):
-        import threading
-        ws = self.open(AllowWatchedFolders=False)
-        # Just after boot the monotonic clock is below the scan interval; the
-        # launch check must still happen at once (it waited 5 minutes before).
-        with mock.patch("workspace.intake.scan") as scan, \
-                mock.patch("workspace.app.time.monotonic", return_value=12.0):
-            t = threading.Thread(target=ws._watch_loop, daemon=True)
-            t.start()
-            for _ in range(50):
-                if ws.last_scan == {"managed_off": True}:
-                    break
-                threading.Event().wait(0.05)
-            ws._closing.set()
-            t.join(5)
-        scan.assert_not_called()
-        self.assertEqual(ws.last_scan, {"managed_off": True})
-
     def test_clipboard_is_cleared_later_only_by_policy(self):
         from workspace import clipboard
         ws = self.open(ClipboardClearMinutes=5)
