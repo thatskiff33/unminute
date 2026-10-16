@@ -1,0 +1,6 @@
+Security hardening (#111, slice A3):
+
+- **Recordings are decoded in a separate, sandboxed process.** Each imported file is decoded by a short-lived helper that runs at Windows' Low integrity level (the level browsers use for web pages) inside a Windows job. Windows stops it writing your files, opening the app's process, starting programs directly or using more than 2 GB of memory, and normally also the clipboard (inside some managed sessions the session's own limits apply instead), and it ends when the app closes. It sends back only plain audio, which the app checks, writes and hashes itself. It can still read files you can read, so a decoder flaw would mainly be a privacy risk; the firewall rule for managed devices (#111 B7) closes the network side.
+- **Only real recordings are opened.** The decoder accepts only the supported recording formats and local files, whatever a file claims to be, so playlists, stream descriptions and scripts disguised as recordings are refused.
+- **Limits on what a file can do.** Decoding stops at 12 hours of audio and keeps at least 1 GB of disk space free.
+- **Network drives are refused for imports.** Files on mapped network drives, or reached through a symbolic link, are refused with a message to copy them first. Synced folders such as OneDrive are unaffected.

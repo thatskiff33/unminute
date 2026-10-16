@@ -203,6 +203,7 @@ Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `transcribe_ui.py`, `transcriber_core.py`, `install.ps1` | The earlier app |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
+| `changelog.d/` | Unreleased changes, one fragment per pull request; `tools/changelog.py` moves them into `CHANGELOG.md` at release. |
 
 Design and plans:
 

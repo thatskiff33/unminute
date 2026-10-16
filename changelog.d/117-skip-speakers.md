@@ -1,0 +1,1 @@
+- **Skip speaker identification for a meeting.** For a recording of one or two people, select **Skip speakers** on the meeting's row or **Skip speaker identification** in its speaker panel. The meeting goes straight to review and hand off without speaker labels, and a pass already running stops at once. **Identify again…** still works later while the audio is kept.

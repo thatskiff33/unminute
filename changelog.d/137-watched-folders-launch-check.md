@@ -1,0 +1,1 @@
+- **Watched folders are checked as soon as the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check.

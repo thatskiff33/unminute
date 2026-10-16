@@ -123,7 +123,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 
 **Criterion.**
 - **Version:** Semantic Versioning, with the version kept in one place.
-- **Changelog:** one dated section per version, with an Unreleased section that pull requests add to.
+- **Changelog:** one dated section per version. Pull requests add a fragment in `changelog.d/`, and the release assembles the fragments into the version's section.
 - **Build:** made by CI from a tagged commit on the main branch. Dependencies are hash-locked, and the build is reproducible.
 - **Each release carries:** a checksum, an SBOM, third-party notices, build provenance, and the release-time evidence from sections 2, 4, 7 and 12, each naming the package's checksum.
 
