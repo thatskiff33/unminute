@@ -2218,7 +2218,8 @@ function pollDelay() {
 // Soon, not in up to 10 s: after something the page did not start itself (a
 // recording dropped on the window is imported by Python directly).
 function pollSoon() {
-  if (document.hidden) return;
+  state.active = true;                 // so an in-flight poll re-arms fast, not at 10 s;
+  if (document.hidden) return;         // wasActive then keeps one more 2 s poll
   clearTimeout(pollTimer);
   pollTimerDelay = 500;
   pollTimer = setTimeout(pollNow, pollTimerDelay);
@@ -2249,12 +2250,12 @@ function wire() {
   $("s-add-folder").addEventListener("click", () => attempt(async () => {
     const added = await call("add_folder_dialog", $("s-include-existing").checked);
     if (added) say("Folder added. It will be checked now.");
-    await refresh();
+    pollSoon();
   }));
   $("s-scan").addEventListener("click", () => attempt(async () => {
     await call("scan_now");
     say("Checking watched folders");
-    await refresh();
+    pollSoon();
   }));
   wireSetup();
   wireHandoff();
@@ -2334,7 +2335,7 @@ function wire() {
       await call("retranscribe", state.mid);
       viewVersion(null);
       say("Transcribing again. The previous version and its edits are kept.");
-      await refresh();
+      pollSoon();
     }),
   }));
   $("m-rerun").addEventListener("click", () => {
@@ -2351,7 +2352,7 @@ function wire() {
         $("m-again-form").hidden = true;
         $("m-again").setAttribute("aria-expanded", "false");
         say("Identifying speakers again");
-        await refresh();
+        pollSoon();
       }),
     });
   });
