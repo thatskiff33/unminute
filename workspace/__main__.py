@@ -102,6 +102,11 @@ def self_test():
     def tcp():
         socket.create_connection(("192.0.2.1", 443), timeout=3).close()
 
+    def raw_tcp():                    # straight to connect(), no name lookup
+        with socket.socket() as s:
+            s.settimeout(3)
+            s.connect(("192.0.2.1", 443))
+
     def udp():
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.sendto(b"x", ("192.0.2.1", 53))
@@ -112,7 +117,8 @@ def self_test():
             writer.close()
         asyncio.run(attempt())
 
-    for label, attempt in (("TCP", tcp), ("UDP", udp), ("asyncio TCP", async_tcp)):
+    for label, attempt in (("TCP", tcp), ("raw TCP", raw_tcp), ("UDP", udp),
+                           ("asyncio TCP", async_tcp)):
         try:
             attempt()
             ok = False

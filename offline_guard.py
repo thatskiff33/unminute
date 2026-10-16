@@ -104,30 +104,60 @@ def _local_proxies():
 
 _proxy_endpoints = set()
 _allowed_names = ()          # host names (and their subdomains) a download may use
+_proxy_names = ()            # configured proxies: exact names only
 _allowed_addresses = set()   # addresses those names resolved to in this process
+_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-_")
 
 
-def _norm_host(host):
+def _norm_address(host):
+    """An IP literal in canonical form, or None if `host` is not one."""
     if isinstance(host, bytes):
         host = host.decode("ascii", "ignore")
-    return str(host).strip("[]").split("%")[0].lower().rstrip(".")
+    text = str(host).strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    try:
+        return str(ipaddress.ip_address(text.split("%")[0]))
+    except ValueError:
+        return None
 
 
-def _name_allowed(host):
-    host = _norm_host(host)
-    return any(host == name or host.endswith("." + name) for name in _allowed_names)
+def _norm_name(host):
+    """A host name, lower case, without a trailing dot; None if it contains
+    anything a real host name cannot (so tricks such as
+    "huggingface.co%x.evil.example" never match)."""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "ignore")
+    name = str(host).strip().lower().rstrip(".")
+    if not name or not set(name) <= _NAME_CHARS or ".." in name or name.startswith("."):
+        return None
+    return name
+
+
+def host_allowed(host):
+    """True if `host` is an allowed download host (a listed name or one of its
+    subdomains). IP literals and proxies are never valid request targets.
+    Used for every HTTP request a download makes, including each redirect,
+    which also covers downloads through a proxy (the proxy, not this
+    computer, resolves the target name)."""
+    name = _norm_name(host)
+    return name is not None and _norm_address(name) is None and any(
+        name == allowed or name.endswith("." + allowed) for allowed in _allowed_names)
 
 
 def allow_hosts(names):
     """Let this process reach exactly these host names (and their
     subdomains), and the proxies configured for it, and nothing else. Used by
     the download process: a redirect to any other host fails at its DNS
-    lookup. Connections are allowed only to addresses that an allowed name
-    resolved to here."""
-    global _allowed_names
+    lookup, or at the HTTP check (host_allowed) when a proxy resolves names.
+    Connections are allowed only to public addresses an allowed name resolved
+    to here, and to the proxies."""
+    global _allowed_names, _proxy_names
+    if isinstance(names, (str, bytes)):
+        raise TypeError("allow_hosts expects a list of host names")
     import urllib.parse
     import urllib.request
-    extra = []
+    proxy_names, proxy_addresses = [], []
     try:
         proxies = urllib.request.getproxies()
     except Exception:
@@ -140,14 +170,36 @@ def allow_hosts(names):
         except ValueError:
             continue
         if parts.hostname:
-            extra.append(parts.hostname)
-            try:
-                ipaddress.ip_address(parts.hostname.strip("[]"))
-                _allowed_addresses.add(_norm_host(parts.hostname))   # proxy given as an IP
-            except ValueError:
-                pass
+            address = _norm_address(parts.hostname)
+            if address:
+                proxy_addresses.append(address)        # proxy given as an IP
+            elif _norm_name(parts.hostname):
+                proxy_names.append(_norm_name(parts.hostname))
+    allowed = tuple(n for n in (_norm_name(x) for x in names) if n and not _norm_address(n))
     with _lock:
-        _allowed_names = tuple(_norm_host(n) for n in (*names, *extra) if n)
+        _allowed_names, _proxy_names = allowed, tuple(proxy_names)
+        _allowed_addresses.clear()
+        _allowed_addresses.update(proxy_addresses)
+
+
+def _resolvable(host):
+    """May this name be looked up? Allowed download hosts and proxies only."""
+    name = _norm_name(host)
+    return name is not None and (host_allowed(name) or name in _proxy_names)
+
+
+def _record_addresses(host, result):
+    """Remember what an allowed name resolved to. Download hosts count only
+    for public addresses (a lookup that returns a private or local address is
+    not followed); a proxy may be anywhere on the firm's network."""
+    proxy = _norm_name(host) in _proxy_names
+    found = set()
+    for entry in result:
+        address = _norm_address(entry[4][0])
+        if address and (proxy or ipaddress.ip_address(address).is_global):
+            found.add(address)
+    with _lock:
+        _allowed_addresses.update(found)
 
 
 def _check(host, port, resolving=False):
@@ -155,8 +207,9 @@ def _check(host, port, resolving=False):
         return True
     if _is_local(host) and (str(host).lower(), port) not in _proxy_endpoints:
         return True
-    if _allowed_names and (_norm_host(host) in _allowed_addresses
-                           or (resolving and _name_allowed(host))):
+    if (_allowed_names or _proxy_names) and (
+            _norm_address(host) in _allowed_addresses
+            or (resolving and _norm_address(host) is None and _resolvable(host))):
         return True
     with _lock:
         blocked.append((str(host), port))
@@ -187,9 +240,8 @@ def _guarded_getaddrinfo(host, port, *args, **kwargs):
     if not _check(host, port, resolving=True):
         raise _refuse(host, port)
     result = _orig["getaddrinfo"](host, port, *args, **kwargs)
-    if _allowed_names and _name_allowed(host):
-        with _lock:
-            _allowed_addresses.update(_norm_host(r[4][0]) for r in result)
+    if (_allowed_names or _proxy_names) and _resolvable(host):
+        _record_addresses(host, result)
     return result
 
 
