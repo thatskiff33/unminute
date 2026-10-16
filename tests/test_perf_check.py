@@ -20,38 +20,58 @@ class MedianTests(unittest.TestCase):
                          perf_check.median_report(runs))
 
     def test_a_figure_missing_from_one_run_uses_the_others(self):
-        runs = [{"worker": {"exit_after_last_use_s": None, "exited": False}},
-                {"worker": {"exit_after_last_use_s": 121.0, "exited": True}},
-                {"worker": {"exit_after_last_use_s": 123.0, "exited": True}}]
-        self.assertEqual({"worker": {"exit_after_last_use_s": 122.0}},
-                         perf_check.median_report(runs))
+        runs = [{"leak": {"private_growth_mb": None}}, {"leak": {"private_growth_mb": 4.0}},
+                {"leak": {"private_growth_mb": 6.0}}]
+        self.assertEqual({"leak": {"private_growth_mb": 5.0}}, perf_check.median_report(runs))
 
 
 class BudgetTests(unittest.TestCase):
-    def test_only_figures_over_a_set_budget_are_reported(self):
+    BUDGETS = {"meetings": {"cpu_percent_of_one_core": 0.3, "private_mb": None},
+               "minimised": {"cpu_percent_of_one_core": 0.1},
+               "worker": {"exit_after_last_use_s": 125},
+               "leak": {"private_growth_mb": 10}}
+
+    def test_over_budget_and_not_measured_are_both_reported(self):
         figures = {"meetings": {"cpu_percent_of_one_core": 0.4, "private_mb": 300},
                    "minimised": {"cpu_percent_of_one_core": 0.05}}
-        budgets = {"meetings": {"cpu_percent_of_one_core": 0.3, "private_mb": None},
-                   "minimised": {"cpu_percent_of_one_core": 0.1},
-                   "settings": {"cpu_percent_of_one_core": 0.5}}       # not measured
-        self.assertEqual([("meetings", "cpu_percent_of_one_core", 0.4, 0.3)],
-                         perf_check.compare(figures, budgets))
+        over, missing = perf_check.compare(figures, self.BUDGETS)
+        self.assertEqual([("meetings", "cpu_percent_of_one_core", 0.4, 0.3)], over)
+        # A set budget with no figure fails; a budget of null is not set yet.
+        self.assertEqual([("worker", "exit_after_last_use_s"), ("leak", "private_growth_mb")],
+                         missing)
 
-    def test_proposed_budgets_add_the_margin(self):
+    def test_a_state_not_asked_for_is_skipped(self):
+        figures = {"meetings": {"cpu_percent_of_one_core": 0.2},
+                   "minimised": {"cpu_percent_of_one_core": 0.05},
+                   "worker": {"exit_after_last_use_s": 121.0}}
+        self.assertEqual(([], []), perf_check.compare(figures, self.BUDGETS, skip=("leak",)))
+
+    def test_a_worker_that_never_unloads_is_over_its_budget(self):
+        # one_run records it at the wait limit rather than leaving it out.
+        figures = {"worker": {"exit_after_last_use_s": perf_check.WORKER_WAIT_S}}
+        over, _ = perf_check.compare(figures, {"worker": {"exit_after_last_use_s": 125}})
+        self.assertEqual([("worker", "exit_after_last_use_s", perf_check.WORKER_WAIT_S, 125)],
+                         over)
+
+    def test_proposed_budgets_add_the_margin_and_round_up(self):
         proposed = perf_check.propose({"meetings": {"cpu_percent_of_one_core": 1.0,
                                                     "private_mb": 1000, "processes": 9},
+                                       "settings": {"cpu_percent_of_one_core": 3.229},
                                        "minimised": {"cpu_percent_of_one_core": 0.01},
                                        "startup": {"startup_s": 2.0}})
         self.assertEqual({"meetings": {"cpu_percent_of_one_core": 1.2, "private_mb": 1200},
+                          "settings": {"cpu_percent_of_one_core": 3.88},     # 3.8748, up
                           "minimised": {"cpu_percent_of_one_core": 0.06},
                           "startup": {"startup_s": 2.4}}, proposed)
 
-    def test_budget_file_is_valid_and_uses_known_metrics(self):
+    def test_budget_file_is_valid_and_uses_known_states_and_metrics(self):
         path = ROOT / "docs" / "perf-budgets.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        known = set(perf_check.BUDGETED) | {"exit_after_last_use_s", "private_growth_mb"}
+        states = set(perf_check.STATES) | {"startup", "worker", "leak"}
+        metrics = set(perf_check.BUDGETED) | {"exit_after_last_use_s", "private_growth_mb"}
         for state, limits in data["budgets"].items():
-            self.assertTrue(set(limits) <= known, f"{state}: unknown metric in {path.name}")
+            self.assertIn(state, states, f"unknown state in {path.name}")
+            self.assertTrue(set(limits) <= metrics, f"{state}: unknown metric in {path.name}")
             for metric, limit in limits.items():
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
 

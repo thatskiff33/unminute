@@ -9,18 +9,10 @@
 # reference only and never used for budgets: summing them counts shared pages
 # once per process.
 #
-#   python tools/perf_check.py <report.json>              release run: 3 runs,
-#                                                          60 s settle, 300 s windows
-#   python tools/perf_check.py <report.json> --quick      1 run, 20 s settle, 60 s
-#                                                          windows (before/after checks)
-#   --app <install>\versions\<v>\app   measure an installed package's code; run
-#                                      with that package's runtime\python.exe
-#   --zip <Unminute-X.Y.Z.zip>         record the SHA-256 of the package measured
-#   --leak-minutes 30                  also hold the Meetings view and report growth
-#
-# Exit code 1 when a figure exceeds its budget in docs/perf-budgets.json. The
-# window is visible for the whole run; leave the machine idle, on mains power.
-# The worker's peak and speed come from tools/packaged_check.py (real models).
+# Run "python tools/perf_check.py --help" for the states, the output and the
+# exit codes. The window is visible for the whole run; leave the machine idle,
+# on mains power, on the Balanced power plan. The worker's peak memory and
+# speed need real models and come from tools/packaged_check.py.
 
 import argparse
 import hashlib
@@ -28,6 +20,8 @@ import json
 import math
 import os
 import platform
+import queue
+import shutil
 import statistics
 import subprocess
 import sys
@@ -42,6 +36,32 @@ STATES = ("meetings", "settings", "minimised")
 MEETINGS = 3                      # synthetic meetings in the measured workspace
 PREFIX = "PERF "                  # protocol lines between parent and child
 WORKER_WAIT_S = 240               # the worker unloads after 120 s idle (worker.py)
+READY_TIMEOUT_S = 600             # seeding (up to 300 s) plus the page starting
+STEP_TIMEOUT_S = 90               # the window reaching a state
+LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
+HELP = """
+States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
+(the Settings view) and minimised. Before them it times start-up to
+interactive (imports, then window creation until the meeting list has
+rendered; interpreter start and opening the workspace are left out) and waits
+for the worker to unload. With --leak-minutes it then holds the Meetings view
+that long, once, in the last run, and reports the growth. The leak budget is
+for 30 minutes, so a shorter hold is reported but not compared: short-window
+noise cannot be scaled up.
+
+Output: a JSON report with the machine, the app and WebView2 versions, every
+run's figures, the medians, anything over budget or not measured, and budgets
+proposed from these figures (plus 20%).
+
+Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
+budget (a worker that did not unload counts as over), or a budgeted figure was
+not measured; 2 the window could not be measured (it did not start, did not
+respond, or left processes outside the measuring job).
+
+Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
+--leak-minutes 30, about 90 minutes. --quick is 1 run, 20 s settle and 60 s
+windows, for before-and-after checks during development.
+"""
 
 
 # -- comparing with budgets (pure; tested in tests/test_perf_check.py) ---------------
@@ -65,16 +85,23 @@ def median_report(runs):
     return out
 
 
-def compare(figures, budgets):
-    """[(state, metric, value, limit)] for every figure over its budget. A budget
-    of null (not set yet) or a figure not measured is skipped."""
-    over = []
+def compare(figures, budgets, skip=()):
+    """(over, not_measured): [(state, metric, value, limit)] for every figure
+    over its budget, and [(state, metric)] for every set budget with no figure.
+    A budget of null is not set yet; states in skip were not asked for."""
+    over, missing = [], []
     for state, limits in budgets.items():
+        if state in skip:
+            continue
         for metric, limit in limits.items():
+            if not _number(limit):
+                continue
             value = figures.get(state, {}).get(metric)
-            if _number(limit) and _number(value) and value > limit:
+            if not _number(value):
+                missing.append((state, metric))
+            elif value > limit:
                 over.append((state, metric, value, limit))
-    return over
+    return over, missing
 
 
 BUDGETED = ("cpu_percent_of_one_core", "private_mb", "startup_s")
@@ -91,8 +118,9 @@ def propose(figures, margin=0.2):
                 continue
             if metric == "private_mb":
                 limits[metric] = math.ceil(value * (1 + margin))
-            else:                           # never closer than 0.05 to the baseline
-                limits[metric] = round(max(value * (1 + margin), value + 0.05), 2)
+            else:          # rounded up, never closer than 0.05 to the baseline
+                limit = max(value * (1 + margin), value + 0.05)
+                limits[metric] = math.ceil(round(limit * 100, 6)) / 100
         if limits:
             out[state] = limits
     return out
@@ -198,8 +226,9 @@ class Job:
                         ("io", ctypes.c_uint64 * 6), ("g", ctypes.c_size_t * 4)]
         limits = Limits()
         limits.LimitFlags = 0x2000                              # KILL_ON_JOB_CLOSE
-        self.k32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits),
-                                         ctypes.sizeof(limits))
+        if not self.k32.SetInformationJobObject(self.handle, 9, ctypes.byref(limits),
+                                                ctypes.sizeof(limits)):
+            raise OSError(ctypes.get_last_error(), "could not set kill-on-close on the job")
         if not self.k32.AssignProcessToJobObject(self.handle, int(process._handle)):
             raise OSError(ctypes.get_last_error(), "could not put the window in a job")
 
@@ -222,23 +251,43 @@ class Job:
         self.k32.CloseHandle(self.handle)                       # kills anything left
 
 
+class Unmeasurable(Exception):
+    """The window cannot be measured as the standard requires (exit code 2)."""
+
+
+def snapshot(pid, tries=3):
+    """The tree and a sample of every process in it. A process that exits
+    between the two is retried; one that cannot be opened is an error, because
+    leaving it out would under-report memory."""
+    for _ in range(tries):
+        procs = tree(pid)
+        samples = {p: sample(p) for p, _ in procs}
+        if all(samples.values()):
+            return procs, samples
+        time.sleep(0.2)
+    missing = [name for p, name in procs if not samples[p]]
+    raise Unmeasurable(f"could not read {len(missing)} process(es): {', '.join(missing)}")
+
+
 def measure(job, pid, settle, window):
     """Wait settle seconds, then measure CPU over window seconds and memory at its end."""
     time.sleep(settle)
     job0, _ = job.cpu_seconds()
-    before = {p: sample(p) for p, _ in tree(pid)}
+    _, before = snapshot(pid)
+    t0 = time.monotonic()
     time.sleep(window)
     job1, active = job.cpu_seconds()
-    procs = tree(pid)
-    after = {p: sample(p) for p, _ in procs}
-    tree_cpu = sum(a["cpu_s"] - (before.get(p) or {}).get("cpu_s", 0)
-                   for p, a in after.items() if a)
-    live = [a for a in after.values() if a]
+    procs, after = snapshot(pid)
+    elapsed = time.monotonic() - t0
+    if active < len(procs):
+        raise Unmeasurable(f"{len(procs) - active} process(es) are outside the measuring job")
+    tree_cpu = sum(a["cpu_s"] - (before.get(p) or {}).get("cpu_s", 0) for p, a in after.items())
+    live = list(after.values())
     names = sorted(name for _, name in procs)
     mb = lambda key: round(sum(a.get(key) or 0 for a in live) / 2**20)  # noqa: E731
     return {
-        "cpu_percent_of_one_core": round((job1 - job0) / window * 100, 3),
-        "cpu_percent_tree": round(tree_cpu / window * 100, 3),
+        "cpu_percent_of_one_core": round((job1 - job0) / elapsed * 100, 3),
+        "cpu_percent_tree": round(tree_cpu / elapsed * 100, 3),
         "private_mb": mb("private"),
         "private_working_set_mb": mb("private_ws") if all(a.get("private_ws") is not None
                                                           for a in live) else None,
@@ -304,34 +353,64 @@ def environment(args):
     return env
 
 
-def one_run(args, settle, window):
+def child_command(args, workdir):
+    """The base interpreter, not a venv's launcher: the launcher starts the real
+    interpreter as a second process, which could escape the job if it started
+    before the job is assigned. __PYVENV_LAUNCHER__ keeps the venv's packages,
+    as multiprocessing does."""
+    env = dict(os.environ)
+    exe = sys.executable
+    base = getattr(sys, "_base_executable", exe)
+    if os.path.normcase(base) != os.path.normcase(exe):
+        env["__PYVENV_LAUNCHER__"] = exe
+        exe = base
     # -B: never write bytecode into the package being measured.
-    child = [sys.executable, "-B", str(Path(__file__).resolve()), "--child"]
+    command = [exe, "-B", str(Path(__file__).resolve()), "--child", "--workdir", str(workdir)]
     if args.app:
-        child += ["--app", args.app]
-    proc = subprocess.Popen(child, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            text=True, encoding="utf-8", bufsize=1)
-    job = Job(proc)
-    result = {}
+        command += ["--app", args.app]
+    return command, env
 
-    def read():
+
+def one_run(args, settle, window, leak_minutes=0):
+    workdir = Path(tempfile.mkdtemp(prefix="unminute-perf-"))
+    command, env = child_command(args, workdir)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
+                            text=True, encoding="utf-8", bufsize=1)
+    job = None
+    lines = queue.Queue()
+
+    def pump():                      # read in a thread, so every wait has a deadline
         for line in proc.stdout:
             if line.startswith(PREFIX):
-                return json.loads(line[len(PREFIX):])
-        raise RuntimeError(f"the window process ended (exit {proc.wait()})")
+                lines.put(json.loads(line[len(PREFIX):]))
+        lines.put(None)
+
+    def read(timeout):
+        try:
+            msg = lines.get(timeout=timeout)
+        except queue.Empty:
+            raise Unmeasurable(f"the window did not answer within {timeout} s") from None
+        if msg is None:
+            raise Unmeasurable(f"the window process ended (exit {proc.wait()})")
+        if msg.get("error"):
+            raise Unmeasurable(f"the window reported: {msg['error']}")
+        return msg
 
     def say(command):
         proc.stdin.write(command + "\n")
         proc.stdin.flush()
 
+    result = {}
     try:
-        ready = read()
-        if ready.get("error"):
-            raise RuntimeError(ready["error"])
+        job = Job(proc)
+        threading.Thread(target=pump, daemon=True).start()
+        ready = read(READY_TIMEOUT_S)
         result["startup"] = {k: ready[k] for k in ("imports_s", "window_to_interactive_s",
                                                    "startup_s")}
         # Idle means after the worker has unloaded. Waiting for it also measures
-        # the standard's "gone within its idle time plus 5 s" (section 3).
+        # the standard's "gone within its idle time plus 5 s" (section 3). A
+        # worker that does not unload is recorded at the wait limit, so it fails
+        # its budget rather than dropping out of the figures.
         worker = ready.get("worker_pid")
         if worker:
             print("  waiting for the worker to unload", flush=True)
@@ -339,31 +418,48 @@ def one_run(args, settle, window):
             while time.time() < deadline and any(p == worker for p, _ in tree(proc.pid)):
                 time.sleep(0.5)
             gone = not any(p == worker for p, _ in tree(proc.pid))
-            result["worker"] = {"exit_after_last_use_s": round(time.time()
-                                                               - ready["worker_last_used"], 1)
-                                if gone else None, "exited": gone}
+            result["worker"] = {"exited": gone, "exit_after_last_use_s": round(
+                time.time() - ready["worker_last_used"], 1) if gone else WORKER_WAIT_S}
         for state in STATES:
             say(state)
-            if read().get("state") != state:
-                raise RuntimeError(f"the window did not reach {state}")
+            if read(STEP_TIMEOUT_S).get("state") != state:
+                raise Unmeasurable(f"the window did not reach {state}")
             result[state] = measure(job, proc.pid, settle, window)
             print(f"  {state}: {result[state]['cpu_percent_of_one_core']}% of one core, "
                   f"{result[state]['private_mb']} MB private", flush=True)
-        if args.leak_minutes:
+        if leak_minutes:
             say("meetings")
-            read()
+            read(STEP_TIMEOUT_S)
+            print(f"  holding the Meetings view for {leak_minutes} minutes (leak check)",
+                  flush=True)
             time.sleep(settle)
-            start = sum((sample(p) or {}).get("private") or 0 for p, _ in tree(proc.pid))
-            time.sleep(args.leak_minutes * 60)
-            end = sum((sample(p) or {}).get("private") or 0 for p, _ in tree(proc.pid))
-            result["leak"] = {"minutes": args.leak_minutes,
-                              "private_growth_mb": round((end - start) / 2**20, 1)}
+            _, first = snapshot(proc.pid)
+            time.sleep(leak_minutes * 60)
+            _, last = snapshot(proc.pid)
+            growth = (sum(s["private"] or 0 for s in last.values())
+                      - sum(s["private"] or 0 for s in first.values())) / 2**20
+            result["leak"] = {"minutes": leak_minutes, "private_growth_mb_raw": round(growth, 1)}
+            if leak_minutes >= LEAK_BUDGET_MINUTES:      # the budget is per 30 minutes
+                result["leak"]["private_growth_mb"] = round(growth, 1)
         say("quit")
-        proc.wait(60)
+        try:
+            proc.wait(60)
+        except subprocess.TimeoutExpired:
+            pass
     finally:
         if proc.poll() is None:
             proc.kill()
-        job.close()
+        if job is not None:
+            job.close()                  # kills anything left, WebView2 included
+        try:
+            proc.wait(30)
+        except subprocess.TimeoutExpired:
+            pass
+        for _ in range(10):              # files can stay locked for a moment
+            shutil.rmtree(workdir, ignore_errors=True)
+            if not workdir.exists():
+                break
+            time.sleep(0.5)
     return result
 
 
@@ -371,27 +467,42 @@ def parent(args):
     settle, window, runs = (20, 60, 1) if args.quick else (args.settle, args.window, args.runs)
     report = {"tool": "tools/perf_check.py", "mode": "quick" if args.quick else "release",
               "settle_s": settle, "window_s": window, "runs": runs,
-              "environment": environment(args)}
+              "leak_minutes": args.leak_minutes, "environment": environment(args)}
     results = []
-    for n in range(runs):
-        print(f"run {n + 1} of {runs}", flush=True)
-        results.append(one_run(args, settle, window))
+    try:
+        for n in range(runs):
+            print(f"run {n + 1} of {runs}", flush=True)
+            last = n == runs - 1
+            results.append(one_run(args, settle, window, args.leak_minutes if last else 0))
+    except Unmeasurable as exc:
+        report["each_run"], report["error"] = results, str(exc)
+        Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"COULD NOT MEASURE: {exc}")
+        return 2
     report["each_run"] = results
     figures = median_report(results)
-    worker_runs = [{"worker": r["worker"]} for r in results if r.get("worker", {}).get("exited")]
-    if worker_runs:
-        figures["worker"] = median_report(worker_runs)["worker"]
     report["median"] = figures
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8")) if BUDGETS.exists() else {}
-    over = compare(figures, budgets.get("budgets", {}))
+    skip = () if args.leak_minutes >= LEAK_BUDGET_MINUTES else ("leak",)
+    over, missing = compare(figures, budgets.get("budgets", {}), skip)
     report["over_budget"] = [{"state": s, "metric": m, "value": v, "budget": b}
                              for s, m, v, b in over]
+    report["not_measured"] = [{"state": s, "metric": m} for s, m in missing]
+    report["not_asked_for"] = list(skip)
     report["proposed_budgets_plus_20_percent"] = propose(figures)
     Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report["median"], indent=2))
-    print("OVER BUDGET: " + "; ".join(f"{s} {m} {v} > {b}" for s, m, v, b in over)
-          if over else "WITHIN BUDGET" if budgets else "NO BUDGETS YET")
-    return 1 if over else 0
+    for s, m, v, b in over:
+        print(f"OVER BUDGET: {s} {m} {v} > {b}")
+    for s, m in missing:
+        print(f"NOT MEASURED: {s} {m}")
+    if skip:
+        print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
+    if not budgets:
+        print("NO BUDGETS YET")
+    elif not over and not missing:
+        print("WITHIN BUDGET")
+    return 1 if over or missing else 0
 
 
 # -- the child: the real window on synthetic meetings ----------------------------------
@@ -400,6 +511,9 @@ def child(args):
     t0 = time.perf_counter()
     app = Path(args.app) if args.app else ROOT
     sys.path[:0] = [str(app), str(ROOT / "tests")]
+    import offline_guard                   # as the app itself starts (workspace/__main__.py)
+    offline_guard.disable_telemetry()
+    offline_guard.install()
     import wave
 
     import numpy as np
@@ -416,10 +530,10 @@ def child(args):
         print(f"  [{time.perf_counter() - t0:6.1f} s] {text}", file=sys.stderr, flush=True)
 
     fake = "test:fake_worker_engines:"
-    with tempfile.TemporaryDirectory(prefix="unminute-perf-") as tmp:
-        root = Path(tmp)
-        ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
-                       battery=False)
+    root = Path(args.workdir)          # made and removed by the parent
+    ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
+                   battery=False)
+    try:
         ws.settings.update(model=fake + "sentences", speakers=False, onboarded=True)
         ws.start()
         rng = np.random.default_rng(7)
@@ -434,7 +548,6 @@ def child(args):
         log("transcribing the synthetic meetings with fake engines")
         if not ws.wait_idle(300) or len(ws.meetings()) < MEETINGS:
             send(error="the synthetic meetings were not ready in 300 s")
-            ws.close()
             return 1
         worker = {"worker_pid": ws.handle.pid, "worker_last_used": time.time()}
         vault = {}                         # never touch the real Credential Manager
@@ -492,22 +605,27 @@ def child(args):
         holder["window"] = window
         shell.run(lambda w: threading.Thread(target=drive, args=(w,), daemon=True).start(),
                   (window,), storage_path=shell.storage_folder(ws.root))
+        return 0
+    finally:
         ws.close()
-    return 0
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Release-time performance evidence.")
+    parser = argparse.ArgumentParser(
+        description="Release-time performance evidence (docs/RELEASE_STANDARD.md, section 2).",
+        epilog=HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("report", nargs="?", help="where to write the JSON report")
     parser.add_argument("--quick", action="store_true",
                         help="1 run, 20 s settle, 60 s windows, for before/after checks")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--settle", type=int, default=60)
     parser.add_argument("--window", type=int, default=300)
-    parser.add_argument("--leak-minutes", type=int, default=0)
+    parser.add_argument("--leak-minutes", type=int, default=0,
+                        help="hold the Meetings view this long, once, and report growth")
     parser.add_argument("--app", help="an installed package's app folder")
     parser.add_argument("--zip", help="the package zip measured, to record its SHA-256")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.child:
         return child(args)

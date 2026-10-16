@@ -4,7 +4,7 @@
   "reference_machine": "Recommended spec: 8 cores, 16 GB, managed, Defender on. No named laptop yet (#121), so these budgets come from the development laptop and are provisional until the reference laptop is measured.",
   "baseline": {
     "measured": "2026-10-16",
-    "tool": "tools/perf_check.py --quick (1 run, 20 s settle, 60 s windows)",
+    "tool": "tools/perf_check.py --quick (1 run, 20 s settle, 60 s windows). startup_s is imports plus window creation until the meeting list has rendered; interpreter start and opening the workspace are not included.",
     "machine": "Intel Core Ultra 7 255H, 16 logical processors, 31.4 GB, Windows 11 (10.0.26200), WebView2 155.0.4283.45, mains power. Deviations from section 2: Performance power plan rather than Balanced, and other apps and WebView2 windows running.",
     "app": "source at 0fb525f, 3 synthetic meetings",
     "figures": {
@@ -16,7 +16,7 @@
     }
   },
   "targets": {
-    "_about": "Where the ratchet is heading (#124). CPU and start-up targets are proposals to confirm on the reference laptop. Private-bytes targets are not set yet: the #124 proposal (350 MB visible, 250 MB minimised) assumed working set, and the first private-bytes baseline is about 760 MB across 8 processes, most of it WebView2.",
+    "_about": "Where the ratchet is heading (#124). CPU and start-up targets are proposals to confirm on the reference laptop. Private-bytes targets are not set yet. The #124 proposal (350 MB visible, 250 MB minimised) came before any private-bytes measurement; the first baseline is about 760 MB across 8 processes, most of it WebView2, so the targets wait for the reference laptop.",
     "meetings": {"cpu_percent_of_one_core": 0.3},
     "settings": {"cpu_percent_of_one_core": 0.5},
     "minimised": {"cpu_percent_of_one_core": 0.1},
@@ -26,7 +26,7 @@
     "startup": {"startup_s": 2.04},
     "worker": {"exit_after_last_use_s": 125},
     "meetings": {"cpu_percent_of_one_core": 1.47, "private_mb": 905},
-    "settings": {"cpu_percent_of_one_core": 3.87, "private_mb": 928},
+    "settings": {"cpu_percent_of_one_core": 3.88, "private_mb": 928},
     "minimised": {"cpu_percent_of_one_core": 0.44, "private_mb": 916},
     "leak": {"private_growth_mb": 10}
   },
