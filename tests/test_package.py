@@ -432,8 +432,9 @@ class ReproducibleBuildTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "whole seconds"):
             bp.source_date_epoch()
         with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": ""}), \
-                mock.patch.object(bp, "git", return_value="1750000000"):
-            self.assertEqual(bp.source_date_epoch(), 1750000000)
+                mock.patch.object(bp, "git", return_value="1750000000") as asked:
+            self.assertEqual(bp.source_date_epoch("f" * 40), 1750000000)
+        asked.assert_called_once_with("log", "-1", "--format=%ct", "f" * 40)  # that commit
         with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": ""}), \
                 mock.patch.object(bp, "git", return_value=None), \
                 self.assertRaisesRegex(SystemExit, "needs SOURCE_DATE_EPOCH"):
@@ -464,9 +465,35 @@ class ReproducibleBuildTests(unittest.TestCase):
             bp.release_guard("0.5.0")                                       # no git: refused
 
     def test_a_development_build_says_whether_the_tree_was_clean(self):
-        for status, clean in (("", True), (" M x.py", False), (None, None)):
-            with mock.patch.object(bp, "git", return_value=status):
+        for status, flags, clean in (("", "H a.py", True), (" M x.py", "H a.py", False),
+                                     ("", "h a.py", False),          # hidden edit
+                                     (None, None, None)):
+            answers = {("status", "--porcelain", "--untracked-files=all"): status,
+                       ("ls-files", "-v"): flags}
+            with mock.patch.object(bp, "git", lambda *args, answers=answers: answers[args]):
                 self.assertIs(bp.clean_tree(), clean)
+
+    def test_the_build_script_and_vendored_wheel_must_match_the_commit(self):
+        repo, sha = self._repo()
+        with self._patched(repo):
+            bp.same_as_commit(sha, "LICENSE")
+            (repo / "LICENSE").write_bytes(b"MIT\r\n")             # line endings only
+            bp.same_as_commit(sha, "LICENSE")
+            with self.assertRaisesRegex(SystemExit, "workspace/app.py differs from commit"):
+                bp.same_as_commit(sha, "workspace/app.py")          # changed in the folder
+
+    def test_nothing_is_written_if_head_moves_during_the_build(self):
+        with mock.patch.object(bp, "release_guard", return_value="f" * 40):
+            bp.unchanged_since("0.5.0", "f" * 40)
+        with mock.patch.object(bp, "release_guard", return_value="e" * 40), \
+                self.assertRaisesRegex(SystemExit, "nothing was written"):
+            bp.unchanged_since("0.5.0", "f" * 40)
+        # build() runs the check, and the script and wheel check, before it writes.
+        source = Path(bp.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def build("):source.index("def release_version")]
+        self.assertLess(body.index("unchanged_since(version, sha)"), body.index("write_zip("))
+        self.assertLess(body.index('same_as_commit(sha, path)'), body.index("install_wheels("))
+        self.assertIn('for path in ("tools/build_package.py",', body)
 
     def test_a_release_cannot_rewrite_the_allowlist(self):
         argv = ["build_package.py", "--release", "--update-binary-allowlist"]
@@ -560,6 +587,33 @@ class ReproducibleBuildTests(unittest.TestCase):
                                   capture_output=True, text=True).stdout.strip()
             with self.assertRaisesRegex(SystemExit, "workspace/link .*not a regular file"):
                 bp.export_app(self.root / "b" / "app", head)
+
+    def test_a_release_refuses_a_name_windows_reads_as_another_path(self):
+        # git keeps "..\..\x" as one name; Windows would write it two folders up.
+        repo, _ = self._repo()
+
+        def run(*args, data=None):
+            return subprocess.run(["git", "-C", str(repo), *args], input=data, check=True,
+                                  capture_output=True).stdout.decode().strip()
+        blob = run("hash-object", "-w", "--stdin", data=b"PWNED")
+        for bad in ("..\\..\\runtime\\sitecustomize.py", "C:x.py", "a\x01.py"):
+            workspace = run("mktree", data=f"100644 blob {blob}\t{bad}\n".encode())
+            packaging = run("mktree", data=f"100644 blob {blob}\tinstall.ps1\n".encode())
+            root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
+                                       f"040000 tree {packaging}\tpackaging\n"
+                                       f"040000 tree {workspace}\tworkspace\n").encode())
+            sha = run("commit-tree", root, "-m", "crafted")
+            with self._patched(repo), self.assertRaisesRegex(SystemExit, "Unexpected path"):
+                bp.export_app(self.root / "c" / "Unminute-0.5.0" / "app", sha)
+            self.assertFalse((self.root / "c" / "runtime").exists())
+
+    def test_a_release_must_run_isolated(self):
+        with mock.patch.object(bp.sys, "flags", mock.Mock(isolated=0)), \
+                mock.patch.object(bp, "check_host"), \
+                mock.patch.object(bp, "release_guard") as guard, \
+                self.assertRaisesRegex(SystemExit, "python -I"):
+            bp.build("0.5.0", self.root, self.root, release=True)
+        guard.assert_not_called()
 
     def test_a_development_build_leaves_ignored_files_out(self):
         repo, _ = self._repo()

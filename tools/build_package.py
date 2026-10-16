@@ -324,8 +324,11 @@ def committed_tree(sha, paths):
         name = name.decode("utf-8")
         if mode not in ("100644", "100755") or kind != "blob":
             sys.exit(f"{name} in the commit is not a regular file ({mode}).")
-        if ".." in name.split("/") or name.startswith("/"):
-            sys.exit(f"Unexpected path in the commit: {name}")
+        # git allows names Windows reads as other paths ("a\..\b", "C:x"): refuse
+        # anything but plain relative names.
+        if (".." in name.split("/") or name.startswith("/")
+                or re.search(r'[\\:*?"<>|\x00-\x1f]', name)):
+            sys.exit(f"Unexpected path in the commit: {name!r}")
         blobs[name] = oid
     for p in paths:
         if not any(n == p or n.startswith(p + "/") for n in blobs):
@@ -383,11 +386,18 @@ def git_commit():
     return git("rev-parse", "HEAD") or "unknown"
 
 
+def hidden_files():
+    """Tracked files git status does not report (assume-unchanged, lower-case
+    tag in ls-files -v, or skip-worktree, "S")."""
+    flags = git("ls-files", "-v") or ""
+    return [line[2:] for line in flags.splitlines() if line[:1].islower() or line[:1] == "S"]
+
+
 def clean_tree():
-    """True when the working tree has no change or untracked file, False when it
-    has, None when git cannot tell."""
+    """True when the working tree has no change, untracked file or hidden file,
+    False when it has, None when git cannot tell."""
     status = git("status", "--porcelain", "--untracked-files=all")
-    return None if status is None else not status
+    return None if status is None else not status and not hidden_files()
 
 
 def release_guard(version):
@@ -400,9 +410,7 @@ def release_guard(version):
     if status:
         sys.exit("--release refuses a working tree with changes or untracked files:\n"
                  + status)
-    flags = git("ls-files", "-v") or ""
-    hidden = [line[2:] for line in flags.splitlines()
-              if line[:1].islower() or line[:1] == "S"]
+    hidden = hidden_files()
     if hidden:
         sys.exit("--release refuses files hidden from git status (assume-unchanged or "
                  "skip-worktree):\n" + "\n".join(hidden))
@@ -417,6 +425,14 @@ def release_guard(version):
     return head
 
 
+def unchanged_since(version, sha):
+    """Just before the zip is written: the release checks still pass, for the
+    same commit (nobody checked out another branch or edited the tree while the
+    build ran)."""
+    if release_guard(version) != sha:
+        sys.exit("HEAD or the tree changed during the build; nothing was written.")
+
+
 def same_as_commit(sha, path):
     """A file this build runs or trusts from the working folder must match the
     commit (line endings aside, for text)."""
@@ -426,10 +442,10 @@ def same_as_commit(sha, path):
         sys.exit(f"{path} differs from commit {sha}.")
 
 
-def source_date_epoch():
+def source_date_epoch(commit="HEAD"):
     """The time stamped on every file: SOURCE_DATE_EPOCH, or the commit's time."""
     given = os.environ.get("SOURCE_DATE_EPOCH")
-    raw = given or git("log", "-1", "--format=%ct", "HEAD")
+    raw = given or git("log", "-1", "--format=%ct", commit)
     try:
         return max(int(raw), ZIP_EPOCH_MIN)
     except (TypeError, ValueError):
@@ -751,8 +767,12 @@ def build(version, out, cache, release=False, update_allowlist=False):
     check_host()
     if release and update_allowlist:
         sys.exit("A release build cannot rewrite the binary allowlist.")
+    if release and not sys.flags.isolated:
+        # Without -I, PYTHONPATH, user site-packages and the script's folder
+        # (where a stray ignored .pyc would not show in git status) are imported from.
+        sys.exit("Run a release build with python -I tools/build_package.py --release.")
     sha = release_guard(version) if release else None
-    epoch = source_date_epoch()
+    epoch = source_date_epoch(sha or "HEAD")
     commit = sha or git_commit()
     name = f"Unminute-{version}"
     # Build in an extended-length path (\\?\): the temp folder plus the
@@ -828,8 +848,8 @@ def build(version, out, cache, release=False, update_allowlist=False):
         if too_long:
             sys.exit("Paths too long for Windows installs:\n" + "\n".join(too_long))
         count = manifest(folder)
-        if release and release_guard(version) != sha:
-            sys.exit("HEAD or the tree changed during the build; nothing was written.")
+        if release:
+            unchanged_since(version, sha)
         out.mkdir(parents=True, exist_ok=True)
         zpath = out / f"{name}.zip"
         write_zip(folder, zpath, epoch)
