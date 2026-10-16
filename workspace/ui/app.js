@@ -260,13 +260,13 @@ function workRow(m, busyTitle) {
   } else if (m.paused) {
     meta = "text ready · speaker identification paused";
     pill = ["paused", "Paused"];
-    actions = [resume(), skip(), discardLink(m)];
+    actions = [resume(), m.can_skip ? skip() : null, discardLink(m)];
   } else {
     meta = "text ready · working out who spoke";
     pill = ["", "Identifying speakers"];
     bar = ["busy", null];
     actions = [pause("Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected."),
-               skip(), discardLink(m)];
+               m.can_skip ? skip() : null, discardLink(m)];
   }
   const progress = bar ? el("div", { class: `progress ${bar[0]}`, role: "progressbar",
     "aria-label": `${m.title}: ${bar[1] === null ? "working" : `${bar[1]}% transcribed`}`,
@@ -545,14 +545,14 @@ function initials(name) {
 
 function renderSpeakers(d) {
   const s = d.speakers;
-  const sig = JSON.stringify([s, d.stage, d.busy, d.audio_available, d.reviewed_at, state.version,
-                              state.speakerList, state.speakerUndo]);
+  const sig = JSON.stringify([s, d.stage, d.busy, d.audio_available, d.reviewed_at, d.can_skip,
+                              state.version, state.speakerList, state.speakerUndo]);
   if (sig === state.speakersSig) return;
   state.speakersSig = sig;
   const box = $("m-speakers");
   const card = (cls, title, text, ...extra) => el("div", { class: `panel-card ${cls}` },
     title, text ? el("span", { class: "panel-text", textContent: text }) : null, ...extra);
-  const canSkip = !d.reviewed_at && state.version === null;
+  const canSkip = d.can_skip && state.version === null;    // the app says when Skip applies
   const skip = () => canSkip ? button("Skip speaker identification", () => attempt(async () => {
     await call("skip_speakers", state.mid);
     say("Speaker identification skipped. The transcript is ready to review and hand off.");
@@ -566,6 +566,10 @@ function renderSpeakers(d) {
   else if (!s)
     content = card("soft", el("span", { class: "panel-title", textContent: "Not identified" }),
       "Speaker identification runs after transcription when it is downloaded and turned on in Settings.",
+      skip());
+  else if (s.status === "skipped" && d.can_skip)     // Identify again is queued after a skip
+    content = card("soft", el("span", { class: "panel-title", textContent: "Waiting to identify speakers" }),
+      "Identify again starts when the computer is free. Skip to keep the transcript without speaker labels.",
       skip());
   else if (s.status === "skipped")
     content = card("soft", el("span", { class: "panel-title", textContent: "Skipped" }),

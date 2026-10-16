@@ -1,0 +1,1 @@
+- **Skip speakers always sticks.** A skip made just as speaker identification was starting, or as an Identify again was about to start, could be lost, and speaker labels then appeared anyway. Skip is no longer offered once speakers are identified, and an interrupted pass that will not restart by itself now says to use Identify again instead of promising a restart.

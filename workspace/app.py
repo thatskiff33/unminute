@@ -159,6 +159,7 @@ class Workspace:
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
+        self._busy_ref = None             # the job's ref (a speaker pass: its skip count)
         self._status = ""                 # short, content-free status line
         self._import_errors = []          # recent intake refusals (safe messages)
         self._imports = queue.Queue()
@@ -787,7 +788,7 @@ class Workspace:
                     continue
                 if m["paused"]:
                     continue                        # kept for Resume
-                return ("rerun", mid, (v["id"], count))
+                return ("rerun", mid, (v["id"], count, self.store.skip_count(v["id"])))
         for m in self.store._all("SELECT * FROM meetings WHERE paused = 0 AND phase != 'error' "
                                  "AND reviewed_at IS NULL AND audio_removed_at IS NULL "
                                  "ORDER BY created_at"):
@@ -796,12 +797,7 @@ class Workspace:
                 continue
             if self.store.chunks(v["id"], status="pending"):
                 return ("transcribe", m["id"], v["id"])
-            # Speakers once per version; an interrupted pass restarts (it cannot
-            # resume), a failed one waits for the user's explicit rerun, and a
-            # skipped one never runs unless the user asks again.
-            if self.settings["speakers"] and not any(
-                    r["status"] in ("done", "failed", "running", "skipped")
-                    for r in self.store.speaker_runs(v["id"])):
+            if self._speakers_due(self.store.speaker_runs(v["id"])):
                 return ("speakers", m["id"], v["id"])
         return None
 
@@ -847,7 +843,7 @@ class Workspace:
                     if kind != "cleanup" and self._removing:
                         self._status = "Waiting while a model is removed"
                         break
-                    self._busy = (mid, kind)
+                    self._busy, self._busy_ref = (mid, kind), ref
                 try:
                     self._run(kind, mid, ref)
                 except Exception as exc:       # never let one meeting stop the loop
@@ -857,7 +853,8 @@ class Workspace:
                     except StoreError:
                         pass
                 finally:
-                    self._busy = None
+                    with self._lock:           # cleared together, as they are set
+                        self._busy = self._busy_ref = None
                     self._yielded = False      # only the run that recording stopped
 
     def _maybe_purge(self):
@@ -891,7 +888,7 @@ class Workspace:
         threads = resources.worker_threads(self.settings["mode"])
         self.handle.quiet = self.settings["mode"] == resources.QUIET
         if kind == "rerun":
-            vid, count = ref
+            vid, count, skips = ref
             with self._lock:
                 self._reruns.pop(mid, None)
                 self._rerun_count = count
@@ -902,11 +899,12 @@ class Workspace:
                                                media.audio_path(self.media, mid),
                                                threads=threads, hint=count,
                                                model=self.speaker_model, device=device,
-                                               gpu_site=site)
+                                               gpu_site=site, skips_seen=skips)
                 m = self.store.meeting(mid)
                 if result == speakers.SpeakerResult.STOPPED and m and m["paused"]:
-                    with self._lock:          # paused mid-pass: kept, with its count
-                        self._reruns.setdefault(mid, count)
+                    with self._lock:          # paused mid-pass: kept, with its count,
+                        if self.store.skip_count(vid) == skips:    # unless skipped since
+                            self._reruns.setdefault(mid, count)
             finally:
                 self._gpu_pass = False
                 with self._lock:
@@ -934,9 +932,11 @@ class Workspace:
         self._status = "Identifying speakers"
         device, site = self._choose_speaker_device()
         try:
+            # Chosen only with no skip recorded (_speakers_due): one since stops it.
             speakers.run_speakers(self.store, mid, ref, self.handle,
                                   media.audio_path(self.media, mid), threads=threads,
-                                  model=self.speaker_model, device=device, gpu_site=site)
+                                  model=self.speaker_model, device=device, gpu_site=site,
+                                  skips_seen=0)
         finally:
             self._gpu_pass = False
 
@@ -1040,22 +1040,66 @@ class Workspace:
         v = self.store.active_version(mid)
         if v is None:
             raise WorkspaceError("The recording is still being imported.")
-        runs = self.store.speaker_runs(v["id"])
-        if runs and runs[-1]["status"] == "skipped":
-            return                                    # already skipped (a double click)
-        if any(r["status"] == "done" for r in runs):
-            raise WorkspaceError("Speakers are already identified for this meeting.")
         with self._lock:
-            self._reruns.pop(mid, None)               # a queued rerun is dropped too
+            queued = mid in self._reruns          # its value (a count) may be None
+            self._reruns.pop(mid, None)           # a queued Identify again is dropped
+            chosen = self._chosen_skips(mid)
+            running = chosen is not None
+            # A pass already chosen but not yet started must see the skip
+            # count change, so a new skip is recorded even after an earlier
+            # one. A pass that saw a skip already (it is stopping) needs no
+            # second one: a double click records nothing.
+            again = queued or (running and chosen == self.store.skip_count(v["id"]))
             # Recorded before the pass is stopped, so nothing can restart it.
-            self.store.skip_speaker_run(v["id"])
-            busy = self._busy
-            if busy and busy[0] == mid and busy[1] in ("speakers", "rerun"):
+            # The check for labels is in the same transaction: a pass that
+            # finished a moment ago wins, and nothing is recorded.
+            result = self.store.skip_speaker_run(v["id"], again=again)
+            if result == "labelled":
+                raise WorkspaceError("Speakers are already identified for this meeting.")
+            if running:
                 self.handle.stop_now()
             if m["paused"] and not self.store.chunks(v["id"], status="pending"):
                 # Paused speaker identification was the only work left.
                 self.store.set_paused(mid, False)
         self._wake.set()
+
+    def _chosen_skips(self, mid):
+        """The skip count the speaker pass chosen for this meeting was picked
+        with (an automatic pass only ever with none), or None if no speaker
+        pass for it is chosen or running. Called under self._lock."""
+        busy, ref = self._busy, self._busy_ref
+        if not busy or busy[0] != mid:
+            return None
+        if busy[1] == "speakers":
+            return 0
+        if busy[1] == "rerun" and ref:
+            return ref[2]
+        return None
+
+    def _speakers_due(self, runs):
+        """An automatic speaker pass is due: once per version; an interrupted
+        pass restarts (it cannot resume), a failed one waits for the user's
+        explicit rerun, and a skipped one never runs unless the user asks."""
+        return self.settings["speakers"] and not any(
+            r["status"] in ("done", "failed", "running", "skipped") for r in runs)
+
+    def _run_note(self, m, runs):
+        """The latest run's note. An interrupted pass restarts by itself only
+        if it is still due, or an Identify again is queued; otherwise the
+        stored "will start again" would mislead."""
+        last = runs[-1]
+        if (last["status"] == "interrupted" and not self._speakers_due(runs)
+                and m["id"] not in self._reruns):
+            if m["reviewed_at"]:
+                return "Speaker identification was interrupted; the transcript is unaffected."
+            return ("Speaker identification was interrupted. Use Identify again to run it; "
+                    "the transcript is unaffected.")
+        return last["error"]
+
+    def _can_skip(self, m, runs):
+        return (not m["reviewed_at"] and not any(r["status"] == "done" for r in runs)
+                and not (runs and runs[-1]["status"] == "skipped"
+                         and m["id"] not in self._reruns))
 
     def retranscribe(self, mid):
         """Transcribe again with the current model. The previous version and
@@ -1090,10 +1134,8 @@ class Workspace:
         if old is None:
             return
         runs = self.store.speaker_runs(old["id"])
-        new_runs = self.store.speaker_runs(new_vid)
-        if (runs and runs[-1]["status"] == "skipped"
-                and not any(r["status"] == "done" for r in new_runs)):
-            self.store.skip_speaker_run(new_vid)
+        if runs and runs[-1]["status"] == "skipped":
+            self.store.skip_speaker_run(new_vid)      # never over labels (store checks)
 
     # -- review -------------------------------------------------------------------------
 
@@ -1262,6 +1304,7 @@ class Workspace:
             done, total = self.store.progress(v["id"]) if v else (0, 0)
             busy = self._busy and self._busy[0] == row["id"] and self._busy[1]
             stage = self._stage(m, v)
+            runs = self.store.speaker_runs(v["id"]) if v else []
             out.append({**row, **self._facts(v), "audio_available": self._audio_available(m),
                         "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
                                      "note": j["error"]} for j in self.store._all(
@@ -1271,6 +1314,7 @@ class Workspace:
                         "paused": bool(m["paused"]), "error": m["last_error"]
                         if m["phase"] == "error" else None,
                         "busy": busy or None, "stage": stage,
+                        "can_skip": bool(v) and self._can_skip(m, runs),
                         "action": self._action(m, stage)})
         return out
 
@@ -1343,7 +1387,8 @@ class Workspace:
                                 "created_at": x["created_at"],
                                 "edits": self.store.edit_count(x["id"])}
                                for i, x in enumerate(older)],
-            "speakers": ({"status": runs[-1]["status"], "error": runs[-1]["error"],
+            "can_skip": bool(v) and self._can_skip(m, runs),
+            "speakers": ({"status": runs[-1]["status"], "error": self._run_note(m, runs),
                           "device": runs[-1]["backend"],
                           "count": runs[-1]["hint_count"],
                           "started_at": runs[-1]["started_at"]} if runs else None),
