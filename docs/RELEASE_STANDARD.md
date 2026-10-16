@@ -230,15 +230,15 @@ Status is one of:
 | Gate | Standard | Where it runs | Status |
 | --- | --- | --- | --- |
 | Bridge methods: the allowlist matches the implementation | 1 | Unit test (`tests/test_app.py`) | In place |
-| Bridge methods: the page and the design fixtures call only allowlisted names | 1 | Unit test | Planned: R2 (#123) |
+| Bridge methods: the page and the design fixtures call only allowlisted names | 1 | Unit test (`tests/test_consistency.py`) | In place |
 | Model IDs and hashes: one manifest, docs generated from it | 1 | Unit test (`tests/test_asr_engines.py`) | In place |
-| GPU wheel pins match the requirements pins | 1 | Unit test | Planned: R2 (#123) |
-| Install identity (taskbar ID, exit codes, name) agrees across app and installer | 1 | Unit test; later `packaging/identity.json` with Pester tests | Planned: R2 (#123); security plan: B6 |
-| Docs' required-checks lists match the CI job names; no hard-coded test counts | 1, 10 | Unit test | Planned: R2 (#123) |
-| Raw colours in `app.css` at or below the ratchet | 1 | Unit test | Planned: R2 (#123), reaches 0 in R12 (#133) |
+| GPU wheel pins match the requirements pins | 1 | Unit test (`tests/test_consistency.py`) | In place |
+| Install identity (taskbar ID, exit codes, name, install folder, registry key) agrees across app, build and installer | 1 | Unit test (`tests/test_consistency.py`); later `packaging/identity.json` with Pester tests | In place; security plan B6 replaces the copies |
+| Docs' required-checks lists match the CI job names; no partial job lists; no hard-coded test counts | 1, 10 | Unit test (`tests/test_consistency.py`) | In place |
+| Raw colours in `app.css` at or below the ratchet | 1 | Unit test (`tests/test_consistency.py`, ratchet in `tests/budgets.json`) | In place; reaches 0 in R12 (#133) |
 | One version source; tag, `VERSION` and dated changelog heading agree | 1, 8 | Build and release job | Planned: R10 (#131); security plan: B3 |
 | Minimum NVIDIA driver, model names and progress fields from one source | 1 | Unit test | Planned: R12 (#133) |
-| UI process imports no heavy libraries | 3 | Windows unit test | Planned: R2 (#123) |
+| UI process imports only allowlisted packages, and no heavy library | 3 | Unit test on Linux and Windows (`tests/test_import_hygiene.py`); module count budget on Windows | In place |
 | Worker starts on demand and unloads after idle | 3 | Unit tests (`tests/test_workers.py`) | In place |
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
 | UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | CI job (headless browser with the design fixtures; to confirm in R4) | Planned: R4 (#125), tightened in R6 (#127) |
