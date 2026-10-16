@@ -124,10 +124,29 @@ def _blocked(exc):
     return False
 
 
+PROXY_MESSAGE = ("Your organisation's proxy refused the connection to the download site. Ask "
+                 "your IT team to allow huggingface.co and hf.co, or to install the models "
+                 "for you.")
+
+
+def _in_chain(exc, type_name):
+    """True if this error, or one it was raised from, has this type name
+    (httpx is not imported here)."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if type(exc).__name__ == type_name:
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _friendly(exc):
     """Download errors in plain language. Never includes the token."""
     if _blocked(exc):
         return BLOCKED_MESSAGE
+    if _in_chain(exc, "ProxyError"):
+        return PROXY_MESSAGE
     text = f"{type(exc).__name__}: {exc}"
     low = text.lower()
     if "gated" in low or "403" in low or "awaiting a review" in low:
@@ -145,8 +164,9 @@ def _friendly(exc):
 # The only hosts the download process may reach (and their subdomains), plus
 # any proxy configured for this user. Hugging Face serves files from
 # huggingface.co and its CDN hosts under huggingface.co and hf.co; the
-# optional GPU component comes from the pinned PyTorch host. A redirect
-# anywhere else fails at its DNS lookup (offline_guard.allow_hosts).
+# optional GPU component comes from the pinned PyTorch host. Every HTTP
+# request and redirect is checked against this list (_check_request), which
+# also holds behind a proxy; the network guard checks DNS lookups as well.
 DOWNLOAD_HOSTS = ("huggingface.co", "hf.co", "download-r2.pytorch.org")
 
 
@@ -156,7 +176,8 @@ def _check_request(request):
     target name (the proxy does), so the guard's DNS check alone would not see
     a redirect to another host: this check does."""
     import offline_guard
-    if request.url.scheme != "https" or not offline_guard.host_allowed(request.url.host):
+    host = request.url.raw_host       # the exact name sent (httpx decodes xn-- in .host)
+    if request.url.scheme != "https" or not offline_guard.host_allowed(host):
         raise offline_guard.NetworkBlockedError(
             13, f"Download address not allowed: {request.url.host}")
 
@@ -170,6 +191,10 @@ def prepare_download_process():
       - certificates checked against the Windows certificate store, so
         downloads work behind a firm's TLS-inspecting proxy;
       - every HTTP request and redirect checked against the allowlist."""
+    import sys
+    if "huggingface_hub" in sys.modules:
+        raise RuntimeError("huggingface_hub was imported before the download process was "
+                           "set up")
     import offline_guard
     offline_guard.disable_telemetry()
     os.environ["HF_HUB_OFFLINE"] = "0"          # this process exists to download

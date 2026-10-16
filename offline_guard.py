@@ -127,8 +127,13 @@ def _norm_name(host):
     anything a real host name cannot (so tricks such as
     "huggingface.co%x.evil.example" never match)."""
     if isinstance(host, bytes):
-        host = host.decode("ascii", "ignore")
-    name = str(host).strip().lower().rstrip(".")
+        try:
+            host = host.decode("ascii")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(host, str) or not host.isascii():
+        return None                        # before lower(): no Unicode case tricks
+    name = host.strip().lower().rstrip(".")
     if not name or not set(name) <= _NAME_CHARS or ".." in name or name.startswith("."):
         return None
     return name

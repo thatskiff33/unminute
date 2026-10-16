@@ -24,6 +24,7 @@ HAVE_DOWNLOAD_LIBS = all(importlib.util.find_spec(m) for m in ("huggingface_hub"
 class FakeURL:
     def __init__(self, scheme, host):
         self.scheme, self.host = scheme, host
+        self.raw_host = host.encode("ascii")       # httpx: the exact bytes sent
 
 
 class FakeRequest:
@@ -67,6 +68,39 @@ class RequestCheckTests(unittest.TestCase):
             self.assertEqual(self.setup._friendly(outer), self.setup.BLOCKED_MESSAGE)
         self.assertNotEqual(self.setup._friendly(TimeoutError("timeout")),
                             self.setup.BLOCKED_MESSAGE)
+
+    def test_a_proxy_refusal_is_not_mistaken_for_model_terms(self):
+        class ProxyError(Exception):          # stands in for httpx.ProxyError
+            pass
+        try:
+            try:
+                raise ProxyError("403 Forbidden")
+            except ProxyError as inner:
+                raise RuntimeError("download failed") from inner
+        except RuntimeError as outer:
+            self.assertEqual(self.setup._friendly(outer), self.setup.PROXY_MESSAGE)
+
+    def test_setup_failure_is_reported_not_raised(self):
+        sent = []
+
+        class Pipe:
+            def send(self, message):
+                sent.append(message)
+
+            def recv(self):
+                raise AssertionError("must not read the token after a failed setup")
+        with mock.patch.object(self.setup, "prepare_download_process",
+                               side_effect=ImportError("no truststore")):
+            self.setup._download_main(Pipe(), "parakeet-tdt-0.6b-v2", ".")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], "error")
+        self.assertNotIn("truststore", sent[0][1])
+
+    def test_host_names_must_be_plain_ascii(self):
+        for host in (b"huggingface.co\xff", "huggingface.co\x85", "hugging\u212aface.co",
+                     "huggingface.co%x.evil.example"):
+            self.assertFalse(og.host_allowed(host), repr(host))
+        self.assertTrue(og.host_allowed(b"huggingface.co"))
 
 
 CHILD = r"""
