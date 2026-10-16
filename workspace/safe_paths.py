@@ -125,10 +125,11 @@ def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=Fa
         real = resolve_within(text, roots)
     else:
         real = Path(os.path.realpath(text, strict=False))
-        try:
-            check_raw(real)          # a link or mapped drive must not lead to \\server
-        except UnsafePathError as exc:
-            raise UnsafePathError(NETWORK_MESSAGE) from exc
+        if not allow_network:        # a mapped drive resolves to \\server\share
+            try:
+                check_raw(real)      # a link or mapped drive must not lead to \\server
+            except UnsafePathError as exc:
+                raise UnsafePathError(NETWORK_MESSAGE) from exc
     if not allow_network and _drive_type(str(real)) == DRIVE_REMOTE:
         raise UnsafePathError(NETWORK_MESSAGE)
     try:

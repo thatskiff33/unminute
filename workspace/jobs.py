@@ -94,12 +94,11 @@ class Job:
         self.close()
 
 
-def contain(pid, memory_bytes):
-    """Put process `pid` in a new job with the limits above. Returns a Job,
-    or None when not on Windows. Raises JobError if any step fails: the
-    caller must then stop the process rather than give it work."""
-    if sys.platform != "win32":
-        return None
+ERROR_NOT_SUPPORTED = 50
+
+
+def _assign(pid, memory_bytes, ui_limits):
+    """Create a job with the limits, put `pid` in it and return the Job."""
     handle = _k32.CreateJobObjectW(None, None)
     if not handle:
         raise JobError(ctypes.get_last_error(), "CreateJobObject failed")
@@ -114,10 +113,11 @@ def contain(pid, memory_bytes):
         if not _k32.SetInformationJobObject(handle, JobObjectExtendedLimitInformation,
                                             ctypes.byref(info), ctypes.sizeof(info)):
             raise JobError(ctypes.get_last_error(), "job limits could not be set")
-        ui = _UI(JOB_OBJECT_UILIMIT_ALL)
-        if not _k32.SetInformationJobObject(handle, JobObjectBasicUIRestrictions,
-                                            ctypes.byref(ui), ctypes.sizeof(ui)):
-            raise JobError(ctypes.get_last_error(), "job UI limits could not be set")
+        if ui_limits:
+            ui = _UI(JOB_OBJECT_UILIMIT_ALL)
+            if not _k32.SetInformationJobObject(handle, JobObjectBasicUIRestrictions,
+                                                ctypes.byref(ui), ctypes.sizeof(ui)):
+                raise JobError(ctypes.get_last_error(), "job UI limits could not be set")
         process = _k32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, int(pid))
         if not process:
             raise JobError(ctypes.get_last_error(), "the process could not be opened")
@@ -130,3 +130,23 @@ def contain(pid, memory_bytes):
         job.close()
         raise
     return job
+
+
+def contain(pid, memory_bytes):
+    """Put process `pid` in a new job with the limits above. Returns a Job,
+    or None when not on Windows. Raises JobError if any step fails: the
+    caller must then stop the process rather than give it work.
+
+    If the app itself already runs in a job that has UI limits (some
+    launchers and managed environments do), Windows refuses a nested job that
+    sets its own UI limits (ERROR_NOT_SUPPORTED). The decoder then gets a job
+    without them: the outer job's UI limits still apply to it, and the
+    memory, single-process and kill-on-close limits are kept."""
+    if sys.platform != "win32":
+        return None
+    try:
+        return _assign(pid, memory_bytes, ui_limits=True)
+    except JobError as exc:
+        if exc.errno != ERROR_NOT_SUPPORTED:
+            raise
+    return _assign(pid, memory_bytes, ui_limits=False)
