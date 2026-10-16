@@ -353,6 +353,13 @@ def digest(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def title_filename(title, fallback):
+    """The meeting title as the suggested file name, when the organisation's
+    policy allows it (HandoffFilenameIncludesTitle, #111 A5)."""
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title or "").strip(" .")[:80]
+    return f"{safe} - transcript.md" if safe else fallback
+
+
 def _filename(created_at):
     """The suggested file name: the date and time the meeting was imported
     (so two meetings on one day do not collide), never the title. A title

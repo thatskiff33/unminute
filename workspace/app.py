@@ -23,7 +23,7 @@ from pathlib import Path
 
 import asr_engines
 from workspace import (cleanup, clipboard, credentials, engines, gpu, handoff, holds, intake,
-                       media, recorder,
+                       media, policy, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace.safe_paths import UnsafePathError, validate_input_file
@@ -51,6 +51,9 @@ DEFAULT_SETTINGS = {
     "recording_display": "flow",                   # flow | spectrum | wave, while recording
 }
 RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
+
+
+MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if you need it."
 
 
 class WorkspaceError(ValueError):
@@ -124,10 +127,12 @@ class Settings:
 
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
-                 idle_unload_s=None, battery=None, start=True, allow_test_engines=False):
+                 idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
+                 policy_reader=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
-        engines; never set by the app itself."""
+        engines; never set by the app itself. policy_reader: tests only; the
+        app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
@@ -137,6 +142,8 @@ class Workspace:
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
+        self.policy = policy.PolicySource(reader=policy_reader or policy.read_registry)
+        self._clipboard_clears = []       # (timer, sequence) for ClipboardClearMinutes
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
@@ -206,6 +213,7 @@ class Workspace:
                 rec.stop()
             except recorder.RecorderError:
                 pass                     # its folder is recovered at the next start
+        self._flush_clipboard_clears()
         self._closing.set()
         self._wake.set()
         self._imports.put(None)
@@ -214,6 +222,21 @@ class Workspace:
             # A folder scan may be hashing a large file; it stops between files.
             t.join(60 if t.name == "workspace-watch" else 15)
         self.store.close()
+
+    # -- managed policy (#111 A5) ---------------------------------------------------
+
+    def _allowed(self, name):
+        return bool(self.policy.current().get(name))
+
+    def managed(self):
+        """What the organisation's policy sets, for Settings and Setup: the
+        permissions in force and which values are managed (no paths)."""
+        p = self.policy.current()
+        allow = {name: bool(p.get(name)) for name in policy.SPEC
+                 if policy.SPEC[name][0] == "bool"}
+        return {**p.summary(), "allow": allow,
+                "clipboard_clear_minutes": p.get("ClipboardClearMinutes"),
+                "handoff_folder_set": bool(p.get("HandoffDefaultFolder"))}
 
     def wait_idle(self, timeout=60.0):
         """Tests and tools: wait until no work is queued or running."""
@@ -274,7 +297,8 @@ class Workspace:
         title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
         with self.store.tx() as db:
-            if folder_id and intake.authority_for(self.store, folder_id):
+            if (folder_id and intake.authority_for(self.store, folder_id)
+                    and self._allowed("AllowDeleteOriginals")):
                 # Authority comes only from the folder's explicit setting (#24);
                 # the original's location is kept only when it may be deleted.
                 db.execute("UPDATE sources SET delete_original = 1, intake_folder = ? "
@@ -292,6 +316,8 @@ class Workspace:
     # -- microphone recording (#30) ---------------------------------------------------
 
     def _need_microphone(self):
+        if not self._allowed("AllowMicrophoneRecording"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
         if not self.settings["microphone"]:
             raise WorkspaceError("Microphone recording is turned off in Settings.")
 
@@ -669,6 +695,10 @@ class Workspace:
             if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
                 self._scan_requested = False
                 last = time.monotonic()
+                if not self._allowed("AllowWatchedFolders"):
+                    self.last_scan = {"managed_off": True}      # nothing is read
+                    self._closing.wait(1.0)
+                    continue
                 try:
                     self.last_scan = intake.scan(
                         self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
@@ -683,6 +713,8 @@ class Workspace:
                 "interval_minutes": intake.SCAN_INTERVAL_S // 60}
 
     def add_watched_folder(self, path, include_existing):
+        if not self._allowed("AllowWatchedFolders"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Watched folders"))
         if not isinstance(include_existing, bool):
             raise WorkspaceError("Expected yes or no.")
         try:
@@ -704,6 +736,8 @@ class Workspace:
         for v in (delete_originals, fetch_cloud):
             if v is not None and not isinstance(v, bool):
                 raise WorkspaceError("Expected on or off.")
+        if delete_originals and not self._allowed("AllowDeleteOriginals"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Deleting original recordings"))
         if delete_originals is not None:
             intake.set_delete_originals(self.store, fid, delete_originals)
         if fetch_cloud is not None:
@@ -823,8 +857,12 @@ class Workspace:
     def _run(self, kind, mid, ref):
         if kind == "cleanup":
             self._status = "Cleaning up"
+            # With deletion authority withheld by policy, originals are kept,
+            # exactly as when the user revokes a folder's authority.
+            roots = (intake.deletion_roots(self.store, mid)
+                     if self._allowed("AllowDeleteOriginals") else [])
             cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown,
-                            original_roots=intake.deletion_roots(self.store, mid))
+                            original_roots=roots)
             return
         if self._closing.is_set():
             return                          # never start a worker during shutdown
@@ -902,6 +940,7 @@ class Workspace:
         turned it on, in Faster mode, with the component verified. Otherwise
         the processor."""
         if (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
+                and self._allowed("AllowGpuComponent")
                 and self.downloads._running != gpu.COMPONENT     # not while it is replaced
                 and gpu.verified_for_use(self.cache_dir)):
             return "cuda", str(gpu.site_dir(self.cache_dir))
@@ -1340,7 +1379,8 @@ class Workspace:
                    for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
         from workspace import update
         info = gpu.detected()
-        return {**self.settings.values, "choices": choices,
+        self.policy.refresh()             # Settings opening re-reads the policy
+        return {**self.settings.values, "choices": choices, "managed": self.managed(),
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
                         "component": gpu.status(self.cache_dir)[0] if info else "missing"},
@@ -1351,6 +1391,10 @@ class Workspace:
     def set_settings(self, changes):
         if not isinstance(changes, dict):
             raise WorkspaceError("Expected settings.")
+        if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
+        if changes.get("gpu_speakers") is True and not self._allowed("AllowGpuComponent"):
+            raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if changes.get("gpu_speakers") is True:
             info = gpu.detected()
             if info is None or not info["driver_ok"]:
@@ -1400,6 +1444,9 @@ class Workspace:
             raise WorkspaceError("Expected yes or no.")
         template = self._handoff(self.templates.get, tid)
         out = self._handoff(handoff.build, self.store, mid, template, anonymise)
+        if self._allowed("HandoffFilenameIncludesTitle") and not anonymise:
+            out["filename"] = handoff.title_filename(self.store.meeting(mid)["title"],
+                                                     out["filename"])
         return {**out, "options": handoff.options(self.store, mid)}
 
     def set_handoff_options(self, mid, omitted, redactions):
@@ -1420,8 +1467,37 @@ class Workspace:
         if kind not in ("combined", "prompt_only"):
             raise WorkspaceError("Choose what to copy.")
         out = self._checked(mid, tid, kind, expected, anonymise)
-        self._handoff(clipboard.copy_text, out[kind])
-        return {"chars": len(out[kind]), "long": out["long"] and kind == "combined"}
+        sequence = self._handoff(clipboard.copy_text, out[kind])
+        minutes = self.policy.current().get("ClipboardClearMinutes")
+        if minutes:
+            self._schedule_clipboard_clear(sequence, minutes * 60)
+        return {"chars": len(out[kind]), "long": out["long"] and kind == "combined",
+                "clears_in_minutes": minutes or None}
+
+    def _schedule_clipboard_clear(self, sequence, delay_s):
+        """Clear the app's own copy later (policy), unless something else was
+        copied since. Pending clears also run when the app closes."""
+        timer = threading.Timer(delay_s, clipboard.clear_if_unchanged, (sequence,))
+        timer.daemon = True
+        self._clipboard_clears = [(t, s) for t, s in self._clipboard_clears if t.is_alive()]
+        self._clipboard_clears.append((timer, sequence))
+        timer.start()
+
+    def _flush_clipboard_clears(self):
+        for timer, sequence in self._clipboard_clears:
+            if timer.is_alive():
+                timer.cancel()
+                try:
+                    clipboard.clear_if_unchanged(sequence)
+                except clipboard.ClipboardError:
+                    pass
+        self._clipboard_clears = []
+
+    def handoff_folder(self):
+        """Where the handoff Save dialog starts: the organisation's folder if
+        policy sets one that exists, else the dialog's own default."""
+        folder = self.policy.current().get("HandoffDefaultFolder")
+        return folder if folder and Path(folder).is_dir() else ""
 
     def save_handoff_to(self, mid, tid, path, expected, anonymise=False):
         """Write the Markdown to a file the user chose in the save dialog. The
@@ -1457,7 +1533,7 @@ class Workspace:
         return {"cards": cards, "token_remembered": credentials.has_token(),
                 "earlier_token": bool(credentials.earlier_token()),
                 "onboarded": self.settings["onboarded"], "speech_ready": speech_ready,
-                "speakers": self.settings["speakers"]}
+                "speakers": self.settings["speakers"], "managed": self.managed()}
 
     def download_model(self, name, token=None, remember=True, use_earlier=False):
         """Download or repair a model. For the speaker model the token is the
@@ -1465,6 +1541,11 @@ class Workspace:
         unticks Remember), the remembered one, or the earlier app's one."""
         if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
+        if not self._allowed("AllowModelDownloads"):
+            raise WorkspaceError("Downloads are turned off by your organisation. Ask your IT "
+                                 "team to install the models.")
+        if name == gpu.COMPONENT and not self._allowed("AllowGpuComponent"):
+            raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         gpu_only = name == gpu.COMPONENT     # used by no running work unless a GPU pass
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")

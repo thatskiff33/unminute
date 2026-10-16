@@ -1,8 +1,10 @@
 # workspace/clipboard.py
 # Put text on the Windows clipboard (#22 handoff). Done in Python rather than
 # by page script so copying works the same way every time, whatever the page
-# origin. The app never clears the clipboard by itself; the final cleanup
-# confirmation tells the user how to (#22).
+# origin. The app clears the clipboard only when the organisation's policy
+# asks for it (ClipboardClearMinutes, #111 A5), and then only if nothing else
+# was copied since; otherwise the final cleanup confirmation tells the user how
+# to (#22).
 #
 # The copy is marked so Windows keeps it out of clipboard history (Win+V) and
 # cloud clipboard sync, and clipboard monitors are asked to ignore it.
@@ -38,6 +40,7 @@ def _api():
     user32.GetClipboardData.restype = wintypes.HANDLE
     user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
     user32.RegisterClipboardFormatW.restype = wintypes.UINT
+    user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
     kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
     kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
     kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
@@ -71,6 +74,8 @@ def _open(user32):
 
 
 def copy_text(text):
+    """Put `text` on the clipboard. Returns the clipboard's sequence number
+    after the copy, which changes as soon as anything else is copied."""
     if sys.platform != "win32":
         raise ClipboardError("Copying is only available on Windows.")
     user32, kernel32 = _api()
@@ -100,6 +105,25 @@ def copy_text(text):
         for _, h in blocks:
             if h:
                 kernel32.GlobalFree(h)
+    return user32.GetClipboardSequenceNumber()
+
+
+def clear_if_unchanged(sequence):
+    """Empty the clipboard only if it still holds the copy that returned
+    `sequence` (managed policy ClipboardClearMinutes, #111 A5): something the
+    user copied since is never touched. Returns True if it was cleared."""
+    if sys.platform != "win32" or not sequence:
+        return False
+    user32, _ = _api()
+    if user32.GetClipboardSequenceNumber() != sequence:
+        return False
+    _open(user32)
+    try:
+        if user32.GetClipboardSequenceNumber() != sequence:   # changed while opening
+            return False
+        return bool(user32.EmptyClipboard())
+    finally:
+        user32.CloseClipboard()
 
 
 def read_text():
