@@ -125,6 +125,8 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 - **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment.
 - **Outside the app's control:** recordings in synced folders such as OneDrive are already in that service, and anything you paste or upload to an AI assistant is handled by its provider under your organisation's account and policies.
 
+The threat model, the controls in place and the remaining risks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## Where things live
 
 | What | Where |
@@ -209,6 +211,7 @@ Design and plans:
 - [docs/WORKSPACE_DESIGN.md](docs/WORKSPACE_DESIGN.md): the durable processing core.
 - [docs/design/boards/](docs/design/boards/): the approved UI design boards that `tools/design_check.py` compares the app against.
 - [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md): the desktop shell trial and its security findings.
+- [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
 - [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release process and hands-on checks.
 
 Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `python test_diarization.py "path\to\recording.wav"` checks Whisper with pyannote speaker identification, and `tools/durable_core_check.py` checks the workspace's processing core. CI runs syntax checks, unit tests, a wheels-only resolve of `requirements.txt`, ruff and PSScriptAnalyzer on pull requests and pushes to main. It does not run the models.
