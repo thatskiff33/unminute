@@ -383,6 +383,10 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.recording_indicator = broken            # never stops a recording
         self.ws.start_recording(3, consent=CONSENT)
         self.assertIsNotNone(self.ws._recording)
+        later = []
+        self.ws.recording_indicator = later.append      # the next change is applied anyway
+        self.ws.stop_recording()
+        self.assertEqual(later, [False])
 
     def test_off_by_default(self):
         self.ws.start()

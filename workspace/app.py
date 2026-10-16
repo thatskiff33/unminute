@@ -279,8 +279,8 @@ class Workspace:
             try:
                 hook(on)
                 self._indicated = on
-            except Exception:            # the indicator never stops a recording
-                pass
+            except Exception:            # the indicator never stops a recording;
+                self._indicated = None   # the next change is always applied
 
     def managed(self):
         """What the organisation's policy sets, for Settings and Setup: the

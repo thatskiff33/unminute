@@ -25,14 +25,30 @@ DELETE_ORIGINALS_TITLE = "Allow deleting originals?"
 DISCARD_TITLE = "Discard this meeting?"
 
 
-def _shown(value, limit):
+def _shown(value, limit, middle=False):
     """Text from the page or the file system as one plain line: control,
     format and line-separator characters (which could reorder or push the
-    warning out of view) become spaces; long values are shortened."""
-    text = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch
-                   for ch in str(value))
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[:limit - 1] + "…"
+    warning out of view) become spaces, and at most two combining marks stay
+    on a letter (more could be stacked over the text above). Long values are
+    shortened at the end, or in the middle for a path, whose end tells two
+    folders apart."""
+    out, marks = [], 0
+    for ch in str(value):
+        kind = unicodedata.category(ch)
+        if kind in ("Mn", "Me"):
+            marks += 1
+            if marks > 2:
+                continue
+        else:
+            marks = 0
+        out.append(" " if kind in ("Cc", "Cf", "Zl", "Zp") else ch)
+    text = " ".join("".join(out).split())
+    if len(text) <= limit:
+        return text
+    if middle:
+        half = (limit - 1) // 2
+        return text[:half] + "…" + text[-(limit - 1 - half):]
+    return text[:limit - 1] + "…"
 
 
 def delete_originals_text(folder):
@@ -41,7 +57,7 @@ def delete_originals_text(folder):
             "original recording from this folder (only if it is exactly the file that was "
             "imported). In a synced folder such as OneDrive, SharePoint or Teams, the "
             "deletion also reaches everyone the folder is shared with.\n\n"
-            f"Folder: {_shown(folder, 240)}\n\n"
+            f"Folder: {_shown(folder, 240, middle=True)}\n\n"
             "Allow it for this folder?")
 
 

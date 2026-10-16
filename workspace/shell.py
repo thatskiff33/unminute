@@ -8,6 +8,7 @@
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
 import os
+import threading
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -495,58 +496,79 @@ def run(func=None, args=None, debug=False, storage_path=None):
 
 # -- native confirmations and the recording indicator (#111 A6) -------------------
 
-# Yes stays disabled this long after the question appears, so a click or key
-# press meant for the page cannot land on it.
 CONFIRM_DELAY_MS = 1000
+_asking = threading.Lock()                 # one question at a time
 
 
 def native_confirm(window, title, text):
     """Ask a Yes/No question in a small Windows dialog owned by the app window.
-    It is outside the web page, so page script cannot answer it. Its buttons
-    have no keyboard shortcuts; Enter and Esc mean No; Yes is disabled for
-    CONFIRM_DELAY_MS after it appears. True only for Yes."""
+    It is outside the web page, so page script cannot answer it.
+
+    - One question at a time: while one is open, another is not shown (No).
+    - The buttons have no keyboard shortcuts; Enter and Esc mean No.
+    - Yes is disabled for CONFIRM_DELAY_MS after the dialog appears or is
+      activated again, and any click or key press meanwhile restarts the
+      wait, so clicks or typing meant for the page cannot land on it.
+    - Yes responds only to a mouse click on it, never to the keyboard (focus
+      can be moved to it with the arrow keys, but Enter or Space there does
+      nothing).
+    True only for Yes."""
+    if not _asking.acquire(blocking=False):
+        return False
+    try:
+        return _ask(window, title, text)
+    finally:
+        _asking.release()
+
+
+def _ask(window, title, text):
     from System import Action, EventHandler
-    from System.Drawing import Size, SystemFonts
-    from System.Windows.Forms import (AutoSizeMode, Button, DialogResult, DockStyle,
-                                      FlowDirection, FlowLayoutPanel, Form, FormBorderStyle,
-                                      FormStartPosition, Label, Padding, TableLayoutPanel,
+    from System.Drawing import Size, SizeF, SystemFonts
+    from System.Windows.Forms import (AutoScaleMode, AutoSizeMode, Button, DialogResult,
+                                      DockStyle, FlowDirection, FlowLayoutPanel, Form,
+                                      FormBorderStyle, FormStartPosition, KeyEventHandler,
+                                      Label, MouseEventHandler, Padding, TableLayoutPanel,
                                       Timer)
     owner = window.native
     box = {}
 
     def ask():
-        dialog, timer = Form(), Timer()
+        dialog, timer, font = Form(), Timer(), SystemFonts.MessageBoxFont
         try:
+            dialog.SuspendLayout()
+            dialog.AutoScaleDimensions = SizeF(96, 96)  # sizes below are at 100 %
+            dialog.AutoScaleMode = AutoScaleMode.Dpi
             dialog.Text = title
-            dialog.Font = SystemFonts.MessageBoxFont
+            dialog.AccessibleDescription = text         # read by Narrator with the title
+            dialog.Font = font
             dialog.FormBorderStyle = FormBorderStyle.FixedDialog
             dialog.StartPosition = FormStartPosition.CenterParent
             dialog.MinimizeBox = dialog.MaximizeBox = False
             dialog.ShowInTaskbar = False
+            dialog.KeyPreview = True                     # every key press reaches restart()
             dialog.AutoSize = True
             dialog.AutoSizeMode = AutoSizeMode.GrowAndShrink
             dialog.Padding = Padding(18)
             message = Label()
             message.Text = text
-            message.UseMnemonic = False           # an "&" in a title stays text
+            message.UseMnemonic = False                 # an "&" in a title stays text
             message.AutoSize = True
             message.MaximumSize = Size(460, 0)
             message.Margin = Padding(0, 0, 0, 18)
             no, yes = Button(), Button()
-            for button, label, result in ((no, "No", DialogResult.No),
-                                          (yes, "Yes", DialogResult.Yes)):
-                button.Text = label                # no "&": no keyboard shortcut
+            for button, label in ((no, "No"), (yes, "Yes")):
+                button.Text = label                      # no "&": no keyboard shortcut
                 button.UseMnemonic = False
-                button.DialogResult = result
                 button.AutoSize = True
                 button.MinimumSize = Size(88, 0)
+            no.DialogResult = DialogResult.No
             yes.Enabled = False
             buttons = FlowLayoutPanel()
             buttons.FlowDirection = FlowDirection.RightToLeft
             buttons.AutoSize = True
             buttons.Dock = DockStyle.Fill
             buttons.Margin = Padding(0)
-            buttons.Controls.Add(no)               # right to left: No last, as Windows does
+            buttons.Controls.Add(no)                     # right to left: No last, as Windows does
             buttons.Controls.Add(yes)
             layout = TableLayoutPanel()
             layout.AutoSize = True
@@ -554,24 +576,49 @@ def native_confirm(window, title, text):
             layout.Controls.Add(message, 0, 0)
             layout.Controls.Add(buttons, 0, 1)
             dialog.Controls.Add(layout)
-            dialog.AcceptButton = no               # Enter means No
-            dialog.CancelButton = no               # Esc and the close box mean No
+            dialog.AcceptButton = no                     # Enter means No
+            dialog.CancelButton = no                     # Esc and the close box mean No
             timer.Interval = CONFIRM_DELAY_MS
+            pressed = {"mouse": False}
+
+            def restart(*_):
+                timer.Stop()                             # Yes is still disabled: wait again
+                timer.Start()
 
             def enable(sender, args):
                 timer.Stop()
                 yes.Enabled = True
 
-            def shown(sender, args):
+            def activated(sender, args):
                 no.Focus()
+                yes.Enabled = False                      # back to the question: wait again
+                timer.Stop()
                 timer.Start()
 
+            def mouse_down_on_yes(sender, args):
+                pressed["mouse"] = True
+
+            def yes_clicked(sender, args):
+                # Click also fires for Enter or Space while Yes has focus: only a
+                # mouse press on Yes counts.
+                if pressed["mouse"]:
+                    dialog.DialogResult = DialogResult.Yes
+                pressed["mouse"] = False
+
             timer.Tick += EventHandler(enable)
-            dialog.Shown += EventHandler(shown)
+            dialog.Activated += EventHandler(activated)
+            yes.MouseDown += MouseEventHandler(mouse_down_on_yes)
+            yes.Click += EventHandler(yes_clicked)
+            dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not yes.Enabled else None)
+            for control in (dialog, layout, buttons, message, no):
+                control.MouseDown += MouseEventHandler(
+                    lambda s, e: restart() if not yes.Enabled else None)
+            dialog.ResumeLayout()
             box["answer"] = dialog.ShowDialog(owner)
         finally:
             timer.Dispose()
             dialog.Dispose()
+            font.Dispose()
 
     owner.Invoke(Action(ask))                     # a dialog belongs to the UI thread
     return box.get("answer") == DialogResult.Yes

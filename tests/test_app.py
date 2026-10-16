@@ -978,9 +978,32 @@ class NativeConfirmationTests(unittest.TestCase):
         b = self.bridge(decline_pause_s=60)
         self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
         self.answer = True
-        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)   # not asked again
+        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED_WAIT)  # not asked
         self.assertEqual(len(self.asked), 1)
         self.assertIsNotNone(self.ws.store.meeting(self.mid))
+
+    def test_one_question_at_a_time(self):
+        import threading
+        from unittest import mock
+
+        from workspace import shell
+        opened, release = threading.Event(), threading.Event()
+
+        def slow_question(window, title, text):
+            opened.set()
+            release.wait(10)
+            return True
+        with mock.patch.object(shell, "_ask", side_effect=slow_question):
+            first = {}
+            t = threading.Thread(target=lambda: first.update(answer=shell.native_confirm(
+                object(), "First", "text")))
+            t.start()
+            self.assertTrue(opened.wait(10))
+            self.assertFalse(shell.native_confirm(object(), "Second", "text"))   # not shown
+            release.set()
+            t.join(10)
+        self.assertTrue(first["answer"])
+        self.assertFalse(shell._asking.locked())
 
     def test_without_a_window_nothing_is_confirmed(self):
         from unittest import mock

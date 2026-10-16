@@ -71,6 +71,8 @@ def _report_id(value):
 
 
 CANCELLED = {"cancelled": True}           # the person chose No in a Windows confirmation
+# Asked again too soon after a No: nothing was shown.
+CANCELLED_WAIT = {"cancelled": True, "retry_soon": True}
 # After a No, the same question is not asked again for this long: a page
 # cannot reopen it straight away until someone clicks Yes.
 DECLINE_PAUSE_S = 3.0
@@ -84,8 +86,10 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     declined = {}                         # question title -> when it was last answered No
 
     def ask(title, text):
+        """True for Yes, False for No (or no window), None if the same question
+        was answered No a moment ago and is not shown again yet."""
         if time.monotonic() - declined.get(title, float("-inf")) < decline_pause_s:
-            return False
+            return None
         if confirm is not None:
             answer = bool(confirm(title, text))
         else:
@@ -301,9 +305,10 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             if delete_originals is True:
                 folder = ws.deletion_grant_folder(fid)
                 if folder is not None:
-                    if not ask(consent.DELETE_ORIGINALS_TITLE,
-                               consent.delete_originals_text(folder)):
-                        return CANCELLED
+                    answer = ask(consent.DELETE_ORIGINALS_TITLE,
+                                 consent.delete_originals_text(folder))
+                    if not answer:
+                        return CANCELLED_WAIT if answer is None else CANCELLED
                     return ws.set_folder_authority(fid, True, fetch_cloud, confirmed=True)
             return ws.set_folder_authority(fid, delete_originals, fetch_cloud)
         return _safe(run)
@@ -331,8 +336,9 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             ws.check_can_record(index, label)  # a refused request never shows the question
             record = None
             if ws.consent_required():
-                if not ask(consent.RECORDING_TITLE, consent.RECORDING_TEXT):
-                    return CANCELLED
+                answer = ask(consent.RECORDING_TITLE, consent.RECORDING_TEXT)
+                if not answer:
+                    return CANCELLED_WAIT if answer is None else CANCELLED
                 record = consent.recording_record()
             return ws.start_recording(index, label, consent=record)
         return _safe(run)
@@ -364,8 +370,9 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def discard_meeting(self, mid):
         def run():
             title, imported_at = ws.meeting_for_discard(mid)   # also checks it exists
-            if not ask(consent.DISCARD_TITLE, consent.discard_text(title, imported_at)):
-                return CANCELLED
+            answer = ask(consent.DISCARD_TITLE, consent.discard_text(title, imported_at))
+            if not answer:
+                return CANCELLED_WAIT if answer is None else CANCELLED
             return ws.discard_meeting(mid)
         return _safe(run)
 
