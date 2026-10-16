@@ -369,16 +369,31 @@ def outdated(text, cutoff, releases=pypi_releases):
     return found
 
 
+def git(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True,
+                          encoding="utf-8")
+
+
 def git_show(ref, path):
-    """A file at a git ref, or None where it does not exist."""
-    r = subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT, capture_output=True,
-                       text=True, encoding="utf-8")
-    return r.stdout if r.returncode == 0 else None
+    """A file at a git commit, or None where the commit has no such file. Any
+    other git failure is an error, never "no file"."""
+    listed = git("ls-tree", "--name-only", "--end-of-options", ref, "--", path)
+    if listed.returncode != 0:
+        raise LockError(f"git could not list {path} at {ref}.")
+    if not listed.stdout.strip():
+        return None
+    shown = git("show", "--end-of-options", f"{ref}:{path}")
+    if shown.returncode != 0:
+        raise LockError(f"git could not read {path} at {ref}.")
+    return shown.stdout
 
 
 def compare(ref):
     """(report lines, failures): every version change in each lock against
     the same lock at git `ref`; an older version not pinned with == fails."""
+    if ref.startswith("-") or git("rev-parse", "--verify", "--quiet",
+                                  f"{ref}^{{commit}}").returncode != 0:
+        raise LockError(f"{ref} is not a commit here: nothing to compare against.")
     lines, failures = [], []
     for source, target, _, _ in LOCKS:
         base = git_show(ref, target)

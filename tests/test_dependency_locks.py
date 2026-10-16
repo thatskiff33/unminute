@@ -228,6 +228,30 @@ class RelockRuleTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("colorama", failures[0])
 
+    def test_compare_refuses_a_ref_that_is_not_a_commit(self):
+        # A wrong ref or an empty FETCH_HEAD must fail, not read as "all new".
+        for ref in ("no-such-ref-for-this-test", "--output=x"):
+            with self.assertRaises(lock.LockError, msg=ref):
+                lock.compare(ref)
+
+    def test_compare_tells_a_missing_lock_from_a_git_failure(self):
+        def fake_git(listing_fails):
+            def run(*args):
+                if args[0] == "rev-parse":
+                    return subprocess.CompletedProcess(args, 0, "abc\n", "")
+                if args[0] == "ls-tree":                     # the lock is not at that commit
+                    return subprocess.CompletedProcess(args, 128 if listing_fails else 0,
+                                                       "", "")
+                raise AssertionError(args)
+            return run
+        with mock.patch.object(lock, "git", fake_git(False)):
+            lines, failures = lock.compare("base")
+        self.assertEqual(failures, [])
+        self.assertTrue(lines and all(line.endswith(": new") for line in lines), lines)
+        with mock.patch.object(lock, "git", fake_git(True)), \
+                self.assertRaises(lock.LockError):
+            lock.compare("base")
+
     def test_outdated_looks_past_the_lock_to_the_current_cooldown(self):
         cutoff = "2026-10-09T00:00:00Z"
         files = {"1.9": "2026-01-01T00:00:00", "2.0": "2026-02-01T00:00:00",
