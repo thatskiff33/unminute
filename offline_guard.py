@@ -10,9 +10,10 @@
 #      UDP datagram to a non-loopback address is refused, including asyncio's
 #      Windows path (ConnectEx and WSASendTo, which bypass socket.connect),
 #      unless the host is on the allow_hosts() list (the workspace's download
-#      process). There is no switch that turns the guard off. Refusals are
-#      recorded in `blocked` so tests can prove nothing tried to reach the
-#      network.
+#      process). Nothing lets a download through in the app's own processes
+#      (the earlier app's permit() is gone); uninstall() is for tests only.
+#      Refusals are recorded in `blocked` so tests can prove nothing tried to
+#      reach the network.
 #
 # This is a tripwire for Python code, not a firewall: native libraries with
 # their own sockets are not covered. On managed devices an outbound firewall
@@ -352,4 +353,3 @@ def uninstall():
             proactor.connect = _orig["iocp_connect"]
             proactor.sendto = _orig["iocp_sendto"]
         _installed = False
-
