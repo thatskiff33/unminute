@@ -72,9 +72,12 @@ jobs:
         # coverage from its hash-locked file.
         shell: pwsh
         run: |
+          python tools/lock.py --subset numpy av huggingface_hub pywebview sounddevice truststore `
+            --output "$env:RUNNER_TEMP/test-requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python -m pip install --disable-pip-version-check --only-binary=:all: `
-            --find-links packaging/wheels -c requirements.txt `
-            numpy av huggingface_hub httpx -r workspace/requirements.txt
+            --require-hashes --no-deps --find-links packaging/wheels `
+            -r "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python -m pip install --disable-pip-version-check --only-binary=:all: `
             --require-hashes --no-deps -r requirements/ci-coverage.txt

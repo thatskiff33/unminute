@@ -1,32 +1,15 @@
-# Security updates are always on (repo setting). This file controls routine
-# version bumps: monthly, grouped into one PR, and never auto-bumping the
-# torch family beyond patch releases - those are ABI-coupled and need a
-# manual end-to-end test on a real recording. A cooldown means a new version
-# is only proposed after it has been public for 7 days, which gives time for a
+# Security alerts and security updates are always on (repo setting). This file
+# controls routine version bumps: GitHub Actions only, monthly, grouped into one
+# PR, and only once a version has been public for 7 days, which gives time for a
 # compromised or broken release to be found and pulled.
+#
+# Python dependencies are hash-locked (#111 B1): requirements.in is the input,
+# and tools/lock.py writes requirements.txt with the same 7-day cooldown.
+# Routine Python updates are a monthly re-lock by hand (docs/RELEASING.md),
+# never automatic: the torch family is ABI-coupled and needs an end-to-end test
+# on a real recording. tools/audit.py (daily) reports known vulnerabilities.
 version: 2
 updates:
-  - package-ecosystem: pip
-    # "/" also reads requirement files one folder down (workspace/,
-    # requirements/), so workspace/requirements.txt is covered.
-    directory: /
-    schedule:
-      interval: monthly
-    cooldown:
-      default-days: 7
-    groups:
-      python-deps:
-        patterns: ["*"]
-    ignore:
-      - dependency-name: torch
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      - dependency-name: torchaudio
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      - dependency-name: torchcodec
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
-      - dependency-name: pyannote-audio
-        update-types: ["version-update:semver-major"]
-
   - package-ecosystem: github-actions
     directory: /
     schedule:

@@ -8,8 +8,9 @@
 # - no permissions by default; each job asks only for what it needs;
 # - every action is pinned to a full commit SHA, with its version in a comment;
 # - checkouts do not keep the token in .git/config;
-# - tools are installed from hash-locked files (requirements/ci.txt) or pinned
-#   to an exact version with a publisher check.
+# - tools and test dependencies are installed from hash-locked files
+#   (requirements.txt, requirements/ci*.txt) or pinned to an exact version with
+#   a publisher check.
 # The Workflow lint job (zizmor) flags unpinned actions, template injection,
 # missing default permissions and persisted credentials; the rest is review.
 name: CI
@@ -47,8 +48,9 @@ jobs:
       # in the "Unit tests (Windows)" job.
       - name: Install test dependencies
         run: |
-          pip install --disable-pip-version-check --only-binary=:all: \
-            "$(grep -E '^numpy==' requirements.txt)" "$(grep -E '^av==' requirements.txt)"
+          python tools/lock.py --subset numpy av --output "$RUNNER_TEMP/test-requirements.txt"
+          pip install --disable-pip-version-check --only-binary=:all: --require-hashes \
+            --no-deps -r "$RUNNER_TEMP/test-requirements.txt"
       - name: Unit tests
         run: python tools/run_tests.py
 
@@ -65,18 +67,6 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      # Both requirement files must stay strict pin lists (the package build
-      # installs them with --only-binary).
-      - name: Check requirements are fully pinned
-        run: |
-          status=0
-          for f in requirements.txt workspace/requirements.txt; do
-            # Tolerate a UTF-8 BOM at the top of the file (Windows PowerShell writes one).
-            bad=$(sed '1s/^\xEF\xBB\xBF//' "$f" | grep -vE '^\s*(#|$)' | grep -vE '^[A-Za-z0-9_.\-]+(\[[^]]+\])?==' || true)
-            if [ -n "$bad" ]; then echo "Unpinned lines in $f:"; echo "$bad"; status=1; fi
-          done
-          [ "$status" -eq 0 ] && echo "All requirements pinned"
-          exit "$status"
 
   windows-tests:
     # The app is Windows-only. This job installs the window shell's packages
@@ -96,23 +86,31 @@ jobs:
           python-version: "3.12"
       - name: Install test dependencies
         # The window shell's packages, numpy and PyAV, and the download stack
-        # (huggingface_hub, httpx) for the download-process tests; every
-        # dependency is held to the pinned versions by -c requirements.txt.
+        # (huggingface_hub, httpx) for the download-process tests: these and
+        # their dependencies from the lock, every file checked against its hash.
         shell: pwsh
         run: |
+          python tools/lock.py --subset numpy av huggingface_hub pywebview sounddevice truststore `
+            --output "$env:RUNNER_TEMP/test-requirements.txt"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
           python -m pip install --disable-pip-version-check --only-binary=:all: `
-            --find-links packaging/wheels -c requirements.txt `
-            numpy av huggingface_hub httpx -r workspace/requirements.txt
+            --require-hashes --no-deps --find-links packaging/wheels `
+            -r "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Unit tests (strict skips)
         run: python tools/run_tests.py --strict-skips
 
   resolve:
-    # Prove the pinned sets still resolve as Windows wheels only, exactly as
-    # the package build installs them. Catches a pin with no Windows wheel or a
-    # conflict between pins (e.g. after a Dependabot bump) without downloading
-    # packages. proxy_tools has no published wheel; it comes from the
-    # hash-checked copy in packaging/wheels.
+    # Prove the locks are current and complete (#111 B1). tools/lock.py --check
+    # resolves requirements.in and the CI tool inputs again, to the locked
+    # versions with hashes taken afresh from PyPI, and must reproduce each lock
+    # exactly (catching an edited hash or line, or an input changed without a
+    # re-lock). On a pull request, --compare lists every version change against
+    # the base branch for review and fails on a downgrade not pinned in the
+    # .in file. Then pip downloads every Windows wheel in requirements.txt with
+    # its hash checked, exactly as the package build installs them. proxy_tools
+    # has no published wheel; it comes from the hash-checked copy in
+    # packaging/wheels.
     name: Requirements resolve (wheels only)
     runs-on: windows-2025
     permissions:
@@ -124,13 +122,27 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
-      - name: Dry-run install
+      - name: Install uv (hash-locked)
         # Block scalar: ":all:" followed by a space is a YAML mapping indicator
         # in a plain scalar, which made the whole workflow file invalid.
         run: >
-          python -m pip install --dry-run --ignore-installed --only-binary=:all:
-          --disable-pip-version-check --find-links packaging/wheels
-          -r requirements.txt -r workspace/requirements.txt
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci-lock.txt
+      - name: Every lock matches its input
+        run: python tools/lock.py --check
+      - name: Version changes against the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$env:BASE_REF"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python tools/lock.py --compare FETCH_HEAD
+      - name: Download every pinned wheel, hashes checked
+        run: >
+          python -m pip download --disable-pip-version-check --only-binary=:all:
+          --require-hashes --no-deps --find-links packaging/wheels
+          --dest "$env:RUNNER_TEMP/wheels" -r requirements.txt
 
   lint-python:
     # Rule set lives in ruff.toml. Ruff comes from requirements/ci.txt with
