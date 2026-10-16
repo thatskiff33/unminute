@@ -45,11 +45,18 @@ def model_cache():
 
 
 def package_version():
-    """version.json beside app/ in an installed package, else "source"."""
+    """version.json beside app/ in an installed package. From a source checkout,
+    the newest prepared release from VERSION with "+source" (later changes may
+    be included), or just "source" if there is no VERSION file."""
     path = Path(__file__).resolve().parents[2] / "version.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))["version"]
     except (OSError, ValueError, KeyError):
+        pass
+    try:
+        version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8")
+        return version.strip() + "+source"
+    except OSError:
         return "source"
 
 

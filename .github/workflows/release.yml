@@ -4,8 +4,9 @@
 #   git push origin v0.5.0
 #
 # The tag must be vX.Y.Z (optionally -preview.N) and must point at a commit
-# already on main. Release notes come from the matching "## vX.Y.Z" section of
-# CHANGELOG.md; the job fails before publishing if it is missing.
+# already on main, and must match VERSION. Release notes come from the matching
+# dated "## vX.Y.Z (YYYY-MM-DD)" section of CHANGELOG.md; the job fails before
+# publishing if it is missing.
 #
 # The Windows package is still built and attached by hand (docs/RELEASING.md).
 # #111 slice B3 replaces this with a CI build, signed provenance and an
@@ -43,14 +44,27 @@ jobs:
             echo "Tag $TAG points at $GITHUB_SHA, which is not on main"; exit 1
           fi
 
+      # VERSION is the single source of the version (#131): tools/changelog.py
+      # sets it with the changelog section, and the package build reads it.
+      - name: Check the tag matches VERSION
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="v$(tr -d '[:space:]' < VERSION)"
+          if [ "$version" != "$TAG" ]; then
+            echo "Tag $TAG does not match VERSION ($version)"; exit 1
+          fi
+
       # Pull the notes for this version out of CHANGELOG.md. Fails if missing,
-      # so a release can never go out with empty notes.
+      # so a release can never go out with empty notes. Only a dated
+      # "## vX.Y.Z (YYYY-MM-DD)" heading is read (tools/changelog.py writes it);
+      # the undated headings before #131 belong to versions already released.
       - name: Extract release notes
         env:
           TAG: ${{ github.ref_name }}
         run: |
           awk -v h="## $TAG" '
-            $0 == h {on=1; next}
+            index($0, h " (") == 1 {on=1; next}
             on && /^## / {exit}
             on {print}
           ' CHANGELOG.md > notes.md

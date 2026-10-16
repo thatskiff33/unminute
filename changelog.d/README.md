@@ -13,4 +13,4 @@ Each pull request with a change a user or IT would notice adds one file here ins
 
 ## At release
 
-`python tools/changelog.py vX.Y.Z` (or `vX.Y.Z-preview.N`) writes a `## vX.Y.Z` section at the top of `CHANGELOG.md` and deletes the fragments. Add `--summary "One line"` for a line under the heading. Review the result and merge it before tagging, as `docs/RELEASING.md` describes. This README stays.
+`python tools/changelog.py vX.Y.Z` (or `vX.Y.Z-preview.N`) writes a dated `## vX.Y.Z (YYYY-MM-DD)` section at the top of `CHANGELOG.md`, sets `VERSION`, and deletes the fragments. Add `--summary "One line"` for a line under the heading, or `--date` for a date other than today. Review the result and merge it before tagging, as `docs/RELEASING.md` describes. This README stays.

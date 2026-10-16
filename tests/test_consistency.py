@@ -73,6 +73,19 @@ class DependencyPinTests(unittest.TestCase):
                              f"but requirements.txt pins {pinned}")
 
 
+class VersionTests(unittest.TestCase):
+    def test_version_file_matches_the_newest_changelog_heading(self):
+        # #131: VERSION is the one source of the version. tools/changelog.py sets
+        # it together with the changelog section, the build reads it, and the
+        # Release workflow refuses a tag that differs.
+        version = read("VERSION").strip()
+        self.assertRegex(version, r"^[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$")
+        newest = one(r"\A(?:.*\n)*?## v(\S+)", read("CHANGELOG.md"), "changelog version heading")
+        self.assertEqual(newest, version,
+                         "VERSION and the newest changelog heading differ; tools/changelog.py "
+                         "sets both when a release is prepared")
+
+
 class InstallIdentityTests(unittest.TestCase):
     """Names and codes shared by the app, the build and the installer scripts."""
 

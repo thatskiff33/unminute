@@ -1,7 +1,8 @@
 # Changelog
 
 Release notes for Unminute (formerly Whisper Transcriber). The Release workflow reads the section
-for the version being released, so keep one `## vX.Y.Z` heading per version.
+for the version being released, so keep one heading per version. From v0.5.0 the headings are
+dated, `## vX.Y.Z (YYYY-MM-DD)`, and written by `tools/changelog.py`.
 
 Changes not yet released are in [`changelog.d/`](changelog.d/README.md), one file per pull request.
 `python tools/changelog.py vX.Y.Z` moves them into a new section here when a release is prepared.

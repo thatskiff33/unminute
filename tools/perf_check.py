@@ -356,7 +356,10 @@ def environment(args):
     else:
         r = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
                            capture_output=True, text=True)
-        env["app"] = {"version": "source", "commit": r.stdout.strip() or None}
+        version = ROOT / "VERSION"            # as workspace/__main__.py names a source run
+        name = version.read_text(encoding="utf-8-sig").strip() + "+source" \
+            if version.exists() else "source"
+        env["app"] = {"version": name, "commit": r.stdout.strip() or None}
     if args.zip:
         env["package_sha256"] = hashlib.sha256(Path(args.zip).read_bytes()).hexdigest()
     return env

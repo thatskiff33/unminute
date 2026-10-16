@@ -56,6 +56,24 @@ class PackageTests(unittest.TestCase):
         self.assertRegex(bp.EMBED_SHA256, r"^[0-9a-f]{64}$")
         self.assertIn(bp.PYTHON_VERSION, bp.EMBED_URL)
 
+    def test_the_version_comes_from_the_version_file(self):
+        # #131: VERSION is the one source; --version may repeat it, never change it.
+        (self.root / "VERSION").write_text("0.5.0\n", encoding="utf-8")
+        self.assertEqual("0.5.0", bp.release_version(root=self.root))
+        self.assertEqual("0.5.0", bp.release_version("0.5.0", root=self.root))
+        with self.assertRaisesRegex(SystemExit, "does not match VERSION"):
+            bp.release_version("0.5.1", root=self.root)
+
+    def test_a_version_file_is_read_safely(self):
+        (self.root / "VERSION").write_bytes(b"\xef\xbb\xbf0.5.0-preview.2\r\n")   # BOM, CRLF
+        self.assertEqual("0.5.0-preview.2", bp.release_version(root=self.root))
+        for bad in ("v0.5.0", "0.5", "0.5.0-rc1", "10000.10000.10000"):   # the last is 17 chars
+            (self.root / "VERSION").write_text(bad + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "not X.Y.Z"):
+                bp.release_version(root=self.root)
+        (self.root / "VERSION").unlink()
+        with self.assertRaisesRegex(SystemExit, "Cannot read"):
+            bp.release_version(root=self.root)
 
 if __name__ == "__main__":
     unittest.main()
