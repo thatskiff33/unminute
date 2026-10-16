@@ -874,8 +874,16 @@ def _ask(window, question, theme):
             timer.Interval = CONFIRM_DELAY_MS
             ready = {"waited": False}
 
+            focused = {"since": None}                  # when the action took the focus
+            enabled = {"since": None}                  # when the action was enabled
+
             def update():
-                act.Enabled = ready["waited"] and (check is None or check.Checked)
+                on = ready["waited"] and (check is None or check.Checked)
+                if on and not act.Enabled:
+                    enabled["since"] = time.monotonic()
+                if not on:
+                    enabled["since"] = focused["since"] = None   # earlier waiting no longer counts
+                act.Enabled = on
 
             def restart(*_):
                 ready["waited"] = False                  # not yet: wait again
@@ -896,8 +904,6 @@ def _ask(window, question, theme):
                 if act.Enabled and act.ClientRectangle.Contains(args.Location):
                     dialog.DialogResult = DialogResult.Yes
 
-            focused = {"since": None}
-
             def focus_in(sender, args):
                 focused["since"] = time.monotonic()
                 act.Invalidate()
@@ -906,12 +912,18 @@ def _ask(window, question, theme):
                 focused["since"] = None
                 act.Invalidate()
 
+            def held(stamp):
+                return stamp is not None and time.monotonic() - stamp >= CONFIRM_DELAY_MS / 1000
+
             def act_clicked(sender, args):
-                # Enter, Space or Invoke (keyboard, Narrator, voice control):
-                # only once the button has held the focus for the full wait.
-                since = focused["since"]
-                if (act.Enabled and since is not None
-                        and time.monotonic() - since >= CONFIRM_DELAY_MS / 1000):
+                # Enter or Space need the focus, so they count only once the
+                # button has held it for the full wait. An Invoke without the
+                # focus (Voice Access "click Start recording") comes from an
+                # assistive tool, never from typing or from the page: it counts
+                # once the button has been enabled for the full wait.
+                if not act.Enabled:
+                    return
+                if held(focused["since"]) if act.Focused else held(enabled["since"]):
                     dialog.DialogResult = DialogResult.Yes
 
             def made(sender, args):
