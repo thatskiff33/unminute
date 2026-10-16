@@ -116,7 +116,8 @@ class InstallIdentityTests(unittest.TestCase):
 
 def markdown_docs():
     """Every Markdown file except the changelog and its fragments, which record history."""
-    skip = {".git", "node_modules", "changelog.d"}
+    skip = {".git", "node_modules", "changelog.d", "build", "dist", "extracted",
+            ".venv", "venv", "env", "__pycache__"}
     return sorted(str(p.relative_to(ROOT)) for p in ROOT.rglob("*.md")
                   if not skip & set(p.relative_to(ROOT).parts) and p.name != "CHANGELOG.md")
 
@@ -159,7 +160,9 @@ class DocsTests(unittest.TestCase):
                               f"{sorted(set(names) - set(found))}; link to ci.yml instead")
 
     def test_no_hard_coded_test_counts(self):
-        count = re.compile(r"\b\d{2,5}\+?\s+(?:[\w-]+\s+){0,2}tests?\b", re.IGNORECASE)
+        # Not a version or issue number ("Python 3.12 unit tests", "#123 tests").
+        count = re.compile(r"(?<![\w.#])\d{2,5}\+?\s+(?:[\w-]+\s+){0,2}tests?\b",
+                           re.IGNORECASE)
         for doc in self.DOCS:
             text = " ".join(read(doc).split())          # counts can wrap onto the next line
             match = count.search(text)
