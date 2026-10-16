@@ -133,6 +133,8 @@ def unfinished_work(store, now=None):
     Active meetings list. Ordinary unfinished work gets no scheduled reminders."""
     now = now or time.time()
     out = []
+    held = {r["meeting_id"] for r in store._all(
+        "SELECT meeting_id FROM holds WHERE released_at IS NULL")}
     for m in store._all("SELECT * FROM meetings ORDER BY created_at"):
         if m["final_saved_at"]:
             action = "Cleanup pending"
@@ -146,5 +148,5 @@ def unfinished_work(store, now=None):
             action = "Transcribing" if not m["paused"] else "Paused"
         out.append({"id": m["id"], "title": m["title"],
                     "age_days": int((now - m["created_at"]) // DAY), "action": action,
-                    "held": bool(active_holds(store, m["id"]))})
+                    "held": m["id"] in held})
     return out

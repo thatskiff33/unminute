@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 const DAY = 86400;
 const POLL_MS = 2000;        // while something is happening (docs/RELEASE_STANDARD.md, section 3)
 const IDLE_POLL_MS = 10000;  // when nothing is; never while the window is hidden
+const LIST_REFRESH_POLLS = 6;  // the lists are fetched on a change, and every 6th poll (a minute idle)
 const PAGE = 1000;           // transcript rows per bridge call
 const SAVE_DELAY_MS = 800;   // autosave after typing stops
 
@@ -17,6 +18,10 @@ const state = {
   version: null,                 // null = current version; else an earlier one (read only)
   saving: Promise.resolve(),     // edits are saved strictly in order
   listsSig: "",                  // the meeting list last drawn
+  changes: null,                 // status().changes at the last poll
+  listsSeen: null,               // ...when the lists were last fetched, and where
+  listsView: null,
+  sinceLists: 0,                 // polls since then
   active: false,                 // something is being processed or imported
   wasActive: false,              // ...at the poll before
   recordingLive: false,          // a recording is open and running
@@ -325,6 +330,7 @@ async function renderLists() {
 async function renderStatus() {
   const s = await call("status");
   state.mode = s.mode;
+  state.changes = s.changes;
   state.wasActive = state.active;      // one more fast poll across the gap between jobs
   state.active = !!(s.busy || s.importing);
   const parts = [];
@@ -2180,9 +2186,23 @@ async function refresh() {
   refreshing = true;
   try {
     await renderStatus();
-    await renderLists();                 // also keeps the sidebar count current
+    // The meeting list and reminders only when Python reports a change, the
+    // view changed, or every LIST_REFRESH_POLLS polls anyway (ages and hold
+    // reviews depend on the time). Counted in polls, not by the clock: the
+    // design fixtures fix the clock for stable screenshots, and the idle
+    // check must see this refresh. renderLists also keeps the sidebar count
+    // current.
+    state.sinceLists += 1;
+    const lists = state.changes === undefined || state.changes !== state.listsSeen ||
+                  state.view !== state.listsView || state.sinceLists >= LIST_REFRESH_POLLS;
+    if (lists) {
+      await renderLists();
+      if (state.view === "meetings") await renderReminders();
+      state.listsSeen = state.changes;
+      state.listsView = state.view;
+      state.sinceLists = 0;
+    }
     if (state.view === "meetings") {
-      await renderReminders();
       await renderRecorder();
     } else if (state.view === "meeting") await renderMeeting();
     else if (state.view === "settings") await renderSettings();
@@ -2243,7 +2263,10 @@ document.addEventListener("visibilitychange", () => {
     clearTimeout(pollTimer);
     pollTimer = null;
     stopRecTimer();
-  } else pollNow();
+  } else {
+    state.sinceLists = LIST_REFRESH_POLLS;   // hidden for a while: ages and reviews moved on
+    pollNow();
+  }
 });
 
 function wire() {

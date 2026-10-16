@@ -16,6 +16,7 @@
 # pauses stay paused.
 
 import json
+import os
 import queue
 import threading
 import time
@@ -45,6 +46,10 @@ SR = 16000
 # clock is checked again within the cap after the computer wakes.
 WATCH_MAX_WAIT_S = 60.0             # watched folders: a scan is at most this late
 POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
+# Settings and Setup are polled while open; what they show from disk (model
+# and component files) or Credential Manager is worked out at most this often,
+# and again at once after a download, removal, token or settings change (R7b).
+DISPLAY_CACHE_S = 60.0
 
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
@@ -153,6 +158,9 @@ class Workspace:
         self._clipboard_lock = threading.Lock()
         self._policy_wake = threading.Event()   # a clear was scheduled, or closing
         self._clock = time.monotonic      # counts time asleep; tests use a fake
+        self._display = {}                # Settings and Setup values (_display_value)
+        self._display_gen = 0
+        self._display_lock = threading.Lock()
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
@@ -163,7 +171,7 @@ class Workspace:
         # Downloads replace model files: the inference worker is unloaded first.
         self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
                                          before_gpu_install=self.handle.release_gpu)
-        self.downloads.after = lambda: self._wake.set()    # resume processing afterwards
+        self.downloads.after = self._after_download
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
@@ -241,6 +249,33 @@ class Workspace:
             # A folder scan may be hashing a large file; it stops between files.
             t.join(60 if t.name == "workspace-watch" else 15)
         self.store.close()
+
+    # -- Settings and Setup data (R7b) -------------------------------------------------
+
+    def _after_download(self):
+        """A download or check ended: what Setup shows is read again, and
+        processing that waited carries on."""
+        self._forget_display()
+        self._wake.set()
+
+    def _display_value(self, key, compute, version=None):
+        """A value Settings or Setup shows, worked out again only after
+        DISPLAY_CACHE_S, when `version` changes, or after _forget_display()."""
+        now = self._clock()
+        with self._display_lock:
+            hit, gen = self._display.get(key), self._display_gen
+        if hit and hit[0] > now and hit[1] == version:
+            return hit[2]
+        value = compute()
+        with self._display_lock:
+            if self._display_gen == gen:     # not forgotten meanwhile: still current
+                self._display[key] = (now + DISPLAY_CACHE_S, version, value)
+        return value
+
+    def _forget_display(self):
+        with self._display_lock:
+            self._display.clear()
+            self._display_gen += 1
 
     # -- managed policy (#111 A5) ---------------------------------------------------
 
@@ -945,6 +980,8 @@ class Workspace:
                     with self._lock:           # cleared together, as they are set
                         self._busy = self._busy_ref = None
                     self._yielded = False      # only the run that recording stopped
+                    if kind != "cleanup":      # a model may have failed its check at load
+                        self._forget_display()
 
     def _maybe_purge(self):
         if time.time() - self._last_purge > RECEIPT_PURGE_S:
@@ -1386,53 +1423,101 @@ class Workspace:
     # -- lists and details --------------------------------------------------------------
 
     def meetings(self):
+        """The Meetings list. Each table is read once for the whole list, not
+        once per meeting, so the number of queries does not grow with the
+        number of meetings (R7b). Read under the store's lock: one consistent
+        view, with no write from another thread in between."""
+        q, active = self.store._all, "SELECT id FROM versions WHERE state = 'active'"
+        with self.store._lock:
+            rows = holds.unfinished_work(self.store)
+            if not rows:
+                return []
+            meetings = {m["id"]: m for m in q("SELECT * FROM meetings")}
+            versions = {v["meeting_id"]: v for v in q(
+                "SELECT * FROM versions WHERE state = 'active'")}
+            chunks = {c["version_id"]: c for c in q(
+                "SELECT version_id, COALESCE(SUM(CASE WHEN status = 'done' THEN end_sample - "
+                "start_sample END), 0) AS done, COALESCE(SUM(end_sample - start_sample), 0) "
+                "AS total, SUM(status = 'pending') AS pending FROM chunks "
+                f"WHERE version_id IN ({active}) GROUP BY version_id")}
+            runs = _group(q(f"SELECT * FROM speaker_runs WHERE version_id IN ({active}) "
+                            "ORDER BY started_at, rowid"), "version_id")
+            sources = {s["id"]: s for s in q(
+                "SELECT id, samples, sample_rate FROM sources WHERE id IN "
+                "(SELECT source_id FROM versions WHERE state = 'active')")}
+            jobs = _group(q("SELECT id, meeting_id, phase, state, error FROM cleanup_jobs "
+                            "ORDER BY intent_at"), "meeting_id")
+            # The current identification: the latest finished run (runs are oldest first).
+            current = {vid: done[-1] for vid, rs in runs.items()
+                       if (done := [r for r in rs if r["status"] == "done"])}
+            # Corrections of finished runs of active versions: a version has at
+            # most one (finishing a run supersedes the one before), the current.
+            logs = _group(q(
+                "SELECT run_id, id, kind, target, value FROM speaker_corrections "
+                "WHERE run_id IN (SELECT id FROM speaker_runs WHERE status = 'done' "
+                f"AND version_id IN ({active})) ORDER BY id"), "run_id") if current else {}
+            # Known counts cost nothing; a new run or correction is worked out
+            # here, still under the lock, from the same view of the data.
+            counts = {vid: self._speaker_count(vid, run, _log_key(logs.get(run["id"], [])))
+                      for vid, run in current.items()}
+        working = self._busy                 # read once: a job may end meanwhile
         out = []
-        for row in holds.unfinished_work(self.store):
-            m = self.store.meeting(row["id"])
-            v = self.store.active_version(row["id"])
-            done, total = self.store.progress(v["id"]) if v else (0, 0)
-            busy = self._busy and self._busy[0] == row["id"] and self._busy[1]
-            stage = self._stage(m, v)
-            runs = self.store.speaker_runs(v["id"]) if v else []
-            out.append({**row, **self._facts(v), "audio_available": self._audio_available(m),
+        for row in rows:
+            m = meetings.get(row["id"])
+            if m is None:
+                continue
+            v = versions.get(row["id"])
+            c = chunks.get(v["id"]) if v else None
+            done, total = (c["done"], c["total"]) if c else (0, 0)
+            busy = working and working[0] == row["id"] and working[1]
+            stage = self._stage(m, v, pending=bool(c and c["pending"]))
+            known = (sources.get(v["source_id"]), counts.get(v["id"])) if v else None
+            out.append({**row, **self._facts(v, known),
+                        "audio_available": self._audio_available(m),
                         "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
-                                     "note": j["error"]} for j in self.store._all(
-                            "SELECT * FROM cleanup_jobs WHERE meeting_id = ? ORDER BY intent_at",
-                            (row["id"],))],
+                                     "note": j["error"]} for j in jobs.get(row["id"], [])],
                         "progress": round(100 * done / total) if total else 0,
                         "paused": bool(m["paused"]), "error": m["last_error"]
                         if m["phase"] == "error" else None,
                         "busy": busy or None, "stage": stage,
-                        "can_skip": bool(v) and self._can_skip(m, runs),
+                        "can_skip": bool(v) and self._can_skip(m, runs.get(v["id"], [])),
                         "action": self._action(m, stage)})
         return out
 
-    def _facts(self, v):
-        """Recording length, number of speakers and model of a working version."""
+    def _facts(self, v, known=None):
+        """Recording length, number of speakers and model of a working version.
+        known: (source row, speaker count) when the caller has worked them out
+        already (meetings()); otherwise read here."""
         if v is None:
             return {"duration_s": None, "speaker_count": None, "model": None}
-        src = self.store.source(v["source_id"])
+        if known is None:
+            with self.store._lock:
+                run = speaker_names.current_run(self.store, v["id"])
+                log = _log_key(self.store._all(
+                    "SELECT id, kind, target, value FROM speaker_corrections WHERE run_id = ? "
+                    "ORDER BY id", (run["id"],))) if run else ()
+                known = (self.store.source(v["source_id"]),
+                         self._speaker_count(v["id"], run, log))
+        src, count = known
         return {"duration_s": round(src["samples"] / src["sample_rate"], 1) if src else None,
-                "speaker_count": self._speaker_count(v["id"]), "model": v["model"]}
+                "speaker_count": count, "model": v["model"]}
 
-    def _speaker_count(self, vid):
-        """Speakers in the current identification. The meeting list is polled
-        every 2 s, so the count is kept until the run or its corrections change."""
-        run = speaker_names.current_run(self.store, vid)
+    def _speaker_count(self, vid, run, log):
+        """Speakers in the current identification (run), kept per version
+        until the run or its corrections change. log is the whole (small)
+        correction log: an undone correction's id can be reused by the next
+        one, so the last id alone could repeat a key. Call under the store's
+        lock, so the count comes from the same data as its key."""
         if run is None:
             return None
-        # The whole (small) correction log: an undone correction's id can be
-        # reused by the next one, so the last id alone could repeat a key.
-        log = tuple((c["id"], c["kind"], c["target"], c["value"]) for c in self.store._all(
-            "SELECT id, kind, target, value FROM speaker_corrections WHERE run_id = ? "
-            "ORDER BY id", (run["id"],)))
-        key = (vid, run["id"], log)
+        key = (run["id"], log)
         cache = self.__dict__.setdefault("_speaker_counts", {})
-        if key not in cache:
-            if len(cache) > 100:
+        hit = cache.get(vid)
+        if hit is None or hit[0] != key:
+            if len(cache) > 1000:             # versions no longer listed
                 cache.clear()
-            cache[key] = len(speaker_names.resolve(self.store, vid)["order"])
-        return cache[key]
+            hit = cache[vid] = (key, len(speaker_names.resolve(self.store, vid)["order"]))
+        return hit[1]
 
     @staticmethod
     def _action(m, stage):
@@ -1443,13 +1528,19 @@ class Workspace:
                 "handoff": "Hand off, then confirm the final document is saved",
                 "cleanup": "Cleanup pending"}[stage]
 
-    def _stage(self, m, v):
-        """inbox: still being processed; review / handoff / cleanup: active meetings."""
+    def _stage(self, m, v, pending=None):
+        """inbox: still being processed; review / handoff / cleanup: active
+        meetings. pending: whether the version has chunks still to do, when
+        the caller has read it already."""
         if m["final_saved_at"]:
             return "cleanup"
         if m["reviewed_at"]:
             return "handoff"
-        if v is None or self.store.chunks(v["id"], status="pending") or m["phase"] == "error":
+        if v is None:
+            return "inbox"
+        if pending is None:
+            pending = bool(self.store.chunks(v["id"], status="pending"))
+        if pending or m["phase"] == "error":
             return "inbox"
         return "review"
 
@@ -1510,7 +1601,17 @@ class Workspace:
         return {"busy": self._busy[1] if self._busy else None, "message": self._status,
                 "mode": self.settings["mode"],
                 "import_errors": list(self._import_errors),
-                "importing": self._imports.unfinished_tasks}
+                "importing": self._imports.unfinished_tasks,
+                "changes": self._changes()}
+
+    def _changes(self):
+        """A number that differs whenever the Meetings list or the reminders
+        could: a database commit, the job running, speaker passes asked for,
+        or the mode. The page asks for the lists only then (and every minute
+        anyway, for ages and hold reviews). Opaque: it carries no ids."""
+        busy = self._busy
+        return hash((self.store.revision, busy[:2] if busy else None,
+                     frozenset(self._reruns), self.settings["mode"])) & 0xFFFFFFFF
 
     def clear_import_errors(self):
         self._import_errors = []
@@ -1535,10 +1636,16 @@ class Workspace:
         return {**effective, "choices": choices, "managed": self.managed(),
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
-                        "component": gpu.status(self.cache_dir)[0] if info else "missing"},
+                        "component": self._display_value(
+                            "gpu", lambda: gpu.status(self.cache_dir))[0] if info
+                        else "missing"},
                 "deployment": update.deployment(),
-                "update_blockers": [b["message"] for b in
-                                    update.blockers(self.root / "workspace.db")]}
+                # Counts from the database and the recordings folder: read
+                # again whenever either changes.
+                "update_blockers": self._display_value(
+                    "blockers", lambda: [b["message"] for b in
+                                         update.blockers(self.root / "workspace.db")],
+                    version=(self.store.revision, _folders(self.recordings)))}
 
     def set_settings(self, changes):
         if not isinstance(changes, dict):
@@ -1558,6 +1665,7 @@ class Workspace:
             raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet
         self.settings.update(**changes)
+        self._forget_display()
         self.handle.quiet = self.settings["mode"] == resources.QUIET
         if self.handle.quiet != quiet_before and self._busy is None:
             self.handle.shutdown()        # the next worker starts with the new priority
@@ -1726,12 +1834,17 @@ class Workspace:
     # -- setup (#19) ----------------------------------------------------------------------
 
     def setup_state(self):
-        cards = setup.cards(self.cache_dir)
+        # The cards check every model's files and the component's file list;
+        # the token answers come from Credential Manager. Both are kept for
+        # DISPLAY_CACHE_S. Download progress is live.
+        cards = [dict(c) for c in self._display_value("cards",
+                                                      lambda: setup.cards(self.cache_dir))]
         for c in cards:
             c["download"] = self.downloads.state.get(c["name"])
         speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
-        return {"cards": cards, "token_remembered": credentials.has_token(),
-                "earlier_token": bool(credentials.earlier_token()),
+        remembered, earlier = self._display_value(
+            "tokens", lambda: (credentials.has_token(), bool(credentials.earlier_token())))
+        return {"cards": cards, "token_remembered": remembered, "earlier_token": earlier,
                 "onboarded": self.settings["onboarded"], "speech_ready": speech_ready,
                 "speakers": self.settings["speakers"], "managed": self.managed()}
 
@@ -1762,6 +1875,7 @@ class Workspace:
             except credentials.CredentialError as exc:
                 raise WorkspaceError(str(exc)) from exc
             if not token:
+                self._forget_display()         # Setup may still offer a token removed elsewhere
                 raise WorkspaceError("Enter your Hugging Face token to download the speaker "
                                      "model.")
         else:
@@ -1804,6 +1918,7 @@ class Workspace:
         finally:
             with self._lock:
                 self._removing = None
+            self._forget_display()
             self._wake.set()
         self.downloads.state.pop(name, None)
         return round(freed / 1e9, 2)
@@ -1861,6 +1976,8 @@ class Workspace:
             return credentials.remove_token()
         except credentials.CredentialError as exc:
             raise WorkspaceError(str(exc)) from exc
+        finally:
+            self._forget_display()
 
     def finish_setup(self, speakers):
         """speakers: the user's choice. Turning them on before the speaker model
@@ -1946,6 +2063,27 @@ def _hold_id(value):
     if not isinstance(value, str) or len(value) != 32 or not value.isalnum():
         raise WorkspaceError("Not found.")
     return value
+
+
+def _group(rows, key):
+    """{row[key]: [rows in their order]}."""
+    out = {}
+    for r in rows:
+        out.setdefault(r[key], []).append(r)
+    return out
+
+
+def _log_key(corrections):
+    """A speaker correction log as a hashable key (_speaker_count)."""
+    return tuple((c["id"], c["kind"], c["target"], c["value"]) for c in corrections)
+
+
+def _folders(path):
+    """How many folders are in path (0 if it is missing): cheap to compare."""
+    try:
+        return sum(1 for e in os.scandir(path) if e.is_dir())
+    except OSError:
+        return 0
 
 
 def _import_message(exc):
