@@ -1,0 +1,1 @@
+- **Less background work.** The recording display is worked out only when the Meetings page asks for it, not for every tenth of a second of audio, and the app no longer checks every second for a speech worker that is not running (#126).

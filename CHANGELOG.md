@@ -3,46 +3,8 @@
 Release notes for Unminute (formerly Whisper Transcriber). The Release workflow reads the section
 for the version being released, so keep one `## vX.Y.Z` heading per version.
 
-## Unreleased
-
-- **Skip speaker identification for a meeting.** For a recording of one or two people, select **Skip speakers** on the meeting's row or **Skip speaker identification** in its speaker panel. The meeting goes straight to review and hand off without speaker labels, and a pass already running stops at once. **Identify again…** still works later while the audio is kept.
-- **Watched folders are checked as soon as the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check.
-- **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
-- **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
-- **Less background work.** The recording display is worked out only when the Meetings page asks for it, not for every tenth of a second of audio, and the app no longer checks every second for a speech worker that is not running (#126).
-- **An earlier dropout is no longer hidden by a later microphone disconnection.** If saving was behind when the microphone went, a dropout from earlier in the recording could be folded into the disconnection note instead of being reported on its own (#126).
-
-Security hardening (#111, slice A5):
-
-- **IT can manage the app's settings.** On managed computers the app reads policy values from `HKLM\SOFTWARE\Policies\Unminute` (at start and every 15 minutes), which standard users cannot change. IT can turn off model downloads, the graphics card component, microphone recording, watched folders and deleting originals; allow recordings on mapped network drives; set a starting folder for saved handoffs; allow the meeting title in handoff file names; and have the app clear its handoff copy from the clipboard after a set time. An administrative template for Intune is in `packaging/policy/`.
-- **A bad policy value never grants a permission.** A value of the wrong type or out of range turns that permission off rather than on, and a policy key that cannot be read turns every permission off.
-- **Settings shows what is managed.** A note at the top of Settings says some settings are managed by your organisation, and managed controls are disabled. Setup and Downloads show "Ask your IT team" instead of a Download button where downloads are off, or "Turned off by your organisation" for the graphics card component. The app enforces each value itself, whatever the page shows: for example, a recording in progress is stopped and saved when microphone recording is turned off.
-- **Without a policy the app behaves as before.**
-
-Security hardening (#111, slice A4):
-
-- **The network block covers more.** Besides ordinary connections and name lookups, the app's Python processes now also refuse UDP datagrams and the Windows asyncio connection path, which went around the block before. `--self-test` checks all three against a reserved address that is never contacted.
-- **Downloads can reach only their own sites.** The download process may contact only huggingface.co and hf.co (models), download-r2.pytorch.org (the optional graphics card component) and any proxy configured for you. Every request and every redirect is checked, also when downloads go through a proxy, and anything else is stopped with its own message. Hugging Face's native Xet downloader is switched off so every download goes through these checks.
-- **Downloads work behind a firm's inspecting proxy.** Certificates are checked against the Windows certificate store (truststore), so a proxy certificate that IT has installed is trusted without any unsafe workaround. A fixed proxy is needed: proxies given only by an automatic configuration script (PAC or WPAD) are not used.
-- **The speaker model is fully checked before every use.** Its files are re-hashed each time they are loaded, not just compared by size and date, because the model format can run code.
-
-Security hardening (#111, slice A3):
-
-- **Recordings are decoded in a separate, sandboxed process.** Each imported file is decoded by a short-lived helper that runs at Windows' Low integrity level (the level browsers use for web pages) inside a Windows job. Windows stops it writing your files, opening the app's process, starting programs directly or using more than 2 GB of memory, and normally also the clipboard (inside some managed sessions the session's own limits apply instead), and it ends when the app closes. It sends back only plain audio, which the app checks, writes and hashes itself. It can still read files you can read, so a decoder flaw would mainly be a privacy risk; the firewall rule for managed devices (#111 B7) closes the network side.
-- **Only real recordings are opened.** The decoder accepts only the supported recording formats and local files, whatever a file claims to be, so playlists, stream descriptions and scripts disguised as recordings are refused.
-- **Limits on what a file can do.** Decoding stops at 12 hours of audio and keeps at least 1 GB of disk space free.
-- **Network drives are refused for imports.** Files on mapped network drives, or reached through a symbolic link, are refused with a message to copy them first. Synced folders such as OneDrive are unaffected.
-
-Security hardening (#111, slice A2):
-
-- **Settings are checked when the app starts.** A value in `settings.json` that the app would not accept from Settings (for example an unknown speech model) is replaced by its default.
-- **The window refuses to open unsafely.** The app now stops with a message if Windows would fall back to the old Internet Explorer engine instead of WebView2, or if its window protections cannot be put in place.
-- **Tighter limits on what the page can ask for.** The page can show only the app's own screen, drag and drop accepts only files Windows reports as dropped, and calls with the wrong arguments are refused before they run.
-- **Less left behind.** The window's browser data is kept inside the workspace folder and cleared at the next start if the app did not close cleanly, and SQLite keeps its temporary data in memory rather than in the Windows temp folder.
-- **The handoff file name no longer contains the meeting title.** Save suggests `Meeting transcript YYYY-MM-DD HH-MM.md` (when the meeting was imported), so client names in titles do not end up in file names by default.
-- **A Hugging Face token left by the earlier app is no longer passed on** to the app's other processes. The "use the token from the earlier app" option still works.
-- **The app refuses a missing, synced or network app data folder** instead of falling back to the current folder.
-- **Only one copy runs at a time.** Opening Unminute again while it is open shows a message instead of starting a second copy on the same workspace.
+Changes not yet released are in [`changelog.d/`](changelog.d/README.md), one file per pull request.
+`python tools/changelog.py vX.Y.Z` moves them into a new section here when a release is prepared.
 
 ## v0.4.3
 

@@ -47,7 +47,7 @@
 - Add meaningful recovery, cleanup, adapter and packaged-runtime tests with each new subsystem. Existing CI is the legacy baseline, not sufficient evidence for the new architecture. Publish only synthetic fixtures and anonymous aggregate evaluation results.
 
 ## Documentation, review and delivery
-- Update relevant README guidance and documentation alongside behaviour or setup changes; add changelog entries for release-worthy changes. Keep screenshots current when changed UI makes them misleading.
+- Update relevant README guidance and documentation alongside behaviour or setup changes; for release-worthy changes add a fragment in `changelog.d/` (see its README) rather than editing `CHANGELOG.md`, which changes only when a release is prepared. Keep screenshots current when changed UI makes them misleading.
 - Review substantive changes for concrete regressions, verify fixes, and inspect the final diff for unrelated edits, private material and generated noise. Scale review to risk; routine work does not require multiple agents or fixed reviewer counts.
 - Follow the PR and linear-history policy documented in `docs/RELEASING.md`; do not import a merge-commit-only policy. Check actual repository settings before an authorised merge rather than assuming the setup guide proves enforcement.
 - Keep PR validation evidence and remaining limitations clear. When PR delivery is in scope, inspect required CI results and resolve attributable failures before declaring the change ready.
