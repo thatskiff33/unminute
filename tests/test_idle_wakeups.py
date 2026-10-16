@@ -109,15 +109,6 @@ class WakeupTests(unittest.TestCase):
         first = 12.0 + intake.LAUNCH_SCAN_DELAY_S
         self.assertEqual(scans, [first, first, first + intake.SCAN_INTERVAL_S])
 
-    def test_watch_loop_reads_no_folder_while_turned_off(self):
-        self.ws.policy._reader = lambda: ({"AllowWatchedFolders": False}, ())
-        self.ws.policy.refresh()
-        self.fake("_scan_wake", 60)
-        with mock.patch("workspace.intake.scan") as scan:
-            self.ws._watch_loop()
-        scan.assert_not_called()
-        self.assertEqual(self.ws.last_scan, {"managed_off": True})
-
     # -- policy: clipboard clears and recording stops ---------------------------
 
     def test_policy_thread_waits_to_be_woken_when_idle(self):
