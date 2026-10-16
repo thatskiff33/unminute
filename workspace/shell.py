@@ -178,6 +178,170 @@ def set_zoom(window, direction):
     return box["zoom"]
 
 
+SUSPEND_DELAY_S = 3.0      # long enough for the page's 800 ms autosave to finish
+minimise_failed = False    # set if a WebView2 call failed (content-free; for diagnostics)
+
+
+class Minimise:
+    """What to tell WebView2 when the window is minimised and restored
+    (docs/RELEASE_STANDARD.md, section 3). Microsoft advises using either
+    suspend or the low-memory target, not both:
+
+    - minimised with nothing recording: hide it (it stops rendering and the
+      page sees itself hidden), then suspend the page after SUSPEND_DELAY_S,
+      so an edit typed just before minimising is saved first. Suspending sets
+      the low-memory target by itself;
+    - minimised while recording (or a recording is opening): hide it and set
+      the low-memory target, so the page keeps running for the recording and
+      the close question;
+    - restored: cancel a pending suspend, resume, put the memory target back
+      to normal if it was set, and show it.
+
+    `webview` has hide(), show(), low_memory(on), suspend() and resume().
+    `later(seconds, fn)` runs fn later on the UI thread and returns something
+    with cancel()."""
+
+    def __init__(self, webview, recording, later):
+        self.webview, self.recording, self.later = webview, recording, later
+        self.minimised = False
+        self.low = False           # set before the call, so a failure is still undone
+        self.suspended = False
+        self.pending = None
+
+    def changed(self, minimised):
+        if minimised == self.minimised:
+            return
+        self.minimised = minimised
+        if minimised:
+            self.webview.hide()
+            if self.recording():
+                self._low_memory()
+            else:
+                self.pending = self.later(SUSPEND_DELAY_S, self._suspend)
+        else:
+            if self.pending is not None:
+                self.pending.cancel()
+                self.pending = None
+            try:
+                if self.suspended:
+                    self.suspended = False
+                    self.webview.resume()      # resuming also puts memory back to normal
+                if self.low:
+                    self.low = False
+                    self.webview.low_memory(False)
+            finally:
+                self.webview.show()
+
+    def _low_memory(self):
+        self.low = True
+        self.webview.low_memory(True)
+
+    def _suspend(self):
+        # Still minimised and nothing recording? A recording that started in
+        # the meantime keeps its page running at low memory instead.
+        self.pending = None
+        if not self.minimised:
+            return
+        if self.recording():
+            self._low_memory()
+            return
+        self.suspended = True
+        self.webview.suspend()
+
+
+class _WebView2:
+    """The WinForms WebView2 control, for Minimise. Called on the UI thread."""
+
+    def __init__(self, control):
+        self.control = control
+
+    def hide(self):
+        self.control.Visible = False          # sets the controller's IsVisible to false
+
+    def show(self):
+        self.control.Visible = True
+
+    def low_memory(self, on):
+        from Microsoft.Web.WebView2.Core import CoreWebView2MemoryUsageTargetLevel as Level
+        core = self.control.CoreWebView2
+        if core is not None:
+            core.MemoryUsageTargetLevel = Level.Low if on else Level.Normal
+
+    def suspend(self):
+        core = self.control.CoreWebView2
+        if core is not None:
+            # Best effort: WebView2 declines in some cases (audio playing, for
+            # example); the page then just stays hidden.
+            core.TrySuspendAsync()
+
+    def resume(self):
+        core = self.control.CoreWebView2
+        if core is not None and core.IsSuspended:
+            core.Resume()
+
+
+class _UiTimer:
+    """A one-shot WinForms timer: its Tick runs on the UI thread."""
+
+    def __init__(self, seconds, fn):
+        from System import EventHandler
+        from System.Windows.Forms import Timer
+        self.timer = Timer()
+        self.timer.Interval = max(1, int(seconds * 1000))
+
+        def tick(sender, args):
+            self.cancel()
+            _guarded(fn)
+        self.timer.Tick += EventHandler(tick)
+        self.timer.Start()
+
+    def cancel(self):
+        self.timer.Stop()
+        self.timer.Dispose()
+
+
+def _guarded(fn, *args):
+    """Run a window-quietening step; a WebView2 failure never stops the app,
+    and is noted in minimise_failed so it can be seen in diagnostics."""
+    global minimise_failed
+    try:
+        fn(*args)
+    except Exception:
+        minimise_failed = True
+
+
+def watch_minimise(window, recording):
+    """Apply Minimise to the window's minimise and restore. Call once the window
+    is shown. `recording` is a callable: is a recording open or opening now?"""
+    from System import EventHandler
+    from System.Windows.Forms import FormWindowState
+    form = window.native
+    state = Minimise(_WebView2(form.browser.webview), recording, _UiTimer)
+
+    def on_resize(sender, args):              # WinForms raises this on the UI thread
+        _guarded(state.changed, form.WindowState == FormWindowState.Minimized)
+    form.Resize += EventHandler(on_resize)
+    return state
+
+
+def bring_to_front(window):
+    """Restore a minimised window, as it was before (maximised stays
+    maximised), and bring it forward, so a question the page is about to ask
+    can be seen (closing from the taskbar while minimised)."""
+    import ctypes
+
+    from System import Action
+    form = window.native
+
+    def apply():
+        user32 = ctypes.windll.user32
+        handle = form.Handle.ToInt64()
+        if user32.IsIconic(handle):
+            user32.ShowWindow(handle, 9)      # SW_RESTORE: back to normal or maximised
+        form.Activate()
+    form.Invoke(Action(apply))
+
+
 def lock_navigation(window, page="index.html"):
     """Cancel any navigation away from the window's bundled page (WebView2
     NavigationStarting). Attached at before_load, i.e. after the first

@@ -196,6 +196,12 @@ def main():
     def ask():
         # The page answers true when it shows the question; otherwise (page not
         # loaded, an error) the window closes and ws.close() saves the recording.
+        # A window closed from the taskbar while minimised is brought forward
+        # first, so the question can be seen.
+        try:
+            shell.bring_to_front(window)
+        except Exception:
+            pass
         try:
             shown = window.evaluate_js("window.workspace.askClose()")
         except Exception:
@@ -238,6 +244,17 @@ def main():
         except Exception:
             pass
     window.events.shown += never_block_shutdown
+
+    def quiet_when_minimised():
+        # Minimised: WebView2 stops rendering; with nothing recording the page
+        # is suspended, and while recording it runs at low memory
+        # (docs/RELEASE_STANDARD.md). _capturing counts a recording that is
+        # still opening, so its page is never suspended.
+        try:
+            shell.watch_minimise(window, ws._capturing)
+        except Exception:
+            shell.minimise_failed = True   # still works, just not as quietly
+    window.events.shown += quiet_when_minimised
     try:
         # The WebView2 profile lives inside the workspace (and is wiped at the
         # next start if a crash left it), not in %TEMP%.

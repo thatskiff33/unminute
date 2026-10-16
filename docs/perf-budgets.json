@@ -31,6 +31,7 @@
     "leak": {"private_growth_mb": 10}
   },
   "_budget_notes": {
+    "minimised": "Not lowered by R8 (#129), on purpose. Single quick runs on this busy development laptop on 16 Oct 2026 put minimised CPU within noise of main (R8 0.208 and 0.338% of one core; main 0.365 and 0.547%), so ratcheting on them would cause false failures. The repeatable gain was working memory: a private working set of about 70 MB minimised against about 203 MB on main. Private bytes did not change (about 755 MB), because suspending trims working memory, not commit. What CPU remains when minimised is likely mostly the Python side's one-second loops (R7, #128); perf_check reports only the whole tree, so this is not yet measured. Re-ratchet from a median of three runs on the reference laptop.",
     "worker": "A fixed criterion, not a ratchet: the worker's idle unload time (120 s, workspace/worker.py) plus 5 s.",
     "leak": "A fixed criterion from #124: at most 10 MB growth over 30 minutes idle (run with --leak-minutes 30). Not yet measured."
   }
