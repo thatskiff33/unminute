@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./extracted/**)",
+      "Edit(./extracted/**)",
+      "Read(~/AppData/Local/whisper/workspace/**)",
+      "Edit(~/AppData/Local/whisper/workspace/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "$h = \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/private_data_guard.py\"; if (-not (Test-Path -LiteralPath $h)) { exit 0 }; if (-not (Get-Command python -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine('private_data_guard: python is not on PATH, so the guard is not active'); exit 1 }; python $h; exit $LASTEXITCODE"
+          }
+        ]
+      }
+    ]
+  }
+}

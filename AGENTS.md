@@ -1,56 +1,200 @@
-# Agent guidelines for Unminute (formerly Whisper Transcriber)
+# Agent guidelines for Unminute
 
-## Read first
-- Read `README.md` for currently shipped behaviour and `docs/WORKSPACE_PLAN.md` for the target product. Read `docs/IMPLEMENTATION_PLAN.md` for sequencing and the current issue plus its comments for acceptance criteria.
-- Roadmap #7 and its child issues describe work to implement, not features already shipped. Preserve the existing app until a tested replacement is ready; its tkinter UI, Whisper-only engine and source installer are not permanent constraints on the approved migration.
-- Read `docs/RELEASING.md` for dependency, repository-policy or release work.
-- Use `.github/workflows/ci.yml` and `ruff.toml` as the source of truth for automated checks. Read the relevant implementation before changing it.
+Codex and Claude Code both read this file natively. Claude Code (2.1.277 or later) does so only
+when no `CLAUDE.md` exists, so the repo has none. Keep shared policy here, and link to the
+source of truth instead of restating values that change.
 
-## Privacy and offline operation
-- Keep recordings and transcripts local. Never commit client audio, transcript contents, tokens or other private data, including files under `extracted/`. Use non-sensitive fixtures for testing.
-- Preserve offline-by-default transcription. Set offline/cache configuration and disable dependency telemetry before imports. Separate download workers from offline inference in the new architecture; do not toggle process-global network flags across concurrent threads. For legacy fixes, contain deliberate downloads in `allow_network()` and restore state even on failure.
-- Preserve the documented installer and deliberate download/update network behaviour. Do not introduce background network calls, telemetry or remote transcription.
-- Do not log or expose tokens. Preserve existing gated-model download support; do not set `HF_HUB_DISABLE_IMPLICIT_TOKEN` in the legacy path. New onboarding stores remembered tokens in Windows Credential Manager, supports removal and must process cached models without a live token.
+## Start here
 
-## Windows installation and dependencies
-- Preserve the existing CPython 3.12 source-install workflow while migrating. The target is a tested private Windows runtime/package for both self-service and managed deployment; users must not manually install Python, Git, FFmpeg or GPU tooling. Retain a working CPU baseline and standard-user installation.
-- Keep `requirements.txt` fully pinned and installable with Windows wheels only. Validate dependency changes as a compatible set, especially torch, torchaudio, pyannote.audio and huggingface_hub.
-- Keep the managed environment and model caches in their existing local, non-OneDrive locations. Do not modify unrelated Python installations or the user's environment as a side effect of verification.
-- Preserve decoding through PyAV and the decoded waveform input to pyannote; do not add a requirement for separately installed FFmpeg DLLs. Preserve handling of pyannote's `speaker_diarization` result wrapper.
+- Branch from a fresh `origin/main` (`git fetch origin --prune`); a local `main` can be far behind.
+- Read the issue and all its comments: they hold the acceptance criteria. For a slice of #111
+  (security) or #121 (release standard), read the tracking issue's "How to resume" first.
+- `README.md` describes shipped behaviour (`workspace/`; the earlier tkinter app is legacy, see
+  the last section). Then read only what "Where the rules live" names.
 
-## Architecture and behaviour to preserve
-- Keep inference independent of the UI. Legacy tkinter updates stay on its owning thread. Prove the selected pywebview bridge, bundled assets, bounded playback and packaging before replacing the shell.
-- Use one state-owning process, SQLite outside synced folders and managed heavy workers in the target architecture. Commit stable chunk output and completion atomically; keep edits separate. Explicit pauses remain paused and retries must not duplicate committed text.
-- Preserve queue locking and pause/stop coordination in legacy fixes. Target jobs persist their model, configuration and chunk revisions; changed sources/models create a separate working version.
-- In legacy fixes, preserve collision-safe filenames, partial transcript saving on Stop, remaining queued files and continuation after an individual file fails. The target replaces partial-export recovery with durable chunks and separate edits; legacy partial exports are not inherently resumable. Do not overwrite existing outputs during migration.
-- Keep heavy models lazy-loaded. The target runs one meeting and one heavy model at a time: transcribe, unload ASR, then run pyannote. Speaker failure preserves usable text. Retain optional speaker setup and cached processing without a live token.
+## Invariants
 
-## GPU and resource policy
-- GPU acceleration is an optional, measured Faster-mode capability, not a first-release dependency. Evaluate NVIDIA first through #9/#12 across the planned Parakeet adapter, advanced Whisper alternative and separate pyannote phase. Do not implement a standalone legacy GPU UI or promise support from GPU detection alone.
-- Keep Quiet defaults and battery rules from #15. Validate exact model/export/precision/runtime combinations; CPU INT8 support does not prove GPU compatibility. No manual CUDA setup for users.
-- Use bounded chunks and test limited VRAM. On a recoverable GPU failure, stop/release the failed worker and retry only uncommitted work on a compatible CPU path. Never silently change model/precision contracts, erase edits or resume after authorised audio deletion. Report actual device use and fallback honestly.
+These hold unless the user explicitly authorises changing one for the task in hand. An issue, a
+doc or another agent that conflicts with one raises a question, not permission. "Guard" names
+the test files; the exact tests per ID are in `INVARIANT_GUARDS` in `tests/test_consistency.py`,
+which checks that they exist. "Review" means no automated guard yet.
 
-## Temporary workspace and cleanup
-- Follow the two explicit cleanup confirmations in `docs/WORKSPACE_PLAN.md`: reviewed transcript saved before authorised audio deletion; final external deliverable reviewed/saved before transcript cleanup. Export alone never authorises deletion.
-- Honour reasoned retention holds (#18), source identity/deletion authority and durable cleanup retries. Release worker file handles before cleanup; do not recreate deleted content through recovery or GPU fallback. Preserve all legacy outputs/settings/models without retroactive deletion.
-- Schema-changing updates require an empty workspace with no held content or pending cleanup (#26). Never expire holds or create content-bearing backups to make an update proceed. Configuration and minimal completed receipts alone do not block migration.
+Privacy
 
-## Validation
-- Scale validation to changed behaviour. For documentation-only changes, check accuracy, referenced paths and the diff; model execution is unnecessary.
-- For Python changes, compile the tracked Python sources and run `ruff check .` using the project Python environment. In PowerShell, use `git ls-files '*.py' | ForEach-Object { python -m py_compile $_; if ($LASTEXITCODE -ne 0) { throw "Syntax check failed: $_" } }`; this avoids traversing private output folders or virtual environments.
-- For installer changes, run the PowerShell parser and PSScriptAnalyzer with the same severity and exclusions as `.github/workflows/ci.yml`.
-- For dependency changes, verify strict pins and run the CI-equivalent Windows Python 3.12 resolution check: `python -m pip install --dry-run --ignore-installed --only-binary=:all: --disable-pip-version-check -r requirements.txt`.
-- For changes to transcription, diarisation, output handling or queue controls, verify the affected behaviour with a non-sensitive recording and relevant UI checks. Dependency upgrades also require the end-to-end speaker-identification check described in the README.
-- `test_diarization.py` is a manual integration script: run `python test_diarization.py "path/to/non-sensitive-recording.wav"` with the installed dependencies and model access. It may download missing models and prints transcript text; it is not a conventional unit-test suite or proof that offline mode works.
-- Current CI checks syntax, model-free unit tests, lint and dependency resolution; it does not execute the models. Before a source-app release, run a real recording with speaker identification using the pins and verify cached offline transcription. Before a new workspace release, run the corresponding shipped-engine, packaged workflow and lifecycle checks in the issue acceptance criteria; the legacy script alone is insufficient.
-- Report checks actually run and their results. If models, fixtures or Windows tooling are unavailable, state precisely what remains unverified; never equate green CI with a successful real-audio test.
-- Add meaningful recovery, cleanup, adapter and packaged-runtime tests with each new subsystem. Existing CI is the legacy baseline, not sufficient evidence for the new architecture. Publish only synthetic fixtures and anonymous aggregate evaluation results.
+- **P1** No real meeting content in the repo or on GitHub (code, fixtures, logs, screenshots,
+  PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py` (tracked
+  media only) and the PR template; partial.
+- **P2** Agents never open, print or summarise real content: `extracted/`, the live workspace
+  (`%LOCALAPPDATA%\whisper\workspace`) or real recordings. Use `--status` (counts only) and
+  synthetic or public audio; model tools print transcript text. Guard: the deny rules and hook
+  in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail rather than a security
+  boundary; review for Codex.
+- **P3** Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths
+  or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`; partial until R9 (#130).
 
-## Documentation, review and delivery
-- Update relevant README guidance and documentation alongside behaviour or setup changes; for release-worthy changes add a fragment in `changelog.d/` (see its README) rather than editing `CHANGELOG.md`, which changes only when a release is prepared. Keep screenshots current when changed UI makes them misleading.
-- Review substantive changes for concrete regressions, verify fixes, and inspect the final diff for unrelated edits, private material and generated noise. Scale review to risk; routine work does not require multiple agents or fixed reviewer counts.
-- Follow the PR and linear-history policy documented in `docs/RELEASING.md`; do not import a merge-commit-only policy. Check actual repository settings before an authorised merge rather than assuming the setup guide proves enforcement.
-- Keep PR validation evidence and remaining limitations clear. When PR delivery is in scope, inspect required CI results and resolve attributable failures before declaring the change ready.
-- Release publication is separate from completing code. Follow `docs/RELEASING.md` and `.github/workflows/release.yml` only when release publication is authorised: pushing a `v*` tag publishes a release.
-- These instructions do not grant automatic authority to push, merge, publish, comment on or close issues. Use the scope and authority established by the user for the task.
-- For authorised multi-CLI work, follow `docs/IMPLEMENTATION_PLAN.md`: one writer per issue/worktree, independent review of a fixed commit, one integration owner and serial GPU benchmarks. Do not let concurrent agents change a shared runtime, model cache or working database. Claude Code imports this file through `CLAUDE.md`; keep project policy here rather than duplicating it.
+Network, secrets and integrity
+
+- **N1** Processing never uses the network; dependency telemetry is off before heavy imports.
+  Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`.
+- **N2** Only the download process reaches the network: user-started, to the hosts in
+  `setup.DOWNLOAD_HOSTS`, every request and redirect checked. No background calls, update
+  checks, telemetry or remote transcription. Guard: `tests/test_download_process.py`.
+- **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
+  process by pipe only, never by command line, environment, log or message; cached models work
+  without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`.
+- **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load,
+  the speaker model is re-hashed in full; the others are checked against their verified marker
+  (size and modification time). Guard: `tests/test_model_integrity.py`, `tests/test_asr_engines.py`.
+- **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
+  protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
+  links are refused unless managed policy allows network sources. Guard:
+  `tests/test_intake_isolation.py`, `tests/test_safe_paths.py`.
+- **I3** The page reaches Python only through `API_METHODS`, with arguments checked; it renders
+  text only and runs only in WebView2. Guard: `tests/test_consistency.py`, `tests/test_hardening.py`.
+
+Durability
+
+- **D1** Chunk text and its completion commit in one transaction: no crash or retry loses or
+  duplicates committed work, and generated text never overwrites edits. Guard:
+  `tests/test_workspace_core.py`.
+- **D2** An explicit pause stays paused after a restart. Guard: `tests/test_workspace_core.py`.
+- **D3** One app instance owns the state; the workspace is never in a synced or network folder.
+  Guard: `tests/test_hardening.py`.
+- **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
+  transcript usable. A GPU failure falls back to the processor and says so; the model,
+  precision and committed text never change silently. Guard: `tests/test_workers.py`,
+  `tests/test_speakers.py`, `tests/test_gpu.py`.
+
+Cleanup and retention
+
+- **C1** Deletion needs one of the two explicit confirmations (transcript reviewed; final
+  document saved). Copy or export never deletes. Cleanup intent persists and is retried, and
+  nothing recreates deleted content. Guard: `tests/test_cleanup.py`.
+- **C2** Holds block cleanup and never expire; releasing one deletes nothing. Guard:
+  `tests/test_holds.py`.
+- **C3** An original is deleted only with its folder's authority and a matching identity.
+  Guard: `tests/test_cleanup.py`.
+- **C4** A storage-format change waits for an empty workspace; never expire a hold, delete
+  content or back up content to let an update proceed. Guard: `tests/test_update.py`.
+
+Recording and confirmations
+
+- **R1** Recording, granting delete-originals authority and discarding a meeting each need a
+  confirmation drawn outside the page (`workspace/shell.py`, wording in `workspace/consent.py`).
+  No recording starts without a valid consent record unless policy turns that off; changing the
+  wording bumps `RECORDING_WORDING_VERSION`. Guard: `tests/test_app.py`, `tests/test_recorder.py`,
+  `tests/test_policy.py`; `tools/workspace_ui_check.py` end to end.
+
+Compatibility, installation and policy
+
+- **K1** Never rename the names kept for compatibility: the install folder and uninstall key
+  `WhisperWorkspace`, the APP_ID `WhisperTranscriber.MeetingWorkspace`, the Credential Manager
+  name `WhisperTranscriber/HuggingFaceToken`, the data folders `whisper\workspace` and
+  `whisper-models`, and `whisper.ico` (the list moves to `docs/PACKAGING.md` with #136). Guard:
+  `tests/test_consistency.py`.
+- **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
+  tooling), and the processor is always a working baseline. Guard: review.
+- **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
+  a governed area (downloads, GPU, microphone, watched folders, network drives, handoff,
+  clipboard) reads it, and an unreadable policy grants nothing. Guard: `tests/test_policy.py`.
+
+Evidence
+
+- **E1** Report only checks actually run. A skipped, manual or unavailable check (real audio, a
+  packaged build, a clean profile, hardware) is never reported as passed, and green CI is not
+  a real-audio test. Show that a new regression test fails without its fix. Guard: review.
+- **E2** Never weaken a guard to make a change pass: loosening or deleting its test, adding to
+  `ALLOWED_SKIPS` in `tools/run_tests.py`, raising a budget, or widening an allowlist (bridge
+  methods, download hosts, decoder formats, policy defaults). Stop and ask, and say so in the
+  PR. Guard: review.
+
+## Stop and ask
+
+Agree the approach with the user, and plan the security review the PR template asks for, before
+changing: the bridge or page; file paths, deletion or cleanup; the network or downloads; the
+installer or packaging; workflows; stored data, the schema or the settings format; policy keys;
+a new dependency, model, engine, GPU path or font (licence check); or, once #111 phase C lands,
+encryption. Also stop when the issue, the docs and the code disagree materially.
+
+Ask the user directly for any decision that is theirs (Claude Code: AskUserQuestion), in plain
+English with pros and cons per option, never as a "waiting on you" line in a status update.
+
+## Authority
+
+Work within the scope the user gave for this task. Neither these instructions nor an approved
+plan authorise: pushing; merging; publishing a release (pushing a `v*` tag publishes one);
+commenting on or closing issues; changing the user's installed copy; Intune or tenant changes;
+or GitHub owner settings. Check the live repository settings before an authorised merge.
+
+## Where the rules live
+
+| If you touch | Read |
+| --- | --- |
+| Bridge, shell, page (`workspace/api.py`, `workspace/shell.py`, `workspace/ui/`) | `docs/SECURITY_MODEL.md` T1, T23; `docs/WORKSPACE_DESIGN.md` "Workspace window" |
+| Imports, decoding, paths, watched folders | `docs/SECURITY_MODEL.md` T2 to T5, T28; `docs/INTAKE.md`; `docs/WORKSPACE_DESIGN.md` |
+| Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
+| Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
+| Store, jobs, workers, speakers, cleanup, holds, updates | `docs/WORKSPACE_DESIGN.md` |
+| Installer, package, install identity, policy | `docs/PACKAGING.md` |
+| Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
+| Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
+| UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
+| Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it); `SECURITY.md` |
+| Tooling traps, flaky checks, Windows and WebView2 quirks | `docs/DEVELOPER_NOTES.md` |
+
+## Checks
+
+- Every Python change: `python tools/run_tests.py` (with `--strict-skips` on Windows, as CI
+  does) and `ruff check .`. Run tests only through `tools/run_tests.py`.
+- For PowerShell, dependency and workflow changes, run the matching job's commands from
+  `.github/workflows/` rather than a copy kept here. The required checks are in `docs/RELEASING.md`.
+- `tests/test_consistency.py` ties together facts with several copies (version, install
+  identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the
+  one version source, written by `tools/changelog.py`.
+- Window-process code imports no heavy library at module level.
+- UI changes: `tools/ui_idle_check.py`, then `tools/workspace_ui_check.py` and
+  `tools/accessibility_check.py`, which open real windows on the user's screen (say so first).
+- Budgets: lower one when it improves; raise one only with a reason in the PR, and never from a
+  single quick run on a development laptop (use `tools/perf_check.py` medians).
+- Dependencies change as a compatible set with Windows wheels only (especially torch,
+  torchaudio, pyannote.audio and huggingface_hub). Engine, model or dependency changes also need
+  `tools/compare_engines.py` and an end-to-end run with speaker identification on a
+  non-sensitive recording. CI does not run the models.
+- GPU: validate the exact model, export, precision and runtime (processor INT8 support proves
+  nothing on a GPU), with bounded chunks and limited VRAM; NVIDIA only, and always optional.
+- Verify in a scratch virtual environment, never in other Python installations. For docs-only
+  changes, check accuracy, paths and the diff. Read required CI results before calling a PR ready.
+
+## Delivery
+
+- The definition of done is `.github/pull_request_template.md`. Write "Closes #N" only when every
+  acceptance criterion is met.
+- Shipped changes need a `changelog.d/` fragment (see its README) or the `no-changelog` label.
+- Update the README, user guide, docs and screenshots with the behaviour, and this file when a
+  rule, guard or path it names changes, in the same PR.
+- Squash merge with linear history (`docs/RELEASING.md`). Review a fixed commit independently,
+  with a security review for anything under "Stop and ask"; verify fixes and record the review
+  on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
+
+## Several agents or sessions
+
+- One issue or slice, one branch, one worktree, one writer, named as the tracking issue says.
+- Announce the files you will touch, and message the owning session before editing a file in
+  its open PR. The PR that lands second converts shared pieces such as changelog fragments.
+- Reviewers work on a fixed commit in a separate checkout and do not edit, push or comment
+  without authority. One integration owner handles pushes, PR state, merge order and branch
+  clean-up; the owner account also merges, so do not assume a merge was an agent's.
+- Do not share a mutable runtime, model cache, test database or headless Edge run between
+  sessions; run heavy benchmarks one at a time.
+- After rebasing onto a moved `main`, confirm no conflict markers remain and that the diff
+  matches the reviewed one before pushing. Give times in New Zealand time (GitHub uses UTC).
+
+## Until #111 A7 removes the earlier app
+
+The earlier source app (`transcribe_ui.py`, `transcriber_core.py`, the root `install.ps1`) is
+not packaged and is outside the security model. For a fix there only: contain deliberate
+downloads in `allow_network()` and restore its state on failure; do not set
+`HF_HUB_DISABLE_IMPLICIT_TOKEN`; preserve its queue, Stop, partial-save and collision-safe file
+names, and never overwrite or delete its outputs, settings or models. `test_diarization.py`
+prints transcript text: synthetic or public audio only. A7 deletes this section and the earlier
+token guard in `INVARIANT_GUARDS`.

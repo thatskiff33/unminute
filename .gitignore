@@ -2,13 +2,32 @@
 # (client recordings) and must never be committed.
 extracted/
 
+# Recordings are private by default and stay out of the repo (AGENTS.md, P1).
+# A synthetic fixture needs an explicit exception here and in tests/test_consistency.py.
+*.mp3
+*.m4a
+*.wav
+*.mp4
+*.mov
+*.mkv
+*.flac
+*.ogg
+*.aac
+*.wma
+*.webm
+*.avi
+*.f32
+
 # Python
 __pycache__/
 *.pyc
 .venv/
 
-# Local tooling / editor state
-.claude/
+# Local tooling / editor state. The shared Claude Code settings and hook are
+# committed (AGENTS.md, invariant P2); personal Claude files stay local.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 .vscode/
 .idea/
 *.log
