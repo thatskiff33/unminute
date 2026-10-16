@@ -61,7 +61,9 @@ def _allowed(uri, page="index.html"):
     #fragment or ?query on the page itself is allowed. Both sides are
     percent-decoded, because Python and Chromium encode characters such as
     ( ) ' ! differently."""
-    target = _norm_url(uri).split("#", 1)[0].split("?", 1)[0]
+    # Cut the fragment and query before decoding, so an encoded "%23" or
+    # "%3F" in the path cannot pass for one.
+    target = _norm_url(str(uri).split("#", 1)[0].split("?", 1)[0])
     return target == _norm_url(ui_url(page))
 
 

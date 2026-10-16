@@ -58,7 +58,8 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(shell._allowed(page + "#meeting"))
         self.assertTrue(shell._allowed(page + "?x=1"))
         for other in (shell.ui_url("trial.html"), shell.ui_url("app.js"),
-                      shell.ui_url("img/logo.svg")):
+                      shell.ui_url("img/logo.svg"), page + "%23/evil.html",
+                      page + "%3F/../trial.html"):
             self.assertFalse(shell._allowed(other), other)
         self.assertTrue(shell._allowed(shell.ui_url("trial.html"), "trial.html"))
         self.assertFalse(shell._allowed(page, "trial.html"))
