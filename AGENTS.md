@@ -22,7 +22,8 @@ which checks that they exist. "Review" means no automated guard yet.
 Privacy
 
 - **P1** No real meeting content in the repo or on GitHub (code, fixtures, logs, screenshots,
-  PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py`.
+  PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py` (tracked
+  media only) and the PR template; partial.
 - **P2** Agents never open, print or summarise real content: `extracted/`, the live workspace
   (`%LOCALAPPDATA%\whisper\workspace`) or real recordings. Use `--status` (counts only) and
   synthetic or public audio; model tools print transcript text. Guard: the deny rules and hook
@@ -41,11 +42,13 @@ Network, secrets and integrity
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work
   without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`.
-- **I1** Models are verified against the manifest before use; the speaker model is re-hashed in
-  full at every load. Guard: `tests/test_model_integrity.py`, `tests/test_asr_engines.py`.
+- **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load,
+  the speaker model is re-hashed in full; the others are checked against their verified marker
+  (size and modification time). Guard: `tests/test_model_integrity.py`, `tests/test_asr_engines.py`.
 - **I2** Untrusted media is decoded only in the sandboxed decode process, within its format,
-  protocol and size limits, by PyAV (users never install FFmpeg); network drives and symbolic
-  links are refused. Guard: `tests/test_intake_isolation.py`, `tests/test_safe_paths.py`.
+  protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
+  links are refused unless managed policy allows network sources. Guard:
+  `tests/test_intake_isolation.py`, `tests/test_safe_paths.py`.
 - **I3** The page reaches Python only through `API_METHODS`, with arguments checked; it renders
   text only and runs only in WebView2. Guard: `tests/test_consistency.py`, `tests/test_hardening.py`.
 
@@ -59,8 +62,8 @@ Durability
   Guard: `tests/test_hardening.py`.
 - **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
   transcript usable. A GPU failure falls back to the processor and says so; the model,
-  precision and committed text never change silently. Guard: `tests/test_speakers.py`,
-  `tests/test_gpu.py`.
+  precision and committed text never change silently. Guard: `tests/test_workers.py`,
+  `tests/test_speakers.py`, `tests/test_gpu.py`.
 
 Cleanup and retention
 
@@ -119,6 +122,7 @@ or GitHub owner settings. Check the live repository settings before an authorise
 | Bridge, shell, page (`workspace/api.py`, `workspace/shell.py`, `workspace/ui/`) | `docs/SECURITY_MODEL.md` T1, T23; `docs/WORKSPACE_DESIGN.md` "Workspace window" |
 | Imports, decoding, paths, watched folders | `docs/SECURITY_MODEL.md` T2 to T5, T28; `docs/INTAKE.md`; `docs/WORKSPACE_DESIGN.md` |
 | Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
+| Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
 | Store, jobs, workers, speakers, cleanup, holds, updates | `docs/WORKSPACE_DESIGN.md` |
 | Installer, package, install identity, policy | `docs/PACKAGING.md` |
 | Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
@@ -145,7 +149,12 @@ or GitHub owner settings. Check the live repository settings before an authorise
   torchaudio, pyannote.audio and huggingface_hub). Engine, model or dependency changes also need
   `tools/compare_engines.py` and an end-to-end run with speaker identification on a
   non-sensitive recording. CI does not run the models.
+- GPU: validate the exact model, export, precision and runtime (processor INT8 support proves
+  nothing on a GPU), with bounded chunks and limited VRAM; NVIDIA only, and always optional.
+- Verify in a scratch virtual environment; never change unrelated Python installations or the
+  user's environment.
 - Documentation-only changes: check accuracy, every referenced path and the diff.
+- Before calling a PR ready, read the required CI results and fix any failures the change caused.
 
 ## Delivery
 

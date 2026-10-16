@@ -70,7 +70,13 @@ class ShellTests(unittest.TestCase):
                         "ls extracted",
                         "git add -f extracted",
                         r"Get-Content $env:LOCALAPPDATA\whisper\workspace\workspace.db",
-                        "sqlite3 ~/AppData/Local/whisper/workspace/workspace.db .dump"):
+                        r'Get-Content "$env:LOCALAPPDATA\whisper\workspace\settings.json"',
+                        "sqlite3 ~/AppData/Local/whisper/workspace/workspace.db .dump",
+                        "rg -n budget extracted/",
+                        'grep -r "x" "extracted/"',
+                        r"Select-String -Pattern 'x' -Path extracted\notes.md",
+                        "python tools/run_tests.py && cat extracted/a.md",
+                        "git diff --no-index extracted/a.md b.md"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))
@@ -90,9 +96,26 @@ class ShellTests(unittest.TestCase):
                         "python tools/ui_idle_check.py",
                         "grep -n extracted .gitignore",
                         "ls ../unminute-r7/workspace",
-                        "git status --short"):
+                        "git status --short",
+                        "git check-ignore -v extracted/x"):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command)))
+
+    def test_message_text_and_search_patterns_are_allowed(self):
+        # Rules must stay quotable and searchable: commit messages, PR bodies,
+        # heredocs and search patterns are text, not paths to read.
+        for command in ('git commit -m "Block access to extracted/ and the live workspace"',
+                        'git commit -m "Ignore *.wav and *.mp4"',
+                        'git commit -m "Add a note on where extracted text goes"',
+                        'grep -rn "extracted/" .gitignore',
+                        r'rg -n "whisper\\workspace" workspace',
+                        r"Select-String -Path AGENTS.md -Pattern 'whisper\\workspace'",
+                        'git log -S "extracted/" --oneline',
+                        r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\whisper\workspace"',
+                        "git commit -F - <<'EOF'\nStop staging *.wav files in extracted/\nEOF"):
+            for name in ("Bash", "PowerShell"):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_other_tools_are_allowed(self):
         self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ whisper/workspace")))
@@ -128,15 +151,27 @@ class HookProcessTests(unittest.TestCase):
         shell_exe = shutil.which("powershell") or shutil.which("pwsh")
         if not shell_exe:
             self.skipTest("PowerShell not installed")
+        if not shutil.which("python"):                # the configured command runs "python"
+            self.skipTest("python not on PATH")
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(ROOT)}
+
+        def run(payload, project):
+            env = {**os.environ, "CLAUDE_PROJECT_DIR": str(project)}
+            return subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
+                                   command], input=json.dumps(payload),
+                                  capture_output=True, text=True, timeout=60, env=env)
+
         for payload, expected in ((shell("git add meeting.m4a"), 2), (shell("git status"), 0)):
             with self.subTest(command=payload["tool_input"]["command"]):
-                result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
-                                         command], input=json.dumps(payload),
-                                        capture_output=True, text=True, timeout=60, env=env)
+                result = run(payload, ROOT)
                 self.assertEqual(expected, result.returncode, result.stderr)
+        # A checkout from before the hook existed has no hook file. That must
+        # allow, never block: exit 2 there would stop every tool call, including
+        # the git command needed to get back.
+        with tempfile.TemporaryDirectory() as empty:
+            result = run(shell("git add meeting.m4a"), empty)
+            self.assertNotEqual(2, result.returncode, result.stderr)
 
 
 class SettingsTests(unittest.TestCase):
@@ -156,6 +191,7 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("$env:CLAUDE_PROJECT_DIR", guards[0]["command"])
         # Without this PowerShell reports the hook's exit 2 as 1, which only warns.
         self.assertTrue(guards[0]["command"].rstrip().endswith("exit $LASTEXITCODE"))
+        self.assertIn("Test-Path", guards[0]["command"])     # a missing hook file allows
 
     def test_media_extensions_cover_the_apps_import_list(self):
         source = (ROOT / "workspace" / "app.py").read_text(encoding="utf-8")

@@ -15,7 +15,7 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/private_data_guard.py\"; exit $LASTEXITCODE"
+            "command": "$h = \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/private_data_guard.py\"; if (-not (Test-Path -LiteralPath $h)) { exit 0 }; if (-not (Get-Command python -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine('private_data_guard: python is not on PATH, so the guard is not active'); exit 1 }; python $h; exit $LASTEXITCODE"
           }
         ]
       }

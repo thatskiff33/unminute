@@ -270,9 +270,12 @@ INVARIANT_GUARDS = {
     "D2": {"tests/test_workspace_core.py": ["test_explicit_pause_survives_restart"]},
     "D3": {"tests/test_hardening.py": ["test_only_one_copy_holds_the_workspace",
                                       "test_location_inside_onedrive_is_refused"]},
-    "D4": {"tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],
+    "D4": {"tests/test_workers.py": ["test_one_model_at_a_time_in_the_same_worker",
+                                    "test_idle_worker_unloads"],
+           "tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],
            "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so"]},
     "C1": {"tests/test_cleanup.py": ["test_copy_or_export_alone_never_deletes",
+                                    "test_intent_survives_a_crash_and_is_retried",
                                     "test_late_worker_result_cannot_recreate_content"]},
     "C2": {"tests/test_holds.py": ["test_release_never_deletes_silently"]},
     "C3": {"tests/test_cleanup.py": [
@@ -325,7 +328,7 @@ class AgentInstructionTests(unittest.TestCase):
         self.assertEqual([], sorted(missing), "AGENTS.md names paths that no longer exist")
 
     def test_invariant_guards_exist(self):
-        bullets = re.findall(r"^- \*\*([A-Z]\d+)\*\*(.*?)(?=^- \*\*|^\S|\Z)", self.invariants,
+        bullets = re.findall(r"^- \*\*([A-Z]+\d+)\*\*(.*?)(?=^- \*\*|^\S|\Z)", self.invariants,
                              re.MULTILINE | re.DOTALL)
         self.assertGreaterEqual(len(bullets), 10, "the invariant pattern no longer matches")
         ids = [ident for ident, _ in bullets]

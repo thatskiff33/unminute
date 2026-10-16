@@ -4,13 +4,17 @@
 # invariants P1 and P2):
 #   - file tools may not touch a repo's extracted/ folder (the earlier app's
 #     transcripts) or the live workspace (%LOCALAPPDATA%\whisper\workspace);
-#   - shell commands may not name either of them;
+#   - shell commands may not name either of them as something to read, list,
+#     copy or stage;
 #   - git add and git commit may not name a media file.
+# Message text (commit messages, PR bodies, heredocs) and the patterns given to
+# text searches are ignored, so rules can be quoted and searched for.
 # It is a guard rail, not a security boundary: a command can build a path these
 # patterns do not see. Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
-# settings run it through PowerShell (Git Bash may be missing) and end with
+# settings run it through PowerShell (Git Bash may be missing), skip it when the
+# file is absent (a branch from before it existed), and end with
 # "exit $LASTEXITCODE": PowerShell otherwise turns the 2 into a 1, which only warns.
 
 import json
@@ -26,20 +30,26 @@ MEDIA_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac", ".o
 # The live workspace, however the path is written: %LOCALAPPDATA%\whisper\workspace,
 # $env:LOCALAPPDATA/whisper/workspace, ~/AppData/Local/whisper/workspace.
 LIVE_WORKSPACE = re.compile(r"(?<![\w-])whisper[\\/]+workspace(?![\w-])", re.IGNORECASE)
-
-# extracted/ followed by a path separator, as a path of its own (not "unextracted/").
-EXTRACTED_PATH = re.compile(r"(?<![\w.-])extracted[\\/]", re.IGNORECASE)
-# A bare "extracted" given to a command that lists, reads, copies or stages it.
-# Text searches (grep, rg) are left out so the word itself can still be searched for.
-EXTRACTED_ARG = re.compile(
-    r"\b(?:ls|dir|gci|get-childitem|tree|find|cat|type|gc|get-content|head|tail|less|more|"
-    r"cp|copy|copy-item|xcopy|robocopy|add)\b[^|;&\n]*?"
-    r"(?<![\w.-])extracted(?![\w.-])",
-    re.IGNORECASE)
-
-GIT_STAGING = re.compile(r"\bgit\b[^|;&\n]*?\b(?:add|commit)\b", re.IGNORECASE)
+# extracted/ as a path of its own (not "unextracted/"), with or without a separator.
+EXTRACTED = re.compile(r"(?<![\w.-])extracted(?:[\\/]|(?![\w.-]))", re.IGNORECASE)
 MEDIA_TOKEN = re.compile(r"[^\s\"']+(?:" + "|".join(re.escape(e) for e in MEDIA_EXTENSIONS)
                          + r")(?=[\s\"']|$)", re.IGNORECASE)
+
+# Text that is written, not read: heredoc bodies and the values of message options.
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1.*?^\s*\2\s*$", re.DOTALL | re.MULTILINE)
+MESSAGE_VALUE = re.compile(
+    r"(?<![\w-])(?:-m|-F|-b|-t|--message|--body|--title|--notes|--subject|--description)"
+    r"(?:\s+|=)(\"(?:[^\"\\]|\\.)*\"|'[^']*'|@'.*?'@|@\".*?\"@)",
+    re.DOTALL)
+TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
+# A search's pattern: the value of its pattern option, or else its first quoted argument.
+PATTERN_VALUE = re.compile(r"(?<![\w-])(?:-e|--regexp|-pattern|-simplematch)(?:\s+|=)"
+                           r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)", re.IGNORECASE)
+SEGMENTS = re.compile(r"\|\||&&|[|;&\n]")
+
+# Commands whose first argument is a search pattern rather than a path.
+SEARCHES = {"grep", "egrep", "fgrep", "rg", "findstr", "select-string", "sls", "ag"}
+GIT_SEARCHES = {"grep", "log"}                 # git log -S/-G take a pattern
 
 FILE_FIELDS = ("file_path", "notebook_path", "path", "pattern")
 FILE_TOOLS = {"Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep"}
@@ -58,6 +68,57 @@ def _repo_extracted(path, cwd):
         if parent.name.lower() == "extracted" and (parent.parent / "AGENTS.md").is_file():
             return True
     return False
+
+
+def _segments(command):
+    """The command's segments with message text removed, each as (words, text)."""
+    command = HEREDOC.sub(" ", command)
+    command = MESSAGE_VALUE.sub(" ", command)
+    for segment in SEGMENTS.split(command):
+        words = segment.split()
+        # Skip assignments and wrappers to reach the program name.
+        while words and (words[0] in ("sudo", "env", "time", "&", ".") or "=" in words[0]):
+            words = words[1:]
+        if words:
+            yield [w.strip("\"'").lower() for w in words], segment
+
+
+def _program(words):
+    name = re.split(r"[\\/]", words[0])[-1]
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _drop_first_argument(text, git):
+    """The segment without its first non-option argument (a search's pattern)."""
+    tokens = TOKEN.findall(text)
+    start = 2 if git else 1                    # after "rg", or after "git grep"
+    for i in range(start, len(tokens)):
+        if not tokens[i].startswith("-"):
+            return " ".join(tokens[:i] + tokens[i + 1:])
+    return text
+
+
+def _check_shell(command):
+    for words, text in _segments(command):
+        program = _program(words)
+        sub = words[1] if len(words) > 1 else ""
+        if program in SEARCHES or (program == "git" and sub in GIT_SEARCHES):
+            # A search pattern may name anything; the paths searched may not.
+            stripped = PATTERN_VALUE.sub(" ", text)
+            text = stripped if stripped != text else _drop_first_argument(text, program == "git")
+        if LIVE_WORKSPACE.search(text):
+            return f"A command naming the live Unminute workspace is blocked. {ADVICE}"
+        # Most git subcommands cannot read an ignored folder's files (check-ignore,
+        # status); staging and --no-index diffs can.
+        git_reads = sub in ("add", "stage", "mv") or "--no-index" in words
+        if EXTRACTED.search(text) and (program != "git" or git_reads):
+            return f"A command naming the repo's extracted/ folder is blocked. {ADVICE}"
+        if program == "git" and sub in ("add", "commit", "stage"):
+            media = MEDIA_TOKEN.search(text)
+            if media:
+                return (f"Staging or committing {media.group(0)} is blocked: recordings stay out "
+                        "of the repo (AGENTS.md, invariant P1).")
+    return None
 
 
 def decide(payload):
@@ -81,17 +142,7 @@ def decide(payload):
 
     if tool in SHELL_TOOLS:
         command = tool_input.get("command")
-        if not isinstance(command, str):
-            return None
-        if LIVE_WORKSPACE.search(command):
-            return f"A command naming the live Unminute workspace is blocked. {ADVICE}"
-        if EXTRACTED_PATH.search(command) or EXTRACTED_ARG.search(command):
-            return f"A command naming the repo's extracted/ folder is blocked. {ADVICE}"
-        if GIT_STAGING.search(command):
-            media = MEDIA_TOKEN.search(command)
-            if media:
-                return (f"Staging or committing {media.group(0)} is blocked: recordings stay out "
-                        "of the repo (AGENTS.md, invariant P1).")
+        return _check_shell(command) if isinstance(command, str) else None
     return None
 
 

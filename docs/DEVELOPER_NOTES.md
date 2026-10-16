@@ -46,6 +46,9 @@ real time, and remove it when the cause is fixed.
 - **PowerShell turns a hook's exit code 2 (block) into 1 (warn only)** unless the command ends
   with `exit $LASTEXITCODE`. `tests/test_agent_guard.py` runs the configured command through
   PowerShell to catch both mistakes.
+- **A hook that exits 2 because it cannot run blocks everything**, including the `git switch`
+  needed to recover. The guard's command therefore allows when the hook file is missing (a
+  branch from before it existed) and warns with exit 1 when `python` is not on `PATH`.
 - **Simulating a hook with a PowerShell pipeline misleads.** Piping into `powershell -Command`
   from PowerShell does not reach the native program, and `$input` adds a byte order mark. Test
   with a real process pipe, as the test does.
@@ -61,7 +64,7 @@ real time, and remove it when the cause is fixed.
 - **Real-window checks** (`tools/workspace_ui_check.py`, `tools/accessibility_check.py`) open
   windows on the user's screen and answer their own dialogs. Tell the user before running one.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
-  the Windows runner and passed on rerun. It looks timing-dependent; no issue has been opened yet.
+  the Windows runner and passed on rerun (#148).
 
 ## Git and worktrees
 
