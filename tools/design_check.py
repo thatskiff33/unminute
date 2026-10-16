@@ -8,7 +8,9 @@
 #
 #   python tools/design_check.py <out-dir> [case ...]
 #
-# Needs Microsoft Edge and Pillow. Development tool only; not shipped.
+# Needs Microsoft Edge and Pillow (Pillow only for the comparison, so
+# tools/ui_idle_check.py can reuse the server and Edge helpers on CI without
+# it). Development tool only; not shipped.
 
 """Compare the approved design boards with the app, screen by screen."""
 
@@ -21,8 +23,6 @@ import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
-
-from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 UI = ROOT / "workspace" / "ui"
@@ -138,6 +138,7 @@ def shoot(url, out, width, height, dark=False):
 
 def compare(board_png, app_png, out_png):
     """Board | app | difference (red where they differ). Returns % of pixels changed."""
+    from PIL import Image, ImageChops
     a = Image.open(board_png).convert("RGB")
     b = Image.open(app_png).convert("RGB")
     if b.size != a.size:

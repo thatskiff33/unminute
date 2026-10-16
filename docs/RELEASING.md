@@ -24,6 +24,11 @@ These settings cannot be applied from a script that only has push access, so set
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
+Newer checks start outside that list:
+- **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage) and `.github/workflows/changelog.yml` (changelog entry).
+- **How they become required:** after 10 consecutive green runs, move the job into `ci.yml` and add it to the list above. Adding it to the ruleset needs the owner account.
+- **The changelog check:** it looks for a changelog entry whenever a pull request changes what is shipped. Add the `no-changelog` label to a pull request whose change is not worth a release note.
+
 Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps are configured in `.github/dependabot.yml` (monthly, grouped, both requirement files, a 7-day cooldown; torch, torchaudio and torchcodec limited to patch releases). CodeQL analyses the Python code and the workflows from `.github/workflows/codeql.yml`.
 
 ## Workflow supply-chain rules

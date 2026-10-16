@@ -6,6 +6,55 @@
 // All names and text are the fictional sample meeting used on the boards.
 "use strict";
 (() => {
+  // -- perf mode (tools/ui_idle_check.py) ------------------------------------------
+  // index.html?perf=visible|hidden&ms=60000 counts what the idle page does over
+  // ms of page time: bridge calls per method, timers and meeting-list rebuilds.
+  // Timers are wrapped here, before app.js loads. "hidden" makes the page report
+  // itself hidden, as a minimised window should.
+  const query = new URLSearchParams(location.search);
+  const perfMode = query.get("perf");
+  const perf = { calls: {}, timeouts: 0, rebuilds: 0, intervals: new Map() };
+  const realSetTimeout = window.setTimeout.bind(window);
+  if (perfMode) {
+    const realSetInterval = window.setInterval.bind(window);
+    const realClearInterval = window.clearInterval.bind(window);
+    window.setInterval = (fn, ms, ...rest) => {
+      const id = realSetInterval(fn, ms, ...rest);
+      perf.intervals.set(id, Number(ms) || 0);
+      return id;
+    };
+    window.clearInterval = (id) => { perf.intervals.delete(id); realClearInterval(id); };
+    window.setTimeout = (fn, ms, ...rest) => { perf.timeouts++; return realSetTimeout(fn, ms, ...rest); };
+    if (perfMode === "hidden") {
+      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    }
+  }
+  function perfMeasure() {
+    const ms = Number(query.get("ms")) || 60000;
+    if (perfMode === "hidden") document.dispatchEvent(new Event("visibilitychange"));
+    const groups = document.getElementById("groups");
+    if (groups) new MutationObserver(() => { perf.rebuilds++; }).observe(groups, { childList: true });
+    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0;      // count from here
+    realSetTimeout(() => {
+      const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
+      const calls = Object.fromEntries(Object.entries(perf.calls).map(([k, v]) => [k, perMinute(v)]));
+      const live = [...perf.intervals.values()];
+      const result = {
+        mode: perfMode, page_ms: ms, calls_per_minute: calls,
+        bridge_calls_per_minute: perMinute(Object.values(perf.calls).reduce((a, b) => a + b, 0)),
+        timeouts_per_minute: perMinute(perf.timeouts),
+        list_rebuilds_per_minute: perMinute(perf.rebuilds),
+        live_intervals: live.length,
+        fastest_interval_ms: live.length ? Math.min(...live) : null,
+      };
+      const out = document.createElement("pre");
+      out.id = "perf-result";
+      out.textContent = JSON.stringify(result);
+      document.body.append(out);
+    }, ms);
+  }
+
   // A fixed clock: 15 Oct 2026, 2:30 pm local time.
   const FIXED = new Date(2026, 9, 15, 14, 30, 0).getTime();
   const RealDate = Date;
@@ -367,6 +416,7 @@
   };
   const api = new Proxy({}, {
     get: (_, method) => async (...args) => {
+      perf.calls[method] = (perf.calls[method] || 0) + 1;
       const fn = handlers[method];
       if (!fn) return { ok: false, error: `The design check has no sample data for ${String(method)}.` };
       return { ok: true, value: fn(...args) };
@@ -379,6 +429,9 @@
     window.dispatchEvent(new Event("pywebviewready"));
     let chain = new Promise((r) => setTimeout(r, 600));
     for (const step of scenario.steps) chain = chain.then(step).then(() => new Promise((r) => setTimeout(r, 300)));
-    chain.then(() => { document.documentElement.dataset.ready = "1"; });
+    chain.then(() => {
+      document.documentElement.dataset.ready = "1";
+      if (perfMode) perfMeasure();
+    });
   });
 })();

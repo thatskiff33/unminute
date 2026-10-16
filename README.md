@@ -215,7 +215,7 @@ Design and plans:
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
 - [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md), [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release criteria, release process and hands-on checks.
 
-Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `python test_diarization.py "path\to\recording.wav"` checks Whisper with pyannote speaker identification, and `tools/durable_core_check.py` checks the workspace's processing core. CI runs the jobs in `.github/workflows/ci.yml` and `codeql.yml` on pull requests and pushes to main; [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md) lists every gate and where it runs. CI does not run the models.
+Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `python test_diarization.py "path\to\recording.wav"` checks Whisper with pyannote speaker identification, and `tools/durable_core_check.py` checks the workspace's processing core. CI runs the workflows in `.github/workflows/` on pull requests and pushes to main; [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md) lists every gate and where it runs. CI does not run the models.
 
 ## Licence
 
