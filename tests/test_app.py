@@ -429,6 +429,113 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)][-1], "done")
         self.assertTrue(ws.transcript(m["id"])["items"])    # the transcript is untouched
 
+    # -- skipping speaker identification ------------------------------------------------
+
+    def wait_for_speakers(self, ws):
+        import time as _time
+        deadline = _time.time() + 120
+        while _time.time() < deadline and not (ws._busy and ws._busy[1] == "speakers"):
+            _time.sleep(0.1)
+        self.assertEqual(ws._busy and ws._busy[1], "speakers")
+
+    def test_skip_stops_a_running_pass_and_it_never_restarts(self):
+        import time as _time
+
+        from workspace import handoff
+        ws = self.open(start=False)
+        ws.speaker_model = fake("diarizer_sleepy")          # a long speaker pass
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        self.wait_for_speakers(ws)
+        [m] = ws.meetings()
+        ws.skip_speakers(m["id"])
+        ws.skip_speakers(m["id"])                           # a double click is harmless
+        self.assertTrue(ws.wait_idle(30))
+        _time.sleep(1)
+        self.assertIsNone(ws._busy)                         # nothing restarts it
+        vid = ws.store.active_version(m["id"])["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)],
+                         ["superseded", "skipped"])
+        [m] = ws.meetings()
+        self.assertEqual((m["stage"], m["busy"], m["paused"]), ("review", None, False))
+        self.assertEqual(ws.detail(m["id"])["speakers"]["status"], "skipped")
+        page = ws.transcript(m["id"])
+        self.assertTrue(page["items"])
+        self.assertFalse(any(i["who"] for i in page["items"]))     # no labels
+        # Straight on to review and hand off, with no speaker labels.
+        ws.confirm_reviewed(m["id"])
+        tmpl = ws.templates.get("summary")
+        out = handoff.build(ws.store, m["id"], tmpl)
+        self.assertIn("Speakers (as labelled): not identified", out["markdown"])
+
+    def test_skip_before_the_text_is_ready_means_no_pass_at_all(self):
+        ws = self.open(start=False)
+        ws._import_one(self.rec)            # imported and planned; nothing processed yet
+        [m] = ws.meetings()
+        self.assertEqual(m["stage"], "inbox")
+        ws.skip_speakers(m["id"])
+        ws.start()
+        self.assertTrue(ws.wait_idle(120))
+        vid = ws.store.active_version(m["id"])["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)], ["skipped"])
+        self.assertEqual(ws.meetings()[0]["stage"], "review")
+
+    def test_skip_resumes_a_paused_pass_into_review(self):
+        ws = self.open(start=False)
+        ws.speaker_model = fake("diarizer_sleepy")
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        self.wait_for_speakers(ws)
+        [m] = ws.meetings()
+        ws.pause(m["id"])
+        self.assertTrue(ws.wait_idle(30))
+        self.assertTrue(ws.meetings()[0]["paused"])
+        ws.skip_speakers(m["id"])                           # Paused was only for speakers
+        self.assertFalse(ws.meetings()[0]["paused"])
+        self.assertTrue(ws.wait_idle(30))
+        self.assertIsNone(ws._busy)
+
+    def test_speakers_can_be_identified_after_a_skip(self):
+        ws = self.open(start=False)
+        ws.speaker_model = fake("diarizer_sleepy")
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        self.wait_for_speakers(ws)
+        [m] = ws.meetings()
+        ws.skip_speakers(m["id"])
+        self.assertTrue(ws.wait_idle(30))
+        ws.speaker_model = fake("fake_diarizer")
+        ws.rerun_speakers(m["id"])
+        self.assertTrue(ws.wait_idle(120))
+        self.assertEqual(ws.detail(m["id"])["speakers"]["status"], "done")
+        self.assertTrue(all(i["who"] for i in ws.transcript(m["id"])["items"]))
+
+    def test_skip_is_refused_once_labelled_or_reviewed(self):
+        ws = self.open()
+        mid = self.imported(ws)                             # speakers done
+        with self.assertRaises(WorkspaceError):
+            ws.skip_speakers(mid)
+        ws.confirm_reviewed(mid)
+        with self.assertRaises(WorkspaceError):
+            ws.skip_speakers(mid)
+        with self.assertRaises(WorkspaceError):
+            ws.skip_speakers("0" * 32)
+
+    def test_transcribing_again_keeps_the_skip(self):
+        ws = self.open(start=False)
+        ws.speaker_model = fake("diarizer_sleepy")
+        ws.start()
+        self.assertEqual(ws.import_paths([str(self.rec)])["accepted"], 1)
+        self.wait_for_speakers(ws)
+        [m] = ws.meetings()
+        ws.skip_speakers(m["id"])
+        self.assertTrue(ws.wait_idle(30))
+        ws.settings.update(model=fake("sentences_v2"))
+        ws.retranscribe(m["id"])
+        self.assertTrue(ws.wait_idle(120))
+        vid = ws.store.active_version(m["id"])["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)], ["skipped"])
+
     def test_gpu_component_downloads_while_a_cpu_speaker_pass_runs(self):
         from unittest import mock
 

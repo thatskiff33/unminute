@@ -238,6 +238,11 @@ function workRow(m, busyTitle) {
   const resume = () => button("Resume", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true });
   const stopNow = () => button("Stop now", () => attempt(() => call("stop_now", m.id).then(refresh)),
                                { title: "Stops at once; the part in progress is redone later" });
+  const skip = () => button("Skip speakers", () => attempt(async () => {
+    await call("skip_speakers", m.id);
+    say("Speaker identification skipped. The meeting is ready to review.");
+    await refresh();
+  }), { title: "Go straight to review and hand off without speaker labels. You can still identify speakers later." });
   let meta, pill = null, bar = null, actions;
   if (m.stage === "inbox" && m.paused) {
     meta = `${m.progress}% · paused by you`;
@@ -255,13 +260,13 @@ function workRow(m, busyTitle) {
   } else if (m.paused) {
     meta = "text ready · speaker identification paused";
     pill = ["paused", "Paused"];
-    actions = [resume(), discardLink(m)];
+    actions = [resume(), skip(), discardLink(m)];
   } else {
     meta = "text ready · working out who spoke";
     pill = ["", "Identifying speakers"];
     bar = ["busy", null];
     actions = [pause("Stops speaker identification now; Resume starts it again from the beginning. The transcript is not affected."),
-               discardLink(m)];
+               skip(), discardLink(m)];
   }
   const progress = bar ? el("div", { class: `progress ${bar[0]}`, role: "progressbar",
     "aria-label": `${m.title}: ${bar[1] === null ? "working" : `${bar[1]}% transcribed`}`,
@@ -547,25 +552,39 @@ function renderSpeakers(d) {
   const box = $("m-speakers");
   const card = (cls, title, text, ...extra) => el("div", { class: `panel-card ${cls}` },
     title, text ? el("span", { class: "panel-text", textContent: text }) : null, ...extra);
+  const canSkip = !d.reviewed_at && state.version === null;
+  const skip = () => canSkip ? button("Skip speaker identification", () => attempt(async () => {
+    await call("skip_speakers", state.mid);
+    say("Speaker identification skipped. The transcript is ready to review and hand off.");
+    await refresh();
+  }), { title: "Go straight to review and hand off without speaker labels. You can still identify speakers later." }) : null;
   let content = null;
   if (!s && d.stage === "inbox")
     content = card("soft", el("span", { class: "panel-title", textContent: "Not identified yet" }),
-      "Speakers are worked out once the text is ready. You can review the words in the meantime.");
+      "Speakers are worked out once the text is ready. You can review the words in the meantime. " +
+      "For one or two people you can skip this.", skip());
   else if (!s)
     content = card("soft", el("span", { class: "panel-title", textContent: "Not identified" }),
-      "Speaker identification runs after transcription when it is downloaded and turned on in Settings.");
+      "Speaker identification runs after transcription when it is downloaded and turned on in Settings.",
+      skip());
+  else if (s.status === "skipped")
+    content = card("soft", el("span", { class: "panel-title", textContent: "Skipped" }),
+      "No speaker labels. The transcript is ready to review and hand off as it is." +
+      (canRerun(d) ? " To label speakers later, use Identify again." : ""));
   else if (s.status === "running")
     content = card("soft", el("span", { class: "running" }, el("span", { class: "spinner", "aria-hidden": "true" }),
         "Identifying speakers…"),
       "The transcript is ready to review while this runs.",
       d.busy ? button("Pause", () => attempt(() => call("pause", state.mid).then(refresh)),
-                      { title: "Stops speaker identification now; Resume starts it again from the beginning." }) : null);
+                      { title: "Stops speaker identification now; Resume starts it again from the beginning." }) : null,
+      skip());
   else if (s.status === "failed")
     content = card("bad", el("span", { class: "panel-title", textContent: "Speaker identification did not work" }),
       `${s.error || "Unknown reason"}. The transcript is still usable.`);
   else if (s.status === "interrupted")
     content = card("soft", el("span", { class: "panel-title", textContent: "Interrupted" }),
-      s.error || "Speaker identification was interrupted and will start again from the beginning.");
+      s.error || "Speaker identification was interrupted and will start again from the beginning.",
+      skip());
   box.replaceChildren(...(content ? [content] : []));
   box.hidden = !content;
 
