@@ -72,14 +72,66 @@ def resolve_within(path, roots):
     return Path(real)
 
 
-def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=False):
+DRIVE_REMOTE = 4
+NETWORK_MESSAGE = ("Recordings on network drives are not accepted. Copy the recording to "
+                   "this computer first (synced folders such as OneDrive are fine).")
+
+
+def _drive_type(text):
+    """Windows drive type of the path's drive letter (DRIVE_REMOTE for a
+    mapped network drive); None elsewhere."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    root = ntpath.splitdrive(text)[0] + "\\"
+    return ctypes.WinDLL("kernel32").GetDriveTypeW(ctypes.c_wchar_p(root))
+
+
+def _refuse_links(text):
+    """Refuse a path that passes through a symbolic link, checked with lstat
+    (which does not follow links) before anything resolves the path: a link
+    could lead to a network share, and resolving it would contact the server
+    and offer it Windows credentials. Directory junctions, which can only
+    point at local volumes, are still allowed and checked after resolving."""
+    parts = Path(text).parts
+    current = Path(parts[0])
+    for part in parts[1:]:
+        current = current / part
+        try:
+            st = os.lstat(current)
+        except OSError:
+            return                   # missing: reported by the checks that follow
+        if stat.S_ISLNK(st.st_mode):
+            raise UnsafePathError("Recordings reached through a symbolic link are not "
+                                  "accepted. Choose the file itself.")
+
+
+def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=False,
+                        allow_network=False):
     """Accept an existing regular file with an allowed extension and size.
 
     `roots` limits where the real target may live (None = anywhere local).
-    Cloud placeholders that are not on disk are refused with a clear message
-    rather than silently triggering a download (#24 handles hydration)."""
+    Mapped network drives and symbolic links are refused unless
+    allow_network is set (managed policy, #111 A5); the resolved path is
+    checked again in every case. Cloud placeholders that are not on disk are
+    refused with a clear message rather than silently triggering a download
+    (#24 handles hydration)."""
     text = check_raw(path)
-    real = resolve_within(text, roots) if roots else Path(os.path.realpath(text, strict=False))
+    if not allow_network:
+        if _drive_type(text) == DRIVE_REMOTE:
+            raise UnsafePathError(NETWORK_MESSAGE)
+        _refuse_links(text)
+    if roots:
+        real = resolve_within(text, roots)
+    else:
+        real = Path(os.path.realpath(text, strict=False))
+        if not allow_network:        # a mapped drive resolves to \\server\share
+            try:
+                check_raw(real)      # a link or mapped drive must not lead to \\server
+            except UnsafePathError as exc:
+                raise UnsafePathError(NETWORK_MESSAGE) from exc
+    if not allow_network and _drive_type(str(real)) == DRIVE_REMOTE:
+        raise UnsafePathError(NETWORK_MESSAGE)
     try:
         st = os.stat(real)
     except OSError as exc:

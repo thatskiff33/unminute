@@ -67,6 +67,46 @@ class FileValidationTests(unittest.TestCase):
         finally:
             os.rmdir(link)   # removes the junction only, never its target
 
+    def test_symbolic_link_on_the_way_is_refused(self):
+        link = self.root / "link.wav"
+        try:
+            os.symlink(self.outside / "secret.wav", link)
+        except OSError:
+            self.skipTest("creating symlinks needs Developer Mode or admin on Windows")
+        with self.assertRaises(sp.UnsafePathError) as ctx:
+            sp.validate_input_file(link, AUDIO, 10**6)
+        self.assertIn("symbolic link", str(ctx.exception))
+        # allow_network (managed policy) lifts the link and drive rules only
+        self.assertTrue(sp.validate_input_file(link, AUDIO, 10**6, allow_network=True))
+
+    def test_mapped_network_drive_is_refused_before_resolving(self):
+        from unittest import mock
+        with mock.patch.object(sp, "_drive_type", return_value=sp.DRIVE_REMOTE), \
+                mock.patch.object(sp.os.path, "realpath") as realpath:
+            with self.assertRaises(sp.UnsafePathError) as ctx:
+                sp.validate_input_file(self.root / "ok.wav", AUDIO, 10**6)
+            realpath.assert_not_called()              # nothing contacted the server
+        self.assertIn("network drives", str(ctx.exception))
+
+    def test_a_path_that_resolves_to_a_network_share_is_refused(self):
+        from unittest import mock
+        with mock.patch.object(sp.os.path, "realpath",
+                               return_value="\\\\server\\share\\ok.wav"):
+            with self.assertRaises(sp.UnsafePathError) as ctx:
+                sp.validate_input_file(self.root / "ok.wav", AUDIO, 10**6)
+        self.assertIn("network drives", str(ctx.exception))
+
+    def test_junction_to_a_local_folder_is_still_allowed(self):
+        link = self.root / "via-junction"
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.outside)],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        try:
+            got = sp.validate_input_file(link / "secret.wav", AUDIO, 10**6)
+            self.assertEqual(got, Path(os.path.realpath(self.outside / "secret.wav")))
+        finally:
+            os.rmdir(link)
+
     def test_refuses_wrong_type_empty_large_and_directories(self):
         (self.root / "notes.exe").write_bytes(b"MZ")
         (self.root / "empty.wav").write_bytes(b"")

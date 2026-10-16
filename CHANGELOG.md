@@ -5,6 +5,9 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
+- **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
+
 Security hardening (#111, slice A4):
 
 - **The network block covers more.** Besides ordinary connections and name lookups, the app's Python processes now also refuse UDP datagrams and the Windows asyncio connection path, which went around the block before. `--self-test` checks all three against a reserved address that is never contacted.
@@ -12,8 +15,12 @@ Security hardening (#111, slice A4):
 - **Downloads work behind a firm's inspecting proxy.** Certificates are checked against the Windows certificate store (truststore), so a proxy certificate that IT has installed is trusted without any unsafe workaround. A fixed proxy is needed: proxies given only by an automatic configuration script (PAC or WPAD) are not used.
 - **The speaker model is fully checked before every use.** Its files are re-hashed each time they are loaded, not just compared by size and date, because the model format can run code.
 
-- **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
-- **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
+Security hardening (#111, slice A3):
+
+- **Recordings are decoded in a separate, sandboxed process.** Each imported file is decoded by a short-lived helper that runs at Windows' Low integrity level (the level browsers use for web pages) inside a Windows job. Windows stops it writing your files, opening the app's process, starting programs directly or using more than 2 GB of memory, and normally also the clipboard (inside some managed sessions the session's own limits apply instead), and it ends when the app closes. It sends back only plain audio, which the app checks, writes and hashes itself. It can still read files you can read, so a decoder flaw would mainly be a privacy risk; the firewall rule for managed devices (#111 B7) closes the network side.
+- **Only real recordings are opened.** The decoder accepts only the supported recording formats and local files, whatever a file claims to be, so playlists, stream descriptions and scripts disguised as recordings are refused.
+- **Limits on what a file can do.** Decoding stops at 12 hours of audio and keeps at least 1 GB of disk space free.
+- **Network drives are refused for imports.** Files on mapped network drives, or reached through a symbolic link, are refused with a message to copy them first. Synced folders such as OneDrive are unaffected.
 
 Security hardening (#111, slice A2):
 
