@@ -264,7 +264,7 @@ class Workspace:
         return m["title"], m["created_at"]
 
     def consent_required(self):
-        """Each recording needs the Windows confirmation that everyone has been
+        """Each recording needs the confirmation (in the app's own window) that everyone has been
         told (#111 A6), unless the organisation's policy turns it off."""
         return self._allowed("RequireRecordingConsent")
 
@@ -413,7 +413,7 @@ class Workspace:
         return self._recording is not None or self._rec_starting
 
     def start_recording(self, device, name=None, consent=None):
-        """consent: the record of the Windows confirmation (workspace.consent),
+        """consent: the record of the confirmation (workspace.consent),
         kept with the recording. The bridge asks for it; it is required unless
         policy turns the confirmation off."""
         self._need_microphone()

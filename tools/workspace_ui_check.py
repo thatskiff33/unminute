@@ -88,30 +88,45 @@ def dialog_button(hwnd, text):
     return found[0] if found else 0
 
 
-def press(script, title):
+def press(script, title, seen=None):
     """Act on the confirmation as a person would, through Windows messages
-    (the page has no way to): "click:Yes", "enter", "wait:1.3"."""
+    (the page has no way to): "click:<button or statement>", "enter",
+    "wait:1.3", "open?" (notes whether the window is still open)."""
     import ctypes
     user32 = ctypes.WinDLL("user32")
     hwnd = find_dialog(title)
     if not hwnd:
         return False
     for step in script:
+        if step == "open?":
+            if seen is not None:
+                seen.append(bool(user32.IsWindow(hwnd) and user32.IsWindowVisible(hwnd)))
+            continue
         kind, _, arg = step.partition(":")
         if kind == "wait":
             time.sleep(float(arg))
         elif kind == "click":
-            user32.SendMessageW(dialog_button(hwnd, arg), 0x00F5, 0, 0)       # BM_CLICK
+            # The mouse messages a real click sends, at the button's centre
+            # (BM_CLICK would use wherever the pointer happens to be).
+            from ctypes import wintypes
+            button = dialog_button(hwnd, arg)
+            rect = wintypes.RECT()
+            user32.GetClientRect(button, ctypes.byref(rect))
+            at = (rect.bottom // 2) << 16 | (rect.right // 2)
+            user32.PostMessageW(button, 0x0201, 1, at)                        # WM_LBUTTONDOWN
+            user32.PostMessageW(button, 0x0202, 0, at)                        # WM_LBUTTONUP
             time.sleep(0.2)
-        elif kind == "enter":                                                 # No has focus
-            user32.PostMessageW(dialog_button(hwnd, "No"), 0x0100, 0x0D, 0)   # WM_KEYDOWN Enter
-            user32.PostMessageW(dialog_button(hwnd, "No"), 0x0101, 0x0D, 0)
+        elif kind == "enter":                                             # Cancel has focus
+            cancel = dialog_button(hwnd, "Cancel")
+            user32.PostMessageW(cancel, 0x0100, 0x0D, 0)                      # WM_KEYDOWN Enter
+            user32.PostMessageW(cancel, 0x0101, 0x0D, 0)
     return True
 
 
 def native_checks(window, ws, mid):
-    """The Windows confirmation: Yes is ignored at first, Enter means No, the
-    bridge reports a No without acting, and Yes works after the delay. The
+    """The app's own confirmation window: the action is ignored at first and
+    until a statement is ticked, Enter means Cancel, the bridge reports a
+    Cancel without acting, and the action works after the wait. The
     recording indicator changes the title and the taskbar overlay and
     restores them."""
     import ctypes
@@ -122,9 +137,9 @@ def native_checks(window, ws, mid):
     from workspace import consent
     out = {}
 
-    def run_with(script, title, call):
+    def run_with(script, title, call, seen=None):
         done = {}
-        clicker = threading.Thread(target=lambda: done.update(ok=press(script, title)),
+        clicker = threading.Thread(target=lambda: done.update(ok=press(script, title, seen)),
                                    daemon=True)
         clicker.start()
         result = call()
@@ -132,10 +147,11 @@ def native_checks(window, ws, mid):
         return result, done.get("ok", False)
 
     title = "Workspace UI check: confirm"
-    # An immediate click on Yes is ignored (disabled); Enter then means No.
+    plain = {"title": title, "body": "Synthetic check. Nothing changes.", "action": "Confirm",
+             "style": "primary", "icon": "tick"}
+    # An immediate click on the action is ignored (disabled); Enter means Cancel.
     out["early_yes_then_enter"], out["pressed_1"] = run_with(
-        ["click:Yes", "enter"], title,
-        lambda: shell.native_confirm(window, title, "Synthetic check. Nothing changes."))
+        ["click:Confirm", "enter"], title, lambda: shell.native_confirm(window, plain))
     # Through the bridge: a No for Discard leaves the meeting in place.
     bridge = api.make_api(ws, lambda: window, decline_pause_s=0)
     result, out["pressed_2"] = run_with(["enter"], consent.DISCARD_TITLE,
@@ -144,8 +160,17 @@ def native_checks(window, ws, mid):
     out["meeting_kept"] = ws.store.meeting(mid) is not None
     # After the delay, Yes answers Yes.
     out["yes_after_delay"], out["pressed_3"] = run_with(
-        ["wait:1.3", "click:Yes"], title,
-        lambda: shell.native_confirm(window, title, "Synthetic check. Nothing changes."))
+        ["wait:1.3", "click:Confirm"], title, lambda: shell.native_confirm(window, plain))
+    # A statement to tick: the action is ignored until it is ticked, and for a
+    # moment after ticking; then it answers.
+    ticked = dict(plain, title="Workspace UI check: tick first",
+                  check="I have read this synthetic question.")
+    seen = []
+    out["tick_first"], out["pressed_4"] = run_with(
+        ["wait:1.3", "click:Confirm", "open?", "click:I have read this synthetic question.",
+         "click:Confirm", "open?", "wait:1.3", "click:Confirm"], ticked["title"],
+        lambda: shell.native_confirm(window, ticked), seen)
+    out["open_until_ticked"] = seen
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -448,7 +473,9 @@ def main():
     nv = report.get("native") or {}
     if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
             and nv.get("bridge_no") and nv.get("meeting_kept")
-            and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")):
+            and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
+            and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")
+            and nv.get("pressed_4")):
         bad.append("native confirmation")
     if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
             and nv.get("overlay_on") and nv.get("overlay_off")):

@@ -168,17 +168,11 @@ function speakersWord(n) { return n ? `${n} speaker${n === 1 ? "" : "s"}` : null
 const MODE = { quiet: "Quiet mode", faster: "Faster mode" };
 
 function discardLink(m) {
+  // The app asks in its own window, which the page cannot answer (#111 A6).
   return linkButton("Discard…", () => attempt(async () => {
-    const d = await call("detail", m.id);            // its own deletion limits
-    confirmDialog({
-      title: "Discard this meeting?",
-      body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
-      check: "Delete this meeting and everything in it.", limitsText: d.limits, danger: true,
-      onConfirm: () => attempt(() => call("discard_meeting", m.id).then((r) => {
-        say(r && r.cancelled ? declined(r, "Nothing was discarded.") : "Meeting discarded.");
-        refresh();
-      })),
-    });
+    const r = await call("discard_meeting", m.id);
+    say(r && r.cancelled ? declined(r, "Nothing was discarded.") : "Meeting discarded.");
+    refresh();
   }), "Delete a meeting you do not need (for example a test recording)");
 }
 
@@ -1813,18 +1807,11 @@ function folderItem(f) {
       disabled: !f.delete_originals && !allowed("AllowDeleteOriginals"),
       on: { change: (e) => {
         if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
-        e.target.checked = false;
-        confirmDialog({
-          title: "Allow deleting originals from this folder?",
-          body: "After you confirm a meeting's transcript is reviewed, the app may delete the original recording from this folder, but only if it is exactly the file that was imported. " +
-            "Do not allow this for shared folders, Teams or channel storage, or recordings someone else (such as a meeting organiser) owns. Copies elsewhere, such as on a phone, in the cloud recycle bin or in backups, are not removed.",
-          check: "I am responsible for recordings in this folder and allow the app to delete reviewed originals from it.",
-          limits: false,
-          onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then((r) => {
-            if (r && r.cancelled) say(declined(r, "Nothing changed: originals in this folder are kept."));
-            return renderSettings();
-          })),
-        });
+        e.target.checked = false;                     // until the app's own window confirms
+        attempt(() => call("set_folder_authority", f.id, true, null).then((r) => {
+          if (r && r.cancelled) say(declined(r, "Nothing changed: originals in this folder are kept."));
+          return renderSettings();
+        }));
       } } }),
       "Delete originals from this folder after review…"),
     f.delete_originals && !allowed("AllowDeleteOriginals")

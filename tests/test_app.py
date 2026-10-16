@@ -889,8 +889,8 @@ class NativeConfirmationTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def bridge(self, **kw):
-        def confirm(title, text):
-            self.asked.append((title, text))
+        def confirm(question):
+            self.asked.append(question)
             return self.answer
         return api.make_api(self.ws, confirm=confirm, **{"decline_pause_s": 0, **kw})
 
@@ -905,7 +905,8 @@ class NativeConfirmationTests(unittest.TestCase):
             start.assert_not_called()                       # No: nothing starts
             self.answer = True
             self.assertEqual(b.start_recording(3, "Mic")["value"], {"ok": 1})
-        self.assertEqual(self.asked[0], (consent.RECORDING_TITLE, consent.RECORDING_TEXT))
+        self.assertEqual(self.asked[0], consent.recording_question())
+        self.assertTrue(self.asked[0]["check"])            # a statement to tick first
         record = start.call_args.kwargs["consent"]
         self.assertEqual((record["confirmed"], record["wording"]),
                          (True, consent.RECORDING_WORDING_VERSION))
@@ -934,8 +935,9 @@ class NativeConfirmationTests(unittest.TestCase):
         self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
         self.assertIsNotNone(self.ws.store.meeting(self.mid))          # still there
         title = self.ws.meeting_for_discard(self.mid)[0]
-        self.assertIn(title, self.asked[0][1])
-        self.assertTrue(self.asked[0][1].startswith("Its audio, transcript"))   # warning first
+        self.assertIn(title, self.asked[0]["detail"])       # named from the app's records
+        self.assertEqual((self.asked[0]["style"], self.asked[0]["action"]), ("danger", "Discard"))
+        self.assertIn("cannot remove copies", self.asked[0]["limits"])
         self.answer = True
         self.assertTrue(b.discard_meeting(self.mid)["ok"])
         self.assertFalse(b.discard_meeting("0" * 32)["ok"])            # unknown: not asked
@@ -948,7 +950,7 @@ class NativeConfirmationTests(unittest.TestCase):
         folder.mkdir()
         fid = self.ws.add_watched_folder(str(folder), False)
         self.assertEqual(b.set_folder_authority(fid, True, None)["value"], api.CANCELLED)
-        self.assertIn(os.path.realpath(folder), self.asked[0][1])   # the folder, from the app
+        self.assertIn(os.path.realpath(folder), self.asked[0]["detail"])   # from the app
         b.set_folder_authority(fid, False, None)                   # taking it away: no question
         b.set_folder_authority(fid, None, True)                    # cloud downloads: no question
         self.assertEqual(len(self.asked), 1)
@@ -989,17 +991,18 @@ class NativeConfirmationTests(unittest.TestCase):
         from workspace import shell
         opened, release = threading.Event(), threading.Event()
 
-        def slow_question(window, title, text):
+        def slow_question(window, question, theme):
             opened.set()
             release.wait(10)
             return True
         with mock.patch.object(shell, "_ask", side_effect=slow_question):
             first = {}
             t = threading.Thread(target=lambda: first.update(answer=shell.native_confirm(
-                object(), "First", "text")))
+                object(), {"title": "First"}, theme="light")))
             t.start()
             self.assertTrue(opened.wait(10))
-            self.assertFalse(shell.native_confirm(object(), "Second", "text"))   # not shown
+            self.assertFalse(shell.native_confirm(object(), {"title": "Second"},
+                                                  theme="light"))      # not shown
             release.set()
             t.join(10)
         self.assertTrue(first["answer"])
@@ -1039,7 +1042,7 @@ class NativeConfirmationTests(unittest.TestCase):
         from unittest import mock
 
         from workspace import shell
-        api.make_api(self.ws, lambda: window, confirm=lambda t, x: True)
+        api.make_api(self.ws, lambda: window, confirm=lambda question: True)
         with mock.patch.object(shell, "show_recording",
                                side_effect=lambda w, on: shown.append((w, on))):
             self.ws._recording = object()             # stands in for an open recording

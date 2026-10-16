@@ -496,125 +496,400 @@ def run(func=None, args=None, debug=False, storage_path=None):
 
 # -- native confirmations and the recording indicator (#111 A6) -------------------
 
+# The action button stays disabled this long after the question appears or
+# returns to the front, and after any click or key press before then, so
+# input meant for the page cannot land on it.
 CONFIRM_DELAY_MS = 1000
 _asking = threading.Lock()                 # one question at a time
 
+# The page's design tokens (workspace/ui/tokens.css), for the window the app
+# draws itself. Colours with transparency are mixed over the card colour.
+_THEMES = {
+    "light": {"card": "#FFFFFF", "text": "#142966", "muted": "#566591", "soft": "#EEF7FD",
+              "line": (20, 41, 102, 0.28), "scrim": "#142966", "scrim_opacity": 0.45,
+              "focus": "#E56600", "secondary": ("#FFFFFF", "#142966"),
+              "primary": ("#142966", "#FFFFFF"), "danger": ("#B3261E", "#FFFFFF"),
+              "record": ("#E56600", "#FFFFFF"),
+              "icon": {"tick": ("#B4DDF6", "#142966"), "mic": ("#B4DDF6", "#142966"),
+                       "bin": ("#B3261E", "#FFFFFF")}},
+    "dark": {"card": "#142966", "text": "#FFFFFF", "muted": (255, 255, 255, 0.74),
+             "soft": (255, 255, 255, 0.06), "line": (255, 255, 255, 0.32),
+             "scrim": "#050C21", "scrim_opacity": 0.6, "focus": "#E56600",
+             "secondary": ("#142966", "#FFFFFF"), "primary": ("#B4DDF6", "#142966"),
+             "danger": ("#B3261E", "#FFFFFF"), "record": ("#E56600", "#FFFFFF"),
+             "icon": {"tick": ("#B4DDF6", "#142966"), "mic": ("#B4DDF6", "#142966"),
+                      "bin": ("#B3261E", "#FFFFFF")}},
+}
+# The page icons' strokes, in their 24-unit view box (workspace/ui/index.html).
+_ICONS = {
+    "tick": [("lines", [(5, 12), (10, 17), (19, 7)])],
+    "bin": [("lines", [(4, 7), (20, 7)]), ("lines", [(10, 11), (10, 17)]),
+            ("lines", [(14, 11), (14, 17)]), ("lines", [(6, 7), (7, 20), (17, 20), (18, 7)]),
+            ("lines", [(9, 7), (9, 4), (15, 4), (15, 7)])],
+    "mic": [("round", (9, 2, 6, 12, 3)), ("arc", (5, 3, 14, 14, 0, 180)),
+            ("lines", [(12, 17), (12, 21)])],
+}
 
-def native_confirm(window, title, text):
-    """Ask a Yes/No question in a small Windows dialog owned by the app window.
-    It is outside the web page, so page script cannot answer it.
+
+def app_theme():
+    """The page follows Windows' app colour mode (prefers-color-scheme); so
+    does the confirmation."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            return "light" if winreg.QueryValueEx(key, "AppsUseLightTheme")[0] else "dark"
+    except OSError:
+        return "light"
+
+
+def native_confirm(window, question, theme=None):
+    """Ask a question (workspace.consent) in a window the app draws itself,
+    in Unminute's own style, owned by the app window and outside the web page,
+    so page script cannot answer it.
 
     - One question at a time: while one is open, another is not shown (No).
-    - The buttons have no keyboard shortcuts; Enter and Esc mean No.
-    - Yes is disabled for CONFIRM_DELAY_MS after the dialog appears or is
-      activated again, and any click or key press meanwhile restarts the
-      wait, so clicks or typing meant for the page cannot land on it.
-    - Yes responds only to a mouse click on it, never to the keyboard (focus
-      can be moved to it with the arrow keys, but Enter or Space there does
-      nothing).
-    True only for Yes."""
+    - Enter and Esc mean Cancel; no button has a keyboard shortcut.
+    - A statement to tick, if the question has one, must be ticked.
+    - The action button is enabled only CONFIRM_DELAY_MS after the window
+      appears or returns to the front, and after any click or key press
+      before then; it answers only a mouse button released over it, never
+      the keyboard.
+    True only for the action."""
     if not _asking.acquire(blocking=False):
         return False
     try:
-        return _ask(window, title, text)
+        return _ask(window, question, theme or app_theme())
     finally:
         _asking.release()
 
 
-def _ask(window, title, text):
+def _colour(value, under="#FFFFFF"):
+    from System.Drawing import Color, ColorTranslator
+    if isinstance(value, tuple):
+        base = ColorTranslator.FromHtml(under)
+        r, g, b, a = value
+        return Color.FromArgb(int(r * a + base.R * (1 - a)), int(g * a + base.G * (1 - a)),
+                              int(b * a + base.B * (1 - a)))
+    return ColorTranslator.FromHtml(value)
+
+
+def _fade(colour, under, amount):
+    """The colour at `amount` opacity over `under` (a disabled control)."""
+    from System.Drawing import Color
+    return Color.FromArgb(int(colour.R * amount + under.R * (1 - amount)),
+                          int(colour.G * amount + under.G * (1 - amount)),
+                          int(colour.B * amount + under.B * (1 - amount)))
+
+
+def _rounded(x, y, w, h, r):
+    from System.Drawing.Drawing2D import GraphicsPath
+    path, d = GraphicsPath(), 2 * r
+    path.AddArc(x, y, d, d, 180, 90)
+    path.AddArc(x + w - d, y, d, d, 270, 90)
+    path.AddArc(x + w - d, y + h - d, d, d, 0, 90)
+    path.AddArc(x, y + h - d, d, d, 90, 90)
+    path.CloseFigure()
+    return path
+
+
+def _ask(window, question, theme):
+    import ctypes
+
     from System import Action, EventHandler
-    from System.Drawing import Size, SizeF, SystemFonts
-    from System.Windows.Forms import (AutoScaleMode, AutoSizeMode, Button, DialogResult,
-                                      DockStyle, FlowDirection, FlowLayoutPanel, Form,
-                                      FormBorderStyle, FormStartPosition, KeyEventHandler,
-                                      Label, MouseEventHandler, Padding, TableLayoutPanel,
-                                      Timer)
+    from System.Drawing import (Font, FontStyle, GraphicsUnit, Pen, Point, Rectangle, Size,
+                                SolidBrush)
+    from System.Drawing.Drawing2D import LineCap, SmoothingMode
+    from System.Windows.Forms import (Button, CheckBox, DialogResult, Form, FormBorderStyle,
+                                      FormStartPosition, FormWindowState, KeyEventHandler,
+                                      Label, MouseEventHandler, PaintEventHandler, Panel,
+                                      TextFormatFlags, TextRenderer, Timer)
     owner = window.native
+    t = _THEMES[theme]
     box = {}
 
     def ask():
-        dialog, timer, font = Form(), Timer(), SystemFonts.MessageBoxFont
+        scale = getattr(owner, "DeviceDpi", 96) / 96.0
+
+        def px(value):
+            return int(round(value * scale))
+
+        def font(size, bold=False, semibold=False):
+            family = "Segoe UI Semibold" if semibold else "Segoe UI"
+            return Font(family, size * scale, FontStyle.Bold if bold else FontStyle.Regular,
+                        GraphicsUnit.Pixel)
+        card = _colour(t["card"])
+        text_c, muted = _colour(t["text"], t["card"]), _colour(t["muted"], t["card"])
+        soft, line = _colour(t["soft"], t["card"]), _colour(t["line"], t["card"])
+        focus = _colour(t["focus"])
+        fonts = {"title": font(22, bold=True), "body": font(15),
+                 "detail": font(15, semibold=True), "small": font(13),
+                 "button": font(15, semibold=True), "check": font(15, semibold=True)}
+        dialog, scrim, timer = Form(), None, Timer()
+        disposables = list(fonts.values())
         try:
-            dialog.SuspendLayout()
-            dialog.AutoScaleDimensions = SizeF(96, 96)  # sizes below are at 100 %
-            dialog.AutoScaleMode = AutoScaleMode.Dpi
-            dialog.Text = title
-            dialog.AccessibleDescription = text         # read by Narrator with the title
-            dialog.Font = font
-            dialog.FormBorderStyle = FormBorderStyle.FixedDialog
+            # The page's dimmed backdrop over the app, then the card on top.
+            if owner.WindowState != FormWindowState.Minimized:
+                scrim = Form()
+                scrim.FormBorderStyle = getattr(FormBorderStyle, "None")
+                scrim.ShowInTaskbar = False
+                scrim.StartPosition = FormStartPosition.Manual
+                scrim.BackColor = _colour(t["scrim"])
+                scrim.Opacity = t["scrim_opacity"]
+                scrim.Bounds = owner.RectangleToScreen(owner.ClientRectangle)
+                scrim.Show(owner)
+            dialog.Text = question["title"]               # Narrator reads the title...
+            dialog.AccessibleDescription = question["body"]   # ...and the question
+            dialog.FormBorderStyle = getattr(FormBorderStyle, "None")
             dialog.StartPosition = FormStartPosition.CenterParent
-            dialog.MinimizeBox = dialog.MaximizeBox = False
             dialog.ShowInTaskbar = False
-            dialog.KeyPreview = True                     # every key press reaches restart()
-            dialog.AutoSize = True
-            dialog.AutoSizeMode = AutoSizeMode.GrowAndShrink
-            dialog.Padding = Padding(18)
-            message = Label()
-            message.Text = text
-            message.UseMnemonic = False                 # an "&" in a title stays text
-            message.AutoSize = True
-            message.MaximumSize = Size(460, 0)
-            message.Margin = Padding(0, 0, 0, 18)
-            no, yes = Button(), Button()
-            for button, label in ((no, "No"), (yes, "Yes")):
-                button.Text = label                      # no "&": no keyboard shortcut
+            dialog.BackColor = card
+            dialog.KeyPreview = True
+            width = min(px(580), (owner.ClientSize.Width if scrim else px(580)) - px(32))
+            pad, inner = px(28), min(px(580), max(px(360), width)) - 2 * px(28)
+            y = pad
+
+            def label(text, f, colour, w, back=card):
+                item = Label()
+                item.Text = text
+                item.Font = f
+                item.ForeColor, item.BackColor = colour, back
+                item.UseMnemonic = False
+                item.AutoSize = True
+                item.MaximumSize = Size(w, 0)
+                return item
+
+            # Head: the page's icon circle and title.
+            icon = Panel()
+            icon.Size = Size(px(44), px(44))
+            icon.Location = Point(pad, y)
+            icon.BackColor = card
+            icon_bg, icon_fg = (_colour(c) for c in t["icon"][question.get("icon", "tick")])
+
+            def paint_icon(sender, e):
+                g = e.Graphics
+                g.SmoothingMode = SmoothingMode.AntiAlias
+                brush = SolidBrush(icon_bg)
+                g.FillEllipse(brush, 0, 0, px(44) - 1, px(44) - 1)
+                brush.Dispose()
+                pen = Pen(icon_fg, 2.2 * scale)
+                pen.StartCap = pen.EndCap = LineCap.Round
+
+                def at(x, y_):
+                    return Point(px(11 + x * 22 / 24), px(11 + y_ * 22 / 24))
+                for kind, shape in _ICONS[question.get("icon", "tick")]:
+                    if kind == "lines":
+                        g.DrawLines(pen, [at(*p) for p in shape])
+                    elif kind == "round":
+                        x, y_, w, h, r = shape
+                        corner = at(x, y_)
+                        path = _rounded(corner.X, corner.Y, px(w * 22 / 24), px(h * 22 / 24),
+                                        px(r * 22 / 24))
+                        g.DrawPath(pen, path)
+                        path.Dispose()
+                    else:
+                        x, y_, w, h, start, sweep = shape
+                        corner = at(x, y_)
+                        g.DrawArc(pen, corner.X, corner.Y, px(w * 22 / 24), px(h * 22 / 24),
+                                  start, sweep)
+                pen.Dispose()
+            icon.Paint += PaintEventHandler(paint_icon)
+            title = label(question["title"], fonts["title"], text_c, inner - px(58))
+            dialog.Controls.Add(icon)
+            dialog.Controls.Add(title)
+            title.Location = Point(pad + px(58),
+                                   y + max(0, (px(44) - title.PreferredSize.Height) // 2))
+            y += max(px(44), title.PreferredSize.Height) + px(16)
+            body = label(question["body"], fonts["body"], text_c, inner)
+            body.Location = Point(pad, y)
+            dialog.Controls.Add(body)
+            y += body.PreferredSize.Height + px(16)
+            if question.get("detail"):
+                detail = label(question["detail"], fonts["detail"], text_c, inner)
+                detail.Location = Point(pad, y)
+                dialog.Controls.Add(detail)
+                y += detail.PreferredSize.Height + px(16)
+            if question.get("limits"):
+                limits = Panel()
+                limits.BackColor = card
+                note = label(question["limits"], fonts["small"], muted, inner - px(28), back=soft)
+                note.Location = Point(px(14), px(12))
+                limits.Controls.Add(note)
+                limits.Size = Size(inner, note.PreferredSize.Height + px(24))
+                limits.Location = Point(pad, y)
+
+                def paint_limits(sender, e, panel=limits):
+                    e.Graphics.SmoothingMode = SmoothingMode.AntiAlias
+                    brush = SolidBrush(soft)
+                    path = _rounded(0, 0, panel.Width - 1, panel.Height - 1, px(12))
+                    e.Graphics.FillPath(brush, path)
+                    path.Dispose()
+                    brush.Dispose()
+                limits.Paint += PaintEventHandler(paint_limits)
+                dialog.Controls.Add(limits)
+                y += limits.Height + px(16)
+            check = None
+            if question.get("check"):
+                check = CheckBox()
+                check.Text = question["check"]
+                check.UseMnemonic = False
+                check.Font = fonts["check"]
+                check.ForeColor, check.BackColor = text_c, card
+                text_w = inner - px(14 + 20 + 12 + 14)
+                text_h = TextRenderer.MeasureText(check.Text, fonts["check"], Size(text_w, 0),
+                                                  TextFormatFlags.WordBreak).Height
+                check.Size = Size(inner, text_h + px(24))
+                check.Location = Point(pad, y)
+
+                def paint_check(sender, e, c=check, text_w=text_w):
+                    g = e.Graphics
+                    g.SmoothingMode = SmoothingMode.AntiAlias
+                    g.Clear(card)
+                    edge = Pen(focus if c.Focused else line, 2 * scale if c.Focused else scale)
+                    path = _rounded(1, 1, c.Width - 3, c.Height - 3, px(12))
+                    g.DrawPath(edge, path)
+                    path.Dispose()
+                    edge.Dispose()
+                    top = (c.Height - px(20)) // 2
+                    tick_box = _rounded(px(14), top, px(20), px(20), px(4))
+                    if c.Checked:
+                        fill = SolidBrush(_colour(t["primary"][0]))
+                        g.FillPath(fill, tick_box)
+                        fill.Dispose()
+                        mark = Pen(_colour(t["primary"][1]), 2.4 * scale)
+                        mark.StartCap = mark.EndCap = LineCap.Round
+                        g.DrawLines(mark, [Point(px(18), top + px(10)), Point(px(22), top + px(14)),
+                                           Point(px(30), top + px(6))])
+                        mark.Dispose()
+                    else:
+                        border = Pen(line, 1.5 * scale)
+                        g.DrawPath(border, tick_box)
+                        border.Dispose()
+                    tick_box.Dispose()
+                    TextRenderer.DrawText(g, c.Text, fonts["check"],
+                                          Rectangle(px(14 + 20 + 12), px(12), text_w,
+                                                    c.Height - px(24)),
+                                          text_c, TextFormatFlags.WordBreak
+                                          | TextFormatFlags.VerticalCenter)
+                check.Paint += PaintEventHandler(paint_check)
+                dialog.Controls.Add(check)
+                y += check.Height + px(20)
+            else:
+                y += px(4)
+
+            # Foot: Cancel, then the action, at the right; the page's button styles.
+            cancel, act = Button(), Button()
+            states = {}
+            for button, label_text, colours in (
+                    (cancel, "Cancel", t["secondary"]),
+                    (act, question["action"], t[question.get("style", "primary")])):
+                button.Text = label_text
                 button.UseMnemonic = False
-                button.AutoSize = True
-                button.MinimumSize = Size(88, 0)
-            no.DialogResult = DialogResult.No
-            yes.Enabled = False
-            buttons = FlowLayoutPanel()
-            buttons.FlowDirection = FlowDirection.RightToLeft
-            buttons.AutoSize = True
-            buttons.Dock = DockStyle.Fill
-            buttons.Margin = Padding(0)
-            buttons.Controls.Add(no)                     # right to left: No last, as Windows does
-            buttons.Controls.Add(yes)
-            layout = TableLayoutPanel()
-            layout.AutoSize = True
-            layout.ColumnCount, layout.RowCount = 1, 2
-            layout.Controls.Add(message, 0, 0)
-            layout.Controls.Add(buttons, 0, 1)
-            dialog.Controls.Add(layout)
-            dialog.AcceptButton = no                     # Enter means No
-            dialog.CancelButton = no                     # Esc and the close box mean No
+                button.Font = fonts["button"]
+                button.Height = px(44)
+                button.Width = max(px(96), px(48) + TextRenderer.MeasureText(
+                    label_text, fonts["button"]).Width)
+                states[button] = {"hover": False, "colours": (_colour(colours[0]),
+                                                              _colour(colours[1]))}
+
+                def paint_button(sender, e, b=button):
+                    g = e.Graphics
+                    g.SmoothingMode = SmoothingMode.AntiAlias
+                    g.Clear(card)
+                    back, fore = states[b]["colours"]
+                    if b is cancel:
+                        back = soft if states[b]["hover"] and b.Enabled else card
+                    if not b.Enabled:
+                        back, fore = _fade(back, card, 0.45), _fade(fore, card, 0.45)
+                    path = _rounded(1, 1, b.Width - 3, b.Height - 3, px(10))
+                    brush = SolidBrush(back)
+                    g.FillPath(brush, path)
+                    brush.Dispose()
+                    edge = Pen(focus if b.Focused else (line if b is cancel else back),
+                               2 * scale if b.Focused else scale)
+                    g.DrawPath(edge, path)
+                    edge.Dispose()
+                    path.Dispose()
+                    TextRenderer.DrawText(g, b.Text, fonts["button"],
+                                          Rectangle(0, 0, b.Width, b.Height), fore,
+                                          TextFormatFlags.HorizontalCenter
+                                          | TextFormatFlags.VerticalCenter
+                                          | TextFormatFlags.SingleLine)
+                button.Paint += PaintEventHandler(paint_button)
+
+                def hover(on, b=button):
+                    def handler(sender, e):
+                        states[b]["hover"] = on
+                        b.Invalidate()
+                    return EventHandler(handler)
+                button.MouseEnter += hover(True)
+                button.MouseLeave += hover(False)
+            cancel.DialogResult = DialogResult.Cancel
+            act.Enabled = False
+            total = pad + inner
+            act.Location = Point(total - act.Width, y)
+            cancel.Location = Point(total - act.Width - px(10) - cancel.Width, y)
+            dialog.Controls.Add(cancel)
+            dialog.Controls.Add(act)
+            dialog.ClientSize = Size(inner + 2 * pad, y + px(44) + pad)
+            dialog.AcceptButton = cancel                 # Enter means Cancel
+            dialog.CancelButton = cancel                 # Esc means Cancel
             timer.Interval = CONFIRM_DELAY_MS
+            ready = {"waited": False}
+
+            def update():
+                act.Enabled = ready["waited"] and (check is None or check.Checked)
 
             def restart(*_):
-                timer.Stop()                             # Yes is still disabled: wait again
+                ready["waited"] = False                  # not yet: wait again
+                update()
+                timer.Stop()
                 timer.Start()
 
-            def enable(sender, args):
+            def waited(sender, args):
                 timer.Stop()
-                yes.Enabled = True
+                ready["waited"] = True
+                update()
 
             def activated(sender, args):
-                no.Focus()
-                yes.Enabled = False                      # back to the question: wait again
-                timer.Stop()
-                timer.Start()
+                cancel.Focus()
+                restart()
 
-            def mouse_up_on_yes(sender, args):
-                # Yes is decided by a mouse button released over Yes itself; the
-                # keyboard (Enter or Space with Yes focused) never answers Yes.
-                if yes.Enabled and yes.ClientRectangle.Contains(args.Location):
+            def mouse_up_on_action(sender, args):
+                if act.Enabled and act.ClientRectangle.Contains(args.Location):
                     dialog.DialogResult = DialogResult.Yes
 
-            timer.Tick += EventHandler(enable)
+            def made(sender, args):
+                # Windows 11 rounds the card's corners and draws its edge.
+                dwm = ctypes.WinDLL("dwmapi")
+                hwnd = ctypes.c_void_p(dialog.Handle.ToInt64())
+                dwm.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(ctypes.c_int(2)), 4)
+                border = ctypes.c_int(line.R | line.G << 8 | line.B << 16)
+                dwm.DwmSetWindowAttribute(hwnd, 34, ctypes.byref(border), 4)
+
+            timer.Tick += EventHandler(waited)
             dialog.Activated += EventHandler(activated)
-            yes.MouseUp += MouseEventHandler(mouse_up_on_yes)
-            dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not yes.Enabled else None)
-            for control in (dialog, layout, buttons, message, no):
+            dialog.HandleCreated += EventHandler(made)
+            act.MouseUp += MouseEventHandler(mouse_up_on_action)
+            if check is not None:
+                check.CheckedChanged += EventHandler(lambda s, e: (restart(), check.Invalidate()))
+                check.GotFocus += EventHandler(lambda s, e: check.Invalidate())
+                check.LostFocus += EventHandler(lambda s, e: check.Invalidate())
+            dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not act.Enabled else None)
+            for control in [dialog, cancel, body, title, icon] + ([check] if check else []):
                 control.MouseDown += MouseEventHandler(
-                    lambda s, e: restart() if not yes.Enabled else None)
-            dialog.ResumeLayout()
-            box["answer"] = dialog.ShowDialog(owner)
+                    lambda s, e: restart() if not act.Enabled else None)
+            box["answer"] = dialog.ShowDialog(scrim or owner)
         finally:
             timer.Dispose()
             dialog.Dispose()
-            font.Dispose()
+            if scrim is not None:
+                scrim.Close()
+                scrim.Dispose()
+            for item in disposables:
+                item.Dispose()
 
-    owner.Invoke(Action(ask))                     # a dialog belongs to the UI thread
+    owner.Invoke(Action(ask))                     # a window belongs to the UI thread
     return box.get("answer") == DialogResult.Yes
 
 
