@@ -205,13 +205,17 @@ class ProtocolTests(unittest.TestCase):
     def test_a_silent_decoder_times_out(self):
         from workspace import media
         r, w = os.pipe()
-        reader = media._Frames(os.fdopen(r, "rb"))
+        stream = os.fdopen(r, "rb")
+        reader = media._Frames(stream)
         try:
             with self.assertRaises(media.DecodeError) as ctx:
                 reader.next(0.2)
             self.assertIn("progress", str(ctx.exception))
         finally:
-            os.close(w)
+            reader.stop()
+            os.close(w)                   # the reader sees the end and finishes
+            reader.join(5)
+            stream.close()
 
 
 LOW_WRITE = r"""
@@ -265,6 +269,92 @@ class ContainmentTests(unittest.TestCase):
             with mock.patch.object(jobs, "contain", checking_contain):
                 media.decode_to_file(src, Path(tmp) / "audio.f32")
         self.assertEqual(seen, {"inside": True, "memory": media.DECODER_MEMORY})
+
+
+# Stand-in decoders (run with -c instead of decode_child.BOOT). Each reads the
+# sys.path line like the real one, then misbehaves in one way.
+STAND_IN = (
+    "import sys,json,time,struct;sys.path[:]=json.loads(sys.stdin.readline());"
+    "from workspace import decode_child as d;o=sys.stdout.buffer;"
+    "w=lambda k,p=b'':(o.write(k+struct.pack('<I',len(p))+p),o.flush());"
+)
+SILENT = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
+                     "sys.stdin.readline();time.sleep(120)")
+LIAR = STAND_IN + ("w(b'R',struct.pack('<I',0x1000));"        # claims Low, is Medium
+                   "line=sys.stdin.readline();"
+                   "open(sys.argv[1],'w').write('got the path' if line else 'no path')")
+TRICKLE = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
+                      "sys.stdin.readline()\nwhile True:\n w(b'A',b'\\0'*4);time.sleep(0.2)")
+
+
+@unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
+class StandInDecoderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.src = tone_wav(self.root / "tone.wav")
+        self.procs = []
+
+    def tearDown(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+        self.tmp.cleanup()
+
+    def run_with(self, boot, extra_args=(), **patches):
+        """decode_to_file with `boot` as the decoder; returns the error and
+        the seconds it took."""
+        import time
+
+        from workspace import decode_child, media
+        real_popen = subprocess.Popen
+
+        def popen(cmd, *a, **kw):
+            proc = real_popen([*cmd, *extra_args], *a, **kw)
+            self.procs.append(proc)
+            return proc
+        start = time.monotonic()
+        with mock.patch.object(decode_child, "BOOT", boot), \
+                mock.patch.object(subprocess, "Popen", popen), \
+                mock.patch.multiple(media, **patches) if patches else mock.MagicMock():
+            with self.assertRaises(media.DecodeError) as ctx:
+                media.decode_to_file(self.src, self.root / "audio.f32")
+        return str(ctx.exception), time.monotonic() - start
+
+    def assert_decoder_gone(self):
+        self.assertTrue(self.procs)
+        for proc in self.procs:
+            self.assertIsNotNone(proc.wait(timeout=10))
+
+    def test_a_silent_decoder_is_stopped_and_the_import_ends(self):
+        message, took = self.run_with(SILENT, IDLE_TIMEOUT_S=1.0)
+        self.assertIn("progress", message)
+        self.assertLess(took, 30)
+        self.assert_decoder_gone()
+        self.assertFalse((self.root / "audio.partial").exists())
+
+    def test_a_decoder_that_is_not_at_low_integrity_never_gets_the_file(self):
+        marker = self.root / "marker.txt"
+        message, _ = self.run_with(LIAR, extra_args=(str(marker),))
+        self.assertIn("safely", message)
+        self.assert_decoder_gone()
+        self.assertEqual(marker.read_text() if marker.exists() else "no path", "no path")
+
+    def test_a_trickling_decoder_hits_the_overall_deadline(self):
+        message, took = self.run_with(TRICKLE, _deadline_s=lambda src: 2.0)
+        self.assertIn("far longer", message)
+        self.assertLess(took, 30)
+        self.assert_decoder_gone()
+
+    def test_no_reader_thread_is_left_behind(self):
+        import threading
+        import time
+        self.run_with(SILENT, IDLE_TIMEOUT_S=1.0)
+        for _ in range(50):
+            if not any(t.name == "decoder-frames" for t in threading.enumerate()):
+                break
+            time.sleep(0.1)
+        self.assertFalse(any(t.name == "decoder-frames" for t in threading.enumerate()))
 
 
 CHILD = r"""

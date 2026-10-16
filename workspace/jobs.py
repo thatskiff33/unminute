@@ -141,7 +141,8 @@ def contain(pid, memory_bytes):
     launchers and managed environments do), Windows refuses a nested job that
     sets its own UI limits (ERROR_NOT_SUPPORTED). The decoder then gets a job
     without them: the outer job's UI limits still apply to it, and the
-    memory, single-process and kill-on-close limits are kept."""
+    memory, single-process and kill-on-close limits are kept. The clipboard
+    and desktop limits are then whatever the outer job sets."""
     if sys.platform != "win32":
         return None
     try:

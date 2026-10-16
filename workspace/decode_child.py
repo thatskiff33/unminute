@@ -63,6 +63,33 @@ def _integrity_level(token):
     return adv.GetSidSubAuthority(sid, count - 1)[0]
 
 
+def process_integrity(pid):
+    """The integrity level of another process (Windows), read by the app so it
+    does not rely on the decoder's own report."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                     ctypes.POINTER(wintypes.HANDLE)]
+    process = k32.OpenProcess(0x1000, False, int(pid))         # QUERY_LIMITED_INFORMATION
+    if not process:
+        raise OSError(ctypes.get_last_error(), "process not readable")
+    try:
+        token = wintypes.HANDLE()
+        if not adv.OpenProcessToken(process, 0x0008, ctypes.byref(token)):   # TOKEN_QUERY
+            raise OSError(ctypes.get_last_error(), "token not readable")
+        try:
+            return _integrity_level(token)
+        finally:
+            k32.CloseHandle(token)
+    finally:
+        k32.CloseHandle(process)
+
+
 def lower_integrity():
     """Lower this process's own integrity level to Low (Windows) and return
     the level now in force; None elsewhere. A process may lower, never raise,
@@ -148,7 +175,12 @@ def main():
     # thread is plenty for resampling and keeps the job's memory limit honest.
     for var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
         os.environ[var] = "1"
-    out = sys.stdout.buffer
+    # The protocol gets a private copy of the output handle; file descriptor 1
+    # and sys.stdout go to the null device, so a library that prints cannot
+    # corrupt the frames.
+    out = os.fdopen(os.dup(1), "wb")
+    os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+    sys.stdout = open(os.devnull, "w")
 
     def send(kind, payload=b""):
         out.write(kind + struct.pack("<I", len(payload)) + payload)
