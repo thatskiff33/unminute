@@ -9,8 +9,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 - **Watched folders are checked as soon as the app opens.** Opened within 5 minutes of starting the computer, the app waited until then for its first check.
 - **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
 - **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
-- **Less background work.** The recording display is worked out only when it is on screen, not for every tenth of a second of audio, and the app no longer checks every second for a speech worker that is not running (#126).
-- **Recording notes are placed correctly when saving falls behind.** A dropout earlier in a recording could be folded into a later microphone disconnection, and not reported on its own, if saving was behind at the time (#126).
+- **Less background work.** The recording display is worked out only when the Meetings page asks for it, not for every tenth of a second of audio, and the app no longer checks every second for a speech worker that is not running (#126).
+- **An earlier dropout is no longer hidden by a later microphone disconnection.** If saving was behind when the microphone went, a dropout from earlier in the recording could be folded into the disconnection note instead of being reported on its own (#126).
 
 Security hardening (#111, slice A5):
 

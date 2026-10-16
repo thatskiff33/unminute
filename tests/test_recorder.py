@@ -189,16 +189,17 @@ class RecordingTests(unittest.TestCase):
         # one at the moment it goes is part of the disconnection.
         block = np.zeros((1600, 1), dtype=np.int16)
         overflow = type("S", (), {"input_overflow": True})()
-        for lead, expected in ((0, ["overrun", "device_lost"]), (30, ["device_lost"])):
-            rec = recorder.Recording(self.root / f"rec{lead}", 0, "Mic", RATE,
+        for before, expected in ((0, ["overrun", "device_lost"]), (30, ["device_lost"])):
+            rec = recorder.Recording(self.root / f"rec{before}", 0, "Mic", RATE,
                                      open_stream=opener({}))
-            for _ in range(lead):
+            for _ in range(before):                  # blocks before the overrun
                 rec._callback(block, 1600, None, None)
             rec._callback(block, 1600, None, overflow)
-            for _ in range(30 - lead):
+            for _ in range(30 - before):
                 rec._callback(block, 1600, None, None)
             rec._device_lost()
-            self.assertEqual([e["kind"] for e in rec.journal["events"]], expected, lead)
+            self.assertEqual([e["kind"] for e in rec.journal["events"]], expected, before)
+            self.assertIsNone(rec._display_block)    # nothing kept after the device went
 
     def test_an_earlier_overrun_is_still_reported_on_its_own(self):
         rec, s = self.start()

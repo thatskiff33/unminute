@@ -176,9 +176,10 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
-# The recording display: a few numbers per block for the page to draw, never audio
-# to keep. Bands are log-spaced across the speech range; the wave is a short,
-# thinned slice of the block for the "Sound wave" display.
+# The recording display: a few numbers per block for the page to draw. Only the
+# latest 100 ms block is held for it, while recording, and it is dropped on
+# pause, stop and device loss. Bands are log-spaced across the speech range; the
+# wave is a short, thinned slice of the block for the "Sound wave" display.
 VIZ_BANDS = 40
 VIZ_LOW_HZ, VIZ_HIGH_HZ = 80.0, 8000.0
 VIZ_WAVE_POINTS = 128
@@ -386,6 +387,7 @@ class Recording:
                                         + (" A fraction of a second may be missing at the "
                                            "moment it disconnected." if during else ""))
         self.journal["state"] = "device_lost"
+        self._display_block = None
         self._stop.set()
 
     def _close_stream(self):
@@ -425,6 +427,7 @@ class Recording:
     def pause(self):
         if not self.paused:
             self.paused = True
+            self._display_block = None
             self._event("paused")
 
     def resume(self):
@@ -438,6 +441,7 @@ class Recording:
         self._stopping.set()          # a deliberate stop: not reported as a lost device
         self._close_stream()          # no more blocks arrive...
         self._stop.set()              # ...then the writer drains the queue and finishes
+        self._display_block = self._viz_cache = None    # nothing of the sound kept for display
         if self._writer is not None:
             self._writer.join(60)
             if self._writer.is_alive():

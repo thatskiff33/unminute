@@ -261,17 +261,20 @@ class WorkerHandle:
 
     def _idle_loop(self):
         # Sleeps until the worker has been idle for idle_unload_s, and not at all
-        # while there is no worker process: _start() and close() wake it. Clearing
-        # before reading the state means a wake-up is never lost.
-        while not self._closed:
+        # while there is no worker process: _start() and close() wake it. The
+        # event is cleared before any state is read, _closed included, so a
+        # wake-up is never lost.
+        while True:
             self._wake.clear()
+            if self._closed:
+                return
             self.idle_wakeups += 1
             if self._proc is None:
                 self._wake.wait()
                 continue
             due = self._last_used + self.idle_unload_s - time.monotonic()
             if due > 0:
-                self._wake.wait(due + 0.05)
+                self._wake.wait(min(due + 0.05, threading.TIMEOUT_MAX))
             elif self._lock.acquire(blocking=False):
                 # Never interrupt a request: only unload if no request holds the lock.
                 try:
@@ -280,8 +283,11 @@ class WorkerHandle:
                         self.shutdown()
                 finally:
                     self._lock.release()
-            else:                        # a request is running: look again shortly
-                self._wake.wait(min(1.0, max(0.05, self.idle_unload_s / 4)))
+            else:
+                # A request is running: wait for it to end (a stop or close ends
+                # it too), then look again with its new last-used time.
+                with self._lock:
+                    pass
 
     # -- requests ---------------------------------------------------------------------
 
