@@ -1,7 +1,8 @@
 # A pull request that changes what is shipped (the app, the installer or the
-# runtime pins) needs a changelog entry: an edit to CHANGELOG.md, or a new
-# fragment in changelog.d/ once fragments are in use. Add the "no-changelog"
-# label when a change is not worth a release note. Not a required check yet
+# runtime pins) needs a changelog fragment in changelog.d/ (see its README).
+# CHANGELOG.md itself changes only when a release is prepared, so editing it
+# does not count. Add the "no-changelog" label when a change is not worth a
+# release note. Not a required check yet
 # (#125); see quality.yml for how checks become required. Re-runs when labels
 # change, which is why it is its own workflow.
 name: Changelog
@@ -31,11 +32,12 @@ jobs:
         run: |
           changed=$(git diff --name-only "$BASE_SHA" HEAD)
           shipped=$(echo "$changed" | grep -E '^(workspace/|packaging/|asr_engines\.py$|offline_guard\.py$|requirements\.txt$)' || true)
-          notes=$(echo "$changed" | grep -E '^(CHANGELOG\.md|changelog\.d/.+\.md)$' | grep -v '^changelog\.d/README\.md$' || true)
+          # A fragment added or changed in this pull request (not the folder's README).
+          notes=$(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'changelog.d/*.md' | grep -v '^changelog\.d/README\.md$' || true)
           if [ -z "$shipped" ]; then echo "Nothing shipped changed: no entry needed."; exit 0; fi
-          if [ -n "$notes" ]; then echo "Changelog entry found:"; echo "$notes"; exit 0; fi
+          if [ -n "$notes" ]; then echo "Changelog fragment found:"; echo "$notes"; exit 0; fi
           if [ "$NO_CHANGELOG" = "true" ]; then echo "Labelled no-changelog."; exit 0; fi
-          echo "These shipped files changed without a changelog entry:"
+          echo "These shipped files changed without a changelog fragment:"
           echo "$shipped"
-          echo "Add an entry (CHANGELOG.md or a changelog.d/ fragment), or the no-changelog label."
+          echo "Add a fragment in changelog.d/ (see changelog.d/README.md), or the no-changelog label."
           exit 1

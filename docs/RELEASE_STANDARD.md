@@ -254,7 +254,7 @@ Status is one of:
 | CodeQL for Python, JavaScript and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
 | JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/quality.yml` | In place, not yet required |
 | Coverage reported, then a rising floor | 7 | The "Coverage (report only)" job in `.github/workflows/quality.yml` | Report in place, not yet required; no floor yet |
-| Changelog entry on shipped changes | 8, 10 | `.github/workflows/changelog.yml`; the `no-changelog` label opts out | In place, not yet required |
+| Changelog fragment for shipped changes | 8, 10 | `.github/workflows/changelog.yml` (a `changelog.d/` fragment; the `no-changelog` label opts out); fragments checked by `tools/changelog.py --check` in the unit tests | In place, not yet required |
 | Manual keyboard and screen-reader pass, every minor release | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (#27) |
 | Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py` | Manual; evidence enforced by security plan B3 |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` | Manual; extended by security plan C7 |
