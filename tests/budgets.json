@@ -9,5 +9,16 @@
     "value": 24,
     "measured": 24,
     "note": "Hex, rgb() and hsl() colour literals in workspace/ui/app.css outside tokens.css (tests/test_consistency.py), 16 Oct 2026. Target 0 (#133): move each to a token in tokens.css."
+  },
+  "ui_idle": {
+    "note": "What the idle Meetings page does per minute of page time (tools/ui_idle_check.py, headless Edge with the design fixtures), measured 16 Oct 2026 at 13d9d8c. Visible and hidden are the same today because the page ignores visibility; R6 (#127) lowers the hidden figures towards the standard (section 3: while hidden, nothing polls faster than once every 30 s). fastest_interval_ms is a floor: an interval faster than it fails. A page that throws, or makes no bridge calls when visible, fails regardless.",
+    "ratchets": {
+      "visible": {"bridge_calls_per_minute": 120, "list_rebuilds_per_minute": 30,
+                  "timeouts_per_minute": 0, "pending_animation_frames": 0,
+                  "live_intervals": 1, "fastest_interval_ms": 2000},
+      "hidden": {"bridge_calls_per_minute": 120, "list_rebuilds_per_minute": 30,
+                 "timeouts_per_minute": 0, "pending_animation_frames": 0,
+                 "live_intervals": 1, "fastest_interval_ms": 2000}
+    }
   }
 }

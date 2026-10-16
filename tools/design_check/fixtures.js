@@ -6,6 +6,85 @@
 // All names and text are the fictional sample meeting used on the boards.
 "use strict";
 (() => {
+  // -- perf mode (tools/ui_idle_check.py) ------------------------------------------
+  // index.html?perf=visible|hidden&ms=60000 counts what the idle page does over
+  // ms of page time: bridge calls per method, timers, animation frames,
+  // meeting-list rebuilds and page errors. Timers are wrapped here, before
+  // app.js loads. "hidden" starts visible and then becomes hidden, with the same
+  // bubbling visibilitychange a minimised window gets.
+  const query = new URLSearchParams(location.search);
+  const perfMode = query.get("perf");
+  // pendingFrames: animation frames requested and not yet run. Headless Edge
+  // runs almost no frames while virtual time skips ahead, so frames run are no
+  // measure; an animation loop always leaves one frame pending.
+  const perf = { calls: {}, timeouts: 0, rebuilds: 0, errors: [],
+                 intervals: new Map(), pendingFrames: new Set() };
+  const realSetTimeout = window.setTimeout.bind(window);
+  let pageHidden = false;
+  if (perfMode) {
+    const realSetInterval = window.setInterval.bind(window);
+    const realClearInterval = window.clearInterval.bind(window);
+    const realClearTimeout = window.clearTimeout.bind(window);
+    const realFrame = window.requestAnimationFrame.bind(window);
+    window.setInterval = (fn, ms, ...rest) => {
+      const id = realSetInterval(fn, ms, ...rest);
+      perf.intervals.set(id, Number(ms) || 0);
+      return id;
+    };
+    // Either clear function stops either kind of timer.
+    window.clearInterval = (id) => { perf.intervals.delete(id); realClearInterval(id); };
+    window.clearTimeout = (id) => { perf.intervals.delete(id); realClearTimeout(id); };
+    window.setTimeout = (fn, ms, ...rest) => { perf.timeouts++; return realSetTimeout(fn, ms, ...rest); };
+    const realCancelFrame = window.cancelAnimationFrame.bind(window);
+    window.requestAnimationFrame = (fn) => {
+      const id = realFrame((t) => { perf.pendingFrames.delete(id); fn(t); });
+      perf.pendingFrames.add(id);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => { perf.pendingFrames.delete(id); realCancelFrame(id); };
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => pageHidden });
+    Object.defineProperty(document, "visibilityState", { configurable: true,
+                                                          get: () => (pageHidden ? "hidden" : "visible") });
+    // A page that throws may stop polling and look idle: errors fail the check.
+    window.addEventListener("error", (e) => { perf.errors.push(String(e.message || e)); });
+    window.addEventListener("unhandledrejection", (e) => { perf.errors.push(String(e.reason)); });
+  }
+  function perfMeasure() {
+    const ms = Number(query.get("ms")) || 60000;
+    const groups = document.getElementById("groups");
+    if (groups) {
+      new MutationObserver((records) => { perf.rebuilds += records.length; })
+        .observe(groups, { childList: true });
+    }
+    // Count from here, before the page becomes hidden, so work it does on the
+    // visibilitychange itself counts too.
+    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0;
+    if (perfMode === "hidden") {
+      pageHidden = true;
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    }
+    realSetTimeout(() => {
+      const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
+      const calls = Object.fromEntries(Object.entries(perf.calls).map(([k, v]) => [k, perMinute(v)]));
+      const live = [...perf.intervals.values()];
+      const result = {
+        mode: perfMode, page_ms: ms, calls_per_minute: calls,
+        bridge_calls_per_minute: perMinute(Object.values(perf.calls).reduce((a, b) => a + b, 0)),
+        timeouts_per_minute: perMinute(perf.timeouts),
+        pending_animation_frames: perf.pendingFrames.size,
+        list_rebuilds_per_minute: perMinute(perf.rebuilds),
+        live_intervals: live.length,
+        fastest_interval_ms: live.length ? Math.min(...live) : null,
+        meeting_rows: groups ? groups.querySelectorAll("li").length : 0,
+        page_errors: perf.errors,
+      };
+      const out = document.createElement("pre");
+      out.id = "perf-result";
+      out.textContent = JSON.stringify(result);
+      document.body.append(out);
+    }, ms);
+  }
+
   // A fixed clock: 15 Oct 2026, 2:30 pm local time.
   const FIXED = new Date(2026, 9, 15, 14, 30, 0).getTime();
   const RealDate = Date;
@@ -367,6 +446,7 @@
   };
   const api = new Proxy({}, {
     get: (_, method) => async (...args) => {
+      perf.calls[method] = (perf.calls[method] || 0) + 1;
       const fn = handlers[method];
       if (!fn) return { ok: false, error: `The design check has no sample data for ${String(method)}.` };
       return { ok: true, value: fn(...args) };
@@ -379,6 +459,9 @@
     window.dispatchEvent(new Event("pywebviewready"));
     let chain = new Promise((r) => setTimeout(r, 600));
     for (const step of scenario.steps) chain = chain.then(step).then(() => new Promise((r) => setTimeout(r, 300)));
-    chain.then(() => { document.documentElement.dataset.ready = "1"; });
+    chain.then(() => {
+      document.documentElement.dataset.ready = "1";
+      if (perfMode) perfMeasure();
+    });
   });
 })();

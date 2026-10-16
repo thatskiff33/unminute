@@ -1,0 +1,90 @@
+# Quality checks that are not required status checks yet (#125). Each becomes
+# a required check, by moving it into ci.yml and the list in docs/RELEASING.md,
+# after 10 consecutive green runs; that ruleset change needs the owner account.
+# The same supply-chain rules as ci.yml apply (see its header).
+name: Quality
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  ui-idle:
+    # Counts what the idle page does per minute of page time (bridge calls,
+    # timers, meeting-list rebuilds), visible and hidden, in headless Edge with
+    # the design fixtures. Counted, not timed, so it is stable on a hosted runner.
+    name: UI idle (headless Edge)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Count idle work
+        shell: pwsh
+        run: |
+          python tools/ui_idle_check.py ui-idle.json
+          $code = $LASTEXITCODE
+          if (Test-Path ui-idle.json) {
+            "``````json" >> $env:GITHUB_STEP_SUMMARY
+            Get-Content ui-idle.json >> $env:GITHUB_STEP_SUMMARY
+            "``````" >> $env:GITHUB_STEP_SUMMARY
+          }
+          exit $code
+
+  js-syntax:
+    name: JavaScript syntax
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner image's Node.js; nothing is installed from npm.
+      - name: Check every tracked JavaScript file parses
+        run: git ls-files -z '*.js' | xargs -0 -n1 node --check
+
+  coverage:
+    # Report only: no floor yet (docs/RELEASE_STANDARD.md, section 7). Worker
+    # and decoder child processes are not measured.
+    name: Coverage (report only)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies and coverage
+        # The same packages as the "Unit tests (Windows)" job in ci.yml, plus
+        # coverage from its hash-locked file.
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: `
+            --find-links packaging/wheels -c requirements.txt `
+            numpy av huggingface_hub httpx -r workspace/requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m pip install --disable-pip-version-check --only-binary=:all: `
+            --require-hashes --no-deps -r requirements/ci-coverage.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Unit tests under coverage
+        run: python -m coverage run --source=workspace,asr_engines,offline_guard tools/run_tests.py
+      - name: Coverage report
+        shell: pwsh
+        run: |
+          python -m coverage report --skip-empty --sort=cover
+          "``````" >> $env:GITHUB_STEP_SUMMARY
+          python -m coverage report --skip-empty --sort=cover >> $env:GITHUB_STEP_SUMMARY
+          "``````" >> $env:GITHUB_STEP_SUMMARY

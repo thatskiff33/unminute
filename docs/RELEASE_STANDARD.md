@@ -222,6 +222,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 
 Status is one of:
 - **In place:** runs today.
+- **In place, not yet required:** runs in CI on every pull request, but does not block a merge yet (docs/RELEASING.md says how it becomes required).
 - **Manual:** a tool exists, but it is run by hand.
 - **Planned:** a slice of #121 will build it.
 - **Security plan:** a slice of #111 will build it.
@@ -241,7 +242,7 @@ Status is one of:
 | UI process imports only allowlisted packages, and no heavy library | 3 | Unit test on Linux and Windows (`tests/test_import_hygiene.py`); module count budget on Windows | In place |
 | Worker starts on demand and unloads after idle | 3 | Unit tests (`tests/test_workers.py`) | In place |
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
-| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | CI job (headless browser with the design fixtures; to confirm in R4) | Planned: R4 (#125), tightened in R6 (#127) |
+| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | `tools/ui_idle_check.py` in headless Edge with the design fixtures; the "UI idle (headless Edge)" job in `.github/workflows/quality.yml`; ratchets in `tests/budgets.json` | In place, not yet required; tightened in R6 (#127) |
 | WebView2 hidden, suspended and low-memory when minimised | 2, 3 | Release-time performance run | Planned: R8 (#129) |
 | Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; enforced by security plan B3 |
 | Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
@@ -251,10 +252,10 @@ Status is one of:
 | Settings versioned; unknown keys kept on rollback | 9 | Unit tests | Planned: R11 (#132) |
 | Local content-free log, crash hooks, Copy diagnostics, `--health` | 5, 6, 14 | Unit tests and the marker test | Planned: R9 (#130) |
 | Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |
-| CodeQL for Python and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
-| JavaScript syntax and CodeQL for JavaScript | 7 | CI | Planned: R4 (#125) |
-| Coverage reported, then a rising floor | 7 | CI | Planned: R4 (#125) |
-| Changelog entry on code changes | 8, 10 | CI | Planned: R4 (#125) |
+| CodeQL for Python, JavaScript and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
+| JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/quality.yml` | In place, not yet required |
+| Coverage reported, then a rising floor | 7 | The "Coverage (report only)" job in `.github/workflows/quality.yml` | Report in place, not yet required; no floor yet |
+| Changelog fragment for shipped changes | 8, 10 | `.github/workflows/changelog.yml` (a `changelog.d/` fragment; the `no-changelog` label opts out); fragments checked by `tools/changelog.py --check` in the unit tests | In place, not yet required |
 | Manual keyboard and screen-reader pass, every minor release | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (#27) |
 | Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py` | Manual; evidence enforced by security plan B3 |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` | Manual; extended by security plan C7 |

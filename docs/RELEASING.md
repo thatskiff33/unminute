@@ -24,7 +24,15 @@ These settings cannot be applied from a script that only has push access, so set
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
-Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps are configured in `.github/dependabot.yml` (monthly, grouped, both requirement files, a 7-day cooldown; torch, torchaudio and torchcodec limited to patch releases). CodeQL analyses the Python code and the workflows from `.github/workflows/codeql.yml`.
+Newer checks start outside that list:
+- **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage) and `.github/workflows/changelog.yml` (changelog entry).
+- **How they become required:** after 10 consecutive green runs.
+  - A `quality.yml` job moves into `ci.yml` and joins the list above.
+  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. It joins the list above, and `tests/test_consistency.py` is extended to include `changelog.yml`'s job, since it takes the required set from `ci.yml` today.
+  - Adding a check to the ruleset needs the owner account.
+- **The changelog check:** it looks for a new or changed fragment in `changelog.d/` whenever a pull request changes what is shipped. An edit to `CHANGELOG.md` does not count. Add the `no-changelog` label to a pull request whose change is not worth a release note.
+
+Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps are configured in `.github/dependabot.yml` (monthly, grouped, both requirement files, a 7-day cooldown; torch, torchaudio and torchcodec limited to patch releases). CodeQL analyses the Python code, the JavaScript and the workflows from `.github/workflows/codeql.yml`.
 
 ## Workflow supply-chain rules
 
@@ -34,7 +42,7 @@ The workflows run with the repository's token, so they are held to these rules. 
 - Every action is pinned to a full commit SHA, with its version in a comment. To update one, resolve the new tag to its commit (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`, and follow an annotated tag to its commit) and update both.
 - Values from the event (tag names, inputs) reach scripts through environment variables, never through `${{ }}` inside a `run:` block.
 - Checkouts use `persist-credentials: false`.
-- CI tools come from `requirements/ci.txt`, installed with `--require-hashes`. PSScriptAnalyzer is pinned to one version and must carry a valid Microsoft signature.
+- CI tools come from `requirements/ci.txt` (and coverage from `requirements/ci-coverage.txt`), installed with `--require-hashes`. PSScriptAnalyzer is pinned to one version and must carry a valid Microsoft signature.
 - A new version of an action or tool is adopted only after it has been public for at least 7 days, so a compromised or broken release has time to be found.
 
 ## Before cutting a release

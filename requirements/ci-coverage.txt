@@ -1,0 +1,9 @@
+# Coverage for the report-only job in .github/workflows/quality.yml (#125).
+# Hash-locked like requirements/ci.txt: installed with --require-hashes, so a
+# replaced file on PyPI fails the job. 7.16.2 was published on 27 Sep 2026, more
+# than 7 days before adoption (docs/RELEASING.md). The hashes are the Windows
+# CPython 3.12 wheel and the pure-Python fallback wheel.
+
+coverage==7.16.2 \
+    --hash=sha256:e6c52d3307824ff93b39efd99e4185d557db40bd841452abfb32e5d9151ca162 \
+    --hash=sha256:11d28e9123a9156cb405d8d27b44256c9a58fb5decc2073a8f17862057e3aa0f
