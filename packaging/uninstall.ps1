@@ -79,7 +79,7 @@ try {
             "contain meetings or retention holds. To remove meeting content, reinstall and use " +
             "the app's cleanup steps; nothing is deleted automatically.")
     }
-    Write-Step "Downloaded models were kept in $(Join-Path $env:LOCALAPPDATA 'whisper-models') (shared with the earlier app)."
+    Write-Step "Downloaded models were kept in $(Join-Path $env:LOCALAPPDATA 'whisper-models') (the earlier Whisper Transcriber app also uses them, where it is still installed)."
     exit 0
 } catch {
     Write-Step "Removal failed: $($_.Exception.Message)"

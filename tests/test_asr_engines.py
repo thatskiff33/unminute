@@ -3,8 +3,10 @@
 # they run in CI without torch, onnxruntime or any downloads.
 #   python -m unittest discover -s tests -v
 
+import contextlib
 import dataclasses
 import hashlib
+import io
 import json
 import os
 import sys
@@ -193,7 +195,7 @@ class InstallModelTests(unittest.TestCase):
         with self.assertRaises(ae.ModelLoadError) as ctx:
             ae.install_model(self.spec, self.cache, self.logs.append, FakeDownload(fail=True))
         self.assertIn("network down", str(ctx.exception))
-        self.assertIn("Update / repair", str(ctx.exception))
+        self.assertIn("try again", str(ctx.exception))
         self.assertFalse(self.target.exists())
         self.assertEqual(self.siblings("~dl-"), [])
 
@@ -275,21 +277,19 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(dl.calls, 1)                              # download reused
         self.assertEqual(ae.check_files(self.spec, self.target, full=True), [])
 
-    def test_cli_default_parakeet_only_when_none_present(self):
-        calls = []
-        real = ae.install_parakeet
-        ae.install_parakeet = lambda name, cache, log=print, download=None: (
-            calls.append(name) or {name: "ok", "silero-vad": "ok"})
-        try:
-            ae._main(["ensure", "--present", "--default-parakeet", "--cache", str(self.cache)])
-            self.assertEqual(calls, [ae.RECOMMENDED_PARAKEET])
-            calls.clear()
-            ae.model_dir(ae.PARAKEET_MODELS["parakeet-tdt-0.6b-v3"], self.cache).mkdir(
-                parents=True)
-            ae._main(["ensure", "--present", "--default-parakeet", "--cache", str(self.cache)])
-            self.assertEqual(calls, ["parakeet-tdt-0.6b-v3"])      # no v2 pulled in
-        finally:
-            ae.install_parakeet = real
+    def test_without_a_downloader_it_only_verifies(self):
+        # The earlier app's own downloader is gone: a missing model needs the
+        # app's download process, and nothing is written meanwhile.
+        with self.assertRaises(ae.ModelLoadError) as ctx:
+            ae.install_model(self.spec, self.cache, lambda message: None)
+        self.assertIn("Setup", str(ctx.exception))
+        self.assertFalse(self.target.exists())
+        self.assertFalse(ae.staging_dir(self.spec, self.cache).exists())
+        self.assertFalse(hasattr(ae, "_download"))
+
+    def test_only_the_manifest_command_remains(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            ae._main(["ensure", "--present", "--cache", str(self.cache)])
 
 
 class ParakeetStatusTests(unittest.TestCase):
@@ -346,7 +346,7 @@ class EngineTests(unittest.TestCase):
             engine = ae.ParakeetEngine(ae.RECOMMENDED_PARAKEET, tmp, 2, decode_audio=None)
             with self.assertRaises(ae.ModelLoadError) as ctx:
                 engine.load()
-            self.assertIn("Update / repair", str(ctx.exception))
+            self.assertIn("Manage downloads", str(ctx.exception))
 
 
 # --- Whisper model integrity (the "expected 128 mel bands, got 80" failure) ---
@@ -479,27 +479,6 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.assertIn("model.bin does not match the expected checksum", detail)
         self.assertEqual(tree(snap.parents[1]), before)            # nothing written there
 
-    def test_cli_present_repairs_damaged_whisper_cache_and_warns_only(self):
-        write_files(hub_snapshot(self.cache), {"config.json": W_GOOD["config.json"]})
-        calls = []
-        real = ae.install
-
-        def fake_install(name, cache, log=print, download=None):
-            calls.append(name)
-            raise ae.ModelLoadError("offline")
-
-        ae.install = fake_install
-        try:
-            # Not selected, only present: attempted, failure is a warning (2).
-            code = ae._main(["ensure", "--present", "--cache", str(self.cache)])
-            self.assertEqual((calls, code), ([self.spec.name], 2))
-            calls.clear()
-            # Selected: the same failure is fatal for the installer (1).
-            code = ae._main(["ensure", "--model", self.spec.name, "--cache", str(self.cache)])
-            self.assertEqual((calls, code), ([self.spec.name], 1))
-        finally:
-            ae.install = real
-
     def test_known_bad_copy_is_skipped_not_rehashed(self):
         managed = ae.model_dir(self.spec, self.cache)
         write_files(managed, {**W_GOOD, "model.bin": b"\x06" * 2000})   # bad, sizes ok
@@ -576,24 +555,6 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
         for f in s.files:
             self.assertRegex(f.sha256, r"^[0-9a-f]{64}$")
 
-    def test_gated_downloads_use_the_users_token_public_ones_never(self):
-        import types
-        calls = []
-        fake = types.ModuleType("huggingface_hub")
-        fake.snapshot_download = lambda repo, **kw: calls.append((repo, kw["token"]))
-        saved = sys.modules.get("huggingface_hub")
-        sys.modules["huggingface_hub"] = fake
-        try:
-            ae._download(ae.SPEAKER_MODEL, "unused")
-            ae._download(ae.WHISPER_MODELS["large-v3-turbo"], "unused")
-        finally:
-            if saved is None:
-                sys.modules.pop("huggingface_hub")
-            else:
-                sys.modules["huggingface_hub"] = saved
-        self.assertEqual(calls, [(ae.SPEAKER_MODEL.repo, None),
-                                 ("dropbox-dash/faster-whisper-large-v3-turbo", False)])
-
     def test_damaged_speaker_cache_is_not_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
             snap = (Path(tmp) / "models--pyannote--speaker-diarization-community-1"
@@ -611,8 +572,10 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
                          "Regenerate: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md")
 
     def test_gated_repair_without_token_says_so_and_downloads_nothing(self):
-        saved = os.environ.pop("HF_TOKEN", None)
+        # A token in the environment is never used: the caller says it has one.
         dl = FakeDownload()
+        saved = os.environ.get("HF_TOKEN")
+        os.environ["HF_TOKEN"] = "hf_example"
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 with self.assertRaises(ae.ModelLoadError) as ctx:
@@ -620,7 +583,9 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
             self.assertIn("Hugging Face token", str(ctx.exception))
             self.assertEqual(dl.calls, 0)
         finally:
-            if saved is not None:
+            if saved is None:
+                os.environ.pop("HF_TOKEN", None)
+            else:
                 os.environ["HF_TOKEN"] = saved
 
 

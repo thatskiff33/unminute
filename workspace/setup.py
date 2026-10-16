@@ -216,6 +216,19 @@ def prepare_download_process():
     huggingface_hub.set_client_factory(checked_client)
 
 
+def model_downloader(token):
+    """The download function for asr_engines.install(): exactly the pinned
+    files of one revision. A gated model gets the token from the pipe and a
+    public one gets none. huggingface_hub is never left to find a token itself
+    (token=None would read HF_TOKEN or its token file), so False, not None."""
+    def download(spec, dest):
+        from huggingface_hub import snapshot_download
+        snapshot_download(spec.repo, revision=spec.revision, local_dir=str(dest),
+                          allow_patterns=[f.name for f in spec.files],
+                          token=(token or False) if spec.gated else False)
+    return download
+
+
 def _download_main(conn, name, cache_dir):
     """Runs in the download process. Network is allowed here only, and only
     to DOWNLOAD_HOSTS."""
@@ -231,11 +244,7 @@ def _download_main(conn, name, cache_dir):
     token = conn.recv()                          # via the pipe, never argv/env
     from workspace.worker import safe_message
 
-    def download(spec, dest):
-        from huggingface_hub import snapshot_download
-        snapshot_download(spec.repo, revision=spec.revision, local_dir=str(dest),
-                          allow_patterns=[f.name for f in spec.files],
-                          token=(token or False) if spec.gated else False)
+    download = model_downloader(token)
 
     def log(message):
         conn.send(("log", safe_message(message)[:300]))

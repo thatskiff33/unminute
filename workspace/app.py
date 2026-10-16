@@ -1842,16 +1842,15 @@ class Workspace:
         for c in cards:
             c["download"] = self.downloads.state.get(c["name"])
         speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
-        remembered, earlier = self._display_value(
-            "tokens", lambda: (credentials.has_token(), bool(credentials.earlier_token())))
-        return {"cards": cards, "token_remembered": remembered, "earlier_token": earlier,
+        remembered = self._display_value("tokens", credentials.has_token)
+        return {"cards": cards, "token_remembered": remembered,
                 "onboarded": self.settings["onboarded"], "speech_ready": speech_ready,
                 "speakers": self.settings["speakers"], "managed": self.managed()}
 
-    def download_model(self, name, token=None, remember=True, use_earlier=False):
+    def download_model(self, name, token=None, remember=True):
         """Download or repair a model. For the speaker model the token is the
         one given now (remembered in Credential Manager unless the user
-        unticks Remember), the remembered one, or the earlier app's one."""
+        unticks Remember), or the remembered one."""
         if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
         if not self._allowed("AllowModelDownloads"):
@@ -1865,8 +1864,8 @@ class Workspace:
         on_success = None
         if name in asr_engines.MANAGED_MODELS and asr_engines.MANAGED_MODELS[name].gated:
             try:
-                if token or use_earlier:
-                    token = (token or "").strip() or credentials.earlier_token() or None
+                if token:
+                    token = token.strip() or None
                     if token and remember:
                         # Remembered only once a download has shown it works.
                         on_success = (lambda t=token: credentials.save_token(t))

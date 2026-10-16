@@ -1,6 +1,7 @@
 # Security hardening checks (#111 slice A2): the window shell's dispatch guard
 # and navigation rule, settings validation, test-only engines, the workspace
-# location, SQLite temporary storage, the earlier app's token and nvidia-smi.
+# location, SQLite temporary storage, a token left in the environment and
+# nvidia-smi.
 #   python -m unittest discover -s tests -v
 
 import importlib
@@ -533,20 +534,40 @@ class SettingsAndTestEngineTests(unittest.TestCase):
                       speaker_model="test:fake_worker_engines:fake_diarizer")
 
 
-class EarlierTokenTests(unittest.TestCase):
-    def tearDown(self):
-        credentials._earlier["token"] = None
-
-    def test_token_leaves_the_environment_and_stays_in_memory(self):
-        with mock.patch.dict(os.environ, {"HF_TOKEN": " hf_example "}):
-            credentials.adopt_earlier_token()
+class EnvironmentTokenTests(unittest.TestCase):
+    def test_token_leaves_the_environment_and_is_not_kept(self):
+        with mock.patch.dict(os.environ, {"HF_TOKEN": " hf_example ",
+                                          "HUGGING_FACE_HUB_TOKEN": "hf_example"}):
+            credentials.drop_environment_token()
             self.assertNotIn("HF_TOKEN", os.environ)
-        self.assertEqual(credentials.earlier_token(), "hf_example")
+            self.assertNotIn("HUGGING_FACE_HUB_TOKEN", os.environ)
+        self.assertFalse(hasattr(credentials, "earlier_token"))
+        self.assertNotIn("hf_example", repr(vars(credentials)))
 
-    def test_no_token_means_none(self):
+    def test_no_token_is_fine(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            credentials.adopt_earlier_token()
-        self.assertIsNone(credentials.earlier_token())
+            credentials.drop_environment_token()
+            self.assertNotIn("HF_TOKEN", os.environ)
+
+    def test_the_window_process_and_its_children_never_see_it(self):
+        # Importing workspace.__main__ (as the app starts) drops it before any
+        # child process starts; run in a child so this process keeps its guard off.
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        code = ("import os, subprocess, sys\n"
+                "import workspace.__main__\n"
+                "names = ('HF_TOKEN', 'HUGGING_FACE_HUB_TOKEN')\n"
+                "print(any(n in os.environ for n in names))\n"
+                "r = subprocess.run([sys.executable, '-c', "
+                "'import os; print(any(n in os.environ for n in "
+                "(\"HF_TOKEN\", \"HUGGING_FACE_HUB_TOKEN\")))'], "
+                "capture_output=True, text=True)\n"
+                "print(r.stdout.strip())\n")
+        env = dict(os.environ, HF_TOKEN="hf_example", HUGGING_FACE_HUB_TOKEN="hf_example")
+        r = subprocess.run([sys.executable, "-c", code], cwd=root, env=env,
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.stdout.split(), ["False", "False"], r.stderr)
+        self.assertNotIn("hf_example", r.stdout + r.stderr)
 
 
 class NvidiaSmiTests(unittest.TestCase):

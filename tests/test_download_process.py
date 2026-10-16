@@ -140,6 +140,27 @@ print(json.dumps({
 """
 
 
+class ModelDownloaderTests(unittest.TestCase):
+    def test_gated_gets_the_given_token_public_never_and_none_is_never_implicit(self):
+        import types
+
+        import asr_engines
+        from workspace import setup
+        calls = []
+        fake = types.ModuleType("huggingface_hub")
+        fake.snapshot_download = lambda repo, **kw: calls.append((repo, kw["token"]))
+        public = asr_engines.WHISPER_MODELS["large-v3-turbo"]
+        with mock.patch.dict(sys.modules, {"huggingface_hub": fake}):
+            setup.model_downloader("hf_example")(asr_engines.SPEAKER_MODEL, "unused")
+            setup.model_downloader("hf_example")(public, "unused")
+            setup.model_downloader(None)(asr_engines.SPEAKER_MODEL, "unused")
+        # False, never None: huggingface_hub would otherwise look for a token
+        # in the environment or its token file.
+        self.assertEqual(calls, [(asr_engines.SPEAKER_MODEL.repo, "hf_example"),
+                                 (public.repo, False),
+                                 (asr_engines.SPEAKER_MODEL.repo, False)])
+
+
 @unittest.skipUnless(HAVE_DOWNLOAD_LIBS, "download libraries not installed")
 class PrepareDownloadProcessTests(unittest.TestCase):
     def test_setup_before_huggingface_hub_is_used(self):

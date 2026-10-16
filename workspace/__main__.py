@@ -32,7 +32,7 @@ from workspace import credentials  # noqa: E402
 # A Hugging Face token the earlier app left in the user's environment is taken
 # out of this process's environment before anything starts, so no child
 # process (workers, WebView2, nvidia-smi) inherits it.
-credentials.adopt_earlier_token()
+credentials.drop_environment_token()
 
 APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1; kept from
                                                    # the earlier name so taskbar pins still group

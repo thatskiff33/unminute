@@ -257,7 +257,7 @@ INVARIANT_GUARDS = {
            "tests/test_import_hygiene.py": []},
     "N2": {"tests/test_download_process.py": ["RequestCheckTests"]},
     "N3": {"tests/test_setup.py": ["test_child_gets_the_token_but_not_on_argv_or_env"],
-           "tests/test_hardening.py": ["EarlierTokenTests"]},      # A7 removes this one
+           "tests/test_hardening.py": ["EnvironmentTokenTests"]},
     "I1": {"tests/test_model_integrity.py": ["test_speaker_model_is_fully_verified_before_loading"],
            "tests/test_asr_engines.py": ["test_docs_manifest_matches_code"]},
     "I2": {"tests/test_intake_isolation.py": ["test_lowered_decoder_cannot_write_the_users_files"],

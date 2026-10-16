@@ -186,7 +186,7 @@ What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.
 
 ## The earlier app
 
-The original source-installed app, Whisper Transcriber (a file queue with a tkinter window, installed with `install.cmd` at the top of this repository) still works. It is documented in [docs/EARLIER_APP.md](docs/EARLIER_APP.md). The two keep separate outputs and share downloaded models, and the workspace never deletes anything the earlier app created.
+The original source-installed app, Whisper Transcriber (a file queue with a tkinter window), was retired and removed from this repository (#111). If it is still installed on a computer, the [user guide](docs/WORKSPACE_GUIDE.md#if-the-earlier-app-is-still-installed) explains how to remove it safely. Unminute deletes nothing the earlier app created, except a shared model you choose to remove in Settings > Manage downloads.
 
 ## For developers
 
@@ -201,7 +201,6 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.12 runtime |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
-| `transcribe_ui.py`, `transcriber_core.py`, `install.ps1` | The earlier app |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
 | `changelog.d/` | Unreleased changes, one fragment per pull request; `tools/changelog.py` moves them into `CHANGELOG.md` at release. |
 
@@ -215,7 +214,7 @@ Design and plans:
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
 - [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md), [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release criteria, release process and hands-on checks.
 
-Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `python test_diarization.py "path\to\recording.wav"` checks Whisper with pyannote speaker identification, and `tools/durable_core_check.py` checks the workspace's processing core. The workflows in `.github/workflows/` run the automated checks on pull requests; [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md) lists every gate and where it runs. CI does not run the models.
+Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `tools/packaged_check.py` runs the full lifecycle (import, transcription, speakers, review, cleanup) with real models from a built package, and `tools/durable_core_check.py` checks the workspace's processing core. The workflows in `.github/workflows/` run the automated checks on pull requests; [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md) lists every gate and where it runs. CI does not run the models.
 
 ## Licence
 
@@ -232,7 +231,6 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | pyannote.audio (library) | MIT | Copyright CNRS |
 | pyannote/speaker-diarization-community-1 (model) | CC BY 4.0 | Gated: you accept sharing your contact details with pyannote to download it. Attribution required, commercial use permitted. |
 | PyTorch | BSD-3-Clause | |
-| sv-ttk, tkinterdnd2 | MIT | Earlier app only |
 | pywebview | BSD-3-Clause | The workspace window. Verified 15 October 2026. |
 | pythonnet, clr-loader, proxy_tools | MIT | Used by pywebview on Windows. Verified 15 October 2026. |
 | nvidia/parakeet-tdt-0.6b-v2 and -v3 (original models) | CC BY 4.0 | Attribution required, commercial use permitted. Verified 13 October 2026. |
@@ -250,4 +248,4 @@ Attribution for the Parakeet models: parakeet-tdt-0.6b-v2 and parakeet-tdt-0.6b-
 
 ## Acknowledgements
 
-Thanks to the faster-whisper, CTranslate2, onnx-asr, ONNX Runtime, pyannote, pywebview, sv-ttk and tkinterdnd2 maintainers, to NVIDIA for releasing the Parakeet weights under CC BY 4.0, and to OpenAI for releasing the Whisper weights under MIT.
+Thanks to the faster-whisper, CTranslate2, onnx-asr, ONNX Runtime, pyannote and pywebview maintainers, to NVIDIA for releasing the Parakeet weights under CC BY 4.0, and to OpenAI for releasing the Whisper weights under MIT.

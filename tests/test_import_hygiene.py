@@ -17,7 +17,8 @@ BUDGETS = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8
 
 # The modules the window process imports before it opens the window.
 # workspace.__main__ is left out on purpose: importing it installs the network
-# guard and adopts an earlier app's token, which are start-up actions, not imports.
+# guard and drops a token left in the environment, which are start-up actions,
+# not imports.
 UI_MODULES = ("workspace.app", "workspace.api", "workspace.shell", "workspace.worker",
               "asr_engines")
 

@@ -4,7 +4,7 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace. The earlier source-installed app (`install.cmd` at the top of the repository) still works and is described in [EARLIER_APP.md](EARLIER_APP.md). The two keep separate workspaces and outputs. They share the downloaded models: if a shared model fails verification, Repair (Settings > Manage downloads) downloads a fresh copy and keeps the damaged one aside. Nothing the earlier app created is ever deleted.
+This guide covers the packaged workspace. The earlier source-installed app (Whisper Transcriber) has been retired; if it is still on your computer, see [If the earlier app is still installed](#if-the-earlier-app-is-still-installed).
 
 ## What stays on your computer, and what does not
 
@@ -130,6 +130,19 @@ For IT support:
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
+
+## If the earlier app is still installed
+
+The earlier source-installed app, Whisper Transcriber, is no longer maintained and gets no security fixes. Unminute deletes nothing it created, except a shared model you choose to remove in Settings > Manage downloads. The two share only the downloaded models: if a shared model fails verification, Repair (Settings > Manage downloads) downloads a fresh copy and keeps the damaged one aside.
+
+To remove the earlier app, close it, then delete:
+
+1. The folder you installed it from. Move any transcripts you still need out of its `extracted` folder first.
+2. `%LOCALAPPDATA%\whisper\.venv` and `%LOCALAPPDATA%\whisper\ui-settings.json`.
+3. The Whisper Transcriber shortcut in the Start menu.
+4. The `HF_TOKEN` user environment variable, if you set one: search the Start menu for "Edit environment variables for your account". Because that variable kept the token in plain text, also delete the token in your Hugging Face account's access token settings and create a new one if you need it. Unminute keeps its own token in Windows Credential Manager.
+
+Do not delete the whole `%LOCALAPPDATA%\whisper` folder or `%LOCALAPPDATA%\whisper-models`: Unminute keeps its workspace and its models there.
 
 ## Supported configuration
 

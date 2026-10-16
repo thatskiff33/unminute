@@ -17,16 +17,15 @@
 # After loading, feature_width_problem() confirms the preprocessing produces
 # the mel-band count the model expects before anything is transcribed.
 #
-# This module never touches the network on its own. Downloads happen only in
-# install()/install_model(), which callers wrap in their own network permission
-# (transcriber_core.allow_network() in the app; the installer runs it online).
+# This module never touches the network. Downloads happen only through the
+# `download` function a caller passes to install()/install_model(): the app's
+# separate download process (workspace/setup.py), with its host checks and the
+# token it was given. There is no other downloader and no environment token.
 #
-# CLI (used by install.ps1):
-#   python asr_engines.py ensure [--model NAME ...] [--present] [--cache DIR]
+# CLI: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md
 
 import hashlib
 import json
-import os
 import re
 import shutil
 import sys
@@ -460,19 +459,10 @@ def feature_width_problem(model, spec):
 
 # --- Download and repair ------------------------------------------------------
 
-def _download(spec, dest):
-    """Fetch exactly the pinned files of one revision into `dest`."""
-    # Deferred import: honours the offline flags the caller has set.
-    from huggingface_hub import snapshot_download
-    # Public repos: never send a stored token. Gated repos: let huggingface_hub
-    # pick up the user's token implicitly (HF_TOKEN), as the app always has.
-    snapshot_download(spec.repo, revision=spec.revision, local_dir=str(dest),
-                      allow_patterns=[f.name for f in spec.files],
-                      token=None if spec.gated else False)
-
-
-def install_model(spec, cache_dir, log=print, download=_download, has_token=None):
+def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     """Make `spec` present and verified. Returns 'ok', 'installed' or 'repaired'.
+    `download(spec, dest)` fetches the pinned files (none given: verify only);
+    `has_token` says whether it holds a token, which a gated model needs.
 
     An existing folder that fails verification is renamed to
     '<folder>.invalid-<timestamp>' so it can be inspected, then replaced by a
@@ -498,18 +488,17 @@ def install_model(spec, cache_dir, log=print, download=_download, has_token=None
         log(f"{spec.name}: installed files are not usable "
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
-    # has_token: the caller passes the token to `download` itself (workspace
-    # setup, #19); None keeps the legacy behaviour of reading HF_TOKEN.
-    token_ok = os.environ.get("HF_TOKEN") if has_token is None else has_token
-    if spec.gated and not token_ok and not staging_dir(spec, cache_dir).is_dir():
+    if spec.gated and not has_token and not staging_dir(spec, cache_dir).is_dir():
         raise ModelLoadError(
             f"{spec.name} needs downloading again, which needs your Hugging Face token. "
-            f"Run install.cmd and follow the token step.")
+            f"Download it in Unminute's Setup.")
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
         # A verified download from an attempt whose final move failed.
         log(f"Reusing the verified {spec.name} download from the last attempt.")
         return _move_into_place(spec, target, staging, had_folder, log)
+    if download is None:
+        raise ModelLoadError(f"{spec.name} needs downloading. Download it in Unminute's Setup.")
     shutil.rmtree(staging, ignore_errors=True)   # leftover of an interrupted run
     staging.parent.mkdir(parents=True, exist_ok=True)
     log(f"Downloading {spec.name} ({spec.download_bytes / 1e9:.2f} GB, "
@@ -520,15 +509,14 @@ def install_model(spec, cache_dir, log=print, download=_download, has_token=None
         except Exception as exc:
             raise ModelLoadError(
                 f"Could not download {spec.name} ({type(exc).__name__}: {exc}). "
-                f"Nothing was changed. Check the internet connection and try again, "
-                f"or run Update / repair.") from exc
+                f"Nothing was changed. Check the internet connection and try again.") from exc
         # Download bookkeeping only; dropping it keeps the model folder clean.
         shutil.rmtree(staging / ".cache", ignore_errors=True)
         problems = check_files(spec, staging, full=True)
         if problems:
             raise ModelLoadError(
                 f"The downloaded {spec.name} files failed verification "
-                f"({'; '.join(problems)}). Nothing was changed; try Update / repair again.")
+                f"({'; '.join(problems)}). Nothing was changed; try the download again.")
     except BaseException:
         # Only our own fresh, unverified download is discarded here.
         shutil.rmtree(staging, ignore_errors=True)
@@ -554,12 +542,12 @@ def _move_into_place(spec, target, staging, had_folder, log):
             kept.rename(target)
         raise ModelLoadError(
             f"Could not move the verified {spec.name} files into place ({exc}). "
-            f"Close the app, wait a minute and run Update / repair again.") from exc
+            f"Wait a minute and try the download again.") from exc
     log(f"{spec.name} verified and ready.")
     return "repaired" if had_folder else "installed"
 
 
-def install_parakeet(name, cache_dir, log=print, download=_download):
+def install_parakeet(name, cache_dir, log=print, download=None):
     """Install or repair a Parakeet model together with its speech detector."""
     results = {SILERO_VAD.name: install_model(SILERO_VAD, cache_dir, log, download)}
     spec = PARAKEET_MODELS[name]
@@ -567,7 +555,7 @@ def install_parakeet(name, cache_dir, log=print, download=_download):
     return results
 
 
-def install(name, cache_dir, log=print, download=_download, has_token=None):
+def install(name, cache_dir, log=print, download=None, has_token=False):
     """Install or repair any managed model. Returns {component: result}."""
     if is_parakeet(name):
         return install_parakeet(name, cache_dir, log, download)
@@ -702,7 +690,7 @@ class WhisperEngine:
 
     def transcribe(self, audio):
         """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
-        if not self.word_timestamps:     # legacy app: settings unchanged
+        if not self.word_timestamps:     # without word times (the app always asks for them)
             segments, info = self.model.transcribe(
                 audio, language=self.language, vad_filter=True, beam_size=self.beam_size)
             return (Segment(s.start, s.end, s.text.strip()) for s in segments), info.duration
@@ -742,9 +730,8 @@ class ParakeetEngine:
             problems = check_files(spec, model_dir(spec, self.cache_dir))
             if problems:
                 raise ModelLoadError(
-                    f"{spec.name} cannot be used: {'; '.join(problems)}. It now shows "
-                    f"'needs repair': start the queue again and accept the repair, "
-                    f"or run Update / repair.")
+                    f"{spec.name} cannot be used: {'; '.join(problems)}. "
+                    f"Repair it in Settings > Manage downloads.")
         try:
             import onnx_asr
             import onnxruntime as rt
@@ -770,7 +757,8 @@ class ParakeetEngine:
         except Exception as exc:
             raise ModelLoadError(
                 f"{self.label} failed to load ({type(exc).__name__}: {exc}). "
-                f"Run Update / repair; if it keeps failing, choose a Whisper model.") from exc
+                f"Repair it in Settings > Manage downloads; if it keeps failing, "
+                f"choose a Whisper model.") from exc
         return self
 
     def transcribe(self, audio):
@@ -795,63 +783,21 @@ class ParakeetEngine:
         self._asr = None
 
 
-# --- Installer entry point ----------------------------------------------------
+# --- Command line ---------------------------------------------------------------
 
 def _main(argv):
     import argparse
-    parser = argparse.ArgumentParser(description="Install or repair speech models.")
+    parser = argparse.ArgumentParser(description="Speech model manifests.")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    ensure = sub.add_parser("ensure", help="download missing / repair damaged models")
-    ensure.add_argument("--model", action="append", default=[], choices=sorted(MANAGED_MODELS))
-    ensure.add_argument("--present", action="store_true",
-                        help="also verify and repair every model already on disk")
-    ensure.add_argument("--default-parakeet", action="store_true",
-                        help=f"install {RECOMMENDED_PARAKEET} only if no Parakeet model is on disk")
-    ensure.add_argument("--cache", default=os.path.join(
-        os.environ.get("LOCALAPPDATA", os.getcwd()), "whisper-models"))
     man = sub.add_parser("manifest", help="write the model integrity manifest as Markdown")
     man.add_argument("--out", help="file to write (UTF-8, LF); default prints it")
     args = parser.parse_args(argv)
-    if args.cmd == "manifest":
-        if args.out:   # written directly: PowerShell 5.1 '>' would produce UTF-16
-            Path(args.out).write_text(manifest_markdown(), encoding="utf-8", newline="\n")
-        else:
-            sys.stdout.write(manifest_markdown())
-        return 0
-
-    def on_disk(spec):
-        # A verified download whose final move failed counts as present too.
-        return model_dir(spec, args.cache).exists() or staging_dir(spec, args.cache).exists()
-
-    selected = list(dict.fromkeys(args.model))
-    if args.default_parakeet and not any(on_disk(s) for s in PARAKEET_MODELS.values()):
-        selected.append(RECOMMENDED_PARAKEET)
-    extra = []
-    if args.present:
-        extra = [n for n, s in MANAGED_MODELS.items() if n not in selected
-                 and (is_present(n, args.cache) or staging_dir(s, args.cache).exists())]
-    if not selected and not extra:
-        print("  No speech models selected or installed.")
-        return 0
-    failed_selected = failed_extra = False
-    for name in selected + extra:
-        try:
-            results = install(name, args.cache, log=lambda m: print("  " + m))
-            print(f"  {name}: {results[name]}")
-        except Exception as exc:
-            print(f"  {name}: FAILED - {exc}")
-            if name in selected:
-                failed_selected = True
-            else:
-                failed_extra = True
-    # 1 = a model the user chose failed; 2 = only an already-present extra
-    # model could not be repaired (the installer warns and carries on).
-    return 1 if failed_selected else (2 if failed_extra else 0)
+    if args.out:   # written directly: PowerShell 5.1 '>' would produce UTF-16
+        Path(args.out).write_text(manifest_markdown(), encoding="utf-8", newline="\n")
+    else:
+        sys.stdout.write(manifest_markdown())
+    return 0
 
 
 if __name__ == "__main__":
-    # The installer's download step: telemetry off, but no network guard,
-    # because downloading is the point.
-    import offline_guard
-    offline_guard.disable_telemetry()
     sys.exit(_main(sys.argv[1:]))

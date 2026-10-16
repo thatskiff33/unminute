@@ -9,21 +9,18 @@
 #   2. install() patches the socket layer so any DNS lookup, TCP connection or
 #      UDP datagram to a non-loopback address is refused, including asyncio's
 #      Windows path (ConnectEx and WSASendTo, which bypass socket.connect),
-#      unless the caller is inside permit() (the earlier app's download path)
-#      or the host is on the allow_hosts() list (the workspace's download
-#      process). Refusals are recorded in `blocked` so tests can prove nothing
-#      tried to reach the network.
+#      unless the host is on the allow_hosts() list (the workspace's download
+#      process). Nothing lets a download through in the app's own processes
+#      (the earlier app's permit() is gone); uninstall() is for tests only.
+#      Refusals are recorded in `blocked` so tests can prove nothing tried to
+#      reach the network.
 #
 # This is a tripwire for Python code, not a firewall: native libraries with
 # their own sockets are not covered. On managed devices an outbound firewall
 # rule for the runtime is the enforcing control (#111 B7).
 #
-# The guard is process-wide: while one thread holds permit() (a deliberate
-# download), other threads are not blocked. The legacy app only downloads while
-# its single worker is preparing a model, so nothing else is running then.
 # Stdlib only, so it is importable (and testable) without the app's packages.
 
-import contextlib
 import errno
 import ipaddress
 import os
@@ -43,13 +40,12 @@ MAX_RECORDED = 100
 
 blocked = []                 # (host, port) of refused attempts, oldest first
 _lock = threading.Lock()
-_permits = 0
 _installed = False
 _orig = {}
 
 
 class NetworkBlockedError(OSError):
-    """Raised when code tries to reach the network outside permit()."""
+    """Raised when code tries to reach the network."""
 
 
 def disable_telemetry():
@@ -82,8 +78,8 @@ def _is_local(host):
 
 def _local_proxies():
     """(host, port) of proxies configured on this machine itself. Traffic sent
-    to a loopback proxy would be forwarded to the internet, so outside permit()
-    such a connection counts as remote. Read from the environment and, on
+    to a loopback proxy would be forwarded to the internet, so such a
+    connection counts as remote. Read from the environment and, on
     Windows, the registry (what requests/httpx/urllib honour by default)."""
     import urllib.parse
     import urllib.request
@@ -208,8 +204,6 @@ def _record_addresses(host, result):
 
 
 def _check(host, port, resolving=False):
-    if _permits > 0:
-        return True
     if _is_local(host) and (str(host).lower(), port) not in _proxy_endpoints:
         return True
     if (_allowed_names or _proxy_names) and (
@@ -226,7 +220,7 @@ def _refuse(host, port):
     return NetworkBlockedError(
         errno.EACCES,
         f"Network access blocked: {host}:{port}. This app works offline; "
-        f"only Update / repair and model downloads may go online.")
+        f"only its model download process may go online.")
 
 
 def _guarded_connect(self, address):
@@ -359,16 +353,3 @@ def uninstall():
             proactor.connect = _orig["iocp_connect"]
             proactor.sendto = _orig["iocp_sendto"]
         _installed = False
-
-
-@contextlib.contextmanager
-def permit():
-    """Allow network access for the duration of one deliberate download."""
-    global _permits
-    with _lock:
-        _permits += 1
-    try:
-        yield
-    finally:
-        with _lock:
-            _permits -= 1

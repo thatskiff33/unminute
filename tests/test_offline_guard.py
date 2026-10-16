@@ -83,12 +83,11 @@ class NetworkGuardTests(unittest.TestCase):
             server.close()
         self.assertEqual(og.blocked, [])
 
-    def test_permit_allows_and_is_released_even_on_error(self):
-        with og.permit():
-            socket.getaddrinfo(TEST_NET, 443)   # numeric: resolved locally
-        with self.assertRaises(RuntimeError):
-            with og.permit():
-                raise RuntimeError("download failed")
+    def test_there_is_no_switch_that_turns_the_guard_off(self):
+        # The earlier app's permit() bypassed the guard for the whole process;
+        # downloads now run only in their own process, with checked hosts.
+        self.assertFalse(hasattr(og, "permit"))
+        self.assertFalse(hasattr(og, "_permits"))
         with self.assertRaises(og.NetworkBlockedError):
             socket.getaddrinfo(TEST_NET, 443)
 
@@ -121,8 +120,6 @@ class NetworkGuardTests(unittest.TestCase):
             finally:
                 s.close()
             self.assertIn(("127.0.0.1", 8899), og.blocked)
-            with og.permit():           # deliberate downloads may still use the proxy
-                self.assertTrue(og._check("127.0.0.1", 8899))
             self.assertTrue(og._check("127.0.0.1", 8900))   # other local ports fine
         finally:
             if saved is None:

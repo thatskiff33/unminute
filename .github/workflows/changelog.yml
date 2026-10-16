@@ -32,8 +32,7 @@ jobs:
         # was built on, so the diff is exactly this pull request's changes.
         # Shipped: what tools/build_package.py puts in the package (the app code,
         # installer, runtime pins and build settings, icon, licence). README.md
-        # also ships but is documentation, so it is left out on purpose, as is the
-        # earlier app at the repo root, which is not in the package.
+        # also ships but is documentation, so it is left out on purpose.
         run: |
           changed=$(git diff --name-only HEAD^1 HEAD)
           shipped=$(echo "$changed" | grep -E '^(workspace/|packaging/|asr_engines\.py$|offline_guard\.py$|requirements\.txt$|tools/build_package\.py$|whisper\.ico$|LICENSE$)' || true)
