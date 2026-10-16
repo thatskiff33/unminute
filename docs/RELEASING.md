@@ -77,7 +77,7 @@ The workflow publishes the notes and the source archives only. The Windows packa
 
 ## Withdrawing a bad release
 
-**When to withdraw.** Withdraw a release if it can lose or expose meeting content, cannot record or transcribe, or blocks updates (severity 1). Anything less serious is fixed forward in the next patch.
+**When to withdraw.** Withdraw a release that has a severity 1 issue (defined in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), section 14). Anything less serious is fixed forward in the next patch.
 
 1. **Stop new downloads.**
    - Make the previous good release the default download: `gh release edit vPREVIOUS --latest`.
@@ -86,7 +86,7 @@ The workflow publishes the notes and the source archives only. The Windows packa
    - Once immutable releases are turned on (#111), the files cannot change. Whether the notes can still be edited is to confirm at that point.
 2. **Managed devices.** Once the per-machine Intune installer exists (#111, slice B6): in Intune, supersede or unassign the bad version and assign the previous one. Until then, installs are per user, and step 3 applies.
 3. **People who installed it.**
-   - Ask them to roll back: run `install.ps1 -Rollback` from the current version's folder (`versions\<version>`).
+   - Ask them to roll back, as described in [PACKAGING.md](PACKAGING.md): from `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>` (the bad version), run `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback`.
    - Rollback is refused if the bad version changed the storage format. In that case, fix forward instead.
 4. **Fix forward.**
    - Release the next patch version through the normal process.

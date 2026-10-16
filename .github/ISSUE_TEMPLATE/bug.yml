@@ -12,8 +12,8 @@ body:
     id: version
     attributes:
       label: Unminute version
-      description: Shown in Settings, or in version.json in the install folder.
-      placeholder: "0.4.3"
+      description: Shown in the About line at the bottom of Settings.
+      placeholder: "X.Y.Z"
     validations:
       required: true
   - type: input

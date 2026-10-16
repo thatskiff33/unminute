@@ -55,7 +55,7 @@ Each budget covers CPU, memory, start-up time and the peak cost of heavy work. B
 
 **Criterion.**
 - Heavy libraries (machine learning, media, GPU) load only in the process that uses them, and only when it needs them.
-- Heavy worker processes start on demand and exit after a stated idle time.
+- Heavy worker processes start on demand, and are gone within their stated idle time plus 5 s.
 - While the window is hidden or minimised, nothing polls faster than once every 30 s, except active recording or processing.
 - The UI redraws only what changed.
 - Start-up does only what the first screen needs; other work is deferred.
@@ -96,7 +96,7 @@ Each budget covers CPU, memory, start-up time and the peak cost of heavy work. B
 **Criterion.**
 - Each process, thread, bridge call and installer step catches unexpected errors.
 - Each failure records an incident code, and shows the user plain language that includes that code.
-- No output goes to a null device.
+- No error output is discarded (for example, a child process's error stream sent to a null device).
 - Errors never pass stack traces or internal detail to the user interface.
 
 **Check.** Unit tests for the boundary handlers. The diagnostics marker test in section 5. Review of every new boundary.
@@ -125,7 +125,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 - **Version:** Semantic Versioning, with the version kept in one place.
 - **Changelog:** one dated section per version, with an Unreleased section that pull requests add to.
 - **Build:** made by CI from a tagged commit on the main branch. Dependencies are hash-locked, and the build is reproducible.
-- **Each release carries:** a checksum, an SBOM, third-party notices, build provenance, and the release-time evidence from sections 2, 4 and 7, each naming the package's checksum.
+- **Each release carries:** a checksum, an SBOM, third-party notices, build provenance, and the release-time evidence from sections 2, 4, 7 and 12, each naming the package's checksum.
 
 **Check.** The release job refuses to publish if any of these is missing or failing.
 
@@ -190,6 +190,10 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 - **Release criteria:** every gate in Part B passes, and the evidence is attached to the release.
 - **Rings:** releases go to the maintainer, then a pilot group on a pre-release, then everyone. Proposed rule: at least 5 working days in pilot, with no open severity 1 or 2 issue.
 - **After release:** a status or health command lets device management spot failures without telemetry.
+- **Severity:**
+  - **1:** meeting content can be lost or exposed, recording or transcription does not work, or updates are blocked. A severity 1 issue in a release means withdrawing it.
+  - **2:** a main task fails or gives wrong results, and there is a workaround.
+  - **3:** anything else, such as wording, layout or a minor inconvenience.
 - **Withdrawal:** a written runbook. A version number is never reused.
 - **Publishing:** always needs explicit approval, separate from merging code.
 
@@ -228,7 +232,7 @@ Status is one of:
 | UI process imports no heavy libraries | 3 | Windows unit test | Planned: R2 (#123) |
 | Worker starts on demand and unloads after idle | 3 | Unit tests (`tests/test_workers.py`) | In place |
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
-| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | CI job (headless Edge, design fixtures) | Planned: R4 (#125), tightened in R6 (#127) |
+| UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | CI job (headless browser with the design fixtures; to confirm in R4) | Planned: R4 (#125), tightened in R6 (#127) |
 | WebView2 hidden, suspended and low-memory when minimised | 2, 3 | Release-time performance run | Planned: R8 (#129) |
 | Idle CPU, private bytes, start-up, worker peak, leak check | 2 | Release-time run on the reference machine | Planned: R3 (#124); enforced by security plan B3 |
 | Durable processing; crash and resume give identical results | 4 | Unit tests; `tools/packaged_crash_check.py` | Unit tests in place; packaged check manual |
@@ -236,24 +240,29 @@ Status is one of:
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
 | Settings versioned; unknown keys kept on rollback | 9 | Unit tests | Planned: R11 (#132) |
 | Local content-free log, crash hooks, Copy diagnostics, `--health` | 5, 6, 14 | Unit tests and the marker test | Planned: R9 (#130) |
-| Syntax, unit tests (Linux and Windows), requirements resolve, Ruff, PSScriptAnalyzer, workflow lint | 7 | CI (`.github/workflows/ci.yml`) | In place |
+| Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |
 | CodeQL for Python and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
 | JavaScript syntax and CodeQL for JavaScript | 7 | CI | Planned: R4 (#125) |
 | Coverage reported, then a rising floor | 7 | CI | Planned: R4 (#125) |
 | Changelog entry on code changes | 8, 10 | CI | Planned: R4 (#125) |
+| Manual keyboard and screen-reader pass, every minor release | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (#27) |
 | Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py` | Manual; evidence enforced by security plan B3 |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` | Manual; extended by security plan C7 |
-| Accuracy on the 148 public clips (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
-| Offline operation and no telemetry | 13 | `--self-test` | In place |
+| Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
+| Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
 | Hash-locked dependencies, vulnerability audit | 8 | CI | Security plan: B1 |
 | Reproducible, pruned build with SBOM and third-party notices; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 |
 | CI-built, attested release behind an approval; evidence present and naming the zip SHA-256 | 8, 14 | Release job | Security plan: B3 |
 | Update gate, rollback and migration | 9 | Unit tests (`tests/test_update.py`); installer end to end | Unit tests in place; installer check manual |
 | First-launch fallback to the previous version; atomic version pointer; installer log | 9 | Installer and launcher tests | Security plan: B5, B6 |
+| Screenshots match the shipped app | 10 | Pull request template and review | In place |
+| Known limitations stated in each full release's notes | 10, 14 | [RELEASING.md](RELEASING.md), "Unminute package releases", step 3 | Manual |
+| Pilot ring before a full release | 14 | Release decision | Not yet possible: no pilot group chosen (#121) |
+| Device-management health check without telemetry | 14 | `--status` (in place); `--health` for Intune Remediation | `--status` in place; `--health` planned: R9 (#130) |
 | Withdrawal runbook | 14 | [RELEASING.md](RELEASING.md) | In place |
 | Pull request definition of done and bug template | 10, 14 | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` | In place |
 
 ### Exceptions
 
 - **Packaged evidence predates current releases.** Most evidence in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) comes from the 0.2.0 previews. It is not re-run in full for each release until R3 (#124) and security plan B3 automate it.
-- **Human and hardware checks are open.** These still need people or hardware: #10, #11, #12, #25, #27, #28 and #29. Each release lists them as known limitations until they are closed.
+- **Human and hardware checks are open.** The checks that need people or hardware are listed in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md), "Before a business release". From now on, a full release lists those still open as known limitations in its notes.

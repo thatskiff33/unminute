@@ -8,7 +8,7 @@ This lists what a workspace release needs, what has been verified, and what stil
 ## Every change (automated, in CI)
 
 - [x] **Every job in `.github/workflows/ci.yml` and `codeql.yml`.** These include unit tests on Linux and Windows; the Windows job fails if a test is skipped for an unlisted reason. The required jobs are listed in [RELEASING.md](RELEASING.md).
-- [x] **The gates in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), Part B, that are marked "In place".**
+[RELEASE_STANDARD.md](RELEASE_STANDARD.md), Part B, shows which gates CI runs and which are still manual.
 
 ## Verified on the development machine
 
@@ -93,4 +93,4 @@ Findings:
 
 ## Publishing (when authorised)
 
-Follow "Unminute package releases" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.
+Follow "Before cutting a release" and "Unminute package releases" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.

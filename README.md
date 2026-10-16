@@ -182,7 +182,7 @@ On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error 
 - Tested on one laptop only. The minimum and recommended hardware levels are untested (#28).
 - Graphics card acceleration has been tested on one NVIDIA laptop GPU with synthetic audio. AMD and Intel graphics are not supported.
 
-What is verified for each release is listed in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md). The evidence recorded so far is in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 ## The earlier app
 
@@ -212,7 +212,7 @@ Design and plans:
 - [docs/design/boards/](docs/design/boards/): the approved UI design boards that `tools/design_check.py` compares the app against.
 - [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md): the desktop shell trial and its security findings.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
-- [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release process and hands-on checks.
+- [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md), [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release criteria, release process and hands-on checks.
 
 Dependencies are pinned on purpose in `requirements.txt` and `workspace/requirements.txt`. If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `python test_diarization.py "path\to\recording.wav"` checks Whisper with pyannote speaker identification, and `tools/durable_core_check.py` checks the workspace's processing core. CI runs syntax checks, unit tests, a wheels-only resolve of `requirements.txt`, ruff and PSScriptAnalyzer on pull requests and pushes to main. It does not run the models.
 
