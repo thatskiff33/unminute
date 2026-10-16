@@ -130,6 +130,13 @@ class AdmxTests(unittest.TestCase):
         self.assertLessEqual(set(re.findall(r"\$\(presentation\.(\w+)\)", admx_text)),
                              presentations)
 
+    def test_it_guide_lists_every_policy_value(self):
+        import re
+        guide =(Path(__file__).resolve().parents[1] / "docs" / "PACKAGING.md").read_text(
+            encoding="utf-8")
+        section = guide.split("### Managed settings (policy)", 1)[1].split("\n## ", 1)[0]
+        self.assertEqual(set(re.findall(r"^\| `(\w+)` \|", section, re.M)), set(policy.SPEC))
+
 
 import importlib.util as _ilu  # noqa: E402
 
