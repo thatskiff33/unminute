@@ -234,9 +234,9 @@ class IntakeTests(unittest.TestCase):
             (self.folder / f"old {i}.wav").write_bytes(b"synthetic")
         calls = []
 
-        def stop():                     # two checks before the files, then one each
+        def stop():                     # three checks before the files, then one each
             calls.append(1)
-            return len(calls) > 12
+            return len(calls) > 13
         self.scan(stop=stop)
         self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
         self.assertEqual(self.states(), {"baseline": 10})          # what was seen is kept
@@ -257,7 +257,81 @@ class IntakeTests(unittest.TestCase):
         queued = []                     # the app imports later: nothing reported back
         self.now += 10
         stats = intake.scan(self.store, EXT, BIG, lambda *a: queued.append(a), now=self.now)
-        self.assertEqual((len(queued), stats["duplicates"]), (1, 1))
+        self.assertEqual((len(queued), stats["duplicates"]), (1, 0))
+        self.assertEqual(stats["waiting"], 1)          # the copy waits for that import
+        (_, fid, key, content), = queued
+        intake.import_finished(self.store, fid, key, content, True)
+        self.now += 10
+        stats = intake.scan(self.store, EXT, BIG, lambda *a: queued.append(a), now=self.now)
+        self.assertEqual((len(queued), stats["duplicates"]), (1, 1))     # done: a duplicate
+
+    # -- the same recording in two folders (#152) --------------------------------
+
+    def two_folders_lined_up(self):
+        """The same recording in two watched folders; the first folder's copy
+        is lined up for import (not yet imported). Returns the folder ids and
+        what was lined up."""
+        other = self.root / "OneDrive copy"
+        other.mkdir()
+        first = intake.add_folder(self.store, str(self.folder))
+        second = intake.add_folder(self.store, str(other))
+        self.settle()
+        wav(self.folder / "meeting.wav", seed=70)
+        wav(other / "meeting.wav", seed=70)
+        self.scan()
+        lined_up = []
+        self.now += 10
+        intake.scan(self.store, EXT, BIG, lambda *a: lined_up.append(a), now=self.now)
+        self.assertEqual(len(lined_up), 1)
+        return first, second, lined_up[0]
+
+    def test_a_copy_in_another_folder_is_imported_when_the_first_is_paused(self):
+        first, second, (path, fid, key, content) = self.two_folders_lined_up()
+        intake.set_active(self.store, fid, False)
+        intake.import_held(self.store, fid, key)             # its import comes up: held
+        self.settle()
+        self.assertEqual(len(self.queued), 1)                # from the folder still on
+        self.assertNotEqual(self.queued[0].parent, Path(path).parent)
+        intake.set_active(self.store, fid, True)
+        self.settle()
+        self.assertEqual(len(self.queued), 1)                # imported once overall
+
+    def test_a_copy_in_another_folder_is_imported_when_the_first_is_removed(self):
+        first, second, (path, fid, key, content) = self.two_folders_lined_up()
+        intake.remove_folder(self.store, fid)
+        intake.import_held(self.store, fid, key)             # nothing left to hold
+        self.settle()
+        self.assertEqual(len(self.queued), 1)
+
+    def test_a_copy_in_another_folder_is_imported_when_the_first_fails(self):
+        first, second, (path, fid, key, content) = self.two_folders_lined_up()
+        intake.import_finished(self.store, fid, key, content, False)    # damaged, say
+        self.settle()
+        self.assertEqual(len(self.queued), 1)
+
+    def test_a_folder_paused_and_resumed_at_once_is_not_marked_scanned(self):
+        # Paused just before a file is read, resumed before the scan ends: the
+        # folder still counts as not scanned (its rows were not all written).
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "new.wav", seed=71)
+        self.scan()
+        before = intake.folders(self.store)[0]["last_scan_at"]
+        with mock.patch.object(intake, "watching", return_value=False):   # paused...
+            self.scan()                                                  # ...and back on
+        self.assertEqual(intake.folders(self.store)[0]["last_scan_at"], before)
+        self.assertEqual(self.queued, [])
+
+    def test_turned_off_during_the_walk_is_not_an_unreadable_folder(self):
+        intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        calls = []
+
+        def stop():                     # the second check is inside the walk
+            calls.append(1)
+            return len(calls) >= 2
+        self.scan(stop=stop)
+        self.assertIsNone(intake.summary(self.store)[0]["error"])
 
     def test_an_import_that_finishes_during_the_scan_is_recorded(self):
         # Its row is written before the import is queued, so the import's
@@ -298,6 +372,82 @@ class IntakeTests(unittest.TestCase):
         self.scan(hasher=hasher)
         self.assertEqual(self.queued, [])                           # nothing imported
         self.assertEqual(self.states(), {})                         # no rows left behind
+
+    # -- pausing a folder (#152): nothing more from it until it is turned on ------
+
+    def test_a_folder_paused_during_a_scan_imports_nothing_more_until_resumed(self):
+        from workspace.media import sha256_file
+        fid = intake.add_folder(self.store, str(self.folder))
+        self.settle()                                               # a finished baseline
+        for i in range(3):
+            wav(self.folder / f"new {i}.wav", seed=60 + i)
+        self.scan()
+
+        def hasher(path):               # the user pauses the folder meanwhile
+            intake.set_active(self.store, fid, False)
+            return sha256_file(path)
+        self.scan(hasher=hasher)
+        self.assertEqual(self.queued, [])
+        wav(self.folder / "while paused.wav", seed=63)              # arrives while paused
+        self.settle()
+        self.assertEqual(self.queued, [])                           # a paused folder is skipped
+        intake.set_active(self.store, fid, True)
+        self.settle()
+        self.assertEqual(sorted(p.name for p in self.queued),
+                         ["new 0.wav", "new 1.wav", "new 2.wav", "while paused.wav"])
+
+    def test_a_paused_folder_hashes_nothing_more(self):
+        # Duplicates are never lined up for import, so the pause must be
+        # noticed before the next file is read, not only at the import.
+        from workspace.media import sha256_file
+        fid = intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        for i in range(3):
+            wav(self.folder / f"copy {i}.wav", seed=65)            # the same recording
+        intake.remember_content(self.store, sha256_file(self.folder / "copy 0.wav"))
+        self.scan()
+        hashed = []
+
+        def hasher(path):
+            hashed.append(path)
+            intake.set_active(self.store, fid, False)
+            return sha256_file(path)
+        self.scan(hasher=hasher)
+        self.assertEqual(len(hashed), 1)
+
+    def test_pausing_an_unfinished_baseline_does_it_again_when_resumed(self):
+        fid = intake.add_folder(self.store, str(self.folder))       # without existing files
+        for i in range(20):
+            (self.folder / f"old {i}.wav").write_bytes(b"synthetic")
+        calls = []
+
+        def stop():                     # paused part-way through the first check
+            calls.append(1)
+            if len(calls) == 12:
+                intake.set_active(self.store, fid, False)
+            return False
+        self.scan(stop=stop)
+        self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
+        intake.set_active(self.store, fid, True)
+        self.settle()
+        self.assertTrue(intake.folders(self.store)[0]["baseline_done"])
+        self.assertEqual(self.queued, [])                           # existing files were not new
+        self.assertEqual(self.states(), {"baseline": 20})
+
+    def test_an_import_held_back_waits_for_the_next_scan(self):
+        fid = intake.add_folder(self.store, str(self.folder))
+        self.settle()
+        wav(self.folder / "lined up.wav", seed=64)
+        self.scan()
+        queued = []
+        self.now += 10
+        intake.scan(self.store, EXT, BIG, lambda *a: queued.append(a), now=self.now)
+        [(_, _, key, _)] = queued                                   # lined up, not yet imported
+        intake.import_held(self.store, fid, key)                    # the folder was paused
+        row = self.store._one("SELECT state, content FROM intake_seen WHERE key = ?", (key,))
+        self.assertEqual((row["state"], row["content"]), ("waiting", None))
+        self.scan()
+        self.assertEqual([p.name for p in self.queued], ["lined up.wav"])
 
     def test_partial_read_keeps_rows_for_unseen_files(self):
         wav(self.folder / "history.wav", seed=34)

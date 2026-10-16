@@ -377,6 +377,12 @@ class Workspace:
                     self._import_recording_folder(Path(item[1]), ask=item[0] == "__recovered__")
                     continue
                 path, folder_id, key, content = (*item, None, None)[:4]
+                if key and not (self._allowed("AllowWatchedFolders")
+                                and intake.watching(self.store, folder_id)):
+                    # Lined up before its folder was paused, removed or turned
+                    # off by policy: it waits until the folder is on again (#152).
+                    intake.import_held(self.store, folder_id, key)
+                    continue
                 self._status = "Importing a recording"
                 try:
                     self._import_one(path, folder_id)
@@ -834,7 +840,11 @@ class Workspace:
                 self.last_scan = intake.scan(
                     self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
                     lambda p, fid, key, content: self._imports.put((p, fid, key, content)),
-                    stop=self._closing.is_set)
+                    # Closing, or policy turning watched folders off meanwhile.
+                    stop=lambda: (self._closing.is_set()
+                                  or not self._allowed("AllowWatchedFolders")))
+                if not self._allowed("AllowWatchedFolders"):
+                    self.last_scan = {"managed_off": True}  # turned off part-way
         except Exception as exc:             # a scan problem must not stop watching
             self.last_scan = {"error": safe_message(exc)}
 

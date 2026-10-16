@@ -351,6 +351,85 @@ class WorkspacePolicyTests(unittest.TestCase):
         scan.assert_not_called()
         self.assertEqual(ws.last_scan, {"managed_off": True})
 
+    def test_lined_up_watched_imports_wait_while_paused_or_turned_off(self):
+        # #152: from the pause (or the policy change) nothing more is imported
+        # from the folder; what was lined up waits until it is on again.
+        from workspace import intake
+        values = {}
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: (dict(values), ()))
+        folder = Path(self.tmp.name) / "Recordings"
+        folder.mkdir()
+        fid = intake.add_folder(ws.store, str(folder))
+        path = str(folder / "lined up.wav")
+        with ws.store.tx() as db:                                  # its row, as a scan left it
+            db.execute("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
+                       "first_seen, last_seen, content) VALUES (?, ?, 1, 1, 0, 'importing', 0, "
+                       "0, ?)", (fid, "k" * 64, "c" * 64))
+
+        def drain(*items):
+            for item in (*items, None):
+                ws._imports.put(item)
+            with mock.patch.object(ws, "_import_one") as imported, \
+                    mock.patch.object(intake, "import_held",
+                                      wraps=intake.import_held) as held:
+                ws._intake_loop()
+            return imported, held
+        intake.set_active(ws.store, fid, False)                    # paused
+        imported, held = drain((path, fid, "k" * 64, "c" * 64))
+        imported.assert_not_called()
+        held.assert_called_once_with(ws.store, fid, "k" * 64)
+        row = ws.store._one("SELECT state, content FROM intake_seen WHERE key = ?", ("k" * 64,))
+        self.assertEqual((row["state"], row["content"]), ("waiting", None))   # for the resume
+        intake.set_active(ws.store, fid, True)
+        values["AllowWatchedFolders"] = False                      # IT turns it off
+        ws.policy.refresh()
+        imported, held = drain((path, fid, "k" * 64, "c" * 64), (path, None))
+        held.assert_called_once()
+        imported.assert_called_once_with(path, None)               # a recording added by hand
+        values["AllowWatchedFolders"] = True
+        ws.policy.refresh()
+        imported, held = drain((path, fid, "k" * 64, "c" * 64))
+        imported.assert_called_once_with(path, fid)                # on again: imported
+        held.assert_not_called()
+        ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        imported, held = drain((path, fid, "k" * 64, "c" * 64))
+        imported.assert_not_called()                               # unreadable: grants nothing
+        held.assert_called_once()
+
+    def test_turning_watched_folders_off_stops_a_scan_part_way(self):
+        import os
+        from workspace import intake
+        values = {}
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: (dict(values), ()))
+        folder = Path(self.tmp.name) / "Recordings"
+        folder.mkdir()
+        intake.add_folder(ws.store, str(folder))
+        hashed = []
+
+        def hasher(path):               # IT turns watched folders off meanwhile
+            hashed.append(path)
+            values["AllowWatchedFolders"] = False
+            ws.policy.refresh()
+            return f"{len(hashed):064d}"
+        saved = (intake.STABLE_S, intake.STABLE_RECENT_S)
+        intake.STABLE_S = intake.STABLE_RECENT_S = 0
+        try:
+            ws._scan_folders()                                     # baseline: empty
+            for i in range(3):
+                p = folder / f"new {i}.wav"
+                p.write_bytes(b"synthetic")
+                os.utime(p, (1e9, 1e9))
+            ws._scan_folders()                                     # seen: waiting
+            with mock.patch("workspace.media.sha256_file", side_effect=hasher):
+                ws._scan_folders()
+        finally:
+            intake.STABLE_S, intake.STABLE_RECENT_S = saved
+        self.assertEqual(len(hashed), 1)                           # stopped after the first
+        self.assertEqual(ws._imports.qsize(), 1)                   # held when it comes up
+        self.assertEqual(ws.last_scan, {"managed_off": True})
+
     def test_closing_runs_a_pending_clipboard_clear(self):
         from workspace import clipboard
         ws = self.open(ClipboardClearMinutes=5)

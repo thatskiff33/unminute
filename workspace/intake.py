@@ -189,14 +189,18 @@ def _walk(root, extensions, stop=None):
 
 
 def already_imported(store, content_sha):
-    """Content the workspace already has, imported within the suppression
-    window, or being imported right now from another file."""
+    """Content the workspace already has: imported within the suppression
+    window, from any folder or by hand."""
     if store._one("SELECT 1 FROM intake_content WHERE sha256 = ?", (content_sha,)):
         return True
-    if store._one("SELECT 1 FROM intake_seen WHERE state = 'importing' AND content = ?",
-                  (content_sha,)):
-        return True
     return store._one("SELECT 1 FROM sources WHERE original_sha256 = ?",
+                      (content_sha,)) is not None
+
+
+def importing_elsewhere(store, content_sha):
+    """The same content is lined up for import from another file. Not yet
+    imported: that import may still be held (its folder paused) or fail."""
+    return store._one("SELECT 1 FROM intake_seen WHERE state = 'importing' AND content = ?",
                       (content_sha,)) is not None
 
 
@@ -215,6 +219,21 @@ def import_finished(store, fid, key, content, ok, now=None):
                    "AND key = ?", ("imported" if ok else "failed", fid, key))
     if ok:
         remember_content(store, content, now)
+
+
+def watching(store, fid):
+    """The folder is still watched and turned on."""
+    row = store._one("SELECT active FROM watched_folders WHERE id = ?", (fid,))
+    return bool(row and row["active"])
+
+
+def import_held(store, fid, key):
+    """An import lined up before its folder was paused (or turned off by
+    policy) waits: back to waiting, so the first scan after the folder is
+    turned on again imports it (#152). Nothing if the folder was removed."""
+    with store.tx() as db:
+        db.execute("UPDATE intake_seen SET state = 'waiting', content = NULL WHERE "
+                   "folder_id = ? AND key = ? AND state = 'importing'", (fid, key))
 
 
 def recover(store):
@@ -268,6 +287,8 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
             stats["errors"] += 1
             continue
         files, complete = _walk(root, extensions, stop)
+        if stop and stop():
+            break                        # closing or turned off, not unreadable: no note
         baseline = not f["baseline_done"] and not f["include_existing"]
         if baseline and not complete:
             # Never record a partial baseline: files it missed would later look new.
@@ -297,7 +318,7 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
         # are committed early only before an import is queued, because the
         # import updates its row when it finishes. No transaction is held
         # while a file is checked or hashed.
-        writes, stopped = [], False
+        writes, stopped, held = [], False, False
         for path, key, ident in stats_files:
             if stop and stop():
                 stopped = True
@@ -345,6 +366,9 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 _put(writes, f["id"], key, ident, "refused", now)
                 stats["errors"] += 1
                 continue
+            if not watching(store, f["id"]):
+                held = True              # paused or removed meanwhile: nothing more from it
+                break
             try:
                 # Read-only: reading a cloud-only file (when allowed) makes the
                 # sync client fetch it; no write access is ever needed.
@@ -358,13 +382,23 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 _put(writes, f["id"], key, ident, "cloud", now)
                 stats["cloud"] += 1
                 continue
+            # Lined up elsewhere is checked first: an import records its
+            # source before its row stops being 'importing', so one finishing
+            # between the two checks is still seen by one of them.
+            if importing_elsewhere(store, content):
+                # Checked again next scan: a duplicate once that import is
+                # done, or imported from here if it was held or failed (#152).
+                _put(writes, f["id"], key, ident, "waiting", now)
+                stats["waiting"] += 1
+                continue
             if already_imported(store, content):
                 _put(writes, f["id"], key, ident, "duplicate", now)
                 stats["duplicates"] += 1
                 continue
             _put(writes, f["id"], key, ident, "importing", now, content=content)
             if not _commit(store, f["id"], writes):
-                break                    # removed during the scan: nothing more from it
+                held = True              # paused or removed during the scan: nothing more
+                break
             enqueue(real, f["id"], key, content)
             stats["queued"] += 1
         if stopped:
@@ -373,8 +407,14 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
             # reached look new next time, and import them.
             _commit(store, f["id"], writes)
             break
+        if held:
+            continue                     # as if not scanned, even if resumed this instant
         with store.tx() as db:
-            _apply(db, f["id"], writes)
+            if not _apply(db, f["id"], writes):
+                # Paused or removed during the scan: as if not scanned. A
+                # baseline left unfinished is done again when it is resumed; a
+                # finished one stays, so files that arrive meanwhile are new.
+                continue
             if complete:
                 # Files that left the folder: forget their rows (bounded). Only
                 # after a complete walk; otherwise unseen files are kept.
@@ -407,20 +447,20 @@ def _touch(writes, fid, key, now):
 
 
 def _apply(db, fid, writes):
-    """Write the waiting row changes, unless the folder was removed during
-    the scan: its rows went with it, and these would be left behind. False
-    if it was removed."""
-    watched = db.execute("SELECT 1 FROM watched_folders WHERE id = ?", (fid,)).fetchone()
-    if watched:
+    """Write the waiting row changes, unless the folder was paused or removed
+    during the scan (#152): its rows went with a removal, and a paused
+    folder is scanned afresh when it is turned back on. False then."""
+    row = db.execute("SELECT active FROM watched_folders WHERE id = ?", (fid,)).fetchone()
+    if row and row["active"]:
         for sql, args in writes:
             db.execute(sql, args)
     writes.clear()
-    return bool(watched)
+    return bool(row and row["active"])
 
 
 def _commit(store, fid, writes):
     """Commit the waiting row changes now (one transaction), if any. False if
-    the folder was removed during the scan."""
+    the folder was paused or removed during the scan."""
     if not writes:
         return True
     with store.tx() as db:
