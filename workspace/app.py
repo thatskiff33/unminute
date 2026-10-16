@@ -752,9 +752,10 @@ class Workspace:
             if self.store.chunks(v["id"], status="pending"):
                 return ("transcribe", m["id"], v["id"])
             # Speakers once per version; an interrupted pass restarts (it cannot
-            # resume), a failed one waits for the user's explicit rerun.
+            # resume), a failed one waits for the user's explicit rerun, and a
+            # skipped one never runs unless the user asks again.
             if self.settings["speakers"] and not any(
-                    r["status"] in ("done", "failed", "running")
+                    r["status"] in ("done", "failed", "running", "skipped")
                     for r in self.store.speaker_runs(v["id"])):
                 return ("speakers", m["id"], v["id"])
         return None
@@ -974,6 +975,36 @@ class Workspace:
             self._reruns[mid] = count
         self._wake.set()
 
+    def skip_speakers(self, mid):
+        """Go to review and hand off without speaker labels: no speaker pass
+        for this meeting's current version, now or after transcription. Useful
+        for one or two people, where an AI assistant does not need labels. A
+        pass in progress stops at once. The transcript is not touched, and
+        Identify speakers again still works later while the audio is kept."""
+        m = self._meeting(mid)
+        if m["reviewed_at"]:
+            raise WorkspaceError("The transcript review is confirmed, so speakers can no "
+                                 "longer be changed.")
+        v = self.store.active_version(mid)
+        if v is None:
+            raise WorkspaceError("The recording is still being imported.")
+        runs = self.store.speaker_runs(v["id"])
+        if runs and runs[-1]["status"] == "skipped":
+            return                                    # already skipped (a double click)
+        if any(r["status"] == "done" for r in runs):
+            raise WorkspaceError("Speakers are already identified for this meeting.")
+        with self._lock:
+            self._reruns.pop(mid, None)               # a queued rerun is dropped too
+            # Recorded before the pass is stopped, so nothing can restart it.
+            self.store.skip_speaker_run(v["id"])
+            busy = self._busy
+            if busy and busy[0] == mid and busy[1] in ("speakers", "rerun"):
+                self.handle.stop_now()
+            if m["paused"] and not self.store.chunks(v["id"], status="pending"):
+                # Paused speaker identification was the only work left.
+                self.store.set_paused(mid, False)
+        self._wake.set()
+
     def retranscribe(self, mid):
         """Transcribe again with the current model. The previous version and
         its edits are kept (superseded), never overwritten."""
@@ -997,8 +1028,20 @@ class Workspace:
         if v is not None and new == v["id"]:
             raise WorkspaceError("It is already transcribed with this model and settings. "
                                  "Change the model in Settings first.")
+        self._carry_skip(v, new)
         self.store.set_phase(mid, "transcribing")
         self._wake.set()
+
+    def _carry_skip(self, old, new_vid):
+        """A meeting whose speakers were skipped keeps that choice when it is
+        transcribed again (a new version would otherwise queue a pass)."""
+        if old is None:
+            return
+        runs = self.store.speaker_runs(old["id"])
+        new_runs = self.store.speaker_runs(new_vid)
+        if (runs and runs[-1]["status"] == "skipped"
+                and not any(r["status"] == "done" for r in new_runs)):
+            self.store.skip_speaker_run(new_vid)
 
     # -- review -------------------------------------------------------------------------
 

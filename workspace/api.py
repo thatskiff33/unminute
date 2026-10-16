@@ -20,6 +20,7 @@ from workspace.bridge import _wav_bytes
 API_METHODS = frozenset({
     "ping", "status", "meetings", "detail", "transcript", "search", "edit", "undo", "clip",
     "pause", "stop_now", "resume", "rename", "retranscribe", "rerun_speakers",
+    "skip_speakers",
     "add_hold", "release_hold", "keep_hold", "confirm_reviewed", "confirm_final_saved",
     "confirm_cleanup", "retry_cleanup", "reminders", "receipts", "settings",
     "set_settings", "import_dialog", "clear_import_errors", "pywebviewEventHandler",
@@ -119,6 +120,9 @@ def make_api(ws, get_window=lambda: None):
 
     def rerun_speakers(self, mid, count=None):
         return _safe(ws.rerun_speakers, mid, count)
+
+    def skip_speakers(self, mid):
+        return _safe(ws.skip_speakers, mid)
 
     def add_hold(self, mid, scope, reason):
         return _safe(ws.add_hold, mid, scope, reason)
@@ -334,7 +338,8 @@ def make_api(ws, get_window=lambda: None):
     names = dict(ping=ping, status=status, meetings=meetings, detail=detail,
                  transcript=transcript, search=search, edit=edit, undo=undo, clip=clip,
                  pause=pause, stop_now=stop_now, resume=resume, rename=rename,
-                 retranscribe=retranscribe, rerun_speakers=rerun_speakers, add_hold=add_hold,
+                 retranscribe=retranscribe, rerun_speakers=rerun_speakers,
+                 skip_speakers=skip_speakers, add_hold=add_hold,
                  release_hold=release_hold, keep_hold=keep_hold,
                  confirm_reviewed=confirm_reviewed, confirm_final_saved=confirm_final_saved,
                  confirm_cleanup=confirm_cleanup, retry_cleanup=retry_cleanup,

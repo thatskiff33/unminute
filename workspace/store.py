@@ -139,7 +139,7 @@ CREATE INDEX IF NOT EXISTS edit_history_by_segment ON edit_history(segment_id);
 -- attribution lives here; user corrections (#21) are stored separately.
 CREATE TABLE IF NOT EXISTS speaker_runs (
     id TEXT PRIMARY KEY, version_id TEXT NOT NULL REFERENCES versions(id),
-    status TEXT NOT NULL,      -- running | done | failed | interrupted | superseded
+    status TEXT NOT NULL,      -- running | done | failed | interrupted | superseded | skipped
     hint_count INTEGER, started_at REAL, finished_at REAL, error TEXT,
     backend TEXT, precision TEXT,
     epoch INTEGER);            -- meeting content epoch at start; a stale finish is refused
@@ -658,6 +658,20 @@ class Store:
             db.execute("UPDATE speaker_runs SET status = 'done', finished_at = ?, backend = ?, "
                        "precision = ? WHERE id = ?", (time.time(), backend, precision, rid))
         return True
+
+    def skip_speaker_run(self, vid):
+        """Record that the user chose not to identify speakers for this
+        version. A pass still running is superseded in the same transaction,
+        so if it finishes anyway its result is refused (finish_speaker_run)
+        and it cannot be restarted. Earlier completed labels are untouched."""
+        rid = new_id()
+        now = time.time()
+        with self.tx() as db:
+            db.execute("UPDATE speaker_runs SET status = 'superseded' "
+                       "WHERE version_id = ? AND status = 'running'", (vid,))
+            db.execute("INSERT INTO speaker_runs (id, version_id, status, started_at, "
+                       "finished_at) VALUES (?, ?, 'skipped', ?, ?)", (rid, vid, now, now))
+        return rid
 
     def end_speaker_run(self, rid, status, error=None):
         """Mark a run failed or interrupted. Its partial data was never written."""

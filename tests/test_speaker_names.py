@@ -51,6 +51,15 @@ class SpeakerNameTests(unittest.TestCase):
         view = sn.resolve(self.store, self.vid)
         return view["names"].get(view["labels"][self.segs[text]])
 
+    def test_a_pass_that_finishes_after_a_skip_is_refused(self):
+        rid = self.store.start_speaker_run(self.vid)
+        self.store.skip_speaker_run(self.vid)
+        late = [(0, 60, "SPEAKER_09")]
+        self.assertFalse(self.store.finish_speaker_run(rid, late, late))
+        self.assertEqual([r["status"] for r in self.store.speaker_runs(self.vid)][-2:],
+                         ["superseded", "skipped"])
+        self.assertEqual(self.who("passage 25"), "Speaker 2")   # earlier labels untouched
+
     def test_default_names_follow_first_appearance(self):
         self.assertEqual(self.who("passage 0"), "Speaker 1")
         self.assertEqual(self.who("passage 25"), "Speaker 2")
