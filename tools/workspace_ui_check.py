@@ -317,6 +317,8 @@ def checks(window, ws, mid, long_mid, report):
         # settings or a missing device.
         report["page_dialogs"]["refused"] = sorted(
             {c for c in shell.blocked_calls if c.startswith(("permission", "screen"))})
+        report["page_dialogs"]["microphone_refusals"] = shell.blocked_calls.count(
+            "permission Microphone")
         report["edit_autosave"] = evaluate(window, WAIT + """
             const span = document.querySelectorAll('#transcript .text')[0];
             span.click(); span.textContent = 'Edited in the page'; span.dispatchEvent(new
@@ -531,8 +533,8 @@ def main():
             and pd.get("prompt") is None and pd.get("native_ms", 9999) < 1000
             and pd.get("microphone") == pd.get("frame_microphone") == "NotAllowedError"
             and pd.get("screen") == "NotAllowedError" and pd.get("notifications") == "denied"
-            and {"screen capture"} <= set(pd.get("refused", []))
-            and any(c.startswith("permission") for c in pd.get("refused", []))
+            and {"screen capture", "permission Notifications"} <= set(pd.get("refused", []))
+            and pd.get("microphone_refusals", 0) >= 2               # the page and its frame
             and pd.get("permission_ms", 9999) < 2000
             and pd.get("new_windows") == [] and pd.get("alert_blocked")):
         bad.append("page dialogs")
