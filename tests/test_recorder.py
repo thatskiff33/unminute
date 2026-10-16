@@ -17,6 +17,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # fake_worker_engines
 
+from workspace import consent  # noqa: E402  (stdlib only)
+
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 RATE = 16000
 
@@ -25,6 +27,10 @@ if HAVE_DEPS:
 
     from workspace import recorder, update
     from workspace.app import Workspace, WorkspaceError
+
+
+# What the bridge passes after the app's own confirmation (#111 A6).
+CONSENT = consent.recording_record(clock=lambda: 1000.0)
 
 
 class FakeStream:
@@ -307,9 +313,9 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.devices.start()
         self.ws = self.make()
 
-    def make(self):
+    def make(self, **kw):
         ws = Workspace(self.root / "ws", self.root / "models", start=False,
-                       allow_test_engines=True, battery=False)
+                       allow_test_engines=True, battery=False, **kw)
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         ws.open_stream = opener(self.holder)
         return ws
@@ -319,22 +325,85 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.devices.stop()
         self.tmp.cleanup()
 
+    def test_a_recording_needs_the_confirmation_and_keeps_it(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        with self.assertRaisesRegex(WorkspaceError, "confirmation"):
+            self.ws.start_recording(3)                  # the bridge asks; nothing else may
+        shown = []
+        self.ws.recording_indicator = shown.append
+        self.ws.start_recording(3, consent=CONSENT)
+        folder = self.ws._recording.folder
+        self.assertEqual(recorder.read_journal(folder)["consent"], CONSENT)   # also after a crash
+        self.assertEqual(shown, [True])
+        self.holder["stream"].feed(4)
+        self.ws.stop_recording()
+        self.assertEqual(shown, [True, False])
+        self.assertTrue(self.ws.wait_idle(120))
+        [m] = self.ws.meetings()                       # kept with the imported meeting
+        sidecar = json.loads((self.ws.media / m["id"] / "recording.json").read_text("utf-8"))
+        self.assertEqual(sidecar["consent"], CONSENT)
+
+    def test_policy_can_turn_the_confirmation_off(self):
+        self.ws.close()
+        self.ws = self.make(policy_reader=lambda: ({"RequireRecordingConsent": False}, ()))
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.assertFalse(self.ws.consent_required())
+        self.ws.start_recording(3)
+        self.assertNotIn("consent", recorder.read_journal(self.ws._recording.folder))
+        self.ws.stop_recording()
+
+    def test_the_indicator_follows_every_way_a_recording_ends(self):
+        from workspace import policy
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        shown = []
+        self.ws.recording_indicator = shown.append
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.discard_recording()                     # discarded
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._recording._device_lost()               # stops itself (microphone lost)
+        deadline = time.time() + 10
+        while self.ws._recording is not None and time.time() < deadline:
+            time.sleep(0.05)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.policy = policy.PolicySource(               # IT turns recording off
+            reader=lambda: ({"AllowMicrophoneRecording": False}, ()))
+        self.ws._policy_tick()
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.close()                                 # saved at close
+        self.assertEqual(shown, [True, False] * 4)
+
+        def broken(on):
+            raise RuntimeError("window gone")
+        self.ws = self.make()
+        self.ws.settings.update(microphone=True)
+        self.ws.recording_indicator = broken            # never stops a recording
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertIsNotNone(self.ws._recording)
+        later = []
+        self.ws.recording_indicator = later.append      # the next change is applied anyway
+        self.ws.stop_recording()
+        self.assertEqual(later, [False])
+
     def test_off_by_default(self):
         self.ws.start()
         with self.assertRaises(WorkspaceError):
-            self.ws.start_recording(3)
+            self.ws.start_recording(3, consent=CONSENT)
         self.assertFalse(self.ws.recording_status()["enabled"])
 
     def test_recording_becomes_a_meeting_and_heavy_work_waits(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
         with self.assertRaises(WorkspaceError):
-            self.ws.start_recording(99)                 # unknown device: refused
-        self.ws.start_recording(3)
+            self.ws.start_recording(99, consent=CONSENT)                 # unknown device: refused
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(8)
         self.assertIsNone(self.ws._next_work())         # nothing heavy starts meanwhile
         with self.assertRaises(WorkspaceError):
-            self.ws.start_recording(3)                  # one at a time
+            self.ws.start_recording(3, consent=CONSENT)                  # one at a time
         self.ws.stop_recording()
         self.assertTrue(self.ws.wait_idle(120))
         meetings = self.ws.meetings()
@@ -348,7 +417,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_discarding_keeps_nothing_and_makes_no_meeting(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(3)
         self.ws.pause_recording()                       # can be discarded while paused too
         self.ws.discard_recording()
@@ -364,7 +433,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_a_discard_that_cannot_delete_yet_is_never_imported(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(3)
         real = recorder.remove_folder
         with mock.patch.object(recorder, "remove_folder", side_effect=OSError("in use")):
@@ -387,7 +456,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_a_recovered_recording_can_be_deleted_instead(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(2)
         rec = self.ws._recording
         time.sleep(0.6)
@@ -438,7 +507,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_unimported_recording_blocks_schema_updates(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(1)
         kinds = [b["kind"] for b in update.blockers(self.ws.root / "workspace.db")]
         self.assertIn("recordings", kinds)
@@ -453,7 +522,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
         def go():
             barrier.wait()
             try:
-                self.ws.start_recording(3)
+                self.ws.start_recording(3, consent=CONSENT)
                 results.append("started")
             except WorkspaceError:
                 results.append("refused")
@@ -477,7 +546,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.settings.update(microphone=True)
         self.ws.start()
         with self.assertRaises(WorkspaceError) as e:
-            self.ws.start_recording(3, "Another microphone")
+            self.ws.start_recording(3, "Another microphone", consent=CONSENT)
         self.assertIn("changed", str(e.exception))
         self.assertFalse((self.ws.root / "recordings").exists()
                          and any((self.ws.root / "recordings").iterdir()))
@@ -513,7 +582,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_a_meeting_made_from_the_folder_prevents_a_second_import(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(3)
         rec = self.ws._recording
         real = recorder._write_atomic
@@ -535,7 +604,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_a_failed_import_is_reported_kept_and_can_be_retried(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(3)
         real = self.ws._import_one
         self.ws._import_one = mock.Mock(side_effect=OSError(28, "No space left on device"))
@@ -557,7 +626,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
     def test_recording_cut_short_by_a_crash_is_imported_at_next_start(self):
         self.ws.settings.update(microphone=True)
         self.ws.start()
-        self.ws.start_recording(3)
+        self.ws.start_recording(3, consent=CONSENT)
         self.holder["stream"].feed(11)
         rec = self.ws._recording
         time.sleep(0.6)

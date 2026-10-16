@@ -26,6 +26,11 @@ Disabled: the component cannot be downloaded or used; speaker identification run
 
 Disabled: microphone recording is off and cannot be turned on, and a recording in progress is stopped and saved when the app next reads the policy (within 15 minutes). Recordings can still be imported.</string>
 
+      <string id="RequireRecordingConsent">Confirm before each recording that everyone has been told</string>
+      <string id="RequireRecordingConsent_Help">Enabled or not configured: before each microphone recording, the person recording confirms that everyone in the meeting has been told that it is being recorded, and why. The recording starts only after they tick that statement and select Start recording. The confirmation is a window the app draws outside its web page, so the page cannot answer it.
+
+Disabled: recordings start without this confirmation. Use this only if the firm makes sure of it another way.</string>
+
       <string id="AllowWatchedFolders">Allow watched folders</string>
       <string id="AllowWatchedFolders_Help">Enabled or not configured: users can choose folders that the app checks for new recordings.
 

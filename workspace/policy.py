@@ -33,6 +33,9 @@ SPEC = {
     "AllowGpuComponent": ("bool", True, True),
     # Microphone recording (the user may still turn it off).
     "AllowMicrophoneRecording": ("bool", True, True),
+    # A confirmation before each recording that everyone present has
+    # been told (#111 A6). Not a permission: a bad value keeps the confirmation.
+    "RequireRecordingConsent": ("bool", True, False),
     # Watched folders, and authority to delete originals in them.
     "AllowWatchedFolders": ("bool", True, True),
     "AllowDeleteOriginals": ("bool", True, True),

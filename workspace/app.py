@@ -26,6 +26,7 @@ from workspace import (cleanup, clipboard, credentials, engines, gpu, handoff, h
                        media, policy, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
+from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root
 from workspace.worker import WorkerEngine, WorkerHandle, safe_message
@@ -176,6 +177,11 @@ class Workspace:
         self.recordings = self.root / "recordings"
         self._recording = None
         self._rec_starting = False         # a recording is being opened
+        # Called with True/False whenever a recording starts or ends, so the
+        # window can show it (title and taskbar, #111 A6). Set by the bridge.
+        self.recording_indicator = None
+        self._indicator_lock = threading.Lock()
+        self._indicated = False
         self._yielded = False              # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
@@ -212,6 +218,7 @@ class Workspace:
         with self._lock:                 # claimed once: the policy tick may race
             rec, self._recording = self._recording, None
         if rec is not None:              # saved now; imported at the next start
+            self._indicate()
             try:
                 rec.stop()
             except recorder.RecorderError:
@@ -230,6 +237,50 @@ class Workspace:
 
     def _allowed(self, name):
         return bool(self.policy.current().get(name))
+
+    def check_can_record(self, device, name=None):
+        """Refuse now what start_recording would refuse, before anyone is asked
+        (the microphone included)."""
+        self._need_microphone()
+        if self._capturing():
+            raise WorkspaceError("A recording is already running.")
+        self._device(device, name)
+
+    def deletion_grant_folder(self, fid):
+        """The path of the watched folder a deletion grant would apply to, read
+        from the app's own records for the Windows question; None if policy
+        refuses the grant anyway (set_folder_authority says why)."""
+        fid = _hold_id(fid)
+        if not self._allowed("AllowDeleteOriginals"):
+            return None
+        row = self.store._one("SELECT path FROM watched_folders WHERE id = ?", (fid,))
+        if row is None:
+            raise WorkspaceError("Not found.")
+        return row["path"]
+
+    def meeting_for_discard(self, mid):
+        """Title and import time, for the Windows question."""
+        m = self._meeting(mid)
+        return m["title"], m["created_at"]
+
+    def consent_required(self):
+        """Each recording needs the confirmation (in the app's own window) that everyone has been
+        told (#111 A6), unless the organisation's policy turns it off."""
+        return self._allowed("RequireRecordingConsent")
+
+    def _indicate(self):
+        """Show the current state (a recording is open, paused or not), so
+        racing starts and ends always settle on the truth."""
+        with self._indicator_lock:
+            on = self._recording is not None
+            hook = self.recording_indicator
+            if hook is None or on == self._indicated:
+                return
+            try:
+                hook(on)
+                self._indicated = on
+            except Exception:            # the indicator never stops a recording;
+                self._indicated = None   # the next change is always applied
 
     def managed(self):
         """What the organisation's policy sets, for Settings and Setup: the
@@ -361,8 +412,16 @@ class Workspace:
     def _capturing(self):
         return self._recording is not None or self._rec_starting
 
-    def start_recording(self, device, name=None):
+    def start_recording(self, device, name=None, consent=None):
+        """consent: the record of the confirmation (workspace.consent),
+        kept with the recording. The bridge asks for it; it is required unless
+        policy turns the confirmation off."""
         self._need_microphone()
+        if consent is not None and not recording_consent.valid_recording_record(consent):
+            raise WorkspaceError("The recording confirmation is not valid.")
+        if consent is None and self.consent_required():
+            raise WorkspaceError("Recording needs your confirmation that everyone in the "
+                                 "meeting has been told.")
         # Under the processing lock: the loop re-checks this flag under the
         # same lock before starting heavy work, so nothing can slip in.
         with self._lock:
@@ -380,12 +439,15 @@ class Workspace:
             rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
                                      choice.get("label") or choice["name"], choice["rate"],
                                      open_stream=self.open_stream)
+            if consent is not None:
+                rec.journal["consent"] = dict(consent)     # saved with the journal
             try:
                 rec.start()
             except recorder.RecorderError as exc:
                 raise WorkspaceError(str(exc)) from exc
             with self._lock:
                 self._recording = rec
+            self._indicate()
         finally:
             with self._lock:
                 self._rec_starting = False
@@ -407,6 +469,7 @@ class Workspace:
             if self._recording is not rec:
                 return False             # already finished by the other path
             self._recording = None
+        self._indicate()
         if event:                        # noted only by the path that finishes it
             rec._event(event[0], note=event[1])
         try:
@@ -464,6 +527,7 @@ class Workspace:
                 raise WorkspaceError("The recording could not be discarded. It carries on; "
                                      "try again, or stop and save it.") from exc
             self._recording = None                # the watcher will not import it now
+        self._indicate()
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
                   "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}
@@ -623,9 +687,12 @@ class Workspace:
         # as imported before removing it: either one stops a second import.
         report.update(title=title, meeting=mid, recording_id=folder.name)
         try:
+            # The consent confirmation stays with the meeting (#111 A6).
+            sidecar = {**report, **({"consent": journal["consent"]}
+                                    if "consent" in journal else {})}
             recorder._retrying(lambda: recorder._write_atomic(
                 self.media / mid / "recording.json",
-                json.dumps(report, indent=1).encode("utf-8")))
+                json.dumps(sidecar, indent=1).encode("utf-8")))
         except OSError:
             pass
         journal.update(state="imported", meeting=mid)
@@ -743,13 +810,19 @@ class Workspace:
         if active:
             self.scan_now()
 
-    def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
+    def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None,
+                             confirmed=False):
+        """confirmed: the person said Yes in the Windows question (the bridge
+        asks); granting deletion is refused without it (#111 A6)."""
         fid = _hold_id(fid)
         for v in (delete_originals, fetch_cloud):
             if v is not None and not isinstance(v, bool):
                 raise WorkspaceError("Expected on or off.")
         if delete_originals and not self._allowed("AllowDeleteOriginals"):
             raise WorkspaceError(MANAGED_OFF.format(what="Deleting original recordings"))
+        if delete_originals and confirmed is not True:
+            raise WorkspaceError("Allowing the app to delete originals needs your confirmation "
+                                 "in Windows.")
         if delete_originals is not None:
             intake.set_delete_originals(self.store, fid, delete_originals)
         if fetch_cloud is not None:

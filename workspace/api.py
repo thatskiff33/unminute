@@ -11,7 +11,9 @@
 
 import base64
 import threading
+import time
 
+from workspace import cleanup, consent
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
 from workspace.bridge import _wav_bytes
 
@@ -68,9 +70,46 @@ def _report_id(value):
     return value
 
 
-def make_api(ws, get_window=lambda: None):
+CANCELLED = {"cancelled": True}           # the person cancelled the app's confirmation
+# Asked again too soon after a No: nothing was shown.
+CANCELLED_WAIT = {"cancelled": True, "retry_soon": True}
+# After a No, the same question is not asked again for this long: a page
+# cannot reopen it straight away until someone clicks Yes.
+DECLINE_PAUSE_S = 3.0
+
+
+def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_PAUSE_S):
     """Return the js_api facade for Workspace `ws`. `get_window()` returns the
-    pywebview window (for the native file dialog)."""
+    pywebview window (for the native file dialog). `confirm(question)` asks a
+    question (workspace.consent) outside the page (tests pass their own); by
+    default a window the app draws itself, and No when there is no window."""
+    declined = {}                         # question title -> when it was last answered No
+
+    def ask(question):
+        """True for the action, False for Cancel (or no window), None if the
+        same question was cancelled a moment ago and is not shown again yet."""
+        title = question["title"]
+        if time.monotonic() - declined.get(title, float("-inf")) < decline_pause_s:
+            return None
+        if confirm is not None:
+            answer = bool(confirm(question))
+        else:
+            window = get_window()
+            if window is None:
+                return False              # no window to own the question: not confirmed
+            from workspace import shell
+            answer = shell.native_confirm(window, question)
+        if not answer:
+            declined[title] = time.monotonic()
+        return answer
+
+    def indicate(recording):                # called by the Workspace, never by the page
+        window = get_window()
+        if window is not None:
+            from workspace import shell
+            shell.show_recording(window, recording)
+
+    ws.recording_indicator = indicate
 
     def ping(self):
         return {"ok": True, "value": "ok"}
@@ -260,7 +299,19 @@ def make_api(ws, get_window=lambda: None):
         return _safe(ws.remove_folder, fid)
 
     def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
-        return _safe(ws.set_folder_authority, fid, delete_originals, fetch_cloud)
+        def run():
+            # Granting deletion needs a confirmation the page cannot give,
+            # naming the folder from the app's records. A refused request (bad id,
+            # unknown folder, policy) never shows the question.
+            if delete_originals is True:
+                folder = ws.deletion_grant_folder(fid)
+                if folder is not None:
+                    answer = ask(consent.delete_originals_question(folder))
+                    if not answer:
+                        return CANCELLED_WAIT if answer is None else CANCELLED
+                    return ws.set_folder_authority(fid, True, fetch_cloud, confirmed=True)
+            return ws.set_folder_authority(fid, delete_originals, fetch_cloud)
+        return _safe(run)
 
     def scan_now(self):
         return _safe(ws.scan_now)
@@ -280,7 +331,17 @@ def make_api(ws, get_window=lambda: None):
         return _safe(ws.microphone_devices)
 
     def start_recording(self, device, name):
-        return _safe(lambda: ws.start_recording(_int(device, 0, 10_000), _device_name(name)))
+        def run():
+            index, label = _int(device, 0, 10_000), _device_name(name)
+            ws.check_can_record(index, label)  # a refused request never shows the question
+            record = None
+            if ws.consent_required():
+                answer = ask(consent.recording_question())
+                if not answer:
+                    return CANCELLED_WAIT if answer is None else CANCELLED
+                record = consent.recording_record()
+            return ws.start_recording(index, label, consent=record)
+        return _safe(run)
 
     def test_microphone(self, device, name):
         return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000), _device_name(name)))
@@ -307,7 +368,13 @@ def make_api(ws, get_window=lambda: None):
         return _safe(lambda: ws.retry_recording_import(_report_id(rid)))
 
     def discard_meeting(self, mid):
-        return _safe(ws.discard_meeting, mid)
+        def run():
+            title, imported_at = ws.meeting_for_discard(mid)   # also checks it exists
+            answer = ask(consent.discard_question(title, imported_at, cleanup.LIMITS))
+            if not answer:
+                return CANCELLED_WAIT if answer is None else CANCELLED
+            return ws.discard_meeting(mid)
+        return _safe(run)
 
     def close_app(self):
         """Close the window after the page asked about an open recording."""
