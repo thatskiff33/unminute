@@ -2265,7 +2265,25 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+// -- diagnostics (R9b, #130) ---------------------------------------------------
+// The page's own script errors reach the app's log as a fixed kind and a line
+// and column: never a message, which could quote meeting text. Python
+// rate-limits them; a failed report is not reported again.
+let reporting = false;
+function reportUiError(event, line, col) {
+  if (reporting || !window.pywebview) return;
+  reporting = true;
+  call("report_ui_error", event, Math.max(0, line | 0), Math.max(0, col | 0))
+    .catch(() => {}).finally(() => { reporting = false; });
+}
+window.addEventListener("error", (e) => reportUiError("error", e.lineno, e.colno));
+window.addEventListener("unhandledrejection", () => reportUiError("rejection", 0, 0));
+
 function wire() {
+  $("help-diagnostics").addEventListener("click", () => attempt(async () => {
+    await call("copy_diagnostics");
+    say("Copied diagnostics: no meeting content. Paste them into your support request.");
+  }));
   $("s-add-folder").addEventListener("click", () => attempt(async () => {
     const added = await call("add_folder_dialog", $("s-include-existing").checked);
     if (added) say("Folder added. It will be checked now.");

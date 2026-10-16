@@ -167,6 +167,8 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
 
 For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content.
 
+For an Intune Remediation detection script, `runtime\python.exe -m workspace --health` prints one line of JSON and exits 0 when healthy, 1 when it needs attention. Fields: `version`; `workspace` (`ok`, `location` when the app data location is missing or synced, `unreadable`); `running` (the app is open); `last_run` (`clean`, or `did_not_close` when the app last ended without closing and has not been opened since); `crashes_7d` (crashes and worker or download processes that ended by themselves in the last 7 days, from the content-free logs); `schema`; `healthy` (workspace `ok`, `last_run` `clean` and no crashes). It reads counts and the logs only, never content, and changes nothing. A user can add the detail with Help > **Copy diagnostics**.
+
 ### Managed settings (policy)
 
 From the first release after v0.4.3, the app reads policy values from `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` (64-bit view): at start, every 15 minutes, on each refresh while Settings or Downloads is open, and again just before it would delete an original recording. Standard users cannot change this key. Policy overrides the user's settings: Settings says some settings are managed and disables those controls, and the app enforces each value itself.

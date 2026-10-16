@@ -123,11 +123,14 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
+| A message says "Something went wrong (code U-…)", or the app closed by itself | Open **Help and shortcuts**, select **Copy diagnostics**, and paste them into your support request with the code. They hold versions, settings, counts and error locations in the app's code, never meeting content, names or folders. |
 
 For IT support:
 
 - `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
+- `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
+- The app keeps small content-free logs in `%LOCALAPPDATA%\whisper\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 

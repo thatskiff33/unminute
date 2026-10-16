@@ -296,6 +296,83 @@ class RecordTests(unittest.TestCase):
         self.assertFalse(gone.parent.exists())
 
 
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class SharingTests(unittest.TestCase):
+    """R9b: page errors, Copy diagnostics and --health."""
+
+    def setUp(self):
+        from workspace.app import Workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.values = {}
+        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                            allow_test_engines=True, policy_reader=lambda: (self.values, ()))
+        self.now = [100.0]
+        self.ws._clock = lambda: self.now[0]
+
+    def tearDown(self):
+        diag.set_current(None)
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def test_page_errors_are_fixed_values_and_rate_limited(self):
+        from workspace import api
+        page = api.make_api(self.ws)
+        self.assertTrue(page.report_ui_error("error", 12, 3)["ok"])
+        self.assertFalse(page.report_ui_error(f"{MARKER} text", 1, 1)["ok"])   # refused
+        self.assertFalse(page.report_ui_error("error", MARKER, 1)["ok"])
+        page.report_ui_error("rejection", 0, 0)                 # within a second: dropped
+        for _ in range(40):
+            self.now[0] += 2
+            page.report_ui_error("rejection", 0, 0)
+        pages = [r for r in records(self.ws.log.folder) if r.get("area") == "page"]
+        self.assertEqual(len(pages), 20)                        # PAGE_ERRORS a run
+        self.assertEqual((pages[0]["event"], pages[0]["line"], pages[0]["col"]),
+                         ("error", 12, 3))
+        self.assertEqual(leaks(self.ws.log.folder), [])
+
+    def test_shared_records_pass_the_field_rules_again(self):
+        self.ws.log.write("start", version="0.5.0")
+        with open(self.ws.log.path, "a", encoding="ascii") as f:     # a hand-edited line
+            f.write(json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "incident",
+                                "title": MARKER, "area": f"C:/Users/{MARKER}",
+                                "frames": [[f"C:/Users/{MARKER}/x.py", 1, "run"]]}) + "\n")
+            f.write("not json\n")
+        shared = diag.shareable_records(self.ws.log.folder)
+        self.assertEqual([r["kind"] for r in shared], ["incident", "start"])
+        self.assertEqual((shared[0]["title"], shared[0]["area"]), ("?", "?"))
+        self.assertNotIn(MARKER, json.dumps(shared))
+
+    def test_diagnostics_show_settings_and_policy_values_never_paths(self):
+        from workspace import clipboard, policy
+        self.values.update(AllowModelDownloads=False, HandoffDefaultFolder=f"C:\\{MARKER}")
+        self.ws.policy = policy.PolicySource(reader=lambda: (self.values, ()))
+        text = self.ws.diagnostics()
+        self.assertIn("AllowModelDownloads=False", text)
+        self.assertIn("HandoffDefaultFolder=set", text)
+        self.assertIn("mode=quiet", text)
+        self.assertNotIn(MARKER, text)
+        with mock.patch.object(clipboard, "copy_text") as copy:
+            self.assertEqual(self.ws.copy_diagnostics()["chars"], len(copy.call_args.args[0]))
+
+    def test_health_for_device_management(self):
+        from workspace import __main__ as main
+        root = self.ws.root
+        report = main.health(root)
+        self.assertEqual((report["healthy"], report["workspace"], report["last_run"],
+                          report["crashes_7d"]), (True, "ok", "clean", 0))
+        self.ws.log.open_run()                                 # a run that never closed
+        with mock.patch.object(main, "_app_running", return_value=False):
+            self.assertEqual(main.health(root)["last_run"], "did_not_close")
+            self.assertFalse(main.health(root)["healthy"])
+        self.ws.log.close_run()
+        self.ws.log.write("crash", code="U-ABCDEF", process="worker", fatal="x")
+        report = main.health(root)
+        self.assertEqual((report["crashes_7d"], report["healthy"]), (1, False))
+        self.assertEqual(set(report), {"version", "workspace", "running", "last_run",
+                                       "crashes_7d", "schema", "healthy"})
+
+
 class DownloadStartTests(unittest.TestCase):
     def test_a_download_that_cannot_start_does_not_leave_setup_busy(self):
         from workspace import setup
@@ -467,7 +544,12 @@ class LifecycleTests(unittest.TestCase):
         methods = {r.get("method") for r in records(self.logs()) if r.get("area") == "bridge"}
         self.assertEqual(methods, {"rename", "rename_speaker", "edit", "search",
                                    "download_model", "meetings"})
-        self.assertEqual(leaks(self.logs(), *ws.status()["import_errors"]), [])
+        # A page error, then what Copy diagnostics would copy (R9b).
+        page.report_ui_error("error", 412, 9)
+        shared = ws.diagnostics()
+        self.assertIn('"area":"page"', shared)
+        self.assertIn("Unminute diagnostics (no meeting content)", shared)
+        self.assertEqual(leaks(self.logs(), shared, *ws.status()["import_errors"]), [])
 
     def test_a_worker_crash_is_recorded_with_a_code(self):
         from workspace.worker import WorkerCrashed

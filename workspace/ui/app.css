@@ -421,6 +421,7 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
   background: var(--soft); font-size: 14px; line-height: 1.5;
 }
 .privacy-note svg { flex: none; margin-top: 1px; }
+.privacy-note .link-plain { font-size: inherit; line-height: inherit; vertical-align: baseline; }
 @media (max-width: 800px) { .help-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* -- shared -------------------------------------------------------------------------- */

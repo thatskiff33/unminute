@@ -37,7 +37,7 @@ API_METHODS = frozenset({
     "stop_recording", "discard_recording", "recording_status", "discard_recording_report",
     "test_microphone",
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
-    "close_app",
+    "close_app", "report_ui_error", "copy_diagnostics",
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
@@ -409,6 +409,18 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             return shell.set_zoom(window, direction)
         return _safe(run)
 
+    def report_ui_error(self, event, line, col):
+        """The page's own script errors (R9b): a fixed event and two numbers,
+        nothing the page could fill with text. Rate-limited by the app."""
+        def run():
+            if event not in ("error", "rejection"):
+                raise WorkspaceError("Unknown event.")
+            ws.report_ui_error(event, _int(line, 0, 10**7), _int(col, 0, 10**7))
+        return _safe(run)
+
+    def copy_diagnostics(self):
+        return _safe(ws.copy_diagnostics)
+
     names = dict(ping=ping, status=status, meetings=meetings, detail=detail,
                  transcript=transcript, search=search, edit=edit, undo=undo, clip=clip,
                  pause=pause, stop_now=stop_now, resume=resume, rename=rename,
@@ -442,7 +454,8 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  retry_recording_import=retry_recording_import,
                  delete_pending_recording=delete_pending_recording,
                  remove_model=remove_model, discard_meeting=discard_meeting,
-                 close_app=close_app)
+                 close_app=close_app, report_ui_error=report_ui_error,
+                 copy_diagnostics=copy_diagnostics)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()

@@ -85,6 +85,7 @@ FIELDS = {
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
     "op": _set("load", "transcribe", "diarize", "exit"),
     "stream": _set("stdout", "stderr"),
+    "event": _set("error", "rejection"),  # a page error (report_ui_error)
     "version": _pattern(re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-preview\.[0-9]{1,4})?"
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),
@@ -549,6 +550,45 @@ def incident(area, exc, **fields):
     if log is None:
         return new_code()
     return log.incident(area, exc, **fields)
+
+
+def shareable_records(folder, limit=60):
+    """The newest records of every log in folder, oldest first, each passed
+    through the field rules again (for Copy diagnostics). Never the raw crash
+    files."""
+    out = []
+    for path in files(folder):
+        try:
+            lines = path.read_text(encoding="ascii", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines[-limit:]:
+            try:
+                raw = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(raw, dict):
+                continue
+            t = raw.get("t")
+            record = {"t": t if isinstance(t, str) and re.fullmatch(
+                          r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else "?",
+                      "kind": raw.get("kind") if raw.get("kind") in KINDS else "?",
+                      "log": path.stem}
+            for key, value in raw.items():
+                if key not in ("t", "kind") and WORD.fullmatch(str(key)):
+                    record[key] = _clean(key, value)
+            out.append(record)
+    out.sort(key=lambda r: r["t"])
+    return out[-limit:]
+
+
+def recent_crashes(folder, days=7, now=None):
+    """Crashes and workers that ended by themselves in the last days."""
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                           time.gmtime((now or time.time()) - days * 86400))
+    return sum(1 for r in shareable_records(folder, limit=100000)
+               if r["t"] >= cutoff and (r["kind"] == "crash" or (
+                   r["kind"] == "worker_exit" and not r.get("hung"))))
 
 
 def files(folder):

@@ -12,6 +12,10 @@
 #                 cleanup); used by installers and updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency and check the offline guard
+#   --health      for an Intune Remediation detection script (R9b): JSON with
+#                 the version, whether the workspace opens, whether the app
+#                 is running, how the last run ended and crashes in the last
+#                 7 days. Exit 0 healthy, 1 needs attention. No content.
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
@@ -85,6 +89,48 @@ def status(root=None):
     return out
 
 
+def health(root=None):
+    """For device management (Intune Remediation): counts and states only.
+    Needs attention when the workspace cannot be used, or something crashed
+    in the last 7 days (including a run that ended without closing)."""
+    from workspace import diag
+    from workspace.store import StoreError, default_root
+    out = {"version": package_version(), "workspace": "ok", "running": _app_running(),
+           "last_run": "clean", "crashes_7d": 0}
+    try:
+        root = Path(root or default_root())
+        counts = status(root)
+        out["schema"] = counts["schema"]
+    except StoreError:
+        out["workspace"] = "location"           # missing or synced LOCALAPPDATA
+        root = None
+    except Exception:
+        out["workspace"] = "unreadable"
+    if root is not None:
+        logs = root / "logs"
+        if (logs / "app.running").exists() and not out["running"]:
+            out["last_run"] = "did_not_close"   # recorded as a crash at the next start
+        out["crashes_7d"] = diag.recent_crashes(logs)
+    out["healthy"] = (out["workspace"] == "ok" and out["crashes_7d"] == 0
+                      and out["last_run"] == "clean")
+    return out
+
+
+def _app_running(name=None):
+    """Is the app open (its single-instance mutex exists)? Never creates it."""
+    import ctypes
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenMutexW.restype = ctypes.c_void_p
+        handle = kernel32.OpenMutexW(0x00100000, False, name or MUTEX_NAME)   # SYNCHRONIZE
+    except (AttributeError, OSError):
+        return False
+    if handle:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return True
+    return False
+
+
 def self_test():
     """Import every dependency the app needs and prove the guard blocks the
     network. Prints one line per check; exit code 0 only if all pass."""
@@ -156,6 +202,10 @@ def main():
         return 0
     if "--self-test" in sys.argv:
         return self_test()
+    if "--health" in sys.argv:
+        result = health()
+        print(json.dumps(result))
+        return 0 if result["healthy"] else 1
     if "--gate" in sys.argv:
         from workspace import update
         from workspace.store import SCHEMA_VERSION, default_root

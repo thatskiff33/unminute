@@ -18,6 +18,7 @@
 import json
 import os
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -51,6 +52,7 @@ POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
 # and component files) or Credential Manager is worked out at most this often,
 # and again at once after a download, removal, token or settings change (R7b).
 DISPLAY_CACHE_S = 60.0
+PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
 
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
@@ -1621,6 +1623,85 @@ class Workspace:
                                        "phase": j["phase"]}
                                       for j in holds.awaiting_confirmation(self.store)],
         }
+
+    # -- diagnostics (R9b, #130) ---------------------------------------------------------
+
+    def report_ui_error(self, event, line, col):
+        """A page script error (the page's error and unhandledrejection
+        events): fixed values and numbers only, at most PAGE_ERRORS a run
+        and one a second, so a page cannot flood the log."""
+        now = self._clock()
+        with self._lock:
+            sent = self.__dict__.setdefault("_page_errors", [0, float("-inf")])
+            if sent[0] >= PAGE_ERRORS or now - sent[1] < 1.0:
+                return None
+            sent[0], sent[1] = sent[0] + 1, now
+        code = diag.new_code()
+        self.log.write("incident", code=code, area="page", event=event, line=line, col=col)
+        return code
+
+    def diagnostics(self):
+        """What Copy diagnostics copies: versions, settings and policy values,
+        counts, model states and the newest log records. Built only from
+        values the app controls, and the records pass the log's field rules
+        again: no meeting content, names, folders or tokens."""
+        import platform
+
+        from workspace import update
+        token = re.compile(r"[A-Za-z0-9_.+-]{1,60}")      # no spaces: no free text
+        word = lambda v: v if isinstance(v, str) and token.fullmatch(v) else "?"  # noqa: E731
+        lines = ["Unminute diagnostics (no meeting content)"]
+        try:
+            from workspace.__main__ import package_version
+            version = package_version()
+        except Exception:
+            version = "?"
+        deployment = update.deployment()
+        lines.append(f"Version: {word(str(version))}; install: "
+                     f"{word(deployment.get('mode'))}; Windows {word(platform.version())}; "
+                     f"Python {word(platform.python_version())}")
+        settings = []
+        for key in DEFAULT_SETTINGS:
+            value = self.settings.values.get(key)
+            shown = ("on" if value else "off") if isinstance(value, bool) else word(value)
+            settings.append(f"{key}={shown}")
+        lines.append("Settings: " + ", ".join(settings))
+        p = self.policy.current()
+        managed = [f"{name}={'set' if policy.SPEC[name][0] == 'path' else p.get(name)}"
+                   for name in p.summary()["managed"] if name in policy.SPEC]
+        lines.append("Managed policy: " + (", ".join(managed) if managed else "none")
+                     + ("; unreadable" if p.unreadable else ""))
+        counts = self.store._one(
+            "SELECT (SELECT COUNT(*) FROM meetings) AS meetings, "
+            "(SELECT COUNT(*) FROM holds WHERE released_at IS NULL) AS holds, "
+            "(SELECT COUNT(*) FROM cleanup_jobs) AS cleanup, "
+            "(SELECT COUNT(*) FROM watched_folders) AS folders")
+        lines.append("Workspace: " + ", ".join(f"{k}={counts[k]}" for k in counts.keys()))
+        try:
+            cards = setup.cards(self.cache_dir)
+            lines.append("Models: " + ", ".join(f"{word(c['name'])}={word(c['state'])}"
+                                                 for c in cards))
+        except Exception:
+            lines.append("Models: ?")
+        info = gpu.detected()
+        lines.append("Graphics card: " + (f"NVIDIA, driver {word(info.get('driver'))}, "
+                                          f"{'supported' if info.get('driver_ok') else 'too old'}"
+                                          if info else "none found"))
+        lines.append(f"Crashes in the last 7 days: {diag.recent_crashes(self.log.folder)}")
+        lines.append("Recent log records (newest last):")
+        lines += [json.dumps(r, separators=(",", ":"))
+                  for r in diag.shareable_records(self.log.folder, limit=40)]
+        return "\n".join(lines) + "\n"
+
+    def copy_diagnostics(self):
+        """Copy diagnostics to the clipboard (kept out of clipboard history and
+        cloud sync, like every copy the app makes)."""
+        text = self.diagnostics()
+        try:
+            clipboard.copy_text(text)
+        except clipboard.ClipboardError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        return {"chars": len(text)}
 
     def status(self):
         return {"busy": self._busy[1] if self._busy else None, "message": self._status,

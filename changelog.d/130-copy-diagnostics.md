@@ -1,0 +1,2 @@
+- **Copy diagnostics, for support.** Help and shortcuts now has **Copy diagnostics**: it copies versions, settings, counts and recent error locations from the app's own logs, never meeting content, names or folders, ready to paste into a support request (#130).
+- **A health check for IT.** `--health` prints a one-line report for device management, such as an Intune Remediation script, and exits 1 when the app needs attention (#130).
