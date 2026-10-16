@@ -219,7 +219,10 @@ def decode_to_file(src, dest):
         raise DecodeError("There is not enough free disk space to import this recording.")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
-    proc = subprocess.Popen([_python(), "-I", "-B", "-c", decode_child.BOOT],
+    # -X disable-remote-debug: no other process can make the decoder run code
+    # through Python 3.14's debugger interface (PEP 768; older Pythons ignore it).
+    proc = subprocess.Popen([_python(), "-I", "-B", "-X", "disable-remote-debug", "-c",
+                             decode_child.BOOT],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, creationflags=flags, env=env)
     import time

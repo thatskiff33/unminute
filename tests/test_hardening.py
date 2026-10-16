@@ -1,20 +1,22 @@
 # Security hardening checks (#111 slice A2): the window shell's dispatch guard
 # and navigation rule, settings validation, test-only engines, the workspace
-# location, SQLite temporary storage, a token left in the environment and
-# nvidia-smi.
+# location, SQLite temporary storage, a token left in the environment,
+# nvidia-smi, and remote debugging (B4).
 #   python -m unittest discover -s tests -v
 
 import importlib
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from workspace import credentials, shell  # noqa: E402
 
@@ -568,6 +570,36 @@ class EnvironmentTokenTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(r.stdout.split(), ["False", "False"], r.stderr)
         self.assertNotIn("hf_example", r.stdout + r.stderr)
+
+
+class RemoteDebugTests(unittest.TestCase):
+    """#111 B4: Python 3.14 lets another process run code in a running Python
+    process (PEP 768). Every app process starts with -X disable-remote-debug."""
+
+    def test_the_app_and_its_processes_start_with_remote_debugging_off(self):
+        install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn('$LaunchArgs = "-X disable-remote-debug -m workspace"', install)
+        self.assertEqual(install.count("Arguments = $LaunchArgs"), 2)   # new and pinned
+        self.assertNotIn('Arguments = "-m workspace"', install)
+        self.assertIn('@("-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")',
+                      install)
+        media = (ROOT / "workspace" / "media.py").read_text(encoding="utf-8")
+        self.assertIn('"-I", "-B", "-X", "disable-remote-debug", "-c"', media)
+
+    def test_the_option_turns_it_off_and_workers_inherit_it(self):
+        # What multiprocessing passes to the workers it starts, from a parent
+        # started as the shortcut starts the app.
+        # (Python 3.13 and earlier have no such interface, and so nothing to pass on.)
+        code = ("import subprocess, sys; "
+                "print(hasattr(sys, 'is_remote_debug_enabled')); "
+                "print(getattr(sys, 'is_remote_debug_enabled', lambda: False)()); "
+                "print(subprocess._args_from_interpreter_flags())")
+        r = subprocess.run([sys.executable, "-X", "disable-remote-debug", "-c", code],
+                           capture_output=True, text=True, timeout=60)
+        has, enabled, flags = r.stdout.splitlines()
+        self.assertEqual(enabled, "False", r.stderr)
+        if has == "True":
+            self.assertIn("'-X', 'disable-remote-debug'", flags)
 
 
 class NvidiaSmiTests(unittest.TestCase):
