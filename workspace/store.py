@@ -353,6 +353,9 @@ class Store:
         self.db = sqlite3.connect(str(self.path), isolation_level=None, timeout=30,
                                   check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # Committed transactions so far: the page asks for the meeting lists
+        # again only when this (or the app's own state) has changed (R7b).
+        self.revision = 0
         try:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
@@ -447,6 +450,7 @@ class Store:
             try:
                 yield self.db
                 self.db.execute("COMMIT")
+                self.revision += 1
             except BaseException as exc:
                 try:
                     self.db.execute("ROLLBACK")

@@ -21,6 +21,7 @@
                  intervals: new Map(), pendingFrames: new Set() };
   const realSetTimeout = window.setTimeout.bind(window);
   let pageHidden = false;
+  let afterNextList = null;      // perf: run once the page next fetches the meeting list
   if (perfMode) {
     const realSetInterval = window.setInterval.bind(window);
     const realClearInterval = window.clearInterval.bind(window);
@@ -65,13 +66,27 @@
     }
     realSetTimeout(() => {
       const seen = snapshot();
-      if (perfMode !== "hidden") return finish(ms, seen, null);
+      if (perfMode !== "hidden") {
+        // Then a meeting changes (as when an import finishes), just after the
+        // page has fetched the list: only the reported change can make it
+        // fetch again, and redraw, within the next poll (11 s), not the
+        // every-6th-poll refresh. Not part of the idle figures.
+        let done = false;
+        const end = (redrawn) => { if (!done) { done = true; finish(ms, seen, null, redrawn); } };
+        afterNextList = () => {
+          const rebuilt = perf.rebuilds;
+          data.meetings = data.meetings.map((m, i) => (i ? m : { ...m, title: `${m.title} (2)` }));
+          realSetTimeout(() => end(perf.rebuilds > rebuilt), 11000);
+        };
+        return realSetTimeout(() => end(false), 75000);   // the page never fetched it
+      }
       // Shown again: the page must catch up by itself, promptly. Counted
       // separately, so the hidden figures above stay what the hidden page did.
-      const before = total(perf.calls);
+      const before = { ...perf.calls };
       pageHidden = false;
       document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
-      realSetTimeout(() => finish(ms, seen, total(perf.calls) - before), 1000);
+      realSetTimeout(() => finish(ms, seen, Object.keys(perf.calls).filter(
+        (k) => perf.calls[k] > (before[k] || 0))), 1000);
     }, ms);
   }
   function total(calls) { return Object.values(calls).reduce((a, b) => a + b, 0); }
@@ -80,7 +95,7 @@
              intervals: [...perf.intervals.values()], frames: perf.pendingFrames.size,
              rows: document.querySelectorAll("#groups li").length };
   }
-  function finish(ms, seen, catchUp) {
+  function finish(ms, seen, catchUp, redrawn = null) {
     const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
     const calls = Object.fromEntries(Object.entries(seen.calls).map(([k, v]) => [k, perMinute(v)]));
     const result = {
@@ -92,7 +107,8 @@
       live_intervals: seen.intervals.length,
       fastest_interval_ms: seen.intervals.length ? Math.min(...seen.intervals) : null,
       meeting_rows: seen.rows,
-      catch_up_calls: catchUp,
+      catch_up_calls: catchUp,           // hidden: the methods called once shown again
+      redrawn_after_change: redrawn,     // visible: the list redrawn within a poll of a change
       page_errors: perf.errors,
     };
     const out = document.createElement("pre");
@@ -431,9 +447,17 @@
     settings: () => data.settings,
     watched_folders: () => ({ folders: data.folders || [], last_scan: null, interval_minutes: 5 }),
     test_microphone: () => ({ heard: !!data.micHeard, peak_db: -18 }),
-    status: () => data.status,
+    // changes: as the app reports it, different whenever the lists are.
+    status: () => ({ ...data.status, changes: JSON.stringify([data.meetings, data.reminders]) }),
     reminders: () => data.reminders,
-    meetings: () => data.meetings,
+    meetings: () => {
+      const items = data.meetings;
+      if (afterNextList) {                 // perf: change it once this answer is out
+        realSetTimeout(afterNextList, 0);
+        afterNextList = null;
+      }
+      return items;
+    },
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.
       if (data.levels && data.recording.recording) {

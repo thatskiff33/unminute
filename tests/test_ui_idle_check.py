@@ -41,9 +41,15 @@ class RatchetTests(unittest.TestCase):
                          ui_idle_check.compare({"visible": {}},
                                                {"visible": {"list_rebuilds_per_minute": 30}}))
 
+    RUNNING = {"bridge_calls_per_minute": 14, "meeting_rows": 3, "page_errors": [],
+               "calls_per_minute": {"status": 6, "recording_status": 6, "meetings": 1,
+                                    "reminders": 1},
+               "redrawn_after_change": True}
+    HIDDEN = {"bridge_calls_per_minute": 0, "page_errors": [],
+              "catch_up_calls": ["status", "meetings", "reminders", "recording_status"]}
+
     def test_a_page_that_threw_or_is_not_running_fails(self):
-        running = {"bridge_calls_per_minute": 120, "meeting_rows": 3, "page_errors": []}
-        hidden = {"bridge_calls_per_minute": 0, "page_errors": [], "catch_up_calls": 4}
+        running, hidden = self.RUNNING, self.HIDDEN
         self.assertEqual([], ui_idle_check.sanity({"visible": running, "hidden": hidden}))
         threw = dict(hidden, page_errors=["TypeError: x is undefined"])
         self.assertEqual(1, len(ui_idle_check.sanity({"visible": running, "hidden": threw})))
@@ -51,13 +57,23 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(1, len(ui_idle_check.sanity({"visible": silent, "hidden": hidden})))
 
     def test_a_page_that_does_not_catch_up_when_shown_again_fails(self):
-        # Hidden pages must stop polling, but come back by themselves (#127).
-        running = {"bridge_calls_per_minute": 24, "meeting_rows": 3, "page_errors": []}
-        for stuck in (0, None):
-            hidden = {"bridge_calls_per_minute": 0, "page_errors": [], "catch_up_calls": stuck}
-            problems = ui_idle_check.sanity({"visible": running, "hidden": hidden})
+        # Hidden pages must stop polling, but come back by themselves (#127),
+        # lists included: ages and hold reviews moved on while hidden (R7b).
+        for stuck in ([], None, ["status", "recording_status"]):
+            hidden = dict(self.HIDDEN, catch_up_calls=stuck)
+            problems = ui_idle_check.sanity({"visible": self.RUNNING, "hidden": hidden})
             self.assertEqual(1, len(problems), stuck)
             self.assertIn("shown again", problems[0])
+
+    def test_a_page_whose_lists_stop_refreshing_fails(self):
+        # The ratchets are ceilings: a page that fetched the lists only once
+        # would pass them (R7b).
+        never = dict(self.RUNNING, calls_per_minute={"status": 6, "recording_status": 6})
+        stale = dict(self.RUNNING, redrawn_after_change=False)
+        for visible, words in ((never, "in a minute"), (stale, "within one poll")):
+            problems = ui_idle_check.sanity({"visible": visible, "hidden": self.HIDDEN})
+            self.assertEqual(1, len(problems), words)
+            self.assertIn(words, problems[0])
 
     def test_ratchet_file_covers_both_modes_with_known_metrics(self):
         data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))

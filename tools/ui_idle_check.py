@@ -44,7 +44,9 @@ def run_page(base, mode, page_ms):
                "--disable-extensions", f"--user-data-dir={profile}", "--mute-audio",
                "--window-size=1100,760",
                # page time: the scenario's start-up steps plus the measured window
-               f"--virtual-time-budget={page_ms + 15000}", "--dump-dom", url]
+               # + up to 60 s for the next list fetch and 11 s for the redraw
+               # after a change (visible), or 1 s of catch-up (hidden).
+               f"--virtual-time-budget={page_ms + 90000}", "--dump-dom", url]
         out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                              errors="replace", timeout=300)
     found = RESULT.search(out.stdout or "")
@@ -84,12 +86,25 @@ def sanity(results):
     for mode, r in results.items():
         if r.get("page_errors"):
             problems.append(f"{mode}: the page threw: {'; '.join(r['page_errors'][:3])}")
-    if "hidden" in results and not results["hidden"].get("catch_up_calls"):
-        problems.append("hidden: the page did not refresh within 1 s of being shown again")
+    if "hidden" in results:
+        caught_up = results["hidden"].get("catch_up_calls") or []
+        if not caught_up:
+            problems.append("hidden: the page did not refresh within 1 s of being shown again")
+        elif "meetings" not in caught_up:
+            problems.append("hidden: shown again, the page did not fetch the meeting list "
+                            "(ages and hold reviews may have moved on while it was hidden)")
     visible = results.get("visible", {})
     if not visible.get("bridge_calls_per_minute") or not visible.get("meeting_rows"):
         problems.append("visible: the page made no bridge calls or showed no meetings, so it "
                         "is not running; an idle figure would be meaningless")
+    else:
+        # The ratchets are ceilings: these make sure the lists still refresh.
+        if not visible.get("calls_per_minute", {}).get("meetings"):
+            problems.append("visible: the page did not fetch the meeting list in a minute "
+                            "(it must, every 6th poll, even when nothing changed)")
+        if visible.get("redrawn_after_change") is not True:
+            problems.append("visible: the page did not redraw the meeting list within one "
+                            "poll of a change")
     return problems
 
 
