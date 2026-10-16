@@ -25,7 +25,7 @@ This guide covers the packaged workspace. The earlier source-installed app (`ins
    - **Speaker names** (optional): speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
    - **Microphone** (optional): turn on recording and test the microphone.
    - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later.
-3. **Import a recording.** On the Meetings page, choose **Import a recording** or drop audio or video files anywhere on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)).
+3. **Import a recording.** On the Meetings page, choose **Import a recording** or drop audio or video files anywhere on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)). Recordings on mapped network drives are refused: copy them to this computer first. OneDrive and other synced folders are fine.
 
 ## Recording with a microphone
 

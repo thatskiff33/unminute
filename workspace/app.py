@@ -1625,7 +1625,8 @@ def _hold_id(value):
 
 
 def _import_message(exc):
-    if isinstance(exc, (media.SourceChanged, UnsafePathError, WorkspaceError)):
+    if isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
+                        WorkspaceError)):
         return str(exc)
     if isinstance(exc, ValueError) and "no audio" in str(exc):
         return "That file contains no audio."

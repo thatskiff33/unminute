@@ -69,7 +69,7 @@ You can skip the optional steps and turn them on later in Settings. **Graphics c
 
 ### Bring in a recording
 
-- **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window.
+- **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window. Recordings must be on this computer: files on mapped network drives, or reached through a symbolic link, are refused (copy them across first). Synced folders such as OneDrive are fine.
 - **Watched folders** (Settings) pick up new recordings automatically. See [docs/INTAKE.md](docs/INTAKE.md) for synced and cloud folders.
 - **Record a meeting** appears once microphone recording is on (Setup, or Settings > Recording and speakers). Tell everyone present that the meeting is being recorded. Only the microphone is recorded, not sound playing on the computer.
 

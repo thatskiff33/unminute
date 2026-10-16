@@ -25,37 +25,169 @@ def sha256_file(path, chunk=8 << 20):
     return h.hexdigest()
 
 
-def decode_to_file(src, dest):
-    """Stream-decode `src` to raw float32 16 kHz mono at `dest`.
+# Recordings can come from clients or shared folders, so the file is treated
+# as hostile (#111 slice A3, threats T2 to T4 in docs/SECURITY_MODEL.md):
+#   - it is decoded in a short-lived child process inside a Windows job
+#     (workspace/jobs.py: memory cap, no child processes, no clipboard, killed
+#     with the app), never in the process that owns the database;
+#   - FFmpeg reads it through a Python file object and may only use its
+#     demuxers for the supported recording types and the local file protocol,
+#     whatever the content claims to be (no playlists, streams or scripts);
+#   - decoding stops at MAX_DECODED_S of audio and keeps DISK_RESERVE free.
+# Container demuxer names (FFmpeg); covers AUDIO_EXTENSIONS in workspace/app.py.
+DEMUXERS = "wav,mp3,mov,mp4,m4a,matroska,webm,flac,ogg,aac,asf,avi"
+OPEN_OPTIONS = {"protocol_whitelist": "file", "format_whitelist": DEMUXERS}
+MAX_DECODED_S = 12 * 3600          # longer than any meeting; a "bomb" stops here
+DISK_RESERVE = 1 << 30             # never fill the disk: keep 1 GB free
+DECODER_MEMORY = 2 << 30           # job memory limit for the decode process
+_CHECK_EVERY = 64 << 20            # bytes written between free-space checks
+
+
+class DecodeError(ValueError):
+    """The recording could not be decoded (message is safe to show)."""
+
+
+def _free_bytes(folder):
+    import shutil
+    return shutil.disk_usage(folder).free
+
+
+def _decode(src, tmp, max_samples=MAX_DECODED_S * SAMPLE_RATE, reserve=DISK_RESERVE):
+    """The decode itself: runs inside the contained child process.
     Returns (samples, sha256 of the written bytes)."""
     import av
     h = hashlib.sha256()
     samples = 0
-    tmp = Path(dest).with_suffix(".partial")
-    with av.open(str(src)) as container, open(tmp, "wb") as out:
-        stream = next((s for s in container.streams if s.type == "audio"), None)
-        if stream is None:
-            raise ValueError("The file has no audio track.")
-        resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+    since_check = 0
+    tmp = Path(tmp)
+    try:
+        with open(src, "rb") as fh, av.open(fh, options=OPEN_OPTIONS) as container, \
+                open(tmp, "wb") as out:
+            stream = next((s for s in container.streams if s.type == "audio"), None)
+            if stream is None:
+                raise DecodeError("The file has no audio track.")
+            if container.duration and container.duration / 1e6 > MAX_DECODED_S + 60:
+                raise DecodeError("The recording is longer than 12 hours.")
+            expected = (container.duration or 0) / 1e6 * SAMPLE_RATE * 4
+            if _free_bytes(tmp.parent) < min(expected, max_samples * 4) + reserve:
+                raise DecodeError("There is not enough free disk space to import this "
+                                  "recording.")
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
 
-        def write(frames):
-            nonlocal samples
-            for fr in frames:
-                data = np.ascontiguousarray(fr.to_ndarray().reshape(-1), dtype="<f4").tobytes()
-                out.write(data)
-                h.update(data)
-                samples += len(data) // 4
+            def write(frames):
+                nonlocal samples, since_check
+                for fr in frames:
+                    data = np.ascontiguousarray(fr.to_ndarray().reshape(-1),
+                                                dtype="<f4").tobytes()
+                    samples += len(data) // 4
+                    if samples > max_samples:
+                        raise DecodeError("The recording is longer than 12 hours.")
+                    out.write(data)
+                    h.update(data)
+                    since_check += len(data)
+                    if since_check >= _CHECK_EVERY:
+                        since_check = 0
+                        if _free_bytes(tmp.parent) < reserve:
+                            raise DecodeError("There is not enough free disk space to "
+                                              "import this recording.")
 
-        for frame in container.decode(stream):
-            write(resampler.resample(frame))
-        write(resampler.resample(None))       # flush
-        out.flush()
-        os.fsync(out.fileno())
+            for frame in container.decode(stream):
+                write(resampler.resample(frame))
+            write(resampler.resample(None))       # flush
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     if samples == 0:
         tmp.unlink(missing_ok=True)
-        raise ValueError("The file contains no audio.")
-    os.replace(tmp, dest)
+        raise DecodeError("The file contains no audio.")
     return samples, h.hexdigest()
+
+
+def _decoder_main(conn):
+    """Entry point of the decode process. It installs the offline guard and
+    waits for its one job only after the parent has put it in a Windows job,
+    so it never touches the recording unconstrained."""
+    import sys
+    if sys.stdout is None or sys.stderr is None:    # pythonw: no console
+        sys.stdout = sys.stderr = open(os.devnull, "w")
+    import offline_guard
+    offline_guard.disable_telemetry()
+    offline_guard.install()
+    try:
+        src, tmp = conn.recv()
+    except (EOFError, OSError):
+        return
+    try:
+        samples, digest = _decode(src, tmp)
+        conn.send(("ok", samples, digest))
+    except DecodeError as exc:
+        conn.send(("error", str(exc)))
+    except MemoryError:
+        conn.send(("error", "The recording needs more memory to decode than this app "
+                            "allows. It may be damaged."))
+    except Exception:            # PyAV/FFmpeg errors carry paths: never sent back
+        conn.send(("error", "That recording could not be imported (unsupported or "
+                            "damaged file)."))
+
+
+def _decode_timeout(src):
+    """Generous: decoding is far faster than real time. Only a hung decoder
+    reaches this (10 minutes plus 1 second per 2 MB of input)."""
+    try:
+        size = os.path.getsize(src)
+    except OSError:
+        size = 0
+    return 600 + size / (2 << 20)
+
+
+def decode_to_file(src, dest):
+    """Decode `src` to raw float32 16 kHz mono at `dest` in a contained child
+    process. Returns (samples, sha256 of the written bytes). Raises
+    DecodeError with a safe message."""
+    import multiprocessing as mp
+
+    from workspace import jobs
+    tmp = Path(dest).with_suffix(".partial")
+    ctx = mp.get_context("spawn")
+    parent, child = ctx.Pipe()
+    proc = ctx.Process(target=_decoder_main, args=(child,), daemon=True,
+                       name="unminute-decode")
+    proc.start()
+    child.close()
+    job = None
+    reply = ("error", "")
+    try:
+        try:
+            job = jobs.contain(proc.pid, DECODER_MEMORY)
+        except jobs.JobError as exc:
+            raise DecodeError("The recording could not be decoded safely on this computer "
+                              "(the decoder could not be contained).") from exc
+        parent.send((str(src), str(tmp)))
+        if not parent.poll(_decode_timeout(src)):
+            raise DecodeError("Decoding the recording took too long. It may be damaged.")
+        try:
+            reply = parent.recv()
+        except (EOFError, OSError) as exc:
+            raise DecodeError("The recording could not be decoded (the decoder stopped). "
+                              "It may be damaged.") from exc
+    finally:
+        parent.close()
+        if job is not None:
+            job.close()                      # kills the process if it is still running
+        proc.join(10)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        if reply[0] != "ok":
+            tmp.unlink(missing_ok=True)      # whatever a stopped decoder left
+    if reply[0] != "ok":
+        tmp.unlink(missing_ok=True)
+        raise DecodeError(reply[1])
+    _, samples, digest = reply
+    os.replace(tmp, dest)
+    return samples, digest
 
 
 class AudioReader:
