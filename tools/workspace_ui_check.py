@@ -56,6 +56,61 @@ def evaluate(window, js, timeout=60):
 WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
 
 
+def answer_dialog(title, button, timeout=15):
+    """Press a button of a Windows message box with this title, as a person
+    would (#111 A6): the page has no way to do this. IDYES = 6, IDNO = 7."""
+    import ctypes
+    user32 = ctypes.WinDLL("user32")
+    end = time.time() + timeout
+    while time.time() < end:
+        hwnd = user32.FindWindowW("#32770", title)
+        if hwnd:
+            user32.PostMessageW(hwnd, 0x0111, button, 0)        # WM_COMMAND
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def native_checks(window):
+    """The Windows confirmation answers Yes and No correctly, and the
+    recording indicator changes the window title and icon and restores them."""
+    import ctypes
+    import threading
+
+    from System import Func, IntPtr
+    out = {}
+    title = "Workspace UI check: confirm"
+    for button, key in ((7, "no"), (6, "yes")):
+        pressed = {}
+        clicker = threading.Thread(target=lambda b=button, p=pressed: p.update(
+            ok=answer_dialog(title, b)), daemon=True)
+        clicker.start()
+        out[key] = shell.native_confirm(window, title, "Synthetic check. Nothing changes.")
+        clicker.join(5)
+        out[key + "_pressed"] = pressed.get("ok", False)
+    form = window.native
+    hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
+
+    def caption():
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.WinDLL("user32").GetWindowTextW(ctypes.c_void_p(hwnd), buf, 256)
+        return buf.value
+    before = caption()
+
+    def icon_handle():                  # .NET returns a new wrapper each time: compare handles
+        return form.Invoke(Func[IntPtr](lambda: form.Icon.Handle)).ToInt64()
+    icon_before = icon_handle()
+    shell.show_recording(window, True)
+    time.sleep(0.5)
+    out["title_recording"] = caption()
+    out["icon_changed"] = icon_handle() != icon_before
+    shell.show_recording(window, False)
+    time.sleep(0.5)
+    out["title_restored"] = caption() == before
+    out["icon_restored"] = icon_handle() == icon_before
+    return out
+
+
 def checks(window, ws, mid, long_mid, report):
     try:
         window.events.loaded.wait(30)
@@ -240,6 +295,7 @@ def checks(window, ws, mid, long_mid, report):
                     render_ms: Math.round(render_ms),
                     hit: document.getElementById('m-hits').textContent}};""", timeout=120)
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
+        report["native"] = native_checks(window)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
@@ -337,6 +393,13 @@ def main():
             and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")
             and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
+    nv = report.get("native") or {}
+    if not (nv.get("no") is False and nv.get("yes") is True and nv.get("no_pressed")
+            and nv.get("yes_pressed")):
+        bad.append("native confirmation")
+    if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
+            and nv.get("icon_changed") and nv.get("icon_restored")):
+        bad.append("recording indicator")
     lt = report.get("long_transcript") or {}
     if lt.get("rows") != 5000:
         bad.append("long transcript")

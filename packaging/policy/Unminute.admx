@@ -47,6 +47,15 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="RequireRecordingConsent" class="Machine"
+            displayName="$(string.RequireRecordingConsent)"
+            explainText="$(string.RequireRecordingConsent_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="RequireRecordingConsent">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
     <policy name="AllowWatchedFolders" class="Machine" displayName="$(string.AllowWatchedFolders)"
             explainText="$(string.AllowWatchedFolders_Help)" key="SOFTWARE\Policies\Unminute"
             valueName="AllowWatchedFolders">

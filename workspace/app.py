@@ -176,6 +176,9 @@ class Workspace:
         self.recordings = self.root / "recordings"
         self._recording = None
         self._rec_starting = False         # a recording is being opened
+        # Called with True/False whenever a recording starts or ends, so the
+        # window can show it (title and taskbar, #111 A6). Set by the bridge.
+        self.recording_indicator = None
         self._yielded = False              # a worker stop caused by recording, not the user
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
@@ -212,6 +215,7 @@ class Workspace:
         with self._lock:                 # claimed once: the policy tick may race
             rec, self._recording = self._recording, None
         if rec is not None:              # saved now; imported at the next start
+            self._indicate(False)
             try:
                 rec.stop()
             except recorder.RecorderError:
@@ -230,6 +234,33 @@ class Workspace:
 
     def _allowed(self, name):
         return bool(self.policy.current().get(name))
+
+    def check_can_record(self):
+        """Refuse now what start_recording would refuse, before anyone is asked."""
+        self._need_microphone()
+        if self._capturing():
+            raise WorkspaceError("A recording is already running.")
+
+    def may_grant_deletion(self, fid):
+        """Granting deletion authority for this folder would be accepted."""
+        _hold_id(fid)
+        return self._allowed("AllowDeleteOriginals")
+
+    def meeting_title(self, mid):
+        return self._meeting(mid)["title"]
+
+    def consent_required(self):
+        """Each recording needs the Windows confirmation that everyone has been
+        told (#111 A6), unless the organisation's policy turns it off."""
+        return self._allowed("RequireRecordingConsent")
+
+    def _indicate(self, recording):
+        hook = self.recording_indicator
+        if hook is not None:
+            try:
+                hook(recording)
+            except Exception:            # the indicator never stops a recording
+                pass
 
     def managed(self):
         """What the organisation's policy sets, for Settings and Setup: the
@@ -361,8 +392,14 @@ class Workspace:
     def _capturing(self):
         return self._recording is not None or self._rec_starting
 
-    def start_recording(self, device, name=None):
+    def start_recording(self, device, name=None, consent=None):
+        """consent: the record of the Windows confirmation (workspace.consent),
+        kept with the recording. The bridge asks for it; it is required unless
+        policy turns the confirmation off."""
         self._need_microphone()
+        if consent is None and self.consent_required():
+            raise WorkspaceError("Recording needs your confirmation that everyone in the "
+                                 "meeting has been told.")
         # Under the processing lock: the loop re-checks this flag under the
         # same lock before starting heavy work, so nothing can slip in.
         with self._lock:
@@ -380,12 +417,15 @@ class Workspace:
             rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
                                      choice.get("label") or choice["name"], choice["rate"],
                                      open_stream=self.open_stream)
+            if consent is not None:
+                rec.journal["consent"] = dict(consent)     # saved with the journal
             try:
                 rec.start()
             except recorder.RecorderError as exc:
                 raise WorkspaceError(str(exc)) from exc
             with self._lock:
                 self._recording = rec
+            self._indicate(True)
         finally:
             with self._lock:
                 self._rec_starting = False
@@ -407,6 +447,7 @@ class Workspace:
             if self._recording is not rec:
                 return False             # already finished by the other path
             self._recording = None
+        self._indicate(False)
         if event:                        # noted only by the path that finishes it
             rec._event(event[0], note=event[1])
         try:
@@ -464,6 +505,7 @@ class Workspace:
                 raise WorkspaceError("The recording could not be discarded. It carries on; "
                                      "try again, or stop and save it.") from exc
             self._recording = None                # the watcher will not import it now
+        self._indicate(False)
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
                   "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}

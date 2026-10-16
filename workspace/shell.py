@@ -491,3 +491,72 @@ def run(func=None, args=None, debug=False, storage_path=None):
                   private_mode=True, debug=debug,
                   storage_path=None if storage_path is None else str(storage_path),
                   icon=str(ICON) if ICON.is_file() else None)
+
+
+# -- native confirmations and the recording indicator (#111 A6) -------------------
+
+
+def native_confirm(window, title, text):
+    """Ask a Yes/No question in a Windows message box owned by the app window.
+    It is outside the web page, so page script cannot answer it. No is the
+    default button; True only for Yes."""
+    from System import Action
+    from System.Windows.Forms import (DialogResult, MessageBox, MessageBoxButtons,
+                                      MessageBoxDefaultButton, MessageBoxIcon)
+    form = window.native
+    box = {}
+
+    def ask():
+        box["answer"] = MessageBox.Show(form, text, title, MessageBoxButtons.YesNo,
+                                        MessageBoxIcon.Question,
+                                        MessageBoxDefaultButton.Button2)
+
+    form.Invoke(Action(ask))            # a message box belongs to the UI thread
+    return box.get("answer") == DialogResult.Yes
+
+
+RECORDING_MARK = "● Recording - "
+
+
+def show_recording(window, recording):
+    """While recording, the window title starts with a red-dot "Recording"
+    mark and the taskbar icon gets a red dot, so recording is visible even
+    when the window is behind others or minimised."""
+    from System import Action
+    form = window.native
+    plain = getattr(window, "unminute_title", None)
+    if plain is None:
+        plain = window.unminute_title = window.title
+    window.set_title(RECORDING_MARK + plain if recording else plain)
+
+    def icon():
+        normal = getattr(window, "unminute_icon", None)
+        if normal is None:
+            normal = window.unminute_icon = form.Icon
+        if not recording:
+            form.Icon = normal
+            return
+        marked = getattr(window, "unminute_recording_icon", None)
+        if marked is None:
+            marked = window.unminute_recording_icon = _with_red_dot(normal)
+        form.Icon = marked
+
+    form.Invoke(Action(icon))
+
+
+def _with_red_dot(icon):
+    """The window icon with a red dot in its lower-right quarter."""
+    from System.Drawing import Bitmap, Color, Graphics, Icon, SolidBrush
+    from System.Drawing.Drawing2D import SmoothingMode
+    size = max(icon.Width, 32)
+    image = Bitmap(icon.ToBitmap(), size, size)
+    pen = Graphics.FromImage(image)
+    try:
+        pen.SmoothingMode = SmoothingMode.AntiAlias
+        dot = size // 2
+        pen.FillEllipse(SolidBrush(Color.White), size - dot - 1, size - dot - 1, dot + 1, dot + 1)
+        pen.FillEllipse(SolidBrush(Color.FromArgb(220, 30, 30)), size - dot, size - dot,
+                        dot - 1, dot - 1)
+    finally:
+        pen.Dispose()
+    return Icon.FromHandle(image.GetHicon())

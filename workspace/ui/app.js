@@ -174,7 +174,10 @@ function discardLink(m) {
       title: "Discard this meeting?",
       body: "Its audio, transcript, edits and speaker names are deleted from this workspace and cannot be recovered. Your original recording file is not deleted. For real meetings, use Transcript reviewed and then the final confirmation instead.",
       check: "Delete this meeting and everything in it.", limitsText: d.limits, danger: true,
-      onConfirm: () => attempt(() => call("discard_meeting", m.id).then(() => { say("Meeting discarded."); refresh(); })),
+      onConfirm: () => attempt(() => call("discard_meeting", m.id).then((r) => {
+        say(r && r.cancelled ? "Nothing was discarded." : "Meeting discarded.");
+        refresh();
+      })),
     });
   }), "Delete a meeting you do not need (for example a test recording)");
 }
@@ -1812,7 +1815,10 @@ function folderItem(f) {
             "Do not allow this for shared folders, Teams or channel storage, or recordings someone else (such as a meeting organiser) owns. Copies elsewhere, such as on a phone, in the cloud recycle bin or in backups, are not removed.",
           check: "I am responsible for recordings in this folder and allow the app to delete reviewed originals from it.",
           limits: false,
-          onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then(renderSettings)),
+          onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then((r) => {
+            if (r && r.cancelled) say("Nothing changed: originals in this folder are kept.");
+            return renderSettings();
+          })),
         });
       } } }),
       "Delete originals from this folder after review…"),
@@ -2104,8 +2110,10 @@ function wireRecorder() {
   const relist = (err) => { if (/changed/.test(String(err && err.message))) $("rec-device").replaceChildren(); throw err; };
   const start = (btn) => attempt(async () => {
     btn.disabled = true;           // one recording per click
-    try { await call("start_recording", device(), deviceName()).catch(relist); }
+    let r;
+    try { r = await call("start_recording", device(), deviceName()).catch(relist); }
     finally { btn.disabled = false; }
+    if (r && r.cancelled) { say("Recording not started."); return; }
     $("mic-chooser").hidden = true;
     $("mic-change").setAttribute("aria-expanded", "false");
     renderRecorder();

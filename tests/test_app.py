@@ -19,7 +19,7 @@ SR = 16000
 if HAVE_DEPS:
     import numpy as np
 
-    from workspace import api
+    from workspace import api, policy
     from workspace.app import Workspace, WorkspaceError
     from workspace.store import new_id
 
@@ -867,6 +867,115 @@ class ApiTests(unittest.TestCase):
             self.assertFalse(self.api.release_hold(bad)["ok"])
         self.assertTrue(self.api.add_hold(self.mid, "all", "reason")["ok"])
         self.assertEqual(len(new_id()), 32)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class NativeConfirmationTests(unittest.TestCase):
+    """Starting a recording, allowing deletion of originals and discarding a
+    meeting need a Yes in a question the page cannot answer (#111 A6)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.ws = Workspace(root / "ws", root / "models", start=False,
+                            allow_test_engines=True, battery=False)
+        self.ws.settings.update(model=fake("sentences"), speakers=False)
+        self.ws._import_one(write_wav(root / "a.wav", 20))
+        self.mid = self.ws.meetings()[0]["id"]
+        self.asked, self.answer = [], False
+
+    def tearDown(self):
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def bridge(self, **kw):
+        def confirm(title, text):
+            self.asked.append((title, text))
+            return self.answer
+        return api.make_api(self.ws, confirm=confirm, **kw)
+
+    def test_recording_asks_first_and_passes_the_record_on(self):
+        from unittest import mock
+
+        from workspace import consent
+        b = self.bridge()
+        with mock.patch.object(self.ws, "check_can_record"), \
+                mock.patch.object(self.ws, "start_recording", return_value={"ok": 1}) as start:
+            self.assertEqual(b.start_recording(3, "Mic")["value"], api.CANCELLED)
+            start.assert_not_called()                       # No: nothing starts
+            self.answer = True
+            self.assertEqual(b.start_recording(3, "Mic")["value"], {"ok": 1})
+        self.assertEqual(self.asked[0], (consent.RECORDING_TITLE, consent.RECORDING_TEXT))
+        record = start.call_args.kwargs["consent"]
+        self.assertEqual((record["confirmed"], record["wording"]),
+                         (True, consent.RECORDING_WORDING_VERSION))
+
+    def test_a_refused_recording_never_asks(self):
+        b = self.bridge()
+        r = b.start_recording(3, "Mic")                     # microphone is off in Settings
+        self.assertFalse(r["ok"])
+        r = b.start_recording(True, "Mic")                  # not a device number
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.asked, [])
+
+    def test_policy_without_confirmation_does_not_ask(self):
+        from unittest import mock
+        self.ws.policy = policy.PolicySource(reader=lambda: ({"RequireRecordingConsent": False},
+                                                             ()))
+        b = self.bridge()
+        with mock.patch.object(self.ws, "check_can_record"), \
+                mock.patch.object(self.ws, "start_recording", return_value={}) as start:
+            b.start_recording(3, "Mic")
+        self.assertEqual(self.asked, [])
+        self.assertIsNone(start.call_args.kwargs["consent"])
+
+    def test_discarding_asks_with_the_title(self):
+        b = self.bridge()
+        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
+        self.assertIsNotNone(self.ws.store.meeting(self.mid))          # still there
+        self.assertIn(self.ws.meeting_title(self.mid), self.asked[0][1])
+        self.answer = True
+        self.assertTrue(b.discard_meeting(self.mid)["ok"])
+        self.assertFalse(b.discard_meeting("0" * 32)["ok"])            # unknown: not asked
+        self.assertEqual(len(self.asked), 2)
+
+    def test_allowing_deletion_asks_but_turning_it_off_does_not(self):
+        from unittest import mock
+        b = self.bridge()
+        fid = "f" * 32
+        with mock.patch.object(self.ws, "set_folder_authority") as grant:
+            self.assertEqual(b.set_folder_authority(fid, True, None)["value"], api.CANCELLED)
+            grant.assert_not_called()
+            b.set_folder_authority(fid, False, None)               # taking it away: no question
+            b.set_folder_authority(fid, None, True)                # cloud downloads: no question
+            self.assertEqual(len(self.asked), 1)
+            self.answer = True
+            b.set_folder_authority(fid, True, None)
+            grant.assert_called_with(fid, True, None)
+        self.ws.policy = policy.PolicySource(reader=lambda: ({"AllowDeleteOriginals": False}, ()))
+        self.assertIn("organisation", b.set_folder_authority(fid, True, None)["error"])
+        self.assertEqual(len(self.asked), 2)                       # refused before asking
+
+    def test_without_a_window_nothing_is_confirmed(self):
+        b = api.make_api(self.ws)                                  # no window, no test hook
+        self.assertEqual(b.discard_meeting(self.mid)["value"], api.CANCELLED)
+        self.assertIsNotNone(self.ws.store.meeting(self.mid))
+
+    def test_the_bridge_drives_the_recording_indicator(self):
+        shown = []
+
+        class Window:                                # stands in for the pywebview window
+            pass
+        window = Window()
+        from unittest import mock
+
+        from workspace import shell
+        api.make_api(self.ws, lambda: window, confirm=lambda t, x: True)
+        with mock.patch.object(shell, "show_recording",
+                               side_effect=lambda w, on: shown.append((w, on))):
+            self.ws._indicate(True)
+            self.ws._indicate(False)
+        self.assertEqual(shown, [(window, True), (window, False)])
 
 
 if __name__ == "__main__":

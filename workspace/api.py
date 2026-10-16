@@ -12,6 +12,7 @@
 import base64
 import threading
 
+from workspace import consent
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
 from workspace.bridge import _wav_bytes
 
@@ -68,9 +69,31 @@ def _report_id(value):
     return value
 
 
-def make_api(ws, get_window=lambda: None):
+CANCELLED = {"cancelled": True}           # the person chose No in a Windows confirmation
+
+
+def make_api(ws, get_window=lambda: None, confirm=None):
     """Return the js_api facade for Workspace `ws`. `get_window()` returns the
-    pywebview window (for the native file dialog)."""
+    pywebview window (for the native file dialog). `confirm(title, text)` asks
+    a Yes/No question outside the page (tests pass their own); by default a
+    Windows message box, and No when there is no window."""
+
+    def ask(title, text):
+        if confirm is not None:
+            return bool(confirm(title, text))
+        window = get_window()
+        if window is None:
+            return False                  # no window to own the question: not confirmed
+        from workspace import shell
+        return shell.native_confirm(window, title, text)
+
+    def indicate(recording):
+        window = get_window()
+        if window is not None:
+            from workspace import shell
+            shell.show_recording(window, recording)
+
+    ws.recording_indicator = indicate
 
     def ping(self):
         return {"ok": True, "value": "ok"}
@@ -260,7 +283,14 @@ def make_api(ws, get_window=lambda: None):
         return _safe(ws.remove_folder, fid)
 
     def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None):
-        return _safe(ws.set_folder_authority, fid, delete_originals, fetch_cloud)
+        def run():
+            # Granting deletion needs a Windows confirmation the page cannot give.
+            # Checked first, so a refused request never shows the question.
+            if delete_originals is True and ws.may_grant_deletion(fid):
+                if not ask(consent.DELETE_ORIGINALS_TITLE, consent.DELETE_ORIGINALS_TEXT):
+                    return CANCELLED
+            return ws.set_folder_authority(fid, delete_originals, fetch_cloud)
+        return _safe(run)
 
     def scan_now(self):
         return _safe(ws.scan_now)
@@ -280,7 +310,16 @@ def make_api(ws, get_window=lambda: None):
         return _safe(ws.microphone_devices)
 
     def start_recording(self, device, name):
-        return _safe(lambda: ws.start_recording(_int(device, 0, 10_000), _device_name(name)))
+        def run():
+            index, label = _int(device, 0, 10_000), _device_name(name)
+            ws.check_can_record()             # a refused request never shows the question
+            record = None
+            if ws.consent_required():
+                if not ask(consent.RECORDING_TITLE, consent.RECORDING_TEXT):
+                    return CANCELLED
+                record = consent.recording_record()
+            return ws.start_recording(index, label, consent=record)
+        return _safe(run)
 
     def test_microphone(self, device, name):
         return _safe(lambda: ws.test_microphone(_int(device, 0, 10_000), _device_name(name)))
@@ -307,7 +346,12 @@ def make_api(ws, get_window=lambda: None):
         return _safe(lambda: ws.retry_recording_import(_report_id(rid)))
 
     def discard_meeting(self, mid):
-        return _safe(ws.discard_meeting, mid)
+        def run():
+            title = ws.meeting_title(mid)     # also checks the meeting exists
+            if not ask(consent.DISCARD_TITLE, consent.discard_text(title)):
+                return CANCELLED
+            return ws.discard_meeting(mid)
+        return _safe(run)
 
     def close_app(self):
         """Close the window after the page asked about an open recording."""

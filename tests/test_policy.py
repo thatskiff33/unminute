@@ -39,6 +39,14 @@ class PolicyTests(unittest.TestCase):
                          ["AllowModelDownloads", "AllowNetworkSources",
                           "ClipboardClearMinutes"])
 
+    def test_a_bad_value_keeps_the_recording_confirmation(self):
+        self.assertTrue(policy.Policy().get("RequireRecordingConsent"))
+        self.assertTrue(policy.Policy(invalid=("RequireRecordingConsent",))
+                        .get("RequireRecordingConsent"))
+        self.assertTrue(policy.Policy({}, policy.UNREADABLE).get("RequireRecordingConsent"))
+        self.assertFalse(policy.Policy({"RequireRecordingConsent": False})
+                         .get("RequireRecordingConsent"))
+
     def test_source_caches_and_refreshes(self):
         calls, now = [], [0.0]
 
