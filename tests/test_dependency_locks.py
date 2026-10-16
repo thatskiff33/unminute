@@ -42,13 +42,22 @@ class OnePythonTests(unittest.TestCase):
         self.assertEqual(build.PYTHON_MINOR, lock.PYTHON)
         self.assertEqual(build.PYTHON_TAG, lock.PYTHON.replace(".", ""))
         self.assertIn('"--python-version", PYTHON_MINOR', read("tools/build_package.py"))
+        found = []
         for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
             text = read(workflow.relative_to(ROOT))
-            for found in re.findall(r'python-version:\s*"([^"]+)"', text):
-                self.assertEqual(found, lock.PYTHON, workflow.name)
+            for version in re.findall(r"python-version:\s*[\"']?([^\"'\s#]+)", text):
+                found.append(version)
+                self.assertEqual(version, lock.PYTHON, workflow.name)
+        self.assertGreater(len(found), 0)             # the pattern still finds them
         self.assertRegex(read("ruff.toml"), rf'target-version = "py{build.PYTHON_TAG}"')
         self.assertIn(f"CPython {lock.PYTHON}", read("requirements.in").splitlines()[0])
         self.assertIn(f"CPython {lock.PYTHON}", read("requirements.txt"))
+        # The docs that name the runtime name this one, and no other.
+        for doc in ("README.md", "docs/PACKAGING.md", "docs/RELEASING.md"):
+            text = read(doc)
+            self.assertIn(f"CPython {lock.PYTHON}", text, doc)
+            for other in set(re.findall(r"CPython (3\.\d+)", text)) - {lock.PYTHON}:
+                self.fail(f"{doc} names CPython {other}")
 
 
 class LockTests(unittest.TestCase):

@@ -220,7 +220,7 @@ Dependencies are hash-locked on purpose: `requirements.in` lists the direct ones
 
 This project is released under the [MIT Licence](LICENSE).
 
-The repository contains this project's own code, plus one third-party wheel (`proxy_tools`, MIT) in `packaging/wheels/` because its publisher provides no wheel. No model weights are redistributed. The release package includes the official embeddable CPython 3.12 runtime (Python Software Foundation Licence) and the pinned packages from PyPI, each under its own licence. Models are downloaded in Setup from Hugging Face. The main components are listed below, verified on 17 September 2026 unless noted.
+The repository contains this project's own code, plus one third-party wheel (`proxy_tools`, MIT) in `packaging/wheels/` because its publisher provides no wheel. No model weights are redistributed. The release package includes the official embeddable CPython 3.14 runtime (Python Software Foundation Licence) and the pinned packages from PyPI, each under its own licence. Models are downloaded in Setup from Hugging Face. The main components are listed below, verified on 17 September 2026 unless noted.
 
 | Component | Licence | Notes |
 | --- | --- | --- |
