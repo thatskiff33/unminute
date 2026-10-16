@@ -355,14 +355,18 @@ def digest(text):
 
 def title_filename(title, fallback):
     """The meeting title as the suggested file name, when the organisation's
-    policy allows it (HandoffFilenameIncludesTitle, #111 A5)."""
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title or "").strip(" .")[:80]
+    policy allows it (HandoffFilenameIncludesTitle, #111 A5). Characters
+    Windows refuses, control characters and invisible format characters
+    (such as right-to-left overrides, which can disguise a name) become spaces."""
+    text = "".join(" " if unicodedata.category(ch) == "Cf" else ch for ch in title or "")
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', " ", text).strip(" .")[:80]
     return f"{safe} - transcript.md" if safe else fallback
 
 
 def _filename(created_at):
     """The suggested file name: the date and time the meeting was imported
-    (so two meetings on one day do not collide), never the title. A title
+    (so two meetings on one day do not collide), never the title unless the
+    organisation's policy allows it (title_filename). A title
     often names the client, and file names travel further than file contents
     (Recent items, jump lists, search indexes, sync logs)."""
     return f"Meeting transcript {time.strftime('%Y-%m-%d %H-%M', time.localtime(created_at))}.md"

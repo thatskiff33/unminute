@@ -1133,7 +1133,9 @@ function confirmFinal(d) {
   confirmDialog({
     title: "Confirm the final document is saved",
     body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers, handoff options and versions. Copying or exporting alone never does this. " +
-      "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them.",
+      (state.managed && state.managed.clipboard_clear_minutes
+        ? "The app does not delete Markdown files you saved. Your organisation has the app clear its own copies from the clipboard after a set time, but copy something else now to be sure (check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them."
+        : "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them."),
     check: "The final document is reviewed and saved outside this app.",
     onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => {
       $("ho-preview").textContent = "";
@@ -1542,9 +1544,12 @@ async function renderSetup() {
   $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
-  $("s-download-speakers").disabled = isRunning(speaker);
-  $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
-  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready";
+  $("s-download-speakers").disabled = isRunning(speaker) || !allowed("AllowModelDownloads");
+  $("s-token").disabled = !allowed("AllowModelDownloads");
+  $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
+    || !allowed("AllowModelDownloads");
+  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready"
+    || !allowed("AllowModelDownloads");
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
@@ -1660,7 +1665,7 @@ async function renderDownloads() {
   state.setup = s;
   state.managed = s.managed;
   const settings = await call("settings");
-  const sig = JSON.stringify([s.cards, settings.model]);
+  const sig = JSON.stringify([s.cards, settings.model, s.managed]);
   if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
     state.downloadsSig = sig;
     replaceKeeping($("dl-list"), ...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
@@ -1795,7 +1800,10 @@ function folderItem(f) {
           onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then(renderSettings)),
         });
       } } }),
-      "Delete originals from this folder after review…"));
+      "Delete originals from this folder after review…"),
+    f.delete_originals && !allowed("AllowDeleteOriginals")
+      ? el("p", { class: "set-text", textContent: "Originals are kept: deleting them is turned off by your organisation." })
+      : null);
 }
 
 function setSetting(changes) { attempt(() => call("set_settings", changes).then(renderSettings)); }
@@ -2343,6 +2351,7 @@ window.addEventListener("pywebviewready", async () => {
   // First run, or no usable speech model: start with Setup.
   let s = null;
   try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }
+  if (s) state.managed = s.managed;                 // what policy allows, from the start
   if (s && (!s.onboarded || !s.speech_ready)) {
     suState.step = s.onboarded ? 2 : 1;
     show("setup");

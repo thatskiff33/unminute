@@ -45,6 +45,10 @@ SPEC = {
     "HandoffFilenameIncludesTitle": ("bool", False, True),
 }
 INT_RANGES = {"ClipboardClearMinutes": (0, 1440)}
+ERROR_NO_MORE_ITEMS = 259
+# A policy key that exists but cannot be read in full: every value counts as
+# invalid, so every permission is withheld and the rest use the app default.
+UNREADABLE = tuple(SPEC)
 
 
 class Policy:
@@ -110,15 +114,19 @@ def read_registry():
     try:
         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, POLICY_KEY, 0,
                              winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
-    except OSError:
+    except FileNotFoundError:
         return {}, ()                        # no policy at all
+    except OSError:
+        return {}, UNREADABLE                # there, but unreadable: nothing is granted
     with key:
         i = 0
         while True:
             try:
                 name, value, regtype = winreg.EnumValue(key, i)
-            except OSError:
-                break
+            except OSError as exc:
+                if getattr(exc, "winerror", None) == ERROR_NO_MORE_ITEMS:
+                    break
+                return {}, UNREADABLE        # a partial read could miss a restriction
             i += 1
             match = next((n for n in SPEC if n.lower() == name.lower()), None)
             if match is None:

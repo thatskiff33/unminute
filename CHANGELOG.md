@@ -12,8 +12,8 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 Security hardening (#111, slice A5):
 
 - **IT can manage the app's settings.** On managed computers the app reads policy values from `HKLM\SOFTWARE\Policies\Unminute` (at start and every 15 minutes), which standard users cannot change. IT can turn off model downloads, the graphics card component, microphone recording, watched folders and deleting originals; allow recordings on mapped network drives; set a starting folder for saved handoffs; allow the meeting title in handoff file names; and have the app clear its handoff copy from the clipboard after a set time. An administrative template for Intune is in `packaging/policy/`.
-- **A bad policy value never grants a permission.** A value of the wrong type or out of range turns that permission off rather than on.
-- **Settings shows what is managed.** Managed controls are disabled with "Turned off by your organisation", and Setup shows "Installed by your IT team" where downloads are off. The app enforces each value itself, whatever the page shows.
+- **A bad policy value never grants a permission.** A value of the wrong type or out of range turns that permission off rather than on, and a policy key that cannot be read turns every permission off.
+- **Settings shows what is managed.** A note at the top of Settings says some settings are managed by your organisation, and managed controls are disabled. Setup and Downloads show "Installed by your IT team" where downloads are off, or "Turned off by your organisation" for the graphics card component. The app enforces each value itself, whatever the page shows: for example, a recording in progress is stopped and saved when microphone recording is turned off.
 - **Without a policy the app behaves as before.**
 
 Security hardening (#111, slice A4):

@@ -143,7 +143,8 @@ class Workspace:
                                  allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
         self.policy = policy.PolicySource(reader=policy_reader or policy.read_registry)
-        self._clipboard_clears = []       # (timer, sequence) for ClipboardClearMinutes
+        self._clipboard_clears = []       # (due, sequence) for ClipboardClearMinutes
+        self._clipboard_lock = threading.Lock()
         self.speaker_model = speaker_model
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
@@ -424,6 +425,8 @@ class Workspace:
     def resume_recording(self):
         if self._recording is None:
             raise WorkspaceError("Nothing is being recorded.")
+        if not self._allowed("AllowMicrophoneRecording"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
         self._recording.resume()
         return self._recording.status()
 
@@ -479,7 +482,8 @@ class Workspace:
 
     def recording_status(self):
         rec = self._recording
-        return {"enabled": self.settings["microphone"],
+        return {"enabled": (self.settings["microphone"]
+                            and self._allowed("AllowMicrophoneRecording")),
                 "display": self.settings["recording_display"],
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
@@ -694,18 +698,22 @@ class Workspace:
         open. Sleep counts as elapsed time, so waking from sleep scans at once."""
         last = 0.0
         while not self._closing.is_set():
+            try:
+                self._policy_tick()
+            except Exception:            # never stops watching; tried again next second
+                pass
             if time.monotonic() - last >= intake.SCAN_INTERVAL_S or self._scan_requested:
                 self._scan_requested = False
                 last = time.monotonic()
-                if not self._allowed("AllowWatchedFolders"):
-                    self.last_scan = {"managed_off": True}      # nothing is read
-                    self._closing.wait(1.0)
-                    continue
                 try:
-                    self.last_scan = intake.scan(
-                        self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
-                        lambda p, fid, key, content: self._imports.put((p, fid, key, content)),
-                        stop=self._closing.is_set)
+                    if not self._allowed("AllowWatchedFolders"):
+                        self.last_scan = {"managed_off": True}      # nothing is read
+                    else:
+                        self.last_scan = intake.scan(
+                            self.store, AUDIO_EXTENSIONS, MAX_IMPORT_BYTES,
+                            lambda p, fid, key, content: self._imports.put((p, fid, key,
+                                                                            content)),
+                            stop=self._closing.is_set)
                 except Exception as exc:     # a scan problem must not stop watching
                     self.last_scan = {"error": safe_message(exc)}
             self._closing.wait(1.0)
@@ -860,7 +868,9 @@ class Workspace:
         if kind == "cleanup":
             self._status = "Cleaning up"
             # With deletion authority withheld by policy, originals are kept,
-            # exactly as when the user revokes a folder's authority.
+            # exactly as when the user revokes a folder's authority. Re-read
+            # now: a deletion never relies on a policy cached for 15 minutes.
+            self.policy.refresh()
             roots = (intake.deletion_roots(self.store, mid)
                      if self._allowed("AllowDeleteOriginals") else [])
             cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown,
@@ -1381,7 +1391,7 @@ class Workspace:
                    for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
         from workspace import update
         info = gpu.detected()
-        self.policy.refresh()             # Settings opening re-reads the policy
+        self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
         effective = dict(self.settings.values)
         if not self._allowed("AllowMicrophoneRecording"):
             effective["microphone"] = False
@@ -1483,27 +1493,38 @@ class Workspace:
 
     def _schedule_clipboard_clear(self, sequence, delay_s):
         """Clear the app's own copy later (policy), unless something else was
-        copied since. Pending clears also run when the app closes."""
-        def clear():
+        copied since. Checked every second by the watch loop against the
+        monotonic clock, which counts time asleep (a plain timer's wait does
+        not, so it would clear late after sleep). Pending clears also run when
+        the app closes."""
+        with self._clipboard_lock:
+            self._clipboard_clears.append((time.monotonic() + delay_s, sequence))
+
+    def _run_clipboard_clears(self, everything=False):
+        now = time.monotonic()
+        with self._clipboard_lock:
+            due = [s for t, s in self._clipboard_clears if everything or t <= now]
+            self._clipboard_clears = [] if everything else [
+                (t, s) for t, s in self._clipboard_clears if t > now]
+        for sequence in due:
             try:
                 clipboard.clear_if_unchanged(sequence)
             except clipboard.ClipboardError:
                 pass                    # busy: the copy stays, as without the policy
-        timer = threading.Timer(delay_s, clear)
-        timer.daemon = True
-        self._clipboard_clears = [(t, s) for t, s in self._clipboard_clears if t.is_alive()]
-        self._clipboard_clears.append((timer, sequence))
-        timer.start()
 
     def _flush_clipboard_clears(self):
-        for timer, sequence in self._clipboard_clears:
-            if timer.is_alive():
-                timer.cancel()
-                try:
-                    clipboard.clear_if_unchanged(sequence)
-                except clipboard.ClipboardError:
-                    pass
-        self._clipboard_clears = []
+        self._run_clipboard_clears(everything=True)
+
+    def _policy_tick(self):
+        """Every second: due clipboard clears, and a recording that policy no
+        longer allows is stopped and saved (the policy is re-read at most every
+        15 minutes, or when Settings or Downloads is open)."""
+        self._run_clipboard_clears()
+        rec = self._recording
+        if rec is not None and not self._allowed("AllowMicrophoneRecording"):
+            rec._event("policy_stop", note="Stopped because your organisation turned off "
+                                           "microphone recording")
+            self._finish_recording(rec)
 
     def handoff_folder(self):
         """Where the handoff Save dialog starts: the organisation's folder if

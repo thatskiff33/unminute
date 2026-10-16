@@ -9,7 +9,7 @@
   <resources>
     <stringTable>
       <string id="Unminute">Unminute</string>
-      <string id="SUPPORTED_Unminute">Unminute 0.5 and later on Windows 10 or 11</string>
+      <string id="SUPPORTED_Unminute">Unminute releases after 0.4.3, on Windows 10 or 11</string>
 
       <string id="AllowModelDownloads">Allow model downloads in the app</string>
       <string id="AllowModelDownloads_Help">Enabled or not configured: users can download and repair speech and speaker models in Setup and Downloads.
@@ -24,7 +24,7 @@ Disabled: the component cannot be downloaded or used; speaker identification run
       <string id="AllowMicrophoneRecording">Allow microphone recording</string>
       <string id="AllowMicrophoneRecording_Help">Enabled or not configured: users can turn on microphone recording in Settings.
 
-Disabled: microphone recording is off and cannot be turned on; recordings can still be imported.</string>
+Disabled: microphone recording is off and cannot be turned on, and a recording in progress is stopped and saved when the app next reads the policy (within 15 minutes). Recordings can still be imported.</string>
 
       <string id="AllowWatchedFolders">Allow watched folders</string>
       <string id="AllowWatchedFolders_Help">Enabled or not configured: users can choose folders that the app checks for new recordings.
@@ -47,12 +47,14 @@ Enabled: such recordings can be imported with Import or by dragging them onto th
 Enabled: Save suggests the meeting title, except when speaker names are being replaced.</string>
 
       <string id="ClipboardClearMinutes">Clear the app's handoff copy from the clipboard</string>
-      <string id="ClipboardClearMinutes_Help">Enabled: a handoff copied with the app's Copy button is removed from the clipboard after this many minutes (1 to 1440), and when the app closes, unless something else was copied in the meantime. 0 or not configured: the app never clears the clipboard.</string>
+      <string id="ClipboardClearMinutes_Help">Enabled: a handoff copied with the app's Copy button is removed from the clipboard after this many minutes (1 to 1440), and when the app closes, unless something else was copied in the meantime. Time the computer spends asleep counts.
+
+Disabled, not configured or 0: the app never clears the clipboard.</string>
 
       <string id="HandoffDefaultFolder">Starting folder for saved handoffs</string>
       <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Use a full path that starts with a drive letter; a mapped drive is fine, but \\server\share paths are not accepted. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
 
-Not configured: the dialog starts in its usual place.</string>
+Not configured, or a folder that does not exist: the dialog starts in its usual place.</string>
     </stringTable>
     <presentationTable>
       <presentation id="ClipboardClearMinutes">

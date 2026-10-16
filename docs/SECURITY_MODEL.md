@@ -178,7 +178,7 @@ Cross-border points to confirm with a privacy adviser: pasting a handoff into an
 | `settings.json`, `templates.json` | `workspace\` | Plain files | Until changed; templates may contain names |
 | Hugging Face token | Windows Credential Manager | DPAPI (by Windows) | Until removed in Setup; kept by uninstall |
 | WebView2 profile | `workspace\webview\<random>` (since A2) | Private (InPrivate) mode | Removed on a clean close; leftovers wiped at the next start |
-| Clipboard copy | Windows session | Copy button: excluded from history and cloud sync | Until replaced |
+| Clipboard copy | Windows session | Copy button: excluded from history and cloud sync | Until replaced, or cleared after a set time by policy (`ClipboardClearMinutes`) |
 | Saved handoff | Where the user saves it | None from the app | Not tracked |
 | Models and GPU component | `%LOCALAPPDATA%\whisper-models\` | SHA-256 verified at download | Until removed in Setup; kept by uninstall |
 

@@ -83,9 +83,48 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(got, os.path.join(os.environ["USERPROFILE"], "Handoffs"))
 
     def test_reading_without_a_policy_key_is_empty(self):
-        values, invalid = policy.read_registry()     # dev machines have no policy key
-        self.assertIsInstance(values, dict)
-        self.assertIsInstance(invalid, tuple)
+        # Development and CI machines have no policy key.
+        self.assertEqual(policy.read_registry(), ({}, ()))
+
+    def test_registry_reading_end_to_end(self):
+        import winreg
+
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        done = OSError(None, "No more data is available", None, policy.ERROR_NO_MORE_ITEMS)
+        rows = [("allowmodeldownloads", 0, winreg.REG_DWORD),        # any case
+                ("AllowModelDownload", 1, winreg.REG_DWORD),         # misspelt: ignored
+                ("AllowWatchedFolders", "0", winreg.REG_SZ),          # wrong type: withheld
+                ("ClipboardClearMinutes", 5, winreg.REG_DWORD), done]
+        with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
+                mock.patch.object(winreg, "EnumValue", side_effect=rows):
+            values, invalid = policy.read_registry()
+        self.assertEqual(values, {"AllowModelDownloads": False, "ClipboardClearMinutes": 5})
+        self.assertEqual(invalid, ("AllowWatchedFolders",))
+
+    def test_a_policy_key_that_cannot_be_read_withholds_everything(self):
+        import winreg
+
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        with mock.patch.object(winreg, "OpenKey", side_effect=PermissionError("denied")):
+            self.assertEqual(policy.read_registry(), ({}, policy.UNREADABLE))
+        broken = [("AllowGpuComponent", 1, winreg.REG_DWORD),
+                  OSError(None, "The key was changed", None, 1018)]   # not "no more items"
+        with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
+                mock.patch.object(winreg, "EnumValue", side_effect=broken):
+            values, invalid = policy.read_registry()
+        self.assertEqual((values, invalid), ({}, policy.UNREADABLE))
+        p = policy.Policy(values, invalid)
+        self.assertFalse(any(p.get(n) for n in policy.SPEC if policy.SPEC[n][2]))
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows clipboard")
@@ -186,8 +225,28 @@ class WorkspacePolicyTests(unittest.TestCase):
         ws = self.open(AllowMicrophoneRecording=False)
         ws.settings.update(microphone=True)                      # saved before the policy
         self.assertIn("organisation", self.refused(ws.microphone_devices))
+        self.assertIn("organisation", self.refused(ws.test_microphone, None))
+        self.assertIn("organisation", self.refused(ws.start_recording, None))
         self.assertIn("organisation", self.refused(ws.set_settings, {"microphone": True}))
         self.assertFalse(ws.get_settings()["microphone"])
+        self.assertFalse(ws.recording_status()["enabled"])       # the page shows no recorder
+
+    def test_a_recording_in_progress_stops_when_policy_turns_the_microphone_off(self):
+        values = {}
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: (values, ()))
+        rec = mock.Mock()
+        ws._recording = rec
+        with mock.patch.object(ws, "_finish_recording") as finish:
+            ws._policy_tick()
+            finish.assert_not_called()                           # allowed: carries on
+            values["AllowMicrophoneRecording"] = False
+            ws.policy.refresh()
+            self.assertIn("organisation", self.refused(ws.resume_recording))
+            ws._policy_tick()
+        finish.assert_called_once_with(rec)
+        self.assertEqual(rec._event.call_args.args[0], "policy_stop")
+        ws._recording = None
 
     def test_watched_folders_and_deletion_authority_off(self):
         ws = self.open(AllowWatchedFolders=False, AllowDeleteOriginals=False)
@@ -201,6 +260,48 @@ class WorkspacePolicyTests(unittest.TestCase):
             ws._run("cleanup", "m" * 32, "job")
         self.assertEqual(seen["original_roots"], [])             # originals are kept
 
+    def test_cleanup_reads_the_policy_again_before_deleting(self):
+        values = {}
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: (dict(values), ()))
+        ws.policy.current()                                      # cached: deletion allowed
+        values["AllowDeleteOriginals"] = False                   # IT changes it since
+        seen = {}
+        with mock.patch("workspace.cleanup.run_job",
+                        side_effect=lambda *a, **kw: seen.update(kw)), \
+                mock.patch("workspace.intake.deletion_roots", return_value=["C:\\rec"]):
+            ws._run("cleanup", "m" * 32, "job")
+        self.assertEqual(seen["original_roots"], [])
+
+    def test_imports_get_no_deletion_authority_while_withheld(self):
+        from workspace import media
+        ws = self.open(AllowDeleteOriginals=False)
+        mid = ws.store.create_meeting("Watched")
+        sid = ws.store.add_source(mid, original_path="C:\\rec\\a.wav", original_sha256="0" * 64,
+                                  original_size=1, original_mtime_ns=1, audio_sha256="0" * 64,
+                                  samples=16000, sample_rate=16000)
+        with mock.patch.object(media, "import_recording", return_value=(mid, sid)), \
+                mock.patch("workspace.intake.authority_for", return_value=True), \
+                mock.patch.object(ws, "_plan_version"):
+            ws._import_one("C:\\rec\\a.wav", folder_id="f" * 32)
+        row = ws.store.source(sid)
+        self.assertEqual((row["delete_original"], row["original_path"]), (0, None))
+
+    def test_watch_loop_reads_no_folder_while_turned_off(self):
+        import threading
+        ws = self.open(AllowWatchedFolders=False)
+        with mock.patch("workspace.intake.scan") as scan:
+            t = threading.Thread(target=ws._watch_loop, daemon=True)
+            t.start()
+            for _ in range(50):
+                if ws.last_scan == {"managed_off": True}:
+                    break
+                threading.Event().wait(0.05)
+            ws._closing.set()
+            t.join(5)
+        scan.assert_not_called()
+        self.assertEqual(ws.last_scan, {"managed_off": True})
+
     def test_clipboard_is_cleared_later_only_by_policy(self):
         from workspace import clipboard
         ws = self.open(ClipboardClearMinutes=5)
@@ -210,9 +311,14 @@ class WorkspacePolicyTests(unittest.TestCase):
                 mock.patch.object(clipboard, "clear_if_unchanged") as clear:
             self.assertEqual(ws.copy_handoff("m" * 32, "t", "combined", "x")["clears_in_minutes"],
                              5)
+            ws._run_clipboard_clears()                           # not due yet
             clear.assert_not_called()
             ws._flush_clipboard_clears()                         # closing runs pending clears
             clear.assert_called_once_with(42)
+            ws._schedule_clipboard_clear(43, 0)                  # due now: the next tick
+            ws._policy_tick()
+            clear.assert_called_with(43)
+            self.assertEqual(ws._clipboard_clears, [])
 
     def test_handoff_file_name_and_folder(self):
         import tempfile
@@ -228,6 +334,9 @@ class WorkspacePolicyTests(unittest.TestCase):
                              "Client  budget review - transcript.md")
             self.assertEqual(ws.handoff_preview(mid, "t", True)["filename"],
                              "Meeting transcript 2026-10-16 10-00.md")   # anonymised: no title
+        # Invisible format characters (a right-to-left override) cannot disguise the name.
+        self.assertEqual(handoff.title_filename("Notes‮gnp.exe\x7f", "x"),
+                         "Notes gnp.exe - transcript.md")
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
 
     def test_network_sources_only_by_policy(self):
