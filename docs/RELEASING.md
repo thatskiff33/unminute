@@ -21,13 +21,24 @@ These settings cannot be applied from a script that only has push access, so set
    - Block force pushes
    - Require linear history
    - Require a pull request before merging. Leave Required approvals at 0 (a solo maintainer cannot approve their own pull request), tick Dismiss stale pull request approvals when new commits are pushed, and tick Require conversation resolution before merging.
-   - Require status checks to pass. Add the four jobs from `.github/workflows/ci.yml`: `Syntax check`, `Requirements resolve (wheels only)`, `Ruff` and `PSScriptAnalyzer`. They only appear in the picker after the CI workflow has run once, so add them after the first pull request goes green.
+   - Require status checks to pass. Add every job from `.github/workflows/ci.yml`: `Syntax check`, `Unit tests (Windows)`, `Requirements resolve (wheels only)`, `Ruff`, `PSScriptAnalyzer` and `Workflow lint`. They only appear in the picker after the CI workflow has run once, so add them after the first pull request goes green.
 5. Leave Bypass list empty. Admins are then held to the same rules, which is the point.
 6. Click Create.
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
-Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps are configured in `.github/dependabot.yml` (monthly, grouped; torch, torchaudio and torchcodec limited to patch releases). CodeQL runs from `.github/workflows/codeql.yml`.
+Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps are configured in `.github/dependabot.yml` (monthly, grouped, both requirement files, a 7-day cooldown; torch, torchaudio and torchcodec limited to patch releases). CodeQL analyses the Python code and the workflows from `.github/workflows/codeql.yml`.
+
+## Workflow supply-chain rules
+
+The workflows run with the repository's token, so they are held to these rules. On every pull request the `Workflow lint` job (zizmor) flags unpinned actions, `${{ }}` expressions inside `run:` blocks, a missing default `permissions` block and checkouts that keep credentials. Asking for more permissions than a job needs, and the tool pinning, are checked in review.
+
+- No permissions by default (`permissions: {}`); each job asks only for what it needs.
+- Every action is pinned to a full commit SHA, with its version in a comment. To update one, resolve the new tag to its commit (`gh api repos/<owner>/<action>/git/ref/tags/<tag>`, and follow an annotated tag to its commit) and update both.
+- Values from the event (tag names, inputs) reach scripts through environment variables, never through `${{ }}` inside a `run:` block.
+- Checkouts use `persist-credentials: false`.
+- CI tools come from `requirements/ci.txt`, installed with `--require-hashes`. PSScriptAnalyzer is pinned to one version and must carry a valid Microsoft signature.
+- A new version of an action or tool is adopted only after it has been public for at least 7 days, so a compromised or broken release has time to be found.
 
 ## Before cutting a release
 
@@ -35,19 +46,21 @@ CI proves the code parses and the pins resolve. It does not run the models. Befo
 
 ## Cutting a release
 
-Releases are cut by the Release workflow in `.github/workflows/release.yml`.
+Releases are cut by the Release workflow in `.github/workflows/release.yml` when a version tag is pushed. There is no manual "Run workflow" route: the tag is the single record of what was released.
 
-1. Add a `## vX.Y.Z` section to `CHANGELOG.md` on a branch and merge it to `main`.
-2. Open https://github.com/thatskiff33/unminute/actions/workflows/release.yml and click Run workflow.
-3. Enter the version without the leading v, for example `0.1.0`, and run it against `main`.
+1. Add a `## vX.Y.Z` section (for a preview, `## vX.Y.Z-preview.N`) to `CHANGELOG.md` on a branch and merge it to `main`.
+2. Tag the merged commit and push the tag:
 
-The workflow tags the current `main` commit, builds the release notes from the changelog section, and publishes the release. GitHub attaches the source zip and tarball automatically. If the changelog section is missing the workflow fails before anything is tagged.
+   ```
+   git tag -a vX.Y.Z -m "Unminute vX.Y.Z" <commit on main>
+   git push origin vX.Y.Z
+   ```
 
-Pushing a `vX.Y.Z` tag by hand also triggers the workflow and publishes the release for that tag.
+The workflow accepts only `vX.Y.Z` or `vX.Y.Z-preview.N`, and only a commit that is already on `main`. It builds the release notes from the changelog section and publishes the release; a `-preview.N` tag becomes a pre-release that is not Latest. GitHub attaches the source zip and tarball automatically. If the changelog section is missing the workflow fails before anything is published.
 
 ## Unminute package releases
 
-The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the same commit the workflow tags:
+The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the commit that is tagged:
 
 1. **Changelog.** Merge the `## vX.Y.Z` section, then check out that commit of `main`.
 2. **Build.** Run `python tools/build_package.py --version X.Y.Z` on Windows with 64-bit CPython 3.12, from a clean working tree. The command prints the zip's SHA-256 and writes the `.sha256` file to `dist/`.
@@ -57,10 +70,9 @@ The workflow publishes the notes and the source archives only. The Windows packa
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
 4. **Publish.**
-   - Before running the workflow, check that `main` is still at the commit you built. The workflow tags the current `main`, and `version.json` in the zip records the commit built.
-   - Run the Release workflow for `X.Y.Z`.
+   - Tag the commit you built (`version.json` in the zip records it) and push the tag, as above.
    - Attach the zip and its `.sha256`: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256`.
-5. **Release type.** The workflow publishes every release as a full release, so a full release becomes Latest, the default download. For a preview, run `gh release edit vX.Y.Z --prerelease --latest=false`.
+5. **Release type.** A `vX.Y.Z` tag publishes a full release, which becomes Latest, the default download. A `vX.Y.Z-preview.N` tag publishes a pre-release that does not.
 
 ## Why there is no PyPI package or installer executable
 

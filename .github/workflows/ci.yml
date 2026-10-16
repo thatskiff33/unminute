@@ -1,8 +1,17 @@
 # Lightweight checks on every pull request and on pushes to main. Nothing here
 # installs torch or the models: the full stack is ~1.5 GB and needs a gated
 # Hugging Face model, so the end-to-end smoke test stays a local step before a
-# release (see docs/RELEASING.md). All four job names are required status
-# checks in the branch ruleset.
+# release (see docs/RELEASING.md). Every job name below is a required status
+# check in the branch ruleset.
+#
+# Supply-chain rules for this file (docs/RELEASING.md):
+# - no permissions by default; each job asks only for what it needs;
+# - every action is pinned to a full commit SHA, with its version in a comment;
+# - checkouts do not keep the token in .git/config;
+# - tools are installed from hash-locked files (requirements/ci.txt) or pinned
+#   to an exact version with a publisher check.
+# The Workflow lint job (zizmor) flags unpinned actions, template injection,
+# missing default permissions and persisted credentials; the rest is review.
 name: CI
 
 on:
@@ -11,17 +20,20 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   check:
     name: Syntax check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -31,41 +43,83 @@ jobs:
         run: python -m compileall -q -f *.py tests tools workspace
 
       # Model-free tests. numpy and PyAV (at their pinned versions) let the
-      # workspace core tests run here; tests that need the full app stack or
-      # models skip themselves; run those locally in the installed environment.
+      # workspace core tests run here; Windows-only tests skip on Linux and run
+      # in the "Unit tests (Windows)" job.
       - name: Install test dependencies
         run: |
           pip install --disable-pip-version-check --only-binary=:all: \
             "$(grep -E '^numpy==' requirements.txt)" "$(grep -E '^av==' requirements.txt)"
       - name: Unit tests
-        run: python -m unittest discover -s tests -v
+        run: python tools/run_tests.py
 
-      # Parse the installer with the PowerShell parser and fail on any error.
-      - name: Parse PowerShell installer
+      # Parse every tracked PowerShell script and fail on any error.
+      - name: Parse PowerShell scripts
         shell: pwsh
         run: |
-          $tokens = $null; $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
-          Write-Host "install.ps1 parsed cleanly"
+          $failed = $false
+          foreach ($file in (git ls-files '*.ps1')) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile("$PWD/$file", [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error "${file}: $_" }; $failed = $true }
+            else { Write-Host "$file parsed cleanly" }
+          }
+          if ($failed) { exit 1 }
 
-      # requirements.txt must stay a strict pin list (installer uses --only-binary).
+      # Both requirement files must stay strict pin lists (the package build
+      # installs them with --only-binary).
       - name: Check requirements are fully pinned
         run: |
-          # Tolerate a UTF-8 BOM at the top of the file (Windows PowerShell writes one).
-          bad=$(sed '1s/^\xEF\xBB\xBF//' requirements.txt | grep -vE '^\s*(#|$)' | grep -vE '^[A-Za-z0-9_.\-]+(\[[^]]+\])?==' || true)
-          if [ -n "$bad" ]; then echo "Unpinned lines:"; echo "$bad"; exit 1; fi
-          echo "All requirements pinned"
+          status=0
+          for f in requirements.txt workspace/requirements.txt; do
+            # Tolerate a UTF-8 BOM at the top of the file (Windows PowerShell writes one).
+            bad=$(sed '1s/^\xEF\xBB\xBF//' "$f" | grep -vE '^\s*(#|$)' | grep -vE '^[A-Za-z0-9_.\-]+(\[[^]]+\])?==' || true)
+            if [ -n "$bad" ]; then echo "Unpinned lines in $f:"; echo "$bad"; status=1; fi
+          done
+          [ "$status" -eq 0 ] && echo "All requirements pinned"
+          exit "$status"
+
+  windows-tests:
+    # The app is Windows-only. This job installs the window shell's packages
+    # too, and fails if any test is skipped for a reason other than the short
+    # list in tools/run_tests.py, so clipboard, Credential Manager, junction,
+    # file-lock and Windows path tests are really exercised.
+    name: Unit tests (Windows)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          $numpy = Select-String -Path requirements.txt -Pattern '^numpy==' | ForEach-Object { $_.Line }
+          $av = Select-String -Path requirements.txt -Pattern '^av==' | ForEach-Object { $_.Line }
+          python -m pip install --disable-pip-version-check --only-binary=:all: `
+            --find-links packaging/wheels $numpy $av -r workspace/requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Unit tests (strict skips)
+        run: python tools/run_tests.py --strict-skips
 
   resolve:
-    # Prove the pinned set still resolves as Windows wheels only, exactly as
-    # install.ps1 installs it. Catches a pin with no Windows wheel or a conflict
-    # between pins (e.g. after a Dependabot bump) without downloading packages.
+    # Prove the pinned sets still resolve as Windows wheels only, exactly as
+    # the package build installs them. Catches a pin with no Windows wheel or a
+    # conflict between pins (e.g. after a Dependabot bump) without downloading
+    # packages. proxy_tools has no published wheel; it comes from the
+    # hash-checked copy in packaging/wheels.
     name: Requirements resolve (wheels only)
-    runs-on: windows-latest
+    runs-on: windows-2025
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
       - name: Dry-run install
@@ -73,39 +127,89 @@ jobs:
         # in a plain scalar, which made the whole workflow file invalid.
         run: >
           python -m pip install --dry-run --ignore-installed --only-binary=:all:
-          --disable-pip-version-check -r requirements.txt
+          --disable-pip-version-check --find-links packaging/wheels
+          -r requirements.txt -r workspace/requirements.txt
 
   lint-python:
-    # Rule set lives in ruff.toml. Ruff is installed from PyPI rather than via
-    # a marketplace action: the runner could not resolve astral-sh/ruff-action@v4
-    # (job failed at "Set up job"), and a pip install has no such dependency.
+    # Rule set lives in ruff.toml. Ruff comes from requirements/ci.txt with
+    # --require-hashes rather than a marketplace action.
     name: Ruff
-    runs-on: windows-latest
+    runs-on: windows-2025
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install ruff
-        run: python -m pip install --disable-pip-version-check ruff
+      - name: Install ruff (hash-locked)
+        # Block scalar: ":all:" followed by a space is a YAML mapping indicator.
+        run: >
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci.txt
       - name: Lint
         run: ruff check --output-format github .
 
   lint-powershell:
-    # PSScriptAnalyzer on the installer. Stylistic rules that are wrong for an
-    # interactive console installer are excluded: Write-Host is the point, and
-    # the empty catch blocks are deliberate "try the next candidate" probes.
+    # PSScriptAnalyzer on every tracked PowerShell script. Stylistic rules that
+    # are wrong for an interactive console installer are excluded: Write-Host
+    # is the point, and the empty catch blocks are deliberate "try the next
+    # candidate" probes. The module is pinned and must carry a valid Microsoft
+    # signature.
     name: PSScriptAnalyzer
-    runs-on: windows-latest
+    runs-on: windows-2025
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - name: Analyse install.ps1 and the package installer scripts
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Analyse the PowerShell scripts
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -Confirm:$false
-          $findings = @("install.ps1", "packaging/install.ps1", "packaging/uninstall.ps1") |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force -Confirm:$false
+          $module = Get-Module -ListAvailable PSScriptAnalyzer | Where-Object Version -eq '1.25.0' | Select-Object -First 1
+          # Every file that runs must carry a valid signature; the module's own
+          # files must be Microsoft's (its bundled Newtonsoft.Json is signed by
+          # the .NET Foundation).
+          $unsigned = Get-ChildItem $module.ModuleBase -Recurse -Include *.dll, *.psm1, *.psd1, *.ps1xml |
+            ForEach-Object {
+              $sig = Get-AuthenticodeSignature $_.FullName
+              $microsoft = $sig.SignerCertificate.Subject -match 'O=Microsoft Corporation'
+              if ($sig.Status -ne 'Valid' -or (-not $microsoft -and $_.Name -notlike 'Newtonsoft.*')) {
+                "$($_.Name): $($sig.Status) $($sig.SignerCertificate.Subject)"
+              }
+            }
+          if ($unsigned) { $unsigned | ForEach-Object { Write-Error $_ }; exit 1 }
+          Import-Module $module.Path
+          $findings = git ls-files '*.ps1' |
             ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Severity Warning, Error `
             -ExcludeRule PSAvoidUsingWriteHost, PSAvoidUsingEmptyCatchBlock, PSUseShouldProcessForStateChangingFunctions }
-          $findings | Format-Table Severity, RuleName, Line, Message -AutoSize -Wrap
+          $findings | Format-Table ScriptName, Severity, RuleName, Line, Message -AutoSize -Wrap
           if (@($findings).Count -gt 0) { exit 1 }
-          "installer scripts: no findings"
+          "PowerShell scripts: no findings"
+
+  lint-workflows:
+    # zizmor audits the workflow files themselves: template injection, unpinned
+    # actions, excessive permissions, credential persistence. Offline mode, so
+    # it needs no token.
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install zizmor (hash-locked)
+        # Block scalar: ":all:" followed by a space is a YAML mapping indicator.
+        run: >
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci.txt
+      - name: Audit workflows
+        run: zizmor --offline --format github .

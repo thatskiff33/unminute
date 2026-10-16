@@ -1,13 +1,19 @@
 # Security updates are always on (repo setting). This file controls routine
 # version bumps: monthly, grouped into one PR, and never auto-bumping the
 # torch family beyond patch releases - those are ABI-coupled and need a
-# manual end-to-end test on a real recording.
+# manual end-to-end test on a real recording. A cooldown means a new version
+# is only proposed after it has been public for 7 days, which gives time for a
+# compromised or broken release to be found and pulled.
 version: 2
 updates:
   - package-ecosystem: pip
+    # "/" also reads requirement files one folder down (workspace/,
+    # requirements/), so workspace/requirements.txt is covered.
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       python-deps:
         patterns: ["*"]
@@ -25,6 +31,8 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         patterns: ["*"]
