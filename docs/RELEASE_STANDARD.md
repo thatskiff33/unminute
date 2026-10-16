@@ -272,6 +272,7 @@ Status is one of:
 | Device-management health check without telemetry | 14 | `--status` (in place); `--health` for Intune Remediation | `--status` in place; `--health` planned: R9 (#130) |
 | Withdrawal runbook | 14 | [RELEASING.md](RELEASING.md) | In place |
 | Pull request definition of done and bug template | 10, 14 | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` | In place |
+| Agent instructions: the paths and invariant guard tests that `AGENTS.md` names exist; no `CLAUDE.md`; no tracked media | 1, 10 | Unit test (`tests/test_consistency.py`); Claude Code guard tested in `tests/test_agent_guard.py` | In place |
 
 ### Exceptions
 

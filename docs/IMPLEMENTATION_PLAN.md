@@ -16,7 +16,7 @@ hardware bottlenecks; choose available capable models and reserve deeper reasoni
 state transitions, deletion, security and package compatibility. Do not hard-code model
 names or launch unlimited background sessions.
 
-Codex reads `AGENTS.md`; `CLAUDE.md` imports it for Claude Code. Both must read the same
+Codex and Claude Code (2.1.277 or later) both read `AGENTS.md` natively. Both must read the same
 issue and current comments. Personal global instructions are not assumed to transfer
 between products. On first launch, have each CLI summarise the shared constraints and
 report its branch/worktree before making changes.

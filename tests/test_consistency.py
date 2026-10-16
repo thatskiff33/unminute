@@ -4,8 +4,10 @@
 # one without the other fails here rather than on a user's machine. When a copy
 # is removed in favour of a generated value, delete its test.
 
+import ast
 import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -227,6 +229,133 @@ class DesignTokenTests(unittest.TestCase):
         self.assertLessEqual(len(colours), budget,
                              "a colour was added to app.css directly; add it to tokens.css and "
                              "use the variable")
+
+
+# Top-level folders whose paths AGENTS.md may name; a backticked path starting
+# with one of these must exist. Other backticked text (names, IDs, registry
+# keys, commands) is left alone.
+REPO_FOLDERS = {".claude", ".github", "changelog.d", "docs", "packaging", "requirements",
+                "tests", "tools", "workspace"}
+FILE_SUFFIXES = (".py", ".md", ".json", ".toml", ".txt", ".yml", ".ps1", ".cmd", ".ico")
+# Named in AGENTS.md because the repo must not have it (see test_claude_reads_agents_md_natively).
+ABSENT_ON_PURPOSE = {"CLAUDE.md"}
+
+
+# The tests that guard each AGENTS.md invariant. AGENTS.md names the files; this
+# names the tests, and test_invariant_guards_exist keeps the two in step. An ID
+# with no entries is guarded by review only. Renaming or deleting one of these
+# tests weakens its invariant (AGENTS.md, E2): say so in the PR.
+INVARIANT_GUARDS = {
+    "P1": {"tests/test_consistency.py": ["test_no_tracked_media"]},
+    "P2": {"tests/test_agent_guard.py": ["FileToolTests", "ShellTests",
+                                        "test_configured_command_blocks_through_powershell"]},
+    "P3": {"tests/test_workers.py": ["test_error_text_has_no_paths"],
+           "tests/test_app.py": ["test_refused_imports_explain_without_paths"]},
+    "N1": {"tests/test_offline_guard.py": [
+        "test_switches_are_forced_off_even_if_the_user_enabled_them", "NetworkGuardTests"],
+           "tests/test_workers.py": ["test_worker_cannot_reach_the_network"],
+           "tests/test_import_hygiene.py": []},
+    "N2": {"tests/test_download_process.py": ["RequestCheckTests"]},
+    "N3": {"tests/test_setup.py": ["test_child_gets_the_token_but_not_on_argv_or_env"],
+           "tests/test_hardening.py": ["EarlierTokenTests"]},      # A7 removes this one
+    "I1": {"tests/test_model_integrity.py": ["test_speaker_model_is_fully_verified_before_loading"],
+           "tests/test_asr_engines.py": ["test_docs_manifest_matches_code"]},
+    "I2": {"tests/test_intake_isolation.py": ["test_lowered_decoder_cannot_write_the_users_files"],
+           "tests/test_safe_paths.py": ["FileValidationTests"]},
+    "I3": {"tests/test_consistency.py": ["BridgeNameTests"],
+           "tests/test_hardening.py": ["test_refuses_the_internet_explorer_fallback"]},
+    "D1": {"tests/test_workspace_core.py": [
+        "test_crash_before_commit_resumes_without_loss_or_duplication",
+        "test_generated_output_never_overwrites_edits"]},
+    "D2": {"tests/test_workspace_core.py": ["test_explicit_pause_survives_restart"]},
+    "D3": {"tests/test_hardening.py": ["test_only_one_copy_holds_the_workspace",
+                                      "test_location_inside_onedrive_is_refused"]},
+    "D4": {"tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],
+           "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so"]},
+    "C1": {"tests/test_cleanup.py": ["test_copy_or_export_alone_never_deletes",
+                                    "test_late_worker_result_cannot_recreate_content"]},
+    "C2": {"tests/test_holds.py": ["test_release_never_deletes_silently"]},
+    "C3": {"tests/test_cleanup.py": [
+        "test_original_deleted_only_with_authority_root_and_same_identity"]},
+    "C4": {"tests/test_update.py": ["test_workspace_with_content_is_never_migrated"]},
+    "K1": {"tests/test_consistency.py": ["InstallIdentityTests"]},
+    "K2": {},
+    "K3": {"tests/test_policy.py": ["WorkspacePolicyTests",
+                                   "test_a_bad_value_never_grants_a_permission"]},
+    "E1": {},
+    "E2": {},
+}
+
+
+def tracked_files():
+    """Tracked paths, or None outside a git checkout."""
+    try:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True,
+                             text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return [f for f in out.split("\0") if f]
+
+
+class AgentInstructionTests(unittest.TestCase):
+    """AGENTS.md stays true: the paths and guard tests it names exist (standard section 1)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read("AGENTS.md")
+        start = cls.text.index("\n## Invariants")
+        end = cls.text.index("\n## ", start + 1)
+        cls.invariants = cls.text[start:end]
+
+    def test_claude_reads_agents_md_natively(self):
+        # Claude Code reads AGENTS.md only when there is no CLAUDE.md; a new one
+        # would silently stop Claude sessions loading the shared rules.
+        for name in ("CLAUDE.md", ".claude/CLAUDE.md"):
+            self.assertFalse((ROOT / name).exists(),
+                             f"{name} stops Claude Code reading AGENTS.md; put the rule there")
+
+    def test_paths_named_in_agents_md_exist(self):
+        missing = []
+        for token in set(re.findall(r"`([^`\s]+)`", self.text)):
+            first = token.split("/")[0]
+            if ("/" in token and first in REPO_FOLDERS) or (
+                    "/" not in token and token.endswith(FILE_SUFFIXES)):
+                if token not in ABSENT_ON_PURPOSE and not (ROOT / token).exists():
+                    missing.append(token)
+        self.assertEqual([], sorted(missing), "AGENTS.md names paths that no longer exist")
+
+    def test_invariant_guards_exist(self):
+        bullets = re.findall(r"^- \*\*([A-Z]\d+)\*\*(.*?)(?=^- \*\*|^\S|\Z)", self.invariants,
+                             re.MULTILINE | re.DOTALL)
+        self.assertGreaterEqual(len(bullets), 10, "the invariant pattern no longer matches")
+        ids = [ident for ident, _ in bullets]
+        self.assertEqual(len(ids), len(set(ids)), "invariant IDs must be unique")
+        self.assertEqual(set(ids), set(INVARIANT_GUARDS),
+                         "AGENTS.md invariants and INVARIANT_GUARDS list different IDs")
+        for ident, body in bullets:
+            with self.subTest(invariant=ident):
+                self.assertIn("Guard:", body, f"{ident} names no guard (write 'Guard: review')")
+                named = set(re.findall(r"`(tests/[\w/]+\.py)`", body))
+                self.assertEqual(named, set(INVARIANT_GUARDS[ident]),
+                                 f"{ident}: AGENTS.md and INVARIANT_GUARDS name different files")
+                for path, names in INVARIANT_GUARDS[ident].items():
+                    source = read(path)
+                    for name in names:
+                        self.assertRegex(source, rf"(?m)^\s*(def|class) {name}\b",
+                                         f"{ident} relies on {name}, not found in {path}")
+
+    def test_no_tracked_media(self):
+        files = tracked_files()
+        if files is None:
+            self.skipTest("not a git checkout")
+        tree = ast.parse(read("workspace/app.py"))
+        extensions = next(ast.literal_eval(node.value) for node in ast.walk(tree)
+                          if isinstance(node, ast.Assign)
+                          and any(getattr(t, "id", None) == "AUDIO_EXTENSIONS"
+                                  for t in node.targets))
+        media = [f for f in files if f.lower().endswith((*extensions, ".f32"))]
+        self.assertEqual([], media, "recordings stay out of the repo (AGENTS.md, P1); "
+                                    "a synthetic fixture needs an agreed exception here")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./extracted/**)",
+      "Edit(./extracted/**)",
+      "Read(~/AppData/Local/whisper/workspace/**)",
+      "Edit(~/AppData/Local/whisper/workspace/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "command": "python \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/private_data_guard.py\"; exit $LASTEXITCODE"
+          }
+        ]
+      }
+    ]
+  }
+}

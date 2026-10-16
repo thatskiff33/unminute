@@ -13,6 +13,7 @@ Tick each item, or replace it with "n/a" and the reason. See docs/RELEASE_STANDA
 - [ ] No budget went up in `tests/budgets.json` or `docs/perf-budgets.json` (or: raised because ...). These files arrive with #123 and #124.
 - [ ] No new dependency, model or font (or: added, and its licence was checked: ...).
 - [ ] Changes to the bridge, file paths, network, installer, workflows or stored data have had a security review (or: none touched).
+- [ ] `AGENTS.md` is updated if this PR changes an invariant, a guard test, a check or a source of truth it names (or: none).
 - [ ] Independent review of the final commit: findings fixed or answered.
 
 ## Checks run

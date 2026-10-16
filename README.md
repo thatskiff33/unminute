@@ -190,7 +190,7 @@ The original source-installed app, Whisper Transcriber (a file queue with a tkin
 
 ## For developers
 
-Both Codex and Claude Code use the shared [agent guidelines](AGENTS.md).
+Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) natively (Claude Code 2.1.277 or later, which needs the repo to have no `CLAUDE.md`). Routine tooling traps are in [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md).
 
 | Path | Purpose |
 | --- | --- |
