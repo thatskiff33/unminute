@@ -51,14 +51,59 @@ class SpeakerNameTests(unittest.TestCase):
         view = sn.resolve(self.store, self.vid)
         return view["names"].get(view["labels"][self.segs[text]])
 
+    def bare_version(self):
+        """A second transcribed meeting, with no speaker runs yet."""
+        mid = self.store.create_meeting("u")
+        sid = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_sha256="d" * 64,
+                                    samples=60 * SR, sample_rate=SR)
+        vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
+                                        model_revision="1", precision="int8", config={},
+                                        chunk_plan=[(0, 60 * SR, 0, 60 * SR)])
+        self.store.commit_chunk(vid, 0, [Segment(0.0, 4.0, "only passage")])
+        return vid
+
+    def statuses(self, vid):
+        return [r["status"] for r in self.store.speaker_runs(vid)]
+
     def test_a_pass_that_finishes_after_a_skip_is_refused(self):
-        rid = self.store.start_speaker_run(self.vid)
-        self.store.skip_speaker_run(self.vid)
+        vid = self.bare_version()
+        rid = self.store.start_speaker_run(vid)
+        self.assertEqual(self.store.skip_speaker_run(vid), "skipped")
         late = [(0, 60, "SPEAKER_09")]
         self.assertFalse(self.store.finish_speaker_run(rid, late, late))
-        self.assertEqual([r["status"] for r in self.store.speaker_runs(self.vid)][-2:],
-                         ["superseded", "skipped"])
-        self.assertEqual(self.who("passage 25"), "Speaker 2")   # earlier labels untouched
+        self.assertEqual(self.statuses(vid), ["superseded", "skipped"])
+
+    def test_a_skip_never_lands_on_labels(self):
+        # A pass that finished a moment before the skip wins: nothing is recorded.
+        before = self.statuses(self.vid)
+        self.assertEqual(self.store.skip_speaker_run(self.vid), "labelled")
+        self.assertEqual(self.statuses(self.vid), before)
+        self.assertEqual(self.who("passage 25"), "Speaker 2")
+
+    def test_a_pass_chosen_before_a_skip_never_starts(self):
+        vid = self.bare_version()
+        seen = self.store.skip_count(vid)                   # when the pass is chosen
+        self.assertEqual(self.store.skip_speaker_run(vid), "skipped")
+        self.assertIsNone(self.store.start_speaker_run(vid, skips_seen=seen))
+        self.assertEqual(self.store.skip_speaker_run(vid), "already")          # double click
+        # A skip that cancels an Identify again is recorded again, so that pass
+        # also sees the count change.
+        self.assertEqual(self.store.skip_speaker_run(vid, again=True), "skipped")
+        self.assertEqual(self.statuses(vid), ["skipped", "skipped"])
+        self.assertIsNotNone(self.store.start_speaker_run(vid, skips_seen=2))  # chosen after
+
+    def test_runs_keep_their_order_when_the_clock_repeats(self):
+        from unittest import mock
+        vid = self.bare_version()
+        with mock.patch("workspace.store.time.time", return_value=1000.0):
+            self.store.start_speaker_run(vid)
+            self.store.skip_speaker_run(vid)
+            self.store.start_speaker_run(vid)
+        runs = self.store.speaker_runs(vid)
+        self.assertEqual([r["status"] for r in runs], ["superseded", "skipped", "running"])
+        times = [r["started_at"] for r in runs]
+        self.assertEqual(times, sorted(set(times)))         # strictly increasing
 
     def test_default_names_follow_first_appearance(self):
         self.assertEqual(self.who("passage 0"), "Speaker 1")

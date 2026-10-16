@@ -432,11 +432,69 @@ class WorkspaceTests(unittest.TestCase):
     # -- skipping speaker identification ------------------------------------------------
 
     def wait_for_speakers(self, ws):
+        """Until a speaker pass has really started: its run is recorded (_busy
+        is set a moment earlier, before the pass is begun)."""
         import time as _time
         deadline = _time.time() + 120
-        while _time.time() < deadline and not (ws._busy and ws._busy[1] == "speakers"):
+        while _time.time() < deadline:
+            for m in ws.meetings():
+                v = ws.store.active_version(m["id"])
+                if v and any(r["status"] == "running" for r in ws.store.speaker_runs(v["id"])):
+                    return
             _time.sleep(0.1)
-        self.assertEqual(ws._busy and ws._busy[1], "speakers")
+        self.fail("No speaker pass started.")
+
+    def transcribed(self, ws):
+        """Import and transcribe on this thread; returns (meeting id, next job)."""
+        ws._import_one(self.rec)
+        [m] = ws.meetings()
+        job = ws._next_work()
+        while job and job[0] == "transcribe":
+            ws._run(*job)
+            job = ws._next_work()
+        return m["id"], job
+
+    def test_a_skip_after_the_pass_was_chosen_stops_it_before_it_starts(self):
+        ws = self.open(start=False)
+        mid, job = self.transcribed(ws)
+        self.assertEqual(job[:2], ("speakers", mid))
+        self.assertTrue(ws.meetings()[0]["can_skip"])
+        ws.skip_speakers(mid)                     # after the choice, before the pass starts
+        ws._run(*job)
+        vid = ws.store.active_version(mid)["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)], ["skipped"])
+        self.assertFalse(any(i["who"] for i in ws.transcript(mid)["items"]))
+        self.assertFalse(ws.meetings()[0]["can_skip"])      # skipped already
+        self.assertIsNone(ws._next_work())
+
+    def test_a_skip_cancels_an_identify_again_already_chosen(self):
+        ws = self.open(start=False)
+        mid, job = self.transcribed(ws)
+        ws.skip_speakers(mid)
+        ws.rerun_speakers(mid)
+        self.assertTrue(ws.detail(mid)["can_skip"])         # queued: Skip cancels it
+        job = ws._next_work()
+        self.assertEqual(job[:2], ("rerun", mid))
+        ws.skip_speakers(mid)                     # after the choice, before the pass starts
+        ws._run(*job)
+        vid = ws.store.active_version(mid)["id"]
+        self.assertEqual([r["status"] for r in ws.store.speaker_runs(vid)],
+                         ["skipped", "skipped"])
+        self.assertIsNone(ws._next_work())
+
+    def test_an_interrupted_pass_that_will_not_restart_says_so(self):
+        from workspace.store import SPEAKER_RESTART_NOTE
+        ws = self.open(start=False)
+        mid, _ = self.transcribed(ws)
+        ws.skip_speakers(mid)
+        vid = ws.store.active_version(mid)["id"]
+        rid = ws.store.start_speaker_run(vid)     # Identify again, then the app closed mid-pass
+        ws.store.end_speaker_run(rid, "interrupted", SPEAKER_RESTART_NOTE)
+        s = ws.detail(mid)["speakers"]
+        self.assertEqual(s["status"], "interrupted")
+        self.assertIn("Use Identify again", s["error"])
+        ws._reruns[mid] = None                    # queued again: it will start by itself
+        self.assertEqual(ws.detail(mid)["speakers"]["error"], SPEAKER_RESTART_NOTE)
 
     def test_skip_stops_a_running_pass_and_it_never_restarts(self):
         import time as _time
@@ -513,6 +571,8 @@ class WorkspaceTests(unittest.TestCase):
     def test_skip_is_refused_once_labelled_or_reviewed(self):
         ws = self.open()
         mid = self.imported(ws)                             # speakers done
+        self.assertFalse(ws.detail(mid)["can_skip"])        # the page offers no Skip
+        self.assertFalse(ws.meetings()[0]["can_skip"])
         with self.assertRaises(WorkspaceError):
             ws.skip_speakers(mid)
         ws.confirm_reviewed(mid)

@@ -23,13 +23,15 @@ MAX_HINT = 20
 
 
 class SpeakerResult:
-    DONE, FAILED, STOPPED, NO_AUDIO, NOT_TRANSCRIBED, BAD_HINT = (
-        "done", "failed", "stopped", "no_audio", "not_transcribed", "bad_hint")
+    DONE, FAILED, STOPPED, NO_AUDIO, NOT_TRANSCRIBED, BAD_HINT, SKIPPED = (
+        "done", "failed", "stopped", "no_audio", "not_transcribed", "bad_hint", "skipped")
 
 
 def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, model="pyannote",
-                 device="cpu", gpu_site=None):
-    """Separate speakers for an already-transcribed version. Returns a SpeakerResult."""
+                 device="cpu", gpu_site=None, skips_seen=None):
+    """Separate speakers for an already-transcribed version. Returns a SpeakerResult.
+    skips_seen: the version's skip count when this pass was chosen; a skip
+    since then means nothing starts (SKIPPED)."""
     if hint is not None and (isinstance(hint, bool) or not isinstance(hint, int)
                              or not 1 <= hint <= MAX_HINT):
         return SpeakerResult.BAD_HINT
@@ -38,7 +40,9 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
     if store.chunks(vid, status="pending"):
         return SpeakerResult.NOT_TRANSCRIBED
     handle.begin_run()               # a new run: clears any earlier Stop
-    rid = store.start_speaker_run(vid, hint)
+    rid = store.start_speaker_run(vid, hint, skips_seen=skips_seen)
+    if rid is None:
+        return SpeakerResult.SKIPPED      # the user skipped after this pass was chosen
     try:
         turns, exclusive, device, _ = _diarize(handle, model, audio_path, hint, threads,
                                                device, gpu_site)

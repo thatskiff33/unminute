@@ -29,7 +29,7 @@ class NamingError(ValueError):
 
 def current_run(store, vid):
     return store._one("SELECT * FROM speaker_runs WHERE version_id = ? AND status = 'done' "
-                      "ORDER BY started_at DESC LIMIT 1", (vid,))
+                      "ORDER BY started_at DESC, rowid DESC LIMIT 1", (vid,))
 
 
 def _log(store, rid):

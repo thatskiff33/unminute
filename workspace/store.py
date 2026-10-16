@@ -325,6 +325,21 @@ def new_id():
     return uuid.uuid4().hex
 
 
+def _skip_count(db, vid):
+    return db.execute("SELECT COUNT(*) FROM speaker_runs WHERE version_id = ? AND "
+                      "status = 'skipped'", (vid,)).fetchone()[0]
+
+
+def _next_run_time(db, vid):
+    """A start time later than every earlier run of the version. The latest
+    run is the meeting's speaker state, and time.time() can return the same
+    value twice (about 16 ms steps on Windows), as a skip racing a start can."""
+    last = db.execute("SELECT MAX(started_at) FROM speaker_runs WHERE version_id = ?",
+                      (vid,)).fetchone()[0]
+    now = time.time()
+    return now if last is None or now > last else last + 1e-6
+
+
 def config_hash(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
@@ -612,11 +627,17 @@ class Store:
 
     # -- speaker separation (#16) -------------------------------------------------
 
-    def start_speaker_run(self, vid, hint_count=None):
+    def start_speaker_run(self, vid, hint_count=None, skips_seen=None):
         """Begin a whole-meeting speaker pass. Earlier runs for this version are
-        superseded; transcription is never touched."""
+        superseded; transcription is never touched. With skips_seen (the number
+        of skips when the pass was chosen), a skip recorded since means the
+        user's latest choice is no pass: nothing is started and None is
+        returned. Checked in the same transaction as the start, so no skip can
+        fall between the check and the start."""
         rid = new_id()
         with self.tx() as db:
+            if skips_seen is not None and _skip_count(db, vid) != skips_seen:
+                return None
             # Only a pass still running is superseded now; the previous good
             # labels stay current until this pass actually succeeds.
             db.execute("UPDATE speaker_runs SET status = 'superseded' "
@@ -625,8 +646,14 @@ class Store:
                                "ON m.id = v.meeting_id WHERE v.id = ?", (vid,)).fetchone()
             db.execute("INSERT INTO speaker_runs (id, version_id, status, hint_count, started_at,"
                        " epoch) VALUES (?, ?, 'running', ?, ?, ?)",
-                       (rid, vid, hint_count, time.time(), epoch[0] if epoch else None))
+                       (rid, vid, hint_count, _next_run_time(db, vid),
+                        epoch[0] if epoch else None))
         return rid
+
+    def skip_count(self, vid):
+        """How many times speakers were skipped for this version (start_speaker_run)."""
+        return self._one("SELECT COUNT(*) FROM speaker_runs WHERE version_id = ? AND "
+                         "status = 'skipped'", (vid,))[0]
 
     def finish_speaker_run(self, rid, turns, exclusive_turns, backend=None, precision=None):
         """Atomically store turns and per-segment attribution, mark the run done
@@ -659,19 +686,28 @@ class Store:
                        "precision = ? WHERE id = ?", (time.time(), backend, precision, rid))
         return True
 
-    def skip_speaker_run(self, vid):
+    def skip_speaker_run(self, vid, again=False):
         """Record that the user chose not to identify speakers for this
         version. A pass still running is superseded in the same transaction,
         so if it finishes anyway its result is refused (finish_speaker_run)
-        and it cannot be restarted. Earlier completed labels are untouched."""
+        and it cannot be restarted. Returns "skipped"; "labelled" (nothing
+        recorded) if labels were saved first, also by a pass finishing just
+        now; or "already" if the latest run is already a skip, unless `again`
+        (a pass was asked for since, which this skip cancels)."""
         rid = new_id()
-        now = time.time()
         with self.tx() as db:
+            runs = db.execute("SELECT status FROM speaker_runs WHERE version_id = ? "
+                              "ORDER BY started_at, rowid", (vid,)).fetchall()
+            if any(r[0] == "done" for r in runs):
+                return "labelled"
+            if runs and runs[-1][0] == "skipped" and not again:
+                return "already"
             db.execute("UPDATE speaker_runs SET status = 'superseded' "
                        "WHERE version_id = ? AND status = 'running'", (vid,))
+            at = _next_run_time(db, vid)
             db.execute("INSERT INTO speaker_runs (id, version_id, status, started_at, "
-                       "finished_at) VALUES (?, ?, 'skipped', ?, ?)", (rid, vid, now, now))
-        return rid
+                       "finished_at) VALUES (?, ?, 'skipped', ?, ?)", (rid, vid, at, at))
+        return "skipped"
 
     def end_speaker_run(self, rid, status, error=None):
         """Mark a run failed or interrupted. Its partial data was never written."""
@@ -680,13 +716,16 @@ class Store:
                        "WHERE id = ? AND status = 'running'", (status, error, time.time(), rid))
 
     def speaker_runs(self, vid):
-        return self._all("SELECT * FROM speaker_runs WHERE version_id = ? ORDER BY started_at",
-                         (vid,))
+        """Oldest first: the last run is the meeting's speaker state. Start
+        times are strictly increasing per version (_next_run_time); rowid only
+        orders rows written before that."""
+        return self._all("SELECT * FROM speaker_runs WHERE version_id = ? "
+                         "ORDER BY started_at, rowid", (vid,))
 
     def current_speakers(self, vid):
         """{segment_id: (label, overlap)} from the latest completed run, or {}."""
         run = self._one("SELECT id FROM speaker_runs WHERE version_id = ? AND status = 'done' "
-                        "ORDER BY started_at DESC LIMIT 1", (vid,))
+                        "ORDER BY started_at DESC, rowid DESC LIMIT 1", (vid,))
         if run is None:
             return {}
         return {r["segment_id"]: (r["label"], bool(r["overlap"])) for r in self._all(

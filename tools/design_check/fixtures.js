@@ -105,7 +105,7 @@
   }
 
   function meeting(over) {
-    return {
+    const m = {
       id: "m-garden", title: "Community garden planning (sample)", created_at: at(1, 57),
       stage: "review", paused: false, error: null, busy: null, progress: 100,
       audio_available: true, audio_removed_at: null, reviewed_at: null, final_saved_at: null,
@@ -114,6 +114,10 @@
       holds: [], cleanup: [], limits: LIMITS, duration_s: 1085, speaker_count: 2, mode: "quiet",
       ...over,
     };
+    // As the app reports it: Skip applies until speakers are labelled or skipped.
+    if (!("can_skip" in m))
+      m.can_skip = !m.reviewed_at && !(m.speakers && ["done", "skipped"].includes(m.speakers.status));
+    return m;
   }
 
   const data = {
@@ -143,7 +147,7 @@
   // Each changes the data and lists steps to run once the page is ready.
   const row = (over) => ({ held: false, progress: 100, paused: false, error: null, busy: null,
     duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true,
-    cleanup: [], age_days: 0, action: "", ...over });
+    cleanup: [], age_days: 0, action: "", can_skip: true, ...over });
   // Board heights of the level meter's bars, as microphone levels in dB.
   const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
                   62, 44, 30, 24, 42, 50, 38, 26, 18, 14]
