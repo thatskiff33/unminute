@@ -191,15 +191,23 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 - **Rings:** releases go to the maintainer, then a pilot group on a pre-release, then everyone. Proposed rule: at least 5 working days in pilot, with no open severity 1 or 2 issue.
 - **After release:** a status or health command lets device management spot failures without telemetry.
 - **Severity:**
-  - **1:** meeting content can be lost or exposed, recording or transcription does not work, or updates are blocked. A severity 1 issue in a release means withdrawing it.
-  - **2:** a main task fails or gives wrong results, and there is a workaround.
+  - **1:** user content can be lost or exposed, the app's core task does not work, or updates are blocked. A severity 1 issue in a release means withdrawing it.
+  - **2:** a main task fails or gives wrong results, short of severity 1.
   - **3:** anything else, such as wording, layout or a minor inconvenience.
+
+  Each app's Part B says what its content and core task are.
 - **Withdrawal:** a written runbook. A version number is never reused.
 - **Publishing:** always needs explicit approval, separate from merging code.
 
 **Check.** The release job and the runbook. The release record shows who approved it.
 
 ## Part B. Unminute profile
+
+### Severity in Unminute
+
+- **Content:** recordings, transcripts, edits, speaker names, meeting titles and handoff text.
+- **Core task:** recording, importing and transcribing a meeting.
+- **Main tasks:** also speaker identification, review, handoff, holds and cleanup.
 
 ### Reference machine and budgets
 
@@ -217,6 +225,7 @@ Status is one of:
 - **Manual:** a tool exists, but it is run by hand.
 - **Planned:** a slice of #121 will build it.
 - **Security plan:** a slice of #111 will build it.
+- **Not yet possible:** it needs a decision or resource first; the issue is named.
 
 | Gate | Standard | Where it runs | Status |
 | --- | --- | --- | --- |
