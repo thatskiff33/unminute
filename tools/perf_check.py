@@ -618,6 +618,9 @@ def child(args):
                                      title="Unminute performance check (synthetic data)",
                                      allowed=api.API_METHODS)
         holder["window"] = window
+        if hasattr(shell, "watch_minimise"):     # as workspace/__main__.py does (#129)
+            capturing = getattr(ws, "_capturing", ws.recording_active)
+            window.events.shown += lambda: shell.watch_minimise(window, capturing)
         shell.run(lambda w: threading.Thread(target=drive, args=(w,), daemon=True).start(),
                   (window,), storage_path=shell.storage_folder(ws.root))
         return 0

@@ -243,7 +243,7 @@ Status is one of:
 | Worker starts on demand and unloads after idle | 3 | Unit tests (`tests/test_workers.py`) | In place |
 | Python background wake-ups and query counts bounded | 3 | Unit tests | Planned: R5 (#126), R7 (#128) |
 | UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | `tools/ui_idle_check.py` in headless Edge with the design fixtures; the "UI idle (headless Edge)" job in `.github/workflows/quality.yml`; ratchets in `tests/budgets.json` | In place, not yet required; ratchets lowered by R6 (#127) |
-| WebView2 hidden, suspended and low-memory when minimised | 2, 3 | Release-time performance run | Planned: R8 (#129) |
+| WebView2 hidden, suspended and low-memory when minimised | 2, 3 | `workspace/shell.py` (`Minimise`, unit-tested in `tests/test_minimise.py`); the effect is measured by `tools/perf_check.py`'s minimised state | In place |
 | Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; enforced by security plan B3 |
 | Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
 | Durable processing; crash and resume give identical results | 4 | Unit tests; `tools/packaged_crash_check.py` | Unit tests in place; packaged check manual |
