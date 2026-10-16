@@ -66,6 +66,50 @@ def crash_once(threads):
     return _Engine(run)
 
 
+MARKER = "Zqmarker"           # tests/test_diagnostics.py: must never reach a log
+
+
+def marker_words(threads):
+    """Transcript text carrying the marker word (diagnostics tests)."""
+    return _Engine(_sentences(MARKER))
+
+
+def raises_marker(threads):
+    """Fails with the marker in its message and a path, as content could."""
+    def run(a):
+        raise RuntimeError(f"{MARKER} secret words from C:\\Users\\{MARKER}\\{MARKER}.wav")
+    return _Engine(run)
+
+
+def _access_violation():
+    """Read address 0 in C: a real access violation, as a broken native
+    library causes. (faulthandler._sigsegv raises a C signal instead, which
+    Windows delivers only to the main thread's handler; ctypes.string_at(0)
+    is caught by ctypes and becomes a Python error.)"""
+    import faulthandler
+    faulthandler._read_null()
+
+
+def native_crash(threads):
+    """A native crash (access violation), as a broken library would cause."""
+    def run(a):
+        _access_violation()
+    return _Engine(run)
+
+
+def crash_after_reply(threads):
+    """Replies, then crashes natively a moment later, while idle."""
+    def run(a):
+        import threading
+
+        def later():
+            time.sleep(0.3)
+            _access_violation()
+        threading.Thread(target=later, daemon=True).start()
+        return [_seg(0.0, 0.5, "replied")]
+    return _Engine(run)
+
+
 def sleepy(threads):
     def run(a):
         time.sleep(30)
@@ -119,6 +163,13 @@ def fake_download(conn, name, cache_dir):
     in_argv = bool(token) and any(token in a for a in sys.argv)
     in_env = bool(token) and any(token in v for v in os.environ.values())
     conn.send(("done", {"token_received": bool(token), "in_argv": in_argv, "in_env": in_env}))
+
+
+def fake_download_crashes(conn, name, cache_dir):
+    """Starts, then crashes natively part-way (diagnostics tests)."""
+    conn.recv()
+    conn.send(("log", "Downloading (test)..."))
+    _access_violation()
 
 
 def fake_download_fails(conn, name, cache_dir):

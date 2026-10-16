@@ -23,7 +23,8 @@ import time
 from pathlib import Path
 
 import asr_engines
-from workspace import (cleanup, clipboard, credentials, engines, gpu, handoff, holds, intake,
+from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, handoff, holds,
+                       intake,
                        media, policy, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -165,13 +166,17 @@ class Workspace:
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
         self.cache_dir = Path(cache_dir or self.root / "models")
+        # Content-free diagnostics (R9): workspace\logs. The app's start
+        # (__main__) installs it as the process's log; tests read it directly.
+        self.log = diag.Log(self.root / "logs", "app")
         self.handle = WorkerHandle(self.cache_dir,
                                    quiet=self.settings["mode"] == resources.QUIET,
-                                   allow_test_engines=allow_test_engines, **kw)
+                                   allow_test_engines=allow_test_engines, log=self.log, **kw)
         # Downloads replace model files: the inference worker is unloaded first.
         self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
                                          before_gpu_install=self.handle.release_gpu)
         self.downloads.after = self._after_download
+        self.downloads.log_dir = str(self.log.folder)
         self._wake = threading.Event()
         self._closing = threading.Event()
         self._busy = None                 # (meeting id, "transcribing" | "speakers" | "cleanup")
@@ -393,7 +398,8 @@ class Workspace:
                 if key:
                     intake.import_finished(self.store, folder_id, key, content, True)
             except Exception as exc:          # a bad file must not stop the intake thread
-                self._import_errors = (self._import_errors + [_import_message(exc)])[-5:]
+                code = None if _expected_import_error(exc) else self.log.incident("import", exc)
+                self._import_errors = (self._import_errors + [_import_message(exc, code)])[-5:]
             finally:
                 self._imports.task_done()
                 self._status = ""
@@ -727,9 +733,11 @@ class Workspace:
             mid = self._import_one(str(wav), None, title)
         except Exception as exc:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
+            code = (None if full or _expected_import_error(exc)
+                    else self.log.incident("recording_import", exc))
             report["note"] = ("It could not be imported yet: " +
                               ("the disk is full. Free some space, then choose Try again."
-                               if full else _import_message(exc)) +
+                               if full else _import_message(exc, code)) +
                               " The saved audio is kept.")
             report["pending"] = folder.name
             self._add_report(report)
@@ -828,6 +836,7 @@ class Workspace:
             if not self._scan_wake.is_set() and now < due:
                 self._scan_wake.wait(min(due - now, WATCH_MAX_WAIT_S))
                 continue
+            self.log.limit_crash_file()     # keep the raw crash file small (R9)
             self._scan_wake.clear()          # a request made during the scan scans again
             due = self._clock() + intake.SCAN_INTERVAL_S
             self._scan_folders()
@@ -981,9 +990,10 @@ class Workspace:
                 try:
                     self._run(kind, mid, ref)
                 except Exception as exc:       # never let one meeting stop the loop
+                    code = self.log.incident("processing", exc, job=kind)
                     try:
-                        self.store.set_phase(mid, "error",
-                                             f"Unexpected problem: {safe_message(exc)}"[:300])
+                        self.store.set_phase(mid, "error", f"Unexpected problem (code {code}): "
+                                                           f"{safe_message(exc)}"[:300])
                     except StoreError:
                         pass
                 finally:
@@ -2100,10 +2110,19 @@ def _folders(path):
         return 0
 
 
-def _import_message(exc):
+def _expected_import_error(exc):
+    """A refusal or a bad file, explained to the user; anything else is a bug."""
+    return (isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
+                             WorkspaceError))
+            or (isinstance(exc, ValueError) and "no audio" in str(exc)))
+
+
+def _import_message(exc, code=None):
     if isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
                         WorkspaceError)):
         return str(exc)
     if isinstance(exc, ValueError) and "no audio" in str(exc):
         return "That file contains no audio."
+    if code:                              # unexpected: the code finds it in the log
+        return f"That recording could not be imported (code {code})."
     return "That recording could not be imported (unsupported or damaged file)."

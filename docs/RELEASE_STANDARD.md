@@ -250,7 +250,8 @@ Status is one of:
 | Integrity check after an unclean shutdown | 4 | Unit tests; `--status` | Planned: R11 (#132) |
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
 | Settings versioned; unknown keys kept on rollback | 9 | Unit tests | Planned: R11 (#132) |
-| Local content-free log, crash hooks, Copy diagnostics, `--health` | 5, 6, 14 | Unit tests and the marker test | Planned: R9 (#130) |
+| Local content-free log, crash hooks, incident codes | 5, 6 | `workspace/diag.py`; unit tests and the marker test (`tests/test_diagnostics.py`); forced crashes in the app and the worker | In place (R9a) |
+| Page errors, Copy diagnostics, `--health` | 5, 6, 14 | Unit tests and the marker test | Planned: R9b (#130) |
 | Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |
 | CodeQL for Python, JavaScript and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
 | JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/quality.yml` | In place, not yet required |

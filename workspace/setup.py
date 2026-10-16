@@ -229,11 +229,31 @@ def model_downloader(token):
     return download
 
 
+def _download_entry(target, conn, name, cache_dir, log_dir):
+    """The download process's start: its own content-free log (R9: unexpected
+    errors, native crashes, and console output reduced to type names), then
+    the download itself (target)."""
+    import sys
+    from workspace import diag
+    log = diag.Log(log_dir, "setup") if log_dir else None
+    if log is not None:
+        if sys.stderr is None or sys.stdout is None:          # pythonw: no console
+            sys.stdout, sys.stderr = diag.OutputSummary(log, "stdout"), \
+                diag.OutputSummary(log, "stderr")
+        diag.use(log)
+    diag.quiet_crashes()
+    try:
+        target(conn, name, cache_dir)
+    except BaseException as exc:
+        diag.incident("setup", exc)
+        raise
+
+
 def _download_main(conn, name, cache_dir):
     """Runs in the download process. Network is allowed here only, and only
     to DOWNLOAD_HOSTS."""
     import sys
-    if sys.stderr is None or sys.stdout is None:   # pythonw: no console
+    if sys.stderr is None or sys.stdout is None:   # pythonw, and no log: no console
         sys.stdout = sys.stderr = open(os.devnull, "w")
     try:
         prepare_download_process()
@@ -389,6 +409,7 @@ class Downloads:
         # it stops that worker and leaves transcription running.
         self.before_gpu_install = before_gpu_install
         self.state = {}                          # name -> {"state", "message", "log"}
+        self.log_dir = None                      # the app's logs folder (R9), set by the app
         self._lock = threading.Lock()
         self._running = None
 
@@ -466,17 +487,19 @@ class Downloads:
     def _run(self, name, token, on_success=None):
         entry = self.state[name]
         final = {"state": "failed", "message": "The download stopped unexpectedly. Try again."}
+        proc = None
         try:
             hook = self.before_gpu_install if name == gpu.COMPONENT else self.before_install
             if hook:
                 hook()
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
-            proc = ctx.Process(target=self.target, args=(child, name, self.cache_dir),
-                               daemon=True, name="model-download")
+            started = ctx.Process(target=_download_entry,
+                                  args=(self.target, child, name, self.cache_dir, self.log_dir),
+                                  daemon=True, name="model-download")
             self._cancelled = False
-            proc.start()
-            self._proc = proc
+            started.start()
+            proc = self._proc = started      # only a started process is joined below
             child.close()
             parent.send(token)
             del token
@@ -501,10 +524,12 @@ class Downloads:
                 else:
                     final = {"state": "failed", "message": payload}
                 break
-            proc.join(10)
         except (EOFError, OSError):
             pass                              # reported as "stopped unexpectedly"
         finally:
+            if proc is not None:
+                proc.join(10)
+                self._note_exit(proc)         # also when it crashed mid-download
             if getattr(self, "_cancelled", False):
                 final = {"state": "failed", "message": "Download cancelled. Start it again "
                                                          "when you are ready."}
@@ -514,6 +539,19 @@ class Downloads:
             entry.update(final)
             if self.after:
                 self.after()
+
+    def _note_exit(self, proc):
+        """A download process that ended by itself with an error code (not
+        cancelled) is recorded in the app's log, with its native crash."""
+        from workspace import diag
+        log = diag.current()
+        if log is None or self.log_dir is None or getattr(self, "_cancelled", False):
+            return
+        died = proc.exitcode not in (0, None)
+        code = log.collect_crash(died, crash_path=os.path.join(self.log_dir, "setup.crash"),
+                                 process="setup")
+        if died:
+            log.write("worker_exit", process="setup", exitcode=proc.exitcode, code=code)
 
     def busy(self):
         return self._running is not None
