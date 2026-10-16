@@ -223,7 +223,7 @@ class RelockRuleTests(unittest.TestCase):
                                lambda ref, path: base if path == "requirements.txt" else
                                real_read(ROOT / path, encoding="utf-8")), \
                 mock.patch.object(Path, "read_text", read_text):
-            lines, failures = lock.compare("FETCH_HEAD")
+            lines, failures = lock.compare("HEAD")         # any real commit; files mocked
         self.assertIn("requirements.txt: colorama 0.4.6 -> 0.4.5", lines)
         self.assertEqual(len(failures), 1)
         self.assertIn("colorama", failures[0])
