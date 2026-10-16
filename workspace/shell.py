@@ -7,6 +7,7 @@
 # trial (tools/webview_trial.py) verifies that by listing listening sockets.
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
+import os
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
@@ -85,7 +86,7 @@ def _clean_dom_event(param):
         files = transfer.get("files") if isinstance(transfer, dict) else None
         if not isinstance(files, list):
             return None
-        clean["dataTransfer"] = {"files": [{"name": f["name"][:260]} for f in files[:100]
+        clean["dataTransfer"] = {"files": [{"name": f["name"][:260]} for f in files[:1000]
                                            if isinstance(f, dict)
                                            and isinstance(f.get("name"), str)]}
     return {"event": clean, "nodeId": "document"}
@@ -218,6 +219,9 @@ def create_window(bridge, title="Unminute", hidden=False, harden=True,
     return window
 
 
+lock_failed = []          # set if a window's navigation lock could not attach
+
+
 def _lock_once(window):
     if getattr(window, "_nav_locked", False):
         return
@@ -226,8 +230,24 @@ def _lock_once(window):
         window._nav_locked = True
     except Exception:
         # Without the lock any page could get the bridge: close instead.
+        lock_failed.append(True)
         blocked_navigations.append("navigation lock failed; window closed")
-        window.destroy()
+        _close_now(window)
+
+
+def _post_close(window):
+    """Ask the window's form to close once the current UI callback returns
+    (before_load runs on the UI thread, where window.destroy() would wait)."""
+    from System import Action
+    form = window.native
+    form.BeginInvoke(Action(form.Close))
+
+
+def _close_now(window):
+    try:
+        _post_close(window)
+    except Exception:
+        os._exit(3)              # cannot even close it: end the process, never run unlocked
 
 
 def check_backend():
@@ -239,9 +259,13 @@ def check_backend():
     import importlib
     import sys
 
-    # webview/__init__ has a global named guilib that hides the module.
-    guilib = importlib.import_module("webview.guilib")
-    backend = guilib.initialize("edgechromium")
+    try:
+        # webview/__init__ has a global named guilib that hides the module.
+        guilib = importlib.import_module("webview.guilib")
+        backend = guilib.initialize("edgechromium")
+    except Exception as exc:     # e.g. pythonnet or .NET could not load
+        raise ShellError("Unminute could not start its window: a Windows component it "
+                         "needs (WebView2 or .NET) could not be loaded. Ask your IT team.") from exc
     if getattr(backend, "renderer", None) != "edgechromium":
         raise ShellError("Unminute needs the Microsoft Edge WebView2 Runtime, which was not "
                          "found on this computer. Ask your IT team to install it.")
@@ -251,48 +275,47 @@ def check_backend():
                          "Reinstall it, or ask your IT team.")
 
 
+def _is_link(path):
+    return path.is_symlink() or os.path.isjunction(path)
+
+
+def _remove_link(path):
+    """Remove a symbolic link or junction itself, never what it points to."""
+    try:
+        os.rmdir(path)           # a junction or directory link
+    except NotADirectoryError:
+        os.unlink(path)          # a file link
+
+
 def storage_folder(root):
     """A new, empty WebView2 profile folder inside the workspace, after
     removing any left by an earlier run that did not close cleanly. In
     private mode pywebview deletes the folder on a clean close; without this
-    a crash would leave it in %TEMP%, outside the workspace's own cleanup."""
+    a crash would leave it behind. Links are removed, never followed: a
+    "webview" junction must not turn this cleanup on another folder."""
     import shutil
     import uuid
     base = Path(root) / "webview"
-    base.mkdir(parents=True, exist_ok=True)
-    for old in base.iterdir():
-        try:
-            if old.is_symlink() or not old.is_dir():
-                old.unlink()
-            else:
-                shutil.rmtree(old)       # a junction is unlinked, never followed
-        except OSError:
-            pass                         # still in use: removed at a later start
-    return base / uuid.uuid4().hex
-
-
-def documents_folder():
-    """The user's Documents folder (wherever Windows has it), or "" to let the
-    dialog choose. Used as the save dialog's starting folder, so a handoff is
-    not saved wherever a dialog was last pointed."""
-    import ctypes
-    from ctypes import wintypes
     try:
-        guid = (ctypes.c_byte * 16).from_buffer_copy(
-            bytes.fromhex("d0 9a d3 fd 8f 23 af 46 ad b4 6c 85 48 03 69 c7".replace(" ", "")))
-        out = ctypes.c_wchar_p()
-        shell32 = ctypes.WinDLL("shell32")
-        ole32 = ctypes.WinDLL("ole32")
-        shell32.SHGetKnownFolderPath.argtypes = [ctypes.c_void_p, wintypes.DWORD,
-                                                 wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
-        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out)) != 0:
-            return ""
-        try:
-            return out.value or ""
-        finally:
-            ole32.CoTaskMemFree(out)
-    except (AttributeError, OSError):
-        return ""
+        if _is_link(base):
+            _remove_link(base)
+        base.mkdir(parents=True, exist_ok=True)
+        if _is_link(base) or not base.is_dir():
+            raise OSError("not a plain folder")
+        for old in base.iterdir():
+            try:
+                if _is_link(old):
+                    _remove_link(old)
+                elif old.is_dir():
+                    shutil.rmtree(old)
+                else:
+                    old.unlink()
+            except OSError:
+                pass             # still in use: removed at a later start
+    except OSError as exc:
+        raise ShellError("Unminute could not prepare its window's data folder in the "
+                         "workspace. Ask your IT team.") from exc
+    return base / uuid.uuid4().hex
 
 
 def run(func=None, args=None, debug=False, storage_path=None):

@@ -77,7 +77,7 @@ class HandoffTests(unittest.TestCase):
         self.assertIn('"Owner: not stated"', c)
         self.assertFalse(out["long"])
         self.assertEqual(out["chars"], len(c))
-        self.assertRegex(out["filename"], r"^Meeting transcript \d{4}-\d{2}-\d{2}\.md$")
+        self.assertRegex(out["filename"], r"^Meeting transcript \d{4}-\d{2}-\d{2} \d{2}-\d{2}\.md$")
 
     def test_prompt_only_points_at_the_file(self):
         self.review()

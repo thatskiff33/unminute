@@ -354,7 +354,8 @@ def digest(text):
 
 
 def _filename(created_at):
-    """The suggested file name: the date only. A title often names the client,
-    and file names travel further than file contents (Recent items, jump
-    lists, search indexes, sync logs)."""
-    return f"Meeting transcript {time.strftime('%Y-%m-%d', time.localtime(created_at))}.md"
+    """The suggested file name: the date and time the meeting was imported
+    (so two meetings on one day do not collide), never the title. A title
+    often names the client, and file names travel further than file contents
+    (Recent items, jump lists, search indexes, sync logs)."""
+    return f"Meeting transcript {time.strftime('%Y-%m-%d %H-%M', time.localtime(created_at))}.md"

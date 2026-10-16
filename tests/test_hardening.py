@@ -125,6 +125,12 @@ class BackendCheckTests(unittest.TestCase):
             with self.assertRaises(shell.ShellError):
                 shell.check_backend()
 
+    def test_a_backend_that_cannot_load_is_refused_with_a_message(self):
+        guilib = importlib.import_module("webview.guilib")
+        with mock.patch.object(guilib, "initialize", side_effect=OSError("no .NET")):
+            with self.assertRaises(shell.ShellError):
+                shell.check_backend()
+
     def test_refuses_an_unguarded_backend(self):
         guilib = importlib.import_module("webview.guilib")
 
@@ -149,6 +155,84 @@ class StorageFolderTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertFalse(new.exists())          # WebView2 creates it
 
+    @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
+    def test_links_are_removed_never_followed(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            precious = Path(tmp) / "Documents"
+            (precious / "inner").mkdir(parents=True)
+            (precious / "client.docx").write_text("keep me")
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
+            for link, target in ((ws / "webview", precious),):
+                r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            shell.storage_folder(ws)                       # "webview" itself is a junction
+            self.assertTrue((precious / "client.docx").exists())
+            self.assertTrue((precious / "inner").is_dir())
+            self.assertFalse(os.path.isjunction(ws / "webview"))
+            inner = ws / "webview" / "old-profile"
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(inner), str(precious)],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            shell.storage_folder(ws)                       # a junction inside it
+            self.assertFalse(inner.exists())
+            self.assertTrue((precious / "client.docx").exists())
+
+
+class LockFailureTests(unittest.TestCase):
+    """If the navigation lock cannot attach, the window is closed, and if even
+    that fails the process ends: it never runs without the lock."""
+
+    def setUp(self):
+        shell.lock_failed.clear()
+
+    def tearDown(self):
+        shell.lock_failed.clear()
+
+    def window(self):
+        class Window:
+            native = object()                 # no WebView2 control: the lock fails
+        return Window()
+
+    def test_window_is_closed_when_the_lock_fails(self):
+        with mock.patch.object(shell, "_post_close") as close:
+            shell._lock_once(self.window())
+        close.assert_called_once()
+        self.assertTrue(shell.lock_failed)
+
+    def test_process_ends_if_the_window_cannot_be_closed(self):
+        with mock.patch.object(shell, "_post_close", side_effect=RuntimeError), \
+                mock.patch.object(shell.os, "_exit", side_effect=SystemExit) as end:
+            with self.assertRaises(SystemExit):
+                shell._lock_once(self.window())
+        end.assert_called_once_with(3)
+
+
+class StartUpTests(unittest.TestCase):
+    """Run in a child process: importing workspace.__main__ installs the
+    network guard, which must not affect this test process."""
+
+    def run_main(self, code, env=None):
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        return subprocess.run([sys.executable, "-c", code], cwd=root, env=env,
+                              capture_output=True, text=True, timeout=120)
+
+    def test_gate_reports_a_bad_location_as_json(self):
+        env = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
+        r = self.run_main("import sys; sys.argv = ['x', '--gate'];"
+                          "import workspace.__main__ as m; sys.exit(m.main())", env)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["kind"], "location")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows named mutex")
+    def test_only_one_copy_holds_the_workspace(self):
+        r = self.run_main("import workspace.__main__ as m; a = m._single_instance();"
+                          "b = m._single_instance(); print(a is not None, b is None)")
+        self.assertEqual(r.stdout.strip(), "True True", r.stderr)
+
 
 class WorkspaceLocationTests(unittest.TestCase):
     def check(self, env):
@@ -172,6 +256,30 @@ class WorkspaceLocationTests(unittest.TestCase):
         ok = self.check({"LOCALAPPDATA": "C:\\Users\\a\\AppData\\Local",
                          "OneDriveCommercial": "C:\\Users\\a\\OneDrive - Firm"})
         self.assertEqual(ok, Path("C:\\Users\\a\\AppData\\Local"))
+
+    @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
+    def test_a_junction_into_onedrive_is_refused(self):
+        import subprocess
+        from workspace.store import StoreError
+        with tempfile.TemporaryDirectory() as tmp:
+            synced = Path(tmp) / "OneDrive - Firm"
+            (synced / "AppData").mkdir(parents=True)
+            link = Path(tmp) / "Local"
+            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(synced / "AppData")],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            try:
+                with self.assertRaises(StoreError):
+                    self.check({"LOCALAPPDATA": str(link), "OneDrive": str(synced)})
+            finally:
+                os.rmdir(link)
+
+    def test_a_mapped_network_drive_is_refused(self):
+        from workspace import store
+        from workspace.store import StoreError
+        with mock.patch.object(store, "_remote_drive", return_value=True):
+            with self.assertRaises(StoreError):
+                self.check({"LOCALAPPDATA": "C:\\Users\\a\\AppData\\Local"})
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

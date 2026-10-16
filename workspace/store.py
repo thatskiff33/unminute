@@ -256,17 +256,37 @@ def local_appdata():
     instead of guessing."""
     base = os.environ.get("LOCALAPPDATA", "")
     path = Path(base)
-    if not base or not path.is_absolute() or base.startswith(("\\\\", "//")):
-        raise StoreError("Unminute cannot find this account's local app data folder "
+    missing = StoreError("Unminute cannot find this account's local app data folder "
                          "(LOCALAPPDATA). Ask your IT team.")
-    resolved = os.path.normcase(os.path.abspath(base)).rstrip("\\/") + os.sep
+    if not base or not path.is_absolute() or base.startswith(("\\\\", "//")):
+        raise missing
+    # Compare real paths: short (8.3) names and junctions must not hide that
+    # the folder is inside OneDrive or on a network share.
+    real = os.path.realpath(base)
+    if real.startswith(("\\\\", "//")) or _remote_drive(real):
+        raise StoreError("This account's local app data folder is on a network drive. "
+                         "Unminute keeps meetings on this computer. Ask your IT team.")
+    resolved = _folder_key(real)
     for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
         synced = os.environ.get(var, "")
-        if synced and resolved.startswith(os.path.normcase(os.path.abspath(synced))
-                                          .rstrip("\\/") + os.sep):
+        if synced and resolved.startswith(_folder_key(os.path.realpath(synced))):
             raise StoreError("This account's local app data folder is inside OneDrive. "
                              "Unminute keeps meetings out of synced folders. Ask your IT team.")
     return path
+
+
+def _folder_key(path):
+    return os.path.normcase(os.path.abspath(path)).rstrip("\\/") + os.sep
+
+
+def _remote_drive(path):
+    """True if the path's drive letter is a mapped network drive (Windows)."""
+    if os.name != "nt":
+        return False
+    import ctypes
+    import ntpath
+    root = ntpath.splitdrive(path)[0] + "\\"
+    return ctypes.WinDLL("kernel32").GetDriveTypeW(ctypes.c_wchar_p(root)) == 4  # REMOTE
 
 
 def default_root():

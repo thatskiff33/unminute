@@ -108,8 +108,13 @@ def main():
     if "--version" in sys.argv:
         print(package_version())
         return 0
+    from workspace.store import StoreError
     if "--status" in sys.argv:
-        print(json.dumps(status()))
+        try:
+            print(json.dumps(status()))
+        except StoreError as exc:           # e.g. LOCALAPPDATA missing or in OneDrive
+            print(json.dumps({"error": str(exc)}))
+            return 1
         return 0
     if "--self-test" in sys.argv:
         return self_test()
@@ -119,12 +124,19 @@ def main():
         schema = SCHEMA_VERSION
         if "--schema" in sys.argv:          # for a version too old to check itself
             schema = int(sys.argv[sys.argv.index("--schema") + 1])
-        result = update.gate(default_root() / "workspace.db", schema)
+        try:
+            result = update.gate(default_root() / "workspace.db", schema)
+        except StoreError as exc:
+            result = {"code": update.TOO_NEW, "kind": "location", "current_schema": None,
+                      "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
     from workspace import api, shell
     from workspace.app import Workspace
-    from workspace.store import StoreError
+    instance = _single_instance()
+    if instance is None:
+        _message("Unminute is already open. Look for its window on the taskbar.")
+        return 0
     try:
         ws = Workspace(cache_dir=model_cache())
     except StoreError as exc:
@@ -207,7 +219,26 @@ def main():
         return 1
     finally:
         ws.close()
+    if shell.lock_failed:
+        _message("Unminute closed its window because it could not secure it. "
+                 "Reinstall it, or ask your IT team.")
+        return 1
     return 0
+
+
+def _single_instance():
+    """Hold a named mutex for the life of the process, so a second copy never
+    opens the same workspace (or clears the first copy's window data). Returns
+    the handle, or None if another copy holds it. If Windows cannot create the
+    mutex at all, the app still starts."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, "Local\\Unminute.Workspace")
+    if handle and ctypes.get_last_error() == 183:      # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+    return handle or True
 
 
 def _message(text):

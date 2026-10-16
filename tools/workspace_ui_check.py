@@ -63,6 +63,9 @@ def checks(window, ws, mid, long_mid, report):
                                      "window.pywebview.api && window.pywebview.api.meetings)"):
             time.sleep(0.2)
         report["listeners_idle"] = listeners(process_tree(os.getpid()))
+        # The WebView2 profile is in the workspace, not %TEMP% (#111 A2).
+        profiles = [p for p in (ws.root / "webview").iterdir() if any(p.iterdir())]
+        report["webview_profile_in_workspace"] = len(profiles) == 1
         report["api_surface"] = evaluate(window, "return Object.keys(window.pywebview.api)"
                                                  ".filter(k => typeof window.pywebview.api[k]"
                                                  " === 'function').sort();")
@@ -285,7 +288,9 @@ def main():
                                      title="Workspace UI check (synthetic data)",
                                      allowed=api.API_METHODS)
         holder["window"] = window
-        shell.run(checks, (window, ws, mid, long_mid, report))
+        storage = shell.storage_folder(ws.root)
+        shell.run(checks, (window, ws, mid, long_mid, report), storage_path=storage)
+        report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -295,6 +300,9 @@ def main():
         bad.append(report["error"])
     if [x for x in report.get("listeners", []) if x["proto"] == "TCP"]:
         bad.append("local TCP listener")
+    if not (report.get("webview_profile_in_workspace")
+            and report.get("webview_profile_removed_on_close")):
+        bad.append("webview profile location")
     expected = sorted(api.API_METHODS - {"pywebviewEventHandler"})
     if report.get("api_surface") != expected:
         bad.append("api surface")
