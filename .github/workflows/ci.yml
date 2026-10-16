@@ -38,7 +38,7 @@ jobs:
           python-version: "3.12"
 
       # Byte-compile every Python file. Catches syntax errors without importing
-      # torch, faster-whisper or tkinter.
+      # torch or faster-whisper.
       - name: Compile Python sources
         run: python -m compileall -q -f *.py tests tools workspace
 

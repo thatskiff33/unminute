@@ -224,8 +224,7 @@ class DisplayCacheTests(unittest.TestCase):
                 mock.patch.object(gpu, "status", return_value=("ready", "ok")) as status, \
                 mock.patch.object(setup, "cards", side_effect=lambda d: [dict(card)]) as cards, \
                 mock.patch.object(update, "blockers", return_value=[]) as blockers, \
-                mock.patch.object(credentials, "has_token", return_value=True) as has, \
-                mock.patch.object(credentials, "earlier_token", return_value=None):
+                mock.patch.object(credentials, "has_token", return_value=True) as has:
             if first:
                 first()
             for _ in range(times):
