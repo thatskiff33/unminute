@@ -1643,8 +1643,9 @@ class Workspace:
     def diagnostics(self):
         """What Copy diagnostics copies: versions, settings and policy values,
         counts, model states and the newest log records. Built only from
-        values the app controls, and the records pass the log's field rules
-        again: no meeting content, names, folders or tokens."""
+        values the app controls (each a known value or a token without
+        spaces), and the records pass the log's field rules again (see
+        diag.shareable_records): no meeting content, names, folders or tokens."""
         import platform
 
         from workspace import update
@@ -1652,8 +1653,7 @@ class Workspace:
         word = lambda v: v if isinstance(v, str) and token.fullmatch(v) else "?"  # noqa: E731
         lines = ["Unminute diagnostics (no meeting content)"]
         try:
-            from workspace.__main__ import package_version
-            version = package_version()
+            version = update.package_version()
         except Exception:
             version = "?"
         deployment = update.deployment()
@@ -1663,11 +1663,16 @@ class Workspace:
         settings = []
         for key in DEFAULT_SETTINGS:
             value = self.settings.values.get(key)
-            shown = ("on" if value else "off") if isinstance(value, bool) else word(value)
+            try:
+                self.settings._check(key, value)    # one of its known values only
+                shown = ("on" if value else "off") if isinstance(value, bool) else word(value)
+            except WorkspaceError:
+                shown = "?"
             settings.append(f"{key}={shown}")
         lines.append("Settings: " + ", ".join(settings))
         p = self.policy.current()
-        managed = [f"{name}={'set' if policy.SPEC[name][0] == 'path' else p.get(name)}"
+        managed = [f"{name}=" + ("invalid" if name in p.invalid else "set"
+                                 if policy.SPEC[name][0] == "path" else str(p.get(name)))
                    for name in p.summary()["managed"] if name in policy.SPEC]
         lines.append("Managed policy: " + (", ".join(managed) if managed else "none")
                      + ("; unreadable" if p.unreadable else ""))
@@ -1678,7 +1683,7 @@ class Workspace:
             "(SELECT COUNT(*) FROM watched_folders) AS folders")
         lines.append("Workspace: " + ", ".join(f"{k}={counts[k]}" for k in counts.keys()))
         try:
-            cards = setup.cards(self.cache_dir)
+            cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
             lines.append("Models: " + ", ".join(f"{word(c['name'])}={word(c['state'])}"
                                                  for c in cards))
         except Exception:

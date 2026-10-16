@@ -2268,16 +2268,22 @@ document.addEventListener("visibilitychange", () => {
 // -- diagnostics (R9b, #130) ---------------------------------------------------
 // The page's own script errors reach the app's log as a fixed kind and a line
 // and column: never a message, which could quote meeting text. Python
-// rate-limits them; a failed report is not reported again.
-let reporting = false;
+// rate-limits them; a failed report is not reported again. The first error
+// before the bridge is ready (in wire(), say) is kept until it is.
+let reporting = false, bridgeReady = false, earlyError = null;
 function reportUiError(event, line, col) {
-  if (reporting || !window.pywebview) return;
+  if (!bridgeReady) { earlyError = earlyError || [event, line, col]; return; }
+  if (reporting) return;
   reporting = true;
   call("report_ui_error", event, Math.max(0, line | 0), Math.max(0, col | 0))
     .catch(() => {}).finally(() => { reporting = false; });
 }
 window.addEventListener("error", (e) => reportUiError("error", e.lineno, e.colno));
 window.addEventListener("unhandledrejection", () => reportUiError("rejection", 0, 0));
+window.addEventListener("pywebviewready", () => {
+  bridgeReady = true;
+  if (earlyError) reportUiError(...earlyError);
+});
 
 function wire() {
   $("help-diagnostics").addEventListener("click", () => attempt(async () => {

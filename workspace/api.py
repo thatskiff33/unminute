@@ -10,6 +10,7 @@
 #     file dialog or a native drop, which pywebview resolves in Python.
 
 import base64
+import math
 import sys
 import threading
 import time
@@ -57,8 +58,9 @@ def _safe(fn, *args):
 
 
 def _int(value, lo, hi):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) \
-            or not lo <= value <= hi:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) \
+            or (isinstance(value, float) and not math.isfinite(value)) \
+            or value != int(value) or not lo <= value <= hi:
         raise WorkspaceError("Out of range.")
     return int(value)
 
