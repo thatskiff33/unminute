@@ -9,7 +9,7 @@ This guide covers the preassembled package from #11:
 
 Updates and the empty-workspace migration gate are #26.
 
-The legacy source app (`install.cmd` at the repository root) is unchanged and still works as before.
+The earlier source app (Whisper Transcriber) was removed from the repository by #111 slice A7; see "If the earlier app is still installed" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md).
 
 ## What the package contains
 
@@ -23,7 +23,7 @@ One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<v
 | `version.json` | The version, build time, Python version and source commit. |
 | `package-manifest.json` | The size and SHA-256 of every file. The installer checks all of them. |
 
-Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\whisper-models` and shared with the legacy app.
+Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\whisper-models` (shared with the earlier app where it is still installed).
 
 Users never need Python, Git, FFmpeg or GPU tools.
 

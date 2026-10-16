@@ -9,8 +9,8 @@ source of truth instead of restating values that change.
 - Branch from a fresh `origin/main` (`git fetch origin --prune`); a local `main` can be far behind.
 - Read the issue and all its comments: they hold the acceptance criteria. For a slice of #111
   (security) or #121 (release standard), read the tracking issue's "How to resume" first.
-- `README.md` describes shipped behaviour (`workspace/`; the earlier tkinter app is legacy, see
-  the last section). Then read only what "Where the rules live" names.
+- `README.md` describes shipped behaviour (`workspace/`). Then read only what "Where the rules
+  live" names.
 
 ## Invariants
 
@@ -188,13 +188,3 @@ or GitHub owner settings. Check the live repository settings before an authorise
   sessions; run heavy benchmarks one at a time.
 - After rebasing onto a moved `main`, confirm no conflict markers remain and that the diff
   matches the reviewed one before pushing. Give times in New Zealand time (GitHub uses UTC).
-
-## Until #111 A7 removes the earlier app
-
-The earlier source app (`transcribe_ui.py`, `transcriber_core.py`, the root `install.ps1`) is
-not packaged and is outside the security model. For a fix there only: contain deliberate
-downloads in `allow_network()` and restore its state on failure; do not set
-`HF_HUB_DISABLE_IMPLICIT_TOKEN`; preserve its queue, Stop, partial-save and collision-safe file
-names, and never overwrite or delete its outputs, settings or models. `test_diarization.py`
-prints transcript text: synthetic or public audio only. A7 deletes this section and the earlier
-token guard in `INVARIANT_GUARDS`.

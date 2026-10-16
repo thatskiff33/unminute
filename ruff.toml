@@ -7,9 +7,6 @@ target-version = "py312"   # the only Python the installer accepts
 [lint]
 select = ["E", "F", "W", "B", "UP"]
 ignore = [
-    # transcriber_core and test_diarization must set HF_* environment variables
-    # BEFORE importing faster_whisper / pyannote; the late imports are intentional.
-    "E402",
     # short `log = lambda msg: ...` helpers read fine.
     "E731",
 ]

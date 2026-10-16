@@ -257,9 +257,9 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def setup_state(self):
         return _safe(ws.setup_state)
 
-    def download_model(self, name, token=None, remember=True, use_earlier=False):
+    def download_model(self, name, token=None, remember=True):
         # The token passes straight through; it is never returned or logged.
-        return _safe(ws.download_model, name, token, bool(remember), bool(use_earlier))
+        return _safe(ws.download_model, name, token, bool(remember))
 
     def verify_model(self, name):
         return _safe(ws.verify_model, name)

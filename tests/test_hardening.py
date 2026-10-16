@@ -1,6 +1,7 @@
 # Security hardening checks (#111 slice A2): the window shell's dispatch guard
 # and navigation rule, settings validation, test-only engines, the workspace
-# location, SQLite temporary storage, the earlier app's token and nvidia-smi.
+# location, SQLite temporary storage, a token left in the environment and
+# nvidia-smi.
 #   python -m unittest discover -s tests -v
 
 import importlib
@@ -533,20 +534,26 @@ class SettingsAndTestEngineTests(unittest.TestCase):
                       speaker_model="test:fake_worker_engines:fake_diarizer")
 
 
-class EarlierTokenTests(unittest.TestCase):
-    def tearDown(self):
-        credentials._earlier["token"] = None
-
-    def test_token_leaves_the_environment_and_stays_in_memory(self):
+class EnvironmentTokenTests(unittest.TestCase):
+    def test_token_leaves_the_environment_and_is_not_kept(self):
         with mock.patch.dict(os.environ, {"HF_TOKEN": " hf_example "}):
-            credentials.adopt_earlier_token()
+            credentials.drop_environment_token()
             self.assertNotIn("HF_TOKEN", os.environ)
-        self.assertEqual(credentials.earlier_token(), "hf_example")
+        self.assertFalse(hasattr(credentials, "earlier_token"))
+        self.assertNotIn("hf_example", repr(vars(credentials)))
 
-    def test_no_token_means_none(self):
+    def test_no_token_is_fine(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            credentials.adopt_earlier_token()
-        self.assertIsNone(credentials.earlier_token())
+            credentials.drop_environment_token()
+            self.assertNotIn("HF_TOKEN", os.environ)
+
+    def test_the_window_process_drops_it_before_anything_starts(self):
+        # workspace.__main__ runs this at import, before any child process.
+        source = (Path(__file__).resolve().parents[1] / "workspace" / "__main__.py").read_text(
+            encoding="utf-8")
+        self.assertIn("credentials.drop_environment_token()", source)
+        self.assertLess(source.index("credentials.drop_environment_token()"),
+                        source.index("def main("))
 
 
 class NvidiaSmiTests(unittest.TestCase):

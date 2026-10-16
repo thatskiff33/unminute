@@ -1571,8 +1571,6 @@ async function renderSetup() {
   $("s-token").disabled = !allowed("AllowModelDownloads");
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
     || !allowed("AllowModelDownloads");
-  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready"
-    || !allowed("AllowModelDownloads");
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
@@ -1620,7 +1618,7 @@ async function renderSuMic() {
 
 function startDownload(name, extra = {}) {
   return attempt(async () => {
-    await call("download_model", name, extra.token || null, extra.remember !== false, !!extra.earlier);
+    await call("download_model", name, extra.token || null, extra.remember !== false);
     say("Download started");
     refresh();
   });
@@ -1640,8 +1638,6 @@ function wireSetup() {
     startDownload(speakerName(), { token, remember: $("s-remember").checked });
   });
   $("s-use-remembered").addEventListener("click", () => startDownload(speakerName()));
-  $("s-use-earlier").addEventListener("click", () =>
-    startDownload(speakerName(), { earlier: true, remember: $("s-remember").checked }));
   const removeToken = () => attempt(async () => {
     await call("remove_token");
     say("Token removed. Downloaded models keep working.");

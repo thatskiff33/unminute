@@ -111,23 +111,14 @@ def remove_token(target=TARGET):
                           f"{ctypes.get_last_error()}).")
 
 
-# The earlier source-installed app asked users to keep their token in the
-# HF_TOKEN environment variable. The app takes it out of its own environment
-# at start (adopt_earlier_token), so worker, download and WebView2 processes
-# never inherit it, and keeps it only in memory for the "use the token from
-# the earlier app" option in Setup.
-_earlier = {"token": None}
+# The earlier source-installed app (removed in #111 A7) asked users to keep
+# their token in the HF_TOKEN environment variable, where it may still be. The
+# app takes it out of its own environment at start, so worker, download and
+# WebView2 processes never inherit it. It is not used: Setup asks for a token.
 
 
-def adopt_earlier_token():
-    """Move HF_TOKEN from this process's environment into memory. Call once,
-    before any child process starts."""
+def drop_environment_token():
+    """Remove HF_TOKEN from this process's environment. Call once, before
+    any child process starts."""
     import os
-    value = os.environ.pop("HF_TOKEN", None)
-    if value and value.strip():
-        _earlier["token"] = value.strip()
-
-
-def earlier_token():
-    """The earlier app's token, if one was adopted at start (else None)."""
-    return _earlier["token"]
+    os.environ.pop("HF_TOKEN", None)

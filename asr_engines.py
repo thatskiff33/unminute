@@ -19,9 +19,9 @@
 #
 # This module never touches the network on its own. Downloads happen only in
 # install()/install_model(), which callers wrap in their own network permission
-# (transcriber_core.allow_network() in the app; the installer runs it online).
+# (the app's separate download process, workspace/setup.py).
 #
-# CLI (used by install.ps1):
+# CLI (written for the earlier app's installer, removed in #111 A7):
 #   python asr_engines.py ensure [--model NAME ...] [--present] [--cache DIR]
 
 import hashlib

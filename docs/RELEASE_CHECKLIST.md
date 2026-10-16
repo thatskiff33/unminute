@@ -3,7 +3,6 @@
 This lists what a workspace release needs, what has been verified, and what still needs people or hardware.
 
 - **Publishing** is a separate step. It needs explicit authorisation and follows [RELEASING.md](RELEASING.md).
-- **The earlier source app** keeps its own release process (README, `install.cmd`).
 
 ## Every change (automated, in CI)
 

@@ -442,7 +442,7 @@
     return { total: rows.length, start, items: rows.slice(start, start + count) };
   }
   const handlers = {
-    setup_state: () => ({ cards: data.cards, token_remembered: false, earlier_token: false,
+    setup_state: () => ({ cards: data.cards, token_remembered: false,
                           speakers: true, ...data.setup }),
     settings: () => data.settings,
     watched_folders: () => ({ folders: data.folders || [], last_scan: null, interval_minutes: 5 }),

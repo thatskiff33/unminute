@@ -14,7 +14,7 @@ It started from v0.4.3 (tag commit `579746f`). As each #111 slice merges, its co
 
 In scope: the Meeting Workspace app (`workspace/`, `asr_engines.py`, `offline_guard.py`), its private runtime and installer (`packaging/`, `tools/build_package.py`), and the build and release pipeline (`.github/workflows/`).
 
-Out of scope: the earlier source-installed app (`transcribe_ui.py`, `transcriber_core.py`, the root `install.ps1`). It is not part of the package, is assumed not to be installed on managed laptops, and will be removed from the repository by #111 slice A7 (planned). Also out of scope: Windows itself, account and sign-in security, endpoint protection, and the tools staff paste a handoff into (for example an AI assistant). Those are the firm's controls; this document states where Unminute depends on them.
+Out of scope: the earlier source-installed app (Whisper Transcriber). It was never part of the package and was removed from the repository by #111 slice A7; a copy still installed on a laptop gets no fixes and is assumed to be removed (see "If the earlier app is still installed" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md)). Also out of scope: Windows itself, account and sign-in security, endpoint protection, and the tools staff paste a handoff into (for example an AI assistant). Those are the firm's controls; this document states where Unminute depends on them.
 
 Assumptions for a managed deployment:
 
