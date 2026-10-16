@@ -567,6 +567,10 @@ function renderSpeakers(d) {
     content = card("soft", el("span", { class: "panel-title", textContent: "Not identified" }),
       "Speaker identification runs after transcription when it is downloaded and turned on in Settings.",
       skip());
+  else if (s.status === "skipped" && d.can_skip)     // Identify again is queued after a skip
+    content = card("soft", el("span", { class: "panel-title", textContent: "Waiting to identify speakers" }),
+      "Identify again starts when the computer is free. Skip to keep the transcript without speaker labels.",
+      skip());
   else if (s.status === "skipped")
     content = card("soft", el("span", { class: "panel-title", textContent: "Skipped" }),
       "No speaker labels. The transcript is ready to review and hand off as it is." +

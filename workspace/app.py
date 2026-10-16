@@ -853,7 +853,8 @@ class Workspace:
                     except StoreError:
                         pass
                 finally:
-                    self._busy = self._busy_ref = None
+                    with self._lock:           # cleared together, as they are set
+                        self._busy = self._busy_ref = None
                     self._yielded = False      # only the run that recording stopped
 
     def _maybe_purge(self):
@@ -901,8 +902,9 @@ class Workspace:
                                                gpu_site=site, skips_seen=skips)
                 m = self.store.meeting(mid)
                 if result == speakers.SpeakerResult.STOPPED and m and m["paused"]:
-                    with self._lock:          # paused mid-pass: kept, with its count
-                        self._reruns.setdefault(mid, count)
+                    with self._lock:          # paused mid-pass: kept, with its count,
+                        if self.store.skip_count(vid) == skips:    # unless skipped since
+                            self._reruns.setdefault(mid, count)
             finally:
                 self._gpu_pass = False
                 with self._lock:
@@ -1070,7 +1072,7 @@ class Workspace:
             return None
         if busy[1] == "speakers":
             return 0
-        if busy[1] == "rerun":
+        if busy[1] == "rerun" and ref:
             return ref[2]
         return None
 
@@ -1088,6 +1090,8 @@ class Workspace:
         last = runs[-1]
         if (last["status"] == "interrupted" and not self._speakers_due(runs)
                 and m["id"] not in self._reruns):
+            if m["reviewed_at"]:
+                return "Speaker identification was interrupted; the transcript is unaffected."
             return ("Speaker identification was interrupted. Use Identify again to run it; "
                     "the transcript is unaffected.")
         return last["error"]

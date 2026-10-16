@@ -495,6 +495,29 @@ class WorkspaceTests(unittest.TestCase):
         self.assertIn("Use Identify again", s["error"])
         ws._reruns[mid] = None                    # queued again: it will start by itself
         self.assertEqual(ws.detail(mid)["speakers"]["error"], SPEAKER_RESTART_NOTE)
+        del ws._reruns[mid]
+        ws.confirm_reviewed(mid)                  # reviewed: Identify again is not offered
+        self.assertNotIn("Identify again", ws.detail(mid)["speakers"]["error"])
+
+    def test_a_paused_identify_again_is_not_queued_again_after_a_skip(self):
+        from unittest import mock
+
+        from workspace import speakers
+        ws = self.open(start=False)
+        mid, _ = self.transcribed(ws)
+        ws.skip_speakers(mid)
+        ws.rerun_speakers(mid)
+        job = ws._next_work()
+        vid = ws.store.active_version(mid)["id"]
+
+        def paused_then_skipped(*a, **kw):
+            # The user pauses the pass, then skips before it is put back in the queue.
+            ws.store.set_paused(mid, True)
+            ws.store.skip_speaker_run(vid, again=True)
+            return speakers.SpeakerResult.STOPPED
+        with mock.patch.object(speakers, "run_speakers", side_effect=paused_then_skipped):
+            ws._run(*job)
+        self.assertNotIn(mid, ws._reruns)
 
     def test_skip_stops_a_running_pass_and_it_never_restarts(self):
         import time as _time
