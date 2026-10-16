@@ -239,14 +239,14 @@ function cleanupRow(m) {
       : null);
 }
 
-// Transcribing and speaker identification: a card per meeting with its
-// progress under the title. Speaker identification has no safe point inside,
-// so Pause stops the pass and Resume restarts it.
 // A Windows confirmation answered No, or asked again too soon after a No (#111 A6).
 function declined(r, text) {
   return r.retry_soon ? "Wait a moment, then try again." : text;
 }
 
+// Transcribing and speaker identification: a card per meeting with its
+// progress under the title. Speaker identification has no safe point inside,
+// so Pause stops the pass and Resume restarts it.
 function workRow(m, busyTitle) {
   const pause = (title) => button("Pause", () => attempt(() => call("pause", m.id).then(refresh)), { title });
   const resume = () => button("Resume", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true });

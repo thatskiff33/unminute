@@ -579,7 +579,6 @@ def _ask(window, title, text):
             dialog.AcceptButton = no                     # Enter means No
             dialog.CancelButton = no                     # Esc and the close box mean No
             timer.Interval = CONFIRM_DELAY_MS
-            pressed = {"mouse": False}
 
             def restart(*_):
                 timer.Stop()                             # Yes is still disabled: wait again
@@ -595,20 +594,15 @@ def _ask(window, title, text):
                 timer.Stop()
                 timer.Start()
 
-            def mouse_down_on_yes(sender, args):
-                pressed["mouse"] = True
-
-            def yes_clicked(sender, args):
-                # Click also fires for Enter or Space while Yes has focus: only a
-                # mouse press on Yes counts.
-                if pressed["mouse"]:
+            def mouse_up_on_yes(sender, args):
+                # Yes is decided by a mouse button released over Yes itself; the
+                # keyboard (Enter or Space with Yes focused) never answers Yes.
+                if yes.Enabled and yes.ClientRectangle.Contains(args.Location):
                     dialog.DialogResult = DialogResult.Yes
-                pressed["mouse"] = False
 
             timer.Tick += EventHandler(enable)
             dialog.Activated += EventHandler(activated)
-            yes.MouseDown += MouseEventHandler(mouse_down_on_yes)
-            yes.Click += EventHandler(yes_clicked)
+            yes.MouseUp += MouseEventHandler(mouse_up_on_yes)
             dialog.KeyDown += KeyEventHandler(lambda s, e: restart() if not yes.Enabled else None)
             for control in (dialog, layout, buttons, message, no):
                 control.MouseDown += MouseEventHandler(
