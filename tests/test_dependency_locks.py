@@ -106,8 +106,10 @@ class LockTests(unittest.TestCase):
     def test_the_build_installs_only_the_lock_with_hashes(self):
         source = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
         body = source[source.index("def install_wheels"):source.index("def write_pth")]
-        for flag in ('"--require-hashes"', '"--no-deps"', '"--only-binary=:all:"'):
-            self.assertIn(flag, body)
+        for flag in ("--require-hashes", "--no-deps", "--only-binary=:all:"):
+            self.assertIn(flag, build.TARGET)
+        self.assertEqual(body.count("+ TARGET + lock"), 2)      # the download and the install
+        self.assertIn('"--no-index"', body)
         self.assertIn('ROOT / "requirements.txt"', body)
         self.assertFalse((ROOT / "workspace" / "requirements.txt").exists())
 

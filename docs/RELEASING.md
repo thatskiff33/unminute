@@ -83,7 +83,7 @@ The workflow accepts only `vX.Y.Z` or `vX.Y.Z-preview.N`, only a commit that is 
 The workflow publishes the notes and the source archives only. The Windows package is built and attached by hand, from the commit that is tagged:
 
 1. **Changelog and version.** Merge the `## vX.Y.Z` section and `VERSION` made by `tools/changelog.py` (step 1 of "Cutting a release"), then check out that commit of `main`.
-2. **Build.** Run `python tools/build_package.py` on Windows with 64-bit CPython 3.12, from a clean working tree. It takes the version from `VERSION`; a `--version` that differs is refused. The command prints the zip's SHA-256 and writes the `.sha256` file to `dist/`.
+2. **Build.** Run `python tools/build_package.py --release` on Windows with 64-bit CPython 3.12. It refuses a working tree with any change or untracked file, and a HEAD that is not the commit tagged `vX.Y.Z`. It takes the version from `VERSION`; a `--version` that differs is refused. The command prints the zip's SHA-256 and writes the `.sha256` file and the bill of materials (`Unminute-<version>.cdx.json`) to `dist/`. The build is reproducible: building the same commit again gives the same SHA-256.
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
