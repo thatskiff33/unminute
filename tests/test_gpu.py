@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -91,11 +92,39 @@ class InstallTests(unittest.TestCase):
 
     def test_first_gpu_use_in_a_session_runs_the_full_check(self):
         gpu.install(self.cache, lambda m: None, self.fetch)
-        gpu._verified.clear()
+        gpu._full_checks.clear()
         (gpu.site_dir(self.cache) / "torch" / "deep.pyd").write_bytes(b"MZ")  # not at root
         self.assertEqual(gpu.check(self.cache), [])          # the quick check misses it
         self.assertFalse(gpu.verified_for_use(self.cache))   # the full check does not
         (gpu.site_dir(self.cache) / "torch" / "deep.pyd").unlink()
+        self.assertTrue(gpu.verified_for_use(self.cache))
+
+    def test_a_failed_full_check_stops_use_until_one_passes(self):
+        # #153: once a GPU run has passed the full check, a same-size change
+        # that Check every file finds must stop the next run too.
+        gpu.install(self.cache, lambda m: None, self.fetch)
+        gpu._full_checks.clear()
+        self.assertTrue(gpu.verified_for_use(self.cache))            # full check passes
+        dll = gpu.site_dir(self.cache) / "torch" / "lib" / "cudart64_13.dll"
+        good = dll.read_bytes()
+        dll.write_bytes(b"\x01" * len(good))                         # same size
+        self.assertTrue(gpu.verified_for_use(self.cache))            # quick check only
+        self.assertTrue(gpu.full_check(self.cache))                  # Check every file
+        self.assertFalse(gpu.verified_for_use(self.cache))           # not used again
+        self.assertEqual(gpu.status(self.cache)[0], "invalid")       # Repair is offered
+        dll.write_bytes(good)
+        self.assertTrue(gpu.verified_for_use(self.cache))            # a full check passes
+        self.assertEqual(gpu.status(self.cache)[0], "ready")
+
+    def test_a_repair_starts_afresh(self):
+        gpu.install(self.cache, lambda m: None, self.fetch)
+        (gpu.site_dir(self.cache) / "torch" / "lib" / "cudart64_13.dll").write_bytes(
+            b"\x01" * 64)
+        self.assertTrue(gpu.full_check(self.cache))
+        self.assertEqual(gpu.status(self.cache)[0], "invalid")
+        time.sleep(0.01)                     # a new installed.json, a new time stamp
+        gpu.install(self.cache, lambda m: None, self.fetch)          # Repair
+        self.assertEqual(gpu.status(self.cache)[0], "ready")
         self.assertTrue(gpu.verified_for_use(self.cache))
 
     def test_install_verifies_and_skips_headers(self):
@@ -280,6 +309,30 @@ class WorkspaceGpuTests(unittest.TestCase):
             with self.assertRaises(WorkspaceError):
                 self.ws.set_settings({"gpu_speakers": True})        # no NVIDIA card
         self.ws.set_settings({"gpu_speakers": False})               # turning off: always
+
+    def test_check_every_file_that_fails_puts_speakers_on_the_processor(self):
+        # #153 through the app: Check every file fails after a GPU run passed.
+        card = {"name": "NVIDIA test", "driver": "595.95", "memory_mb": 4096, "driver_ok": True}
+        changed = {"now": False}
+
+        def check(cache_dir, full=False):
+            return ["torch/lib/x.dll: checksum does not match"] if full and changed["now"] else []
+        with mock.patch.object(gpu, "status", return_value=("ready", "")), \
+                mock.patch.object(gpu, "detected", return_value=card), \
+                mock.patch.object(gpu, "check", side_effect=check), \
+                mock.patch.object(gpu, "_install_key", return_value=("k", 1)), \
+                mock.patch.dict(gpu._full_checks, clear=True):
+            self.ws.set_settings({"gpu_speakers": True, "mode": "faster"})
+            self.assertEqual(self.ws._speaker_device()[0], "cuda")
+            changed["now"] = True
+            self.assertEqual(self.ws._speaker_device()[0], "cuda")     # quick check only
+            self.ws.verify_model(gpu.COMPONENT)                        # Check every file
+            deadline = time.monotonic() + 10
+            while (self.ws.downloads.state[gpu.COMPONENT]["state"] == "running"
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+            self.assertEqual(self.ws.downloads.state[gpu.COMPONENT]["state"], "failed")
+            self.assertEqual(self.ws._speaker_device()[0], "cpu")
 
     def test_device_is_the_gpu_only_in_faster_mode_with_the_component(self):
         card = {"name": "NVIDIA test", "driver": "595.95", "memory_mb": 4096, "driver_ok": True}

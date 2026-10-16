@@ -1,0 +1,1 @@
+- **A failed check of the graphics card component now stops its use.** If Check every file finds a damaged file in the graphics card component, speaker identification uses the processor and the component shows as damaged until it is repaired or passes the check again. Before, a component already used once that session could still be used.

@@ -230,11 +230,12 @@ def check(cache_dir, full=False):
 
 
 def status(cache_dir):
-    """('ready' | 'missing' | 'invalid', plain detail)."""
+    """('ready' | 'missing' | 'invalid', plain detail). A full check that
+    failed this session counts, though the quick check may pass (#153)."""
     problems = check(cache_dir)
     if problems == ["not installed"]:
         return "missing", "Not downloaded yet."
-    if problems:
+    if problems or _full_checks.get(_install_key(cache_dir)) is False:
         return "invalid", ("Damaged or incomplete. Repair downloads a fresh, verified copy; "
                            "the damaged copy is kept aside (only the most recent one).")
     return "ready", "Downloaded and verified."
@@ -296,20 +297,36 @@ def install(cache_dir, log, fetch):
         raise
 
 
-_verified = set()     # component folders fully checked in this app session
+# Full checks in this app session, by installation: True passed (later GPU
+# runs use the quick check), False failed (no GPU run until a full check passes
+# again). A repair writes a new installed.json, so it starts afresh.
+_full_checks = {}
+
+
+def _install_key(cache_dir):
+    marker = component_dir(cache_dir) / "installed.json"
+    try:
+        return str(marker), marker.stat().st_mtime_ns
+    except OSError:
+        return str(marker), None
+
+
+def full_check(cache_dir):
+    """The full check (every file's SHA-256 and no added file anywhere, a
+    few seconds), remembered for this installation in this app session."""
+    key = _install_key(cache_dir)
+    problems = check(cache_dir, full=True)
+    _full_checks[key] = not problems
+    return problems
 
 
 def verified_for_use(cache_dir):
-    """Before the first GPU run of an app session: the full check (every
-    file's SHA-256 and no added file anywhere, a few seconds). Later runs in
-    the same session use the quick check."""
-    key = str(component_dir(cache_dir))
-    if key in _verified:
+    """The full check before the first GPU run of an app session, and again
+    after any full check that failed (from Check every file too). Once one has
+    passed, later runs use the quick check."""
+    if _full_checks.get(_install_key(cache_dir)):
         return not check(cache_dir)
-    if check(cache_dir, full=True):
-        return False
-    _verified.add(key)
-    return True
+    return not full_check(cache_dir)
 
 
 def _rename(src, dst, attempts=20, wait=0.5):

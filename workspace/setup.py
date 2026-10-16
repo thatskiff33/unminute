@@ -436,7 +436,7 @@ class Downloads:
                                           "message": "The check could not be completed."}
         try:
             if name == gpu.COMPONENT:
-                ok = not gpu.check(self.cache_dir, full=True)
+                ok = not gpu.full_check(self.cache_dir)      # remembered: #153
                 spec = None
             else:
                 spec = asr_engines.MANAGED_MODELS[name]
