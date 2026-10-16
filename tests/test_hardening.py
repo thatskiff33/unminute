@@ -435,6 +435,15 @@ class WorkspaceLocationTests(unittest.TestCase):
         self.assertEqual(ok, Path("C:\\Users\\a\\AppData\\Local"))
 
     @unittest.skipUnless(os.name == "nt", "Windows paths")
+    def test_a_onedrive_variable_without_a_drive_still_counts(self):
+        # Python 3.13 and later no longer call "\Users\a\..." absolute (#111 B4).
+        from workspace.store import StoreError
+        drive = os.path.splitdrive(os.getcwd())[0]          # where realpath puts it
+        with self.assertRaises(StoreError):
+            self.check({"LOCALAPPDATA": f"{drive}\\Users\\a\\OneDrive - Firm\\AppData\\Local",
+                        "OneDriveCommercial": "\\Users\\a\\OneDrive - Firm"})
+
+    @unittest.skipUnless(os.name == "nt", "Windows paths")
     def test_volume_paths_are_local_and_unc_paths_are_not(self):
         from workspace import store
         self.assertFalse(store._network_path("\\\\?\\Volume{1234}\\Users\\a\\AppData"))

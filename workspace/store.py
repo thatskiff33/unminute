@@ -270,7 +270,10 @@ def local_appdata():
     profile = os.environ.get("USERPROFILE", "")
     for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
         synced = os.environ.get(var, "")
-        if not synced or not os.path.isabs(synced):
+        # A rooted path without a drive ("\Users\a\OneDrive") still counts:
+        # Python 3.13 stopped calling it absolute, and realpath puts it on the
+        # current drive.
+        if not synced or not (os.path.isabs(synced) or synced.startswith(("\\", "/"))):
             continue
         synced_key = _folder_key(_real(synced))
         # A variable pointing at a drive root, or at or above the user's
