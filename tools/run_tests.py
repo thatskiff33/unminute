@@ -24,6 +24,8 @@ ALLOWED_SKIPS = {
     "clipboard busy": "transient contention",
     # The earlier tkinter app's queue tests need its full stack (torch, models).
     "app dependencies not installed": "earlier app only, needs models",
+    # huggingface_hub and httpx are not in the CI test install (B1's lock adds them).
+    "download libraries not installed": "model download stack not installed in CI",
 }
 
 

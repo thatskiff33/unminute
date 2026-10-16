@@ -109,7 +109,7 @@ def whisper(cache, audio, device):
 def pyannote(cache, audio, device):
     import torch
     from pyannote.audio import Pipeline
-    folder = asr_engines.find_verified(asr_engines.SPEAKER_MODEL, cache)
+    folder = asr_engines.find_verified(asr_engines.SPEAKER_MODEL, cache, full=True)
     pipe = Pipeline.from_pretrained(str(folder)).to(torch.device(device))
     t = time.perf_counter()
     out = pipe({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": SR})

@@ -207,7 +207,12 @@ WHISPER_MODELS = {
 # pyannote speaker identification. Gated on Hugging Face (needs the user's
 # token to download, never to load). pyannote 4.0.4 loads both sub-models with
 # torch.load(weights_only=False), which can execute code from a tampered file,
-# so these hashes are what stands between the cache and code execution.
+# so these hashes are what stands between the cache and code execution. The
+# workspace re-hashes every file in full before each load (engines.diarize_file):
+# a size-and-date marker is not enough here. Remaining gap: a process running
+# as the user could change a file between that check and torch.load (#111 B7
+# moves managed models to a folder users cannot write; B9 looks at loading
+# without full unpickling).
 SPEAKER_MODEL = ModelSpec(
     name="speaker-diarization-community-1",
     folder="speaker-diarization-community-1",

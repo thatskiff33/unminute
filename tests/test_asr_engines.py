@@ -115,6 +115,18 @@ class CheckFilesTests(unittest.TestCase):
         os.utime(p, (later, later))
         self.assertIn("checksum", ae.check_files(self.spec, self.folder)[0])
 
+    def test_quick_check_trusts_a_restored_date_but_full_check_does_not(self):
+        # The attack the speaker model's full re-hash closes (#111 A4): same
+        # size, different bytes, and the old modification time put back.
+        write_files(self.folder, GOOD)
+        self.assertEqual(ae.check_files(self.spec, self.folder), [])
+        p = self.folder / "weights.onnx"
+        before = p.stat()
+        p.write_bytes(b"\x07\x07" * 500)
+        os.utime(p, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(ae.check_files(self.spec, self.folder), [])      # quick: fooled
+        self.assertIn("checksum", ae.check_files(self.spec, self.folder, full=True)[0])
+
     def test_marker_for_another_revision_is_not_trusted(self):
         write_files(self.folder, GOOD)
         ae.check_files(self.spec, self.folder)

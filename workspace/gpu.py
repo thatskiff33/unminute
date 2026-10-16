@@ -28,7 +28,7 @@ from pathlib import Path
 COMPONENT = "gpu-speakers"
 VERSION = "torch-2.13.0-cu130"
 LICENCE = ("PyTorch BSD-3-Clause; NVIDIA CUDA runtime and cuDNN under NVIDIA's licences",
-           "PyTorch CUDA 13.0 build from download.pytorch.org")
+           "PyTorch CUDA 13.0 build from download-r2.pytorch.org")
 
 # Pinned on 14 October 2026 from https://download.pytorch.org/whl/cu130/ (the
 # index publishes these SHA-256 values with each file). record_sha256 pins each

@@ -95,12 +95,14 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install test dependencies
+        # The window shell's packages, numpy and PyAV, and the download stack
+        # (huggingface_hub, httpx) for the download-process tests; every
+        # dependency is held to the pinned versions by -c requirements.txt.
         shell: pwsh
         run: |
-          $numpy = Select-String -Path requirements.txt -Pattern '^numpy==' | ForEach-Object { $_.Line }
-          $av = Select-String -Path requirements.txt -Pattern '^av==' | ForEach-Object { $_.Line }
           python -m pip install --disable-pip-version-check --only-binary=:all: `
-            --find-links packaging/wheels $numpy $av -r workspace/requirements.txt
+            --find-links packaging/wheels -c requirements.txt `
+            numpy av huggingface_hub httpx -r workspace/requirements.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Unit tests (strict skips)
         run: python tools/run_tests.py --strict-skips

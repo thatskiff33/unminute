@@ -138,5 +138,149 @@ class NetworkGuardTests(unittest.TestCase):
         self.assertEqual(og.blocked[-1][0], f"host{og.MAX_RECORDED + 19}.example")
 
 
+class GuardGapTests(unittest.TestCase):
+    """Paths that bypass socket.connect (#111 A4): UDP datagrams and asyncio's
+    Windows event loop, which connects with ConnectEx/WSAConnect directly and
+    skips DNS for IP literals."""
+
+    def setUp(self):
+        og.install()
+        og.blocked.clear()
+
+    def tearDown(self):
+        og.uninstall()
+
+    def test_udp_datagram_to_a_remote_address_is_refused(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            with self.assertRaises(og.NetworkBlockedError):
+                s.sendto(b"x", (TEST_NET, 53))
+            with self.assertRaises(og.NetworkBlockedError):
+                s.sendto(b"x", 0, (TEST_NET, 53))
+        self.assertEqual(og.blocked, [(TEST_NET, 53), (TEST_NET, 53)])
+
+    def test_udp_to_loopback_still_works(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as rx, \
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+            rx.bind(("127.0.0.1", 0))
+            tx.sendto(b"hi", rx.getsockname())
+            self.assertEqual(rx.recv(10), b"hi")
+
+    def test_asyncio_connection_to_an_ip_literal_is_refused(self):
+        import asyncio
+
+        async def attempt():
+            await asyncio.wait_for(asyncio.open_connection(TEST_NET, 443), 5)
+        with self.assertRaises(og.NetworkBlockedError):
+            asyncio.run(attempt())
+        self.assertIn((TEST_NET, 443), og.blocked)
+
+    def test_asyncio_udp_to_an_ip_literal_is_refused(self):
+        import asyncio
+
+        async def attempt():
+            loop = asyncio.get_running_loop()
+            transport, _ = await loop.create_datagram_endpoint(
+                asyncio.DatagramProtocol, remote_addr=(TEST_NET, 53))
+            transport.close()
+        with self.assertRaises(og.NetworkBlockedError):
+            asyncio.run(attempt())
+
+    def test_uninstall_restores_asyncio_and_sendto(self):
+        og.uninstall()
+        self.assertIsNot(socket.socket.sendto, og._guarded_sendto)
+        proactor = og._iocp_proactor()
+        if proactor is not None:
+            self.assertIsNot(proactor.connect, og._guarded_iocp_connect)
+        og.install()
+
+
+class AllowHostsTests(unittest.TestCase):
+    """The download process may reach only the listed hosts (and public
+    addresses they resolved to) and the configured proxies: a redirect
+    elsewhere fails at its DNS lookup, or at host_allowed() for each HTTP
+    request when a proxy resolves names."""
+
+    # Public-looking addresses; nothing is ever contacted.
+    FAKE = {"huggingface.co": "18.239.50.7", "cdn-lfs.hf.co": "3.167.0.8",
+            "rebind.hf.co": "10.0.0.5", "proxy.corp.example": "10.1.2.3"}
+
+    def setUp(self):
+        self.saved = (og._allowed_names, og._proxy_names, set(og._allowed_addresses))
+        og.install()
+        og.blocked.clear()
+        self.real = og._orig["getaddrinfo"]
+
+        def fake_resolver(host, port, *args, **kwargs):
+            key = str(host).lower().rstrip(".")
+            if key in self.FAKE:
+                return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.FAKE[key], port))]
+            raise AssertionError(f"test tried a real lookup: {host}")
+        og._orig["getaddrinfo"] = fake_resolver
+
+    def tearDown(self):
+        og._orig["getaddrinfo"] = self.real       # uninstall() puts this back on socket
+        og.uninstall()
+        og._allowed_names, og._proxy_names = self.saved[0], self.saved[1]
+        og._allowed_addresses.clear()
+        og._allowed_addresses.update(self.saved[2])
+
+    def allow(self, proxies=None):
+        from unittest import mock
+        with mock.patch("urllib.request.getproxies", return_value=proxies or {}):
+            og.allow_hosts(("huggingface.co", "hf.co"))
+
+    def test_listed_hosts_and_subdomains_resolve_and_connect(self):
+        self.allow()
+        self.assertEqual(socket.getaddrinfo("huggingface.co", 443)[0][4][0], "18.239.50.7")
+        self.assertEqual(socket.getaddrinfo("CDN-LFS.hf.co.", 443)[0][4][0], "3.167.0.8")
+        self.assertTrue(og._check("18.239.50.7", 443))
+        self.assertTrue(og._check("3.167.0.8", 443))
+
+    def test_other_hosts_lookalikes_and_tricks_are_refused(self):
+        self.allow()
+        for host in ("evil.example", "huggingface.co.evil.example", "nothf.co",
+                     "otel.pyannote.ai", "huggingface.co%x.evil.example",
+                     "huggingface.co/evil.example", "[huggingface.co]"):
+            with self.assertRaises(og.NetworkBlockedError, msg=host):
+                socket.getaddrinfo(host, 443)
+            self.assertFalse(og.host_allowed(host), host)
+        s = socket.socket()
+        try:
+            with self.assertRaises(og.NetworkBlockedError):
+                s.connect((TEST_NET, 443))         # never resolved from an allowed name
+        finally:
+            s.close()
+
+    def test_an_allowed_name_resolving_to_a_private_address_is_not_followed(self):
+        self.allow()
+        socket.getaddrinfo("rebind.hf.co", 443)
+        self.assertFalse(og._check("10.0.0.5", 443))
+
+    def test_request_targets_must_be_listed_names(self):
+        self.allow()
+        self.assertTrue(og.host_allowed("huggingface.co"))
+        self.assertTrue(og.host_allowed("us.aws.cdn.hf.co"))
+        for host in ("18.239.50.7", "[::1]", "", None, "proxy.corp.example"):
+            self.assertFalse(og.host_allowed(host), repr(host))
+
+    def test_proxies_are_allowed_by_exact_name_only(self):
+        self.allow({"https": "http://user:secret@proxy.corp.example:8080",
+                    "http": "http://192.0.2.44:3128", "no": "localhost"})
+        self.assertEqual(socket.getaddrinfo("proxy.corp.example", 8080)[0][4][0], "10.1.2.3")
+        self.assertTrue(og._check("10.1.2.3", 8080))       # a proxy may be private
+        self.assertTrue(og._check("192.0.2.44", 3128))     # proxy given as an address
+        with self.assertRaises(og.NetworkBlockedError):
+            socket.getaddrinfo("other.proxy.corp.example", 8080)
+        self.assertFalse(og.host_allowed("proxy.corp.example"))
+
+    def test_allow_hosts_rejects_a_bare_string_and_ignores_blanks(self):
+        with self.assertRaises(TypeError):
+            og.allow_hosts("huggingface.co")
+        from unittest import mock
+        with mock.patch("urllib.request.getproxies", return_value={}):
+            og.allow_hosts(("", ".", "%", "huggingface.co"))
+        self.assertEqual(og._allowed_names, ("huggingface.co",))
+
+
 if __name__ == "__main__":
     unittest.main()

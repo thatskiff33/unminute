@@ -108,8 +108,45 @@ def cards(cache_dir):
 
 # -- the download process ------------------------------------------------------------
 
+BLOCKED_MESSAGE = ("The download site sent the download to an address this app does not "
+                   "allow, so it was stopped. Nothing was installed.")
+
+
+def _blocked(exc):
+    """True if this error, or one it was raised from, is the network guard."""
+    import offline_guard
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if isinstance(exc, offline_guard.NetworkBlockedError):
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+PROXY_MESSAGE = ("Your organisation's proxy refused the connection to the download site. Ask "
+                 "your IT team to allow huggingface.co and hf.co, or to install the models "
+                 "for you.")
+
+
+def _in_chain(exc, type_name):
+    """True if this error, or one it was raised from, has this type name
+    (httpx is not imported here)."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        if type(exc).__name__ == type_name:
+            return True
+        seen.add(id(exc))
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
 def _friendly(exc):
     """Download errors in plain language. Never includes the token."""
+    if _blocked(exc):
+        return BLOCKED_MESSAGE
+    if _in_chain(exc, "ProxyError"):
+        return PROXY_MESSAGE
     text = f"{type(exc).__name__}: {exc}"
     low = text.lower()
     if "gated" in low or "403" in low or "awaiting a review" in low:
@@ -124,16 +161,73 @@ def _friendly(exc):
     return "The download did not finish. Nothing was changed; try again."
 
 
-def _download_main(conn, name, cache_dir):
-    """Runs in the download process. Network is allowed here only."""
-    import sys
+# The only hosts the download process may reach (and their subdomains), plus
+# any proxy configured for this user. Hugging Face serves files from
+# huggingface.co and its CDN hosts under huggingface.co and hf.co; the
+# optional GPU component comes from the pinned PyTorch host. Every HTTP
+# request and redirect is checked against this list (_check_request), which
+# also holds behind a proxy; the network guard checks DNS lookups as well.
+DOWNLOAD_HOSTS = ("huggingface.co", "hf.co", "download-r2.pytorch.org")
 
+
+def _check_request(request):
+    """httpx request hook, run for every request a download makes and for each
+    redirect it follows. Behind a proxy this computer never looks up the
+    target name (the proxy does), so the guard's DNS check alone would not see
+    a redirect to another host: this check does."""
+    import offline_guard
+    host = request.url.raw_host       # the exact name sent (httpx decodes xn-- in .host)
+    if request.url.scheme != "https" or not offline_guard.host_allowed(host):
+        raise offline_guard.NetworkBlockedError(
+            13, f"Download address not allowed: {request.url.host}")
+
+
+def prepare_download_process():
+    """Set up the download process. Must run before huggingface_hub is
+    imported anywhere in it:
+      - telemetry off, and the native Xet downloader off (it would bypass the
+        guard and Python's TLS and proxy handling);
+      - the network guard with the DOWNLOAD_HOSTS allowlist;
+      - certificates checked against the Windows certificate store, so
+        downloads work behind a firm's TLS-inspecting proxy;
+      - every HTTP request and redirect checked against the allowlist."""
+    import sys
+    if "huggingface_hub" in sys.modules:
+        raise RuntimeError("huggingface_hub was imported before the download process was "
+                           "set up")
     import offline_guard
     offline_guard.disable_telemetry()
     os.environ["HF_HUB_OFFLINE"] = "0"          # this process exists to download
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+    offline_guard.install()
+    offline_guard.allow_hosts(DOWNLOAD_HOSTS)
+    import truststore
+    truststore.inject_into_ssl()
+    import huggingface_hub
+    from huggingface_hub.utils import _http as hf_http
+
+    def checked_client():
+        client = hf_http.default_client_factory()
+        hooks = client.event_hooks
+        hooks["request"] = [*hooks.get("request", []), _check_request]
+        client.event_hooks = hooks
+        return client
+    huggingface_hub.set_client_factory(checked_client)
+
+
+def _download_main(conn, name, cache_dir):
+    """Runs in the download process. Network is allowed here only, and only
+    to DOWNLOAD_HOSTS."""
+    import sys
     if sys.stderr is None or sys.stdout is None:   # pythonw: no console
         sys.stdout = sys.stderr = open(os.devnull, "w")
+    try:
+        prepare_download_process()
+    except Exception:
+        conn.send(("error", "Downloads could not be set up safely on this computer. "
+                            "Ask your IT team."))
+        return
     token = conn.recv()                          # via the pipe, never argv/env
     from workspace.worker import safe_message
 
