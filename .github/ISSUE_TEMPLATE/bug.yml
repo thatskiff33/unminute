@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in Unminute does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This repository is public. Do not include meeting content: no transcript text, meeting titles, speaker or client names, recordings, screenshots of meetings, file paths that name a client, or tokens. Describe the problem in general terms.
+
+        Security problems: do not use this form. Follow SECURITY.md (Security tab, "Report a vulnerability").
+  - type: input
+    id: version
+    attributes:
+      label: Unminute version
+      description: Shown in the About line at the bottom of Settings.
+      placeholder: "X.Y.Z"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: Include any message the app showed, and its incident code if it has one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a synthetic or public recording if one is needed.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: If your version has Help > Copy diagnostics, paste its output here. It contains no meeting content.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: This report contains no meeting content, names, recordings or tokens.
+          required: true
