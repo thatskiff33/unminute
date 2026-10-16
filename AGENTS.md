@@ -30,7 +30,8 @@ Privacy
   in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail rather than a security
   boundary; review for Codex.
 - **P3** Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths
-  or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`; partial until R9 (#130).
+  or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`;
+  partial until R9b (#130: page errors and Copy diagnostics).
 
 Network, secrets and integrity
 

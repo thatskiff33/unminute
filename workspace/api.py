@@ -10,10 +10,11 @@
 #     file dialog or a native drop, which pywebview resolves in Python.
 
 import base64
+import sys
 import threading
 import time
 
-from workspace import cleanup, consent
+from workspace import cleanup, consent, diag
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
 from workspace.bridge import _wav_bytes
 
@@ -47,8 +48,12 @@ def _safe(fn, *args):
         return {"ok": True, "value": fn(*args)}
     except WorkspaceError as exc:
         return {"ok": False, "error": str(exc)}
-    except Exception:
-        return {"ok": False, "error": "Something went wrong. Please try again."}
+    except Exception as exc:
+        # Recorded without its message (R9); the code lets support find it.
+        # The bridge method that called _safe (fn can be a lambda): its name
+        # is one of API_METHODS, never content.
+        code = diag.incident("bridge", exc, method=sys._getframe(1).f_code.co_name)
+        return {"ok": False, "error": f"Something went wrong (code {code}). Please try again."}
 
 
 def _int(value, lo, hi):
@@ -83,6 +88,7 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     pywebview window (for the native file dialog). `confirm(question)` asks a
     question (workspace.consent) outside the page (tests pass their own); by
     default a window the app draws itself, and No when there is no window."""
+    diag.set_current(ws.log)              # bridge incidents go to this workspace's log
     declined = {}                         # question title -> when it was last answered No
 
     def ask(question):

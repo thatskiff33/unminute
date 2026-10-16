@@ -19,6 +19,7 @@
 #   - Idle workers exit after IDLE_UNLOAD_S, releasing all model memory.
 
 import multiprocessing as mp
+import signal
 import os
 import re
 import threading
@@ -45,6 +46,11 @@ GPU_TIMEOUT_FLOOR_S = 300
 GPU_TIMEOUT_FACTOR = 1.0
 
 
+# A worker whose pipe has just closed is ending: wait this long for it, so its
+# own exit code (a crash's) is kept rather than replaced by terminate()'s.
+CRASH_GRACE_S = 2.0
+
+
 class WorkerCrashed(RuntimeError):
     """The worker process ended or hung; nothing from it was committed."""
 
@@ -66,31 +72,51 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
-def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False):
+def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False,
+                 log_dir=None, log_name="worker"):
     # Launched from pythonw there is no console: libraries that write to
-    # stdout/stderr must not crash the worker.
+    # stdout/stderr must not crash the worker. What they write is free text,
+    # which can include meeting content (P3), so it is never kept: with a log,
+    # only the error and warning type names are counted (R9). Unexpected
+    # errors and native crashes go to the worker's own log.
     import sys
+    from workspace import diag
+    log = diag.Log(log_dir, log_name) if log_dir else None
     if sys.stdout is None or sys.stderr is None:
-        sys.stdout = sys.stderr = open(os.devnull, "w")
-    # Before importing any model library: no telemetry, no network.
-    import offline_guard
-    offline_guard.disable_telemetry()
-    offline_guard.install()
-    # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
-    # Windows telemetry events, switched off by a call rather than a variable.
-    offline_guard.disable_onnxruntime_telemetry()
-    if gpu_site:
-        # The GPU worker (speaker identification only): the CUDA build of
-        # PyTorch must be first on the path before anything imports torch.
-        from workspace import gpu
-        gpu.activate(gpu_site)
-    if quiet:
-        from workspace.resources import set_priority
-        set_priority()
-    from workspace.engines import load_engine
+        if log is not None:
+            sys.stdout, sys.stderr = diag.OutputSummary(log, "stdout"), \
+                diag.OutputSummary(log, "stderr")
+        else:
+            sys.stdout = sys.stderr = open(os.devnull, "w")
+    if log is not None:
+        diag.use(log)
+    diag.quiet_crashes()                 # no Windows Error Reporting dialog (T21)
+    try:
+        # Before importing any model library: no telemetry, no network.
+        import offline_guard
+        offline_guard.disable_telemetry()
+        offline_guard.install()
+        # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
+        # Windows telemetry events, switched off by a call rather than a variable.
+        offline_guard.disable_onnxruntime_telemetry()
+        if gpu_site:
+            # The GPU worker (speaker identification only): the CUDA build of
+            # PyTorch must be first on the path before anything imports torch.
+            from workspace import gpu
+            gpu.activate(gpu_site)
+        if quiet:
+            from workspace.resources import set_priority
+            set_priority()
+        from workspace.engines import load_engine
+    except BaseException as exc:
+        # multiprocessing prints a failed start to stderr, never to excepthook.
+        diag.incident("worker_start", exc)
+        raise
 
     engine, loaded = None, None
     while True:
+        if log is not None:
+            log.limit_crash_file()           # recovered native errors stay small
         try:
             msg = conn.recv()
         except (EOFError, OSError):
@@ -134,16 +160,23 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 conn.send(("error", "UnknownRequest", op))
         except Exception as exc:
             # Message only: no stack traces or paths cross the process boundary.
-            conn.send(("error", type(exc).__name__, safe_message(exc), op))
+            # The type and frames (never the message) go to the worker's log,
+            # under a code that reaches the user with the message.
+            code = diag.incident("worker", exc, op=op)
+            conn.send(("error", type(exc).__name__, safe_message(exc), op, code))
 
 
 class WorkerHandle:
     """Owned by the state-owning process. One meeting at a time uses it."""
 
     def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S, gpu_site=None,
-                 allow_test_engines=False):
+                 allow_test_engines=False, log=None):
         self.cache_dir, self.quiet, self.idle_unload_s = str(cache_dir), quiet, idle_unload_s
         self.gpu_site = gpu_site
+        # The app's diagnostics log (workspace.diag.Log): the worker writes its
+        # own log beside it, and a worker that dies is recorded here.
+        self.log = log
+        self._log_name = "gpu-worker" if gpu_site else "worker"
         self.allow_test_engines = bool(allow_test_engines)   # tests only (engines.TEST_PREFIX)
         self._gpu = None             # companion GPU worker (speaker identification only)
         self._ctx = mp.get_context("spawn")
@@ -173,9 +206,10 @@ class WorkerHandle:
 
     def _start(self):
         parent, child = self._ctx.Pipe()
+        log_dir = str(self.log.folder) if self.log is not None else None
         self._proc = self._ctx.Process(target=_worker_main,
                                        args=(child, self.cache_dir, self.quiet, self.gpu_site,
-                                             self.allow_test_engines),
+                                             self.allow_test_engines, log_dir, self._log_name),
                                        daemon=True, name="whisper-gpu-worker" if self.gpu_site
                                        else "whisper-worker")
         self._proc.start()
@@ -183,15 +217,34 @@ class WorkerHandle:
         self._conn, self._loaded = parent, None
         self._wake.set()                 # the idle loop now has a worker to watch
 
-    def _kill(self):
+    def _kill(self, grace=0.0):
+        """End the worker. grace: when it looks to be dying already, let it
+        finish for that long first, so its own exit code (and crash file) are
+        kept rather than replaced by ours."""
         if self._proc is not None:
+            if grace and self._proc.is_alive():
+                self._proc.join(grace)
             if self._proc.is_alive():
                 self._proc.terminate()
             self._proc.join(5)
+            # Ended by itself: not by terminate() (-SIGTERM), a stop or a clean exit.
+            self._note_exit(died=not self._stop_requested.is_set()
+                            and self._proc.exitcode not in (0, None, -signal.SIGTERM))
         if self._conn is not None:
             self._conn.close()
         self._proc = self._conn = None
         self._loaded = None
+
+    def _note_exit(self, died):
+        """A worker that ended by itself (not stopped, unloaded or closed) is
+        recorded in the app's log, with its native crash if it left one."""
+        if self.log is None:
+            return
+        crash = self.log.folder / f"{self._log_name}.crash"
+        code = self.log.collect_crash(died, crash_path=crash, process=self._log_name)
+        if died:
+            self.log.write("worker_exit", process=self._log_name,
+                           exitcode=self._proc.exitcode, code=code)
 
     def gpu_worker(self, site):
         """The companion worker that loads the CUDA build of PyTorch. It is
@@ -201,7 +254,7 @@ class WorkerHandle:
                 self._gpu.close()
             self._gpu = WorkerHandle(self.cache_dir, quiet=self.quiet,
                                      idle_unload_s=self.idle_unload_s, gpu_site=str(site),
-                                     allow_test_engines=self.allow_test_engines)
+                                     allow_test_engines=self.allow_test_engines, log=self.log)
         self._gpu.quiet = self.quiet
         # Clear the companion's old stop first, then carry over a stop that is
         # in force now, so a stop that lands meanwhile is never lost.
@@ -295,12 +348,14 @@ class WorkerHandle:
         with self._lock:
             if self._stop_requested.is_set():
                 raise WorkerStopped("Stopped.")
-            if self._proc is None or not self._proc.is_alive():
+            if self._proc is not None and not self._proc.is_alive():
+                self._kill()                 # it ended while idle: noted before a new one
+            if self._proc is None:
                 self._start()
             try:
                 self._conn.send(msg)
             except (OSError, EOFError) as exc:
-                self._kill()
+                self._kill(grace=CRASH_GRACE_S)
                 raise WorkerCrashed("The worker could not be reached.") from exc
             deadline = time.monotonic() + timeout
             while True:
@@ -313,7 +368,7 @@ class WorkerHandle:
                     ready = self._conn.poll(0.2)
                     reply = self._conn.recv() if ready else None
                 except (OSError, EOFError) as exc:
-                    self._kill()
+                    self._kill(grace=CRASH_GRACE_S)
                     if self._stop_requested.is_set():
                         raise WorkerStopped("Stopped.") from None
                     raise WorkerCrashed("The worker ended unexpectedly.") from exc
@@ -321,14 +376,18 @@ class WorkerHandle:
                     self._last_used = time.monotonic()
                     if reply[0] == "error":
                         cls = EngineUnavailable if reply[3:4] == ("load",) else WorkerError
-                        raise cls(f"{reply[1]}: {reply[2]}")
+                        code = f" (code {reply[4]})" if len(reply) > 4 else ""
+                        raise cls(f"{reply[1]}: {reply[2]}{code}")
                     return reply
                 if not self._proc.is_alive():
-                    self._kill()
+                    self._kill(grace=CRASH_GRACE_S)
                     if self._stop_requested.is_set():
                         raise WorkerStopped("Stopped.")
                     raise WorkerCrashed("The worker ended unexpectedly.")
                 if time.monotonic() > deadline:
+                    if self.log is not None:
+                        self.log.write("worker_exit", process=self._log_name, hung=True,
+                                       op=msg[0])
                     self._kill()
                     raise WorkerCrashed("The worker stopped responding.")
 

@@ -18,7 +18,10 @@
 
 import json
 import sys
+import time
 from pathlib import Path
+
+_STARTED = time.perf_counter()        # start-up timings (R9): from here, not interpreter start
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -166,8 +169,9 @@ def main():
                       "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
-    from workspace import api, shell
+    from workspace import api, diag, shell
     from workspace.app import Workspace
+    imported = time.perf_counter()
     instance = _single_instance()
     if instance is None:
         _message("Unminute is already open. Look for its window on the taskbar.")
@@ -179,6 +183,13 @@ def main():
         # explain instead of disappearing (pythonw has no console).
         _message(str(exc))
         return 1
+    # Content-free diagnostics (R9): uncaught errors on any thread and native
+    # crashes are recorded in workspace\logs\app.log from here on.
+    unclean = diag.install(ws.log, others=("worker", "gpu-worker", "setup"))
+    diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
+    ws.log.write("start", version=package_version(), python=sys.version.split()[0],
+                 previous_run_unclean=unclean)
+    opened = time.perf_counter()
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),
         # so the window shows the app's icon instead of Python's.
@@ -191,6 +202,17 @@ def main():
                                  allowed=api.API_METHODS)
     holder["window"] = window
     window.events.loaded += lambda: api.enable_drop(window, ws)
+
+    def timing():
+        # Seconds from the start of this module: imports, opening the
+        # workspace, and the page loaded (the window is interactive). Once.
+        if getattr(timing, "done", False):
+            return
+        timing.done = True
+        now = time.perf_counter()
+        ws.log.write("timing", imports_s=imported - _STARTED, workspace_s=opened - imported,
+                     page_loaded_s=now - _STARTED)
+    window.events.loaded += timing
 
     import threading
     import time as _time
@@ -270,7 +292,11 @@ def main():
         _message(str(exc))
         return 1
     finally:
-        ws.close()
+        try:
+            ws.close()
+        finally:
+            ws.log.write("stop")
+            ws.log.close_run()             # a clean end: not a crash next time
     if shell.lock_failed:
         _message("Unminute closed its window because it could not secure it. "
                  "Update the Microsoft Edge WebView2 Runtime or reinstall Unminute, "
