@@ -112,6 +112,31 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(wav_frames(wav), (s.fed, RATE))
         self.assertEqual(journal["events"], [])
 
+    def test_display_data_is_worked_out_only_when_asked_for(self):
+        # docs/RELEASE_STANDARD.md section 3: no FFT for blocks nobody looks at.
+        calls = []
+        real = recorder.visual
+
+        def counting(block, rate):
+            calls.append(len(block))
+            return real(block, rate)
+        with mock.patch.object(recorder, "visual", counting):
+            rec, s = self.start()
+            s.feed(3)                                 # 30 blocks, none displayed
+            self.assertEqual(calls, [])
+            first = rec.status()["viz"]
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(rec.status()["viz"], first)   # same block: not worked out again
+            self.assertEqual(len(calls), 1)
+            s.feed(0.1)
+            rec.status()
+            self.assertEqual(len(calls), 2)
+            rec.pause()
+            s.feed(0.5)
+            self.assertIsNone(rec.status()["viz"])    # nothing to draw while paused
+            rec.stop()
+        self.assertEqual(len(calls), 2)
+
     def test_pause_keeps_nothing_and_says_so(self):
         rec, s = self.start()
         s.feed(2)
@@ -157,6 +182,24 @@ class RecordingTests(unittest.TestCase):
         events = rec.stop()["events"]
         self.assertEqual([e["kind"] for e in events], ["device_lost"])
         self.assertIn("fraction of a second", events[0]["note"])
+
+    def test_overruns_are_placed_by_captured_audio_even_when_saving_is_behind(self):
+        # The writer is not started, so everything stays queued, as when saving
+        # falls behind. An overrun 3 s before the device goes is its own event;
+        # one at the moment it goes is part of the disconnection.
+        block = np.zeros((1600, 1), dtype=np.int16)
+        overflow = type("S", (), {"input_overflow": True})()
+        for before, expected in ((0, ["overrun", "device_lost"]), (30, ["device_lost"])):
+            rec = recorder.Recording(self.root / f"rec{before}", 0, "Mic", RATE,
+                                     open_stream=opener({}))
+            for _ in range(before):                  # blocks before the overrun
+                rec._callback(block, 1600, None, None)
+            rec._callback(block, 1600, None, overflow)
+            for _ in range(30 - before):
+                rec._callback(block, 1600, None, None)
+            rec._device_lost()
+            self.assertEqual([e["kind"] for e in rec.journal["events"]], expected, before)
+            self.assertIsNone(rec._display_block)    # nothing kept after the device went
 
     def test_an_earlier_overrun_is_still_reported_on_its_own(self):
         rec, s = self.start()

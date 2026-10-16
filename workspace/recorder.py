@@ -176,9 +176,10 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
-# The recording display: a few numbers per block for the page to draw, never audio
-# to keep. Bands are log-spaced across the speech range; the wave is a short,
-# thinned slice of the block for the "Sound wave" display.
+# The recording display: a few numbers per block for the page to draw. Only the
+# latest 100 ms block is held for it, while recording, and it is dropped on
+# pause, stop and device loss. Bands are log-spaced across the speech range; the
+# wave is a short, thinned slice of the block for the "Sound wave" display.
 VIZ_BANDS = 40
 VIZ_LOW_HZ, VIZ_HIGH_HZ = 80.0, 8000.0
 VIZ_WAVE_POINTS = 128
@@ -243,7 +244,8 @@ class Recording:
         self.level_db = -96.0
         self._levels = collections.deque(maxlen=50)   # recent [block number, level], for the meter
         self._level_seq = 0                           # blocks measured so far
-        self._viz = None                              # the latest block's display data
+        self._display_block = None                    # (block number, latest block) to draw
+        self._viz_cache = None                        # (block number, its display data)
         self._last_audio = clock()
         self._stop = threading.Event()          # the writer's signal to finish
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
@@ -264,16 +266,15 @@ class Recording:
                                         "audio was lost here.")
         if self.paused:
             self.level_db = -96.0
-            self._viz = None
+            self._display_block = None
             return
         block = np.array(indata, dtype=np.int16).reshape(-1)
         self.level_db = _level_db(block)
         self._level_seq += 1
         self._levels.append((self._level_seq, round(self.level_db, 1)))
-        try:
-            self._viz = visual(block, self.rate)       # replaced whole, so readers see one block
-        except Exception:                             # the display must never stop a recording
-            self._viz = None
+        # Display data is worked out only when the page asks (status), not for
+        # every block; replaced whole, so a reader sees one block.
+        self._display_block = (self._level_seq, block)
         try:
             self._queue.put_nowait(block)
         except queue.Full:
@@ -287,10 +288,15 @@ class Recording:
 
     # -- journal ---------------------------------------------------------------------
 
+    def _position_s(self):
+        """Seconds captured so far: saved, buffered and still queued for the
+        writer. Call with _lock held."""
+        return (self.journal["frames"] + self._buffered) / self.rate \
+            + self._queue.qsize() * BLOCK_S
+
     def _event(self, kind, seconds=None, note=""):
         with self._lock:
-            at = (self.journal["frames"] + self._buffered) / self.rate \
-                + self._queue.qsize() * BLOCK_S
+            at = self._position_s()
             self.journal["events"].append({"kind": kind, "at_s": round(at, 1),
                                            "t": self._clock(),
                                            "seconds": None if seconds is None
@@ -367,7 +373,10 @@ class Recording:
         # part of the disconnection, not the computer falling behind.
         with self._lock:
             events = self.journal["events"]
-            at_now = (self.journal["frames"] + self._buffered) / self.rate
+            # The same clock the events use: audio the writer has not saved yet
+            # still counts, or a writer that is behind makes an old overrun look
+            # like part of the disconnection.
+            at_now = self._position_s()
             during = bool(events and events[-1]["kind"] == "overrun"
                           and at_now - events[-1]["at_s"] <= 1.0)
             if during:
@@ -378,6 +387,7 @@ class Recording:
                                         + (" A fraction of a second may be missing at the "
                                            "moment it disconnected." if during else ""))
         self.journal["state"] = "device_lost"
+        self._display_block = None
         self._stop.set()
 
     def _close_stream(self):
@@ -417,6 +427,7 @@ class Recording:
     def pause(self):
         if not self.paused:
             self.paused = True
+            self._display_block = None
             self._event("paused")
 
     def resume(self):
@@ -430,12 +441,13 @@ class Recording:
         self._stopping.set()          # a deliberate stop: not reported as a lost device
         self._close_stream()          # no more blocks arrive...
         self._stop.set()              # ...then the writer drains the queue and finishes
+        self._display_block = self._viz_cache = None    # nothing of the sound kept for display
         if self._writer is not None:
             self._writer.join(60)
             if self._writer.is_alive():
                 raise RecorderError("Saving the recording did not finish. It is kept and "
                                     "will be imported when the app next starts.")
-        self._viz = None              # nothing of the sound is kept for display
+        self._display_block = self._viz_cache = None    # nothing of the sound is kept
         if self.journal["state"] == "recording":
             self.journal["state"] = "stopped"
         try:
@@ -455,14 +467,30 @@ class Recording:
     def status(self):
         with self._lock:
             seconds = (self.journal["frames"] + self._buffered) / self.rate
-            events = [dict(e) for e in self.journal["events"]]
+            events = [dict(e) for e in self.journal["events"][-10:]]
         return {"state": "paused" if self.paused and self.journal["state"] == "recording"
                 else self.journal["state"], "seconds": round(seconds, 1),
                 "level_db": round(self.level_db, 1), "id": self.journal["id"],
                 "levels": [list(x) for x in list(self._levels)],
-                "viz": self._viz,
+                "viz": self._display(),
                 "device": self.journal["device_name"],
-                "events": events[-10:]}
+                "events": events}
+
+    def _display(self):
+        """Display data for the latest block, worked out when asked for: the page
+        asks while the recording is on screen, not for every block."""
+        latest = self._display_block           # read once: the callback replaces it whole
+        if latest is None:
+            return None
+        cached = self._viz_cache
+        if cached is not None and cached[0] == latest[0]:
+            return cached[1]
+        try:
+            viz = visual(latest[1], self.rate)
+        except Exception:                      # the display must never break status
+            viz = None
+        self._viz_cache = (latest[0], viz)
+        return viz
 
 
 # -- after recording: assemble, recover ---------------------------------------------

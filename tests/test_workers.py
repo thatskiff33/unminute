@@ -126,6 +126,21 @@ class WorkerTests(unittest.TestCase):
         finally:
             h.close()
 
+    def test_idle_loop_sleeps_while_there_is_no_worker(self):
+        # docs/RELEASE_STANDARD.md section 3: no background wake-ups without work.
+        h = WorkerHandle(self.tmp.name, idle_unload_s=0.2, allow_test_engines=True)
+        try:
+            time.sleep(0.6)                          # several old 50 ms ticks' worth
+            self.assertLessEqual(h.idle_wakeups, 1)
+            h.load(fake("echo"), 1)                  # a worker: the loop wakes to watch it
+            self.assertTrue(wait_until(lambda: h.pid is None))
+            settled = h.idle_wakeups
+            time.sleep(0.6)
+            self.assertLessEqual(h.idle_wakeups - settled, 1)    # asleep again
+        finally:
+            h.close()
+        self.assertTrue(wait_until(lambda: not h._timer.is_alive()))   # close ends the loop
+
     def test_requests_are_bounded(self):
         with self.assertRaises(ValueError):
             self.h.transcribe(np.zeros(SR * 121, dtype=np.float32))

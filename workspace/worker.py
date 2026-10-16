@@ -155,6 +155,8 @@ class WorkerHandle:
         self._lock = threading.RLock()
         self._stop_requested = threading.Event()
         self._closed = False
+        self._wake = threading.Event()   # the idle loop re-reads its deadline when set
+        self.idle_wakeups = 0            # idle loop iterations (tests, diagnostics)
         self._timer = threading.Thread(target=self._idle_loop, daemon=True)
         self._timer.start()
 
@@ -179,6 +181,7 @@ class WorkerHandle:
         self._proc.start()
         child.close()
         self._conn, self._loaded = parent, None
+        self._wake.set()                 # the idle loop now has a worker to watch
 
     def _kill(self):
         if self._proc is not None:
@@ -232,6 +235,7 @@ class WorkerHandle:
         if companion is not None:
             companion.close()
         self._closed = True
+        self._wake.set()
         self.stop_now()              # do not wait for an in-flight chunk
         with self._lock:
             self._kill()
@@ -256,17 +260,34 @@ class WorkerHandle:
                 self._lock.release()
 
     def _idle_loop(self):
-        while not self._closed:
-            time.sleep(min(1.0, max(0.05, self.idle_unload_s / 4)))
-            if self._proc is None or time.monotonic() - self._last_used <= self.idle_unload_s:
+        # Sleeps until the worker has been idle for idle_unload_s, and not at all
+        # while there is no worker process: _start() and close() wake it. The
+        # event is cleared before any state is read, _closed included, so a
+        # wake-up is never lost.
+        while True:
+            self._wake.clear()
+            if self._closed:
+                return
+            self.idle_wakeups += 1
+            if self._proc is None:
+                self._wake.wait()
                 continue
-            # Never interrupt a request: only unload if no request holds the lock.
-            if self._lock.acquire(blocking=False):
+            due = self._last_used + self.idle_unload_s - time.monotonic()
+            if due > 0:
+                self._wake.wait(min(due + 0.05, threading.TIMEOUT_MAX))
+            elif self._lock.acquire(blocking=False):
+                # Never interrupt a request: only unload if no request holds the lock.
                 try:
-                    if time.monotonic() - self._last_used > self.idle_unload_s:
+                    if (self._proc is not None
+                            and time.monotonic() - self._last_used > self.idle_unload_s):
                         self.shutdown()
                 finally:
                     self._lock.release()
+            else:
+                # A request is running: wait for it to end (a stop or close ends
+                # it too), then look again with its new last-used time.
+                with self._lock:
+                    pass
 
     # -- requests ---------------------------------------------------------------------
 
