@@ -545,8 +545,8 @@ function initials(name) {
 
 function renderSpeakers(d) {
   const s = d.speakers;
-  const sig = JSON.stringify([s, d.stage, d.busy, d.audio_available, d.reviewed_at, state.version,
-                              state.speakerList, state.speakerUndo]);
+  const sig = JSON.stringify([s, d.stage, d.busy, d.audio_available, d.reviewed_at, d.can_skip,
+                              state.version, state.speakerList, state.speakerUndo]);
   if (sig === state.speakersSig) return;
   state.speakersSig = sig;
   const box = $("m-speakers");
