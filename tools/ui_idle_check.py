@@ -121,7 +121,7 @@ def main():
         print(f"{mode}: {r.get('bridge_calls_per_minute')} bridge calls/min, "
               f"{r.get('list_rebuilds_per_minute')} list rebuilds/min, "
               f"{r.get('timeouts_per_minute')} timeouts/min, "
-              f"{r.get('animation_frames_per_minute')} frames/min, "
+              f"{r.get('pending_animation_frames')} pending frame(s), "
               f"{r.get('live_intervals')} interval(s), fastest {r.get('fastest_interval_ms')} ms")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")

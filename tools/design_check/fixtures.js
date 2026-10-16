@@ -14,8 +14,11 @@
   // bubbling visibilitychange a minimised window gets.
   const query = new URLSearchParams(location.search);
   const perfMode = query.get("perf");
-  const perf = { calls: {}, timeouts: 0, frames: 0, rebuilds: 0, errors: [],
-                 intervals: new Map() };
+  // pendingFrames: animation frames requested and not yet run. Headless Edge
+  // runs almost no frames while virtual time skips ahead, so frames run are no
+  // measure; an animation loop always leaves one frame pending.
+  const perf = { calls: {}, timeouts: 0, rebuilds: 0, errors: [],
+                 intervals: new Map(), pendingFrames: new Set() };
   const realSetTimeout = window.setTimeout.bind(window);
   let pageHidden = false;
   if (perfMode) {
@@ -32,7 +35,13 @@
     window.clearInterval = (id) => { perf.intervals.delete(id); realClearInterval(id); };
     window.clearTimeout = (id) => { perf.intervals.delete(id); realClearTimeout(id); };
     window.setTimeout = (fn, ms, ...rest) => { perf.timeouts++; return realSetTimeout(fn, ms, ...rest); };
-    window.requestAnimationFrame = (fn) => realFrame((t) => { perf.frames++; fn(t); });
+    const realCancelFrame = window.cancelAnimationFrame.bind(window);
+    window.requestAnimationFrame = (fn) => {
+      const id = realFrame((t) => { perf.pendingFrames.delete(id); fn(t); });
+      perf.pendingFrames.add(id);
+      return id;
+    };
+    window.cancelAnimationFrame = (id) => { perf.pendingFrames.delete(id); realCancelFrame(id); };
     Object.defineProperty(document, "hidden", { configurable: true, get: () => pageHidden });
     Object.defineProperty(document, "visibilityState", { configurable: true,
                                                           get: () => (pageHidden ? "hidden" : "visible") });
@@ -42,16 +51,18 @@
   }
   function perfMeasure() {
     const ms = Number(query.get("ms")) || 60000;
-    if (perfMode === "hidden") {
-      pageHidden = true;
-      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
-    }
     const groups = document.getElementById("groups");
     if (groups) {
       new MutationObserver((records) => { perf.rebuilds += records.length; })
         .observe(groups, { childList: true });
     }
-    perf.calls = {}; perf.timeouts = 0; perf.frames = 0; perf.rebuilds = 0;   // count from here
+    // Count from here, before the page becomes hidden, so work it does on the
+    // visibilitychange itself counts too.
+    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0;
+    if (perfMode === "hidden") {
+      pageHidden = true;
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    }
     realSetTimeout(() => {
       const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
       const calls = Object.fromEntries(Object.entries(perf.calls).map(([k, v]) => [k, perMinute(v)]));
@@ -60,7 +71,7 @@
         mode: perfMode, page_ms: ms, calls_per_minute: calls,
         bridge_calls_per_minute: perMinute(Object.values(perf.calls).reduce((a, b) => a + b, 0)),
         timeouts_per_minute: perMinute(perf.timeouts),
-        animation_frames_per_minute: perMinute(perf.frames),
+        pending_animation_frames: perf.pendingFrames.size,
         list_rebuilds_per_minute: perMinute(perf.rebuilds),
         live_intervals: live.length,
         fastest_interval_ms: live.length ? Math.min(...live) : null,

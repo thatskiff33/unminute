@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import ui_idle_check  # noqa: E402
 
 METRICS = {"bridge_calls_per_minute", "list_rebuilds_per_minute", "timeouts_per_minute",
-           "animation_frames_per_minute", "live_intervals", "fastest_interval_ms"}
+           "pending_animation_frames", "live_intervals", "fastest_interval_ms"}
 
 
 class RatchetTests(unittest.TestCase):

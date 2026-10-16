@@ -28,7 +28,7 @@ Newer checks start outside that list:
 - **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage) and `.github/workflows/changelog.yml` (changelog entry).
 - **How they become required:** after 10 consecutive green runs.
   - A `quality.yml` job moves into `ci.yml` and joins the list above.
-  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. It joins the list above, and its name is added to the required set in `tests/test_consistency.py`.
+  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. It joins the list above, and `tests/test_consistency.py` is extended to include `changelog.yml`'s job, since it takes the required set from `ci.yml` today.
   - Adding a check to the ruleset needs the owner account.
 - **The changelog check:** it looks for a new or changed fragment in `changelog.d/` whenever a pull request changes what is shipped. An edit to `CHANGELOG.md` does not count. Add the `no-changelog` label to a pull request whose change is not worth a release note.
 
