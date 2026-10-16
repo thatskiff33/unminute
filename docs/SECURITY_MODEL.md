@@ -2,7 +2,7 @@
 
 This document describes how Unminute protects meeting recordings and transcripts: what it protects, from whom, the controls in place, the controls planned and the risks that remain. Its threat IDs are referenced by the security hardening slices in #111. Each slice updates this document when it lands.
 
-It started from v0.4.3 (tag commit `579746f`). As each #111 slice merges, its controls move from "Planned" to "In place" (merged so far: A0, A1, A2, A3). A control described as planned names the #111 slice that delivers it and does not exist yet. Nothing here is a certification or legal advice. Privacy Act 2020 and other legal points are marked "to confirm" for a privacy adviser.
+It started from v0.4.3 (tag commit `579746f`). As each #111 slice merges, its controls move from "Planned" to "In place" (merged so far: A0, A1, A2, A3, A4). A control described as planned names the #111 slice that delivers it and does not exist yet. Nothing here is a certification or legal advice. Privacy Act 2020 and other legal points are marked "to confirm" for a privacy adviser.
 
 ## Summary
 

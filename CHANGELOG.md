@@ -5,15 +5,15 @@ for the version being released, so keep one `## vX.Y.Z` heading per version.
 
 ## Unreleased
 
+- **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
+- **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
+
 Security hardening (#111, slice A4):
 
 - **The network block covers more.** Besides ordinary connections and name lookups, the app's Python processes now also refuse UDP datagrams and the Windows asyncio connection path, which went around the block before. `--self-test` checks all three against a reserved address that is never contacted.
 - **Downloads can reach only their own sites.** The download process may contact only huggingface.co and hf.co (models), download-r2.pytorch.org (the optional graphics card component) and any proxy configured for you. Every request and every redirect is checked, also when downloads go through a proxy, and anything else is stopped with its own message. Hugging Face's native Xet downloader is switched off so every download goes through these checks.
 - **Downloads work behind a firm's inspecting proxy.** Certificates are checked against the Windows certificate store (truststore), so a proxy certificate that IT has installed is trusted without any unsafe workaround. A fixed proxy is needed: proxies given only by an automatic configuration script (PAC or WPAD) are not used.
 - **The speaker model is fully checked before every use.** Its files are re-hashed each time they are loaded, not just compared by size and date, because the model format can run code.
-
-- **Security update: pytorch-lightning 2.6.6** (was 2.6.5), which fixes CVE-2026-58659, a code-execution flaw when loading a crafted model checkpoint. Unminute loads only its hash-checked speaker model, so exposure was low; the fix is taken anyway. Speaker identification results are unchanged.
-- **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
 
 Security hardening (#111, slice A3):
 
