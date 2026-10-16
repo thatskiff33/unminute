@@ -8,34 +8,50 @@
 (() => {
   // -- perf mode (tools/ui_idle_check.py) ------------------------------------------
   // index.html?perf=visible|hidden&ms=60000 counts what the idle page does over
-  // ms of page time: bridge calls per method, timers and meeting-list rebuilds.
-  // Timers are wrapped here, before app.js loads. "hidden" makes the page report
-  // itself hidden, as a minimised window should.
+  // ms of page time: bridge calls per method, timers, animation frames,
+  // meeting-list rebuilds and page errors. Timers are wrapped here, before
+  // app.js loads. "hidden" starts visible and then becomes hidden, with the same
+  // bubbling visibilitychange a minimised window gets.
   const query = new URLSearchParams(location.search);
   const perfMode = query.get("perf");
-  const perf = { calls: {}, timeouts: 0, rebuilds: 0, intervals: new Map() };
+  const perf = { calls: {}, timeouts: 0, frames: 0, rebuilds: 0, errors: [],
+                 intervals: new Map() };
   const realSetTimeout = window.setTimeout.bind(window);
+  let pageHidden = false;
   if (perfMode) {
     const realSetInterval = window.setInterval.bind(window);
     const realClearInterval = window.clearInterval.bind(window);
+    const realClearTimeout = window.clearTimeout.bind(window);
+    const realFrame = window.requestAnimationFrame.bind(window);
     window.setInterval = (fn, ms, ...rest) => {
       const id = realSetInterval(fn, ms, ...rest);
       perf.intervals.set(id, Number(ms) || 0);
       return id;
     };
+    // Either clear function stops either kind of timer.
     window.clearInterval = (id) => { perf.intervals.delete(id); realClearInterval(id); };
+    window.clearTimeout = (id) => { perf.intervals.delete(id); realClearTimeout(id); };
     window.setTimeout = (fn, ms, ...rest) => { perf.timeouts++; return realSetTimeout(fn, ms, ...rest); };
-    if (perfMode === "hidden") {
-      Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
-      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
-    }
+    window.requestAnimationFrame = (fn) => realFrame((t) => { perf.frames++; fn(t); });
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => pageHidden });
+    Object.defineProperty(document, "visibilityState", { configurable: true,
+                                                          get: () => (pageHidden ? "hidden" : "visible") });
+    // A page that throws may stop polling and look idle: errors fail the check.
+    window.addEventListener("error", (e) => { perf.errors.push(String(e.message || e)); });
+    window.addEventListener("unhandledrejection", (e) => { perf.errors.push(String(e.reason)); });
   }
   function perfMeasure() {
     const ms = Number(query.get("ms")) || 60000;
-    if (perfMode === "hidden") document.dispatchEvent(new Event("visibilitychange"));
+    if (perfMode === "hidden") {
+      pageHidden = true;
+      document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
+    }
     const groups = document.getElementById("groups");
-    if (groups) new MutationObserver(() => { perf.rebuilds++; }).observe(groups, { childList: true });
-    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0;      // count from here
+    if (groups) {
+      new MutationObserver((records) => { perf.rebuilds += records.length; })
+        .observe(groups, { childList: true });
+    }
+    perf.calls = {}; perf.timeouts = 0; perf.frames = 0; perf.rebuilds = 0;   // count from here
     realSetTimeout(() => {
       const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
       const calls = Object.fromEntries(Object.entries(perf.calls).map(([k, v]) => [k, perMinute(v)]));
@@ -44,9 +60,12 @@
         mode: perfMode, page_ms: ms, calls_per_minute: calls,
         bridge_calls_per_minute: perMinute(Object.values(perf.calls).reduce((a, b) => a + b, 0)),
         timeouts_per_minute: perMinute(perf.timeouts),
+        animation_frames_per_minute: perMinute(perf.frames),
         list_rebuilds_per_minute: perMinute(perf.rebuilds),
         live_intervals: live.length,
         fastest_interval_ms: live.length ? Math.min(...live) : null,
+        meeting_rows: groups ? groups.querySelectorAll("li").length : 0,
+        page_errors: perf.errors,
       };
       const out = document.createElement("pre");
       out.id = "perf-result";

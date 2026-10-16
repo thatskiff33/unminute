@@ -222,6 +222,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 
 Status is one of:
 - **In place:** runs today.
+- **In place, not yet required:** runs in CI on every pull request, but does not block a merge yet (docs/RELEASING.md says how it becomes required).
 - **Manual:** a tool exists, but it is run by hand.
 - **Planned:** a slice of #121 will build it.
 - **Security plan:** a slice of #111 will build it.

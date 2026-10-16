@@ -51,12 +51,7 @@ jobs:
           persist-credentials: false
       # The runner image's Node.js; nothing is installed from npm.
       - name: Check every tracked JavaScript file parses
-        run: |
-          status=0
-          for f in $(git ls-files '*.js'); do
-            node --check "$f" || status=1
-          done
-          exit "$status"
+        run: git ls-files -z '*.js' | xargs -0 -n1 node --check
 
   coverage:
     # Report only: no floor yet (docs/RELEASE_STANDARD.md, section 7). Worker
