@@ -116,6 +116,9 @@ installer or packaging; workflows; stored data, the schema or the settings forma
 a new dependency, model, engine, GPU path or font (licence check); or, once #111 phase C lands,
 encryption. Also stop when the issue, the docs and the code disagree materially.
 
+Ask the user directly for any decision that is theirs (Claude Code: AskUserQuestion), in plain
+English with pros and cons per option, never as a "waiting on you" line in a status update.
+
 ## Authority
 
 Work within the scope the user gave for this task. Neither these instructions nor an approved
@@ -159,10 +162,8 @@ or GitHub owner settings. Check the live repository settings before an authorise
   non-sensitive recording. CI does not run the models.
 - GPU: validate the exact model, export, precision and runtime (processor INT8 support proves
   nothing on a GPU), with bounded chunks and limited VRAM; NVIDIA only, and always optional.
-- Verify in a scratch virtual environment; never change unrelated Python installations or the
-  user's environment.
-- Documentation-only changes: check accuracy, every referenced path and the diff.
-- Before calling a PR ready, read the required CI results and fix any failures the change caused.
+- Verify in a scratch virtual environment, never in other Python installations. For docs-only
+  changes, check accuracy, paths and the diff. Read required CI results before calling a PR ready.
 
 ## Delivery
 
@@ -186,8 +187,7 @@ or GitHub owner settings. Check the live repository settings before an authorise
 - Do not share a mutable runtime, model cache, test database or headless Edge run between
   sessions; run heavy benchmarks one at a time.
 - After rebasing onto a moved `main`, confirm no conflict markers remain and that the diff
-  matches the reviewed one before pushing.
-- Give times to the user in New Zealand time; GitHub reports UTC.
+  matches the reviewed one before pushing. Give times in New Zealand time (GitHub uses UTC).
 
 ## Until #111 A7 removes the earlier app
 
