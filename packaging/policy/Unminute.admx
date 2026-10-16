@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Unminute managed policy (#111 slice A5). Values are written under
+  HKLM\SOFTWARE\Policies\Unminute and read by workspace/policy.py.
+  Import into Intune (Devices > Configuration > Import ADMX) with Unminute.adml
+  from the en-US folder. Self-contained: no other ADMX file is needed.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0" schemaVersion="1.0"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="unminute" namespace="Unminute.Policies.Unminute" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Unminute" displayName="$(string.SUPPORTED_Unminute)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="Unminute" displayName="$(string.Unminute)" />
+  </categories>
+  <policies>
+    <policy name="AllowModelDownloads" class="Machine" displayName="$(string.AllowModelDownloads)"
+            explainText="$(string.AllowModelDownloads_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowModelDownloads">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="AllowGpuComponent" class="Machine" displayName="$(string.AllowGpuComponent)"
+            explainText="$(string.AllowGpuComponent_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowGpuComponent">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="AllowMicrophoneRecording" class="Machine"
+            displayName="$(string.AllowMicrophoneRecording)"
+            explainText="$(string.AllowMicrophoneRecording_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowMicrophoneRecording">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="AllowWatchedFolders" class="Machine" displayName="$(string.AllowWatchedFolders)"
+            explainText="$(string.AllowWatchedFolders_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowWatchedFolders">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="AllowDeleteOriginals" class="Machine" displayName="$(string.AllowDeleteOriginals)"
+            explainText="$(string.AllowDeleteOriginals_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowDeleteOriginals">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="AllowNetworkSources" class="Machine" displayName="$(string.AllowNetworkSources)"
+            explainText="$(string.AllowNetworkSources_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowNetworkSources">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="HandoffFilenameIncludesTitle" class="Machine"
+            displayName="$(string.HandoffFilenameIncludesTitle)"
+            explainText="$(string.HandoffFilenameIncludesTitle_Help)"
+            key="SOFTWARE\Policies\Unminute" valueName="HandoffFilenameIncludesTitle">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="ClipboardClearMinutes" class="Machine" displayName="$(string.ClipboardClearMinutes)"
+            explainText="$(string.ClipboardClearMinutes_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.ClipboardClearMinutes)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <decimal id="ClipboardClearMinutes" valueName="ClipboardClearMinutes" minValue="0"
+                 maxValue="1440" />
+      </elements>
+    </policy>
+    <policy name="HandoffDefaultFolder" class="Machine" displayName="$(string.HandoffDefaultFolder)"
+            explainText="$(string.HandoffDefaultFolder_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.HandoffDefaultFolder)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <text id="HandoffDefaultFolder" valueName="HandoffDefaultFolder" expandable="true"
+              maxLength="400" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

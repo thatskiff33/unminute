@@ -80,7 +80,7 @@ Each meeting shows its steps:
 3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
 4. **Confirm the final document is saved.** The app then removes the meeting's transcript working content: text, edits, speakers and versions. A minimal receipt (a random number, times and the result) is kept for 30 days.
 
-Copying or saving never deletes anything by itself. The app does not clear your clipboard or delete files you saved. Replace the clipboard and delete saved handoff files yourself when you no longer need them.
+Copying or saving never deletes anything by itself. The app does not delete files you saved, and it clears your clipboard only if your organisation has set it to remove the app's own copies after a set time. Replace the clipboard and delete saved handoff files yourself when you no longer need them.
 
 **What cleanup cannot reach.** Cleanup removes the app's own copies on this computer. It cannot remove:
 

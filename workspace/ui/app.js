@@ -1133,7 +1133,9 @@ function confirmFinal(d) {
   confirmDialog({
     title: "Confirm the final document is saved",
     body: "All of this meeting's transcript working content will be removed from the workspace: text, edits, speakers, handoff options and versions. Copying or exporting alone never does this. " +
-      "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them.",
+      (state.managed && state.managed.clipboard_clear_minutes
+        ? "The app does not delete Markdown files you saved. Your organisation has the app clear its own copies from the clipboard after a set time, but copy something else now to be sure (check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them."
+        : "The app does not clear your clipboard or delete Markdown files you saved: copy something else to replace the clipboard (the app's copies are kept out of Windows clipboard history, but check Win+V if you copied the text another way), and delete saved handoff files when you no longer need them."),
     check: "The final document is reviewed and saved outside this app.",
     onConfirm: () => attempt(() => call("confirm_final_saved", d.id).then(() => {
       $("ho-preview").textContent = "";
@@ -1287,10 +1289,13 @@ async function copyHandoff(kind) {
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind], handoffState.anonymise); }
   catch (err) { handoffSaid(String(err.message || err)); return; }
-  handoffSaid(kind === "combined"
+  const clears = r.clears_in_minutes
+    ? ` Your organisation clears it from the clipboard after ${r.clears_in_minutes} minute${r.clears_in_minutes === 1 ? "" : "s"} or when you close the app.`
+    : "";
+  handoffSaid((kind === "combined"
     ? `Copied the prompt and transcript (${r.chars.toLocaleString("en-NZ")} characters). Paste it into your organisation's approved AI assistant.` +
       (r.long ? " It is long: if the assistant cuts it off, use Save Markdown and Copy prompt only instead." : "")
-    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.");
+    : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.") + clears);
 }
 
 async function saveHandoff() {
@@ -1438,6 +1443,8 @@ function modelCard(c, s) {
   if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download").then(renderSetup)));
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
+  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+    action = itManaged(c);
   else {
     action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
     action.disabled = busy;
@@ -1491,8 +1498,10 @@ function downloadRow(c, s, inUse) {
       show("setup");
       setStep(3);
     }, { primary: true });
+  else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
+    action = itManaged(c);
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
-  action.disabled = busy && !running;
+  if (action.tagName === "BUTTON") action.disabled = busy && !running;
   const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
     title: `Remove ${cardName(c)}?`,
     body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
@@ -1520,6 +1529,7 @@ function downloadRow(c, s, inUse) {
 async function renderSetup() {
   const s = await call("setup_state");
   state.setup = s;
+  state.managed = s.managed;
   renderSuSteps();
   const speech = s.cards.filter((c) => c.role === "speech");
   const rec = speech.find((c) => c.recommended) || speech[0];
@@ -1534,9 +1544,12 @@ async function renderSetup() {
   $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
-  $("s-download-speakers").disabled = isRunning(speaker);
-  $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready";
-  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready";
+  $("s-download-speakers").disabled = isRunning(speaker) || !allowed("AllowModelDownloads");
+  $("s-token").disabled = !allowed("AllowModelDownloads");
+  $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
+    || !allowed("AllowModelDownloads");
+  $("s-use-earlier").hidden = !s.earlier_token || s.token_remembered || speaker.state === "ready"
+    || !allowed("AllowModelDownloads");
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
@@ -1650,14 +1663,30 @@ function wireSetup() {
 async function renderDownloads() {
   const s = await call("setup_state");
   state.setup = s;
+  state.managed = s.managed;
   const settings = await call("settings");
-  const sig = JSON.stringify([s.cards, settings.model]);
+  const sig = JSON.stringify([s.cards, settings.model, s.managed]);
   if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
     state.downloadsSig = sig;
     replaceKeeping($("dl-list"), ...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
   }
   $("dl-token").hidden = !s.token_remembered;
   $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
+}
+
+// -- managed policy (#111 A5) ------------------------------------------------------
+// What the organisation's policy allows (from settings and setup_state). Until
+// the first answer arrives everything is treated as allowed; the app itself
+// enforces the policy whatever the page shows.
+function allowed(name) {
+  const m = state.managed;
+  return !m || !m.allow || m.allow[name] !== false;
+}
+const MANAGED_NOTE = "Turned off by your organisation.";
+// A component the organisation switched off, or models IT installs instead of downloads.
+function itManaged(c) {
+  return el("span", { class: "set-text", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
+    ? "Turned off by your organisation" : "Ask your IT team" });
 }
 
 // -- settings ------------------------------------------------------------------
@@ -1668,6 +1697,8 @@ const MODE_NOTE = {
 
 async function renderSettings() {
   const s = await call("settings");
+  state.managed = s.managed;
+  $("s-managed").hidden = !(s.managed && s.managed.managed.length);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
@@ -1677,8 +1708,9 @@ async function renderSettings() {
   $("s-gpu-box").hidden = !s.gpu.card;
   $("s-gpu").checked = !!s.gpu_speakers;
   // Always possible to turn off; turning on needs the component and driver.
-  $("s-gpu").disabled = !s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok);
-  $("s-gpu-note").textContent = !s.gpu.card ? "" : !s.gpu.driver_ok
+  $("s-gpu").disabled = !allowed("AllowGpuComponent")
+    || (!s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok));
+  $("s-gpu-note").textContent = !s.gpu.card ? "" : !allowed("AllowGpuComponent") ? MANAGED_NOTE : !s.gpu.driver_ok
     ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
     : s.gpu.component !== "ready"
       ? (s.gpu_speakers
@@ -1688,6 +1720,8 @@ async function renderSettings() {
         ? "Used only in Faster mode (Processing, above)."
         : `${s.gpu.card}. Speeds up speaker names in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
+  $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
+  $("s-add-folder").disabled = $("s-include-existing").disabled = !allowed("AllowWatchedFolders");
   const sel = $("s-model");
   if (document.activeElement !== sel) {
     sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name,
@@ -1753,6 +1787,7 @@ function folderItem(f) {
       on: { change: (e) => attempt(() => call("set_folder_authority", f.id, null, e.target.checked).then(renderSettings)) } }),
       "Download recordings that are only in cloud storage (OneDrive and similar)"),
     el("label", {}, el("input", { type: "checkbox", checked: f.delete_originals,
+      disabled: !f.delete_originals && !allowed("AllowDeleteOriginals"),
       on: { change: (e) => {
         if (!e.target.checked) { attempt(() => call("set_folder_authority", f.id, false, null).then(renderSettings)); return; }
         e.target.checked = false;
@@ -1765,7 +1800,10 @@ function folderItem(f) {
           onConfirm: () => attempt(() => call("set_folder_authority", f.id, true, null).then(renderSettings)),
         });
       } } }),
-      "Delete originals from this folder after review…"));
+      "Delete originals from this folder after review…"),
+    f.delete_originals && !allowed("AllowDeleteOriginals")
+      ? el("p", { class: "set-text", textContent: "Originals are kept: deleting them is turned off by your organisation." })
+      : null);
 }
 
 function setSetting(changes) { attempt(() => call("set_settings", changes).then(renderSettings)); }
@@ -2313,6 +2351,7 @@ window.addEventListener("pywebviewready", async () => {
   // First run, or no usable speech model: start with Setup.
   let s = null;
   try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }
+  if (s) state.managed = s.managed;                 // what policy allows, from the start
   if (s && (!s.onboarded || !s.speech_ready)) {
     suState.step = s.onboarded ? 2 : 1;
     show("setup");

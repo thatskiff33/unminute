@@ -69,7 +69,7 @@ You can skip the optional steps and turn them on later in Settings. **Graphics c
 
 ### Bring in a recording
 
-- **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window. Recordings must be on this computer: files on mapped network drives, or reached through a symbolic link, are refused (copy them across first). Synced folders such as OneDrive are fine.
+- **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window. Recordings must be on this computer: files on mapped network drives, or reached through a symbolic link, are refused (copy them across first), unless your organisation allows them. Synced folders such as OneDrive are fine.
 - **Watched folders** (Settings) pick up new recordings automatically. See [docs/INTAKE.md](docs/INTAKE.md) for synced and cloud folders.
 - **Record a meeting** appears once microphone recording is on (Setup, or Settings > Recording and speakers). Tell everyone present that the meeting is being recorded. Only the microphone is recorded, not sound playing on the computer.
 
@@ -94,14 +94,14 @@ Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) 
 
 Each meeting shows its steps:
 
-1. **Transcript reviewed…** saves the reviewed text and removes the app's copy of the audio. If you allowed it for the watched folder a recording came from, the original there is removed too. Playback and editing end here.
+1. **Transcript reviewed…** saves the reviewed text and removes the app's copy of the audio. If you allowed it for the watched folder a recording came from, the original there is removed too (unless your organisation has turned that off, which keeps originals). Playback and editing end here.
 2. **Hand off…** opens a page that shows exactly what will be copied. Choose a template, then remove details for this hand off only: replace names with Speaker 1, Speaker 2, redact words, or leave out passages, and select **Apply**. Then **Copy prompt and transcript**, **Copy prompt only** or **Save Markdown…**.
 3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
 4. **Final document saved…** removes the meeting's transcript, edits and speaker names. A minimal receipt (a random number, times and the result) is kept for 30 days.
 
 ![Hand off: the template, details to remove and a preview of what will be copied](docs/screenshots/workspace-handoff.png)
 
-Copying or saving never deletes anything by itself, and the app does not clear your clipboard. Cleanup cannot reach copies in synced folders, on a phone or recorder, or anything you shared with another service.
+Copying or saving never deletes anything by itself, and the app does not clear your clipboard unless your organisation has set it to clear the app's own copies after a set time. Cleanup cannot reach copies in synced folders, on a phone or recorder, or anything you shared with another service.
 
 - **Holds.** Hold a meeting's audio, transcript or everything, with a reason. A hold stops the matching cleanup and never expires by itself. Releasing it deletes nothing: the cleanup waits for you to confirm it again.
 - **Discard….** A test or wrong recording can be discarded before its review is confirmed. Discard is refused while a hold is active, and your original recording file is never deleted.

@@ -207,6 +207,7 @@ def make_api(ws, get_window=lambda: None):
                 raise WorkspaceError("The save dialog is not available.")
             name = ws.handoff_preview(mid, tid, anonymise)["filename"]
             chosen = window.create_file_dialog(webview.FileDialog.SAVE, save_filename=name,
+                                               directory=ws.handoff_folder(),
                                                file_types=("Markdown (*.md)",))
             if not chosen:
                 return None                       # cancelled
