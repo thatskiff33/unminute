@@ -290,21 +290,33 @@ def checks(window, ws, mid, long_mid, report):
             const prompted = frame.contentWindow.prompt('Synthetic', 'x');
             const native_ms = Math.round(performance.now() - t1);
             frame.remove();
-            // Browser permissions are refused at once, with no prompt: the page
-            // can never record or notify outside the app (#111 A6).
+            // Browser permissions and screen capture are refused at once, with
+            // no prompt or picker: the page can never record or notify outside
+            // the app (#111 A6), from the page or from a frame of its own.
+            const outcome = async (ask) => {
+                try { await ask(); return 'granted'; } catch (err) { return err.name; }
+            };
             const t2 = performance.now();
-            let microphone;
-            try {
-                await navigator.mediaDevices.getUserMedia({audio: true});
-                microphone = 'granted';
-            } catch (err) { microphone = err.name; }
+            const microphone = await outcome(
+                () => navigator.mediaDevices.getUserMedia({audio: true}));
+            const inner = document.createElement('iframe');
+            document.body.appendChild(inner);
+            const frame_microphone = await outcome(
+                () => inner.contentWindow.navigator.mediaDevices.getUserMedia({audio: true}));
+            inner.remove();
+            const screen = await outcome(
+                () => navigator.mediaDevices.getDisplayMedia({video: true, audio: true}));
             const notifications = await Notification.requestPermission();
             const permission_ms = Math.round(performance.now() - t2);
             return {confirm: answer, confirm_ms, prompt: prompted, native_ms,
-                    microphone, notifications, permission_ms};""")
+                    microphone, frame_microphone, screen, notifications, permission_ms};""")
         time.sleep(1.0)
         report["page_dialogs"]["new_windows"] = sorted(page_dialogs() - before)
         report["page_dialogs"]["alert_blocked"] = "_pywebviewAlert" in shell.blocked_calls
+        # The refusals came from the app's handlers, not from Windows privacy
+        # settings or a missing device.
+        report["page_dialogs"]["refused"] = sorted(
+            {c for c in shell.blocked_calls if c.startswith(("permission", "screen"))})
         report["edit_autosave"] = evaluate(window, WAIT + """
             const span = document.querySelectorAll('#transcript .text')[0];
             span.click(); span.textContent = 'Edited in the page'; span.dispatchEvent(new
@@ -517,7 +529,10 @@ def main():
     pd = report.get("page_dialogs") or {}
     if not (pd.get("confirm") is False and pd.get("confirm_ms", 9999) < 1000
             and pd.get("prompt") is None and pd.get("native_ms", 9999) < 1000
-            and pd.get("microphone") == "NotAllowedError" and pd.get("notifications") == "denied"
+            and pd.get("microphone") == pd.get("frame_microphone") == "NotAllowedError"
+            and pd.get("screen") == "NotAllowedError" and pd.get("notifications") == "denied"
+            and {"screen capture"} <= set(pd.get("refused", []))
+            and any(c.startswith("permission") for c in pd.get("refused", []))
             and pd.get("permission_ms", 9999) < 2000
             and pd.get("new_windows") == [] and pd.get("alert_blocked")):
         bad.append("page dialogs")

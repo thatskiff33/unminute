@@ -358,10 +358,11 @@ def _page_alert(message):
 
 
 def install_alert_guard():
-    """In the WebView2 backend: drop pywebview's alert message, and turn off
-    WebView2's own alert, confirm and prompt dialogs before the first page
-    loads. Both handlers are bound when each window is created, so this runs
-    before any window (check_backend calls it)."""
+    """In the WebView2 backend: drop pywebview's alert message; before the
+    first page loads, turn off WebView2's own alert, confirm and prompt
+    dialogs and refuse every permission request and screen capture. Both
+    handlers are bound when each window is created, so this runs before any
+    window (check_backend calls it)."""
     import importlib
     view = importlib.import_module("webview.platforms.edgechromium").EdgeChrome
     notify = getattr(view.on_script_notify, "__wrapped__", view.on_script_notify)
@@ -382,24 +383,33 @@ def install_alert_guard():
         # this one handler; the setting is read when a navigation starts, so
         # it is turned off just before each load it makes.
         loads = {name: getattr(self, name) for name in ("load_url", "load_html")}
-        refusing = {"on": False}                   # once per window (this handler runs once)
+        guard = {"on": False, "failed": False}     # once per window (this handler runs once)
 
         def quiet():
+            """True once the page may load."""
             core = getattr(sender, "CoreWebView2", None)
-            if core is None:
-                return                             # WebView2 failed to start: nothing loads
-            _dialogs_off(core)
-            if not refusing["on"]:
-                # An error here stops the page loading at all: never a page
-                # that can ask for the microphone.
-                core.ScriptDialogOpening += _refuse_script_dialog
-                core.PermissionRequested += _permission_refuser()
-                refusing["on"] = True
+            if core is None or guard["failed"]:
+                return False                       # WebView2 failed to start: nothing loads
+            try:
+                _dialogs_off(core)
+                if not guard["on"]:
+                    core.ScriptDialogOpening += _refuse_script_dialog
+                    core.PermissionRequested += _permission_refuser()
+                    core.ScreenCaptureStarting += _refuse_screen_capture
+                    guard["on"] = True
+            except Exception:
+                # Never a page that could ask for the microphone or the screen
+                # (an older WebView2 Runtime has no screen-capture event):
+                # nothing loads, and the window closes with a message.
+                guard["failed"] = True
+                _guard_failed(self.pywebview_window)
+                return False
+            return True
 
         def before(load):
             def wrapped(*a, **kw):
-                quiet()
-                return load(*a, **kw)
+                if quiet():
+                    return load(*a, **kw)
             return wrapped
         for name, load in loads.items():
             setattr(self, name, before(load))
@@ -432,6 +442,18 @@ def _permission_refuser():
         args.State = deny
         blocked_calls.append(f"permission {args.PermissionKind}")
     return refuse
+
+
+def _refuse_screen_capture(sender, args):
+    # getDisplayMedia: no screen picker, and the page's call fails.
+    args.Cancel = True
+    blocked_calls.append("screen capture")
+
+
+def _guard_failed(window):
+    lock_failed.append(True)
+    blocked_navigations.append("browser guard failed; window closed")
+    _close_now(window)
 
 
 def _refuse_script_dialog(sender, args):
