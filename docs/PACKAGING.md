@@ -172,7 +172,7 @@ For an Intune Remediation detection script, run `runtime\python.exe -m workspace
 It prints one line of JSON (well within Intune's 2,048-character output limit) and exits 0 when healthy, 1 when it needs attention (Intune's "issue detected"). It never prints an error message or a traceback. Fields:
 
 - `version`.
-- `workspace`: `ok`; `none` (this user has not opened the app yet; still healthy); `location` (the app data location is missing or synced); `unreadable`; `system_account`.
+- `workspace`: `ok`; `none` (this user has not opened the app yet; still healthy); `location` (the app data location is missing or synced); `unreadable` (also when Windows cannot say which account it runs as); `system_account`.
 - `running`: the app is open, asked of Windows through its single-instance lock and the process it recorded at start, so from any session.
 - `last_run`: `clean`, or `did_not_close` when the app last ended without closing and has not been opened since (its next start records that as a crash).
 - `crashes_7d`: crashes (including runs that ended without closing) and worker or download processes that ended by themselves in the last 7 days, each counted once, from the content-free logs.

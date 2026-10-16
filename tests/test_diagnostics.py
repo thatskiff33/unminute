@@ -505,6 +505,11 @@ class SharingTests(unittest.TestCase):
         with mock.patch.object(main, "_system_account", return_value=True):
             report = main.health(self.ws.root)
             self.assertEqual((report["workspace"], report["healthy"]), ("system_account", False))
+        with mock.patch.object(main, "_system_account", return_value=None):   # cannot tell
+            report = main.health(self.ws.root)
+            self.assertEqual((report["workspace"], report["healthy"]), ("unreadable", False))
+        with mock.patch.object(main, "package_version", return_value=f"{MARKER} 1.0"):
+            self.assertEqual(main.health(self.ws.root)["version"], "?")   # from the install
         with mock.patch.object(main, "status", side_effect=sqlite3.DatabaseError(MARKER)):
             self.assertEqual(main.health(self.ws.root)["workspace"], "unreadable")
         with mock.patch.object(diag, "recent_crashes",

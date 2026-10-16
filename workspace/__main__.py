@@ -100,8 +100,11 @@ def health(root=None):
 def _health(out, root):
     from workspace import diag
     from workspace.store import StoreError, default_root
-    out["version"] = package_version()
-    if _system_account():
+    out["version"] = diag._clean("version", package_version())   # read from the install
+    account = _system_account()
+    if account is None:                         # cannot tell: needs attention, never healthy
+        return                                  # (workspace stays "unreadable")
+    if account:
         out["workspace"] = "system_account"
         return
     try:
@@ -146,14 +149,18 @@ def _app_running(name=None):
 
 def _system_account():
     """Is this process running as Local System (S-1-5-18)? Intune runs a
-    script there unless it is set to use the logged-on credentials."""
+    script there unless it is set to use the logged-on credentials. None if
+    Windows cannot say (so --health never reports healthy on a guess); False
+    off Windows."""
     import ctypes
     from ctypes import wintypes
     try:
         advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    except (AttributeError, OSError):
+    except AttributeError:                      # not Windows (tests on Linux)
         return False
+    except OSError:
+        return None
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD,
                                           ctypes.POINTER(wintypes.HANDLE))
@@ -165,18 +172,18 @@ def _system_account():
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,   # TOKEN_QUERY
                                      ctypes.byref(token)):
-        return False
+        return None
     try:
         size = wintypes.DWORD()
         advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
         buffer = ctypes.create_string_buffer(size.value)
         if not size.value or not advapi32.GetTokenInformation(
                 token, 1, buffer, size, ctypes.byref(size)):
-            return False
+            return None
         sid = ctypes.c_void_p.from_buffer(buffer).value   # TOKEN_USER.User.Sid
         text = ctypes.c_wchar_p()
         if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
-            return False
+            return None
         try:
             return text.value == "S-1-5-18"
         finally:
