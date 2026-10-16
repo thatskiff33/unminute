@@ -1781,7 +1781,7 @@ function folderItem(f) {
   const status = f.error || joinParts(f.active ? "Watching" : "Paused",
     f.last_scan_at ? `checked ${whenWord(f.last_scan_at)}` : "not checked yet",
     f.imported ? `${f.imported} imported` : null,
-    f.waiting ? `${f.waiting} waiting until fully copied` : null,
+    f.waiting ? `${f.waiting} waiting ${f.active ? "until fully copied" : "until you resume"}` : null,
     f.cloud ? `${f.cloud} in cloud storage, not on this computer yet` : null,
     f.duplicates ? `${f.duplicates} already imported` : null,
     f.unreadable ? `${f.unreadable} could not be read (no permission)` : null,

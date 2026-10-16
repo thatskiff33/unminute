@@ -34,7 +34,7 @@ Disabled: recordings start without this confirmation. Use this only if the firm 
       <string id="AllowWatchedFolders">Allow watched folders</string>
       <string id="AllowWatchedFolders_Help">Enabled or not configured: users can choose folders that the app checks for new recordings.
 
-Disabled: no new watched folders can be added and existing ones are not checked.</string>
+Disabled: no new watched folders can be added and existing ones are not checked. From when the app next reads the policy (within 15 minutes), recordings already found in them are not imported until the policy allows watched folders again; the one being copied in at that moment finishes.</string>
 
       <string id="AllowDeleteOriginals">Allow deleting original recordings from watched folders</string>
       <string id="AllowDeleteOriginals_Help">Enabled or not configured: for a watched folder, a user may allow the app to delete an original recording after its transcript is reviewed (only if it is exactly the file that was imported).

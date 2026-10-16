@@ -120,7 +120,7 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > **Manage downloads** (the Downloads page) > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. |
-| A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows files waiting for copying to finish, cloud-only files and unreadable files. |
+| A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 
