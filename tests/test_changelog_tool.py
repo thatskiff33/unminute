@@ -3,11 +3,14 @@
 # reads. Stdlib only.
 #   python -m unittest discover -s tests -v
 
+import contextlib
+import io
 import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -15,14 +18,15 @@ sys.path.insert(0, str(ROOT / "tools"))
 import changelog  # noqa: E402
 from changelog import ChangelogError  # noqa: E402
 
-HEAD = ("# Changelog\n\nRelease notes for Unminute. Unreleased changes are in changelog.d/.\n\n"
-        "## v0.4.3\n\n- **Older.** Kept.\n")
+INTRO = "# Changelog\n\nRelease notes for Unminute. Unreleased changes are in changelog.d/.\n\n"
+HEAD = INTRO + "## v0.4.3\n\n- **Older.** Kept.\n"
 
 
 def workflow_notes(text, version):
-    """The Release workflow's awk: lines after '## <tag>' up to the next '## '."""
+    """The Release workflow's awk, line for line: lines after '## <tag>' up to
+    the next line starting '## '."""
     out, on = [], False
-    for line in text.splitlines():
+    for line in text.replace("\r\n", "\n").split("\n"):
         if line == f"## {version}":
             on = True
             continue
@@ -53,15 +57,18 @@ class FragmentTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "changelog.d").mkdir()
-        (self.root / "CHANGELOG.md").write_text(HEAD, encoding="utf-8")
+        (self.root / "CHANGELOG.md").write_bytes(HEAD.encode())
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def add(self, name, text):
-        (self.root / "changelog.d" / name).write_text(text, encoding="utf-8")
+        (self.root / "changelog.d" / name).write_bytes(text.encode("utf-8"))
 
-    def test_fragments_combine_in_number_order_with_groups_merged(self):
+    def changelog(self):
+        return (self.root / "CHANGELOG.md").read_bytes().decode("utf-8")
+
+    def test_loose_fragments_form_one_list_then_each_group(self):
         self.add("README.md", "# How to write a fragment\n")          # not a fragment
         self.add("118-lightning.md", "- **Security update.** pytorch-lightning 2.6.6.\n")
         self.add("111-a5-policy.md", "Security hardening (#111):\n\n- **Policy.** IT settings.\n")
@@ -69,41 +76,60 @@ class FragmentTests(unittest.TestCase):
         self.add("9-early.md", "- **Early.** First by number.\n")
         self.add("wording.md", "- **Wording.** No number, so last.\n")
         self.assertEqual(changelog.notes(self.root),
-                         "- **Early.** First by number.\n\n"
+                         "- **Early.** First by number.\n"
+                         "- **Security update.** pytorch-lightning 2.6.6.\n"
+                         "- **Wording.** No number, so last.\n\n"
                          "Security hardening (#111):\n\n- **Bridge.** Tighter.\n"
-                         "- **Policy.** IT settings.\n\n"
-                         "- **Security update.** pytorch-lightning 2.6.6.\n\n"
-                         "- **Wording.** No number, so last.")
+                         "- **Policy.** IT settings.")
 
     def test_release_writes_the_section_the_workflow_reads(self):
         self.add("117-skip.md", "- **Skip speaker identification.** For one or two people.\n")
         self.add("111-a5.md", "Security hardening (#111, slice A5):\n\n- **Policy.** Managed.\n")
         changelog.release("v0.5.0", "Managed settings for IT.", root=self.root)
-        text = (self.root / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertEqual(workflow_notes(text, "v0.5.0").strip(),
-                         "Managed settings for IT.\n\n"
-                         "Security hardening (#111, slice A5):\n\n- **Policy.** Managed.\n\n"
-                         "- **Skip speaker identification.** For one or two people.")
-        self.assertLess(text.index("## v0.5.0"), text.index("## v0.4.3"))   # newest first
-        self.assertIn("- **Older.** Kept.", workflow_notes(text, "v0.4.3"))
+        self.assertEqual(self.changelog(), INTRO + (
+            "## v0.5.0\n\nManaged settings for IT.\n\n"
+            "- **Skip speaker identification.** For one or two people.\n\n"
+            "Security hardening (#111, slice A5):\n\n- **Policy.** Managed.\n\n"
+            "## v0.4.3\n\n- **Older.** Kept.\n"))
+        self.assertIn("- **Policy.** Managed.", workflow_notes(self.changelog(), "v0.5.0"))
+        self.assertEqual(workflow_notes(self.changelog(), "v0.4.3"), "\n- **Older.** Kept.\n")
         self.assertEqual([p.name for p in (self.root / "changelog.d").iterdir()], [])
 
-    def test_release_keeps_the_readme_and_crlf_endings(self):
+    def test_release_keeps_crlf_endings_and_the_readme(self):
         (self.root / "CHANGELOG.md").write_bytes(HEAD.replace("\n", "\r\n").encode())
         self.add("README.md", "Format notes.\n")
         self.add("1-x.md", "- **X.** Y.\n")
         changelog.release("v0.5.0-preview.1", root=self.root)
-        raw = (self.root / "CHANGELOG.md").read_bytes()
-        self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
+        self.assertEqual(self.changelog(), (INTRO + "## v0.5.0-preview.1\n\n- **X.** Y.\n\n"
+                                            "## v0.4.3\n\n- **Older.** Kept.\n")
+                         .replace("\n", "\r\n"))
         self.assertTrue((self.root / "changelog.d" / "README.md").exists())
+
+    def test_a_changelog_without_versions_gets_the_section_at_the_end(self):
+        (self.root / "CHANGELOG.md").write_bytes(b"# Changelog\n\nIntro.\n")
+        self.add("1-x.md", "- **X.** Y.\n")
+        changelog.release("v0.1.0", root=self.root)
+        self.assertEqual(self.changelog(), "# Changelog\n\nIntro.\n\n## v0.1.0\n\n- **X.** Y.\n")
+
+    def test_other_line_separators_are_left_alone(self):
+        (self.root / "CHANGELOG.md").write_bytes((HEAD + "Page\x0cbreak and   kept.\n")
+                                                 .encode())
+        self.add("1-x.md", "- **X.** a b\n")
+        changelog.release("v0.5.0", root=self.root)
+        self.assertIn("Page\x0cbreak and   kept.", self.changelog())
+        self.assertIn("- **X.** a b", self.changelog())
 
     def test_release_refusals(self):
         with self.assertRaisesRegex(ChangelogError, "nothing to release"):
             changelog.release("v0.5.0", root=self.root)
         self.add("1-x.md", "- **X.** Y.\n")
-        for bad in ("0.5.0", "v0.5", "v0.5.0-rc1", "v0.5.0\n"):
+        for bad in ("0.5.0", "v0.5", "v0.5.0-rc1", "v0.5.0\n", "v١.0.0"):
             with self.assertRaisesRegex(ChangelogError, "not vX.Y.Z"):
                 changelog.release(bad, root=self.root)
+        for summary, reason in (("## Big release", "heading"), ("# Title", "heading"),
+                                ("One\n## v9.9.9", "one line")):
+            with self.assertRaisesRegex(ChangelogError, reason):
+                changelog.release("v0.5.0", summary, root=self.root)
         with self.assertRaisesRegex(ChangelogError, "already has"):
             changelog.release("v0.4.3", root=self.root)
         (self.root / "CHANGELOG.md").write_text(HEAD.replace("## v0.4.3", "## Unreleased\n\n"
@@ -113,6 +139,22 @@ class FragmentTests(unittest.TestCase):
             changelog.release("v0.5.0", root=self.root)
         self.assertTrue((self.root / "changelog.d" / "1-x.md").exists())   # nothing removed
 
+    def test_a_fragment_that_cannot_be_deleted_is_named_and_the_rest_go(self):
+        for n in (1, 2, 3):
+            self.add(f"{n}-x.md", f"- **X{n}.** Y.\n")
+        real_unlink = Path.unlink
+
+        def unlink(path, *a, **kw):
+            if path.name == "2-x.md":
+                raise PermissionError("in use")
+            return real_unlink(path, *a, **kw)
+        with mock.patch.object(Path, "unlink", unlink):
+            with self.assertRaisesRegex(ChangelogError, "2-x.md"):
+                changelog.release("v0.5.0", root=self.root)
+        self.assertIn("## v0.5.0", self.changelog())
+        self.assertEqual(sorted(p.name for p in (self.root / "changelog.d").iterdir()),
+                         ["2-x.md"])
+
     def test_bad_fragments_are_named(self):
         for name, text, reason in (
                 ("1-empty.md", "\n\n", "empty"),
@@ -120,18 +162,24 @@ class FragmentTests(unittest.TestCase):
                 ("3-h1.md", "- **X.** Y.\n# Title\n", "headings"),
                 ("4-prose.md", "Just a sentence.\n", "bullet"),
                 ("5-group-only.md", "Security hardening:\n\n", "nothing under it"),
-                ("6-notes.txt", "- **X.** Y.\n", ".md files")):
+                ("6-notes.txt", "- **X.** Y.\n", ".md files"),
+                ("7-bom-heading.md", "﻿## v9.9.9\n", "headings"),
+                ("8-trailing.md", "- **X.** Y.\n##\t\n", "headings")):
             self.add(name, text)
             with self.assertRaisesRegex(ChangelogError, re.escape(name) + ".*" + reason):
                 changelog.check(self.root)
             (self.root / "changelog.d" / name).unlink()
-        self.add("7-subheading.md", "- **X.** Y.\n\n### Details\n\n- more\n")   # level 3 is fine
+        self.add("9-subheading.md", "- **X.** Y.\n\n### Details\n\n- more\n")   # level 3 is fine
+        self.add("10-bom.md", "﻿- **X.** Y.\n")
         changelog.check(self.root)
 
     def test_command_line(self):
-        self.assertEqual(changelog.main(["--check"]), 0)
-        self.assertEqual(changelog.main(["--preview"]), 0)
-        with self.assertRaises(SystemExit):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(changelog.main(["--check"]), 0)
+            self.assertEqual(changelog.main(["--preview"]), 0)
+        self.assertIn("fragment(s) OK", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             changelog.main([])
 
 
