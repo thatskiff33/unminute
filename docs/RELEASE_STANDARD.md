@@ -264,7 +264,8 @@ Status is one of:
 | Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
 | Hash-locked dependencies | 8 | `tools/lock.py --check` (each lock resolved again, with hashes taken afresh), `tools/lock.py --compare` (version changes against the base branch) and `pip download --require-hashes` in `ci.yml` (Requirements resolve); `tools/build_package.py` installs with `--require-hashes --no-deps`; `tests/test_dependency_locks.py` | In place |
 | Vulnerability audit | 8 | `tools/audit.py` (pip-audit over every lock) in `audit.yml` on every pull request and daily, with expiring ignores in `requirements/audit-ignore.json` | In place, not yet required |
-| Reproducible, pruned build with SBOM and third-party notices; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 |
+| Reproducible build with SBOM, third-party notices, model manifest and binary inventory; binaries and their signers match an allowlist; a release builds only the tagged commit's committed files from a clean tree | 8, 11 | `tools/build_package.py` (`--release`; `packaging/binary-allowlist.json`); `tests/test_package.py` | Unit tests in place; the build runs by hand until B3 |
+| Pruned, precompiled build; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 (pruning) |
 | CI-built, attested release behind an approval; evidence present and naming the zip SHA-256 | 8, 14 | Release job | Security plan: B3 |
 | Update gate, rollback and migration | 9 | Unit tests (`tests/test_update.py`); installer end to end | Unit tests in place; installer check manual |
 | First-launch fallback to the previous version; atomic version pointer; installer log | 9 | Installer and launcher tests | Security plan: B5, B6 |
