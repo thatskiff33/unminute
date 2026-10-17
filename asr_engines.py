@@ -773,7 +773,7 @@ class ParakeetEngine:
                                      max_speech_duration_s=MAX_SEGMENT_SECONDS).with_timestamps()
         except Exception as exc:
             raise ModelLoadError(
-                f"{self.label} failed to load ({type(exc).__name__}: {exc}). "
+                f"{label(self.spec.name)} failed to load ({type(exc).__name__}: {exc}). "
                 f"Repair it in Settings > Manage downloads; if it keeps failing, "
                 f"choose a Whisper model.") from exc
         return self
@@ -784,7 +784,7 @@ class ParakeetEngine:
         Segments are produced lazily, one speech piece at a time, so callers
         can pause or stop between them."""
         if self._asr is None:
-            raise ModelLoadError(f"{self.label} is not loaded.")
+            raise ModelLoadError(f"{label(self.spec.name)} is not loaded.")
         wav = audio
         if isinstance(audio, (str, Path)):
             if self.decode_audio is None:       # the app passes decoded arrays (R12)

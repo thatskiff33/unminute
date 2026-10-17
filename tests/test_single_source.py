@@ -2,6 +2,7 @@
 model names and what the app calls them, and download progress as a number.
 The page shows what Python sends and reads nothing out of a title or message.
 """
+import ast
 import json
 import os
 import re
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -127,20 +129,56 @@ class ModelNameTests(unittest.TestCase):
 
     def test_every_model_message_names_the_model_by_its_label(self):
         # No message in asr_engines or engines puts a model's raw name in
-        # front of the user: each goes through label().
+        # front of the user: each goes through label(). An engine's own
+        # .label stays the model id (tools store it as a version's model).
         for path in (ROOT / "asr_engines.py", ROOT / "workspace" / "engines.py"):
-            raw = re.findall(r"\{(?:spec\.name|name)\}", path.read_text(encoding="utf-8"))
+            source = path.read_text(encoding="utf-8")
+            raw = re.findall(r"\{(?:spec\.name|name)\}", source)
             self.assertEqual(raw, [], path.name)
+            errors = [node for node in ast.walk(ast.parse(source))
+                      if isinstance(node, ast.Call)
+                      and getattr(node.func, "id", None) == "ModelLoadError"]
+            self.assertGreater(len(errors), 2, path.name)
+            raw = [f"{path.name}:{node.lineno}" for node in errors for part in ast.walk(node)
+                   if isinstance(part, ast.FormattedValue) and _raw_model_name(part.value)]
+            self.assertEqual(raw, [])
         from workspace import engines
         with mock.patch.object(asr_engines, "parakeet_status", return_value=("missing", "x")), \
                 self.assertRaisesRegex(asr_engines.ModelLoadError, "^Parakeet v3 is not ready"):
             engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
+
+    def test_a_parakeet_engine_names_the_model_by_its_label(self):
+        engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
+        self.assertEqual(engine.label, asr_engines.PARAKEET_V2)      # the id, as stored
+        with self.assertRaisesRegex(asr_engines.ModelLoadError, "^Parakeet v2 is not loaded"):
+            engine.transcribe("synthetic.wav")
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("synthetic")
+        onnx_asr = types.ModuleType("onnx_asr")
+        onnx_asr.load_model = onnx_asr.load_vad = fail
+        onnxruntime = types.ModuleType("onnxruntime")
+        onnxruntime.disable_telemetry_events = lambda: None
+        onnxruntime.SessionOptions = mock.MagicMock
+        with mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=onnxruntime), \
+                mock.patch.object(asr_engines, "check_files", return_value=[]), \
+                self.assertRaisesRegex(asr_engines.ModelLoadError,
+                                       r"^Parakeet v2 failed to load \(RuntimeError"):
+            engine.load()
 
     def test_the_page_reads_no_names_out_of_titles_or_ids(self):
         self.assertNotIn("c.title", APP_JS)
         self.assertNotIn("modelName", APP_JS)
         self.assertIn("d.model_label", APP_JS)
         self.assertIn("v.model_label", APP_JS)
+
+
+def _raw_model_name(expr):
+    """True for a formatted value that is a model's raw name: `name`,
+    `spec.name`, `self.spec.name` or `self.label`. label(...) is what is wanted."""
+    if isinstance(expr, ast.Name):
+        return expr.id == "name"
+    return isinstance(expr, ast.Attribute) and expr.attr in ("name", "label")
 
 
 class ProgressTests(unittest.TestCase):
@@ -256,11 +294,20 @@ class ProgressTests(unittest.TestCase):
         subprocess.run(["cmd", "/c", "mklink", "/J", str(gpu.staging_dir(cache)), str(canary)],
                        check=True, capture_output=True)
         fetched = []
-        with self.assertRaisesRegex(gpu.GpuError, "is a link"):
-            gpu.install(cache, log=lambda m: None, fetch=lambda *a: fetched.append(a))
-        self.assertEqual(fetched, [])
+
+        def fetch(url, dest, size):      # writes, so without the refusal install carries on
+            fetched.append(url)
+            Path(dest).write_bytes(b"x")
+        try:
+            gpu.install(cache, log=lambda m: None, fetch=fetch)
+            error = None
+        except Exception as exc:         # checked after the outside folder
+            error = exc
         self.assertTrue((canary / "keep" / "file.txt").is_file())
         self.assertEqual(sorted(p.name for p in canary.iterdir()), ["keep"])   # nothing written
+        self.assertEqual(fetched, [])
+        self.assertIsInstance(error, gpu.GpuError)
+        self.assertIn("is a link", str(error))
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):
