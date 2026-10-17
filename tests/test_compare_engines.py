@@ -166,8 +166,50 @@ compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out +
 """
 
 
+DAMAGED_PROBE = r"""
+import argparse, json, sys
+tools, repo, wav, out = sys.argv[1:5]
+sys.path[:0] = [repo, tools]
+import compare_engines
+from workspace import engines
+
+
+class Fake:
+    description = "fake"
+
+    def transcribe(self, samples):
+        raise AssertionError("a refused clip reached the engine")
+
+
+engines.load_engine = lambda name, cache, threads: Fake()
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 9, "wav": wav}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=1, manifest=[manifest], out=out))
+"""
+
+
 @unittest.skipUnless(sys.platform == "win32", "the app's decoder runs in a Windows job")
 class RunTests(unittest.TestCase):
+    def test_a_clip_the_decoder_refuses_stops_the_run_naming_the_clip(self):
+        import importlib.util
+        import subprocess
+        import tempfile
+        if not importlib.util.find_spec("av"):
+            self.skipTest("PyAV is not installed")
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "damaged-synthetic.wav"
+            wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVEjunk" + bytes(range(256)) * 8)
+            r = subprocess.run([sys.executable, "-B", "-c", DAMAGED_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(Path(tmp) / "run.jsonl")],
+                               capture_output=True, text=True, timeout=180)
+        self.assertEqual(r.returncode, 1, r.stderr[-2000:])
+        self.assertIn("Clip s/9 could not be decoded", r.stderr)
+        self.assertNotIn("reached the engine", r.stderr)
+        self.assertNotIn("damaged-synthetic", r.stderr)      # the clip, not its path
+
     def test_a_missing_clip_stops_the_run_before_the_model_loads(self):
         import subprocess
         import tempfile
