@@ -11,7 +11,7 @@ const BOARDS = "/docs/design/boards/";
 // Uploaded canvas assets, by id, mapped to files in the repository.
 const BLOBS = {
   db54b5564615ab70ce9e211b583e7378: "/workspace/ui/img/unlimit.svg",
-  "0e6863cecdf84627bc5ac53d8917418d": "/workspace/ui/img/unlimit-white.svg",
+  "0e6863cecdf84627bc5ac53d8917418d": "/docs/design/assets/unlimit-white.svg",
   "80914b56cf1699947f5651b6ecf024e6": "/docs/design/before/workspace-inbox.png",
   "9c13f53304689b1b5dfe79b534813196": "/docs/design/before/workspace-meeting.png",
 };

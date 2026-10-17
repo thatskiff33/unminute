@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 IGNORES = ROOT / "requirements" / "audit-ignore.json"
 LOCKS = ["requirements.txt", "requirements/ci-lock.txt", "requirements/ci-audit.txt",
-         "requirements/ci.txt", "requirements/ci-coverage.txt"]
+         "requirements/ci.txt", "requirements/ci-coverage.txt", "requirements/ci-vulture.txt"]
 MAX_IGNORE_DAYS = 90
 FIELDS = ("id", "package", "reason", "until")
 

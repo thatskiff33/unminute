@@ -199,6 +199,7 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
 | `packaging/` | Per-user installer and uninstaller for the package |
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.14 runtime |
+| `tools/make_icon.py` | Draws the app icon with Pillow: `python tools/make_icon.py whisper.ico preview.png` |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
@@ -206,11 +207,9 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 
 Design and plans:
 
-- [docs/WORKSPACE_PLAN.md](docs/WORKSPACE_PLAN.md): the target product.
-- [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md): coding and integration sequence.
 - [docs/WORKSPACE_DESIGN.md](docs/WORKSPACE_DESIGN.md): the durable processing core.
 - [docs/design/boards/](docs/design/boards/): the approved UI design boards that `tools/design_check.py` compares the app against.
-- [docs/WEBVIEW_TRIAL.md](docs/WEBVIEW_TRIAL.md): the desktop shell trial and its security findings.
+- [docs/history/](docs/history/): the original product plan and coding sequence, and the desktop shell trial's evidence, kept for history and no longer maintained.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
 - [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md), [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release criteria, release process and hands-on checks.
 

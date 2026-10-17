@@ -1,5 +1,7 @@
 # pywebview / WebView2 feasibility trial (#10)
 
+> **Status: kept as evidence, no longer maintained (moved here in R13, #136).** The #10 shell trial ran on 13 October 2026. Its tool (`tools/webview_trial.py`) and trial page were removed in R13 (#136); git history has them. `docs/SECURITY_MODEL.md` cites this record.
+
 Evidence for the desktop shell of the planned meeting workspace. The legacy
 tkinter app is unchanged. Re-run with:
 

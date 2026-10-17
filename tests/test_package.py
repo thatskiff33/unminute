@@ -970,5 +970,28 @@ class VerifyPrecompiledTests(unittest.TestCase):
         self.assertIn("tools/build_package.py --verify-precompiled", workflow)
 
 
+class AppAllowlistTests(unittest.TestCase):
+    """packaging/app-allowlist.json names every file the app folder holds (R13,
+    #136): a new shipped file is listed, and so reviewed, in its own PR."""
+
+    def setUp(self):
+        path = bp.PACKAGING / "app-allowlist.json"
+        self.allowed = json.loads(path.read_text(encoding="utf-8"))["app"]
+
+    def test_the_app_folder_holds_exactly_the_allowlist(self):
+        # The files the build copies: workspace/ as git has it, and APP_FILES.
+        listed = subprocess.run(["git", "-C", str(bp.ROOT), "ls-files", "-z", "--", "workspace"],
+                                capture_output=True, check=True).stdout.decode("utf-8")
+        shipped = sorted({*bp.APP_FILES, *filter(None, listed.split("\0"))})
+        self.assertEqual(self.allowed, sorted(set(self.allowed)))      # sorted, no repeats
+        self.assertEqual(shipped, self.allowed,
+                         "packaging/app-allowlist.json must list exactly the shipped files")
+
+    def test_no_trial_page_tool_test_or_design_asset_is_allowed(self):
+        for path in self.allowed:
+            self.assertFalse(path.startswith(("tools/", "tests/", "docs/", "packaging/")), path)
+            self.assertNotRegex(path, r"(^|/)trial\.|unlimit-white|webview_trial|make_icon")
+
+
 if __name__ == "__main__":
     unittest.main()

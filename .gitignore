@@ -33,5 +33,4 @@ __pycache__/
 *.log
 
 # Screenshot build scratch (the committed PNGs live in docs/screenshots)
-docs/screenshots/*.tmp.png
 dist/
