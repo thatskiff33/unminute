@@ -394,14 +394,6 @@ function signatureOf(d) {
           d.audio_available].join("|");
 }
 
-// "Parakeet v2" for "parakeet-tdt-0.6b-v2"; other names as they are.
-function modelName(m) {
-  if (!m) return null;
-  const s = String(m).toLowerCase();
-  if (s.includes("parakeet")) return s.includes("v3") ? "Parakeet v3" : s.includes("v2") ? "Parakeet v2" : m;
-  if (s.includes("turbo")) return "Whisper large-v3 turbo";
-  return m;
-}
 function whenWord(epoch) {
   const d = new Date(epoch * 1000), now = new Date();
   const time = d.toLocaleTimeString("en-NZ", { hour: "numeric", minute: "2-digit" });
@@ -416,10 +408,10 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 function metaLine(d) {
   if (state.version !== null) {
     const v = d.older_versions.find((x) => x.index === state.version);
-    return v ? `Earlier version: ${modelName(v.model)} (${dateWord(v.created_at)}) · ${plural(v.edits, "edited passage")}` : "";
+    return v ? `Earlier version: ${v.model_label} (${dateWord(v.created_at)}) · ${plural(v.edits, "edited passage")}` : "";
   }
   const when = d.reviewed_at ? `Reviewed ${whenWord(d.reviewed_at)}` : `Imported ${whenWord(d.created_at)}`;
-  return joinParts(when, lengthWord(d.duration_s), speakersWord(d.speaker_count), modelName(d.model));
+  return joinParts(when, lengthWord(d.duration_s), speakersWord(d.speaker_count), d.model_label);
 }
 
 async function renderMeeting() {
@@ -704,12 +696,12 @@ function renderVersions(d) {
     return open ? el("button", { type: "button", class: "ver-card", on: { click: open } }, ...kids)
       : el("div", { class: "ver-card now" }, ...kids);
   };
-  const items = [el("li", {}, card("Current", modelName(d.model) || "No model yet", plural(d.edits, "edited passage"),
+  const items = [el("li", {}, card("Current", d.model_label || "No model yet", plural(d.edits, "edited passage"),
     viewing ? () => viewVersion(null) : null))];
   for (const v of d.older_versions) {
     const mine = state.version === v.index;
     items.push(el("li", {}, card(mine ? "Earlier · viewing" : "Earlier · read only",
-      `${modelName(v.model)} (${dateWord(v.created_at)})`,
+      `${v.model_label} (${dateWord(v.created_at)})`,
       mine ? plural(v.edits, "edited passage") : `${plural(v.edits, "edited passage")} · Open`,
       mine ? null : () => viewVersion(v.index))));
   }
@@ -1429,21 +1421,14 @@ const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Opti
 // returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
 const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, returnTo: null };
 
-// "Parakeet v2" from "Speech to text: Parakeet v2 (recommended)".
-function cardName(c) {
-  return c.title.replace(/^Speech to text:\s*/i, "").replace(/\s*\((recommended|optional)\)\s*$/i, "");
-}
-// A download's progress, when its latest message states one.
-function downloadPercent(message) {
-  const of = /([\d.]+)\s*(?:GB)?\s+of\s+([\d.]+)\s*GB/i.exec(message || "");
-  if (of) return Math.min(100, Math.round((100 * parseFloat(of[1])) / parseFloat(of[2])));
-  const pct = /(\d{1,3})\s*%/.exec(message || "");
-  return pct ? Math.min(100, Number(pct[1])) : null;
-}
+// A card's short name ("Parakeet v2") and a download's progress (a number, or
+// null when it cannot be told) come from Python as they are: the page never
+// reads them out of a title or a message (R12, #133).
+const cardName = (c) => c.label;
 const isRunning = (c) => !!(c && c.download && c.download.state === "running");
 
 function progressBlock(dl, note) {
-  const pct = downloadPercent(dl.message);
+  const pct = typeof dl.percent === "number" ? dl.percent : null;
   const bar = el("div", { class: `progress${pct === null ? " busy" : ""}`, role: "progressbar", "aria-label": "Download",
     ...(pct === null ? {} : { "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100" }) }, el("span", {}));
   if (pct !== null) bar.firstChild.style.width = `${pct}%`;
@@ -1775,7 +1760,7 @@ async function renderSettings() {
   $("s-gpu").disabled = !allowed("AllowGpuComponent")
     || (!s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok));
   $("s-gpu-note").textContent = !s.gpu.card ? "" : !allowed("AllowGpuComponent") ? MANAGED_NOTE : !s.gpu.driver_ok
-    ? `${s.gpu.card}: the NVIDIA driver is too old (580 or later is needed). Ask IT to update it.`
+    ? `${s.gpu.card}: the NVIDIA driver is too old (${s.gpu.min_driver} or later is needed). Ask IT to update it.`
     : s.gpu.component !== "ready"
       ? (s.gpu_speakers
         ? "The graphics card component needs repair in Downloads; until then speaker names are worked out on the processor."
@@ -1789,7 +1774,7 @@ async function renderSettings() {
   const sel = $("s-model");
   if (document.activeElement !== sel) {
     sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name,
-      textContent: `${modelName(c.name)}${/recommended/.test(c.label) ? " (recommended)" : ""}` })));
+      textContent: `${c.label}${c.recommended ? " (recommended)" : ""}` })));
     sel.value = s.model;
   }
   const setup = await call("setup_state");

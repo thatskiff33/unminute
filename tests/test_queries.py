@@ -21,6 +21,7 @@ SR = 16000
 if HAVE_DEPS:
     import numpy as np
 
+    import asr_engines
     from workspace import holds, speaker_names
     from workspace.app import Workspace
 
@@ -57,14 +58,15 @@ def reference_meetings(ws):
         else:
             stage = "review"
         if v is None:
-            facts = {"duration_s": None, "speaker_count": None, "model": None}
+            facts = {"duration_s": None, "speaker_count": None, "model": None,
+                     "model_label": None}
         else:
             src = store.source(v["source_id"])
             run = speaker_names.current_run(store, v["id"])
             facts = {"duration_s": round(src["samples"] / src["sample_rate"], 1),
                      "speaker_count": (len(speaker_names.resolve(store, v["id"])["order"])
                                        if run else None),
-                     "model": v["model"]}
+                     "model": v["model"], "model_label": asr_engines.label(v["model"])}
         busy = ws._busy and ws._busy[0] == row["id"] and ws._busy[1]
         out.append({**row, **facts, "audio_available": ws._audio_available(m),
                     "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],

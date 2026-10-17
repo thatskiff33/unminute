@@ -1,0 +1,1 @@
+- **Downloads show how far they have got.** The progress bar for a model or the graphics card component now fills as the download arrives, instead of only showing that it is busy (#133).

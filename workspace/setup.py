@@ -16,6 +16,7 @@ import multiprocessing as mp
 import os
 import threading
 import urllib.request
+from pathlib import Path
 
 import asr_engines
 from workspace import gpu
@@ -29,18 +30,22 @@ HELP_LINKS = {   # fixed pages the user can open in their own browser (allowlist
                 "#if-unminute-finds-damage",
 }
 
+def _speech_card(name, recommended, about):
+    label = asr_engines.label(name)
+    return {"name": name, "role": "speech", "recommended": recommended, "label": label,
+            "title": f"Speech to text: {label}" + (" (recommended)" if recommended else ""),
+            "about": about}
+
+
+# The page shows "label" and "title" as they are: it never reads either apart.
 CARDS = [
-    {"name": asr_engines.RECOMMENDED_PARAKEET, "role": "speech", "recommended": True,
-     "title": "Speech to text: Parakeet v2 (recommended)",
-     "about": "Fast and accurate for English. Runs on this computer's processor."},
-    {"name": "parakeet-tdt-0.6b-v3", "role": "speech", "recommended": False,
-     "title": "Speech to text: Parakeet v3",
-     "about": "Newer multilingual version. In our tests it was less accurate for English."},
-    {"name": "large-v3-turbo", "role": "speech", "recommended": False,
-     "title": "Speech to text: Whisper large-v3 turbo",
-     "about": "Alternative engine; slower on a processor."},
+    _speech_card(asr_engines.RECOMMENDED_PARAKEET, True,
+                 "Fast and accurate for English. Runs on this computer's processor."),
+    _speech_card(asr_engines.PARAKEET_V3, False,
+                 "Newer multilingual version. In our tests it was less accurate for English."),
+    _speech_card(asr_engines.WHISPER_TURBO, False, "Alternative engine; slower on a processor."),
     {"name": asr_engines.SPEAKER_MODEL.name, "role": "speakers", "recommended": True,
-     "title": "Speaker identification (optional)",
+     "label": "Speaker identification", "title": "Speaker identification (optional)",
      "about": "Works out who spoke when. Downloading it needs a free Hugging Face account "
               "and token; once downloaded it works offline and the token is not needed."},
 ]
@@ -79,9 +84,10 @@ def gpu_card(cache_dir):
              "Used only in Faster mode, once turned on in Settings. Transcription stays "
              "on the processor.")
     if not info["driver_ok"]:
-        about += (f" The NVIDIA driver ({info['driver']}) is too old: version 580 or later "
-                  "is needed. Ask IT to update it.")
+        about += (f" The NVIDIA driver ({info['driver']}) is too old: version "
+                  f"{gpu.MIN_DRIVER[0]} or later is needed. Ask IT to update it.")
     return {"name": gpu.COMPONENT, "role": "gpu", "recommended": False,
+            "label": "Graphics card acceleration",
             "title": "Graphics card acceleration (optional)", "about": about,
             "state": state, "status": plain, "licence": gpu.LICENCE[0],
             "source": gpu.LICENCE[1], "size_gb": round(gpu.DOWNLOAD_BYTES / 1e9, 2),
@@ -451,7 +457,7 @@ class Downloads:
                 raise SetupError("Wait for the current download or check to finish.")
             self._running = name
             self.state[name] = {"state": "running", "message": "Checking every file…",
-                                "log": []}
+                                "log": [], "verify": True}
         threading.Thread(target=self._verify, args=(name,), daemon=True,
                          name="model-verify").start()
 
@@ -555,6 +561,26 @@ class Downloads:
                                  process="setup")
         if died:
             log.write("worker_exit", process="setup", exitcode=proc.exitcode, code=code)
+
+    def percent(self, name):
+        """How far a running download is, from the size of what it has written
+        so far against what it fetches (R12: a number for the page, never read
+        out of a message); None when that cannot be told (checking, unpacking)."""
+        entry = self.state.get(name)
+        if not entry or entry.get("state") != "running" or entry.get("verify"):
+            return None
+        cache = Path(self.cache_dir)
+        if name == gpu.COMPONENT:
+            folder = gpu.component_dir(cache).parent / (gpu.VERSION + ".partial") / "wheels"
+            total = gpu.DOWNLOAD_BYTES
+        elif name in asr_engines.MANAGED_MODELS:
+            spec = asr_engines.MANAGED_MODELS[name]
+            folder, total = asr_engines.staging_dir(spec, cache), spec.download_bytes
+        else:
+            return None
+        if not total or not folder.is_dir():
+            return None
+        return min(100, round(100 * _size_of(folder) / total))
 
     def busy(self):
         return self._running is not None

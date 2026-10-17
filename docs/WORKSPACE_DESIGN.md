@@ -354,6 +354,7 @@ Failure reasons are stored without file paths.
 - Downloads run one at a time in a separate, short-lived download process. The app process keeps its offline network guard, and inference workers never download.
 - Before a model is replaced, the inference worker is unloaded. Models cannot be replaced while a meeting is being processed.
 - Each download is verified against the pinned SHA-256 manifest before it replaces anything. A damaged copy is set aside, not deleted.
+- Progress (R12): the app process measures what the download has written so far in its staging folder against the size it fetches, and sends the page a number (`percent`; none while checking or unpacking). The download process itself is unchanged, and the page never reads a number out of a message.
 - An interrupted or failed download is retried by starting it again. Errors are explained in plain language, for example:
   - terms not accepted;
   - token not accepted;

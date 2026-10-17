@@ -92,12 +92,27 @@ class ModelSpec:
         return sum(f.size for f in self.files)
 
 
+# Speech model names (the keys below) and what the app calls them: one source
+# for Setup, Settings and a meeting's details (R12, #133).
+PARAKEET_V2 = "parakeet-tdt-0.6b-v2"
+PARAKEET_V3 = "parakeet-tdt-0.6b-v3"
+WHISPER_TURBO = "large-v3-turbo"
+WHISPER_LARGE = "large-v3"
+LABELS = {PARAKEET_V2: "Parakeet v2", PARAKEET_V3: "Parakeet v3",
+          WHISPER_TURBO: "Whisper large-v3 turbo", WHISPER_LARGE: "Whisper large-v3"}
+
+
+def label(name):
+    """What the app calls a speech model ("Parakeet v2"); any other name as it is."""
+    return LABELS.get(name, name)
+
+
 # Hashes were taken from the pinned revisions. Large files match the LFS
 # SHA-256 Hugging Face publishes; small files were checked against Hugging
 # Face's git blob IDs before their SHA-256 was recorded.
 PARAKEET_MODELS = {
-    "parakeet-tdt-0.6b-v2": ModelSpec(
-        name="parakeet-tdt-0.6b-v2",
+    PARAKEET_V2: ModelSpec(
+        name=PARAKEET_V2,
         folder="parakeet-tdt-0.6b-v2-int8",
         onnx_asr_name="nemo-parakeet-tdt-0.6b-v2",
         repo="istupakov/parakeet-tdt-0.6b-v2-onnx",
@@ -114,8 +129,8 @@ PARAKEET_MODELS = {
                       "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
         ),
     ),
-    "parakeet-tdt-0.6b-v3": ModelSpec(
-        name="parakeet-tdt-0.6b-v3",
+    PARAKEET_V3: ModelSpec(
+        name=PARAKEET_V3,
         folder="parakeet-tdt-0.6b-v3-int8",
         onnx_asr_name="nemo-parakeet-tdt-0.6b-v3",
         repo="istupakov/parakeet-tdt-0.6b-v3-onnx",
@@ -148,7 +163,7 @@ SILERO_VAD = ModelSpec(
     ),
 )
 
-RECOMMENDED_PARAKEET = "parakeet-tdt-0.6b-v2"
+RECOMMENDED_PARAKEET = PARAKEET_V2
 
 # faster-whisper (CTranslate2) models. File hashes match Hugging Face's LFS
 # SHA-256 and git blob IDs; the model files are identical across turbo
@@ -164,8 +179,8 @@ _WHISPER_SHARED = (
 )
 
 WHISPER_MODELS = {
-    "large-v3-turbo": ModelSpec(
-        name="large-v3-turbo",
+    WHISPER_TURBO: ModelSpec(
+        name=WHISPER_TURBO,
         folder="faster-whisper-large-v3-turbo",
         family="whisper",
         repo="dropbox-dash/faster-whisper-large-v3-turbo",
@@ -183,8 +198,8 @@ WHISPER_MODELS = {
             *_WHISPER_SHARED,
         ),
     ),
-    "large-v3": ModelSpec(
-        name="large-v3",
+    WHISPER_LARGE: ModelSpec(
+        name=WHISPER_LARGE,
         folder="faster-whisper-large-v3",
         family="whisper",
         repo="Systran/faster-whisper-large-v3",
@@ -710,7 +725,7 @@ class ParakeetEngine:
 
     device = "cpu"
 
-    def __init__(self, name, cache_dir, threads, decode_audio):
+    def __init__(self, name, cache_dir, threads, decode_audio=None):
         self.spec = PARAKEET_MODELS[name]
         self.cache_dir = cache_dir
         self.threads = threads
@@ -770,6 +785,8 @@ class ParakeetEngine:
             raise ModelLoadError(f"{self.label} is not loaded.")
         wav = audio
         if isinstance(audio, (str, Path)):
+            if self.decode_audio is None:       # the app passes decoded arrays (R12)
+                raise ModelLoadError("Pass the audio as an array, or give a decoder.")
             wav = self.decode_audio(str(audio), sampling_rate=SAMPLE_RATE)
         duration = len(wav) / SAMPLE_RATE
 

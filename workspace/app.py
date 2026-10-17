@@ -1682,7 +1682,8 @@ class Workspace:
         known: (source row, speaker count) when the caller has worked them out
         already (meetings()); otherwise read here."""
         if v is None:
-            return {"duration_s": None, "speaker_count": None, "model": None}
+            return {"duration_s": None, "speaker_count": None, "model": None,
+                    "model_label": None}
         if known is None:
             with self.store._lock:
                 run = speaker_names.current_run(self.store, v["id"])
@@ -1693,7 +1694,8 @@ class Workspace:
                          self._speaker_count(v["id"], run, log))
         src, count = known
         return {"duration_s": round(src["samples"] / src["sample_rate"], 1) if src else None,
-                "speaker_count": count, "model": v["model"]}
+                "speaker_count": count, "model": v["model"],
+                "model_label": asr_engines.label(v["model"])}
 
     def _speaker_count(self, vid, run, log):
         """Speakers in the current identification (run), kept per version
@@ -1757,6 +1759,7 @@ class Workspace:
             "edits": self.store.edit_count(v["id"]) if v else 0,
             "can_undo": bool(v) and not m["reviewed_at"] and self.store.can_undo(v["id"]),
             "older_versions": [{"index": i, "model": x["model"],
+                                "model_label": asr_engines.label(x["model"]),
                                 "created_at": x["created_at"],
                                 "edits": self.store.edit_count(x["id"])}
                                for i, x in enumerate(older)],
@@ -1938,8 +1941,8 @@ class Workspace:
                 for r in holds.receipts(self.store)]
 
     def get_settings(self):
-        choices = [{"name": n, "label": n + (" (recommended)" if n ==
-                                               asr_engines.RECOMMENDED_PARAKEET else "")}
+        choices = [{"name": n, "label": asr_engines.label(n),
+                    "recommended": n == asr_engines.RECOMMENDED_PARAKEET}
                    for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
         from workspace import update
         info = gpu.detected()
@@ -1956,6 +1959,7 @@ class Workspace:
                              "all": self.settings.unreadable},
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
+                        "min_driver": gpu.MIN_DRIVER[0],
                         "component": self._display_value(
                             "gpu", lambda: gpu.status(self.cache_dir))[0] if info
                         else "missing"},
@@ -1978,7 +1982,7 @@ class Workspace:
             info = gpu.detected()
             if info is None or not info["driver_ok"]:
                 raise WorkspaceError("This computer has no NVIDIA graphics card with a recent "
-                                     "enough driver (580 or later).")
+                                     f"enough driver ({gpu.MIN_DRIVER[0]} or later).")
             if gpu.status(self.cache_dir)[0] != "ready":
                 raise WorkspaceError("Download the graphics card component in Setup first.")
         if changes.get("microphone") is False and self._recording is not None:
@@ -2160,7 +2164,9 @@ class Workspace:
         cards = [dict(c) for c in self._display_value("cards",
                                                       lambda: setup.cards(self.cache_dir))]
         for c in cards:
-            c["download"] = self.downloads.state.get(c["name"])
+            dl = self.downloads.state.get(c["name"])
+            # How far it is, as a number (R12): the page never reads it out of a message.
+            c["download"] = dict(dl, percent=self.downloads.percent(c["name"])) if dl else None
         speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
         remembered = self._display_value("tokens", credentials.has_token)
         return {"cards": cards, "token_remembered": remembered,

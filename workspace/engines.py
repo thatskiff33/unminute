@@ -33,8 +33,10 @@ def load_engine(name, cache_dir, threads, allow_test=False):
         if state != "ready":
             raise ModelLoadError(f"{name} is not ready ({detail}). Download or repair it "
                                  f"in Setup.")
-        from faster_whisper.audio import decode_audio
-        return asr_engines.ParakeetEngine(name, cache_dir, threads, decode_audio).load()
+        # No decoder: the worker passes decoded arrays. faster_whisper's
+        # decoder would load faster_whisper, and CTranslate2 with it, into
+        # every Parakeet worker (R12, #133).
+        return asr_engines.ParakeetEngine(name, cache_dir, threads).load()
 
     if asr_engines.is_whisper(name):
         spec = asr_engines.WHISPER_MODELS[name]
@@ -91,8 +93,10 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
     label = "cpu"
     if device == "cuda":
         if "+cu" not in torch.__version__ or not torch.cuda.is_available():
-            raise GpuUnavailable("graphics card unavailable (needs NVIDIA driver 580 or "
-                                 "later and the graphics card component)")
+            from workspace import gpu
+            raise GpuUnavailable(f"graphics card unavailable (needs NVIDIA driver "
+                                 f"{gpu.MIN_DRIVER[0]} or later and the graphics card "
+                                 f"component)")
         label = f"cuda ({torch.cuda.get_device_name(0)})"[:80]
     from pyannote.audio import Pipeline
     pipeline = Pipeline.from_pretrained(str(folder))
