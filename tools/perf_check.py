@@ -15,7 +15,6 @@
 # speed need real models and come from tools/packaged_check.py.
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -31,6 +30,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(ROOT / "tools"))     # evidence.py, also under -I; after the stdlib
+import evidence  # noqa: E402
+
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
 STATES = ("meetings", "settings", "minimised")
 MEETINGS = 3                      # synthetic meetings in the measured workspace
@@ -39,6 +41,10 @@ WORKER_WAIT_S = 240               # the worker unloads after 120 s idle (worker.
 READY_TIMEOUT_S = 600             # seeding (up to 300 s) plus the page starting
 STEP_TIMEOUT_S = 90               # the window reaching a state
 LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
+# A release run's shape; release evidence needs at least this (tools/evidence.py).
+RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
+RELEASE_SETTLE_S = evidence.PERF_RELEASE["settle_s"]
+RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
 (the Settings view) and minimised. Before them it times start-up to
@@ -360,8 +366,6 @@ def environment(args):
         name = version.read_text(encoding="utf-8-sig").strip() + "+source" \
             if version.exists() else "source"
         env["app"] = {"version": name, "commit": r.stdout.strip() or None}
-    if args.zip:
-        env["package_sha256"] = hashlib.sha256(Path(args.zip).read_bytes()).hexdigest()
     return env
 
 
@@ -376,8 +380,10 @@ def child_command(args, workdir):
     if os.path.normcase(base) != os.path.normcase(exe):
         env["__PYVENV_LAUNCHER__"] = exe
         exe = base
-    # -B: never write bytecode into the package being measured.
-    command = [exe, "-B", str(Path(__file__).resolve()), "--child", "--workdir", str(workdir)]
+    # -B: never write bytecode into the package being measured. Release
+    # evidence (--zip) starts the window as the Start menu shortcut does.
+    flags = ["-I", "-B", "-X", "disable-remote-debug"] if args.zip else ["-B"]
+    command = [exe, *flags, str(Path(__file__).resolve()), "--child", "--workdir", str(workdir)]
     if args.app:
         command += ["--app", args.app]
     return command, env
@@ -528,7 +534,8 @@ def parent(args):
 def child(args):
     t0 = time.perf_counter()
     app = Path(args.app) if args.app else ROOT
-    sys.path[:0] = [str(app), str(ROOT / "tests")]
+    evidence.add_app(app)                     # as the package's own runtime has it, if so
+    sys.path.append(str(ROOT / "tests"))      # fake engines, after the standard library
     import offline_guard                   # as the app itself starts (workspace/__main__.py)
     offline_guard.disable_telemetry()
     offline_guard.install()
@@ -539,6 +546,8 @@ def child(args):
     from workspace import api, credentials, shell
     from workspace.app import Workspace
     imports_s = time.perf_counter() - t0
+    if args.app:
+        evidence.require_app_modules(app)       # measuring the package, not this checkout
 
     def send(**msg):
         sys.stdout.write(PREFIX + json.dumps(msg) + "\n")
@@ -634,17 +643,19 @@ def child(args):
 def main():
     parser = argparse.ArgumentParser(
         description="Release-time performance evidence (docs/RELEASE_STANDARD.md, section 2).",
-        epilog=HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+        epilog=HELP, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     parser.add_argument("report", nargs="?", help="where to write the JSON report")
     parser.add_argument("--quick", action="store_true",
                         help="1 run, 20 s settle, 60 s windows, for before/after checks")
-    parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--settle", type=int, default=60)
-    parser.add_argument("--window", type=int, default=300)
+    parser.add_argument("--runs", type=int, default=RELEASE_RUNS)
+    parser.add_argument("--settle", type=int, default=RELEASE_SETTLE_S)
+    parser.add_argument("--window", type=int, default=RELEASE_WINDOW_S)
     parser.add_argument("--leak-minutes", type=int, default=0,
                         help="hold the Meetings view this long, once, and report growth")
-    parser.add_argument("--app", help="an installed package's app folder")
-    parser.add_argument("--zip", help="the package zip measured, to record its SHA-256")
+    parser.add_argument("--app", help="an installed package's app folder (run with that "
+                        "package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
+    parser.add_argument("--zip", help="the package zip installed at --app: records it as release "
+                        "evidence (tools/evidence.py); exit 1 unless that evidence passes")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -652,7 +663,21 @@ def main():
         return child(args)
     if not args.report:
         parser.error("give a report path")
-    return parent(args)
+    before = evidence.prepare(parser, args, Path(args.app) if args.app else None)
+    rc = parent(args)
+    if args.zip:
+        run = run_shape(args)
+        ev = evidence.stamp_file(args.report, "perf", args.zip, Path(args.app).resolve().parent,
+                                 passed=rc == 0 and evidence.perf_release_run(run)
+                                 and BUDGETS.exists(), before=before, run=run)
+        rc = rc or (0 if ev["pass"] else 1)
+    return rc
+
+
+def run_shape(args):
+    """What the evidence records of this run (a full release run counts)."""
+    return {"quick": args.quick, "runs": args.runs, "settle_s": args.settle,
+            "window_s": args.window, "leak_minutes": args.leak_minutes}
 
 
 if __name__ == "__main__":

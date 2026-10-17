@@ -4,7 +4,14 @@
 # and record evidence as JSON. Opens a window for about a minute; audio is muted.
 #
 #   python tools/workspace_ui_check.py <report.json>
+#
+# Against an installed or extracted package, as release evidence
+# (tools/evidence.py), with that package's own Python:
+#
+#   <v>\runtime\python.exe -I -B -X disable-remote-debug tools\workspace_ui_check.py
+#       <report.json> --app <v>\app --zip <the zip it came from>
 
+import argparse
 import json
 import os
 import sys
@@ -16,8 +23,16 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
+TOOLS = Path(__file__).resolve().parent
+# evidence.py, webview_trial.py and the fake engines (tests/), also under -I,
+# after the standard library and the app's packages so they cannot shadow one.
+sys.path.append(str(TOOLS))
+sys.path.append(str(TOOLS.parent / "tests"))
+import evidence  # noqa: E402
+
+# The app checked: this checkout, or a package's app folder with --app.
+APP = evidence.app_folder(TOOLS.parent)
+evidence.add_app(APP)
 from webview_trial import listeners, process_tree  # noqa: E402
 
 from workspace import api, shell  # noqa: E402
@@ -27,6 +42,10 @@ FAKE = "test:fake_worker_engines:"
 VAULT = {}          # stands in for Windows Credential Manager during the check
 HOSTILE = '<img src=x onerror="window.__pwned=1"> and <script>window.__pwned=2</script>'
 SR = 16000
+# A confirmation still open this long after its script has finished (a lost
+# click, or a locked screen, where it cannot be answered) is closed, so the
+# check fails instead of waiting for ever.
+STUCK_DIALOG_S = 20
 
 
 def write_wav(path, seconds):
@@ -77,14 +96,27 @@ def page_dialogs():
 
 
 def find_dialog(title, timeout=15):
-    """The top-level window of a confirmation with this title, once shown."""
+    """The top-level window of a confirmation with this title, once shown, in
+    this process only: a real Unminute's confirmation open at the same time
+    (such as "Discard this meeting?") is never pressed or closed."""
     import ctypes
+    from ctypes import wintypes
     user32 = ctypes.WinDLL("user32")
+    user32.FindWindowExW.restype = wintypes.HWND
+    user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR,
+                                     wintypes.LPCWSTR]
+    pid = os.getpid()
     end = time.time() + timeout
     while time.time() < end:
-        hwnd = user32.FindWindowW(None, title)
-        if hwnd and user32.IsWindowVisible(hwnd):
-            return hwnd
+        hwnd = None
+        while True:                           # every top-level window with the title
+            hwnd = user32.FindWindowExW(None, hwnd, None, title)
+            if not hwnd:
+                break
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd):
+                return hwnd
         time.sleep(0.05)
     return 0
 
@@ -168,11 +200,24 @@ def native_checks(window, ws, mid):
 
     def run_with(script, title, call, seen=None):
         done = {}
-        clicker = threading.Thread(target=lambda: done.update(ok=press(script, title, seen)),
-                                   daemon=True)
+
+        def click():
+            done["ok"] = press(script, title, seen)
+            # Wait for the confirmation to close. If the script found none, keep
+            # looking: one that shows late is closed too, rather than waited on.
+            end = time.time() + STUCK_DIALOG_S
+            while time.time() < end:
+                if not find_dialog(title, timeout=0.2) and done["ok"]:
+                    return
+                time.sleep(0.5)
+            hwnd = find_dialog(title, timeout=0.2)
+            if hwnd:
+                out.setdefault("stuck_dialogs", []).append(title)
+                ctypes.WinDLL("user32").PostMessageW(hwnd, 0x0010, 0, 0)       # WM_CLOSE
+        clicker = threading.Thread(target=click, daemon=True)
         clicker.start()
         result = call()
-        clicker.join(10)
+        clicker.join(STUCK_DIALOG_S + 15)
         return result, done.get("ok", False)
 
     title = "Workspace UI check: confirm"
@@ -469,7 +514,16 @@ def checks(window, ws, mid, long_mid, report):
 
 
 def main():
-    out = Path(sys.argv[1])
+    ap = argparse.ArgumentParser(description="Real-window UI check on synthetic data (#20).",
+                                 allow_abbrev=False)
+    ap.add_argument("report", help="where to write the JSON report")
+    ap.add_argument("--app", help="an installed or extracted package's app folder (run with "
+                    "that package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
+    ap.add_argument("--zip", help="the zip that package came from: records it as release "
+                    "evidence (tools/evidence.py); exit 1 unless that evidence passes")
+    args = ap.parse_args()
+    before = evidence.prepare(ap, args, APP if args.app else None)
+    out = Path(args.report)
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -567,6 +621,8 @@ def main():
             and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
     nv = report.get("native") or {}
+    if nv.get("stuck_dialogs"):
+        bad.append("a confirmation was left open (is the screen locked?)")
     if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
             and nv.get("bridge_no") and nv.get("meeting_kept")
             and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
@@ -589,6 +645,10 @@ def main():
               and lt.get("page_scroll_y") == 0):
         bad.append("transcript pane scrolling")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
+    if args.zip:
+        ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,
+                                 before=before)
+        return 0 if ev["pass"] else 1
     return 1 if bad else 0
 
 

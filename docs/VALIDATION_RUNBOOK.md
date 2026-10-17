@@ -47,7 +47,8 @@ From the extracted source folder, using the installed runtime:
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps1 -Version <install> -Wav <recording.wav>
 ```
 
-- Expect `"pass": true` from the crash check and from the dialog check.
+- Expect `"pass": true` from both checks and from the dialog check. Each report lists the criteria that failed under `"failed"`.
+- Add `--zip <the zip installed>` to make a report release evidence: it then names the zip and checks that the version folder still holds exactly its files (`tools/evidence.py`; docs/RELEASING.md, step 3).
 - Do not copy anything to the clipboard during the crash check; it compares the clipboard sequence number.
 - From `packaged_check.json`, record:
   - the transcription and speaker time against the recording length;

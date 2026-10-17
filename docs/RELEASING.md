@@ -92,12 +92,29 @@ The workflow publishes the notes and the source archives only. The Windows packa
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -I -B -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
-   - Measure it against the budgets in `docs/perf-budgets.json`. From a checkout of the tagged commit, run `<installed version>\runtime\python.exe -B tools\perf_check.py perf-X.Y.Z.json --app <installed version>\app --zip dist\Unminute-X.Y.Z.zip --leak-minutes 30`. Leave the laptop idle, on mains power and the Balanced power plan, with the window visible for about 90 minutes. Expect WITHIN BUDGET (exit 0), and attach the JSON to the release.
+   - **Release evidence** (docs/RELEASE_STANDARD.md, section 8). Run the five checks against the installed package from a clean checkout of the tagged commit, with the installed version's own Python. Run `git checkout vX.Y.Z`, then `git clean -ndX -- tools tests docs` to see which ignored files (such as `__pycache__`) would go, and `git clean -fdX -- tools tests docs` to remove them. It deletes them for good, so move anything else first. Clean means no change, no extra or ignored file, and nothing hidden from `git status` under `tools`, `tests` or `docs`. Start every check with `-B` so it writes no bytecode there. `<v>` is the installed version folder (`%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\X.Y.Z`). Use a copy of the models, never the live workspace, and a non-sensitive recording, such as a public meeting.
+     - **What each report records** (`tools/evidence.py`): the zip given with `--zip`; the checkout's commit, and whether it was clean; and whether the version folder held exactly that zip's files before and after the run. Names are compared exactly, and nothing may be missing, changed or added, with no link or extra folder.
+     - **What stops a check before it starts:** a `--zip` that is not a package, or a version folder that already differs from it. The UI, accessibility and performance checks also stop under any other Python, without the app's flags (`-I -B -X disable-remote-debug`), or with app code from outside `<v>`.
+     - **Exit code:** with `--zip`, a check exits 1 unless its evidence passes.
+
+     ```
+     <v>\runtime\python.exe -I -B -X disable-remote-debug tools\perf_check.py evidence-perf.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip --leak-minutes 30
+     <v>\runtime\python.exe -B tools\packaged_check.py <v> <model cache> <recording.wav> evidence-packaged.json --zip dist\Unminute-X.Y.Z.zip
+     <v>\runtime\python.exe -B tools\packaged_crash_check.py <v> <model cache> <recording.wav> evidence-crash.json --zip dist\Unminute-X.Y.Z.zip
+     <v>\runtime\python.exe -I -B -X disable-remote-debug tools\workspace_ui_check.py evidence-ui.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip
+     <v>\runtime\python.exe -I -B -X disable-remote-debug tools\accessibility_check.py evidence-accessibility.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip
+     python -I tools\evidence.py check <the zip's SHA-256> --commit <the tag's commit> evidence-perf.json evidence-packaged.json evidence-crash.json evidence-ui.json evidence-accessibility.json
+     ```
+
+     - The performance check measures against `docs/perf-budgets.json`. Leave the laptop idle, on mains power and the Balanced power plan, with the window visible for about 90 minutes. It counts as evidence only as a full release run within budget: at least 3 runs, 60 s settle and 300 s windows (the defaults), with the leak check (`--leak-minutes 30`), not `--quick`.
+     - The UI and accessibility checks open a window for about a minute each, and `packaged_check` opens one at the end. Do not copy anything during the crash check.
+     - Each check prints `EVIDENCE <kind>: PASS`. `tools/evidence.py check` prints `EVIDENCE COMPLETE` only when there is one passing report of each kind that names that SHA-256 and commit. Each report must also come from a release build, be made by a clean checkout of that commit, and have run on the unchanged package. Anything else is a failed gate: fix it and run the check again. Never edit a report. A failing report may hold error text with local paths, so do not publish one.
+     - Until security plan B3b moves releases into CI, attach the five `evidence-*.json` reports with the zip in step 4. From B3b, the Release workflow refuses to publish without them.
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
 4. **Publish.**
    - Push the tag made in step 2: `git push origin vX.Y.Z`. The Release workflow publishes the release.
-   - Attach the zip, its `.sha256` and the bill of materials: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256 dist/Unminute-X.Y.Z.cdx.json`.
+   - Attach the zip, its `.sha256`, the bill of materials and the five evidence reports from step 3: `gh release upload vX.Y.Z dist/Unminute-X.Y.Z.zip dist/Unminute-X.Y.Z.zip.sha256 dist/Unminute-X.Y.Z.cdx.json evidence-perf.json evidence-packaged.json evidence-crash.json evidence-ui.json evidence-accessibility.json`.
 5. **Release type.** A `vX.Y.Z` tag publishes a full release, which becomes Latest, the default download. A `vX.Y.Z-preview.N` tag publishes a pre-release that does not.
 
 ## Withdrawing a bad release
