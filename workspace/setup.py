@@ -171,7 +171,10 @@ def _friendly(exc):
     if any(k in low for k in ("connection", "timeout", "temporarily", "resolve", "offline")):
         return "Could not reach the download site. Check the internet connection and try again."
     if isinstance(exc, asr_engines.ModelLoadError):
-        return str(exc).split(" (")[0] + ". Try again."
+        # Cut at the technical part in brackets; a message without one is
+        # already complete and says what to do (a refused link: ask IT).
+        message = str(exc)
+        return message.split(" (")[0] + ". Try again." if " (" in message else message
     return "The download did not finish. Nothing was changed; try again."
 
 
@@ -379,6 +382,12 @@ def remove(name, cache_dir):
     from pathlib import Path
     cache = Path(cache_dir).resolve()
     targets = removal_targets(name, cache_dir)
+    # The check records' folder too: matching records are deleted through it.
+    marks = (None if name == gpu.COMPONENT
+             else Path(cache_dir) / asr_engines.MANAGED_MODELS[name].family / ".verified")
+    if marks is not None and asr_engines.is_link(marks):
+        raise RemovalRefused("A model folder is a link to somewhere else, so nothing was "
+                             "removed.")
     for p in targets:
         inside = [a for a in Path(p).parents
                   if a != Path(cache_dir) and str(a).startswith(str(Path(cache_dir)))]
@@ -393,9 +402,8 @@ def remove(name, cache_dir):
         long = gpu._long(p)
         freed += _size_of(long)
         shutil.rmtree(long)
-    if name != gpu.COMPONENT:
+    if marks is not None:
         spec = asr_engines.MANAGED_MODELS[name]
-        marks = Path(cache_dir) / spec.family / ".verified"
         # Exactly "<folder>-<16 hex>.json": large-v3 must not match large-v3-turbo.
         for m in marks.glob(spec.folder + "-" + "?" * 16 + ".json") if marks.is_dir() else ():
             m.unlink(missing_ok=True)

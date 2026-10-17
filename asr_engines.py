@@ -336,6 +336,8 @@ def check_files(spec, folder, full=False, marker=None):
     for f in spec.files:
         if _sha256(folder / f.name) != f.sha256:
             problems.append(f"{f.name} does not match the expected checksum")
+    if is_link(marker.parent):
+        return problems   # never written through a link (T5): it re-hashes next time
     try:
         # Record the outcome either way: a failure makes the quick status show
         # "needs repair" until these exact files change.
@@ -496,11 +498,13 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
-    # A link or junction at the family, model or download folder is refused
-    # before anything is read, deleted or downloaded: following one would write
-    # outside the cache, and the clean-up of the download's bookkeeping would
-    # delete the linked folder's own .cache (T5). remove() refuses the same.
-    if any(is_link(p) for p in (target.parent, target, staging_dir(spec, cache_dir))):
+    # A link or junction at the family, model, download or check-record folder
+    # is refused before anything is read, deleted or downloaded: following one
+    # would write outside the cache, and the clean-up of the download's
+    # bookkeeping would delete the linked folder's own .cache (T5). remove()
+    # refuses the same.
+    if any(is_link(p) for p in (target.parent, target, staging_dir(spec, cache_dir),
+                                target.parent / ".verified")):
         raise ModelLoadError(f"A {label(spec.name)} folder in the model cache is a link to "
                              f"somewhere else, so it was not used. Ask your IT team.")
     hub_cached = bool(spec.hub_repos)

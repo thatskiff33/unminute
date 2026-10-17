@@ -4,6 +4,7 @@ The page shows what Python sends and reads nothing out of a title or message.
 """
 import ast
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -352,7 +353,8 @@ class ProgressTests(unittest.TestCase):
         cache = base / "models"
         spec = asr_engines.MANAGED_MODELS[asr_engines.PARAKEET_V3]
         target = asr_engines.model_dir(spec, cache)
-        for at in (target.parent, target, asr_engines.staging_dir(spec, cache)):
+        for at in (target.parent, target, asr_engines.staging_dir(spec, cache),
+                   target.parent / ".verified"):
             with self.subTest(at=at.name):
                 downloaded = []
 
@@ -367,6 +369,50 @@ class ProgressTests(unittest.TestCase):
                 self.assertEqual(downloaded, [])
                 self.assertIsInstance(error, asr_engines.ModelLoadError)
                 self.assertRegex(str(error), "^A Parakeet v3 folder .* is a link")
+                # The page shows it whole: no "..", no "Try again" after "ask IT".
+                self.assertEqual(setup._friendly(error), str(error))
+                self.assertTrue(str(error).endswith("Ask your IT team."))
+
+    def test_a_message_with_a_technical_part_is_still_cut_there(self):
+        error = asr_engines.ModelLoadError("Could not download Parakeet v3 (OSError: x). "
+                                           "Nothing was changed.")
+        self.assertEqual(setup._friendly(error), "Could not download Parakeet v3. Try again.")
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_removal_never_deletes_check_records_through_a_link(self):
+        base = Path(self.tmp.name)
+        cache = base / "models"
+        spec = asr_engines.MANAGED_MODELS[asr_engines.WHISPER_LARGE]
+        record = f"{spec.folder}-{'b' * 16}.json"          # the pattern remove() deletes
+        with _outside_folder(base, cache / spec.family / ".verified") as outside:
+            (outside / record).write_text("{}", encoding="utf-8")
+            with self.assertRaisesRegex(setup.RemovalRefused, "is a link"):
+                setup.remove(asr_engines.WHISPER_LARGE, cache)
+            self.assertEqual(_tree(outside), sorted([*_OUTSIDE, record]))
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_a_check_record_is_never_written_through_a_link(self):
+        base = Path(self.tmp.name)
+        contents = {"config.json": b"{}", "weights.onnx": b"\x01\x02" * 500}
+        files = tuple(asr_engines.ModelFile(n, len(d), hashlib.sha256(d).hexdigest())
+                      for n, d in contents.items())
+        spec = asr_engines.ModelSpec(name="synthetic", folder="synthetic", repo="example/x",
+                                     revision="0" * 40, files=files)
+        for case in ("model folder", "record folder"):
+            with self.subTest(case=case):
+                at = base / "models" / "parakeet" / ("synthetic" if case == "model folder"
+                                                     else ".verified")
+                with _outside_folder(base, at) as outside:
+                    folder = at if case == "model folder" else base / "models" / "synthetic"
+                    folder.mkdir(parents=True, exist_ok=True)
+                    for n, d in contents.items():
+                        (folder / n).write_bytes(d)
+                    marker = None if case == "model folder" else at / "synthetic-x.json"
+                    self.assertEqual(asr_engines.check_files(spec, folder, full=True,
+                                                             marker=marker), [])
+                    # Only what the test put there: no check record.
+                    expected = [*_OUTSIDE, *contents] if case == "model folder" else _OUTSIDE
+                    self.assertEqual(_tree(outside), sorted(expected))
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):
