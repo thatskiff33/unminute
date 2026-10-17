@@ -283,10 +283,10 @@ def _valid(entry):
 # -- per-meeting options (content) ----------------------------------------------------
 
 def options(store, mid):
-    row = store._one("SELECT * FROM handoff_options WHERE meeting_id = ?", (mid,))
-    if row is None:
+    stored = store.handoff_options(mid)
+    if stored is None:
         return {"omitted": [], "redactions": []}
-    return {"omitted": json.loads(row["omitted"]), "redactions": json.loads(row["redactions"])}
+    return {"omitted": json.loads(stored[0]), "redactions": json.loads(stored[1])}
 
 
 def set_options(store, mid, omitted, redactions):
@@ -305,11 +305,7 @@ def set_options(store, mid, omitted, redactions):
             phrases.append(r[:200])
     if len(phrases) > MAX_REDACTIONS:
         raise HandoffError(f"Up to {MAX_REDACTIONS} words or phrases can be redacted.")
-    with store.tx() as db:
-        db.execute("INSERT INTO handoff_options (meeting_id, omitted, redactions) "
-                   "VALUES (?, ?, ?) ON CONFLICT(meeting_id) DO UPDATE SET "
-                   "omitted = excluded.omitted, redactions = excluded.redactions",
-                   (mid, json.dumps(omitted), json.dumps(phrases)))
+    store.set_handoff_options(mid, json.dumps(omitted), json.dumps(phrases))
 
 
 def _invisible(ch):

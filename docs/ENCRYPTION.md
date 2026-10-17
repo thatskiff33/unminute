@@ -2,7 +2,7 @@
 
 How Unminute encrypts meeting content on disk, what that protects against and what it does not. This is the design the code follows; threat IDs (T6 and so on) are in [SECURITY_MODEL.md](SECURITY_MODEL.md).
 
-**Status (#111 phase C).** C1 adds the building blocks: `workspace/dpapi.py`, `workspace/vault.py` and `workspace/audiocrypt.py`, with their tests. The app does not use them yet. C2 encrypts the database's content columns (schema 2), C3 the audio files and recorder chunks with crypto-erase at cleanup, and C4 adds the locked screen for when Windows cannot unlock the key. Until C3 ships, content on disk is protected by BitLocker only.
+**Status (#111 phase C).** C1 adds the building blocks: `workspace/dpapi.py`, `workspace/vault.py` and `workspace/audiocrypt.py`, with their tests. C2a routes every read and write of the database's content columns through one place, the store's codec (`docs/WORKSPACE_DESIGN.md`, "Content columns"), which still stores them as they are. C2b encrypts them (schema 2), C3 the audio files and recorder chunks with crypto-erase at cleanup, and C4 adds the locked screen for when Windows cannot unlock the key. Until C3 ships, content on disk is protected by BitLocker only.
 
 ## What it protects against
 
