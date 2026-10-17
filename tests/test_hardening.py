@@ -60,12 +60,45 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(shell._allowed(page))
         self.assertTrue(shell._allowed(page + "#meeting"))
         self.assertTrue(shell._allowed(page + "?x=1"))
-        for other in (shell.ui_url("trial.html"), shell.ui_url("app.js"),
+        for other in (shell.ui_url("other.html"), shell.ui_url("app.js"),
                       shell.ui_url("img/logo.svg"), page + "%23/evil.html",
-                      page + "%3F/../trial.html"):
+                      page + "%3F/../other.html"):
             self.assertFalse(shell._allowed(other), other)
-        self.assertTrue(shell._allowed(shell.ui_url("trial.html"), "trial.html"))
-        self.assertFalse(shell._allowed(page, "trial.html"))
+        self.assertTrue(shell._allowed(shell.ui_url("other.html"), "other.html"))
+        self.assertFalse(shell._allowed(page, "other.html"))
+
+    def test_the_window_needs_its_allowed_names_and_has_one_page(self):
+        # No default bridge allowlist to fall back on, and no page to choose (#136).
+        import inspect
+        params = inspect.signature(shell.create_window).parameters
+        self.assertIs(params["allowed"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(params["allowed"].default, inspect.Parameter.empty)
+        self.assertNotIn("page", params)
+
+    def test_the_lock_keeps_index_html_and_cancels_any_other_page(self):
+        from types import SimpleNamespace
+
+        class Event:                       # WebView2's NavigationStarting (+= adds a handler)
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+        control = SimpleNamespace(NavigationStarting=Event())
+        window = SimpleNamespace(native=SimpleNamespace(browser=SimpleNamespace(webview=control)),
+                                 unminute_page="other.html")     # never followed
+        with mock.patch.object(shell, "quiet_script_dialogs"):
+            shell._lock_once(window)
+        [handler] = control.NavigationStarting.handlers
+        cancelled = {}
+        for name in ("index.html#x", "other.html"):
+            args = SimpleNamespace(Uri=shell.ui_url("index.html").rsplit("/", 1)[0] + "/" + name,
+                                   Cancel=False)
+            handler(None, args)
+            cancelled[name] = args.Cancel
+        self.assertEqual(cancelled, {"index.html#x": False, "other.html": True})
 
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")

@@ -32,6 +32,5 @@ __pycache__/
 .idea/
 *.log
 
-# Screenshot build scratch (the committed PNGs live in docs/screenshots)
-docs/screenshots/*.tmp.png
+# Package build output (tools/build_package.py --out)
 dist/

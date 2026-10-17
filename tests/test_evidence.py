@@ -598,27 +598,26 @@ class ToolTests(TempDir):
             for p in folder.glob("*.py"):
                 self.assertNotIn(p.stem, taken, p)
         for tool in ("perf_check.py", "packaged_check.py", "packaged_crash_check.py",
-                     "workspace_ui_check.py", "accessibility_check.py", "webview_trial.py"):
+                     "workspace_ui_check.py", "accessibility_check.py", "process_listeners.py"):
             with self.subTest(tool=tool):
                 text = self.source(tool)
                 self.assertNotRegex(text, r'sys\.path\.insert\(0, str\([^)]*"(tools|tests)"\)')
                 self.assertNotRegex(text, r"sys\.path\.insert\(0, str\(Path\(__file__\)"
                                           r"\.resolve\(\)\.parent\)\)")
 
-    @unittest.skipUnless(os.name == "nt", "webview_trial imports Windows-only modules")
-    def test_with_app_the_trial_helper_imports_the_packages_workspace(self):
-        app = self.root / "Unminute-0.5.0" / "app"
-        (app / "workspace").mkdir(parents=True)
-        (app / "workspace" / "__init__.py").write_text("")
-        (app / "workspace" / "shell.py").write_text("")
-        (app / "workspace" / "bridge.py").write_text("def make_bridge(*a, **k):\n    pass\n")
-        code = ("import sys; sys.path.append(sys.argv[3]); import webview_trial, workspace; "
-                "print(workspace.__file__)")
-        r = subprocess.run([sys.executable, "-I", "-B", "-c", code, "--app", str(app),
-                            str(ROOT / "tools")], capture_output=True, text=True, cwd=self.root)
+    def test_the_socket_helpers_import_nothing_from_the_app(self):
+        # workspace_ui_check imports tools/process_listeners.py after its own
+        # --app path setup. The helpers import only the standard library and
+        # leave the import path alone, so they cannot load a checkout's
+        # workspace before the package's.
+        code = ("import sys; sys.path.append(sys.argv[1]); before = list(sys.path); "
+                "import process_listeners; print(sys.path == before, "
+                "any(m.split('.')[0] in ('workspace', 'asr_engines', 'offline_guard') "
+                "for m in sys.modules))")
+        r = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "tools")],
+                           capture_output=True, text=True, cwd=self.root)
         self.assertEqual(0, r.returncode, r.stderr[-500:])
-        self.assertEqual(Path(r.stdout.strip()).resolve(),
-                         (app / "workspace" / "__init__.py").resolve())
+        self.assertEqual(r.stdout.split(), ["True", "False"])
 
     def run_perf(self, zpath, folder, rc, *extra):
         import perf_check

@@ -1,0 +1,3 @@
+# vulture (MIT) for the report-only dead-code job in .github/workflows/quality.yml
+# (#136). Adopt a new version only after it has been public for at least 7 days.
+vulture==2.16

@@ -431,7 +431,7 @@ def _hub_snapshots(spec, cache_dir):
     return out
 
 
-def whisper_candidates(spec, cache_dir):
+def hub_candidates(spec, cache_dir):
     """Existing folders that may hold this model: our managed copy first."""
     managed = model_dir(spec, cache_dir)
     return ([managed] if managed.is_dir() else []) + _hub_snapshots(spec, cache_dir)
@@ -445,11 +445,11 @@ def _marker_for(spec, cache_dir, folder):
     return Path(cache_dir) / spec.family / ".verified" / f"{spec.folder}-{key}.json"
 
 
-def whisper_status(name, cache_dir):
+def hub_model_status(name, cache_dir):
     """('ready' | 'missing' | 'invalid', detail) without hashing large files.
     Works for any Hugging Face-cached model (Whisper, speaker identification)."""
     spec = MANAGED_MODELS[name]
-    candidates = whisper_candidates(spec, cache_dir)
+    candidates = hub_candidates(spec, cache_dir)
     if not candidates:
         return "missing", "not installed"
     reports = []
@@ -462,9 +462,9 @@ def whisper_status(name, cache_dir):
     return "invalid", " | ".join(dict.fromkeys(reports))
 
 
-def find_verified_whisper(spec, cache_dir, full=False):
+def find_verified(spec, cache_dir, full=False):
     """First candidate folder whose files all verify, or None."""
-    for folder in whisper_candidates(spec, cache_dir):
+    for folder in hub_candidates(spec, cache_dir):
         marker = _marker_for(spec, cache_dir, folder)
         # A copy already found bad (and unchanged since) is skipped rather than
         # re-hashed on every load; a full check (repair) re-examines it.
@@ -515,7 +515,7 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     hub_cached = bool(spec.hub_repos)
     if hub_cached:
         # Reuse any copy that verifies, including an older Hugging Face cache.
-        if find_verified_whisper(spec, cache_dir, full=True) is not None:
+        if find_verified(spec, cache_dir, full=True) is not None:
             return "ok"
         for snap in _hub_snapshots(spec, cache_dir):
             log(f"{label(spec.name)}: the cached copy in {snap} is not usable "
@@ -605,17 +605,6 @@ def install(name, cache_dir, log=print, download=None, has_token=False):
         return install_parakeet(name, cache_dir, log, download)
     return {name: install_model(MANAGED_MODELS[name], cache_dir, log, download, has_token)}
 
-
-def is_present(name, cache_dir):
-    """True if any copy of the model exists on disk, usable or not."""
-    if is_parakeet(name):
-        return model_dir(PARAKEET_MODELS[name], cache_dir).exists()
-    return bool(whisper_candidates(MANAGED_MODELS[name], cache_dir))
-
-
-# Family-neutral names: these work for any model cached by Hugging Face.
-hub_model_status = whisper_status
-find_verified = find_verified_whisper
 
 # Licences as published on each model card (checked 13 October 2026).
 LICENCES = {
@@ -716,17 +705,17 @@ def _token_words(start, end, tokens, timestamps):
 
 
 class WhisperEngine:
-    """faster-whisper behind the shared interface; settings are unchanged."""
+    """faster-whisper behind the shared interface, always with word times:
+    chunk ownership is decided per word."""
 
     device = "cpu"
 
-    def __init__(self, model, label, precision, language, beam_size=5, word_timestamps=False):
+    def __init__(self, model, label, precision, language, beam_size=5):
         self.model = model
         self.label = label
         self.precision = precision
         self.language = language
         self.beam_size = beam_size
-        self.word_timestamps = word_timestamps   # the workspace needs word times
 
     @property
     def description(self):
@@ -734,10 +723,6 @@ class WhisperEngine:
 
     def transcribe(self, audio):
         """`audio` is a path or a 16 kHz float32 waveform. Returns (segments, duration)."""
-        if not self.word_timestamps:     # without word times (the app always asks for them)
-            segments, info = self.model.transcribe(
-                audio, language=self.language, vad_filter=True, beam_size=self.beam_size)
-            return (Segment(s.start, s.end, s.text.strip()) for s in segments), info.duration
         segments, info = self.model.transcribe(
             audio, language=self.language, vad_filter=True, beam_size=self.beam_size,
             word_timestamps=True)

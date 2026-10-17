@@ -1,6 +1,5 @@
 # workspace/api.py
-# The js_api the workspace page may call (#20). Same rules as the trial
-# bridge (workspace/bridge.py):
+# The js_api the workspace page may call (#20):
 #   - the shell's dispatch guard allows only the names in API_METHODS;
 #   - the facade pywebview sees has no state; the Workspace lives in a closure;
 #   - every method returns {"ok": True, "value": ...} or {"ok": False,
@@ -10,19 +9,23 @@
 #     file dialog or a native drop, which pywebview resolves in Python.
 
 import base64
+import io
 import math
 import sys
 import threading
 import time
+import wave
+
+import numpy as np
 
 from workspace import cleanup, consent, diag
 from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
-from workspace.bridge import _wav_bytes
+from workspace.media import SAMPLE_RATE
 
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
 # (used only for drag and drop of recordings onto the window).
 API_METHODS = frozenset({
-    "ping", "status", "meetings", "detail", "transcript", "search", "edit", "undo", "clip",
+    "status", "meetings", "detail", "transcript", "search", "edit", "undo", "clip",
     "pause", "stop_now", "resume", "rename", "retranscribe", "rerun_speakers",
     "skip_speakers",
     "add_hold", "release_hold", "keep_hold", "confirm_reviewed", "confirm_final_saved",
@@ -42,6 +45,18 @@ API_METHODS = frozenset({
 })
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
+
+
+def _wav_bytes(samples):
+    """16-bit mono WAV of a clip (Workspace.clip keeps it to 30 seconds)."""
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
 
 
 def _safe(fn, *args):
@@ -118,9 +133,6 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             shell.show_recording(window, recording)
 
     ws.recording_indicator = indicate
-
-    def ping(self):
-        return {"ok": True, "value": "ok"}
 
     def status(self):
         return _safe(ws.status)
@@ -426,7 +438,7 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def continue_despite_damage(self):
         return _safe(ws.continue_despite_damage)
 
-    names = dict(ping=ping, status=status, meetings=meetings, detail=detail,
+    names = dict(status=status, meetings=meetings, detail=detail,
                  transcript=transcript, search=search, edit=edit, undo=undo, clip=clip,
                  pause=pause, stop_now=stop_now, resume=resume, rename=rename,
                  retranscribe=retranscribe, rerun_speakers=rerun_speakers,

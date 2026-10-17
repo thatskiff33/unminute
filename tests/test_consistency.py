@@ -141,6 +141,24 @@ class DocsTests(unittest.TestCase):
     """Docs link to the source of truth instead of restating facts that change."""
 
     DOCS = markdown_docs()
+    # A Markdown link target, or an HTML src or href inside a Markdown file.
+    LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)|(?:src|href)=\"([^\"]+)\"")
+
+    def test_relative_links_resolve(self):
+        # Every relative link in the docs reaches a file or folder (R13, #136,
+        # moved docs to docs/history/). URLs and in-page anchors are skipped.
+        broken = []
+        for rel in self.DOCS:
+            path = ROOT / rel
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                for m in self.LINK.finditer(line):
+                    target = m.group(1) or m.group(2)
+                    if re.match(r"[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith("#"):
+                        continue
+                    target = target.split("#", 1)[0].split("?", 1)[0]
+                    if target and not (path.parent / target).exists():
+                        broken.append(f"{rel}:{n}: {target}")
+        self.assertEqual(broken, [])
 
     @classmethod
     def setUpClass(cls):

@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 
 TOOLS = Path(__file__).resolve().parent
-# evidence.py, webview_trial.py and the fake engines (tests/), also under -I,
+# evidence.py, process_listeners.py and the fake engines (tests/), also under -I,
 # after the standard library and the app's packages so they cannot shadow one.
 sys.path.append(str(TOOLS))
 sys.path.append(str(TOOLS.parent / "tests"))
@@ -33,7 +33,7 @@ import evidence  # noqa: E402
 # The app checked: this checkout, or a package's app folder with --app.
 APP = evidence.app_folder(TOOLS.parent)
 evidence.add_app(APP)
-from webview_trial import listeners, process_tree  # noqa: E402
+from process_listeners import listeners, process_tree  # noqa: E402
 
 from workspace import api, shell  # noqa: E402
 from workspace.app import Workspace  # noqa: E402

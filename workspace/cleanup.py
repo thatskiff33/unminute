@@ -212,7 +212,9 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
 
 
 def resume_pending(store, media_root, *, quiesce=None, original_roots=()):
-    """Retry every unfinished job (call at startup). Returns {job_id: result}."""
+    """Retry every unfinished job at once. Returns {job_id: result}. Test helper:
+    the app runs due jobs one at a time from its processing loop
+    (Workspace._next_work)."""
     jobs = store._all("SELECT id FROM cleanup_jobs WHERE state IN ('pending', 'failed') "
                       "ORDER BY intent_at")
     return {j["id"]: run_job(store, j["id"], media_root, quiesce=quiesce,

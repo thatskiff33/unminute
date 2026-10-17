@@ -204,4 +204,4 @@ Detecting a graphics card does not enable anything on its own.
 
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for what is verified for a release and what still needs people or hardware.
 
-For how the workspace is built and planned, see [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md), [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) and [WORKSPACE_DESIGN.md](WORKSPACE_DESIGN.md).
+For how the workspace is built, see [WORKSPACE_DESIGN.md](WORKSPACE_DESIGN.md). The original product plan and coding sequence are kept for history, no longer maintained: [WORKSPACE_PLAN.md](history/WORKSPACE_PLAN.md) and [IMPLEMENTATION_PLAN.md](history/IMPLEMENTATION_PLAN.md).

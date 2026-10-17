@@ -14,8 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
-from workspace.decode_child import (DEMUXERS, E_MEMORY, E_NO_AUDIO, E_SETUP, E_TOO_LONG,
-                                    LOW_INTEGRITY, MAX_DECODED_S, OPEN_OPTIONS)
+from workspace.decode_child import (E_MEMORY, E_NO_AUDIO, E_SETUP, E_TOO_LONG, LOW_INTEGRITY,
+                                    MAX_DECODED_S)
 
 SAMPLE_RATE = 16000
 AUDIO_FILE = "audio.f32"
@@ -59,7 +59,6 @@ MESSAGES = {
     E_SETUP: "The recording could not be decoded safely on this computer. Ask your IT team.",
 }
 last_decoder_integrity = None      # what the last decoder reported (tests, diagnostics)
-SUPPORTED_DEMUXERS, DECODER_OPTIONS = DEMUXERS, OPEN_OPTIONS    # for tests and docs
 
 
 class DecodeError(ValueError):

@@ -10,7 +10,6 @@ import os
 import sys
 
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
-NORMAL_PRIORITY_CLASS = 0x00000020
 PROCESS_SET_INFORMATION = 0x0200
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -55,6 +54,8 @@ def set_priority(pid=None, priority=BELOW_NORMAL_PRIORITY_CLASS):
 
 
 def get_priority(pid):
+    """A process's priority class, or None off Windows. Test helper: the app
+    only sets priorities (set_priority)."""
     if sys.platform != "win32":
         return None
     k = _k32()

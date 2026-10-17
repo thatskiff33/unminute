@@ -321,9 +321,12 @@ class ManifestTests(unittest.TestCase):
 
 class EngineTests(unittest.TestCase):
     def test_whisper_engine_maps_segments_and_keeps_settings(self):
+        class Word:
+            start, end, word = 0.1, 0.4, " Hi."
+
         class Seg:
             def __init__(self, s, e, t):
-                self.start, self.end, self.text = s, e, t
+                self.start, self.end, self.text, self.words = s, e, t, [Word()]
 
         class Info:
             duration = 42.0
@@ -336,9 +339,10 @@ class EngineTests(unittest.TestCase):
         fw = FakeWhisper()
         engine = ae.WhisperEngine(fw, "large-v3-turbo", "int8", "en")
         segs, duration = engine.transcribe("x.wav")
-        self.assertEqual(list(segs), [ae.Segment(0.0, 1.0, "Hi.")])
+        self.assertEqual(list(segs), [ae.Segment(0.0, 1.0, "Hi.", ((0.1, 0.4, " Hi."),))])
         self.assertEqual(duration, 42.0)
-        self.assertEqual(fw.kw, {"language": "en", "vad_filter": True, "beam_size": 5})
+        self.assertEqual(fw.kw, {"language": "en", "vad_filter": True, "beam_size": 5,
+                                 "word_timestamps": True})
 
     def test_parakeet_refuses_to_load_incomplete_install(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -393,11 +397,10 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def status(self):
-        return ae.whisper_status(self.spec.name, self.cache)
+        return ae.hub_model_status(self.spec.name, self.cache)
 
     def test_missing(self):
         self.assertEqual(self.status(), ("missing", "not installed"))
-        self.assertFalse(ae.is_present(self.spec.name, self.cache))
 
     def test_empty_hub_folder_is_not_ready(self):
         # The original bug: a cache folder existing was treated as "downloaded".
@@ -405,7 +408,6 @@ class WhisperIntegrityTests(unittest.TestCase):
         state, detail = self.status()
         self.assertEqual(state, "invalid")
         self.assertIn("model.bin is missing", detail)
-        self.assertTrue(ae.is_present(self.spec.name, self.cache))
 
     def test_missing_preprocessor_config(self):
         write_files(hub_snapshot(self.cache),
@@ -436,7 +438,7 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.assertEqual(len(bad), len(W_GOOD["preprocessor_config.json"]))
         write_files(hub_snapshot(self.cache), {**W_GOOD, "preprocessor_config.json": bad})
         self.assertEqual(self.status(), ("ready", ""))              # quick check passes
-        self.assertIsNone(ae.find_verified_whisper(self.spec, self.cache))
+        self.assertIsNone(ae.find_verified(self.spec, self.cache))
         self.assertIn("preprocessor_config.json does not match", self.status()[1])
 
     def test_valid_hub_cache_is_used_without_writing_to_it(self):
@@ -444,7 +446,7 @@ class WhisperIntegrityTests(unittest.TestCase):
         write_files(snap, W_GOOD)
         before = tree(snap.parents[1])
         self.assertEqual(self.status(), ("ready", ""))
-        self.assertEqual(ae.find_verified_whisper(self.spec, self.cache, full=True), snap)
+        self.assertEqual(ae.find_verified(self.spec, self.cache, full=True), snap)
         self.assertEqual(tree(snap.parents[1]), before)            # hub cache untouched
         self.assertTrue(any((self.cache / "whisper" / ".verified").iterdir()))
         dl = FakeDownload(W_GOOD)
@@ -461,7 +463,7 @@ class WhisperIntegrityTests(unittest.TestCase):
         self.assertEqual(tree(snap.parents[1]), before)            # preserved for diagnosis
         self.assertTrue(any("left untouched" in m for m in self.logs))
         managed = ae.model_dir(self.spec, self.cache)
-        self.assertEqual(ae.find_verified_whisper(self.spec, self.cache), managed)
+        self.assertEqual(ae.find_verified(self.spec, self.cache), managed)
         self.assertEqual(self.status(), ("ready", ""))
         # Repeat repair: nothing more to do, no second download.
         self.assertEqual(ae.install_model(self.spec, self.cache, self.logs.append, dl), "ok")
@@ -473,7 +475,7 @@ class WhisperIntegrityTests(unittest.TestCase):
         write_files(snap, {**W_GOOD, "model.bin": b"\x06" * 2000})
         before = tree(snap.parents[1])
         self.assertEqual(self.status(), ("ready", ""))
-        self.assertIsNone(ae.find_verified_whisper(self.spec, self.cache, full=True))
+        self.assertIsNone(ae.find_verified(self.spec, self.cache, full=True))
         state, detail = self.status()
         self.assertEqual(state, "invalid")
         self.assertIn("model.bin does not match the expected checksum", detail)
@@ -488,7 +490,7 @@ class WhisperIntegrityTests(unittest.TestCase):
         real = ae._sha256
         ae._sha256 = lambda p, *a: (hashed.append(Path(p).parent.name), real(p, *a))[1]
         try:
-            found = ae.find_verified_whisper(self.spec, self.cache)
+            found = ae.find_verified(self.spec, self.cache)
         finally:
             ae._sha256 = real
         self.assertEqual(found, hub_snapshot(self.cache))

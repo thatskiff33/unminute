@@ -1,0 +1,1 @@
+- **Less in the install.** The leftover desktop-shell trial (an extra page and its bridge) and an unused bridge method are gone, and a test now fixes exactly which source files the app folder holds, so nothing unneeded ships again (#136).

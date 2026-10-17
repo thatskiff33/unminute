@@ -525,7 +525,7 @@ class ReproducibleBuildTests(unittest.TestCase):
         smudge filter."""
         repo = self.root / "repo"
         files = {"workspace/app.py": "a = 1\nb = 2\n", "workspace/ui/index.html": "<p>\n",
-                 "workspace/ui/trial.html": "trial\n", "workspace/consent.py": "c = 1\n",
+                 "workspace/consent.py": "c = 1\n",
                  "LICENSE": "MIT\n", "packaging/install.ps1": "Write-Host 1\nWrite-Host 2\n",
                  ".gitattributes": "* text=auto\n*.ps1 text eol=crlf\n", ".gitignore": "*.log\n"}
         for rel, text in files.items():
@@ -968,6 +968,57 @@ class VerifyPrecompiledTests(unittest.TestCase):
         workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows"
                     / "release.yml").read_text(encoding="utf-8")
         self.assertIn("tools/build_package.py --verify-precompiled", workflow)
+
+
+class AppAllowlistTests(unittest.TestCase):
+    """packaging/app-allowlist.json names every file the app folder holds (R13,
+    #136): a new shipped file is listed, and so reviewed, in its own PR."""
+
+    def setUp(self):
+        path = bp.PACKAGING / "app-allowlist.json"
+        self.allowed = json.loads(path.read_text(encoding="utf-8"))["app"]
+
+    def test_the_app_folder_holds_exactly_the_allowlist(self):
+        # The files the build copies: APP_FILES, and workspace/ as a development
+        # build selects it (copy_app: tracked and untracked but not ignored, and
+        # only files still there). A release build takes the committed ones.
+        listed = subprocess.run(["git", "-C", str(bp.ROOT), "ls-files", "-z", "--cached",
+                                 "--others", "--exclude-standard", "--", "workspace"],
+                                capture_output=True, check=True).stdout.decode("utf-8")
+        shipped = sorted({*bp.APP_FILES, *(p for p in listed.split("\0")
+                                           if p and (bp.ROOT / p).is_file())})
+        self.assertEqual(self.allowed, sorted(set(self.allowed)))      # sorted, no repeats
+        self.assertEqual(shipped, self.allowed,
+                         "packaging/app-allowlist.json must list exactly the shipped files")
+
+    def test_no_trial_page_tool_test_or_design_asset_is_allowed(self):
+        for path in self.allowed:
+            self.assertFalse(path.startswith(("tools/", "tests/", "docs/", "packaging/")), path)
+            self.assertNotRegex(path, r"(^|/)trial\.|unlimit-white|webview_trial|make_icon")
+            self.assertNotRegex(path, r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
+
+    def test_the_build_stops_on_a_file_the_allowlist_does_not_name(self):
+        # A development build copies untracked files too, so the build itself
+        # checks the folder, before precompiling adds the .pyc files.
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "app"
+            for rel in self.allowed:
+                (app / rel).parent.mkdir(parents=True, exist_ok=True)
+                (app / rel).write_text("x", encoding="utf-8")
+            bp.check_app_files(app)                                    # exact: passes
+            extra = app / "workspace" / "ui" / "extra.html"
+            extra.write_text("x", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "not listed: workspace/ui/extra.html"):
+                bp.check_app_files(app)
+            extra.unlink()
+            (app / "LICENSE").unlink()
+            with self.assertRaisesRegex(SystemExit, "listed but missing: LICENSE"):
+                bp.check_app_files(app)
+        source = (bp.ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
+        body = source[source.index("\ndef build("):]
+        self.assertLess(body.index('check_app_files(folder / "app", app_list)'),
+                        body.index("precompile(folder)"))
+        self.assertIn('committed(sha, "packaging/app-allowlist.json")', body)   # a release's own
 
 
 if __name__ == "__main__":

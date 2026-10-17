@@ -22,6 +22,8 @@ All names and text in the boards are fictional sample content.
 
 The `Today-*` boards show the app before the redesign, for comparison.
 
+`assets/` holds canvas assets the boards use but the app does not ship (the white Unlimit logo); `tools/design_check/render.js` maps them.
+
 ## Tokens
 
 `workspace/ui/tokens.css` turns the boards' values into CSS custom properties (colours, type, radii, shadows, control heights) for light and dark themes. Archivo is bundled in `workspace/ui/fonts/` under the SIL Open Font Licence (`OFL.txt`).

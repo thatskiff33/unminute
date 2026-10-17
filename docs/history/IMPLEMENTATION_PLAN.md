@@ -1,6 +1,8 @@
 # Coding and integration plan
 
-Read [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md), [AGENTS.md](../AGENTS.md) and the live
+> **Status: kept for history, no longer maintained (moved here in R13, #136).** This was the coding sequence for building the app. Current behaviour is in `README.md` and `docs/WORKSPACE_DESIGN.md`; open work is in the roadmap (#7) and its issues.
+
+Read [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md), [AGENTS.md](../../AGENTS.md) and the live
 [roadmap #7](https://github.com/thatskiff33/unminute/issues/7). This is a
 coding sequence, not a claim that the planned features or hardware have been validated.
 Live child issues and reviewed acceptance evidence govern completion.

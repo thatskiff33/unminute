@@ -875,6 +875,12 @@ class ApiTests(unittest.TestCase):
     def test_clip_is_a_bounded_data_url(self):
         r = self.api.clip(self.mid, 0, 2)
         self.assertTrue(r["value"].startswith("data:audio/wav;base64,"))
+        import base64
+        import io
+        import wave
+        with wave.open(io.BytesIO(base64.b64decode(r["value"].split(",", 1)[1]))) as w:
+            self.assertEqual((w.getframerate(), w.getnchannels(), w.getsampwidth(),
+                              w.getnframes()), (16000, 1, 2, 2 * 16000))
         self.assertFalse(self.api.clip(self.mid, 0, 60)["ok"])
         self.assertFalse(self.api.clip(self.mid, "0", 2)["ok"])
 

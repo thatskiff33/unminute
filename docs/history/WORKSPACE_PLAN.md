@@ -1,5 +1,7 @@
 # Meeting workspace: target product and delivery scope
 
+> **Status: kept for history, no longer maintained (moved here in R13, #136).** This was the product plan before the app was built. Current behaviour is in `README.md` and `docs/WORKSPACE_GUIDE.md`; open work is in the roadmap (#7) and its issues.
+
 This is the public, generic product plan for roadmap [#7](https://github.com/thatskiff33/unminute/issues/7).
 It describes planned behaviour, not shipped functionality. The README describes the current app.
 Child issue acceptance criteria supply implementation detail; resolve material contradictions before coding.

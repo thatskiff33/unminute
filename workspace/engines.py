@@ -51,7 +51,7 @@ def load_engine(name, cache_dir, threads, allow_test=False):
         if problem:
             raise ModelLoadError(f"{problem}. Repair {asr_engines.label(name)} in Setup.")
         # Word times are required: chunk ownership is decided per word.
-        return asr_engines.WhisperEngine(model, name, "int8", "en", word_timestamps=True)
+        return asr_engines.WhisperEngine(model, name, "int8", "en")
 
     raise ModelLoadError(f"Unknown model: {asr_engines.label(name)}")
 
