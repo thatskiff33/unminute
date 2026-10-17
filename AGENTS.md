@@ -121,10 +121,34 @@ English with pros and cons per option, never as a "waiting on you" line in a sta
 
 ## Authority
 
-Work within the scope the user gave for this task. Neither these instructions nor an approved
-plan authorise: pushing; merging; publishing a release (pushing a `v*` tag publishes one);
-commenting on or closing issues; changing the user's installed copy; Intune or tenant changes;
-or GitHub owner settings. Check the live repository settings before an authorised merge.
+Work within the scope the user gave for this task. The user does not review code: independent
+agent reviews are the review (the user's decision, 17 October 2026). An agent may push its
+task's branch and squash-merge its own PR when all of these hold, after checking the live
+repository settings:
+
+- the PR is out of draft, every required check passes on its final commit, and no other check
+  fails without the reason recorded on the PR;
+- an independent review of that exact commit has signed off: by an agent that did not write or
+  direct the change (a fresh agent or another session), working on that fixed commit in a
+  separate checkout, with a security review for anything under "Stop and ask". The PR records
+  the reviewer, the commit, the verdict and the findings, and each finding is fixed or
+  answered. A rebase onto a moved `main` keeps the review only if
+  `git range-diff <old base>..<reviewed> <new base>..HEAD` shows every commit identical ("="),
+  the PR records that, and CI passes on the rebased head; any other change after the review
+  needs that change reviewed;
+- no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
+
+Never push to `main` or force-push a branch another agent works on. An agent may comment on
+the issues its work belongs to (decisions, progress) and close an issue once the PRs that
+resolve it have merged and every acceptance criterion is met, saying which PRs did it.
+
+Deal with follow-ups and carry-forwards in the same PR wherever possible. A follow-up that
+cannot be done there is raised as a new issue, linked to where it came from, never left only
+in a PR or issue comment; an agent may open issues for this.
+
+Neither these instructions nor an approved plan authorise: publishing a release (pushing a `v*`
+tag publishes one); opening other issues; changing the user's installed copy; Intune or tenant
+changes; or GitHub owner settings.
 
 ## Where the rules live
 
@@ -176,6 +200,10 @@ or GitHub owner settings. Check the live repository settings before an authorise
 - Squash merge with linear history (`docs/RELEASING.md`). Review a fixed commit independently,
   with a security review for anything under "Stop and ask"; verify fixes and record the review
   on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
+- A PR may be a draft while work continues. Once its required checks pass and any review it
+  needs is recorded, the agent that owns it marks it ready (`gh pr ready <n>`) so it can be
+  reviewed and merged; who merges follows "Authority". Never call a draft "ready to merge":
+  check `gh pr view <n> --json isDraft,mergeStateStatus` first.
 
 ## Several agents or sessions
 
@@ -183,8 +211,9 @@ or GitHub owner settings. Check the live repository settings before an authorise
 - Announce the files you will touch, and message the owning session before editing a file in
   its open PR. The PR that lands second converts shared pieces such as changelog fragments.
 - Reviewers work on a fixed commit in a separate checkout and do not edit, push or comment
-  without authority. One integration owner handles pushes, PR state, merge order and branch
-  clean-up; the owner account also merges, so do not assume a merge was an agent's.
+  without authority. The agent that owns a PR handles its pushes, PR state, merge and branch
+  clean-up; agree the merge order with the other owners when PRs share files. The owner account
+  also merges, so do not assume a merge was an agent's.
 - Do not share a mutable runtime, model cache, test database or headless Edge run between
   sessions; run heavy benchmarks one at a time.
 - After rebasing onto a moved `main`, confirm no conflict markers remain and that the diff
