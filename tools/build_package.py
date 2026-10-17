@@ -365,9 +365,11 @@ def precompile(folder, python=None):
     """Unchecked-hash .pyc for every module in the packages, the app and the
     runtime's sitecustomize, so nothing is compiled or written when the app
     runs (it starts with -B). Compiled by the package's own Python (python=
-    is for tests) without site (-S) or import-time caching (-B), rewriting any
-    .pyc already there (-f: compileall would keep a timestamp .pyc it thinks is
-    current, with the build path in it). A fixed hash seed, one process (marshal
+    is for tests) with no user site-packages (-s; the runtime's ._pth says
+    "import site", which overrides -S, so the package's own site still runs)
+    and no import-time caching (-B), rewriting any .pyc already there (-f:
+    compileall would keep a timestamp .pyc it thinks is current, with the
+    build path in it). A fixed hash seed (checked first), one process (marshal
     marks an object shared only if something else holds it at that moment,
     which parallel workers change from run to run) and paths relative to the
     package make the bytes the same in every build; at import Python records
@@ -375,8 +377,15 @@ def precompile(folder, python=None):
     python = python or str(folder / "runtime" / "python.exe").removeprefix("\\\\?\\")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONHASHSEED"] = "0"
+    base = [python, "-S", "-s", "-B"]
+    probe = subprocess.run(base + ["-c", "import sys; print(sys.flags.hash_randomization, "
+                                         "sys.flags.no_user_site)"],
+                           env=env, capture_output=True, text=True)
+    if probe.stdout.split() != ["0", "1"]:
+        sys.exit("The compile run would not have a fixed hash seed and no user "
+                 f"site-packages ({probe.stdout.strip() or probe.stderr.strip()[-200:]}).")
     for sub, flags in ((f"runtime/{SITE}", []), ("app", []), ("runtime", ["-l"])):
-        r = subprocess.run([python, "-S", "-B", "-m", "compileall", "-q", "-f", *flags,
+        r = subprocess.run(base + ["-m", "compileall", "-q", "-f", *flags,
                             "--invalidation-mode", "unchecked-hash", "-s", str(folder),
                             str(folder / sub)], env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
@@ -455,7 +464,7 @@ def committed_tree(sha, paths):
     regular files: a symbolic link or submodule stops the build, and so does a
     requested path the commit does not have."""
     listing = git_bytes("ls-tree", "-r", "-z", "--full-tree", sha, "--", *paths)
-    blobs = {}
+    blobs, folded = {}, set()
     for entry in filter(None, listing.split(b"\0")):
         meta, name = entry.split(b"\t", 1)
         mode, kind, oid = meta.decode("ascii").split()
@@ -467,9 +476,13 @@ def committed_tree(sha, paths):
         # anything but plain relative names.
         if (".." in name.split("/") or name.startswith("/")
                 or re.search(r'[\\:*?"<>|\x00-\x1f]', name)
-                or any(re.fullmatch(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?", part)
+                or any(re.fullmatch(r"(?i)(con|prn|aux|nul|conin\$|conout\$|"
+                                    r"(com|lpt)[0-9\u00b9\u00b2\u00b3])(\..*)?", part)
                        or part.endswith((".", " ")) for part in name.split("/"))):
             sys.exit(f"Unexpected path in the commit: {name!r}")
+        if name.casefold() in folded:       # one would overwrite the other on Windows
+            sys.exit(f"Two files in the commit differ only by case: {name!r}")
+        folded.add(name.casefold())
         blobs[name] = oid
     for p in paths:
         if not any(n == p or n.startswith(p + "/") for n in blobs):

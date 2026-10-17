@@ -605,7 +605,7 @@ class ReproducibleBuildTests(unittest.TestCase):
                                   capture_output=True).stdout.decode().strip()
         blob = run("hash-object", "-w", "--stdin", data=b"PWNED")
         for bad in ("..\\..\\runtime\\sitecustomize.py", "C:x.py", "a\x01.py", "NUL.py",
-                    "com1", "trail.", "space "):
+                    "com1", "trail.", "space ", "CONOUT$", "lpt\u00b9.txt"):
             workspace = run("mktree", data=f"100644 blob {blob}\t{bad}\n".encode())
             packaging = run("mktree", data=f"100644 blob {blob}\tinstall.ps1\n".encode())
             root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
@@ -760,20 +760,29 @@ class PrunedBuildTests(unittest.TestCase):
 
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs["env"]))
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "0 1\n", "")
         with mock.patch.object(bp.subprocess, "run", fake_run), \
                 mock.patch.dict(os.environ, {"PYTHONHASHSEED": "random", "PYTHONOPTIMIZE": "2"}):
             bp.precompile(self.root / "Unminute-0.5.0")
-        self.assertEqual(len(calls), 3)              # the packages, the app, sitecustomize
-        for cmd, env in calls:
+        self.assertEqual(len(calls), 4)       # the seed check, packages, app, sitecustomize
+        self.assertIn("hash_randomization", calls[0][0][-1])
+        for n, (cmd, env) in enumerate(calls):
             self.assertTrue(cmd[0].endswith("runtime\\python.exe")
                             or cmd[0].endswith("runtime/python.exe"), cmd[0])   # its own Python
-            self.assertEqual(cmd[1:3], ["-S", "-B"])
-            self.assertIn("-f", cmd)                        # rewrite, never keep a stale .pyc
-            self.assertFalse([a for a in cmd if a.startswith(("-j", "--workers"))], cmd)
-            self.assertEqual(cmd[cmd.index("--invalidation-mode") + 1], "unchecked-hash")
+            self.assertEqual(cmd[1:4], ["-S", "-s", "-B"])     # -s: no user site-packages
             self.assertEqual(env["PYTHONHASHSEED"], "0")
             self.assertNotIn("PYTHONOPTIMIZE", env)          # no other PYTHON* setting
+            if n:                                           # the compile runs
+                self.assertIn("-f", cmd)                    # rewrite, never keep a stale .pyc
+                self.assertFalse([a for a in cmd if a.startswith(("-j", "--workers"))], cmd)
+                self.assertEqual(cmd[cmd.index("--invalidation-mode") + 1], "unchecked-hash")
+
+    def test_a_compile_run_without_a_fixed_seed_stops_the_build(self):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "1 1\n", "")   # hash randomised
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                self.assertRaisesRegex(SystemExit, "fixed hash seed"):
+            bp.precompile(self.root / "Unminute-0.5.0")
 
     def test_a_missing_or_leaky_pyc_stops_the_build(self):
         folder = self.root / "Unminute-0.5.0"
