@@ -1074,12 +1074,15 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.holder["stream"].feed(2)
         rec = self.ws._recording
         time.sleep(0.6)
+        # Let go first (#148): with the handle still set, the app's recorder-watch
+        # thread would "finish" a stopped recording in the gap, saving it as
+        # stopped, so the next start would not see a crash to recover.
+        self.ws._recording = None
         rec._stop.set()                                # the app closes without stopping it
         rec._writer.join(5)
         journal = json.loads((rec.folder / "journal.json").read_text())
         journal["state"] = "recording"
         (rec.folder / "journal.json").write_text(json.dumps(journal))
-        self.ws._recording = None
         self.ws.close()
         self.ws = self.make()
         self.ws.start()
@@ -1245,19 +1248,22 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.holder["stream"].feed(11)
         rec = self.ws._recording
         time.sleep(0.6)
+        # Let go first (#148): with the handle still set, the app's recorder-watch
+        # thread would "finish" a stopped recording in the gap, saving it as
+        # stopped, so the next start would not see a crash to recover.
+        self.ws._recording = None
         rec._stop.set()                                # the process "dies"
         rec._writer.join(5)
         journal = json.loads((rec.folder / "journal.json").read_text())
         journal["state"] = "recording"
         (rec.folder / "journal.json").write_text(json.dumps(journal))
         (rec.folder / "heartbeat").write_text(str(journal["started_at"] + 30))
-        self.ws._recording = None
         self.ws.close()
         self.ws = self.make()
         self.ws.start()
         self.assertTrue(self.ws.wait_idle(120))
         waiting = self.ws.recording_status()["reports"][-1]   # not transcribed until the user says
-        self.assertTrue(waiting["recovered"])
+        self.assertTrue(waiting.get("recovered"), waiting)   # self-explaining (#148)
         self.assertEqual(self.ws.meetings(), [])
         self.ws.retry_recording_import(waiting["id"])        # Keep and transcribe
         self.assertTrue(self.ws.wait_idle(120))
