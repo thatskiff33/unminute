@@ -186,6 +186,20 @@ It prints one line of JSON (well within Intune's 2,048-character output limit) a
 
 It reads counts and the logs only, never content. It writes nothing of its own, though opening the database read-only can leave SQLite's `-wal` and `-shm` files beside it. A user can add the detail with Help > **Copy diagnostics**.
 
+### Verifying a release before packaging
+
+Each release is built by the project's Release workflow on GitHub, from its tagged commit, and signed (build provenance and an SBOM attestation). Before packaging a release for Intune, check the download:
+
+```
+powershell -NoProfile -File tools\intune\Get-VerifiedRelease.ps1 -Tag vX.Y.Z
+```
+
+- **What it downloads:** the release's zip, its `.sha256` file, the SBOM and the attestation bundle, into a new folder.
+- **What it checks:** that the release is published, its tag is exactly the one given (case matters), and it is not a preview unless you add `-AllowPrerelease`; that the zip matches its checksum; and that both attestations verify. They must be signed by exactly the repository's Release workflow at that tag, from the commit the tag points at, on a GitHub-hosted runner.
+- **The result:** it prints VERIFIED and the zip's SHA-256, or NOT VERIFIED and the reason. Package only a verified zip.
+- **Always run it.** The `.sha256` file beside a zip detects a damaged download, not a replaced one: anyone who can replace the zip on the release page can replace its checksum too. The signature check is what proves the zip was built by the project's Release workflow from that tag.
+- **What it needs:** the GitHub CLI (`gh`) on the path. No GitHub account or sign-in is needed while the repository is public: `gh` checks the bundle against Sigstore's public trust root.
+
 ### Managed settings (policy)
 
 From the first release after v0.4.3, the app reads policy values from `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` (64-bit view): at start, every 15 minutes, on each refresh while Settings or Downloads is open, and again just before it would delete an original recording. Standard users cannot change this key. Policy overrides the user's settings: Settings says some settings are managed and disables those controls, and the app enforces each value itself.

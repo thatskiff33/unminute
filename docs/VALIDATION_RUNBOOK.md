@@ -1,9 +1,9 @@
 # Validation runbook: checks that need people or hardware
 
-These are the checks still open before a business release. Each one needs a machine, an organisation or people that the development laptop cannot supply. Run them against a published package. Record the results on the issue named, using anonymous, aggregate figures only.
+These are the checks still open before a business release. Each one needs a machine, an organisation or people that the development laptop cannot supply. Run them against a published package. The validation tracker #189 groups them into sittings; record each result there, under the sitting named, using anonymous, aggregate figures only.
 
 **Get the package and tools:**
-- From the release page, download `Unminute-<version>.zip`, its `.sha256` file and "Source code (zip)".
+- From the release page, download `Unminute-<version>.zip`, its `.sha256` file and "Source code (zip)". `tools/intune/Get-VerifiedRelease.ps1 -Tag v<version>` downloads the package and checks its signature (docs/PACKAGING.md, "Verifying a release before packaging").
 - The source zip contains `tools/`, which holds the evidence scripts.
 - The scripts run with the installed app's own Python runtime, so nothing else needs installing.
 
@@ -12,7 +12,7 @@ These are the checks still open before a business release. Each one needs a mach
 - Models live in `%LOCALAPPDATA%\whisper-models`, after Setup has downloaded them.
 - Use synthetic or consented, non-client audio only.
 
-## 1. Clean standard-user profile (#10, #11)
+## 1. Clean standard-user profile (#189, sitting 3)
 
 **Machine:** a Windows 10 (1809 or later) or Windows 11 x64 device. Sign in with a standard (non-admin) account that has never had Python, Git or developer tools.
 
@@ -24,7 +24,7 @@ These are the checks still open before a business release. Each one needs a mach
 
 **Record:** the Windows version, whether each step passed, and any prompt or error text.
 
-## 2. Managed deployment with Intune (#11)
+## 2. Managed deployment with Intune (#189, sitting 3)
 
 Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user context, `install.ps1 -Silent -Managed`, the registry detection rule, and exit code 5 mapped to Retry.
 
@@ -32,12 +32,13 @@ Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user c
 2. Open the app and check that Settings shows "Updates are managed by your IT team".
 3. Deploy the next version. With a meeting under a hold, the install waits (exit 5). After the hold is released and cleanup is confirmed, it installs.
 4. Uninstall through Intune.
+5. On the Intune-managed device, check `--health` as a Remediation script, and the crash-dump settings (SECURITY_MODEL.md T21).
 
-**Signing route:** choose one of the options in `docs/PACKAGING.md`, "Signing and trust", and record the decision on #11.
+**Signing route:** choose one of the options in `docs/PACKAGING.md`, "Signing and trust", and record the decision on #189 (sitting 7).
 
-## 3. Lowest-supported laptop (#28)
+## 3. Lowest-supported laptop and reference-laptop release run (#189, sitting 2)
 
-**Define the floor first.** Agree the lowest-supported specification, for example 4 cores and 8 GB of memory, CPU only. Record it on #28: it becomes the documented minimum.
+**Define the floor first.** Agree the lowest-supported specification, for example 4 cores and 8 GB of memory, CPU only. Record it on #189: it becomes the documented minimum.
 
 From the extracted source folder, using the installed runtime:
 
@@ -56,15 +57,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
   - idle CPU and memory;
   - no marker text found, and no backups.
 - Note whether the laptop stayed usable during processing in Quiet mode.
+- Also in this sitting:
+  - the first launch after an install;
+  - a full `tools/perf_check.py` release run against the package (`--app`), for the reference-laptop budgets and the cost of the GPU check;
+  - the GPU failure cases;
+  - the packaged build's crash and hang records.
 
-## 4. Representative transcription quality (#12, #25)
+## 4. Representative transcription quality (#189, sitting 4)
 
 1. Collect consented business recordings, with each person's agreement, outside any client matter. Cover the expected range: accents including New Zealand English, meeting sizes, Teams recordings and in-room microphones.
 2. Have a person write a reference transcript for each one, or for a sampled excerpt.
 3. Write a JSON Lines manifest (`{"set", "id", "wav", "ref"}`), then run `tools/compare_engines.py run` once per engine, followed by `score`. The header of the file shows the usage.
 4. Publish only the aggregate figures: word error rate per set and per engine, and speed. No transcripts, names or audio.
 
-## 5. Accessibility and pilot users (#27)
+## 5. Accessibility and pilot users (#189, sitting 5)
 
 **Screen reader:**
 1. With NVDA or Narrator, complete import, review, naming speakers, handoff and both cleanup confirmations by keyboard only.
@@ -77,9 +83,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 3. Do not coach. Note where people hesitate, any errors they see, and whether they finish.
 4. Record findings without personal details.
 
-**Two quick checks for the same session:**
+**Quick checks for the same session:**
 - dragging a recording onto the window (#20);
-- pressing Ctrl+plus to zoom.
+- pressing Ctrl+plus to zoom;
+- the handoff check listed on #189.
 
 ## 6. Microphone recording on real hardware (#30)
 
@@ -90,6 +97,15 @@ Turn on Settings > Recording and speakers > Record with a microphone. Use a USB 
 3. Check that the meeting's length matches the time before the unplug. If recording continued with silence instead, record that on #30: it means the device-loss check needs a silence-based rule for this driver.
 4. Optional: during a recording, end the app in Task Manager. At the next start, the saved part is imported, and the report gives about how much at the end was lost.
 
+## 7. Laptop sleep, lid and timers (#189, sitting 1)
+
+On a laptop, with a synthetic recording or an idle workspace:
+- the scan of watched folders after the laptop wakes (within about 60 s);
+- closing the app from the taskbar while it is minimised;
+- a long idle session;
+- that the app's timers count time asleep;
+- the lid and sleep checks listed on #189 (recording with the lid closed, if that setting is in the release).
+
 ## After the checks
 
-Update `docs/RELEASE_CHECKLIST.md`, then close each issue whose acceptance is met, with the evidence. #29 closes when the checklist's open items are done. A full release then follows `docs/RELEASING.md`.
+Update `docs/RELEASE_CHECKLIST.md` and record each sitting's results on #189; it closes when every sitting is done, and the checklist's open items and release readiness are sitting 7. A full release then follows `docs/RELEASING.md`.

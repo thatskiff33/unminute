@@ -377,7 +377,7 @@ def precompile(folder, python=None):
     python = python or str(folder / "runtime" / "python.exe").removeprefix("\\\\?\\")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONHASHSEED"] = "0"
-    base = [python, "-S", "-s", "-B"]
+    base = [python, "-S", "-s", "-B", "-P"]       # -P: nothing from the current folder
     probe = subprocess.run(base + ["-c", "import sys; print(sys.flags.hash_randomization, "
                                          "sys.flags.no_user_site)"],
                            env=env, capture_output=True, text=True)
@@ -413,6 +413,63 @@ def check_precompiled(folder):
                 problems.append(f"build path inside: {pyc.relative_to(folder).as_posix()}")
     if problems:
         sys.exit("Precompiled files are wrong:\n" + "\n".join(problems[:20]))
+
+
+def verify_precompiled(zpath):
+    """Every shipped .pyc is what its .py compiles to (#111 B3). Python runs
+    the .pyc and never checks it against the source (unchecked-hash), so a
+    reviewer reading the shipped .py files would not see an altered .pyc.
+    Unpacks the package, notes every .pyc, compiles every module again as the
+    build does (precompile is deterministic and path-independent), and compares
+    the bytes. The compiler is this Python, which must be the package's
+    version, not the package's own runtime, so nothing in the package takes
+    part in checking itself. A .pyc that is not __pycache__/<module>.cpython-
+    <tag>.pyc beside its .py (a module shipped without its source) cannot be
+    checked and is refused. The standard library inside python3XX.zip is not
+    covered here: the build checks the runtime's pinned SHA-256, and a
+    downloaded zip's attestation covers it. Returns the count compared."""
+    if platform.python_version() != PYTHON_VERSION or sys.implementation.name != "cpython":
+        sys.exit(f"Verify with CPython {PYTHON_VERSION}, the package's version "
+                 f"(this is {sys.implementation.name} {platform.python_version()}).")
+    work = Path(tempfile.mkdtemp(prefix="wwverify-")).resolve()
+    if os.name == "nt":
+        work = Path("\\\\?\\" + str(work))
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            names = z.namelist()
+            tops = {n.split("/", 1)[0] for n in names}
+            if len(tops) != 1 or not all(inside(n) for n in names):
+                sys.exit(f"{Path(zpath).name} is not one package folder.")
+            z.extractall(work)
+        folder = work / tops.pop()
+
+        def digests():
+            return {p.relative_to(folder).as_posix(): sha256(p) for p in folder.rglob("*.pyc")}
+        shipped = digests()
+        suffix = f".cpython-{PYTHON_TAG}.pyc"
+
+        def has_source(name):
+            parts = name.split("/")
+            if len(parts) < 2 or parts[-2] != "__pycache__" or not parts[-1].endswith(suffix):
+                return False
+            return (folder.joinpath(*parts[:-2]) / (parts[-1][:-len(suffix)] + ".py")).is_file()
+        sourceless = sorted(n for n in shipped if not has_source(n))
+        if sourceless:
+            sys.exit("The package has .pyc files without their source beside them (outside "
+                     "__pycache__, an unexpected name, or no .py), which cannot be checked:\n"
+                     + "\n".join(sourceless[:20]))
+        for name in shipped:                  # a .pyc the compile does not remake shows
+            (folder / name).unlink()
+        precompile(folder, python=sys.executable)
+        rebuilt = digests()
+        differ = sorted(n for n in shipped.keys() | rebuilt.keys()
+                        if shipped.get(n) != rebuilt.get(n))
+        if differ:
+            sys.exit(f"{len(differ)} shipped .pyc files are not what their sources compile "
+                     "to (or a module has none):\n" + "\n".join(differ[:20]))
+        return len(shipped)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def package_budget(zip_bytes, files, budgets_text):
@@ -455,10 +512,16 @@ def copy_app(app):
         shutil.copy2(PACKAGING / script, app.parent / script)
 
 
+def git_env():
+    """The environment for git: no GIT_DIR, GIT_WORK_TREE or other git setting
+    from outside, so the build reads this checkout and nothing else."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+
+
 def git_bytes(*args, data=None):
     """Raw git output; replace refs are ignored so a commit means what it says."""
     r = subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
-                       input=data, capture_output=True)
+                       input=data, capture_output=True, env=git_env())
     if r.returncode:
         sys.exit(f"git {args[0]} failed: " + r.stderr.decode("utf-8", "replace").strip())
     return r.stdout
@@ -541,7 +604,7 @@ def git(*args):
     try:
         return subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
                               check=True, capture_output=True, encoding="utf-8",
-                              errors="replace").stdout.strip()
+                              errors="replace", env=git_env()).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 
@@ -1075,7 +1138,14 @@ def main():
                     help="refuse a dirty tree or a HEAD that is not the vX.Y.Z tag")
     ap.add_argument("--update-binary-allowlist", action="store_true",
                     help="rewrite packaging/binary-allowlist.json from this build (review it)")
+    ap.add_argument("--verify-precompiled", metavar="ZIP",
+                    help="build nothing: check that every .pyc in this package zip is what "
+                         "its source compiles to (on Windows, with the package's own Python)")
     a = ap.parse_args()
+    if a.verify_precompiled:
+        count = verify_precompiled(Path(a.verify_precompiled))
+        print(f"{count} .pyc files are what their sources compile to.")
+        return
     if a.release and a.update_binary_allowlist:
         ap.error("--release cannot rewrite the binary allowlist")
     build(release_version(a.version), Path(a.out), Path(a.cache), a.release,

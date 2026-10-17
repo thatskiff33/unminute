@@ -1,18 +1,38 @@
-# Cuts a GitHub release when a version tag is pushed.
+# Builds, attests and publishes a release when a version tag is pushed (#111 B3).
 #
 #   git tag -a v0.5.0 -m "Unminute v0.5.0" <commit on main>
 #   git push origin v0.5.0
 #
-# The tag must be vX.Y.Z (optionally -preview.N) and must point at a commit
-# already on main, and must match VERSION. Release notes come from the matching
-# dated "## vX.Y.Z (YYYY-MM-DD)" section of CHANGELOG.md; the job fails before
-# publishing if it is missing.
+# Nothing is public until the owner approves (docs/RELEASING.md):
 #
-# The Windows package is still built and attached by hand (docs/RELEASING.md).
-# #111 slice B3 replaces this with a CI build, signed provenance and an
-# approval step. Values from the event are passed through environment
-# variables, never pasted into the script, so a crafted tag name cannot run
-# commands.
+# 1. check (Linux): the tag is vX.Y.Z or vX.Y.Z-preview.N, points at a commit on
+#    main and matches VERSION; the notes come from its dated changelog section;
+#    the hash-locked dependencies pass the vulnerability audit at that commit.
+# 2. build (Windows, a GitHub-hosted runner, no cache): the release build of the
+#    tagged commit with the pinned Python, its --self-test, a check that every
+#    shipped .pyc is what its source compiles to, then signed build provenance
+#    and an SBOM attestation for the zip (Sigstore, via actions/attest).
+# 3. draft (Linux): a draft release, visible only to people with write access,
+#    holding the zip, its .sha256, the SBOM and the attestation bundle (so IT
+#    can verify a download with tools/intune/Get-VerifiedRelease.ps1).
+# 4. publish (Linux, the protected "release" environment): waits for the
+#    owner's approval. Approve only after the five release-time evidence reports
+#    are attached to the draft. It then checks the draft holds exactly the zip
+#    built and attested here, that its attestations verify against this
+#    workflow at this tag and commit, that the evidence is complete and names
+#    that zip (tools/evidence.py check), and that nothing else was added; then
+#    it publishes, and checks the published files are the ones it checked.
+#    With immutable releases on, the files and the tag are locked from then
+#    on (to confirm with the owner). The approval
+#    gates this workflow only: anyone with write access can still edit or
+#    publish a draft by hand, which the last check and IT's verification of
+#    every download (tools/intune/Get-VerifiedRelease.ps1) are there to catch.
+#
+# A -preview.N tag publishes a pre-release that does not become Latest. Values
+# from the event reach scripts through environment variables, never ${{ }}
+# inside run:, so a crafted tag name cannot run commands. The repository name
+# is never written here (GITHUB_REPOSITORY), so moving the repository changes
+# only the signer identity that verifiers name.
 name: Release
 
 on:
@@ -21,11 +41,17 @@ on:
 
 permissions: {}
 
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  check:
+    name: Check the tag
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
-      contents: write     # create the release
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -55,10 +81,9 @@ jobs:
             echo "Tag $TAG does not match VERSION ($version)"; exit 1
           fi
 
-      # Pull the notes for this version out of CHANGELOG.md. Fails if missing,
-      # so a release can never go out with empty notes. Only a dated
+      # The notes for this version, from CHANGELOG.md. Only a dated
       # "## vX.Y.Z (YYYY-MM-DD)" heading is read (tools/changelog.py writes it);
-      # the undated headings before #131 belong to versions already released.
+      # without one nothing is drafted.
       - name: Extract release notes
         env:
           TAG: ${{ github.ref_name }}
@@ -71,20 +96,285 @@ jobs:
           if [ ! -s notes.md ]; then
             echo "No section '## $TAG' found in CHANGELOG.md"; exit 1
           fi
-          cat notes.md
+          echo "Release notes: $(wc -l < notes.md) lines"
 
-      - name: Publish release
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Install pip-audit (hash-locked)
+        run: >
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r requirements/ci-audit.txt
+      - name: Audit every lock at this commit
+        run: python tools/audit.py
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: notes
+          path: notes.md
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: Build and attest (Windows)
+    needs: check
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write       # the Sigstore signing certificate for the attestations
+      attestations: write   # store the attestations with the repository
+    outputs:
+      name: ${{ steps.build.outputs.name }}
+      sha256: ${{ steps.build.outputs.sha256 }}
+      sbom_sha256: ${{ steps.build.outputs.sbom_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0          # the tag, for the release build's checks
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14.8"   # PYTHON_VERSION in tools/build_package.py
+
+      # The release build refuses a dirty tree and any commit but the tag's;
+      # its downloads are hash-pinned. The wheel cache is this run's own.
+      - name: Release build
+        id: build
+        shell: pwsh
+        run: |
+          python -I tools/build_package.py --release --out dist --cache "$env:RUNNER_TEMP/wwbuild-cache"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $zip = @(Get-ChildItem -LiteralPath dist -Filter "Unminute-*.zip")
+          if ($zip.Count -ne 1) { throw "Expected one package zip in dist, found $($zip.Count)." }
+          $name = $zip[0].BaseName
+          $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip[0].FullName).Hash.ToLowerInvariant()
+          $sbom = (Get-FileHash -Algorithm SHA256 -LiteralPath "dist/$name.cdx.json").Hash.ToLowerInvariant()
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "sha256=$sha" >> $env:GITHUB_OUTPUT
+          "sbom_sha256=$sbom" >> $env:GITHUB_OUTPUT
+
+      # The package's own record of what it is: this tag's version, this
+      # tag's commit, and a release build.
+      - name: The package names this tag and commit
+        shell: pwsh
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $commit = git rev-parse HEAD
+          python -I tools/evidence.py names "dist/$env:NAME.zip" $env:TAG.Substring(1) $commit
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Packaged self-test
+        shell: pwsh
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $root = Join-Path $env:RUNNER_TEMP "package"
+          [System.IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path "dist/$env:NAME.zip").Path, $root)
+          $version = Join-Path $root $env:NAME
+          Push-Location (Join-Path $version "app")
+          $out = & (Join-Path $version "runtime\python.exe") -I -B -X disable-remote-debug -m workspace --self-test
+          $code = $LASTEXITCODE
+          Pop-Location
+          $out
+          if ($code -ne 0 -or @($out)[-1] -ne "PASS") { throw "The packaged self-test did not pass." }
+
+      # The app runs its .pyc files and never compares them with the .py files
+      # beside them, so check that each is exactly what its source compiles to.
+      - name: Shipped bytecode matches its source
+        shell: pwsh
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+        run: |
+          python -I tools/build_package.py --verify-precompiled "dist/$env:NAME.zip"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: dist/${{ steps.build.outputs.name }}.zip
+      - name: SBOM attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: dist/${{ steps.build.outputs.name }}.zip
+          sbom-path: dist/${{ steps.build.outputs.name }}.cdx.json
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: package
+          path: |
+            dist/${{ steps.build.outputs.name }}.zip
+            dist/${{ steps.build.outputs.name }}.zip.sha256
+            dist/${{ steps.build.outputs.name }}.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  draft:
+    name: Draft the release
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write       # create the draft release
+      attestations: read    # download the attestation bundle
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: package
+          path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: notes
+          path: .
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ needs.build.outputs.name }}
+          BUILT: ${{ needs.build.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "$(sha256sum "dist/$NAME.zip" | cut -d' ' -f1)" != "$BUILT" ]; then
+            echo "The zip changed between the build and the draft"; exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A release or draft for $TAG already exists; nothing was changed"; exit 1
+          fi
+          # Every attestation for the zip (provenance and SBOM), for offline checks.
+          gh attestation download "dist/$NAME.zip" --repo "$GITHUB_REPOSITORY" --limit 10
+          # gh names the file sha256:<digest>.jsonl (with "-" for ":" on Windows).
+          bundle=""
+          for candidate in "sha256:$BUILT.jsonl" "sha256-$BUILT.jsonl"; do
+            if [ -f "$candidate" ]; then bundle="$candidate"; fi
+          done
+          if [ -z "$bundle" ]; then
+            echo "gh attestation download wrote no bundle for the zip"; ls -la; exit 1
+          fi
+          mv "$bundle" "dist/$NAME.attestations.jsonl"
+          kind=()
+          case "$TAG" in *-preview.*) kind=(--prerelease) ;; esac
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Unminute $TAG" --notes-file notes.md "${kind[@]}" \
+            "dist/$NAME.zip" "dist/$NAME.zip.sha256" "dist/$NAME.cdx.json" \
+            "dist/$NAME.attestations.jsonl"
+
+  publish:
+    name: Publish (after approval)
+    needs: [build, draft]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write       # publish the draft (the attestations are checked offline)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: The draft holds only the release's files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ needs.build.outputs.name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+            --jq '"draft=\(.isDraft)", (.assets[].name)' > assets.txt
+          cat assets.txt
+          if [ "$(head -n1 assets.txt)" != "draft=true" ]; then
+            echo "$TAG is not a draft"; exit 1
+          fi
+          tail -n +2 assets.txt | sort > found.txt
+          printf '%s\n' "$NAME.zip" "$NAME.zip.sha256" "$NAME.cdx.json" \
+            "$NAME.attestations.jsonl" evidence-perf.json evidence-packaged.json \
+            evidence-crash.json evidence-ui.json evidence-accessibility.json | sort > expected.txt
+          if ! diff expected.txt found.txt; then
+            echo "The draft's files are not exactly the release's (above: < missing, > extra)"; exit 1
+          fi
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          # A file added between the listing and the download is caught here.
+          if ! ls -A release | sort | diff expected.txt -; then
+            echo "The downloaded files are not exactly the release's"; exit 1
+          fi
+
+      - name: The zip is the one built and attested here
+        env:
+          TAG: ${{ github.ref_name }}
+          NAME: ${{ needs.build.outputs.name }}
+          BUILT: ${{ needs.build.outputs.sha256 }}
+          SBOM: ${{ needs.build.outputs.sbom_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)      # the commit the tag points at, as checked out
+          cd release
+          [ "$(sha256sum "$NAME.zip" | cut -d' ' -f1)" = "$BUILT" ] || { echo "The draft's zip is not the one built"; exit 1; }
+          [ "$(sha256sum "$NAME.cdx.json" | cut -d' ' -f1)" = "$SBOM" ] || { echo "The draft's SBOM is not the one built"; exit 1; }
+          # Written on the Windows runner, so it may end with CRLF.
+          [ "$(tr -d '\r' < "$NAME.zip.sha256")" = "$BUILT  $NAME.zip" ] || { echo "The .sha256 file does not name the zip built"; exit 1; }
+          for predicate in https://slsa.dev/provenance/v1 https://cyclonedx.org/bom; do
+            gh attestation verify "$NAME.zip" --repo "$GITHUB_REPOSITORY" \
+              --bundle "$NAME.attestations.jsonl" --predicate-type "$predicate" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG" \
+              --signer-digest "$commit" --source-ref "refs/tags/$TAG" --source-digest "$commit" \
+              --deny-self-hosted-runners
+          done
+
+      - name: The release evidence is complete and names this zip and commit
+        env:
+          BUILT: ${{ needs.build.outputs.sha256 }}
+        run: |
+          python -I tools/evidence.py check "$BUILT" --commit "$(git rev-parse HEAD)" \
+            release/evidence-*.json
+
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # A -preview.N tag is published as a pre-release that does not
-          # become Latest; a plain vX.Y.Z tag is a full release.
-          kind=()
+          # The tag decides the release type, whatever the draft was changed to.
+          kind=(--prerelease=false --latest)
           case "$TAG" in *-preview.*) kind=(--prerelease --latest=false) ;; esac
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Unminute $TAG" \
-            --notes-file notes.md \
-            --verify-tag \
-            "${kind[@]}"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${kind[@]}"
+
+      # Anyone with write access could change a draft's files between the checks
+      # above and publishing: the published release must hold exactly the files
+      # checked, by name and by the digest GitHub records for each.
+      - name: The published release holds exactly the files checked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Read it again until every file has its digest; a read that keeps
+          # failing is reported as that, not as changed files.
+          for attempt in 1 2 3 4 5 6; do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > published.json \
+                && jq -e '[.assets[] | .digest] | all(. != null)' published.json > /dev/null; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::Could not read the published release's files to compare them. Compare them by hand (docs/RELEASING.md, step 4)."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -r '.assets[] | "\(.name) \(.digest)"' published.json | sort > published.txt
+          (cd release && for f in *; do
+            echo "$f sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+          done) | sort > checked.txt
+          if ! diff checked.txt published.txt || ! cut -d' ' -f1 published.txt | diff expected.txt -; then
+            echo "::error::The published release's files differ from the ones checked. Withdraw it (docs/RELEASING.md)."
+            exit 1
+          fi
+          immutable=$(jq -r '.immutable' published.json)
+          echo "immutable: $immutable"
+          if [ "$immutable" != "true" ]; then
+            echo "::warning::This release is not immutable: turn on immutable releases (docs/RELEASING.md, Protecting releases)."
+          fi

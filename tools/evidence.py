@@ -383,16 +383,44 @@ def check(expected_sha256, paths, commit=None):
     return problems
 
 
+def names(zpath, version, commit):
+    """Problems if the package zip is not the release build of this version and
+    commit, by its own version.json (empty when it is)."""
+    top, info, _ = check_zip(zpath)
+    problems = []
+    if top != f"Unminute-{version}":
+        problems.append(f"its folder is {top}, not Unminute-{version}")
+    if info.get("version") != version:
+        problems.append(f"it is version {info.get('version')}, not {version}")
+    if info.get("commit") != commit:
+        problems.append(f"it was built from {info.get('commit')}, not {commit}")
+    if info.get("release") is not True:
+        problems.append("it is not a release build")
+    return problems
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Check a release's evidence (#111 B3).",
                                  allow_abbrev=False)
     sub = ap.add_subparsers(dest="command", required=True)
+    n = sub.add_parser("names", help="the zip is the release build of this version and commit",
+                       allow_abbrev=False)
+    n.add_argument("zip")
+    n.add_argument("version", help="X.Y.Z or X.Y.Z-preview.N")
+    n.add_argument("commit", help="40 hex digits")
     c = sub.add_parser("check", help="every kind present, naming this zip, and passing",
                        allow_abbrev=False)
     c.add_argument("sha256", help="the SHA-256 of the zip being released")
     c.add_argument("reports", nargs="*", help="the evidence reports (JSON)")
     c.add_argument("--commit", help="the commit the zip was built from (40 hex digits)")
     a = ap.parse_args(argv)
+    if a.command == "names":
+        problems = names(a.zip, a.version, a.commit)
+        for p in problems:
+            print(f"PACKAGE PROBLEM: {Path(a.zip).name}: {p}")
+        if not problems:
+            print(f"{Path(a.zip).name} is the release build of {a.version} from {a.commit}")
+        return 1 if problems else 0
     problems = check(a.sha256, a.reports, a.commit)
     for p in problems:
         print(f"EVIDENCE PROBLEM: {p}")

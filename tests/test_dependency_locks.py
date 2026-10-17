@@ -45,10 +45,16 @@ class OnePythonTests(unittest.TestCase):
         found = []
         for workflow in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
             text = read(workflow.relative_to(ROOT))
+            # The release build uses exactly the runtime the package ships
+            # (#111 B3), so a rebuild elsewhere can be compared byte for byte.
+            allowed = ({lock.PYTHON, build.PYTHON_VERSION} if workflow.name == "release.yml"
+                       else {lock.PYTHON})
             for version in re.findall(r"python-version:\s*[\"']?([^\"'\s#]+)", text):
                 found.append(version)
-                self.assertEqual(version, lock.PYTHON, workflow.name)
+                self.assertIn(version, allowed, workflow.name)
         self.assertGreater(len(found), 0)             # the pattern still finds them
+        self.assertIn(f'python-version: "{build.PYTHON_VERSION}"',
+                      read(".github/workflows/release.yml"))
         self.assertRegex(read("ruff.toml"), rf'target-version = "py{build.PYTHON_TAG}"')
         self.assertIn(f"CPython {lock.PYTHON}", read("requirements.in").splitlines()[0])
         self.assertIn(f"CPython {lock.PYTHON}", read("requirements.txt"))
