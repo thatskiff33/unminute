@@ -103,7 +103,7 @@ FIELDS = {
     "op": _set("load", "transcribe", "diarize", "exit"),
     "stream": _set("stdout", "stderr"),
     "event": _set("error", "rejection"),  # a page error (report_ui_error)
-    "result": _set("ok", "failed"),       # a database check (R11)
+    "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)
     "version": _pattern(re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-preview\.[0-9]{1,4})?"
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),

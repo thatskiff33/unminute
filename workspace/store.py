@@ -347,8 +347,39 @@ def config_hash(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
 
+# SQLite result codes that mean the file is damaged (the primary code, the
+# low byte of sqlite_errorcode): IOERR, CORRUPT, NOTADB. Others (busy, out of
+# memory) say nothing about damage.
+DAMAGE_CODES = {10, 11, 26}
+
+
+def quick_check_file(path):
+    """SQLite's quick check (R11) on its own read-only connection, before the
+    workspace opens and before anything writes to it: True if sound, False if
+    damaged, None if it could not be checked. Its findings name pages and
+    tables, never content, and are not kept."""
+    try:
+        con = sqlite3.connect(Path(path).absolute().as_uri() + "?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error as exc:
+        return _damaged(exc)
+    try:
+        rows = con.execute("PRAGMA quick_check(1)").fetchall()
+    except sqlite3.Error as exc:
+        return _damaged(exc)
+    finally:
+        con.close()
+    return len(rows) == 1 and rows[0][0] == "ok"
+
+
+def _damaged(exc):
+    code = getattr(exc, "sqlite_errorcode", None)
+    return False if isinstance(code, int) and code & 0xFF in DAMAGE_CODES else None
+
+
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, housekeeping=True):
+        """housekeeping False (R11): open a database the check found damaged
+        without marking interrupted work; mark_interrupted() runs later."""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -377,13 +408,8 @@ class Store:
                 elif row["v"] > SCHEMA_VERSION:
                     raise SchemaTooNew(f"This workspace was created by a newer version of "
                                        f"the app (schema {row['v']}).")
-                # Attempts still 'running' were cut short by a crash or kill of
-                # the previous session (this process owns the state, #15).
-                db.execute("UPDATE attempts SET result = 'interrupted' "
-                           "WHERE result = 'running'")
-                # Same for a speaker pass cut short: it restarts from the start.
-                db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
-                           "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
+            if housekeeping:
+                self.mark_interrupted()
         except BaseException:
             self.db.close()          # never leave the file locked on a refused open
             raise
@@ -442,15 +468,15 @@ class Store:
         with self._lock:
             self.db.close()
 
-    def quick_check(self):
-        """SQLite's quick integrity check (R11): True if it finds no damage.
-        Its findings name pages and tables, never content, and are not kept."""
-        with self._lock:
-            try:
-                rows = self.db.execute("PRAGMA quick_check(1)").fetchall()
-            except sqlite3.DatabaseError:
-                return False
-        return len(rows) == 1 and rows[0][0] == "ok"
+    def mark_interrupted(self):
+        """Attempts and speaker passes still 'running' were cut short by a
+        crash or kill of the previous session (this process owns the state,
+        #15). Run at open, or (R11) once a damaged database's hold is released."""
+        with self.tx() as db:
+            db.execute("UPDATE attempts SET result = 'interrupted' WHERE result = 'running'")
+            # Same for a speaker pass cut short: it restarts from the start.
+            db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
+                       "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
 
     @contextmanager
     def tx(self):

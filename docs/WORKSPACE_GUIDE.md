@@ -131,8 +131,8 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
-| Settings says some settings are on their defaults | A saved setting could not be used: the settings file was damaged, or a newer version of Unminute saved a value this one does not know (after going back to an earlier version). Check the settings it names and set them again. A newer version's values are kept, and come back when you update again. |
-| A message says Unminute found damage in its workspace database | See [If Unminute finds damage](#if-unminute-finds-damage) below. |
+| Settings says some settings are on their defaults | A saved setting could not be used: the settings file was damaged, or a newer version of Unminute saved a value this one does not know (after going back to an earlier version). Check the settings it names. A newer version's value you leave alone is kept and comes back when you update again; one you set again here replaces it. A settings file that could not be read at all is kept aside as `settings.unreadable.json` the first time a setting is saved. |
+| A message says Unminute found damage in its workspace database, or that it cannot open its workspace | See [If Unminute finds damage](#if-unminute-finds-damage) below. |
 | A message says "Something went wrong (code U-…)", or the app closed by itself | Open **Help and shortcuts**, select **Copy diagnostics**, and paste them into your support request with the code. They hold versions, settings, counts and error locations in the app's code, never meeting content, names or folders. |
 
 For IT support:
@@ -146,23 +146,24 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 
 ## If Unminute finds damage
 
-After Unminute last closed unexpectedly (a crash, a power cut, or ending it in Task Manager), it checks its workspace database when it next starts. If it finds damage, it shows a message with a code, and holds new transcription and imports so that nothing more is written to the damaged database. You can still read, copy and hand off meetings, and cleanup you have already confirmed still runs. While the damage stays, the check runs again at every start, and the hold comes back.
+If Unminute last closed unexpectedly (a crash, a power cut, or ending it from Task Manager's **Details** tab), it checks its workspace database before it opens the workspace at the next start. If it finds damage, it shows a message with a code and holds processing, imports, cleanup and its own upkeep, so as little as possible is written to the damaged database. You can still read, copy and hand off meetings, and changes you make (edits, names, confirmations) are still saved. **How to recover** in the message opens this section. While the damage stays, the check runs again at every start and the hold comes back. If the damage is so bad that the workspace cannot open at all, Unminute says so, with a code, and closes.
 
 What to do:
 
 1. Hand off anything you need now: open each meeting you still need and copy its text.
 2. Tell your IT team, with the code from the message.
-3. Select **Continue anyway** only if IT agrees, or if you must carry on working. Processing then writes to the damaged database, which can make the damage worse.
+3. Select **Continue anyway** only if IT agrees, or if you must carry on working. Processing and cleanup then write to the damaged database, which can make the damage worse, and cleanup relies on hold records that may be damaged.
 
 For IT support (there are no backups, by design):
 
-1. Ask the user to hand off what they need, then close Unminute.
-2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` and the number of active holds. If it says `"readable": false`, the database cannot be read at all.
-3. Rename the workspace folder `%LOCALAPPDATA%\whisper\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never email or upload it.
+1. Ask the user to hand off what they need, then close Unminute. Check that no Unminute processes are left in Task Manager before going on.
+2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` (or `"readable": false` if the database cannot be read at all), the number of active holds, `pending_cleanup` and `recordings`. The counts come from the damaged database and may be wrong: a hold can be missing from them.
+3. Rename the workspace folder `%LOCALAPPDATA%\whisper\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never copy it to a share or another computer, and never email or upload it.
 4. Start Unminute. It creates a new, empty workspace. Models and the Hugging Face token are kept, but guided setup, settings, handoff templates and watched folders start again.
-5. Delete the renamed folder once nothing in it is needed. If `--status` showed any active hold, or could not read the database (so holds could not be counted), keep the folder until whoever placed the hold agrees: holds never expire.
+5. Tell the user what did not happen: cleanup they confirmed in the old workspace (`pending_cleanup`) has not run, so audio, transcripts or originals in watched folders they asked to delete may still be there. `recordings` counts recordings that never became meetings; their audio is in the renamed folder's `recordings` folder.
+6. Before deleting the renamed folder, check with whoever manages holds in your organisation, whatever `--status` showed: hold records in a damaged database can be lost, and holds never expire. Delete it once nothing in it is needed.
 
-To get meetings back that were not handed off, SQLite's own recovery tool can sometimes rebuild a damaged database. It is not part of Unminute, and SQLite warns that a recovered database is usually defective: some content can be lost, altered, or come back after it was deleted (see SQLite's guide, [Recovering data from a corrupt SQLite database](https://sqlite.org/recovery.html)). Work only on a copy, and ask the Unminute maintainers before putting a recovered database back in place: this has not been tested with an Unminute workspace.
+To get meetings back that were not handed off, SQLite's own recovery tool can sometimes rebuild a damaged database. It is not part of Unminute, and SQLite warns that a recovered database is usually defective: some content can be lost, altered, or come back after it was deleted (see SQLite's guide, [Recovering data from a corrupt SQLite database](https://sqlite.org/recovery.html)). Work only on a copy kept in the same profile, and delete the copy and the SQL text the tool writes when you are done: both hold meeting content. Ask the Unminute maintainers before putting a recovered database back in place: this has not been tested with an Unminute workspace.
 
 ## If the earlier app is still installed
 

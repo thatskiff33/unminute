@@ -347,22 +347,29 @@ async function renderStatus() {
   renderIntegrity(s.integrity);
 }
 
-// The database check after an unexpected close (R11) found damage: new work
-// is held until the user chooses Continue anyway. Rebuilt only on a change,
-// so the button keeps its focus between polls.
+// The database check after an unexpected close (R11) found damage: work is
+// held until the user chooses Continue anyway. Rebuilt only on a change, so
+// the buttons keep their focus between polls; announced once when it appears.
 function renderIntegrity(info) {
   const sig = info ? `${info.state}:${info.code || ""}` : "";
   if (sig === state.integritySig) return;
+  const appeared = !!info && !state.integritySig;
   state.integritySig = sig;
   const box = $("integrity");
   box.hidden = !info;
-  box.replaceChildren(...(info ? [notice("alert",
-    `Unminute found damage in its workspace database (code ${info.code}). New transcription ` +
-    "and imports are on hold, so nothing more is written. You can still read, copy and hand " +
-    "off meetings. Ask your IT team before you continue: the Unminute user guide has the " +
-    "steps, under \"If Unminute finds damage\".",
-    button("Continue anyway", () => attempt(() => call("continue_despite_damage").then(refresh)))
+  const text = `Unminute found damage in its workspace database (code ${info && info.code}). ` +
+    "Processing, imports and cleanup are on hold, so as little as possible is written to it. " +
+    "You can still read, copy and hand off meetings; changes you make are still saved. " +
+    "Ask your IT team before you continue.";
+  box.replaceChildren(...(info ? [notice("alert", text,
+    linkButton("How to recover", () => attempt(() => call("open_help", "recovery"))),
+    button("Continue anyway", () => attempt(async () => {
+      await call("continue_despite_damage");
+      await refresh();
+      $("import").focus();              // the button has gone: keep the focus on the page
+    })),
   )] : []));
+  if (appeared) say(text, { sticky: true });
 }
 
 async function renderReminders() {
@@ -1741,7 +1748,7 @@ const SETTING_NAMES = {
   recording_display: "Recording display",
 };
 function renderRepaired(r) {
-  const names = ((r && r.keys) || []).map((k) => SETTING_NAMES[k]).filter(Boolean);
+  const names = ((r && r.keys) || []).map((k) => SETTING_NAMES[k] || k);
   const text = r && r.all
     ? "Your saved settings could not be read, so all of them are on their defaults. Check them below."
     : names.length

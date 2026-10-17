@@ -23,6 +23,7 @@
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
 
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -70,7 +71,8 @@ def status(root=None):
     checked = diag.integrity_state(root / "logs")
     out = {"version": package_version(), "workspace": db.exists(), "meetings": 0,
            "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None,
-           "integrity": checked["result"] if checked else "unchecked", "readable": True}
+           "integrity": checked["result"] if checked else "unchecked", "readable": True,
+           "recordings": _count_folders(root / "recordings")}   # not yet in a meeting
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
@@ -85,6 +87,14 @@ def status(root=None):
         finally:
             con.close()
     return out
+
+
+def _count_folders(folder):
+    """Subfolders of folder (a recording each); 0 if there is none."""
+    try:
+        return sum(1 for p in folder.iterdir() if p.is_dir())
+    except OSError:
+        return 0
 
 
 def health(root=None):
@@ -305,10 +315,11 @@ def main():
         # check_integrity: after an unclean exit (this run's marker is not
         # written yet, diag.install below), the database is checked (R11).
         ws = Workspace(cache_dir=model_cache(), check_integrity=True)
-    except StoreError as exc:
-        # e.g. a workspace from a newer version, or one that cannot be migrated:
-        # explain instead of disappearing (pythonw has no console).
-        _message(str(exc))
+    except (StoreError, sqlite3.DatabaseError) as exc:
+        # e.g. a workspace from a newer version, one that cannot be migrated,
+        # or a damaged database: explain instead of disappearing (pythonw
+        # has no console).
+        _message(_open_failed(exc))
         return 1
     # Content-free diagnostics (R9): uncaught errors on any thread and native
     # crashes are recorded in workspace\logs\app.log from here on.
@@ -451,6 +462,31 @@ def _single_instance(name=MUTEX_NAME):
     if not handle and error == 5:                  # held by a copy run as administrator
         return None
     return handle or True
+
+
+def _open_failed(exc):
+    """The message when the workspace will not open. A damaged database is
+    said so, with a code, and kept for --status and --health (R11); anything
+    else gives the store's own message."""
+    from workspace import diag
+    from workspace.store import StoreError, default_root, quick_check_file
+    try:
+        root = default_root()
+    except StoreError:
+        return str(exc)
+    db, logs = root / "workspace.db", root / "logs"
+    if db.exists() and quick_check_file(db) is False:
+        last = diag.integrity_state(logs)
+        code = last["code"] if last and last["result"] == "failed" and last["code"] \
+            else diag.new_code()
+        diag.record_integrity(logs, "failed", code)
+        diag.Log(logs, "app").write("integrity", result="failed", code=code)
+        return (f"Unminute found damage in its workspace database and cannot open it "
+                f"(code {code}). Ask your IT team: the steps are in the Unminute user "
+                f"guide, under \"If Unminute finds damage\".")
+    if isinstance(exc, StoreError):
+        return str(exc)
+    return f"Unminute could not open its workspace (code {diag.new_code()})."
 
 
 def _message(text):

@@ -204,8 +204,15 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(s["speakers"])
         with self.assertRaises(WorkspaceError):
             self.ws.open_help("https://evil.example/")
-        self.assertTrue(all(u.startswith("https://huggingface.co/")
-                            for u in setup.HELP_LINKS.values()))
+        # Exactly these pages (an allowlist): the Hugging Face pages for the
+        # token, and the user guide's recovery steps (R11, the user's choice).
+        self.assertEqual(setup.HELP_LINKS, {
+            "account": "https://huggingface.co/join",
+            "terms": "https://huggingface.co/pyannote/speaker-diarization-community-1",
+            "tokens": "https://huggingface.co/settings/tokens",
+            "recovery": "https://github.com/thatskiff33/unminute/blob/main/docs/"
+                        "WORKSPACE_GUIDE.md#if-unminute-finds-damage",
+        })
 
     def test_unfinished_work_never_switches_model_revision(self):
         import wave

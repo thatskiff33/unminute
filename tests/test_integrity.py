@@ -9,6 +9,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import wave
@@ -20,7 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from workspace import diag  # noqa: E402
 from workspace.app import DEFAULT_SETTINGS, SETTINGS_VERSION, Settings, Workspace  # noqa: E402
-from workspace.store import Store  # noqa: E402
+from workspace.store import Store, StoreError, quick_check_file  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -52,6 +53,34 @@ def write_wav(path, seconds):
         w.setframerate(SR)
         w.writeframes(pcm.tobytes())
     return path
+
+
+def until(condition, timeout=20.0):
+    """Wait for a condition (never a fixed sleep); False on timeout."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+class WatchedEvent(threading.Event):
+    """The hold's Event, counting who asked: a thread blocked on wait() or a
+    loop that checked is_set() proves it reached the hold."""
+
+    def __init__(self):
+        super().__init__()
+        self.waiting = threading.Event()
+        self.checks = 0
+
+    def wait(self, timeout=None):
+        self.waiting.set()
+        return super().wait(timeout)
+
+    def is_set(self):
+        self.checks += 1
+        return super().is_set()
 
 
 class SettingsFormatTests(unittest.TestCase):
@@ -105,17 +134,71 @@ class SettingsFormatTests(unittest.TestCase):
                          (DEFAULT_SETTINGS["mode"], DEFAULT_SETTINGS["speakers"]))
 
     def test_an_unreadable_file_means_all_defaults_and_says_so(self):
-        for text in ("{not json", "[1, 2]", "{}" + " " * 70000, "[" * 50000):  # under the cap
+        for text in ("{not json", "[1, 2]", "{}" + " " * 70000, "[" * 50000):
             self.path.write_text(text, encoding="utf-8")
             s = Settings(self.path)
             self.assertTrue(s.unreadable, text[:10])
             self.assertEqual(s.values, DEFAULT_SETTINGS)
-        s.update(mode="faster")
-        self.assertFalse(s.unreadable)
-        self.assertFalse(Settings(self.path).unreadable)
+        # Nesting that loads but cannot be written back (Python 3.12's indented
+        # encoder stops near 1,000 levels; 3.14's writes anything that loads).
+        deep = '{"x": ' + "[" * 1200 + "]" * 1200 + "}"
+        try:
+            json.dumps(json.loads(deep), indent=2)
+            writable = True
+        except RecursionError:
+            writable = False
+        self.path.write_text(deep, encoding="utf-8")
+        self.assertEqual(Settings(self.path).unreadable, not writable)
         self.assertFalse(Settings(Path(self.tmp.name) / "none.json").unreadable)   # first run
         self.path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"mode": "faster"}).encode())
         self.assertEqual(Settings(self.path)["mode"], "faster")   # saved by Windows PowerShell
+
+    def test_an_unreadable_file_is_kept_aside_before_the_first_save(self):
+        self.path.write_text('{"mode": "faster", "theme": ', encoding="utf-8")   # cut short
+        s = Settings(self.path)
+        s.update(onboarded=True)
+        self.assertFalse(s.unreadable)
+        aside = self.path.with_name("settings.unreadable.json")
+        self.assertEqual(aside.read_text(encoding="utf-8"), '{"mode": "faster", "theme": ')
+        s.update(speakers=False)                       # only once
+        self.assertEqual(aside.read_text(encoding="utf-8"), '{"mode": "faster", "theme": ')
+        self.assertFalse(Settings(self.path).unreadable)
+
+    def test_a_moment_when_the_file_cannot_be_read_is_tried_again(self):
+        self.write({"mode": "faster"})
+        real_open, calls = open, []
+
+        def flaky(path, *a, **k):
+            if Path(path) == self.path and not calls:
+                calls.append(1)
+                raise PermissionError("held by a scan")
+            return real_open(path, *a, **k)
+        with mock.patch("builtins.open", flaky), mock.patch("time.sleep"):
+            s = Settings(self.path)
+        self.assertEqual((s["mode"], s.unreadable), ("faster", False))
+
+    def test_kept_values_never_make_the_file_unreadable(self):
+        nested = {"k": [[{"a": i, "b": [i, [i, [i]]]} for i in range(400)]]}
+        self.path.write_text(json.dumps({"extra": nested}, separators=(",", ":")),
+                             encoding="utf-8")
+        self.assertLess(self.path.stat().st_size, 64 * 1024)
+        s = Settings(self.path)
+        s.update(mode="faster")
+        self.assertLessEqual(self.path.stat().st_size, 64 * 1024)   # written compactly
+        again = Settings(self.path)
+        self.assertEqual((again.unreadable, again._kept["extra"]), (False, nested))
+
+    def test_kept_values_that_cannot_fit_are_dropped_not_the_settings(self):
+        self.path.write_text(json.dumps({"extra": "汉" * 20000}, ensure_ascii=False),
+                             encoding="utf-8")                  # about 60 KB as UTF-8
+        s = Settings(self.path)
+        self.assertFalse(s.unreadable)
+        s.update(mode="faster")                                 # escaped, it would be 120 KB
+        self.assertLessEqual(self.path.stat().st_size, 64 * 1024)
+        self.assertNotIn("extra", s._kept)                     # dropped in memory too
+        again = Settings(self.path)
+        self.assertEqual((again.unreadable, again["mode"], "extra" in again._kept),
+                         (False, "faster", False))
 
     def test_the_new_file_reaches_the_disk_before_it_replaces_the_old(self):
         s = Settings(self.path)
@@ -129,6 +212,30 @@ class SettingsFormatTests(unittest.TestCase):
             s.update(mode="faster")
         self.assertEqual(order, ["fsync", "replace"])
         self.assertEqual(self.saved()["mode"], "faster")
+
+    def test_the_app_uses_new_values_only_once_they_are_saved(self):
+        s = Settings(self.path)
+        with mock.patch("os.fsync", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            s.update(mode="faster")
+        self.assertEqual(s["mode"], DEFAULT_SETTINGS["mode"])
+
+    def test_saves_run_one_at_a_time(self):
+        s = Settings(self.path)
+        errors = []
+
+        def save(i):
+            try:
+                s.update(mode="faster" if i % 2 else "quiet", speakers=bool(i % 3))
+            except Exception as exc:              # noqa: BLE001 (any failure counts)
+                errors.append(exc)
+        threads = [threading.Thread(target=save, args=(i,)) for i in range(40)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(self.saved()["mode"], s["mode"])        # the file matches memory
 
 
 class IntegrityTests(unittest.TestCase):
@@ -149,52 +256,55 @@ class IntegrityTests(unittest.TestCase):
                             policy_reader=lambda: ({}, ()), **kw)
         return self.ws
 
-    def unclean(self, meetings=0):
+    def unclean(self, meetings=0, prepare=None):
         """A workspace whose app last ended without closing."""
         ws = self.open()
         for i in range(meetings):
             ws.store.create_meeting(f"Synthetic meeting {i}")
+        if prepare:
+            prepare(ws)
         ws.log.open_run()                       # never closed: the marker stays
         ws.close()
         self.ws = None
+
+    def checks(self):
+        return [r for r in diag.shareable_records(self.root / "logs")
+                if r["kind"] == "integrity"]
 
     def test_no_check_after_a_clean_close(self):
         ws = self.open()
         ws.log.open_run()
         ws.log.close_run()
         ws.close()
-        with mock.patch.object(Store, "quick_check", side_effect=AssertionError("checked")):
+        with mock.patch("workspace.app.quick_check_file", side_effect=AssertionError("checked")):
             ws = self.open(check_integrity=True)
-            ws.start()
         self.assertTrue(ws._integrity_ok.is_set())
         self.assertIsNone(ws.status()["integrity"])
         self.assertIsNone(diag.integrity_state(ws.log.folder))
 
     def test_tests_and_tools_never_check(self):
         self.unclean()
-        ws = self.open()                        # check_integrity defaults to False
+        with mock.patch("workspace.app.quick_check_file", side_effect=AssertionError("checked")):
+            ws = self.open()                    # check_integrity defaults to False
         self.assertTrue(ws._integrity_ok.is_set())
 
-    def test_a_sound_database_after_an_unclean_close_lets_work_start(self):
+    def test_a_sound_database_after_an_unclean_close_opens_as_usual(self):
         self.unclean(meetings=3)
         ws = self.open(check_integrity=True)
-        self.assertFalse(ws._integrity_ok.is_set())        # held until the check is done
-        ws._check_integrity()
         self.assertTrue(ws._integrity_ok.is_set())
         self.assertIsNone(ws.status()["integrity"])
         self.assertEqual(diag.integrity_state(ws.log.folder)["result"], "ok")
-        checks = [r for r in diag.shareable_records(ws.log.folder) if r["kind"] == "integrity"]
-        self.assertEqual([r["result"] for r in checks], ["ok"])
+        self.assertEqual([r["result"] for r in self.checks()], ["ok"])
 
-    def test_damage_is_found_shown_with_a_code_and_kept_for_the_next_start(self):
+    def test_damage_is_found_before_the_workspace_opens_and_kept(self):
         self.unclean(meetings=200)
         damage(self.root / "workspace.db")
         ws = self.open(check_integrity=True)
-        ws._check_integrity()
         notice = ws.status()["integrity"]
         self.assertEqual(notice["state"], "failed")
         self.assertRegex(notice["code"], r"^U-[0-9A-F]{6}$")
         self.assertFalse(ws._integrity_ok.is_set())
+        self.assertIn("On hold", ws.status()["message"])
         state = diag.integrity_state(ws.log.folder)
         self.assertEqual((state["result"], state["code"]), ("failed", notice["code"]))
         self.assertIn("Database check: failed", ws.diagnostics())
@@ -202,38 +312,94 @@ class IntegrityTests(unittest.TestCase):
         ws.continue_despite_damage()
         self.assertTrue(ws._integrity_ok.is_set())
         self.assertIsNone(ws.status()["integrity"])
+        self.assertEqual([r["result"] for r in self.checks()], ["failed", "continued"])
         ws.log.close_run()                       # this time the app closes cleanly
         ws.close()
         ws = self.open(check_integrity=True)     # still checked: the damage stays
         self.assertFalse(ws.log.running_path.exists())
-        self.assertFalse(ws._integrity_ok.is_set())
-        ws._check_integrity()
         self.assertEqual(ws.status()["integrity"]["state"], "failed")
 
-    def test_continue_does_nothing_without_damage(self):
-        self.unclean()
-        ws = self.open(check_integrity=True)
-        ws.continue_despite_damage()            # still checking: no effect
-        self.assertFalse(ws._integrity_ok.is_set())
-        self.assertEqual(ws._integrity["state"], "checking")
+    def test_nothing_that_can_delete_runs_before_the_hold_is_released(self):
+        def interrupted_import(ws):
+            mid = ws.store.create_meeting("Synthetic interrupted import")   # no version yet
+            (ws.media / mid).mkdir(parents=True)
+            (ws.media / mid / "note.txt").write_text("synthetic", encoding="utf-8")
+            self.mid = mid
+        self.unclean(meetings=200, prepare=interrupted_import)
+        damage(self.root / "workspace.db", table="receipts")
+        with mock.patch.object(Store, "mark_interrupted", autospec=True) as marked:
+            ws = self.open(check_integrity=True)
+            self.assertEqual(ws._integrity["state"], "failed")
+            self.assertFalse(marked.called)          # opened without marking interrupted work
+            self.assertTrue((ws.media / self.mid).exists())   # upkeep waited: nothing removed
+            self.assertIsNotNone(ws.store.meeting(self.mid))
+            ws.continue_despite_damage()
+            self.assertTrue(marked.called)
+        self.assertFalse((ws.media / self.mid).exists())       # the upkeep ran on Continue
 
-    def test_the_check_reports_damage_it_cannot_even_read(self):
-        store = Store(Path(self.tmp.name) / "fine.db")
-        try:
-            self.assertTrue(store.quick_check())
-            with mock.patch.object(store, "db") as db:
-                db.execute.side_effect = sqlite3.DatabaseError("database disk image is malformed")
-                self.assertFalse(store.quick_check())
-                db.execute.side_effect = None
-                db.execute.return_value.fetchall.return_value = [("*** in database main ***",)]
-                self.assertFalse(store.quick_check())
-        finally:
-            store.close()
+    def test_a_database_error_never_discards_an_import(self):
+        ws = self.open()
+        ws.store.create_meeting("Synthetic interrupted import")      # no version yet
+        with mock.patch.object(ws.store, "_one", return_value={"id": "s1"}), \
+                mock.patch("workspace.media.audio_path",
+                           return_value=mock.Mock(is_file=lambda: True)), \
+                mock.patch.object(ws, "_plan_version", side_effect=StoreError("malformed")), \
+                mock.patch.object(ws, "_discard_import") as discard:
+            ws._reconcile_imports()
+        self.assertFalse(discard.called)        # kept, to be tried again at the next start
+        with mock.patch.object(ws.store, "_one", return_value={"id": "s1"}), \
+                mock.patch("workspace.media.audio_path",
+                           return_value=mock.Mock(is_file=lambda: True)), \
+                mock.patch.object(ws, "_plan_version", side_effect=ValueError("bad audio")), \
+                mock.patch.object(ws, "_discard_import") as discard:
+            ws._reconcile_imports()
+        self.assertTrue(discard.called)         # a broken import is still removed
+
+    def test_continue_does_nothing_without_damage(self):
+        ws = self.open()
+        ws.continue_despite_damage()
+        self.assertTrue(ws._integrity_ok.is_set())
+        self.assertIsNone(ws._integrity["state"])
+        self.assertEqual(self.checks(), [])
+
+    def test_only_damage_codes_count_as_damage(self):
+        good = Path(self.tmp.name) / "fine.db"
+        Store(good).close()
+        self.assertTrue(quick_check_file(good))
+        junk = Path(self.tmp.name) / "junk.db"
+        junk.write_bytes(b"\x00" * 4096 + b"not a database" * 100)
+        self.assertFalse(quick_check_file(junk))
+
+        def failing(code):
+            exc = sqlite3.OperationalError("synthetic")
+            exc.sqlite_errorcode = code
+            return mock.patch("sqlite3.connect", side_effect=exc)
+        with failing(5):                                    # SQLITE_BUSY: not damage
+            self.assertIsNone(quick_check_file(good))
+        with failing(7):                                    # SQLITE_NOMEM
+            self.assertIsNone(quick_check_file(good))
+        for code in (10, 11, 26, 10 | (3 << 8)):            # IOERR, CORRUPT, NOTADB, IOERR_WRITE
+            with failing(code):
+                self.assertIs(quick_check_file(good), False, code)
+
+    def test_a_check_that_cannot_run_holds_only_what_was_held(self):
+        self.unclean()
+        with mock.patch("workspace.app.quick_check_file", return_value=None):
+            ws = self.open(check_integrity=True)
+        self.assertTrue(ws._integrity_ok.is_set())
+        self.assertEqual([r["result"] for r in self.checks()], ["skipped"])
+        ws.close()
+        diag.record_integrity(self.root / "logs", "failed", "U-ABCDEF")   # damage found before
+        with mock.patch("workspace.app.quick_check_file", return_value=None):
+            ws = self.open(check_integrity=True)
+        self.assertEqual(ws.status()["integrity"], {"state": "failed", "code": "U-ABCDEF"})
 
     def test_status_and_health_report_the_last_check(self):
         from workspace import __main__ as main
         ws = self.open()
         self.assertEqual(main.status(self.root)["integrity"], "unchecked")
+        (ws.recordings / "r1").mkdir(parents=True)
+        self.assertEqual(main.status(self.root)["recordings"], 1)
         diag.record_integrity(ws.log.folder, "ok")
         self.assertEqual(main.status(self.root)["integrity"], "ok")
         diag.record_integrity(ws.log.folder, "failed", "U-ABCDEF")
@@ -256,6 +422,56 @@ class IntegrityTests(unittest.TestCase):
         self.assertFalse(report["readable"])
         with mock.patch.object(main, "_app_running", return_value=False):
             self.assertEqual(main.health(self.root)["workspace"], "unreadable")
+
+    def test_a_workspace_too_damaged_to_open_says_so_with_a_code(self):
+        from workspace import __main__ as main
+        self.root.mkdir(parents=True)
+        db = self.root / "workspace.db"
+        db.write_bytes(b"SQLite format 3\x00" + b"\xff" * 4096)
+        with mock.patch("workspace.store.default_root", return_value=self.root):
+            text = main._open_failed(sqlite3.DatabaseError("file is not a database"))
+            self.assertIn("found damage", text)
+            code = diag.integrity_state(self.root / "logs")["code"]
+            self.assertIn(code, text)
+            self.assertIn(code, main._open_failed(StoreError("again")))   # the same code
+        db.unlink()
+        Store(db).close()                                    # sound: the store's own message
+        with mock.patch("workspace.store.default_root", return_value=self.root):
+            self.assertEqual(main._open_failed(StoreError("Newer schema")), "Newer schema")
+            with mock.patch("workspace.store.quick_check_file", return_value=None):
+                self.assertRegex(main._open_failed(sqlite3.DatabaseError("x")),
+                                 r"could not open its workspace \(code U-[0-9A-F]{6}\)")
+
+    def test_the_app_checks_before_diagnostics_replace_the_run_marker(self):
+        from workspace import __main__ as main
+        from workspace import app as app_module
+        order = []
+
+        def built(*a, **kw):
+            order.append(("workspace", kw.get("check_integrity")))
+            return mock.Mock(log=mock.Mock())
+
+        def installed(*a, **kw):
+            order.append(("install", None))
+            raise RuntimeError("stop here")
+        with mock.patch.object(app_module, "Workspace", side_effect=built), \
+                mock.patch.object(main, "_single_instance", return_value=True), \
+                mock.patch.object(main, "model_cache", return_value=self.root / "models"), \
+                mock.patch.object(diag, "install", side_effect=installed), \
+                mock.patch.object(sys, "argv", ["workspace"]), \
+                self.assertRaisesRegex(RuntimeError, "stop here"):
+            main.main()
+        self.assertEqual(order, [("workspace", True), ("install", None)])
+        for error in (sqlite3.DatabaseError("file is not a database"), StoreError("refused")):
+            with mock.patch.object(app_module, "Workspace", side_effect=error), \
+                    mock.patch.object(main, "_single_instance", return_value=True), \
+                    mock.patch.object(main, "model_cache", return_value=self.root / "models"), \
+                    mock.patch.object(main, "_open_failed", return_value="explained") as why, \
+                    mock.patch.object(main, "_message") as shown, \
+                    mock.patch.object(sys, "argv", ["workspace"]):
+                self.assertEqual(main.main(), 1)                 # never a silent exit
+            why.assert_called_once_with(error)
+            shown.assert_called_once_with("explained")
 
     def test_the_kept_result_is_only_what_the_app_writes(self):
         folder = Path(self.tmp.name) / "logs"
@@ -281,27 +497,81 @@ class IntegrityTests(unittest.TestCase):
             ws.set_settings({"mode": "faster"})
             self.assertEqual(ws.get_settings()["repaired"], {"keys": [], "all": False})
 
-    def test_the_bridge_offers_continue(self):
-        from workspace import api
+    def test_the_bridge_offers_continue_and_the_recovery_page(self):
+        from workspace import api, setup
         self.assertIn("continue_despite_damage", api.API_METHODS)
+        self.assertEqual(setup.HELP_LINKS["recovery"],
+                         "https://github.com/thatskiff33/unminute/blob/main/docs/"
+                         "WORKSPACE_GUIDE.md#if-unminute-finds-damage")
         self.unclean()
-        ws = self.open(check_integrity=True)
-        with mock.patch.object(ws.store, "quick_check", return_value=False):
-            ws._check_integrity()
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.open(check_integrity=True)
         page = api.make_api(ws)
+        with mock.patch("webbrowser.open") as browser:
+            self.assertTrue(page.open_help("recovery")["ok"])
+        browser.assert_called_once_with(setup.HELP_LINKS["recovery"])
         self.assertTrue(page.continue_despite_damage()["ok"])
         self.assertTrue(ws._integrity_ok.is_set())
+
+    def test_scans_and_the_receipt_purge_wait_while_held(self):
+        self.unclean()
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.open(check_integrity=True)
+        ws._integrity_ok = watched = WatchedEvent()
+        with mock.patch.object(ws, "_scan_folders") as scan, \
+                mock.patch("workspace.holds.purge_expired_receipts") as purge:
+            ws.start()
+            ws.scan_now()
+            self.assertTrue(until(lambda: watched.checks >= 2))   # both loops reached the hold
+            self.assertFalse(scan.called)
+            self.assertFalse(purge.called)
+            ws.continue_despite_damage()
+            self.assertTrue(until(lambda: scan.called and purge.called))
+
+    def test_a_recording_recovered_after_a_crash_still_asks_while_held(self):
+        def recording_cut_short(ws):
+            folder = ws.recordings / "synthetic-recording"
+            folder.mkdir(parents=True)
+            (folder / "chunk-000001.pcm").write_bytes(b"\x00\x01" * SR)
+            (folder / "journal.json").write_text(json.dumps(
+                {"state": "recording", "rate": SR, "frames": SR, "started_at": time.time(),
+                 "chunks": []}), encoding="utf-8")
+        self.unclean(prepare=recording_cut_short)
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.open(check_integrity=True)
+        ws.start()
+        self.assertTrue(until(lambda: ws.recording_status()["reports"]))
+        self.assertTrue(ws.recording_status()["reports"][-1]["recovered"])
+        self.assertFalse(ws._integrity_ok.is_set())          # still held
+
+    def test_a_recovered_recording_that_would_import_waits(self):
+        def stopped_recording(ws):
+            folder = ws.recordings / "synthetic-stopped"
+            folder.mkdir(parents=True)
+            (folder / "chunk-000001.pcm").write_bytes(b"\x00\x01" * SR)
+            (folder / "journal.json").write_text(json.dumps(
+                {"state": "stopped", "rate": SR, "frames": SR, "started_at": time.time(),
+                 "chunks": [{"file": "chunk-000001.pcm"}]}), encoding="utf-8")
+        self.unclean(prepare=stopped_recording)
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.open(check_integrity=True)
+        ws._integrity_ok = watched = WatchedEvent()
+        ws.start()
+        self.assertTrue(watched.waiting.wait(20))            # held: importing writes
+        self.assertEqual((ws.recording_status()["reports"], ws._import_errors), ([], []))
+        self.assertTrue((ws.recordings / "synthetic-stopped").exists())
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class HoldTests(unittest.TestCase):
-    """Damage holds transcription and imports until Continue anyway; cleanup is not held."""
+    """Damage holds transcription, imports and cleanup until Continue anyway."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
         self.rec = write_wav(self.base / "synthetic-standup.wav", 20)
+        self.kw = dict(allow_test_engines=True, battery=False, policy_reader=lambda: ({}, ()))
         self.ws = None
 
     def tearDown(self):
@@ -309,59 +579,60 @@ class HoldTests(unittest.TestCase):
             self.ws.close()
         self.tmp.cleanup()
 
-    def held_workspace(self):
-        first = Workspace(self.base / "ws", self.base / "models", start=False,
-                          allow_test_engines=True, battery=False,
-                          policy_reader=lambda: ({}, ()))
+    def reopen_held(self):
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.ws = Workspace(self.base / "ws", self.base / "models", start=False,
+                                     check_integrity=True, **self.kw)
+        ws._integrity_ok = WatchedEvent()
+        return ws
+
+    def test_transcription_and_imports_wait_until_continue(self):
+        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
         first.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         first._import_one(self.rec)
         first.log.open_run()                    # ends without closing
         first.close()
-        ws = self.ws = Workspace(self.base / "ws", self.base / "models", start=False,
-                                 allow_test_engines=True, battery=False,
-                                 policy_reader=lambda: ({}, ()), check_integrity=True)
-        with mock.patch.object(ws.store, "quick_check", return_value=False):
-            ws._check_integrity()
-        return ws
+        ws = self.reopen_held()
+        with mock.patch.object(ws, "_import_one", wraps=ws._import_one) as imported:
+            ws.start()
+            ws.import_paths([str(self.rec)])
+            self.assertTrue(ws._integrity_ok.waiting.wait(20))   # the intake is at the hold
+            self.assertFalse(imported.called)
+            self.assertEqual([m["progress"] for m in ws.meetings()], [0])
+            status = ws.status()
+            self.assertEqual(status["importing"], 0)              # no fast polling while held
+            self.assertIn("1 import waiting", status["message"])
+            ws.continue_despite_damage()
+            self.assertTrue(ws.wait_idle(120))
+        self.assertEqual([m["progress"] for m in ws.meetings()], [100, 100])
 
-    def test_cleanup_the_user_confirmed_still_runs(self):
-        kw = dict(allow_test_engines=True, battery=False, policy_reader=lambda: ({}, ()))
-        ws = Workspace(self.base / "ws", self.base / "models", **kw)
+    def test_cleanup_waits_too(self):
+        ws = Workspace(self.base / "ws", self.base / "models", **self.kw)
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         ws._import_one(self.rec)
         self.assertTrue(ws.wait_idle(120))
         mid = ws.meetings()[0]["id"]
         ws.close()
-        ws = Workspace(self.base / "ws", self.base / "models", start=False, **kw)
+        ws = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
         ws.confirm_reviewed(mid)                # lined up; nothing runs it yet
         ws.log.open_run()                       # then the app ends without closing
         ws.close()
-        ws = self.ws = Workspace(self.base / "ws", self.base / "models", start=False,
-                                 check_integrity=True, **kw)
-        with mock.patch.object(ws.store, "quick_check", return_value=False):
-            ws._check_integrity()
-        self.assertTrue(ws.detail(mid)["audio_available"])
+        ws = self.reopen_held()
         ws.start()
-        self.assertTrue(ws.wait_idle(60))
-        self.assertFalse(ws.detail(mid)["audio_available"])   # removed, as the user asked
-        self.assertEqual(ws.status()["integrity"]["state"], "failed")   # still on hold
-
-    def test_transcription_and_imports_wait_until_continue(self):
-        ws = self.held_workspace()
-        ws.start()
-        ws.import_paths([str(self.rec)])
-        time.sleep(1.5)
-        self.assertEqual([m["progress"] for m in ws.meetings()], [0])   # nothing new either
-        self.assertIn("On hold", ws.status()["message"])
+        self.assertTrue(until(lambda: ws._integrity_ok.checks >= 1))   # processing looked
+        self.assertTrue(ws.detail(mid)["audio_available"])    # held: holds read from damage
         ws.continue_despite_damage()
-        self.assertTrue(ws.wait_idle(120))
-        self.assertEqual([m["progress"] for m in ws.meetings()], [100, 100])
+        self.assertTrue(ws.wait_idle(60))
+        self.assertFalse(ws.detail(mid)["audio_available"])   # removed once released
 
     def test_closing_while_held_does_not_wait_for_the_hold(self):
-        ws = self.held_workspace()
+        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        first.log.open_run()
+        first.close()
+        ws = self.reopen_held()
         ws.start()
         ws.import_paths([str(self.rec)])        # waits on the hold
-        time.sleep(0.5)
+        self.assertTrue(ws._integrity_ok.waiting.wait(20))
         started = time.monotonic()
         ws.close()
         self.ws = None
