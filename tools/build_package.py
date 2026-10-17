@@ -377,7 +377,7 @@ def precompile(folder, python=None):
     python = python or str(folder / "runtime" / "python.exe").removeprefix("\\\\?\\")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONHASHSEED"] = "0"
-    base = [python, "-S", "-s", "-B"]
+    base = [python, "-S", "-s", "-B", "-P"]       # -P: nothing from the current folder
     probe = subprocess.run(base + ["-c", "import sys; print(sys.flags.hash_randomization, "
                                          "sys.flags.no_user_site)"],
                            env=env, capture_output=True, text=True)
@@ -458,6 +458,8 @@ def verify_precompiled(zpath):
             sys.exit("The package has .pyc files without their source beside them (outside "
                      "__pycache__, an unexpected name, or no .py), which cannot be checked:\n"
                      + "\n".join(sourceless[:20]))
+        for name in shipped:                  # a .pyc the compile does not remake shows
+            (folder / name).unlink()
         precompile(folder, python=sys.executable)
         rebuilt = digests()
         differ = sorted(n for n in shipped.keys() | rebuilt.keys()

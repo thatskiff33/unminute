@@ -781,7 +781,7 @@ class PrunedBuildTests(unittest.TestCase):
         for n, (cmd, env) in enumerate(calls):
             self.assertTrue(cmd[0].endswith("runtime\\python.exe")
                             or cmd[0].endswith("runtime/python.exe"), cmd[0])   # its own Python
-            self.assertEqual(cmd[1:4], ["-S", "-s", "-B"])     # -s: no user site-packages
+            self.assertEqual(cmd[1:5], ["-S", "-s", "-B", "-P"])   # -s: no user site; -P: no cwd
             self.assertEqual(env["PYTHONHASHSEED"], "0")
             self.assertNotIn("PYTHONOPTIMIZE", env)          # no other PYTHON* setting
             if n:                                           # the compile runs
@@ -926,6 +926,14 @@ class VerifyPrecompiledTests(unittest.TestCase):
     def test_it_runs_only_on_the_packages_python_version(self):
         with self.assertRaisesRegex(SystemExit, f"Verify with CPython {bp.PYTHON_VERSION}"):
             self.verify(self.package({"app/mod.py": ""}), {}, version="3.14.0")
+
+    def test_a_pyc_the_compile_does_not_remake_is_found(self):
+        # Beside a .py in a folder the compile does not cover (runtime/sub is
+        # importable through the runtime's "." path entry).
+        files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"same",
+                 "runtime/sub/mod.py": "", f"runtime/sub/{self.PYC}": b"planted"}
+        with self.assertRaisesRegex(SystemExit, f"1 shipped .pyc(.|\n)*runtime/sub/{self.PYC}"):
+            self.verify(self.package(files), {f"app/{self.PYC}": b"same"})
 
     def test_an_altered_pyc_is_found(self):
         files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"planted"}

@@ -122,6 +122,8 @@ class WorkflowTests(unittest.TestCase):
         after = publish[publish.index("--draft=false"):]
         self.assertIn('"\\(.name) \\(.digest)"', after)
         self.assertIn("diff checked.txt published.txt", after)
+        self.assertIn("cut -d' ' -f1 published.txt | diff expected.txt -", after)
+        self.assertIn("ls -A release | sort | diff expected.txt -", publish)    # downloaded set
 
     def test_the_draft_finds_the_bundle_whatever_gh_names_it(self):
         draft = jobs()["draft"]

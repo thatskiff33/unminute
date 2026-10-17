@@ -297,6 +297,10 @@ jobs:
             echo "The draft's files are not exactly the release's (above: < missing, > extra)"; exit 1
           fi
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release
+          # A file added between the listing and the download is caught here.
+          if ! ls -A release | sort | diff expected.txt -; then
+            echo "The downloaded files are not exactly the release's"; exit 1
+          fi
 
       - name: The zip is the one built and attested here
         env:
@@ -350,8 +354,12 @@ jobs:
           (cd release && for f in *; do
             echo "$f sha256:$(sha256sum "$f" | cut -d' ' -f1)"
           done) | sort > checked.txt
-          if ! diff checked.txt published.txt; then
+          if ! diff checked.txt published.txt || ! cut -d' ' -f1 published.txt | diff expected.txt -; then
             echo "::error::The published release's files differ from the ones checked. Withdraw it (docs/RELEASING.md)."
             exit 1
           fi
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '"immutable: \(.immutable)"'
+          immutable=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.immutable')
+          echo "immutable: $immutable"
+          if [ "$immutable" != "true" ]; then
+            echo "::warning::This release is not immutable: turn on immutable releases (docs/RELEASING.md, Protecting releases)."
+          fi

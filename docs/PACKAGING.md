@@ -195,7 +195,7 @@ powershell -NoProfile -File tools\intune\Get-VerifiedRelease.ps1 -Tag vX.Y.Z
 ```
 
 - **What it downloads:** the release's zip, its `.sha256` file, the SBOM and the attestation bundle, into a new folder.
-- **What it checks:** that the release is published, and not a pre-release unless you add `-AllowPrerelease`; that the zip matches its checksum; and that both attestations verify. They must be signed by the repository's Release workflow, for that tag, on a GitHub-hosted runner.
+- **What it checks:** that the release is published, its tag is exactly the one given (case matters), and it is not a preview unless you add `-AllowPrerelease`; that the zip matches its checksum; and that both attestations verify. They must be signed by exactly the repository's Release workflow at that tag, from the commit the tag points at, on a GitHub-hosted runner.
 - **The result:** it prints VERIFIED and the zip's SHA-256, or NOT VERIFIED and the reason. Package only a verified zip.
 - **Always run it.** The `.sha256` file beside a zip detects a damaged download, not a replaced one: anyone who can replace the zip on the release page can replace its checksum too. The signature check is what proves the zip was built by the project's Release workflow from that tag.
 - **What it needs:** the GitHub CLI (`gh`) on the path. No GitHub account or sign-in is needed: `gh` checks the bundle against Sigstore's public trust root.
