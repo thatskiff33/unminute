@@ -37,13 +37,18 @@ QUEUE_S = 20                 # seconds of audio buffered between callback and wr
 BLOCK_S = 0.1                # PortAudio block length
 SILENT_DEVICE_S = 3.0        # no audio at all for this long while recording: device lost
 # Sleep (the lid closed, the power button) freezes the whole app. A watchdog
-# thread beats every ALIVE_S; a beat later than SILENT_DEVICE_S on the
-# monotonic clock means the app was frozen. Changing the time cannot fake it,
+# thread beats every ALIVE_S; a beat later than SLEEP_S on the monotonic clock
+# means the app was frozen by sleep. Changing the time cannot fake it,
 # and a slow save or a microphone that stalls does not delay the watchdog. The
 # recording stops with state "slept", keeping what came before; audio after
 # the wake is not joined on. Every check reads the beat before writing its own
 # mark, so whichever thread runs first after the wake notices.
 ALIVE_S = 0.2
+# A late beat is sleep only beyond SLEEP_S: the app can be held up for a few
+# seconds without sleeping (heavy paging, a busy computer). A shorter late beat
+# beyond SILENT_DEVICE_S is noted as a "stall" with its length, and the
+# recording carries on; the lost-device check still decides if audio is gone.
+SLEEP_S = 15.0
 HEARTBEAT_S = 1.0            # how often the "still recording" time is noted
 MAX_HOURS = 8                # a forgotten recording stops itself
 
@@ -390,22 +395,29 @@ class Recording:
                 pass        # the journal on disk still lists every saved chunk
 
     def _frozen(self, tick):
-        """The watchdog has missed its beat by more than the silence limit:
-        the whole app is frozen, or has just woken from sleep."""
-        return self._watchdog is not None and tick - self._alive > SILENT_DEVICE_S
+        """The watchdog has missed its beat by more than SLEEP_S: the whole
+        app is frozen, or has just woken from sleep."""
+        return self._watchdog is not None and tick - self._alive > SLEEP_S
 
     def _watch_loop(self):
-        """Beats every ALIVE_S. A late beat means the app was frozen: the
-        computer slept. Checked before the beat is written, so another thread
-        reading the beat after the wake either finds it late or finds the
-        recording already stopped."""
+        """Beats every ALIVE_S. A beat later than SLEEP_S means the computer
+        slept; later than SILENT_DEVICE_S, that the app was held up (a stall,
+        noted with its length). Checked before the beat is written, so another
+        thread reading the beat after the wake either finds it late or finds
+        the recording already stopped."""
         while not self._stop.wait(ALIVE_S):
             tick = self._tick()
-            if tick - self._alive > SILENT_DEVICE_S:
+            late = tick - self._alive
+            if late > SLEEP_S:
                 self._froze_at = tick
                 if not self.paused:       # paused: nothing was being recorded
                     self._slept()
                     self._close_after_sleep()
+            elif (late > SILENT_DEVICE_S and not self.paused
+                  and self.journal["state"] == "recording"):
+                self._event("stall", seconds=late,
+                            note="The computer was held up; audio from this moment may "
+                                 "be missing.")
             self._alive = tick
 
     def _close_after_sleep(self):
@@ -424,6 +436,7 @@ class Recording:
         tick = self._tick()
         if self._frozen(tick) or (self._froze_at is not None
                                   and tick - self._froze_at <= 2 * SILENT_DEVICE_S):
+            # (froze_at is set only for a sleep-length freeze, never a stall)
             self._slept(paused_too=True)
             return
         # Windows reports an overrun at the moment a device disappears; that is

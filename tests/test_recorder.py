@@ -252,8 +252,10 @@ class RecordingTests(unittest.TestCase):
         self.assertAlmostEqual(seconds, 2.0, places=1)    # everything before it is kept
 
     def test_audio_resuming_after_sleep_is_not_joined_on(self):
-        # The driver delivers audio before the watchdog's first beat after the wake.
-        with mock.patch.object(recorder, "ALIVE_S", 30):
+        # The driver delivers audio before the watchdog's first beat after the
+        # wake (and before any silence check): the callback alone must notice.
+        with mock.patch.object(recorder, "ALIVE_S", 30), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 30):
             rec, s = self.start_ticking()
             s.feed(2)
             self.asleep[0] += 600
@@ -371,6 +373,46 @@ class RecordingTests(unittest.TestCase):
         rec._device_lost()
         rec._device_lost()                       # the driver and the silence check both
         self.assertEqual([e["kind"] for e in rec.journal["events"]], ["device_lost"])
+        import threading                         # and at the same moment
+        for n in range(20):
+            rec = recorder.Recording(self.root / f"race{n}", 0, "Mic", RATE,
+                                     open_stream=opener({}))
+            gate = threading.Barrier(6)
+
+            def lose(r=rec, g=gate):
+                g.wait()
+                r._device_lost()
+            threads = [threading.Thread(target=lose) for _ in range(6)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            self.assertEqual([e["kind"] for e in rec.journal["events"]], ["device_lost"])
+
+    def test_a_hold_up_short_of_sleep_is_a_stall_not_sleep(self):
+        # The app is held up for 5 s (heavy paging, a busy computer) without
+        # sleeping: the gap is noted with its length and the recording goes on.
+        with mock.patch.object(recorder, "HEARTBEAT_S", 30):
+            rec, s = self.start_ticking()
+            s.feed(1)
+            time.sleep(0.3)                      # the writer's first (silence-checking) pass
+            self.asleep[0] += 5                  # the monotonic clock moved 5 s at once
+            s.feed(1)                            # audio straight after: not "slept"
+            time.sleep(0.5)                      # the watchdog's next beat
+            self.assertFalse(rec.stopped)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+        self.assertEqual([e["kind"] for e in journal["events"]], ["stall"])
+        self.assertAlmostEqual(journal["events"][0]["seconds"], 5.0, delta=0.5)
+
+    def test_no_sleep_is_judged_before_the_watchdog_runs(self):
+        # A slow microphone start: audio can arrive before the watchdog starts.
+        asleep = [0.0]
+        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}),
+                                 tick=lambda: time.monotonic() + asleep[0])
+        asleep[0] += 600
+        rec._callback(np.zeros((1600, 1), dtype=np.int16), 1600, None, None)
+        self.assertEqual(rec.journal["state"], "recording")
 
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
         real = recorder._write_atomic
