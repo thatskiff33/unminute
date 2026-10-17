@@ -4,7 +4,7 @@
 # Speaker identification (pyannote) runs on PyTorch. The package ships the CPU
 # build; the CUDA build is an optional component the user downloads in Setup:
 # the official PyTorch CUDA 13 wheels for the SAME versions the app pins
-# (torch 2.13.0, torchaudio 2.11.0), pinned by SHA-256 and checked again file
+# (torch 2.14.1, torchaudio 2.11.0), pinned by SHA-256 and checked again file
 # by file against each wheel's RECORD. It is unpacked into its own folder and
 # put first on the import path of a separate worker process used only for
 # speaker identification, so transcription engines never share a process with
@@ -26,25 +26,27 @@ import zipfile
 from pathlib import Path
 
 COMPONENT = "gpu-speakers"
-VERSION = "torch-2.13.0-cu130"
+VERSION = "torch-2.14.1-cu130"
 LICENCE = ("PyTorch BSD-3-Clause; NVIDIA CUDA runtime and cuDNN under NVIDIA's licences",
            "PyTorch CUDA 13.0 build from download-r2.pytorch.org")
 
-# Pinned on 14 October 2026 from https://download.pytorch.org/whl/cu130/ (the
-# index publishes these SHA-256 values with each file). record_sha256 pins each
+# Pinned on 17 October 2026 from https://download.pytorch.org/whl/cu130/ (the
+# index publishes these SHA-256 values with each file), for CPython 3.14. The
+# index gives no SHA-256 for torch 2.13.0's CPython 3.14 wheel, so the app moved
+# to 2.14.1, whose wheel has one (#111 B4). record_sha256 pins each
 # wheel's own file list (RECORD), so an installed file cannot be changed
 # together with its RECORD line and still pass.
 WHEELS = (
-    {"name": "torch", "version": "2.13.0+cu130", "size": 1915519202,
+    {"name": "torch", "version": "2.14.1+cu130", "size": 1998854405,
      "url": "https://download-r2.pytorch.org/whl/cu130/"
-            "torch-2.13.0%2Bcu130-cp312-cp312-win_amd64.whl",
-     "sha256": "2efab1e83604ca628c6d85b9e188c153690980498d1297081a9dad704919303c",
-     "record_sha256": "e415d943930b06b803c218451db82748e7cdfe57c514e5d51de9a175ee5a2c16"},
-    {"name": "torchaudio", "version": "2.11.0+cu130", "size": 1722734,
+            "torch-2.14.1%2Bcu130-cp314-cp314-win_amd64.whl",
+     "sha256": "e25757e423be3c107a36d7495fa5aeb021b9ab506457cd7c7e068505f0283ae0",
+     "record_sha256": "18309d15de951a0d2291a0fcb262df5427824106346cabeb032dc87b5ab92397"},
+    {"name": "torchaudio", "version": "2.11.0+cu130", "size": 1722736,
      "url": "https://download-r2.pytorch.org/whl/cu130/"
-            "torchaudio-2.11.0%2Bcu130-cp312-cp312-win_amd64.whl",
-     "sha256": "f74949f9ace1e4a6cf9468bdb3211b9cfa0af6ea348125471ac71c8621d6c77d",
-     "record_sha256": "10cdec950a2b1ea0d80c6967ab49a380c030ebdec3f10f402d4f986efc94d62f"},
+            "torchaudio-2.11.0%2Bcu130-cp314-cp314-win_amd64.whl",
+     "sha256": "b345401d76a371031b2fe965bd9579b9621c9d87902ee3e586be665df04c179e",
+     "record_sha256": "3990f10471f16b97f09f44fd2a5e55aad4b3418ca5103efffe238a0ef0d91757"},
 )
 DOWNLOAD_HOST = "https://download-r2.pytorch.org/whl/cu130/"
 DOWNLOAD_BYTES = sum(w["size"] for w in WHEELS)

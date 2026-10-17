@@ -2,7 +2,7 @@
 # (undefined names, unused imports, bugbear traps, outdated syntax) without
 # forcing a restyle of working code.
 line-length = 100
-target-version = "py312"   # the only Python the installer accepts
+target-version = "py314"   # the Python the package ships (tools/build_package.py)
 
 [lint]
 select = ["E", "F", "W", "B", "UP"]

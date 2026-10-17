@@ -62,7 +62,19 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 
 ## GPU for speaker identification
 
-The optional component is the PyTorch 2.13.0 and torchaudio 2.11.0 CUDA 13.0 wheels (`workspace/gpu.py`). They are pinned by SHA-256 and every file is checked against the wheels' RECORD. They are loaded only by a separate speaker-identification worker. Measured through the app's worker on 14 October 2026 (RTX 500 Ada, 4 GB):
+The optional component is the PyTorch 2.14.1 and torchaudio 2.11.0 CUDA 13.0 wheels for CPython 3.14 (`workspace/gpu.py`). They are pinned by SHA-256 and every file is checked against the wheels' RECORD. They are loaded only by a separate speaker-identification worker.
+
+Measured through the app's worker on 17 October 2026 (#111 B4; RTX 500 Ada, 4 GB, driver 595.95; Faster mode), on a public 4-person meeting (AMI ES2004a headset mix, 17.5 minutes, CC BY 4.0):
+
+| Runtime | Transcription (Parakeet v2) | Speaker identification | Output |
+| --- | --- | --- | --- |
+| CPython 3.12.10, torch 2.13.0, CPU (before B4) | 49 s | 499 s | 2,117 words; 298 turns, 5 speakers |
+| CPython 3.14.8, torch 2.14.1, CPU | 47 s | 503 s | the same words (0 edits); the same turns (every 10 ms frame agrees) |
+| CPython 3.14.8, torch 2.14.1 CUDA, GPU | not run (stays on the CPU) | 100 s (5.0x) | the same turns as the CPU (every 10 ms frame agrees) |
+
+The component's install through the app's own `gpu.install` and download code took 63 s, and the full file check passed. Peak GPU memory was not measured in this run.
+
+Earlier, with PyTorch 2.13.0 on CPython 3.12 (14 October 2026, synthetic audio):
 
 | Synthetic audio | CPU (14 threads) | GPU | Speed-up | Peak GPU memory (incl. desktop) | Output |
 | --- | --- | --- | --- | --- | --- |
@@ -73,7 +85,7 @@ Other results:
 
 - **Install:** the real install through Setup's download process took 132 s, and the full file check passed.
 - **Fallback:** forcing a failure ran the pass on the CPU and labelled it.
-- **Not yet tested:** the synthetic audio was identified as one speaker, so multi-speaker agreement still needs a real recording (#12, #25).
+- **Multi-speaker agreement:** the synthetic audio was identified as one speaker; the public AMI meeting above (5 speakers found) agrees exactly between CPU and GPU. A real New Zealand business recording is still to test (#12, #25).
 
 ## GPU trial (engines)
 

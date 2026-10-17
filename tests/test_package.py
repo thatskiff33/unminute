@@ -29,10 +29,12 @@ class PackageTests(unittest.TestCase):
     def test_pth_isolates_the_runtime(self):
         rt = self.root / "runtime"
         rt.mkdir()
-        (rt / "python312._pth").write_text("python312.zip\n.\n#import site\n")
+        pth = rt / f"python{bp.PYTHON_TAG}._pth"
+        pth.write_text(f"python{bp.PYTHON_TAG}.zip\n.\n#import site\n")
         bp.write_pth(rt)
-        lines = (rt / "python312._pth").read_text().splitlines()
-        self.assertEqual(lines, ["python312.zip", ".", bp.SITE, "..\\app", "import site"])
+        lines = pth.read_text().splitlines()
+        self.assertEqual(lines, [f"python{bp.PYTHON_TAG}.zip", ".", bp.SITE, "..\\app",
+                                 "import site"])
         self.assertIn("addsitedir", (rt / "sitecustomize.py").read_text())  # .pth files work
 
     def test_deep_licences_are_flattened_indexed_and_recorded(self):

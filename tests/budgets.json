@@ -2,8 +2,8 @@
   "_about": "Ratchets for the deterministic gates in docs/RELEASE_STANDARD.md, Part B. Lower a value whenever the measured figure drops. Raise one only with a stated reason in the pull request. Release-time CPU and memory budgets live in docs/perf-budgets.json, not here.",
   "window_process_modules": {
     "value": 330,
-    "measured": 303,
-    "note": "Modules loaded by importing the window process's modules (tests/test_import_hygiene.py), Windows, Python 3.12.10, CI test install, 16 Oct 2026; the test prints the current count. About 10% headroom for patch-level differences between Python and package builds."
+    "measured": 313,
+    "note": "Modules loaded by importing the window process's modules (tests/test_import_hygiene.py), Windows. 303 on Python 3.12.10 (CI test install, 16 Oct 2026); 313 on Python 3.14.8 (full runtime lock, 17 Oct 2026, #111 B4: the standard library imports a few more modules), within the unchanged budget; the test prints the current count. About 5% headroom at 313 (10% at 303) for patch-level differences between Python and package builds."
   },
   "app_css_raw_colours": {
     "value": 24,

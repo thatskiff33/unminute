@@ -30,10 +30,6 @@
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
-   "path": "runtime/_msi.pyd",
-   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
-  },
-  {
    "path": "runtime/_multiprocessing.pyd",
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
@@ -43,6 +39,10 @@
   },
   {
    "path": "runtime/_queue.pyd",
+   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
+  },
+  {
+   "path": "runtime/_remote_debugging.pyd",
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
@@ -70,11 +70,15 @@
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
-   "path": "runtime/lib/81d243bd2c585b0f4821__mypyc.cp312-win_amd64.pyd",
+   "path": "runtime/_zstd.pyd",
+   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
+  },
+  {
+   "path": "runtime/lib/81d243bd2c585b0f4821__mypyc.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/_cffi_backend.cp312-win_amd64.pyd",
+   "path": "runtime/lib/_cffi_backend.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -82,19 +86,19 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/aiohttp/_http_parser.cp312-win_amd64.pyd",
+   "path": "runtime/lib/aiohttp/_http_parser.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/aiohttp/_http_writer.cp312-win_amd64.pyd",
+   "path": "runtime/lib/aiohttp/_http_writer.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/aiohttp/_websocket/mask.cp312-win_amd64.pyd",
+   "path": "runtime/lib/aiohttp/_websocket/mask.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/aiohttp/_websocket/reader_c.cp312-win_amd64.pyd",
+   "path": "runtime/lib/aiohttp/_websocket/reader_c.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -390,11 +394,11 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/charset_normalizer/cd.cp312-win_amd64.pyd",
+   "path": "runtime/lib/charset_normalizer/cd.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/charset_normalizer/md.cp312-win_amd64.pyd",
+   "path": "runtime/lib/charset_normalizer/md.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -406,11 +410,11 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/contourpy/_contourpy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/contourpy/_contourpy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/ctranslate2/_ext.cp312-win_amd64.pyd",
+   "path": "runtime/lib/ctranslate2/_ext.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -426,31 +430,31 @@
    "signer": "CN=Intel Corporation, O=Intel Corporation, S=California, C=US"
   },
   {
-   "path": "runtime/lib/fontTools/cu2qu/cu2qu.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/cu2qu/cu2qu.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/fontTools/feaLib/lexer.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/feaLib/lexer.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/fontTools/misc/bezierTools.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/misc/bezierTools.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/fontTools/pens/momentsPen.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/pens/momentsPen.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/fontTools/qu2cu/qu2cu.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/qu2cu/qu2cu.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/fontTools/varLib/iup.cp312-win_amd64.pyd",
+   "path": "runtime/lib/fontTools/varLib/iup.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/frozenlist/_frozenlist.cp312-win_amd64.pyd",
+   "path": "runtime/lib/frozenlist/_frozenlist.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -458,19 +462,19 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/greenlet/_greenlet.cp312-win_amd64.pyd",
+   "path": "runtime/lib/greenlet/_greenlet.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/greenlet/tests/_test_extension.cp312-win_amd64.pyd",
+   "path": "runtime/lib/greenlet/tests/_test_extension.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/greenlet/tests/_test_extension_cpp.cp312-win_amd64.pyd",
+   "path": "runtime/lib/greenlet/tests/_test_extension_cpp.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/grpc/_cython/cygrpc.cp312-win_amd64.pyd",
+   "path": "runtime/lib/grpc/_cython/cygrpc.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -478,47 +482,47 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/kiwisolver/_cext.cp312-win_amd64.pyd",
+   "path": "runtime/lib/kiwisolver/_cext.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/markupsafe/_speedups.cp312-win_amd64.pyd",
+   "path": "runtime/lib/markupsafe/_speedups.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/_c_internal_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/_c_internal_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/_image.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/_image.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/_path.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/_path.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/_qhull.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/_qhull.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/_tri.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/_tri.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/backends/_backend_agg.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/backends/_backend_agg.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/backends/_tkagg.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/backends/_tkagg.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/matplotlib/ft2font.cp312-win_amd64.pyd",
+   "path": "runtime/lib/matplotlib/ft2font.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/multidict/_multidict.cp312-win_amd64.pyd",
+   "path": "runtime/lib/multidict/_multidict.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -530,79 +534,79 @@
    "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
   {
-   "path": "runtime/lib/numpy/_core/_multiarray_tests.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_multiarray_tests.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_multiarray_umath.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_multiarray_umath.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_operand_flag_tests.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_operand_flag_tests.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_rational_tests.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_rational_tests.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_simd.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_simd.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_struct_ufunc_tests.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_struct_ufunc_tests.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/_core/_umath_tests.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/_core/_umath_tests.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/fft/_pocketfft_umath.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/fft/_pocketfft_umath.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/linalg/_umath_linalg.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/linalg/_umath_linalg.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/linalg/lapack_lite.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/linalg/lapack_lite.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_bounded_integers.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_bounded_integers.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_common.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_common.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_generator.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_generator.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_mt19937.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_mt19937.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_pcg64.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_pcg64.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_philox.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_philox.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/_sfc64.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/_sfc64.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/bit_generator.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/bit_generator.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy/random/mtrand.cp312-win_amd64.pyd",
+   "path": "runtime/lib/numpy/random/mtrand.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -622,219 +626,219 @@
    "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
   {
-   "path": "runtime/lib/pandas/_libs/_cyutility.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/_cyutility.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/algos.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/algos.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/arrays.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/arrays.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/byteswap.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/byteswap.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/groupby.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/groupby.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/hashing.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/hashing.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/hashtable.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/hashtable.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/index.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/index.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/indexing.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/indexing.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/internals.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/internals.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/interval.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/interval.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/join.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/join.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/json.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/json.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/lib.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/lib.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/missing.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/missing.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/ops.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/ops.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/ops_dispatch.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/ops_dispatch.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/pandas_datetime.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/pandas_datetime.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/pandas_parser.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/pandas_parser.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/parsers.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/parsers.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/properties.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/properties.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/reshape.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/reshape.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/sas.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/sas.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/sparse.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/sparse.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/testing.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/testing.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslib.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslib.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/base.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/base.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/ccalendar.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/ccalendar.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/conversion.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/conversion.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/dtypes.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/dtypes.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/fields.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/fields.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/nattype.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/nattype.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/np_datetime.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/np_datetime.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/offsets.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/offsets.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/parsing.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/parsing.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/period.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/period.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/strptime.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/strptime.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/timedeltas.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/timedeltas.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/timestamps.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/timestamps.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/timezones.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/timezones.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/tzconversion.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/tzconversion.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/tslibs/vectorized.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/tslibs/vectorized.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/window/aggregations.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/window/aggregations.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/window/indexers.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/window/indexers.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/pandas/_libs/writers.cp312-win_amd64.pyd",
+   "path": "runtime/lib/pandas/_libs/writers.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_avif.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_avif.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imaging.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imaging.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imagingcms.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imagingcms.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imagingft.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imagingft.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imagingmath.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imagingmath.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imagingmorph.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imagingmorph.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_imagingtk.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_imagingtk.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/PIL/_webp.cp312-win_amd64.pyd",
+   "path": "runtime/lib/PIL/_webp.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/propcache/_helpers_c.cp312-win_amd64.pyd",
+   "path": "runtime/lib/propcache/_helpers_c.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -850,439 +854,439 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_cyutility.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_cyutility.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_ccallback_c.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_ccallback_c.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_fpumode.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_fpumode.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_test_ccallback.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_test_ccallback.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_test_deprecation_call.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_test_deprecation_call.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_test_deprecation_def.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_test_deprecation_def.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/_uarray/_uarray.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/_uarray/_uarray.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/_lib/messagestream.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/_lib/messagestream.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_hierarchy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/_hierarchy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_optimal_leaf_ordering.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/_optimal_leaf_ordering.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_vq.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/_vq.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/fft/_pocketfft/pypocketfft.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/fft/_pocketfft/pypocketfft.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/fftpack/convolve.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/fftpack/convolve.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/integrate/_dop.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/integrate/_dop.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/integrate/_odepack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/integrate/_odepack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/integrate/_quadpack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/integrate/_quadpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/integrate/_test_multivariate.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/integrate/_test_multivariate.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/integrate/_vode.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/integrate/_vode.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_dfitpack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_dfitpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_dierckx.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_dierckx.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_fitpack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_fitpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_interpnd.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_interpnd.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_ppoly.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_ppoly.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_rbfinterp_pythran.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_rbfinterp_pythran.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/interpolate/_rgi_cython.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/interpolate/_rgi_cython.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/io/_fast_matrix_market/_fmm_core.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/io/_fast_matrix_market/_fmm_core.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/io/matlab/_mio5_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/io/matlab/_mio5_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/io/matlab/_mio_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/io/matlab/_mio_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/io/matlab/_streams.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/io/matlab/_streams.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_batched_linalg.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_batched_linalg.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_cythonized_array_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_cythonized_array_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_decomp_interpolative.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_decomp_interpolative.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_decomp_lu_cython.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_decomp_lu_cython.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_decomp_update.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_decomp_update.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_fblas.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_fblas.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_flapack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_flapack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_linalg_pythran.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_linalg_pythran.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_matfuncs_expm.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_matfuncs_expm.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_matfuncs_schur_sqrtm.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_matfuncs_schur_sqrtm.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_matfuncs_sqrtm_triu.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_matfuncs_sqrtm_triu.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_solve_toeplitz.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/_solve_toeplitz.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/cython_blas.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/cython_blas.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/cython_lapack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/linalg/cython_lapack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/ndimage/_ctest.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/ndimage/_ctest.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/ndimage/_cytest.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/ndimage/_cytest.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/ndimage/_nd_image.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/ndimage/_nd_image.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/ndimage/_ni_label.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/ndimage/_ni_label.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/ndimage/_rank_filter_1d.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/ndimage/_rank_filter_1d.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/odr/__odrpack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/odr/__odrpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_bglu_dense.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_bglu_dense.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_direct.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_direct.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_group_columns.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_group_columns.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_highspy/_core.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_highspy/_core.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_highspy/_highs_options.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_highspy/_highs_options.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_lbfgsb.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_lbfgsb.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_lsap.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_lsap.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_lsq/givens_elimination.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_lsq/givens_elimination.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_minpack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_minpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_moduleTNC.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_moduleTNC.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_pava_pybind.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_pava_pybind.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_slsqplib.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_slsqplib.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_trlib/_trlib.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_trlib/_trlib.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/_zeros.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/_zeros.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/optimize/cython_optimize/_zeros.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/optimize/cython_optimize/_zeros.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_max_len_seq_inner.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_max_len_seq_inner.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_peak_finding_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_peak_finding_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_sigtools.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_sigtools.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_sosfilt.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_sosfilt.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_spline.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_spline.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/signal/_upfirdn_apply.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/signal/_upfirdn_apply.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/_csparsetools.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/_csparsetools.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/_sparsetools.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/_sparsetools.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_flow.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_flow.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_matching.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_matching.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_min_spanning_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_min_spanning_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_reordering.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_reordering.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_shortest_path.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_shortest_path.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_tools.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_tools.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/csgraph/_traversal.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/csgraph/_traversal.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/linalg/_dsolve/_superlu.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/linalg/_dsolve/_superlu.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/linalg/_eigen/arpack/_arpacklib.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/linalg/_eigen/arpack/_arpacklib.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/sparse/linalg/_propack.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/sparse/linalg/_propack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_ckdtree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_ckdtree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_distance_pybind.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_distance_pybind.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_distance_wrap.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_distance_wrap.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_hausdorff.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_hausdorff.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_qhull.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_qhull.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/_voronoi.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/_voronoi.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/transform/_rigid_transform_cy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/transform/_rigid_transform_cy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/spatial/transform/_rotation_cy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/spatial/transform/_rotation_cy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_comb.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_comb.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_ellip_harm_2.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_ellip_harm_2.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_gufuncs.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_gufuncs.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_specfun.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_specfun.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_special_ufuncs.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_special_ufuncs.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_test_internal.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_test_internal.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_ufuncs.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_ufuncs.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/_ufuncs_cxx.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/_ufuncs_cxx.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/special/cython_special.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/special/cython_special.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_ansari_swilk_statistics.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_ansari_swilk_statistics.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_biasedurn.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_biasedurn.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_levy_stable/levyst.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_levy_stable/levyst.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_qmc_cy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_qmc_cy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_qmvnt_cy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_qmvnt_cy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_rcont/rcont.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_rcont/rcont.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_sobol.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_sobol.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_stats.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_stats.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_stats_pythran.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_stats_pythran.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/stats/_unuran/unuran_wrapper.cp312-win_amd64.pyd",
+   "path": "runtime/lib/scipy/stats/_unuran/unuran_wrapper.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1326,299 +1330,299 @@
    "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
   {
-   "path": "runtime/lib/sklearn/__check_build/_check_build.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/__check_build/_check_build.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/_cyutility.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/_cyutility.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/_isotonic.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/_isotonic.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/_loss/_loss.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/_loss/_loss.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_dbscan_inner.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_dbscan_inner.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_hdbscan/_linkage.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_hdbscan/_linkage.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_hdbscan/_reachability.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_hdbscan/_reachability.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_hdbscan/_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_hdbscan/_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_hierarchical_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_hierarchical_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_k_means_common.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_k_means_common.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_k_means_elkan.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_k_means_elkan.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_k_means_lloyd.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_k_means_lloyd.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/cluster/_k_means_minibatch.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/cluster/_k_means_minibatch.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/datasets/_svmlight_format_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/datasets/_svmlight_format_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/decomposition/_cdnmf_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/decomposition/_cdnmf_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/decomposition/_online_lda_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/decomposition/_online_lda_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_gradient_boosting.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_gradient_boosting.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_binning.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_binning.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_gradient_boosting.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_predictor.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/_predictor.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/common.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/common.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/histogram.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/histogram.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/splitting.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/ensemble/_hist_gradient_boosting/splitting.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/feature_extraction/_hashing_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/feature_extraction/_hashing_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/linear_model/_cd_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/linear_model/_cd_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/linear_model/_sag_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/linear_model/_sag_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/linear_model/_sgd_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/linear_model/_sgd_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/manifold/_barnes_hut_tsne.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/manifold/_barnes_hut_tsne.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/manifold/_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/manifold/_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_dist_metrics.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_dist_metrics.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_argkmin.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_argkmin.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_argkmin_classmode.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_base.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_base.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_datasets_pair.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_middle_term_computer.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors_classmode.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_distances_reduction/_radius_neighbors_classmode.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/_pairwise_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/_pairwise_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/metrics/cluster/_expected_mutual_info_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/metrics/cluster/_expected_mutual_info_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/neighbors/_ball_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/neighbors/_ball_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/neighbors/_kd_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/neighbors/_kd_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/neighbors/_partition_nodes.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/neighbors/_partition_nodes.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/neighbors/_quad_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/neighbors/_quad_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/preprocessing/_csr_polynomial_expansion.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/preprocessing/_csr_polynomial_expansion.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/preprocessing/_target_encoder_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/preprocessing/_target_encoder_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/svm/_liblinear.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/svm/_liblinear.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/svm/_libsvm.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/svm/_libsvm.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/svm/_libsvm_sparse.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/svm/_libsvm_sparse.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/svm/_newrand.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/svm/_newrand.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/tree/_criterion.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/tree/_criterion.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/tree/_partitioner.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/tree/_partitioner.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/tree/_splitter.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/tree/_splitter.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/tree/_tree.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/tree/_tree.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/tree/_utils.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/tree/_utils.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_bitset.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_bitset.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_cython_blas.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_cython_blas.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_fast_dict.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_fast_dict.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_heap.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_heap.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_isfinite.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_isfinite.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_openmp_helpers.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_openmp_helpers.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_random.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_random.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_seq_dataset.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_seq_dataset.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_sorting.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_sorting.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_typedefs.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_typedefs.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_vector_sentinel.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_vector_sentinel.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/_weight_vector.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/_weight_vector.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/arrayfuncs.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/arrayfuncs.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/murmurhash.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/murmurhash.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sklearn/utils/sparsefuncs_fast.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sklearn/utils/sparsefuncs_fast.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sqlalchemy/cyextension/collections.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sqlalchemy/cyextension/collections.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sqlalchemy/cyextension/immutabledict.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sqlalchemy/cyextension/immutabledict.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sqlalchemy/cyextension/processors.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sqlalchemy/cyextension/processors.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sqlalchemy/cyextension/resultproxy.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sqlalchemy/cyextension/resultproxy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/sqlalchemy/cyextension/util.cp312-win_amd64.pyd",
+   "path": "runtime/lib/sqlalchemy/cyextension/util.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1626,7 +1630,7 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/torch/_C.cp312-win_amd64.pyd",
+   "path": "runtime/lib/torch/_C.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1766,11 +1770,11 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/yaml/_yaml.cp312-win_amd64.pyd",
+   "path": "runtime/lib/yaml/_yaml.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/yarl/_quoting_c.cp312-win_amd64.pyd",
+   "path": "runtime/lib/yarl/_quoting_c.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1786,6 +1790,10 @@
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
+   "path": "runtime/libtommath.dll",
+   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
+  },
+  {
    "path": "runtime/pyexpat.pyd",
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
@@ -1798,7 +1806,7 @@
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
-   "path": "runtime/python312.dll",
+   "path": "runtime/python314.dll",
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {

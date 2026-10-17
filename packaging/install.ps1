@@ -60,6 +60,10 @@ $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWork
 # Must match APP_ID in workspace/__main__.py (taskbar grouping and icon). Kept from the
 # earlier name on purpose: changing it would split existing taskbar pins.
 $AppId = "WhisperTranscriber.MeetingWorkspace"
+# How the app is started. Python 3.14 lets another process attach a debugger and run
+# code in a running Python process (PEP 768); -X disable-remote-debug turns that off,
+# and the app's workers inherit it (#111 B4). Older runtimes ignore the option.
+$LaunchArgs = "-X disable-remote-debug -m workspace"
 $WebView2Client = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
 function Write-Step([string]$Message) {
@@ -206,7 +210,8 @@ function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema =
     # $Checker (a newer runtime) checks on its behalf with -Schema.
     $base = if ($Checker) { $Checker } else { $Root }
     $python = Join-Path $base "runtime\python.exe"
-    $gateArgs = @("-B", "-m", "workspace", "--gate")      # -B: write nothing into the package
+    # -B: write nothing into the package.
+    $gateArgs = @("-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")
     if ($Schema -gt 0) { $gateArgs += @("--schema", "$Schema") }
     $saved = $ErrorActionPreference
     $ErrorActionPreference = "Continue"                  # warnings on stderr must not abort
@@ -346,7 +351,7 @@ function New-Shortcut([string]$Target) {
     $shell = New-Object -ComObject WScript.Shell
     $link = $shell.CreateShortcut((Join-Path $programs "$name.lnk"))
     $link.TargetPath = Join-Path $Target "runtime\pythonw.exe"
-    $link.Arguments = "-m workspace"
+    $link.Arguments = $LaunchArgs
     $link.WorkingDirectory = Join-Path $Target "app"
     $link.Description = "Transcribe and review meetings on this computer"
     $icon = Join-Path $Target "app\whisper.ico"
@@ -381,7 +386,7 @@ function Update-PinnedShortcut([string]$Target, [string[]]$Folders = @()) {
                     $old.EndsWith("\runtime\pythonw.exe", [StringComparison]::OrdinalIgnoreCase)
                 if (-not $ours) { continue }
                 $sc.TargetPath = Join-Path $Target "runtime\pythonw.exe"
-                $sc.Arguments = "-m workspace"
+                $sc.Arguments = $LaunchArgs
                 $sc.WorkingDirectory = Join-Path $Target "app"
                 $icon = Join-Path $Target "app\whisper.ico"
                 if (Test-Path -LiteralPath $icon) { $sc.IconLocation = "$icon,0" }

@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
       # Byte-compile every Python file. Catches syntax errors without importing
       # torch or faster-whisper.
@@ -83,7 +83,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install test dependencies
         # The window shell's packages, numpy and PyAV, and the download stack
         # (huggingface_hub, httpx) for the download-process tests: these and
@@ -121,7 +121,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install uv (hash-locked)
         # Block scalar: ":all:" followed by a space is a YAML mapping indicator
         # in a plain scalar, which made the whole workflow file invalid.
@@ -157,7 +157,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install ruff (hash-locked)
         # Block scalar: ":all:" followed by a space is a YAML mapping indicator.
         run: >
@@ -219,7 +219,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Install zizmor (hash-locked)
         # Block scalar: ":all:" followed by a space is a YAML mapping indicator.
         run: >

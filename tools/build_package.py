@@ -22,7 +22,7 @@
 # assemble anything). The result is one versioned zip plus a .sha256 file:
 #
 #   Unminute-<version>/
-#     runtime/      private CPython 3.12 (official embeddable package, hash-pinned
+#     runtime/      private CPython 3.14 (official embeddable package, hash-pinned
 #                   and Authenticode-checked) with the pinned wheels installed
 #     app/          asr_engines.py, offline_guard.py, workspace/ (no tests)
 #     install.ps1, uninstall.ps1   per-user installer (see docs/PACKAGING.md)
@@ -61,12 +61,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-PYTHON_VERSION = "3.12.10"
+PYTHON_VERSION = "3.14.8"
 EMBED_URL = (f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
              f"python-{PYTHON_VERSION}-embed-amd64.zip")
 # Pinned after checking the Authenticode signatures of python.exe,
-# pythonw.exe and python312.dll (Python Software Foundation) on 13 October 2026.
-EMBED_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"
+# pythonw.exe and python314.dll (Python Software Foundation, time-stamped) on
+# 17 October 2026; the SHA-256 matches the one python.org publishes for the file.
+EMBED_SHA256 = "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310"
+# "3.14" and "314": the wheel tags, the runtime's zip and DLL, and the build host.
+PYTHON_MINOR = ".".join(PYTHON_VERSION.split(".")[:2])
+PYTHON_TAG = PYTHON_MINOR.replace(".", "")
 
 APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md",
              "whisper.ico"]
@@ -135,7 +139,7 @@ def check_signatures(runtime):
     """The runtime's executables must carry a valid PSF Authenticode signature."""
     if os.name != "nt":
         return
-    names = ["python.exe", "pythonw.exe", f"python{PYTHON_VERSION.replace('.', '')[:3]}.dll"]
+    names = ["python.exe", "pythonw.exe", f"python{PYTHON_TAG}.dll"]
     for name in names:
         r = powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:UNMINUTE_FILE; "
                        "if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch "
@@ -145,13 +149,13 @@ def check_signatures(runtime):
             sys.exit(f"The Python runtime's signature check failed ({name}).")
 
 
-TARGET = ["--platform", "win_amd64", "--python-version", "3.12", "--implementation", "cp",
+TARGET = ["--platform", "win_amd64", "--python-version", PYTHON_MINOR, "--implementation", "cp",
           "--only-binary=:all:", "--require-hashes", "--no-deps"]
 
 
 def install_wheels(site, wheel_cache, report, lock_file):
     """The hash-locked requirements (tools/lock.py), wheels only, for Windows
-    x64 CPython 3.12: every file must match a pinned SHA-256, and nothing
+    x64 CPython 3.14: every file must match a pinned SHA-256, and nothing
     outside the lock is installed (--no-deps). The wheels are downloaded into
     the cache first, then installed from there with no index, and pip's report
     names the exact file used for each package (for the SBOM and notices). The
@@ -178,7 +182,8 @@ def write_pth(runtime):
     """Fixed import path: the runtime's own zip, its site-packages and the app.
     A ._pth file also makes Python ignore PYTHONPATH and user site-packages."""
     pth = next(runtime.glob("python3*._pth"))
-    pth.write_text(f"python312.zip\n.\n{SITE}\n..\\app\nimport site\n", encoding="ascii")
+    pth.write_text(f"python{PYTHON_TAG}.zip\n.\n{SITE}\n..\\app\nimport site\n",
+                   encoding="ascii")
     # site only reads .pth files from Lib\site-packages; runtime\lib is ours,
     # so register it as a site directory (sitecustomize runs at start-up).
     (runtime / "sitecustomize.py").write_text(
@@ -759,9 +764,9 @@ def manifest(folder):
 
 def check_host():
     """Environment markers are evaluated against this interpreter."""
-    if os.name != "nt" or sys.version_info[:2] != (3, 12) or \
+    if os.name != "nt" or f"{sys.version_info[0]}.{sys.version_info[1]}" != PYTHON_MINOR or \
             sys.implementation.name != "cpython" or sys.maxsize < 2**32:
-        sys.exit("Build the package with 64-bit CPython 3.12 on Windows.")
+        sys.exit(f"Build the package with 64-bit CPython {PYTHON_MINOR} on Windows.")
 
 
 def build(version, out, cache, release=False, update_allowlist=False):
