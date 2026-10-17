@@ -1,6 +1,7 @@
 # Keeping the computer awake while recording (workspace/power.py).
 #   python -m unittest discover -s tests -v
 
+import ctypes
 import os
 import sys
 import unittest
@@ -96,6 +97,197 @@ class KeepAwakeTests(unittest.TestCase):
         finally:
             k.release()
         self.assertFalse(k.held)
+
+
+class FakeScheme:
+    """A power scheme's lid action, plugged in (True) and on battery (False)."""
+
+    def __init__(self, ac=1, dc=1, write_rc=0, apply_rc=0, take=True, watch=None):
+        self.values = {True: ac, False: dc}
+        self.write_rc, self.apply_rc, self.take = write_rc, apply_rc, take
+        self.writes, self.watch = [], watch      # watch: a file that must exist before writing
+
+    def active_scheme(self):
+        return "6cb4fe25-1ec4-4e4a-a4a5-24e60a60b5d3"
+
+    def read(self, scheme, plugged_in):
+        return self.values[plugged_in]
+
+    def write(self, scheme, plugged_in, value):
+        if self.watch is not None and value == power.DO_NOTHING:
+            assert self.watch.exists(), "the restore file must be saved before any change"
+        self.writes.append((plugged_in, value))
+        if self.write_rc:
+            return self.write_rc
+        if self.take:
+            self.values[plugged_in] = value
+        return 0
+
+    def apply(self, scheme):
+        return self.apply_rc
+
+
+class LidSwitchTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "power_restore.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def switch(self, api, managed=lambda: False):
+        return power.LidSwitch(self.path, api=api, managed=managed)
+
+    def test_sets_do_nothing_and_puts_it_back(self):
+        api = FakeScheme(ac=1, dc=2, watch=self.path)
+        sw = self.switch(api)
+        self.assertEqual(sw.override(), (True, "set"))
+        self.assertEqual(api.values, {True: 0, False: 0})
+        self.assertTrue(sw.active)
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertFalse(sw.active)
+        sw.restore()                                     # repeat is harmless
+        self.assertEqual(api.values, {True: 1, False: 2})
+
+    def test_a_crash_is_put_right_at_the_next_start(self):
+        api = FakeScheme(ac=1, dc=1)
+        self.switch(api).override()                      # the app dies here
+        self.switch(api).restore()                       # the next start
+        self.assertEqual(api.values, {True: 1, False: 1})
+        self.assertFalse(self.path.exists())
+
+    def test_a_change_the_user_made_meanwhile_is_left_alone(self):
+        api = FakeScheme(ac=1, dc=1)
+        sw = self.switch(api)
+        sw.override()
+        api.values[True] = 3                             # the user chose "Shut down"
+        sw.restore()
+        self.assertEqual(api.values, {True: 3, False: 1})
+
+    def test_stands_aside_when_the_organisation_manages_the_lid(self):
+        def broken():
+            raise OSError("registry unreadable")
+        for managed in (lambda: True, broken):           # cannot tell: also stands aside
+            api = FakeScheme()
+            self.assertEqual(self.switch(api, managed).override(), (False, "managed"))
+            self.assertEqual(api.writes, [])
+            self.assertFalse(self.path.exists())
+
+    def test_already_do_nothing_changes_nothing(self):
+        api = FakeScheme(ac=0, dc=0)
+        self.assertEqual(self.switch(api).override(), (True, "already"))
+        self.assertEqual(api.writes, [])
+        self.assertFalse(self.path.exists())
+
+    def test_a_refused_or_ineffective_change_is_undone(self):
+        for api in (FakeScheme(write_rc=5), FakeScheme(apply_rc=5), FakeScheme(take=False)):
+            sw = self.switch(api)
+            self.assertEqual(sw.override(), (False, "refused"))
+            self.assertEqual(api.values, {True: 1, False: 1})
+            self.assertFalse(self.path.exists())
+
+    def test_nothing_changes_if_the_restore_file_cannot_be_saved(self):
+        api = FakeScheme()
+        sw = power.LidSwitch(Path(self.tmp.name) / "missing" / "r.json", api=api,
+                             managed=lambda: False)
+        self.assertEqual(sw.override(), (False, "refused"))
+        self.assertEqual(api.writes, [])
+
+    def test_a_damaged_restore_file_is_removed_without_changes(self):
+        for text in ("not json", '{"scheme": "s", "ac": 9, "dc": 1}', '{"ac": true}'):
+            self.path.write_text(text, encoding="utf-8")
+            api = FakeScheme(ac=0, dc=0)
+            self.switch(api).restore()
+            self.assertEqual(api.writes, [])
+            self.assertFalse(self.path.exists())
+
+    def test_a_failed_restore_keeps_the_file_for_the_next_start(self):
+        api = FakeScheme()
+        sw = self.switch(api)
+        sw.override()
+        api.write_rc = 5
+        sw.restore()
+        self.assertTrue(self.path.exists())
+        api.write_rc = 0
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 1})
+
+    def test_managed_reads_group_policy_and_intune_values_only(self):
+        def reader(values):
+            return lambda key, name: values.get((key, name))
+        self.assertFalse(power.lid_managed(reader({})))
+        self.assertTrue(power.lid_managed(reader({(power.GP_LID_KEY, "DCSettingIndex"): 1})))
+        self.assertTrue(power.lid_managed(reader(
+            {(power.MDM_POWER_KEY, "SelectLidCloseActionOnBattery"): 1})))
+        self.assertFalse(power.lid_managed(reader(           # Intune's leftover marker
+            {(power.MDM_POWER_KEY, "SelectLidCloseActionOnBattery_LastWrite"): 1})))
+        self.assertEqual(power.GP_LID_KEY.count(chr(92)), 5)  # a real registry path
+
+    @unittest.skipUnless(os.name == "nt", "Windows power scheme")
+    def test_windows_reads_the_lid_action(self):
+        # Read-only: never writes the real power scheme.
+        api = power._PowrProf()
+        scheme = api.active_scheme()
+        self.assertRegex(scheme, r"^[0-9a-f-]{36}$")
+        for plugged_in in (True, False):
+            self.assertIn(api.read(scheme, plugged_in), (0, 1, 2, 3))
+
+
+class FakeNotify:
+    def __init__(self, rc=0):
+        self.rc, self.callback, self.unregistered = rc, None, 0
+
+    def PowerSettingRegisterNotification(self, guid, flags, params, handle):
+        assert flags == power.DEVICE_NOTIFY_CALLBACK
+        self.callback = params._obj.Callback
+        handle._obj.value = 1234
+        return self.rc
+
+    def PowerSettingUnregisterNotification(self, handle):
+        self.unregistered += 1
+        return 0
+
+
+def lid_setting(open_):
+    s = power._PowerSetting()
+    s.PowerSetting = power.GUID.of(power.LIDSWITCH_STATE)
+    s.DataLength = 4
+    s.Data[0] = 1 if open_ else 0
+    return s
+
+
+@unittest.skipUnless(os.name == "nt", "Windows power notifications")
+class LidWatchTests(unittest.TestCase):
+    def test_reports_open_and_closed_until_stopped(self):
+        seen, api = [], FakeNotify()
+        w = power.LidWatch(seen.append, api=api)
+        self.assertTrue(w.start())
+        for state in (True, False, True):
+            s = lid_setting(state)
+            w._notified(None, power.PBT_POWERSETTINGCHANGE, ctypes.addressof(s))
+        w._notified(None, 0x0004, None)                  # something else: ignored
+        self.assertEqual(seen, [True, False, True])
+        w.stop()
+        w.stop()
+        self.assertEqual(api.unregistered, 1)
+
+    def test_a_refused_registration_or_failing_handler_is_not_fatal(self):
+        self.assertFalse(power.LidWatch(print, api=FakeNotify(rc=5)).start())
+
+        def boom(open_):
+            raise ValueError("handler failed")
+        w = power.LidWatch(boom, api=FakeNotify())
+        w.start()
+        s = lid_setting(False)
+        self.assertEqual(w._notified(None, power.PBT_POWERSETTINGCHANGE, ctypes.addressof(s)), 0)
+
+    def test_windows_accepts_the_registration(self):
+        w = power.LidWatch(lambda open_: None)
+        started = w.start()                              # a laptop reports the lid at once
+        w.stop()
+        self.assertIsInstance(started, bool)
 
 
 if __name__ == "__main__":

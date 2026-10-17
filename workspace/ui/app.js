@@ -1785,6 +1785,12 @@ async function renderSettings() {
         : `${s.gpu.card}. Speeds up speaker names in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
+  // The lid (#172): "Do nothing" while recording, put back afterwards.
+  $("s-lid").checked = !!s.lid_override;
+  $("s-lid").disabled = !s.lid_override && (!allowed("AllowLidOverride") || s.lid_managed);
+  $("s-lid-note").textContent = !allowed("AllowLidOverride") ? MANAGED_NOTE
+    : s.lid_managed ? "Your organisation sets what closing the lid does, so Unminute leaves it alone."
+    : "While recording, Windows is set to do nothing when the lid is closed, and put back afterwards. Stop the recording before you put the laptop away.";
   $("s-add-folder").disabled = $("s-include-existing").disabled = !allowed("AllowWatchedFolders");
   const sel = $("s-model");
   if (document.activeElement !== sel) {
@@ -2038,7 +2044,16 @@ function deviceLabel() {
 const deviceOption = (d) => el("option", { value: String(d.index), "data-name": d.name,
   "data-label": d.label || d.name, textContent: (d.label || d.name) + (d.default ? " (default)" : "") });
 
-function renderRecCard(rec, display) {
+// "under a minute", "1 minute", "23 minutes", "1 hour 5 minutes".
+function fmtDuration(s) {
+  const m = Math.round(s / 60);
+  if (m < 1) return "under a minute";
+  const h = Math.floor(m / 60), mm = m % 60;
+  const part = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return h ? part(h, "hour") + (mm ? ` ${part(mm, "minute")}` : "") : part(m, "minute");
+}
+
+function renderRecCard(rec, display, lidOverride) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
   $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
@@ -2063,7 +2078,12 @@ function renderRecCard(rec, display) {
   $("rec-discard").hidden = kind !== "" && kind !== "paused";
   $("rec-stop").className = kind === "paused" ? "" : "primary";
   $("rec-note").hidden = kind !== "" && kind !== "paused";
-  $("rec-note").textContent = `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
+  // The lid (#172): how long the recording carried on with the lid closed (its
+  // marks could not be seen meanwhile), and that closing it will not stop it.
+  const lid = [...rec.events].reverse().find((e) => e.kind === "lid");
+  const lidNote = (lid ? `The recording carried on while the lid was closed (about ${fmtDuration(lid.seconds)}). ` : "")
+    + (lidOverride ? "Closing the lid does not stop this recording: stop it here when the meeting ends. " : "");
+  $("rec-note").textContent = lidNote + `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
     "Tell everyone present the meeting is being recorded.";
 }
 
@@ -2126,7 +2146,7 @@ async function renderRecorder(tick = false) {
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
-  if (active) renderRecCard(rec, r.display);
+  if (active) renderRecCard(rec, r.display, r.lid_override);
   else stopViz();
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
@@ -2468,6 +2488,7 @@ function wire() {
   $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }));
   $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
   $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }));
+  $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }));
   wireRecorder();
   $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }));
   document.addEventListener("keydown", (e) => {

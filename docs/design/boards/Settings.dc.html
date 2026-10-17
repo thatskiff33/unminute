@@ -154,7 +154,8 @@ class Component extends DCLogic {
       toggles: [
         on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
         on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),
-        off('Use the graphics card', 'NVIDIA RTX 500. Speeds up speaker names in Faster mode only.')
+        off('Use the graphics card', 'NVIDIA RTX 500. Speeds up speaker names in Faster mode only.'),
+        off('Keep recording when the lid is closed', 'While recording, Windows is set to do nothing when the lid is closed, and put back afterwards. Stop the recording before you put the laptop away.')
       ],
       receipts: [
         { what: 'Audio and transcript removed (meeting 1)', when: '14/10/2026' },

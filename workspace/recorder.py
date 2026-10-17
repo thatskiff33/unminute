@@ -50,6 +50,7 @@ ALIVE_S = 0.2
 # recording carries on; the lost-device check still decides if audio is gone.
 SLEEP_S = 15.0
 HEARTBEAT_S = 1.0            # how often the "still recording" time is noted
+LID_NOTE_S = 5.0             # a lid closed this long while recording is noted on opening
 MAX_HOURS = 8                # a forgotten recording stops itself
 
 
@@ -265,6 +266,7 @@ class Recording:
         self._froze_at = None                   # when the watchdog last found a sleep
         self._stall_end = float("-inf")         # when the watchdog last found a stall
         self._started_tick = tick()             # for the time limit (set again at start)
+        self._lid_closed_at = None              # when the lid was closed, while recording
         self._watchdog = None
         self._close_lock = threading.Lock()     # one thread closes the stream after a sleep
         self._stop = threading.Event()         # the writer's signal to finish
@@ -534,6 +536,21 @@ class Recording:
             self.paused = True
             self._display_block = None
             self._event("paused")
+
+    def lid_changed(self, open_):
+        """The lid closed or opened while recording (#172). On opening, a
+        recording that carried on with the lid closed for LID_NOTE_S or more
+        says so, with how long: its marks could not be seen meanwhile."""
+        tick = self._tick()
+        if not open_:
+            if self._lid_closed_at is None:
+                self._lid_closed_at = tick
+            return
+        closed, self._lid_closed_at = self._lid_closed_at, None
+        if closed is not None and self.journal["state"] == "recording" \
+                and tick - closed >= LID_NOTE_S:
+            self._event("lid", seconds=tick - closed,
+                        note="The lid was closed; the recording carried on.")
 
     def resume(self):
         if self.paused:
