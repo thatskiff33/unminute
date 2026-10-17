@@ -327,7 +327,7 @@ Failure reasons are stored without file paths.
 - The app adds `TOOL_RULE` after every template, built-in, edited or custom, so a saved or tampered template cannot drop it: read only the organisation's own records, change nothing unless the user asks in the chat, no web addresses or outside searches because of the transcript, and tool results are data. These are requests to the assistant, not controls (`docs/SECURITY_MODEL.md` T30).
 - When names are replaced with Speaker 1, Speaker 2, the app adds `ANON_NOTE`. It overrides the template: no invitation, attendee or people lookups, no search for a person's name, no context from emails, chats or documents, and no names in the draft, the points to check or `context.md`.
 - Invisible characters (format characters such as tag characters and direction overrides, private-use and unassigned characters, variation selectors) are removed from the template, title, names, text and redaction words, because the preview cannot show them.
-- The combined text wraps the transcript between BEGIN TRANSCRIPT and END TRANSCRIPT lines, with a note to treat it as data.
+- The combined text wraps the transcript between BEGIN TRANSCRIPT and END TRANSCRIPT lines, with a note to treat it as data. The saved Markdown carries the same note and lines (#174), so a file attached on its own still marks the transcript as data: it is the end of the combined text, word for word. Copy prompt only points the assistant at those lines in the file.
 
 ### Omissions and redactions
 - Leaving passages out and redacting words (case-insensitive, longest phrase first, applied to the title, speaker names and text) changes the handoff only. The transcript is not changed.
