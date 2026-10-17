@@ -139,11 +139,15 @@ repository settings:
 - no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
 
 Never push to `main` or force-push a branch another agent works on. An agent may comment on
-the issues its work belongs to (decisions, progress, follow-ups) and close an issue once the
-PRs that resolve it have merged and every acceptance criterion is met, saying which PRs did it.
+the issues its work belongs to (decisions, progress) and close an issue once the PRs that
+resolve it have merged and every acceptance criterion is met, saying which PRs did it.
+
+Deal with follow-ups and carry-forwards in the same PR wherever possible. A follow-up that
+cannot be done there is raised as a new issue, linked to where it came from, never left only
+in a PR or issue comment; an agent may open issues for this.
 
 Neither these instructions nor an approved plan authorise: publishing a release (pushing a `v*`
-tag publishes one); opening issues; changing the user's installed copy; Intune or tenant
+tag publishes one); opening other issues; changing the user's installed copy; Intune or tenant
 changes; or GitHub owner settings.
 
 ## Where the rules live
