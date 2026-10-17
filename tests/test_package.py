@@ -4,6 +4,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -634,6 +635,106 @@ class ReproducibleBuildTests(unittest.TestCase):
                                    "workspace/stray.py", "workspace/ui/index.html"])
         self.assertEqual((app / "workspace" / "app.py").read_bytes(),
                          b"a = 'changed, not committed'\n")        # as it is in the folder
+
+class PrunedBuildTests(unittest.TestCase):
+    """#111 B2: what the app never uses is left out; every module ships
+    precompiled; the package is held to its size and file-count budget."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _site(self, base="a"):
+        runtime = self.root / base / "runtime"
+        site = runtime / bp.SITE
+        files = ["jinja2/__init__.py", "jinja2/tests.py",             # a module, not a test suite
+                 "numpy/__init__.py", "numpy/testing/__init__.py",    # used at run time
+                 "numpy/tests/test_core.py", "scipy/io/test/data.mat",
+                 "numpy/_core/include/numpy/ndarrayobject.h", "torch/lib/torch_cpu.lib",
+                 "torch/lib/torch_cpu.dll", "torch/bin/protoc.exe", "torch/__init__.pyi",
+                 "av/filter/loudnorm_impl.h", "cffi/_cffi_include.h",
+                 "clr_loader/ffi/dlls/x86/ClrLoader.dll", "clr_loader/ffi/dlls/amd64/ClrLoader.dll",
+                 "webview/lib/runtimes/win-x86/native/WebView2Loader.dll",
+                 "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+                 "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+                 "webview/lib/WebBrowserInterop.x86.dll",
+                 "torch-9.dist-info/licenses/third_party/x/test/LICENSE",  # licences stay
+                 "torch-9.dist-info/licenses/third_party/y/include/z.h"]
+        for rel in files:
+            (site / rel).parent.mkdir(parents=True, exist_ok=True)
+            (site / rel).write_bytes(b"x")
+        (runtime / "libtommath.dll").write_bytes(b"x")
+        for dist, owned in (("grpcio-1.0", ["grpc/__init__.py", "grpc/_cython/cygrpc.pyd"]),
+                            ("pyannoteai_sdk-0.4.0", ["pyannoteai/sdk/__init__.py"]),
+                            ("setuptools-83.0.0", ["setuptools/__init__.py",
+                                                   "_distutils_hack/__init__.py",
+                                                   "distutils-precedence.pth"])):
+            info = site / f"{dist}.dist-info"
+            info.mkdir()
+            for rel in owned:
+                (site / rel).parent.mkdir(parents=True, exist_ok=True)
+                (site / rel).write_bytes(b"x")
+            (info / "RECORD").write_text("".join(f"{r},sha256=x,1\n" for r in owned)
+                                         + f"{dist}.dist-info/RECORD,,\n")
+        return runtime, site
+
+    def test_what_the_app_never_uses_is_left_out(self):
+        runtime, site = self._site()
+        removed = bp.prune(site, runtime)
+        self.assertEqual(removed, {"grpcio", "pyannoteai-sdk", "setuptools"})
+        left = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
+        self.assertEqual(left, [
+            "clr_loader/ffi/dlls/amd64/ClrLoader.dll", "jinja2/__init__.py", "jinja2/tests.py",
+            "numpy/__init__.py", "numpy/testing/__init__.py",
+            "torch-9.dist-info/licenses/third_party/x/test/LICENSE",
+            "torch-9.dist-info/licenses/third_party/y/include/z.h",
+            "torch/lib/torch_cpu.dll",
+            "webview/lib/runtimes/win-x64/native/WebView2Loader.dll"])
+        self.assertFalse((runtime / "libtommath.dll").exists())
+        self.assertFalse((site / "torch" / "bin").exists())        # empty folders go too
+
+    def test_a_stale_prune_entry_stops_the_build(self):
+        runtime, site = self._site()
+        (site / "torch" / "bin" / "protoc.exe").unlink()
+        with self.assertRaisesRegex(SystemExit, "torch/bin/protoc.exe is no longer"):
+            bp.prune(site, runtime)
+        runtime, site = self._site("b")
+        shutil.rmtree(site / "grpcio-1.0.dist-info")
+        with self.assertRaisesRegex(SystemExit, "No dist-info folder for grpcio"):
+            bp.prune(site, runtime)
+
+    def test_every_module_is_precompiled_the_same_way_twice(self):
+        builds = []
+        for n in (1, 2):
+            folder = self.root / f"build{n}" / "Unminute-0.5.0"
+            for rel, text in ((f"runtime/{bp.SITE}/pkg/__init__.py", "X = {'a', 'b', 'c'}\n"),
+                              ("app/workspace/mod.py", "def f():\n    return 1\n")):
+                (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+                (folder / rel).write_text(text)
+            bp.precompile(folder)
+            pycs = sorted(p for p in folder.rglob("*.pyc"))
+            self.assertEqual(len(pycs), 2)
+            builds.append({p.relative_to(folder).as_posix(): p.read_bytes() for p in pycs})
+        self.assertEqual(builds[0], builds[1])               # same bytes in a different folder
+        for name, data in builds[0].items():
+            self.assertEqual(int.from_bytes(data[4:8], "little"), 1, name)  # unchecked-hash
+            self.assertNotIn(b"build1", data)                # no build folder in the bytes
+            self.assertNotIn(str(self.root).encode(), data)
+
+    def test_the_package_is_held_to_its_budget(self):
+        budgets = json.dumps({"package_zip_mb": {"value": 100.0}, "package_files": {"value": 50}})
+        self.assertEqual(bp.package_budget(99_949_999, 50, budgets),
+                         ([], {"package_zip_mb": 99.9, "package_files": 50}))
+        problems, _ = bp.package_budget(100_100_000, 51, budgets)
+        self.assertEqual(len(problems), 2)
+        self.assertIn("package_zip_mb: 100.1 is over its budget of 100.0", problems[0])
+        committed = json.loads((bp.ROOT / bp.BUDGETS).read_text(encoding="utf-8"))
+        for key in ("package_zip_mb", "package_files"):
+            self.assertGreaterEqual(committed[key]["value"], committed[key]["measured"])
+
 
 if __name__ == "__main__":
     unittest.main()

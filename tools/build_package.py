@@ -32,6 +32,13 @@
 #     binary-inventory.json   every executable file with its SHA-256 and signer
 #     model-manifest.json     the pinned model files (models are not in the package)
 #
+# What the app never uses is left out (#111 B2): packages nothing imports, the
+# test suites inside packages, files only needed to compile against a package,
+# and binaries for other processors. Every module is precompiled (unchecked-hash
+# .pyc, the same bytes in every build), and the app starts with -I -B, so it
+# writes no bytecode into its folder. The zip's size and file count are held to
+# the ratchets in tests/budgets.json.
+#
 # Models are NOT included: they are separate, verified downloads (#19). Every
 # executable file (by suffix or by its PE, ELF or Mach-O header) must be listed
 # in packaging/binary-allowlist.json with its signer, so a new one, or one that
@@ -98,6 +105,28 @@ TRIAL_PAGE = re.compile(r"(^|/)trial\.(html|js|css)$")
 # found in this machine's catalogs rather than in the file itself.
 SIGNATURE_OK = ("Valid", "NotSigned")
 ALLOWLIST = PACKAGING / "binary-allowlist.json"
+BUDGETS = "tests/budgets.json"
+# Left out after installing (#111 B2). An import trace of the window process,
+# transcription and speaker identification on CPython 3.14 (17 October 2026)
+# loaded none of these. Each must still be there to remove, so a dependency
+# change cannot leave a stale entry.
+PRUNED_DISTRIBUTIONS = {
+    "grpcio": "only opentelemetry's gRPC exporter uses it, and telemetry is off",
+    "pyannoteai-sdk": "the client for pyannote's cloud service, never called",
+    "setuptools": "a packaging tool; its .pth hook ran at every start",
+}
+PRUNED_DIRS = ("tests", "test")         # test suites shipped inside packages
+# Only needed to compile or link against a package, or to type-check it.
+PRUNED_SUFFIXES = (".h", ".hpp", ".hxx", ".cuh", ".lib", ".pdb", ".pyi", ".pyx", ".pxd",
+                   ".pxi", ".c", ".cc", ".cpp", ".cxx")
+PRUNED_PATHS = (                        # under runtime/lib
+    "torch/bin/protoc.exe",             # the protocol buffers compiler
+    "clr_loader/ffi/dlls/x86",          # 32-bit and Arm builds: the app is x64 only
+    "webview/lib/runtimes/win-x86",
+    "webview/lib/runtimes/win-arm64",
+    "webview/lib/WebBrowserInterop.x86.dll",
+)
+PRUNED_RUNTIME = ("libtommath.dll",)   # in the embeddable package; nothing loads it
 ZIP_EPOCH_MIN = 315532800      # 1980-01-01, the earliest time a zip entry can hold
 # SBOM names. Written as constants: tests/test_consistency.py expects exactly
 # one literal "name" value in this file, the package name in version.json.
@@ -280,6 +309,74 @@ def drop_launchers(site):
     then drops their RECORD rows)."""
     for extra in ("bin", "include", "share"):
         shutil.rmtree(site / extra, ignore_errors=True)
+
+
+def prune(site, runtime):
+    """Remove what the app never uses (see PRUNED_*). Returns the distributions
+    removed whole, which then leave the bill of materials and the notices."""
+    for name in sorted(PRUNED_DISTRIBUTIONS):
+        info = dist_info(site, name)
+        rows, _ = read_record(info)
+        for row in rows:
+            p = site / row[0]
+            if ".." not in row[0].replace("\\", "/").split("/") and p.is_file():
+                p.unlink()
+        shutil.rmtree(info)
+    for rel in PRUNED_PATHS:
+        p = site / rel
+        if not p.exists():
+            sys.exit(f"{rel} is no longer in the package: update PRUNED_PATHS.")
+        shutil.rmtree(p) if p.is_dir() else p.unlink()
+    for name in PRUNED_RUNTIME:
+        if not (runtime / name).is_file():
+            sys.exit(f"{name} is no longer in the Python runtime: update PRUNED_RUNTIME.")
+        (runtime / name).unlink()
+    packages_only = [p for p in sorted(site.iterdir()) if not p.name.endswith(".dist-info")]
+    for top in packages_only:
+        if not top.is_dir():
+            if top.suffix.lower() in PRUNED_SUFFIXES:
+                top.unlink()
+            continue
+        for d in sorted((d for d in top.rglob("*") if d.is_dir() and d.name in PRUNED_DIRS),
+                        key=lambda d: len(d.parts)):
+            if d.exists():
+                shutil.rmtree(d)
+        for f in sorted(p for p in top.rglob("*") if p.is_file()
+                        and p.suffix.lower() in PRUNED_SUFFIXES):
+            f.unlink()
+    remove_empty_dirs(site)
+    return set(PRUNED_DISTRIBUTIONS)
+
+
+def remove_empty_dirs(root):
+    for d in sorted((d for d in root.rglob("*") if d.is_dir()), key=lambda d: -len(d.parts)):
+        if not any(d.iterdir()):
+            d.rmdir()
+
+
+def precompile(folder):
+    """Unchecked-hash .pyc for every module in the packages and the app, so
+    nothing is compiled or written when the app runs (it starts with -B).
+    A fixed hash seed and paths relative to the package make the bytes the
+    same in every build; at import Python records the file's real path."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
+    env["PYTHONHASHSEED"] = "0"
+    for sub in (f"runtime/{SITE}", "app"):
+        r = subprocess.run([sys.executable, "-P", "-s", "-m", "compileall", "-q", "-j", "0",
+                            "--invalidation-mode", "unchecked-hash", "-s", str(folder),
+                            str(folder / sub)], env=env, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        if r.returncode:
+            sys.exit(f"Precompiling {sub} failed:\n" + (r.stdout + r.stderr)[-2000:])
+
+
+def package_budget(zip_bytes, files, budgets_text):
+    """Over-budget messages for the zip's size (MB, one decimal) and file count,
+    against the ratchets in tests/budgets.json."""
+    budgets = json.loads(budgets_text)
+    measured = {"package_zip_mb": round(zip_bytes / 1e6, 1), "package_files": files}
+    return [f"{key}: {value} is over its budget of {budgets[key]['value']} ({BUDGETS})"
+            for key, value in measured.items() if value > budgets[key]["value"]], measured
 
 
 def copy_app(app):
@@ -509,7 +606,7 @@ def build_tools():
 
 
 def sbom(installed, app_name, version, commit, epoch, runtime_sha, release=False,
-         tools=()):
+         tools=(), removed=()):
     """A CycloneDX 1.6 bill of materials for the package, reproducible (its
     serial number comes from the version, the commit and the kind of build)."""
     def prop(key, value):
@@ -543,21 +640,30 @@ def sbom(installed, app_name, version, commit, epoch, runtime_sha, release=False
                      "component": {"type": "application", "bom-ref": "unminute",
                                    "name": app_name, "version": version,
                                    "properties": [prop("unminute:commit", commit),
-                                                  prop("unminute:build", kind)]}},
+                                                  prop("unminute:build", kind)]
+                                   + ([prop("unminute:removed", ", ".join(sorted(removed)))]
+                                      if removed else [])}},
         "components": [runtime] + [component(*row) for row in packages(installed)],
     }
+
+
+def canonical(name):
+    return re.sub(r"[-_.]+", "_", name).lower()
+
+
+def dist_info(site, name):
+    """A distribution's dist-info folder. None stops the build."""
+    for info in sorted(site.glob("*.dist-info")):
+        if canonical(info.name[:-len(".dist-info")].rsplit("-", 1)[0]) == canonical(name):
+            return info
+    sys.exit(f"No dist-info folder for {name}: cannot list its files.")
 
 
 def wheel_files(site, name):
     """The files a wheel installed (its RECORD), relative to site. A package
     with no dist-info folder stops the build."""
-    norm = re.sub(r"[-_.]+", "_", name).lower()
-    for info in sorted(site.glob("*.dist-info")):
-        stem = info.name[:-len(".dist-info")]
-        if re.sub(r"[-_.]+", "_", stem.rsplit("-", 1)[0]).lower() == norm:
-            rows, _ = read_record(info)
-            return sorted((row[0] for row in rows), key=str.lower)
-    sys.exit(f"No dist-info folder for {name}: cannot list its files.")
+    rows, _ = read_record(dist_info(site, name))
+    return sorted((row[0] for row in rows), key=str.lower)
 
 
 def licence_files(site, name):
@@ -795,10 +901,12 @@ def build(version, out, cache, release=False, update_allowlist=False):
         work.mkdir(exist_ok=True)
         # What the build obeys: from the commit for a release, else the folder.
         lock_file, allowlist = ROOT / "requirements.txt", ALLOWLIST
+        budgets = (ROOT / BUDGETS).read_text(encoding="utf-8")
         if release:
             lock_file, allowlist = work / "requirements.txt", work / "binary-allowlist.json"
             lock_file.write_bytes(committed(sha, "requirements.txt"))
             allowlist.write_bytes(committed(sha, "packaging/binary-allowlist.json"))
+            budgets = committed(sha, BUDGETS).decode("utf-8")
             for path in ("tools/build_package.py",
                          *(f"packaging/wheels/{w}" for w in VENDORED)):
                 same_as_commit(sha, path)
@@ -812,11 +920,15 @@ def build(version, out, cache, release=False, update_allowlist=False):
         flatten_licences(site)
         prune_portaudio(site)
         drop_launchers(site)
+        removed = prune(site, runtime)
+        installed = [i for i in installed
+                     if canonical(i["metadata"]["name"]) not in map(canonical, removed)]
         sync_records(site)
         if release:
             export_app(folder / "app", sha)
         else:
             copy_app(folder / "app")
+        precompile(folder)
         info = {
             # "name": Start menu and Settings > Apps name; installers read it so a
             # rollback recreates what this version's uninstaller removes.
@@ -847,7 +959,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
         (folder / "THIRD_PARTY_NOTICES.txt").write_text(
             notices(installed, site, folder, version, signed), encoding="utf-8")
         bom = sbom(installed, info["name"], version, commit, epoch, sha256(embed), release,
-                   build_tools())
+                   build_tools(), removed)
         (folder / "sbom.cdx.json").write_text(json.dumps(bom, indent=1), encoding="utf-8")
         too_long = [p.relative_to(folder).as_posix() for p in folder.rglob("*")
                     if len(p.relative_to(folder).as_posix()) > MAX_RELATIVE_PATH]
@@ -859,12 +971,16 @@ def build(version, out, cache, release=False, update_allowlist=False):
         out.mkdir(parents=True, exist_ok=True)
         zpath = out / f"{name}.zip"
         write_zip(folder, zpath, epoch)
+        problems, measured = package_budget(zpath.stat().st_size, count + 1, budgets)
+        if problems:
+            zpath.unlink()
+            sys.exit("The package is over budget (nothing was written):\n" + "\n".join(problems))
         digest = sha256(zpath)
         (out / f"{name}.zip.sha256").write_text(f"{digest}  {zpath.name}\n", encoding="ascii")
         shutil.copyfile(folder / "sbom.cdx.json", out / f"{name}.cdx.json")
         kind = "release" if release else "DEVELOPMENT build (not for publishing)"
-        print(f"{zpath} ({zpath.stat().st_size / 1e6:.0f} MB, {count} files, {kind})\n"
-              f"SHA-256 {digest}")
+        print(f"{zpath} ({measured['package_zip_mb']} MB, {measured['package_files']} files, "
+              f"{kind})\nSHA-256 {digest}")
         return zpath
     finally:
         shutil.rmtree(work, ignore_errors=True)

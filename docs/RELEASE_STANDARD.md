@@ -215,7 +215,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 | --- | --- |
 | Reference machine (budgets) | Recommended spec: 8 cores, 16 GB. A named, managed laptop is still to be chosen (#121). |
 | Information-only machine | Installer minimum: 4 cores, 8 GB. |
-| Budget numbers | `docs/perf-budgets.json`, the only place they live, with the baseline they came from and the targets. Provisional until the reference laptop is measured. |
+| Budget numbers | Release-time measured budgets: `docs/perf-budgets.json`, with the baseline they came from and the targets, provisional until the reference laptop is measured. Deterministic ratchets (package size and file count, imported modules, CSS colours, idle page work): `tests/budgets.json`. |
 | Measurement tool | `tools/perf_check.py`: start-up, idle CPU and private bytes per state, worker unload time and the leak check, measured as section 2 describes. The worker's peak memory and speed need real models and come from `tools/packaged_check.py`, whose idle figures sum working sets and are not comparable. |
 
 ### Gates
@@ -265,7 +265,7 @@ Status is one of:
 | Hash-locked dependencies | 8 | `tools/lock.py --check` (each lock resolved again, with hashes taken afresh), `tools/lock.py --compare` (version changes against the base branch) and `pip download --require-hashes` in `ci.yml` (Requirements resolve); `tools/build_package.py` installs with `--require-hashes --no-deps`; `tests/test_dependency_locks.py` | In place |
 | Vulnerability audit | 8 | `tools/audit.py` (pip-audit over every lock) in `audit.yml` on every pull request and daily, with expiring ignores in `requirements/audit-ignore.json` | In place, not yet required |
 | Reproducible build with SBOM, third-party notices, model manifest and binary inventory; binaries and their signers match an allowlist; a release builds only the tagged commit's committed files from a clean tree | 8, 11 | `tools/build_package.py` (`--release`; `packaging/binary-allowlist.json`); `tests/test_package.py` | Unit tests in place; the build runs by hand until B3 |
-| Pruned, precompiled build; size and file-count budget | 8, 11 | `tools/build_package.py` | Security plan: B2 (pruning) |
+| Pruned, precompiled build; size and file-count budget | 8, 11 | `tools/build_package.py` (`PRUNED_*`, `precompile`; the zip checked against `package_zip_mb` and `package_files` in `tests/budgets.json`); `tests/test_package.py` | Unit tests in place; the build runs by hand until B3 |
 | CI-built, attested release behind an approval; evidence present and naming the zip SHA-256 | 8, 14 | Release job | Security plan: B3 |
 | Update gate, rollback and migration | 9 | Unit tests (`tests/test_update.py`); installer end to end | Unit tests in place; installer check manual |
 | First-launch fallback to the previous version; atomic version pointer; installer log | 9 | Installer and launcher tests | Security plan: B5, B6 |

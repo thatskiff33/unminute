@@ -17,8 +17,8 @@ One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<v
 
 | Path | Contents |
 | --- | --- |
-| `runtime/` | A private CPython 3.14 runtime: the official embeddable package from python.org, with the hash-locked wheels from `requirements.txt` installed. A `._pth` file fixes the import path, so the runtime ignores `PYTHONPATH`, user site-packages and any other Python on the machine. |
-| `app/` | `asr_engines.py`, `offline_guard.py` and `workspace/`. Tests are not included. |
+| `runtime/` | A private CPython 3.14 runtime: the official embeddable package from python.org, with the hash-locked wheels from `requirements.txt` installed, less what the app never uses (step 3 below), and every module precompiled. A `._pth` file fixes the import path, so the runtime ignores `PYTHONPATH`, user site-packages and any other Python on the machine. |
+| `app/` | `asr_engines.py`, `offline_guard.py` and `workspace/`, precompiled. Tests are not included. |
 | `install.cmd`, `install.ps1`, `uninstall.ps1` | The per-user installer and uninstaller. |
 | `version.json` | The version, build time (the source commit's time, so a rebuild is identical), Python version and source commit; whether it is a release build (`release`) and, for a development build, whether the working tree had no changes (`clean`). |
 | `package-manifest.json` | The size and SHA-256 of every file. The installer checks all of them. |
@@ -56,10 +56,15 @@ The build:
    - Console launchers, C headers and man pages written by pip (`runtime\lib\bin`, `include` and `share`) are removed; the launchers embed the build machine's paths. Each package's `RECORD` is then trimmed to the files that ship, and licence files moved out of very deep folders are recorded at their new place.
    - pip runs with `--isolated`, so no `PIP_*` variable or pip configuration file can change what it installs.
    - `runtime\sitecustomize.py` registers `runtime\lib` as a site directory, so packages that rely on `.pth` files work.
-3. Copies the app and installer files (a release build takes them from the commit), then writes `version.json` and `model-manifest.json` (from the `asr_engines.py` being packaged).
-4. Reads the Authenticode signature of every executable file and checks each against `packaging/binary-allowlist.json`, which lists every file with its signer. A file that is not listed, a listed one that is missing, a changed signer, a signature that is neither valid nor absent (for example a hash mismatch), or a signature that Windows found in this machine's catalogs rather than in the file fails the build. "Valid" depends on the build machine's certificate store and clock: a rebuild of an old version may stop if a bundled file's certificate has since been revoked, or has expired without a time stamp. When a dependency change adds, renames or re-signs binaries, rebuild with `--update-binary-allowlist` and review the list's diff in the pull request; a release build cannot rewrite it.
-5. Writes `binary-inventory.json`, `THIRD_PARTY_NOTICES.txt`, `sbom.cdx.json` and `package-manifest.json`.
-6. Zips the result and writes the `.sha256` file and `Unminute-<version>.cdx.json`.
+3. Leaves out what the app never uses (#111 B2; `PRUNED_*` in `tools/build_package.py`). An import trace of the window process, transcription and speaker identification on CPython 3.14 loaded none of it. Each entry must still be there to remove, so a dependency change cannot leave a stale one.
+   - Whole packages: `grpcio` (only opentelemetry's gRPC exporter uses it, and telemetry is off), `pyannoteai-sdk` (the client for pyannote's cloud service) and `setuptools` (a packaging tool, whose `.pth` hook ran at every start). They leave the bill of materials and the notices, which record that they were removed.
+   - Every folder named `tests` or `test` inside a package (licence files in `.dist-info` stay).
+   - Files needed only to compile or link against a package, or to type-check it: C and C++ headers (including `torch\include`), `.lib`, `.pdb`, `.pyi`, Cython and C sources.
+   - `torch\bin\protoc.exe`, the 32-bit and Arm copies of `clr_loader`'s and WebView2's loaders and pywebview's Internet Explorer interop, and `libtommath.dll` from the runtime.
+4. Copies the app and installer files (a release build takes them from the commit) and precompiles every module in `runtime\lib` and `app\` (`compileall`, unchecked-hash `.pyc`, hash seed 0, paths recorded relative to the package), so the same commit gives the same bytes. The app starts with `-I -B -X disable-remote-debug -m workspace`: `-B` means it never writes bytecode into its folder, and unchecked-hash means Python uses the shipped `.pyc` without reading the source first. Then it writes `version.json` and `model-manifest.json` (from the `asr_engines.py` being packaged).
+5. Reads the Authenticode signature of every executable file and checks each against `packaging/binary-allowlist.json`, which lists every file with its signer. A file that is not listed, a listed one that is missing, a changed signer, a signature that is neither valid nor absent (for example a hash mismatch), or a signature that Windows found in this machine's catalogs rather than in the file fails the build. "Valid" depends on the build machine's certificate store and clock: a rebuild of an old version may stop if a bundled file's certificate has since been revoked, or has expired without a time stamp. When a dependency change adds, renames or re-signs binaries, rebuild with `--update-binary-allowlist` and review the list's diff in the pull request; a release build cannot rewrite it.
+6. Writes `binary-inventory.json`, `THIRD_PARTY_NOTICES.txt`, `sbom.cdx.json` and `package-manifest.json`.
+7. Zips the result and checks its size (MB, one decimal) and file count against `package_zip_mb` and `package_files` in `tests/budgets.json` (a release build reads them from the commit); over either, the zip is deleted and the build fails. Then it writes the `.sha256` file and `Unminute-<version>.cdx.json`.
 
 Publishing the zip is part of release publication. Follow [RELEASING.md](RELEASING.md), and only with release authorisation.
 

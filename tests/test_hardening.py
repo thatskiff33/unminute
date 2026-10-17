@@ -587,10 +587,10 @@ class RemoteDebugTests(unittest.TestCase):
 
     def test_the_app_and_its_processes_start_with_remote_debugging_off(self):
         install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn('$LaunchArgs = "-X disable-remote-debug -m workspace"', install)
+        self.assertIn('$LaunchArgs = "-I -B -X disable-remote-debug -m workspace"', install)
         self.assertEqual(install.count("Arguments = $LaunchArgs"), 2)   # new and pinned
         self.assertNotIn('Arguments = "-m workspace"', install)
-        self.assertIn('@("-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")',
+        self.assertIn('@("-I", "-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")',
                       install)
         media = (ROOT / "workspace" / "media.py").read_text(encoding="utf-8")
         self.assertIn('"-I", "-B", "-X", "disable-remote-debug", "-c"', media)
