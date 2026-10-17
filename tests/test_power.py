@@ -102,13 +102,18 @@ class KeepAwakeTests(unittest.TestCase):
 class FakeScheme:
     """A power scheme's lid action, plugged in (True) and on battery (False)."""
 
+    SCHEME = "6cb4fe25-1ec4-4e4a-a4a5-24e60a60b5d3"
+
     def __init__(self, ac=1, dc=1, write_rc=0, apply_rc=0, take=True, watch=None):
         self.values = {True: ac, False: dc}
         self.write_rc, self.apply_rc, self.take = write_rc, apply_rc, take
         self.writes, self.watch = [], watch      # watch: a file that must exist before writing
+        self.active = self.SCHEME
+        self.targets, self.applied = [], []      # the scheme each write and apply went to
+        self.fail_side = None                    # a side whose writes fail (True or False)
 
     def active_scheme(self):
-        return "6cb4fe25-1ec4-4e4a-a4a5-24e60a60b5d3"
+        return self.active
 
     def read(self, scheme, plugged_in):
         return self.values[plugged_in]
@@ -117,13 +122,15 @@ class FakeScheme:
         if self.watch is not None and value == power.DO_NOTHING:
             assert self.watch.exists(), "the restore file must be saved before any change"
         self.writes.append((plugged_in, value))
-        if self.write_rc:
-            return self.write_rc
+        self.targets.append(scheme)
+        if self.write_rc or plugged_in == self.fail_side:
+            return self.write_rc or 5
         if self.take:
             self.values[plugged_in] = value
         return 0
 
     def apply(self, scheme):
+        self.applied.append(scheme)
         return self.apply_rc
 
 
@@ -288,6 +295,136 @@ class LidWatchTests(unittest.TestCase):
         started = w.start()                              # a laptop reports the lid at once
         w.stop()
         self.assertIsInstance(started, bool)
+
+
+class LidSwitchReviewTests(unittest.TestCase):
+    """The #188 security review (F1 to F7 and nits)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "power_restore.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def switch(self, api, managed=lambda: False):
+        return power.LidSwitch(self.path, api=api, managed=managed)
+
+    def test_a_file_that_cannot_be_deleted_never_raises(self):
+        # F1: the values go back; the file stays for the next try.
+        from unittest import mock
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertTrue(self.path.exists())
+        self.assertEqual(sw.problem, "failed")
+        sw.restore()                                     # unlocked later
+        self.assertFalse(self.path.exists())
+        self.assertIsNone(sw.problem)
+
+    def test_a_brief_read_error_keeps_the_record(self):
+        # F2: an unreadable file is not a damaged one.
+        from unittest import mock
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError("locked")):
+            sw.restore()
+        self.assertTrue(self.path.exists())
+        self.assertEqual(api.values, {True: 0, False: 0})
+        self.assertEqual(sw.problem, "failed")
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+
+    def test_a_waiting_restore_is_never_overwritten(self):
+        # F3: AC went back, DC failed; the next recording must not save
+        # {ac 1, dc 0} over the real DC original.
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        api.fail_side = False
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 0})
+        saved = self.path.read_text(encoding="utf-8")
+        self.assertEqual(sw.override(), (False, "refused"))
+        self.assertEqual(self.path.read_text(encoding="utf-8"), saved)
+        api.fail_side = None
+        self.assertEqual(sw.override(), (True, "set"))   # put back first, then set again
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+
+    def test_an_unreadable_registry_counts_as_managed(self):
+        # F5: only "not there" means not managed.
+        def denied(key, name):
+            raise PermissionError("access denied")
+        api = FakeScheme()
+        sw = self.switch(api, managed=lambda: power.lid_managed(denied))
+        self.assertEqual(sw.override(), (False, "managed"))
+        self.assertEqual(api.writes, [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows registry")
+    def test_registry_reads_say_not_set_only_when_missing(self):
+        from unittest import mock
+        self.assertIsNone(power._registry_value(power.GP_LID_KEY + "-absent", "X"))
+        with mock.patch("winreg.OpenKey", side_effect=PermissionError("access denied")):
+            with self.assertRaises(PermissionError):
+                power._registry_value(power.GP_LID_KEY, "ACSettingIndex")
+
+    def test_restore_targets_the_saved_scheme_and_applies_only_if_active(self):
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        api.active = "11111111-2222-3333-4444-555555555555"   # the user switched plans
+        api.targets.clear()
+        api.applied.clear()
+        sw.restore()
+        self.assertEqual(set(api.targets), {FakeScheme.SCHEME})
+        self.assertEqual(api.applied, [])
+        api2 = FakeScheme(ac=1, dc=2)
+        sw2 = power.LidSwitch(Path(self.tmp.name) / "r2.json", api=api2, managed=lambda: False)
+        sw2.override()
+        api2.applied.clear()
+        sw2.restore()
+        self.assertEqual(api2.applied, [FakeScheme.SCHEME])
+
+    def test_a_scheme_that_is_not_a_guid_is_a_lost_record(self):
+        self.path.write_text('{"scheme": "not-a-guid", "ac": 1, "dc": 1}', encoding="utf-8")
+        api = FakeScheme(ac=0, dc=0)
+        sw = self.switch(api)
+        sw.restore()
+        self.assertEqual((api.writes, self.path.exists(), sw.problem), ([], False, "lost"))
+
+    def test_an_original_out_of_range_is_never_changed(self):
+        api = FakeScheme(ac=7, dc=1)
+        self.assertEqual(self.switch(api).override(), (False, "refused"))
+        self.assertEqual((api.writes, self.path.exists()), ([], False))
+
+
+@unittest.skipUnless(os.name == "nt", "Windows power notifications")
+class LidWatchReviewTests(unittest.TestCase):
+    def test_the_callback_outlives_the_subscription(self):
+        # F7: Windows might still call it as the subscription ends.
+        api = FakeNotify()
+        w = power.LidWatch(lambda open_: None, api=api)
+        w.start()
+        keep = w._keep
+        self.assertTrue(w.stop())
+        self.assertIs(w._keep, keep)
+        self.assertIn(keep, power._ALIVE)
+        w.start()
+        self.assertIs(w._keep, keep)                     # made once, reused
+
+    def test_a_refused_unsubscribe_is_reported(self):
+        class Refusing(FakeNotify):
+            def PowerSettingUnregisterNotification(self, handle):
+                return 5
+        w = power.LidWatch(lambda open_: None, api=Refusing())
+        w.start()
+        self.assertFalse(w.stop())
 
 
 if __name__ == "__main__":

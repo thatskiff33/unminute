@@ -218,8 +218,9 @@ def _registry_value(key, name):
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key, 0,
                             winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
             return winreg.QueryValueEx(k, name)[0]
-    except OSError:
-        return None
+    except FileNotFoundError:
+        return None                       # not set; any other error (access denied)
+                                          # propagates, and managed() then says yes
 
 
 class LidSwitch:
@@ -235,6 +236,9 @@ class LidSwitch:
         self._api = api
         self._managed = managed
         self._lock = threading.Lock()
+        # None, "failed" (a restore is waiting and will be tried again) or
+        # "lost" (the record was damaged; the user is told once).
+        self.problem = None
 
     def _calls(self):
         if self._api is None:
@@ -260,6 +264,10 @@ class LidSwitch:
         with self._lock:
             if self.managed():
                 return False, "managed"
+            if self.path.exists():          # originals still waiting to go back
+                self._restore_locked()
+                if self.path.exists():
+                    return False, "refused"  # never overwrite them with "Do nothing"
             try:
                 api = self._calls()
                 scheme = api.active_scheme()
@@ -267,6 +275,8 @@ class LidSwitch:
                             "dc": api.read(scheme, False)}
             except Exception:
                 return False, "refused"
+            if not _valid_saved(original):
+                return False, "refused"     # a value it could not faithfully put back
             if original["ac"] == DO_NOTHING and original["dc"] == DO_NOTHING:
                 return True, "already"      # nothing to change, nothing to put back
             try:
@@ -294,29 +304,39 @@ class LidSwitch:
             self._restore_locked()
 
     def _restore_locked(self):
+        """Never raises. A file that cannot be read just now, or values that
+        cannot be written just now, are kept for the next try ("failed"). A
+        damaged file cannot say what to put back: the lid action is left as it
+        is and the user is told ("lost", the user's decision on #188)."""
         try:
-            saved = json.loads(self.path.read_text(encoding="utf-8"))
+            text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
-        except (OSError, ValueError):
+        except OSError:
+            self.problem = "failed"         # briefly locked or unreadable: try again later
+            return
+        try:
+            saved = json.loads(text)
+        except ValueError:
             saved = None
-        if not (isinstance(saved, dict) and isinstance(saved.get("scheme"), str)
-                and all(isinstance(saved.get(k), int) and not isinstance(saved.get(k), bool)
-                        and 0 <= saved[k] <= 3 for k in ("ac", "dc"))):
-            self._remove()                  # damaged: nothing safe to put back
+        if not _valid_saved(saved):
+            self.problem = "lost"           # nothing safe to put back: left as it is
+            self._remove()
             return
         try:
             api = self._calls()
-            scheme = saved["scheme"]
+            scheme = saved["scheme"]        # written there even if no longer active
             for plugged_in, key in ((True, "ac"), (False, "dc")):
                 if api.read(scheme, plugged_in) == DO_NOTHING:
                     if api.write(scheme, plugged_in, saved[key]):
-                        return              # kept, so the next start tries again
+                        raise OSError("write refused")
             if scheme == api.active_scheme():
                 api.apply(scheme)
         except Exception:
-            return                          # kept, so the next start tries again
-        self._remove()
+            self.problem = "failed"         # kept, so the next try puts it back
+            return
+        if self._remove():
+            self.problem = None
 
     def _save(self, original):
         tmp = self.path.with_name(self.path.name + ".tmp")
@@ -327,14 +347,34 @@ class LidSwitch:
         os.replace(tmp, self.path)
 
     def _remove(self):
+        """True once the file is gone. A file that cannot be deleted (locked,
+        read-only) is kept: the values are back, and the next try removes it."""
         try:
             self.path.unlink()
         except FileNotFoundError:
             pass
+        except OSError:
+            self.problem = "failed"
+            return False
+        return True
+
+
+def _valid_saved(saved):
+    """The restore record: a real scheme GUID and lid actions 0 to 3."""
+    if not (isinstance(saved, dict) and isinstance(saved.get("scheme"), str)
+            and all(isinstance(saved.get(k), int) and not isinstance(saved.get(k), bool)
+                    and 0 <= saved[k] <= 3 for k in ("ac", "dc"))):
+        return False
+    try:
+        uuid.UUID(saved["scheme"])
+    except ValueError:
+        return False
+    return True
 
 
 # -- lid open and close notifications (#172) ------------------------------------------
 
+_ALIVE = []                                     # lid callbacks, never freed (see LidWatch)
 DEVICE_NOTIFY_CALLBACK = 2
 PBT_POWERSETTINGCHANGE = 0x8013
 _CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
@@ -355,7 +395,7 @@ class LidWatch:
         self.on_change = on_change
         self._api = api
         self._handle = None
-        self._keep = None                # the callback must outlive the registration
+        self._keep = None                # (callback, params), made once and never freed
 
     def start(self):
         if self._handle is not None:
@@ -365,31 +405,36 @@ class LidWatch:
                 if sys.platform != "win32":
                     return False
                 self._api = ctypes.WinDLL("powrprof")
-
-            class Params(ctypes.Structure):        # DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
-                _fields_ = [("Callback", _CALLBACK), ("Context", ctypes.c_void_p)]
-            cb = _CALLBACK(self._notified)
-            params = Params(cb, None)
+            if self._keep is None:
+                class Params(ctypes.Structure):    # DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
+                    _fields_ = [("Callback", _CALLBACK), ("Context", ctypes.c_void_p)]
+                cb = _CALLBACK(self._notified)
+                self._keep = (cb, Params(cb, None))
+                # Kept for the life of the process: Microsoft does not say that
+                # unregistering waits for a callback already running, and a
+                # freed callback crashes the process.
+                _ALIVE.append(self._keep)
             handle = ctypes.c_void_p()
             rc = self._api.PowerSettingRegisterNotification(
                 ctypes.byref(GUID.of(LIDSWITCH_STATE)), DEVICE_NOTIFY_CALLBACK,
-                ctypes.byref(params), ctypes.byref(handle))
+                ctypes.byref(self._keep[1]), ctypes.byref(handle))
             if rc or not handle.value:
                 return False
-            self._keep, self._handle = (cb, params), handle.value
+            self._handle = handle.value
             return True
         except Exception:
             return False
 
     def stop(self):
+        """True if Windows confirmed the end of the subscription (the callback
+        stays alive either way)."""
         handle, self._handle = self._handle, None
         if handle is None:
-            return
+            return True
         try:
-            self._api.PowerSettingUnregisterNotification(ctypes.c_void_p(handle))
+            return self._api.PowerSettingUnregisterNotification(ctypes.c_void_p(handle)) == 0
         except Exception:
-            pass
-        self._keep = None
+            return False
 
     def _notified(self, context, kind, setting):
         try:

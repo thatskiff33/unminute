@@ -48,6 +48,7 @@ SR = 16000
 # clock is checked again within the cap after the computer wakes.
 WATCH_MAX_WAIT_S = 60.0             # watched folders: a scan is at most this late
 POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
+LID_RETRY_S = 60.0                  # a lid restore that failed is tried again this often
 # Settings and Setup are polled while open; what they show from disk (model
 # and component files) or Credential Manager is worked out at most this often,
 # and again at once after a download, removal, token or settings change (R7b).
@@ -233,17 +234,26 @@ class Settings:
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None, check_integrity=False):
+                 policy_reader=None, check_integrity=False, lid_switch=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
         app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy).
         check_integrity: the app's own start (R11): check the database when
-        the app last ended without closing, or the last check found damage."""
+        the app last ended without closing, or the last check found damage.
+        lid_switch: tests only; a power.LidSwitch with a fake power scheme."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
         self.root.mkdir(parents=True, exist_ok=True)
+        # The lid (#172): a "Do nothing" left by a crash or power cut is put
+        # back first of all, before anything that could fail (the database
+        # may be damaged by the same power cut). It never stops the start.
+        self.lid = lid_switch or power.LidSwitch(self.root / "power_restore.json")
+        try:
+            self.lid.restore()
+        except Exception:
+            pass
         self.media = self.root / "media"
         # Content-free diagnostics (R9): workspace\logs. The app's start
         # (__main__) installs it as the process's log; tests read it directly.
@@ -308,9 +318,8 @@ class Workspace:
         self.keep_awake = power.KeepAwake()  # held while a recording is open; tests use a fake
         # The lid (#172): with the opt-in setting, "Do nothing" while recording.
         # A change left by a crash or power cut is put back first of all.
-        self.lid = power.LidSwitch(self.root / "power_restore.json")
-        self.lid.restore()
         self.lid_watch = power.LidWatch(self._lid_changed)
+        self._lid_retry_at = float("-inf")  # a waiting restore is retried while idle
         self._lid_result = None            # the last override's outcome, for the page
         self._power_on = False             # keep-awake and lid are set for a recording
         self._yielded = False             # a worker stop caused by recording, not the user
@@ -476,16 +485,24 @@ class Workspace:
             on = self._recording is not None
             if on != self._power_on:          # once per start and per end
                 self._power_on = on
-                if on:
-                    self.keep_awake.hold()    # refused: recording carries on regardless
-                    self.lid_watch.start()
-                    if self.settings["lid_override"] and self._allowed("AllowLidOverride"):
-                        self._lid_result = self.lid.override()
-                else:
-                    self.keep_awake.release()
-                    self.lid_watch.stop()
-                    self.lid.restore()
-                    self._lid_result = None
+                # Nothing here may stop a recording starting or ending.
+                try:
+                    if on:
+                        self.keep_awake.hold()    # refused: recording carries on regardless
+                        self.lid_watch.start()
+                        if self.settings["lid_override"] and self._allowed("AllowLidOverride"):
+                            self._lid_result = self.lid.override()
+                            if not self.settings["lid_override"]:   # turned off meanwhile
+                                self.lid.restore()
+                                self._lid_result = None
+                    else:
+                        self.keep_awake.release()
+                        self.lid_watch.stop()
+                        self.lid.restore()
+                        self._lid_result = None
+                except Exception:
+                    pass
+                self._lid_problem_report()
             hook = self.recording_indicator
             if hook is None or on == self._indicated:
                 return
@@ -494,6 +511,29 @@ class Workspace:
                 self._indicated = on
             except Exception:            # the indicator never stops a recording;
                 self._indicated = None   # the next change is always applied
+
+    LID_NOTES = {
+        # The user's decision on #188: a record that cannot say what to put back
+        # leaves the lid action as it is, and the user is told once.
+        "lost": "Unminute could not put your lid setting back, because its saved record "
+                "was damaged. Check what closing the lid does in Windows Settings > System "
+                "> Power & battery > Lid & power button controls.",
+        "failed": "Unminute could not put your lid setting back yet. It tries again while "
+                  "the app is open. If this stays, check what closing the lid does in "
+                  "Windows Settings > System > Power & battery > Lid & power button "
+                  "controls.",
+    }
+
+    def _lid_problem_report(self):
+        """A lid restore that failed or found a damaged record is shown once,
+        under the recording card (no content)."""
+        problem = getattr(self.lid, "problem", None)
+        if problem in self.LID_NOTES and problem != getattr(self, "_lid_reported", None):
+            self._lid_reported = problem
+            self._add_report({"title": None, "seconds": 0, "events": [], "lid": True,
+                              "note": self.LID_NOTES[problem]})
+        elif problem is None:
+            self._lid_reported = None
 
     def _lid_changed(self, open_):
         """Windows reports the lid opening or closing (power.LidWatch)."""
@@ -795,6 +835,9 @@ class Workspace:
                 "display": self.settings["recording_display"],
                 # The lid action is "Do nothing" for this recording (set, or already so).
                 "lid_override": bool(self._lid_result and self._lid_result[0]),
+                # The setting is on but the lid action could not be set: why.
+                "lid_refused": (self._lid_result[1] if self._lid_result
+                                and not self._lid_result[0] else None),
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
 
@@ -2152,9 +2195,17 @@ class Workspace:
         it is read again within 30 seconds."""
         self._run_clipboard_clears()
         p = self.policy.current()
-        if not p.get("AllowLidOverride") and self.lid.active:
-            self.lid.restore()                # IT turned it off: put the lid action back
-            self._lid_result = None
+        try:
+            if not p.get("AllowLidOverride") and self.lid.active:
+                self.lid.restore()            # IT turned it off: put the lid action back
+                self._lid_result = None
+            elif (self.lid.active and not self._capturing()
+                  and self._clock() - self._lid_retry_at >= LID_RETRY_S):
+                self._lid_retry_at = self._clock()
+                self.lid.restore()            # a restore that failed earlier: try again
+            self._lid_problem_report()
+        except Exception:
+            pass
         stop = not p.get("AllowMicrophoneRecording") and not p.unreadable
         if stop and self._recording is not None:
             self._finish_recording(self._recording, event=(

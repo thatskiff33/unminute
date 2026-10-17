@@ -2053,7 +2053,7 @@ function fmtDuration(s) {
   return h ? part(h, "hour") + (mm ? ` ${part(mm, "minute")}` : "") : part(m, "minute");
 }
 
-function renderRecCard(rec, display, lidOverride) {
+function renderRecCard(rec, display, lidOverride, lidRefused) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
   $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
@@ -2082,7 +2082,9 @@ function renderRecCard(rec, display, lidOverride) {
   // marks could not be seen meanwhile), and that closing it will not stop it.
   const lid = [...rec.events].reverse().find((e) => e.kind === "lid");
   const lidNote = (lid ? `The recording carried on while the lid was closed (about ${fmtDuration(lid.seconds)}). ` : "")
-    + (lidOverride ? "Closing the lid does not stop this recording: stop it here when the meeting ends. " : "");
+    + (lidOverride ? "Closing the lid does not stop this recording: stop it here when the meeting ends. "
+      : lidRefused === "managed" ? "Closing the lid may stop this recording: your organisation sets what closing the lid does. "
+      : lidRefused ? "Closing the lid may stop this recording: Windows did not allow Unminute to change the lid setting. " : "");
   $("rec-note").textContent = lidNote + `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
     "Tell everyone present the meeting is being recorded.";
 }
@@ -2114,6 +2116,8 @@ function reportItem(rep) {
         onConfirm: () => attempt(() => call("delete_pending_recording", rep.id).then(renderRecorder)) })),
       dismiss);
   const done = rep.note ? ` ${rep.note}` : rep.meeting ? " It is in Meetings now." : " It is being imported.";
+  if (rep.lid)                                      // a lid setting that could not be put back
+    return notice("alert", rep.note, dismiss);
   if (rep.events.some((e) => e.kind === "sleep"))
     return notice("alert", `The computer went to sleep, so the recording stopped. ${fmtSeconds(rep.seconds)} recorded before that was saved. If you closed the lid: to keep recording with it closed, set Windows to do nothing when the lid is closed; the recording then carries on until you stop it here.${done}`, dismiss);
   if (rep.events.some((e) => e.kind === "device_lost"))
@@ -2146,7 +2150,7 @@ async function renderRecorder(tick = false) {
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
-  if (active) renderRecCard(rec, r.display, r.lid_override);
+  if (active) renderRecCard(rec, r.display, r.lid_override, r.lid_refused);
   else stopViz();
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
