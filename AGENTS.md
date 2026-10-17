@@ -176,6 +176,10 @@ or GitHub owner settings. Check the live repository settings before an authorise
 - Squash merge with linear history (`docs/RELEASING.md`). Review a fixed commit independently,
   with a security review for anything under "Stop and ask"; verify fixes and record the review
   on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
+- A PR may be a draft while work continues. Once its required checks pass and any review it
+  needs is recorded, the agent that owns it marks it ready (`gh pr ready <n>`) so it can be
+  reviewed and merged; who merges follows "Authority". Never call a draft "ready to merge":
+  check `gh pr view <n> --json isDraft,mergeStateStatus` first.
 
 ## Several agents or sessions
 
