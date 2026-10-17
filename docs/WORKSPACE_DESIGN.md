@@ -81,6 +81,14 @@ A new version starts without edits, and the old version's edits stay with it. Ca
 
 The UI bridge and the processing thread share one `Store` object. Every operation holds one lock, because a single SQLite connection cannot nest transactions and readers must not see another thread's uncommitted writes. Workers (#15) run in other processes and never open the database.
 
+## Content columns (#111 C2)
+
+The columns that hold meeting content are listed in `store.CONTENT_COLUMNS`: titles, error texts, the original's path, passages, words, edits and their history, speaker run errors, speaker corrections, handoff options, hold reasons, the reviewed snapshot and watched-folder paths. Only `workspace/store.py` names them in SQL. Every value it writes or reads passes through the store's codec, together with its meeting (none for watched folders) and its place (table, column, row id). Rows that hold content get their ids before they are inserted, so each value can be bound to its row.
+
+Other modules keep their rules (holds, cleanup, speaker names, handoff, intake) and use the store's methods for content: `meetings()`, `transcript()`, `passage()`, `speaker_runs()`, `corrections()`, `holds()`, `folders()`, `handoff_options()` and so on. Their own SQL touches plain columns only. Since C2a the codec stores values as they are (schema 1); C2b seals them (`docs/ENCRYPTION.md`).
+
+`tests/test_content_access.py` checks this two ways. A static check finds any SQL outside the store that names a content column or selects `*` from a table that has one. A run with a codec that scrambles every value goes through a meeting's whole life, in the store and in the app with fake engines: nothing readable is left in the database file, and everything the app shows is still right.
+
 ## Run state
 
 Meeting `phase`: `new`, then `transcribing`, then `transcribed`, then (#16) speakers.

@@ -15,8 +15,6 @@
 # with an empty log; the old run's corrections stay with that run. All of it is
 # removed with the transcript at cleanup (#17).
 
-import time
-
 MAX_NAME = 80
 MIN_CLIP_S, MAX_CLIP_S = 1.5, 15.0     # representative passages: long enough to judge
 MAX_FALLBACK_S = 30.0                  # longest passage played whole when nothing better
@@ -28,12 +26,11 @@ class NamingError(ValueError):
 
 
 def current_run(store, vid):
-    return store._one("SELECT * FROM speaker_runs WHERE version_id = ? AND status = 'done' "
-                      "ORDER BY started_at DESC, rowid DESC LIMIT 1", (vid,))
+    return store.current_run(vid)
 
 
 def _log(store, rid):
-    return store._all("SELECT * FROM speaker_corrections WHERE run_id = ? ORDER BY id", (rid,))
+    return store.corrections(rid)
 
 
 def resolve(store, vid):
@@ -89,9 +86,7 @@ def resolve(store, vid):
 
 
 def _append(store, rid, kind, target, value):
-    with store.tx() as db:
-        db.execute("INSERT INTO speaker_corrections (run_id, kind, target, value, at) "
-                   "VALUES (?, ?, ?, ?, ?)", (rid, kind, str(target), value, time.time()))
+    store.add_correction(rid, kind, target, value)
 
 
 def _run_or_refuse(store, vid):
@@ -154,10 +149,7 @@ def undo(store, vid):
 
 
 def _rows(store, vid):
-    return store._all("SELECT s.id, s.start_s, s.end_s, COALESCE(e.text, s.text) AS text, "
-                      "e.text IS NOT NULL AS edited, s.words_json FROM segments s "
-                      "LEFT JOIN edits e ON e.segment_id = s.id WHERE s.version_id = ? "
-                      "ORDER BY s.start_s", (vid,))
+    return store.transcript(vid)
 
 
 def _excerpt(r):

@@ -192,6 +192,37 @@ CREATE TABLE IF NOT EXISTS receipts (
 """
 
 
+# Columns that hold meeting content (#111 C2; docs/ENCRYPTION.md). Only this
+# module names them in SQL, and every value read or written goes through the
+# Store's codec, so C2b can seal them in one place. tests/test_content_access.py
+# checks that no other module's SQL names them or selects * from their tables.
+CONTENT_COLUMNS = {
+    "meetings": ("title", "last_error"),
+    "reviewed_snapshots": ("text",),
+    "sources": ("original_path",),
+    "segments": ("text", "words_json"),
+    "edits": ("text",),
+    "edit_history": ("before", "after"),
+    "speaker_runs": ("error",),
+    "speaker_corrections": ("value",),
+    "handoff_options": ("omitted", "redactions"),
+    "holds": ("reason",),
+    "watched_folders": ("path",),
+}
+
+
+class PlainCodec:
+    """Content stored as it is (schema 1). C2b replaces it with a codec that
+    seals each value under its meeting's text key (the workspace key when
+    meeting is None), bound to its table, column and row."""
+
+    def seal(self, meeting, table, column, row, value):
+        return value
+
+    def unseal(self, meeting, table, column, row, value):
+        return value
+
+
 OVERLAP_MIN_S = 0.3   # two people must talk at the same time this long to count
 SPEAKER_RESTART_NOTE = (
     "Speaker identification was interrupted. It works on the whole meeting at once, so it "
@@ -390,9 +421,11 @@ def _damaged(exc):
 
 
 class Store:
-    def __init__(self, path, housekeeping=True):
+    def __init__(self, path, housekeeping=True, codec=None):
         """housekeeping False (R11): open a database the check found damaged
-        without marking interrupted work; mark_interrupted() runs later."""
+        without marking interrupted work; mark_interrupted() runs later.
+        codec: how content columns are stored (PlainCodec unless given)."""
+        self.codec = codec or PlainCodec()
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -493,8 +526,31 @@ class Store:
         with self.tx() as db:
             db.execute("UPDATE attempts SET result = 'interrupted' WHERE result = 'running'")
             # Same for a speaker pass cut short: it restarts from the start.
-            db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
-                       "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
+            for rid, mid in db.execute(
+                    "SELECT r.id, v.meeting_id FROM speaker_runs r JOIN versions v "
+                    "ON v.id = r.version_id WHERE r.status = 'running'").fetchall():
+                db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
+                           "WHERE id = ?",
+                           (self._seal(mid, "speaker_runs", "error", rid, SPEAKER_RESTART_NOTE),
+                            rid))
+
+    # -- content columns (CONTENT_COLUMNS) ---------------------------------------
+
+    def _seal(self, meeting, table, column, row, value):
+        return None if value is None else self.codec.seal(meeting, table, column, row, value)
+
+    def _unseal(self, meeting, table, column, row, value):
+        return None if value is None else self.codec.unseal(meeting, table, column, row, value)
+
+    def _opened(self, table, row, meeting, key):
+        """A row as a dict, with its content columns opened."""
+        if row is None:
+            return None
+        out = dict(row)
+        for column in CONTENT_COLUMNS.get(table, ()):
+            if column in out:
+                out[column] = self._unseal(meeting, table, column, key, out[column])
+        return out
 
     @contextmanager
     def tx(self):
@@ -537,7 +593,8 @@ class Store:
         mid, now = new_id(), time.time()
         with self.tx() as db:
             db.execute("INSERT INTO meetings (id, title, created_at, updated_at) "
-                       "VALUES (?, ?, ?, ?)", (mid, title, now, now))
+                       "VALUES (?, ?, ?, ?)",
+                       (mid, self._seal(mid, "meetings", "title", mid, title), now, now))
         return mid
 
     def delete_new_meeting(self, mid):
@@ -547,8 +604,22 @@ class Store:
                 raise StoreError("Meeting has content; use cleanup (#17).")
             db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
 
+    def _meeting(self, row):
+        return self._opened("meetings", row, row["id"], row["id"]) if row is not None else None
+
     def meeting(self, mid):
-        return self._one("SELECT * FROM meetings WHERE id = ?", (mid,))
+        return self._meeting(self._one("SELECT * FROM meetings WHERE id = ?", (mid,)))
+
+    def meetings(self, where="1", args=()):
+        """Meetings matching a condition on their plain columns (a fixed SQL
+        expression from the caller, never user text), oldest first."""
+        return [self._meeting(r) for r in self._all(
+            f"SELECT * FROM meetings WHERE {where} ORDER BY created_at", args)]
+
+    def rename_meeting(self, mid, title):
+        with self.tx() as db:
+            db.execute("UPDATE meetings SET title = ? WHERE id = ?",
+                       (self._seal(mid, "meetings", "title", mid, title), mid))
 
     def add_source(self, mid, *, original_path, original_sha256, original_size,
                    original_mtime_ns, audio_sha256, samples, sample_rate):
@@ -557,12 +628,33 @@ class Store:
             db.execute("INSERT INTO sources (id, meeting_id, original_path, original_sha256, "
                        "original_size, original_mtime_ns, audio_sha256, samples, sample_rate, "
                        "created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                       (sid, mid, original_path, original_sha256, original_size,
-                        original_mtime_ns, audio_sha256, samples, sample_rate, time.time()))
+                       (sid, mid, self._seal(mid, "sources", "original_path", sid, original_path),
+                        original_sha256, original_size, original_mtime_ns, audio_sha256,
+                        samples, sample_rate, time.time()))
         return sid
 
+    def _source(self, row):
+        return (self._opened("sources", row, row["meeting_id"], row["id"])
+                if row is not None else None)
+
     def source(self, sid):
-        return self._one("SELECT * FROM sources WHERE id = ?", (sid,))
+        return self._source(self._one("SELECT * FROM sources WHERE id = ?", (sid,)))
+
+    def sources(self, mid):
+        """A meeting's sources, oldest first."""
+        return [self._source(r) for r in self._all(
+            "SELECT * FROM sources WHERE meeting_id = ? ORDER BY created_at", (mid,))]
+
+    def set_source_intake(self, sid, folder_id, may_delete):
+        """Where an import came from (#24). The original's location is kept
+        only when the folder's explicit setting allows deleting it."""
+        with self.tx() as db:
+            if may_delete:
+                db.execute("UPDATE sources SET delete_original = 1, intake_folder = ? "
+                           "WHERE id = ?", (folder_id, sid))
+            else:
+                db.execute("UPDATE sources SET original_path = NULL, intake_folder = ? "
+                           "WHERE id = ?", (folder_id, sid))
 
     def set_paused(self, mid, paused):
         with self.tx() as db:
@@ -572,7 +664,8 @@ class Store:
     def set_phase(self, mid, phase, error=None):
         with self.tx() as db:
             db.execute("UPDATE meetings SET phase = ?, last_error = ?, updated_at = ? "
-                       "WHERE id = ?", (phase, error, time.time(), mid))
+                       "WHERE id = ?", (phase, self._seal(mid, "meetings", "last_error", mid,
+                                                          error), time.time(), mid))
 
     # -- versions and chunks -----------------------------------------------------
 
@@ -657,18 +750,25 @@ class Store:
         longer active, or `epoch` no longer matches the meeting's content epoch."""
         with self.tx() as db:
             row = db.execute(
-                "SELECT c.status, v.state, m.content_epoch FROM chunks c "
+                "SELECT c.status, v.state, m.content_epoch, m.id AS mid FROM chunks c "
                 "JOIN versions v ON v.id = c.version_id JOIN meetings m ON m.id = v.meeting_id "
                 "WHERE c.version_id = ? AND c.idx = ?", (vid, idx)).fetchone()
             if (row is None or row["status"] == "done" or row["state"] != "active"
                     or (epoch is not None and epoch != row["content_epoch"])):
                 return False
+            # Ids are given here, not by SQLite, so each passage's text can be
+            # bound to its row before it is written (C2b seals it).
+            first = db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM segments").fetchone()[0]
+            mid, rows = row["mid"], []
+            for sid, s in enumerate(segments, start=first):
+                words = (json.dumps([list(w) for w in s.words])
+                         if getattr(s, "words", ()) else None)
+                rows.append((sid, vid, idx, s.start, s.end,
+                             self._seal(mid, "segments", "text", sid, s.text),
+                             self._seal(mid, "segments", "words_json", sid, words)))
             db.executemany(
-                "INSERT INTO segments (version_id, chunk_idx, start_s, end_s, text, words_json) "
-                "VALUES (?,?,?,?,?,?)",
-                [(vid, idx, s.start, s.end, s.text,
-                  json.dumps([list(w) for w in s.words]) if getattr(s, "words", ()) else None)
-                 for s in segments])
+                "INSERT INTO segments (id, version_id, chunk_idx, start_s, end_s, text, "
+                "words_json) VALUES (?,?,?,?,?,?,?)", rows)
             db.execute("UPDATE chunks SET status = 'done', committed_at = ? "
                        "WHERE version_id = ? AND idx = ?", (time.time(), vid, idx))
             if attempt_id is not None:
@@ -678,13 +778,32 @@ class Store:
 
     # -- transcript and edits ----------------------------------------------------
 
+    def _passage(self, r):
+        """{id, start_s, end_s, text, generated, edited, words_json} from a row
+        with s.id, s.start_s, s.end_s, generated (s.text), edit (e.text),
+        s.words_json and mid; the edit, where there is one, is the text."""
+        mid, sid = r["mid"], r["id"]
+        generated = self._unseal(mid, "segments", "text", sid, r["generated"])
+        edit = self._unseal(mid, "edits", "text", sid, r["edit"])
+        return {"id": sid, "start_s": r["start_s"], "end_s": r["end_s"],
+                "text": generated if edit is None else edit, "generated": generated,
+                "edited": int(edit is not None),
+                "words_json": self._unseal(mid, "segments", "words_json", sid, r["words_json"])}
+
+    _PASSAGES = ("SELECT s.id, s.start_s, s.end_s, s.text AS generated, e.text AS edit, "
+                 "s.words_json, v.meeting_id AS mid FROM segments s "
+                 "JOIN versions v ON v.id = s.version_id "
+                 "LEFT JOIN edits e ON e.segment_id = s.id ")
+
     def transcript(self, vid):
         """Segments in time order, with any human edit applied on top."""
-        return self._all(
-            "SELECT s.id, s.start_s, s.end_s, COALESCE(e.text, s.text) AS text, "
-            "s.text AS generated, e.text IS NOT NULL AS edited, s.words_json "
-            "FROM segments s LEFT JOIN edits e ON e.segment_id = s.id "
-            "WHERE s.version_id = ? ORDER BY s.start_s, s.id", (vid,))
+        return [self._passage(r) for r in self._all(
+            self._PASSAGES + "WHERE s.version_id = ? ORDER BY s.start_s, s.id", (vid,))]
+
+    def passage(self, segment_id):
+        """One passage (as transcript()), or None."""
+        r = self._one(self._PASSAGES + "WHERE s.id = ?", (segment_id,))
+        return self._passage(r) if r is not None else None
 
     # -- speaker separation (#16) -------------------------------------------------
 
@@ -773,15 +892,70 @@ class Store:
     def end_speaker_run(self, rid, status, error=None):
         """Mark a run failed or interrupted. Its partial data was never written."""
         with self.tx() as db:
+            row = db.execute("SELECT v.meeting_id FROM speaker_runs r JOIN versions v "
+                             "ON v.id = r.version_id WHERE r.id = ?", (rid,)).fetchone()
+            if row is None:
+                return
             db.execute("UPDATE speaker_runs SET status = ?, error = ?, finished_at = ? "
-                       "WHERE id = ? AND status = 'running'", (status, error, time.time(), rid))
+                       "WHERE id = ? AND status = 'running'",
+                       (status, self._seal(row[0], "speaker_runs", "error", rid, error),
+                        time.time(), rid))
+
+    def _runs(self, where, args):
+        """Speaker runs with their error opened, oldest first per version."""
+        out = []
+        for r in self._all("SELECT r.*, v.meeting_id AS mid FROM speaker_runs r "
+                           "JOIN versions v ON v.id = r.version_id WHERE " + where +
+                           " ORDER BY r.started_at, r.rowid", args):
+            run = self._opened("speaker_runs", r, r["mid"], r["id"])
+            del run["mid"]
+            out.append(run)
+        return out
 
     def speaker_runs(self, vid):
         """Oldest first: the last run is the meeting's speaker state. Start
         times are strictly increasing per version (_next_run_time); rowid only
         orders rows written before that."""
-        return self._all("SELECT * FROM speaker_runs WHERE version_id = ? "
-                         "ORDER BY started_at, rowid", (vid,))
+        return self._runs("r.version_id = ?", (vid,))
+
+    def active_speaker_runs(self):
+        """Every speaker run of every active version, oldest first."""
+        return self._runs("v.state = 'active'", ())
+
+    def current_run(self, vid):
+        """The latest finished speaker run of a version, or None."""
+        done = [r for r in self.speaker_runs(vid) if r["status"] == "done"]
+        return done[-1] if done else None
+
+    # -- speaker corrections (#21) ----------------------------------------------------
+
+    def _corrections(self, where, args):
+        return [self._opened("speaker_corrections", r, r["mid"], r["id"]) for r in self._all(
+            "SELECT c.id, c.run_id, c.kind, c.target, c.value, c.at, v.meeting_id AS mid "
+            "FROM speaker_corrections c JOIN speaker_runs r ON r.id = c.run_id "
+            "JOIN versions v ON v.id = r.version_id WHERE " + where + " ORDER BY c.id", args)]
+
+    def corrections(self, rid):
+        """A run's corrections, oldest first, with their values opened."""
+        return self._corrections("c.run_id = ?", (rid,))
+
+    def active_corrections(self):
+        """Corrections of every finished run of an active version, oldest first."""
+        return self._corrections("r.status = 'done' AND v.state = 'active'", ())
+
+    def add_correction(self, rid, kind, target, value):
+        with self.tx() as db:
+            row = db.execute("SELECT v.meeting_id FROM speaker_runs r JOIN versions v "
+                             "ON v.id = r.version_id WHERE r.id = ?", (rid,)).fetchone()
+            if row is None:
+                raise StoreError("That speaker identification no longer exists.")
+            cid = db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM speaker_corrections"
+                             ).fetchone()[0]
+            db.execute("INSERT INTO speaker_corrections (id, run_id, kind, target, value, at) "
+                       "VALUES (?, ?, ?, ?, ?, ?)",
+                       (cid, rid, kind, str(target),
+                        self._seal(row[0], "speaker_corrections", "value", cid, value),
+                        time.time()))
 
     def current_speakers(self, vid):
         """{segment_id: (label, overlap)} from the latest completed run, or {}.
@@ -798,39 +972,46 @@ class Store:
         replaced so it can be undone. Saving the generated text again removes
         the edit. Returns False if nothing changed."""
         with self.tx() as db:
-            seg = db.execute("SELECT s.text AS generated, e.text AS edited FROM segments s "
-                             "LEFT JOIN edits e ON e.segment_id = s.id WHERE s.id = ?",
-                             (segment_id,)).fetchone()
+            seg = db.execute(self._PASSAGES + "WHERE s.id = ?", (segment_id,)).fetchone()
             if seg is None:
                 raise StoreError("That passage no longer exists.")
-            current = seg["edited"]
-            new = None if text == seg["generated"] else text
+            passage = self._passage(seg)
+            mid = seg["mid"]
+            current = passage["text"] if passage["edited"] else None
+            new = None if text == passage["generated"] else text
             if new == current:
                 return False
-            self._set_edit(db, segment_id, new)
-            db.execute("INSERT INTO edit_history (segment_id, before, after, at) "
-                       "VALUES (?,?,?,?)", (segment_id, current, new, time.time()))
+            self._set_edit(db, mid, segment_id, new)
+            hid = db.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM edit_history").fetchone()[0]
+            db.execute("INSERT INTO edit_history (id, segment_id, before, after, at) "
+                       "VALUES (?,?,?,?,?)",
+                       (hid, segment_id, self._seal(mid, "edit_history", "before", hid, current),
+                        self._seal(mid, "edit_history", "after", hid, new), time.time()))
         return True
 
-    @staticmethod
-    def _set_edit(db, segment_id, text):
+    def _set_edit(self, db, mid, segment_id, text):
         if text is None:
             db.execute("DELETE FROM edits WHERE segment_id = ?", (segment_id,))
         else:
             db.execute("INSERT INTO edits (segment_id, text, edited_at) VALUES (?,?,?) "
                        "ON CONFLICT(segment_id) DO UPDATE SET text = excluded.text, "
-                       "edited_at = excluded.edited_at", (segment_id, text, time.time()))
+                       "edited_at = excluded.edited_at",
+                       (segment_id, self._seal(mid, "edits", "text", segment_id, text),
+                        time.time()))
 
     def undo_edit(self, vid):
         """Undo the most recent edit in this version. Returns the segment id,
         or None when there is nothing to undo. Survives restart."""
         with self.tx() as db:
-            last = db.execute("SELECT h.* FROM edit_history h JOIN segments s "
-                              "ON s.id = h.segment_id WHERE s.version_id = ? "
+            last = db.execute("SELECT h.id, h.segment_id, h.before, v.meeting_id AS mid "
+                              "FROM edit_history h JOIN segments s ON s.id = h.segment_id "
+                              "JOIN versions v ON v.id = s.version_id WHERE s.version_id = ? "
                               "ORDER BY h.id DESC LIMIT 1", (vid,)).fetchone()
             if last is None:
                 return None
-            self._set_edit(db, last["segment_id"], last["before"])
+            before = self._unseal(last["mid"], "edit_history", "before", last["id"],
+                                  last["before"])
+            self._set_edit(db, last["mid"], last["segment_id"], before)
             db.execute("DELETE FROM edit_history WHERE id = ?", (last["id"],))
             return last["segment_id"]
 
@@ -856,3 +1037,66 @@ class Store:
     def versions(self, mid):
         return self._all("SELECT * FROM versions WHERE meeting_id = ? ORDER BY created_at",
                          (mid,))
+
+    # -- holds, handoff options, the reviewed snapshot (workspace/holds.py,
+    #    handoff.py and cleanup.py keep the rules; the values live here) ---------
+
+    def add_hold(self, hid, mid, scope, reason, now):
+        with self.tx() as db:
+            db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at, "
+                       "reviewed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                       (hid, mid, scope, self._seal(mid, "holds", "reason", hid, reason),
+                        now, now))
+
+    def holds(self, where="1", args=()):
+        """Holds matching a condition on their plain columns (a fixed SQL
+        expression from the caller), oldest first, with their reasons opened."""
+        return [self._opened("holds", r, r["meeting_id"], r["id"]) for r in self._all(
+            f"SELECT * FROM holds WHERE {where} ORDER BY created_at", args)]
+
+    def handoff_options(self, mid):
+        """(omitted, redactions) as stored (JSON text), or None."""
+        row = self._one("SELECT omitted, redactions FROM handoff_options WHERE meeting_id = ?",
+                        (mid,))
+        if row is None:
+            return None
+        return (self._unseal(mid, "handoff_options", "omitted", mid, row["omitted"]),
+                self._unseal(mid, "handoff_options", "redactions", mid, row["redactions"]))
+
+    def set_handoff_options(self, mid, omitted, redactions):
+        with self.tx() as db:
+            db.execute("INSERT INTO handoff_options (meeting_id, omitted, redactions) "
+                       "VALUES (?, ?, ?) ON CONFLICT(meeting_id) DO UPDATE SET "
+                       "omitted = excluded.omitted, redactions = excluded.redactions",
+                       (mid, self._seal(mid, "handoff_options", "omitted", mid, omitted),
+                        self._seal(mid, "handoff_options", "redactions", mid, redactions)))
+
+    def put_snapshot(self, db, mid, text, sha256):
+        """The reviewed transcript frozen at confirmation, written inside the
+        caller's transaction (db from tx())."""
+        db.execute("INSERT OR REPLACE INTO reviewed_snapshots (meeting_id, text, sha256, "
+                   "created_at) VALUES (?, ?, ?, ?)",
+                   (mid, self._seal(mid, "reviewed_snapshots", "text", mid, text), sha256,
+                    time.time()))
+
+    def snapshot(self, mid):
+        """The reviewed snapshot's text, or None."""
+        row = self._one("SELECT text FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
+        return (self._unseal(mid, "reviewed_snapshots", "text", mid, row["text"])
+                if row is not None else None)
+
+    # -- watched folders (workspace/intake.py keeps the rules): workspace-wide
+    #    values, so meeting is None --------------------------------------------------
+
+    def add_folder(self, fid, path, include_existing):
+        with self.tx() as db:
+            db.execute("INSERT INTO watched_folders (id, path, created_at, include_existing) "
+                       "VALUES (?, ?, ?, ?)",
+                       (fid, self._seal(None, "watched_folders", "path", fid, path),
+                        time.time(), 1 if include_existing else 0))
+
+    def folders(self, where="1", args=()):
+        """Watched folders matching a condition on their plain columns, oldest
+        first, with their paths opened."""
+        return [self._opened("watched_folders", r, None, r["id"]) for r in self._all(
+            f"SELECT * FROM watched_folders WHERE {where} ORDER BY created_at", args)]

@@ -54,7 +54,8 @@ def confirm_transcript_reviewed(store, mid):
     """Checkpoint 1: freeze the reviewed transcript and record the intent to
     remove the meeting's audio. Removal itself happens in run_job()."""
     with store.tx() as db:
-        meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
+        meeting = db.execute("SELECT id, reviewed_at FROM meetings WHERE id = ?",
+                             (mid,)).fetchone()
         if meeting is None:
             raise CleanupError("Meeting not found.")
         version = db.execute("SELECT id FROM versions WHERE meeting_id = ? AND state = 'active'",
@@ -66,8 +67,7 @@ def confirm_transcript_reviewed(store, mid):
                       (version["id"],)).fetchone():
             raise CleanupError("Speaker identification is still running.")
         text = render_reviewed(store, version["id"])
-        db.execute("INSERT OR REPLACE INTO reviewed_snapshots VALUES (?,?,?,?)",
-                   (mid, text, hashlib.sha256(text.encode()).hexdigest(), time.time()))
+        store.put_snapshot(db, mid, text, hashlib.sha256(text.encode()).hexdigest())
         db.execute("UPDATE meetings SET reviewed_at = ? WHERE id = ?", (time.time(), mid))
         return _add_job(db, mid, AUDIO)
 
@@ -76,7 +76,8 @@ def confirm_final_saved(store, mid):
     """Checkpoint 2: the final deliverable is reviewed and saved outside the
     app. Records the intent to remove all transcript working content."""
     with store.tx() as db:
-        meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
+        meeting = db.execute("SELECT id, reviewed_at FROM meetings WHERE id = ?",
+                             (mid,)).fetchone()
         if meeting is None:
             raise CleanupError("Meeting not found.")
         if meeting["reviewed_at"] is None:
@@ -97,7 +98,8 @@ def discard(store, mid, unfinished=False):
     then it is an import that never finished, for example one kept after a
     damaged database was opened with Continue anyway (#181)."""
     with store.tx() as db:
-        meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
+        meeting = db.execute("SELECT id, reviewed_at FROM meetings WHERE id = ?",
+                             (mid,)).fetchone()
         if meeting is None:
             raise CleanupError("Meeting not found.")
         if db.execute("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at IS NULL",
@@ -142,10 +144,7 @@ def render_reviewed(store, vid):
     the user's speaker names and corrections (#21) applied. Called inside the
     confirmation transaction (the store lock is re-entrant)."""
     from workspace.speaker_names import resolve
-    rows = store._all(
-        "SELECT s.id, s.start_s, COALESCE(e.text, s.text) AS text FROM segments s "
-        "LEFT JOIN edits e ON e.segment_id = s.id WHERE s.version_id = ? "
-        "ORDER BY s.start_s, s.id", (vid,))
+    rows = store.transcript(vid)
     view = resolve(store, vid)
     lines = []
     for r in rows:
@@ -271,7 +270,7 @@ def _remove_audio(store, mid, media_root, original_roots):
     if folder.exists():
         shutil.rmtree(folder)         # raises on a locked file: job stays 'failed'
     notes = []
-    for src in store._all("SELECT * FROM sources WHERE meeting_id = ?", (mid,)):
+    for src in store.sources(mid):
         notes.append(_remove_original(src, original_roots))
     with store.tx() as db:
         db.execute("UPDATE meetings SET audio_removed_at = ? WHERE id = ?", (time.time(), mid))
