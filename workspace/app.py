@@ -2446,15 +2446,20 @@ class Workspace:
 
     def discard_meeting(self, mid):
         """Delete a meeting that is not needed, with one explicit confirmation
-        (cleanup.discard). Work in progress on it is stopped first."""
+        (cleanup.discard). Work in progress on it is stopped first. A meeting
+        whose import never finished can be discarded too, but only while no
+        import is running or queued (#181): every import runs on the intake
+        thread from self._imports, so none can still add to it."""
         self._meeting(mid)
         with self._lock:
             self._reruns.pop(mid, None)
             busy = self._busy
             if busy and busy[0] == mid and busy[1] != "cleanup":
                 self.handle.stop_now()
+            with self._imports.mutex:     # queued or in progress (task_done comes last)
+                importing = self._imports.unfinished_tasks > 0
             try:
-                cleanup.discard(self.store, mid)
+                cleanup.discard(self.store, mid, unfinished=not importing)
             except cleanup.CleanupError as exc:
                 raise WorkspaceError(str(exc)) from exc
         self._wake.set()
