@@ -88,15 +88,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 - pressing Ctrl+plus to zoom;
 - the handoff check listed on #189.
 
-## 7. Laptop sleep, lid and timers (#189, sitting 1)
-
-On a laptop, with a synthetic recording or an idle workspace:
-- the scan of watched folders after the laptop wakes (within about 60 s);
-- closing the app from the taskbar while it is minimised;
-- a long idle session;
-- that the app's timers count time asleep;
-- the lid and sleep checks listed on #189 (recording with the lid closed, if that setting is in the release).
-
 ## 6. Microphone recording on real hardware (#30)
 
 Turn on Settings > Recording and speakers > Record with a microphone. Use a USB or Bluetooth headset that can be unplugged or switched off.
@@ -105,6 +96,15 @@ Turn on Settings > Recording and speakers > Record with a microphone. Use a USB 
 2. Within a few seconds, the panel should say the microphone stopped responding and that recording stopped without switching device. The saved part should become a meeting.
 3. Check that the meeting's length matches the time before the unplug. If recording continued with silence instead, record that on #30: it means the device-loss check needs a silence-based rule for this driver.
 4. Optional: during a recording, end the app in Task Manager. At the next start, the saved part is imported, and the report gives about how much at the end was lost.
+
+## 7. Laptop sleep, lid and timers (#189, sitting 1)
+
+On a laptop, with a synthetic recording or an idle workspace:
+- the scan of watched folders after the laptop wakes (within about 60 s);
+- closing the app from the taskbar while it is minimised;
+- a long idle session;
+- that the app's timers count time asleep;
+- the lid and sleep checks listed on #189 (recording with the lid closed, if that setting is in the release).
 
 ## After the checks
 

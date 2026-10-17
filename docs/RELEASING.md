@@ -24,17 +24,6 @@ These settings cannot be applied from a script that only has push access, so set
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
-## Protecting releases
-
-The Release workflow relies on these owner settings. They were read back on 17 Oct 2026:
-
-- **Tag ruleset** "Protect release tags": active. It stops a `v*` tag being created, moved or deleted by anyone but its bypass list. This is the control that keeps a collaborator from releasing: with it, only the owner can start a release. Confirm that the bypass list is the owner alone. Tags are matched by pattern, and whether that ignores case is not documented, so add `refs/tags/V*` too: IT's script refuses such a tag, but the workflow's own trigger may not.
-- **`release` environment:** the repository owner is the required reviewer, and only `v*` tags can deploy to it. The publish job waits here for approval. Administrators can bypass it (GitHub's default): turn that off after the move to the organisation.
-- **The owner's sign-in on machines where agents run.** An agent, or malware running as the user, could use a signed-in owner account to create release tags and approve the deployment. Recommended: sign the owner out of `gh` and Git Credential Manager on those machines, and tag and approve on GitHub's website with two-factor sign-in.
-- **Releases before v0.5.0** are not immutable, and their tags' `release.yml` still has a manual "Run workflow" route (with write access only; it has no signing rights).
-- **Immutable releases** (Settings > General > Releases): turned on by the owner on 16 Oct 2026. This could not be read back with a collaborator's access, so confirm it before the first signed release. Once on, a published release's files and tag cannot change.
-- **Moving the repository** to the Unlimit organisation changes the identity the attestations name. Do it before the first signed release, then change the default `-Repository` in `tools/intune/Get-VerifiedRelease.ps1`; a test fails in CI until they agree.
-
 Newer checks start outside that list:
 - **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage), `.github/workflows/changelog.yml` (changelog entry) and `.github/workflows/audit.yml` (dependency audit).
 - **How they become required:** after 10 consecutive green runs.
@@ -45,6 +34,18 @@ Newer checks start outside that list:
 - **The changelog check:** it looks for a new or changed fragment in `changelog.d/` whenever a pull request changes what is shipped. An edit to `CHANGELOG.md` does not count. Add the `no-changelog` label to a pull request whose change is not worth a release note.
 
 Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps in `.github/dependabot.yml` cover GitHub Actions only (monthly, grouped, a 7-day cooldown); Python dependencies are re-locked instead (see "Workflow supply-chain rules"). CodeQL analyses the Python code, the JavaScript and the workflows from `.github/workflows/codeql.yml`.
+
+## Protecting releases
+
+The Release workflow relies on these owner settings. They were read back on 17 Oct 2026:
+
+- **Tag ruleset** "Protect release tags": active. It stops a `v*` tag being created, moved or deleted by anyone but its bypass list. This is the control that keeps a collaborator from releasing: with it, only the owner can start a release. Confirm that the bypass list is the owner alone. Tags are matched by pattern, and whether that ignores case is not documented, so add `refs/tags/V*` too: IT's script refuses such a tag, but the workflow's own trigger may not.
+- **`release` environment:** the repository owner is the required reviewer, and only `v*` tags can deploy to it. The publish job waits here for approval. Administrators can bypass it (GitHub's default): turn that off after the move to the organisation.
+- **The owner's sign-in on machines where agents run.** An agent, or malware running as the user, could use a signed-in owner account to create release tags and approve the deployment. Recommended: sign the owner out of `gh` and Git Credential Manager on those machines, and tag and approve on GitHub's website with two-factor sign-in.
+- **Releases before v0.5.0** are not immutable, and their tags' `release.yml` still has a manual "Run workflow" route (with write access only; it has no signing rights).
+- **Immutable releases** (Settings > General > Releases): turned on by the owner on 16 Oct 2026. This could not be read back with a collaborator's access, so confirm it before the first signed release. Once on, a published release's files and tag cannot change.
+- **Rehearse the workflow first.** The hosted-runner build, the attestations, the draft and the publish job have not run yet. Before the first real release, run them end to end on a test tag in a scratch copy of the repository.
+- **Moving the repository** to the Unlimit organisation changes the identity the attestations name. Do it before the first signed release, then change the default `-Repository` in `tools/intune/Get-VerifiedRelease.ps1`; a test fails in CI until they agree.
 
 ## Workflow supply-chain rules
 
@@ -79,7 +80,7 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - `--summary "One line"` adds a line under the heading. `--date` sets the date if it should not be today.
    - Review both files, then merge them to `main`. `VERSION` is the one source of the version: the package build reads it, and the workflow refuses a tag that differs.
    - **Promoting a preview to a full release:** run `python tools/changelog.py vX.Y.Z` as usual. The full section brings in the notes of every `## vX.Y.Z-preview.N` section (oldest first, each group's notes kept together) and any fragments added since, so users on Latest see everything since the last full release, as long as the previews were numbered `vX.Y.Z-preview.N` (notes from an abandoned preview of another version are not brought in: add a fragment if they still apply). The preview sections stay as they were; leave them as the script wrote them, and put install notes in `--summary`. A preview's summary is not carried over; give the full release its own. `python tools/changelog.py --preview vX.Y.Z` shows the notes first.
-2. **Tag the merged commit and push the tag.** Publishing a release needs its own approval (AGENTS.md), so an agent pushes a tag only when the user has asked for that release.
+2. **Tag the merged commit and push the tag.** The owner does this: the tag ruleset lets only its bypass list create release tags, and publishing a release needs its own approval (AGENTS.md).
    - **Before tagging, the owner reviews what changed in the release machinery since the last release.** An attestation proves where and from which commit a package was built, not that the code is benign, and agents merge their own pull requests:
 
      ```
@@ -100,7 +101,7 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
 
    If the check or the build fails, nothing is drafted. A version number is never reused, and the tag ruleset stops a release tag being moved or deleted: fix the cause and release the next patch version.
 3. **Test the draft and attach the evidence.**
-   - **Download and verify it.** In a new, empty folder, run `gh release download vX.Y.Z --pattern "Unminute-X.Y.Z.*"`. Then run `gh attestation verify Unminute-X.Y.Z.zip --repo <owner>/unminute --bundle Unminute-X.Y.Z.attestations.jsonl --cert-identity https://github.com/<owner>/unminute/.github/workflows/release.yml@refs/tags/vX.Y.Z --source-digest <the tag's commit> --deny-self-hosted-runners`. `<owner>/unminute` is the repository, as in `tools/intune/Get-VerifiedRelease.ps1`, which checks published releases only.
+   - **Download and verify it.** In a new, empty folder, run `gh release download vX.Y.Z --repo <owner>/unminute --pattern "Unminute-X.Y.Z.*"`. Then run `gh attestation verify Unminute-X.Y.Z.zip --repo <owner>/unminute --bundle Unminute-X.Y.Z.attestations.jsonl --cert-identity https://github.com/<owner>/unminute/.github/workflows/release.yml@refs/tags/vX.Y.Z --source-digest <the tag's commit> --deny-self-hosted-runners`. `<owner>/unminute` is the repository, as in `tools/intune/Get-VerifiedRelease.ps1`, which checks published releases only.
    - **Rebuild it (recommended).** From a clean checkout of the tag, `python -I tools/build_package.py --release` should give the same SHA-256 ("Building the package locally" below).
    - **Install it** with `install.ps1 -Package <folder>\Unminute-X.Y.Z.zip`, with its `.sha256` beside it. Run `runtime\python.exe -I -B -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
    - **Release evidence** (docs/RELEASE_STANDARD.md, section 8). Run the five checks against the installed package from a clean checkout of the tagged commit, with the installed version's own Python. Run `git checkout vX.Y.Z`, then `git clean -ndX -- tools tests docs` to see which ignored files (such as `__pycache__`) would go, and `git clean -fdX -- tools tests docs` to remove them. It deletes them for good, so move anything else first. Clean means no change, no extra or ignored file, and nothing hidden from `git status` under `tools`, `tests` or `docs`. Start every check with `-B` so it writes no bytecode there. `<v>` is the installed version folder (`%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\X.Y.Z`). Use a copy of the models, never the live workspace, and a non-sensitive recording, such as a public meeting. The window checks need an unlocked screen.
@@ -123,7 +124,8 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
      - Each check prints `EVIDENCE <kind>: PASS`. `tools/evidence.py check` prints `EVIDENCE COMPLETE` only when there is one passing report of each kind that names that SHA-256 and commit. Each report must also come from a release build, be made by a clean checkout of that commit, and have run on the unchanged package. Anything else is a failed gate: fix it and run the check again. Never edit a report. A failing report may hold error text with local paths, so do not attach one.
    - Run one real, non-sensitive recording through the installed package with speaker identification on, and check the transcript looks right.
    - If a previous version is installed, check that the update keeps the workspace.
-   - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.
+   - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes. The notes come from the changelog at the tag, so put known limitations there before tagging (`--summary`), or edit the draft's notes before approving.
+   - Attach only the five `evidence-*.json` reports: the publish job refuses a draft holding any other file.
 4. **Approve.** When the five reports are attached, the owner opens the workflow run on GitHub, chooses Review deployments and approves `release`. Approve only after the evidence is attached. The publish job then checks:
    - the draft holds exactly the zip, its `.sha256`, the SBOM, the attestation bundle and the five evidence reports, with nothing missing or added;
    - the zip and the SBOM are the ones the build job made;

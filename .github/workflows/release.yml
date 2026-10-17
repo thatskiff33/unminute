@@ -22,7 +22,8 @@
 #    workflow at this tag and commit, that the evidence is complete and names
 #    that zip (tools/evidence.py check), and that nothing else was added; then
 #    it publishes, and checks the published files are the ones it checked.
-#    Immutable releases lock the files and the tag from then on. The approval
+#    With immutable releases on, the files and the tag are locked from then
+#    on (to confirm with the owner). The approval
 #    gates this workflow only: anyone with write access can still edit or
 #    publish a draft by hand, which the last check and IT's verification of
 #    every download (tools/intune/Get-VerifiedRelease.ps1) are there to catch.
@@ -315,7 +316,8 @@ jobs:
           cd release
           [ "$(sha256sum "$NAME.zip" | cut -d' ' -f1)" = "$BUILT" ] || { echo "The draft's zip is not the one built"; exit 1; }
           [ "$(sha256sum "$NAME.cdx.json" | cut -d' ' -f1)" = "$SBOM" ] || { echo "The draft's SBOM is not the one built"; exit 1; }
-          [ "$(cat "$NAME.zip.sha256")" = "$BUILT  $NAME.zip" ] || { echo "The .sha256 file does not name the zip built"; exit 1; }
+          # Written on the Windows runner, so it may end with CRLF.
+          [ "$(tr -d '\r' < "$NAME.zip.sha256")" = "$BUILT  $NAME.zip" ] || { echo "The .sha256 file does not name the zip built"; exit 1; }
           for predicate in https://slsa.dev/provenance/v1 https://cyclonedx.org/bom; do
             gh attestation verify "$NAME.zip" --repo "$GITHUB_REPOSITORY" \
               --bundle "$NAME.attestations.jsonl" --predicate-type "$predicate" \
@@ -336,9 +338,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          latest=(--latest)
-          case "$TAG" in *-preview.*) latest=(--latest=false) ;; esac
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${latest[@]}"
+          # The tag decides the release type, whatever the draft was changed to.
+          kind=(--prerelease=false --latest)
+          case "$TAG" in *-preview.*) kind=(--prerelease --latest=false) ;; esac
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${kind[@]}"
 
       # Anyone with write access could change a draft's files between the checks
       # above and publishing: the published release must hold exactly the files

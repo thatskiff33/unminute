@@ -58,6 +58,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("    environment: release\n", j["publish"])
         self.assertNotIn("environment:", j["draft"] + j["build"] + j["check"])
         self.assertIn("--draft --verify-tag", j["draft"])
+        self.assertIn("already exists; nothing was changed", j["draft"])   # never over a release
         self.assertIn("--draft=false", j["publish"])
         self.assertNotIn("--draft=false", j["draft"])
 
@@ -101,6 +102,11 @@ class WorkflowTests(unittest.TestCase):
                      '"$NAME.attestations.jsonl"'):
             self.assertIn(name, publish)
         self.assertIn("diff expected.txt found.txt", publish)       # nothing added, nothing missing
+        self.assertIn('"$(head -n1 assets.txt)" != "draft=true"', publish)   # still a draft
+        self.assertIn("""[ "$(tr -d '\\r' < "$NAME.zip.sha256")" = "$BUILT  $NAME.zip" ]""",
+                      publish)
+        self.assertIn('kind=(--prerelease=false --latest)', publish)
+        self.assertIn('*-preview.*) kind=(--prerelease --latest=false)', publish)
         self.assertIn('= "$BUILT"', publish)                          # the zip that was built
         self.assertIn('= "$SBOM"', publish)
         for flag in ('--cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/'
@@ -157,6 +163,9 @@ class VerificationScriptTests(unittest.TestCase):
         self.assertIn("[ValidateScript({ $_ -cmatch ", script)
         self.assertNotIn("ValidatePattern('^v", script)
         self.assertIn("$release.tag_name -cne $Tag", script)
+        self.assertIn('if ($listed -cne "$sha  $name.zip")', script)      # the checksum
+        # Every file is there before any is downloaded.
+        self.assertLess(script.index("the release has no $file"), script.index("Invoke-WebRequest"))
         self.assertIn("if ($release.draft)", script)
         self.assertIn("$release.prerelease -and -not $AllowPrerelease", script)
         self.assertIn("$Tag -cmatch '-preview\\.' -and -not $AllowPrerelease", script)

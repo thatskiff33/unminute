@@ -95,14 +95,17 @@ if ($release.prerelease -and -not $AllowPrerelease) {
 }
 if ($commit -cnotmatch '^[0-9a-f]{40}$') { Stop-Verification "could not read the commit of $Tag." }
 
-# 2. The release's four files, by their exact names.
+# 2. The release's four files, by their exact names: all present first, then downloaded.
 $files = "$name.zip", "$name.zip.sha256", "$name.cdx.json", "$name.attestations.jsonl"
+$urls = @{}
 foreach ($file in $files) {
     $asset = @($release.assets | Where-Object { $_.name -ceq $file })
     if ($asset.Count -ne 1) { Stop-Verification "the release has no $file." }
+    $urls[$file] = $asset[0].browser_download_url
+}
+foreach ($file in $files) {
     try {
-        Invoke-WebRequest -Uri $asset[0].browser_download_url -OutFile (Join-Path $OutputFolder $file) `
-            -UseBasicParsing
+        Invoke-WebRequest -Uri $urls[$file] -OutFile (Join-Path $OutputFolder $file) -UseBasicParsing
     } catch {
         Stop-Verification "$file could not be downloaded ($($_.Exception.Message))."
     }
