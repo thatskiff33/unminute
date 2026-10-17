@@ -10,6 +10,8 @@
 #     laptops on battery it also ends five minutes after the sleep timeout
 #     (Microsoft Learn, PowerSetRequest). Recording with the lid closed
 #     therefore also needs the Windows lid action "Do nothing".
+#   - Windows ignores the request where policy turns off "Allow applications to
+#     prevent automatic sleep" (AllowSystemPowerRequestAC/DC), without saying so.
 #   - A failure is never fatal: recording carries on without the request.
 #     Windows drops the request by itself if the app exits.
 # Stdlib only (ctypes).
@@ -75,7 +77,8 @@ class KeepAwake:
         with self._lock:
             if self._handle is not None:
                 return True
-            try:
+            handle = None
+            try:                      # nothing here may stop a recording starting
                 if self._api is None:
                     if sys.platform != "win32":
                         return False
@@ -86,25 +89,30 @@ class KeepAwake:
                 handle = self._api.create(ctypes.byref(reason))
                 if not handle or handle == INVALID_HANDLE_VALUE:
                     return False
-                if not self._api.set(handle, POWER_REQUEST_SYSTEM_REQUIRED):
-                    self._api.close(handle)
-                    return False
-            except (OSError, AttributeError):
+                if self._api.set(handle, POWER_REQUEST_SYSTEM_REQUIRED):
+                    self._handle, handle = handle, None
+                    return True
                 return False
-            self._handle = handle
-            return True
+            except Exception:
+                return False
+            finally:
+                if handle and handle != INVALID_HANDLE_VALUE:   # created, not kept
+                    try:
+                        self._api.close(handle)
+                    except Exception:
+                        pass
 
     def release(self):
         with self._lock:
             handle, self._handle = self._handle, None
             if handle is None:
                 return
-            try:
+            try:                      # nothing here may stop a recording ending
                 self._api.clear(handle, POWER_REQUEST_SYSTEM_REQUIRED)
-            except OSError:
+            except Exception:
                 pass
             finally:
                 try:
                     self._api.close(handle)
-                except OSError:
+                except Exception:
                     pass

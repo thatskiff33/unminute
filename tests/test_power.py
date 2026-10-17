@@ -66,6 +66,26 @@ class KeepAwakeTests(unittest.TestCase):
         self.assertFalse(k.hold())
         self.assertFalse(k.held)
 
+    def test_any_error_is_contained_and_no_handle_is_left_open(self):
+        # A recording must start and end whatever the power calls do.
+        def failing(real, close_first):
+            def boom(*args):
+                if close_first:
+                    real(*args)              # closed, then reports an error
+                raise ValueError("unexpected")
+            return boom
+
+        for step in ("create", "set", "clear", "close"):
+            api = FakeKernel32()
+            setattr(api, step, failing(getattr(api, step), step == "close"))
+            k = power.KeepAwake(api)
+            with self.subTest(step):
+                held = k.hold()
+                self.assertEqual(held, step in ("clear", "close"))
+                k.release()
+                self.assertFalse(k.held)
+                self.assertEqual(api.open, 0)
+
     @unittest.skipUnless(os.name == "nt", "Windows power requests")
     def test_windows_accepts_the_request(self):
         # The real calls: checks the ctypes signatures and REASON_CONTEXT layout.

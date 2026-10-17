@@ -117,9 +117,9 @@ Battery: automatic processing waits while Windows reports battery power, unless 
 
 Sleep while recording (`workspace/power.py`, `workspace/recorder.py`):
 
-- While a recording is open, the app holds a system-required power request, so the idle sleep timer does not end it. The request starts and ends with the recording indicator (`Workspace._indicate`), on every way a recording ends. A refused request never stops a recording.
+- While a recording is open (paused included), the app holds a system-required power request, so the idle sleep timer does not end it. `powercfg /requests` lists it with the reason "Unminute is recording a meeting." Windows ignores it, without saying so, where policy turns off "Allow applications to prevent automatic sleep" (`AllowSystemPowerRequestAC` and `AllowSystemPowerRequestDC`). The request starts and ends with the recording indicator (`Workspace._indicate`), on every way a recording ends. A refused request never stops a recording.
 - Windows ends every power request when the user starts sleep (the lid with its action set to Sleep, the power button, Start > Sleep). On Modern Standby laptops on battery, it also ends five minutes after the sleep timeout. Recording with the lid closed therefore needs the Windows lid action "Do nothing", which the app leaves to the user and IT.
-- If the recorder's writer thread has not run for longer than the silence limit (`SILENT_DEVICE_S`) when the audio stops, the whole app was frozen, which means the computer slept. The recording stops with state `slept` and a `sleep` event, not as a lost microphone, and keeps everything recorded before. It never resumes by itself.
+- Sleep freezes the whole app. The recorder sees it as a wait for audio (at most 0.2 s) that lasted longer than the silence limit (`SILENT_DEVICE_S`), or as audio blocks arriving that far apart while not paused. The recording then stops with state `slept` and a `sleep` event, not as a lost microphone, keeps everything recorded before, and joins no audio from after the wake. A sleep that starts while a chunk is being saved, with no audio after the wake, is still reported as a lost microphone.
 
 ## Speakers after transcription (#16)
 
