@@ -1421,20 +1421,38 @@ const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Opti
 // returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
 const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, returnTo: null };
 
-// A card's short name ("Parakeet v2") and a download's progress (a number, or
+// A card's short name and a download's progress (a number, or
 // null when it cannot be told) come from Python as they are: the page never
 // reads them out of a title or a message (R12, #133).
 const cardName = (c) => c.label;
 const isRunning = (c) => !!(c && c.download && c.download.state === "running");
 
-function progressBlock(dl, note) {
-  const pct = typeof dl.percent === "number" ? dl.percent : null;
-  const bar = el("div", { class: `progress${pct === null ? " busy" : ""}`, role: "progressbar", "aria-label": "Download",
-    ...(pct === null ? {} : { "aria-valuenow": String(pct), "aria-valuemin": "0", "aria-valuemax": "100" }) }, el("span", {}));
-  if (pct !== null) bar.firstChild.style.width = `${pct}%`;
+function progressBlock(c, note) {
+  const dl = c.download;
+  const bar = el("div", { class: "progress", role: "progressbar", "aria-label": "Download", "data-card": c.name },
+    el("span", {}));
+  setProgress(bar, dl.percent);
   return el("div", { class: "su-progress" }, bar,
     el("div", { class: "su-progress-text" }, el("span", { textContent: dl.message }), note ? el("span", { textContent: note }) : null));
 }
+// A bar's value, set again in place on every poll: the list around it is
+// rebuilt only when something else changes, so focus and open Details stay.
+function setProgress(bar, percent) {
+  const pct = typeof percent === "number" ? percent : null;
+  bar.classList.toggle("busy", pct === null);
+  for (const [k, v] of [["aria-valuenow", pct], ["aria-valuemin", 0], ["aria-valuemax", 100]])
+    if (pct === null) bar.removeAttribute(k); else bar.setAttribute(k, String(v));
+  bar.firstChild.style.width = pct === null ? "" : `${pct}%`;
+}
+function updateProgress(box, cards) {
+  for (const c of cards) {
+    const bar = c.download && box.querySelector(`.progress[data-card="${CSS.escape(c.name)}"]`);
+    if (bar) setProgress(bar, c.download.percent);
+  }
+}
+// The cards as the lists are drawn, without the progress (it updates in place).
+const cardsSig = (cards) => JSON.stringify(cards.map((c) =>
+  (c.download ? { ...c, download: { ...c.download, percent: null } } : c)));
 
 function setStep(n) {
   $("s-token").value = "";                           // a typed token is never kept in the page
@@ -1490,7 +1508,7 @@ function modelCard(c, s) {
            c.recommended ? el("span", { class: "rec-badge", textContent: "Recommended" }) : null),
         el("span", { class: "su-model-about", textContent: `${c.about} ${c.size_gb} GB, downloaded once.` })),
       action),
-    isRunning(c) ? progressBlock(dl, "Each file is checked before use") : null,
+    isRunning(c) ? progressBlock(c, "Each file is checked before use") : null,
     dl && dl.state === "failed" ? el("span", { class: "su-failed", textContent: dl.message }) : null);
 }
 
@@ -1553,7 +1571,7 @@ function downloadRow(c, s, inUse) {
         el("span", { class: "dl-desc", textContent: `${about} ${c.size_gb} GB.` })),
       el("span", { class: `dl-pill ${pillKind}`.trim(), textContent: pillText }),
       action, remove),
-    running ? progressBlock(dl, null) : null,
+    running ? progressBlock(c, null) : null,
     !running && dl && dl.state === "failed" ? el("span", { class: "dl-msg bad", textContent: dl.message }) : null,
     el("details", {}, el("summary", { textContent: "Details" }),
       el("p", { textContent: c.status }),
@@ -1568,12 +1586,14 @@ async function renderSetup() {
   const speech = s.cards.filter((c) => c.role === "speech");
   const rec = speech.find((c) => c.recommended) || speech[0];
   const others = speech.filter((c) => c !== rec);
-  const sig = JSON.stringify(s.cards);
+  const sig = cardsSig(s.cards);
   if (sig !== suState.sig) {                         // unchanged: keep open Details and focus
     suState.sig = sig;
     replaceKeeping($("su-model"), modelCard(rec, s));
     replaceKeeping($("setup-cards"), ...others.map((c) => downloadRow(c, s, false)));
   }
+  updateProgress($("su-model"), s.cards);
+  updateProgress($("setup-cards"), s.cards);
   $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
   $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
@@ -1590,7 +1610,7 @@ async function renderSetup() {
     : speaker.download ? speaker.download.message : "";
   renderSummary(s);
   $("s-finish").disabled = !s.speech_ready;
-  $("s-finish-note").textContent = s.speech_ready ? "" : "Download a speech model first (Parakeet v2 is recommended).";
+  $("s-finish-note").textContent = s.speech_ready ? "" : `Download a speech model first (${cardName(rec)} is recommended).`;
 }
 
 function renderSummary(s) {
@@ -1695,11 +1715,12 @@ async function renderDownloads() {
   state.setup = s;
   state.managed = s.managed;
   const settings = await call("settings");
-  const sig = JSON.stringify([s.cards, settings.model, s.managed]);
+  const sig = JSON.stringify([cardsSig(s.cards), settings.model, s.managed]);
   if (sig !== state.downloadsSig) {                  // unchanged: keep open Details and focus
     state.downloadsSig = sig;
     replaceKeeping($("dl-list"), ...s.cards.map((c) => downloadRow(c, s, c.name === settings.model)));
   }
+  updateProgress($("dl-list"), s.cards);
   $("dl-token").hidden = !s.token_remembered;
   $("dl-token-note").textContent = "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded.";
 }

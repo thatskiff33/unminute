@@ -95,7 +95,7 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
         if "+cu" not in torch.__version__ or not torch.cuda.is_available():
             from workspace import gpu
             raise GpuUnavailable(f"graphics card unavailable (needs NVIDIA driver "
-                                 f"{gpu.MIN_DRIVER[0]} or later and the graphics card "
+                                 f"{gpu.MIN_DRIVER_TEXT} or later and the graphics card "
                                  f"component)")
         label = f"cuda ({torch.cuda.get_device_name(0)})"[:80]
     from pyannote.audio import Pipeline

@@ -510,13 +510,13 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
         # A verified download from an attempt whose final move failed.
-        log(f"Reusing the verified {spec.name} download from the last attempt.")
+        log(f"Reusing the verified {label(spec.name)} download from the last attempt.")
         return _move_into_place(spec, target, staging, had_folder, log)
     if download is None:
         raise ModelLoadError(f"{spec.name} needs downloading. Download it in Unminute's Setup.")
     shutil.rmtree(staging, ignore_errors=True)   # leftover of an interrupted run
     staging.parent.mkdir(parents=True, exist_ok=True)
-    log(f"Downloading {spec.name} ({spec.download_bytes / 1e9:.2f} GB, "
+    log(f"Downloading {label(spec.name)} ({spec.download_bytes / 1e9:.2f} GB, "
         f"revision {spec.revision[:7]})...")
     try:
         try:
@@ -590,11 +590,11 @@ find_verified = find_verified_whisper
 
 # Licences as published on each model card (checked 13 October 2026).
 LICENCES = {
-    "parakeet-tdt-0.6b-v2": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v2, ONNX export by istupakov"),
-    "parakeet-tdt-0.6b-v3": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v3, ONNX export by istupakov"),
+    PARAKEET_V2: ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v2, ONNX export by istupakov"),
+    PARAKEET_V3: ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v3, ONNX export by istupakov"),
     "silero-vad": ("MIT", "Silero VAD, ONNX packaging by istupakov"),
-    "large-v3-turbo": ("MIT", "OpenAI whisper-large-v3-turbo, CTranslate2 conversion"),
-    "large-v3": ("MIT", "OpenAI whisper-large-v3, CTranslate2 conversion by Systran"),
+    WHISPER_TURBO: ("MIT", "OpenAI whisper-large-v3-turbo, CTranslate2 conversion"),
+    WHISPER_LARGE: ("MIT", "OpenAI whisper-large-v3, CTranslate2 conversion by Systran"),
     "speaker-diarization-community-1": (
         "CC BY 4.0 (gated)",
         "pyannoteAI speaker-diarization-community-1; accept terms to download"),
@@ -786,7 +786,7 @@ class ParakeetEngine:
         wav = audio
         if isinstance(audio, (str, Path)):
             if self.decode_audio is None:       # the app passes decoded arrays (R12)
-                raise ModelLoadError("Pass the audio as an array, or give a decoder.")
+                raise TypeError("Pass the audio as an array, or give a decoder.")
             wav = self.decode_audio(str(audio), sampling_rate=SAMPLE_RATE)
         duration = len(wav) / SAMPLE_RATE
 

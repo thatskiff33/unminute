@@ -3,10 +3,12 @@ model names and what the app calls them, and download progress as a number.
 The page shows what Python sends and reads nothing out of a title or message.
 """
 import json
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -18,25 +20,40 @@ import asr_engines  # noqa: E402
 from workspace import gpu, setup  # noqa: E402
 
 APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+# Shipped code a person could edit a fact into (tests and tools are not shipped).
+SHIPPED = [ROOT / "asr_engines.py", *sorted((ROOT / "workspace").glob("*.py")),
+           *sorted((ROOT / "workspace" / "ui").glob("*.js")),
+           *sorted((ROOT / "workspace" / "ui").glob("*.html"))]
+
+
+def strings(path):
+    """The string literals in a Python or JavaScript file (not its comments)."""
+    return re.findall(r"""("[^"\n]*"|'[^'\n]*'|`[^`\n]*`)""", path.read_text(encoding="utf-8"))
 
 
 class DriverMinimumTests(unittest.TestCase):
     def test_one_definition_in_code(self):
-        minimum = str(gpu.MIN_DRIVER[0])
+        minimum = re.escape(gpu.MIN_DRIVER_TEXT)
         found = []
-        paths = [*sorted((ROOT / "workspace").glob("*.py")), ROOT / "workspace" / "ui" / "app.js"]
-        for path in paths:
+        for path in SHIPPED:
             for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                if re.search(rf"\b{minimum}\b", line) and re.search(r"(?i)driver|or later|R5\d\d",
-                                                                    line):
+                if path.name == "gpu.py" and line.startswith("MIN_DRIVER = "):
+                    continue                            # the definition
+                if re.search(rf"\b{minimum}\b", line) and re.search(r"(?i)driver|or later", line):
                     found.append(f"{path.name}:{n}")
-        self.assertEqual([f for f in found if not f.startswith("gpu.py:")], [])
+        self.assertEqual(found, [])
+
+    def test_the_text_follows_the_tuple(self):
+        self.assertEqual(gpu.version_text((580, 0)), "580")
+        self.assertEqual(gpu.version_text((580, 65)), "580.65")
+        self.assertEqual(gpu.version_text((581, 7)), "581.07")
+        self.assertEqual(gpu.MIN_DRIVER_TEXT, gpu.version_text(gpu.MIN_DRIVER))
 
     def test_the_docs_name_the_same_minimum(self):
         for doc in ("README.md", "docs/WORKSPACE_GUIDE.md"):
             text = (ROOT / doc).read_text(encoding="utf-8")
-            numbers = set(re.findall(r"(?i)driver[^.\n]{0,30}?\b(\d{3})\b", text))
-            self.assertEqual(numbers, {str(gpu.MIN_DRIVER[0])}, doc)
+            numbers = set(re.findall(r"(?i)driver[^.\n]{0,30}?\b(\d{3}(?:\.\d+)?)\b", text))
+            self.assertEqual(numbers, {gpu.MIN_DRIVER_TEXT}, doc)
 
     def test_the_page_gets_it_from_settings(self):
         self.assertIn("${s.gpu.min_driver}", APP_JS)
@@ -48,34 +65,71 @@ class ModelNameTests(unittest.TestCase):
         self.assertEqual(set(asr_engines.LABELS), speech)
         self.assertEqual(asr_engines.label("test:x:y"), "test:x:y")      # unknown: as it is
 
+    def test_no_model_name_or_label_is_written_out_in_shipped_code(self):
+        labels = "|".join(re.escape(v) for v in asr_engines.LABELS.values())
+        found = []
+        for path in SHIPPED:
+            if path.name == "asr_engines.py":
+                continue                                # the source itself
+            for s in strings(path):
+                if re.search(rf"parakeet-tdt|large-v3|{labels}", s):
+                    found.append(f"{path.name}: {s[:60]}")
+        self.assertEqual(found, [])
+
     def test_setup_takes_names_and_labels_from_asr_engines(self):
-        source = (ROOT / "workspace" / "setup.py").read_text(encoding="utf-8")
-        literals = re.findall(r"[\"'][^\"'\n]*(?:parakeet-tdt|large-v3)[^\"'\n]*[\"']", source)
-        self.assertEqual(literals, [])                                    # no literal names
+        names = [c["name"] for c in setup.CARDS]
+        self.assertEqual(len(names), len(set(names)))
+        speech = [c for c in setup.CARDS if c["role"] == "speech"]
+        self.assertEqual([c["name"] for c in speech if c["recommended"]],
+                         [asr_engines.RECOMMENDED_PARAKEET])
         for card in setup.CARDS:
             self.assertIn(card["name"], asr_engines.MANAGED_MODELS)
             self.assertTrue(card["label"])
-            if card["role"] == "speech":
-                self.assertEqual(card["label"], asr_engines.label(card["name"]))
-                self.assertIn(card["label"], card["title"])
+        for card in speech:
+            self.assertEqual(card["label"], asr_engines.label(card["name"]))
+            self.assertIn(card["label"], card["title"])
+        self.assertEqual(set(asr_engines.LICENCES),
+                         set(asr_engines.MANAGED_MODELS) | {asr_engines.SILERO_VAD.name})
 
-    def test_a_meeting_carries_its_models_label(self):
+    def test_a_meeting_and_its_earlier_versions_carry_labels(self):
         from workspace.app import Workspace
         with tempfile.TemporaryDirectory() as tmp:
             ws = Workspace(Path(tmp) / "ws", Path(tmp) / "models", start=False, battery=False,
                            policy_reader=lambda: ({}, ()))
             try:
-                facts = ws._facts({"model": asr_engines.PARAKEET_V3, "id": 1}, known=(None, None))
-                self.assertEqual((facts["model"], facts["model_label"]),
-                                 (asr_engines.PARAKEET_V3, "Parakeet v3"))
+                mid = ws.store.create_meeting("Synthetic meeting")
+                sid = ws.store.add_source(mid, original_path=None, original_sha256="0" * 64,
+                                          original_size=1, original_mtime_ns=1,
+                                          audio_sha256="0" * 64, samples=16000,
+                                          sample_rate=16000)
+                for model in (asr_engines.PARAKEET_V3, asr_engines.PARAKEET_V2):
+                    ws.store.ensure_version(mid, sid, engine="parakeet", model=model,
+                                            model_revision="r", precision="int8",
+                                            config={"chunking": "v1"}, chunk_plan=[])
+                d = ws.detail(mid)
+                self.assertEqual(d["model_label"], "Parakeet v2")
+                self.assertEqual([v["model_label"] for v in d["older_versions"]],
+                                 ["Parakeet v3"])
                 self.assertIsNone(ws._facts(None)["model_label"])
             finally:
                 ws.close()
 
+    def test_download_messages_name_the_model_as_the_page_does(self):
+        said = []
+        spec = asr_engines.MANAGED_MODELS[asr_engines.PARAKEET_V3]
+
+        def refuse(spec, dest):
+            raise OSError("no network in tests")
+        with tempfile.TemporaryDirectory() as tmp, \
+                self.assertRaises(asr_engines.ModelLoadError):
+            asr_engines.install_model(spec, tmp, log=said.append, download=refuse)
+        self.assertTrue(any(m.startswith("Downloading Parakeet v3 (") for m in said), said)
+
     def test_the_page_reads_no_names_out_of_titles_or_ids(self):
-        self.assertNotIn("c.title.replace", APP_JS)
-        self.assertNotIn("function modelName", APP_JS)
+        self.assertNotIn("c.title", APP_JS)
+        self.assertNotIn("modelName", APP_JS)
         self.assertIn("d.model_label", APP_JS)
+        self.assertIn("v.model_label", APP_JS)
 
 
 class ProgressTests(unittest.TestCase):
@@ -89,7 +143,19 @@ class ProgressTests(unittest.TestCase):
     def test_the_page_reads_no_numbers_out_of_messages(self):
         regexes = re.findall(r"/[^/\n]*(?:GB|%)[^/\n]*/[gimsuy]*\.(?:exec|test)\(", APP_JS)
         self.assertEqual(regexes, [])
-        self.assertIn("dl.percent", APP_JS)
+        self.assertIn("c.download.percent", APP_JS)
+        # The bar is set in place; the lists' signatures leave the number out,
+        # so a moving bar never rebuilds the list (focus and open Details stay).
+        self.assertIn("percent: null", APP_JS)
+        self.assertEqual(APP_JS.count("cardsSig(s.cards)"), 2)
+        self.assertEqual(APP_JS.count("updateProgress($("), 3)   # Setup's two lists, Downloads
+
+    def test_each_attempt_records_when_it_started(self):
+        with mock.patch("threading.Thread"):            # the download itself never starts
+            before = time.time()
+            self.downloads.start(asr_engines.RECOMMENDED_PARAKEET)
+        started = self.downloads.state[asr_engines.RECOMMENDED_PARAKEET]["started"]
+        self.assertGreaterEqual(started, before)
 
     def test_a_model_download_is_measured_by_what_it_has_written(self):
         name = asr_engines.RECOMMENDED_PARAKEET
@@ -108,14 +174,78 @@ class ProgressTests(unittest.TestCase):
         self.downloads.state[name] = {"state": "ready", "message": "Done", "log": []}
         self.assertIsNone(self.downloads.percent(name))
 
-    def test_the_graphics_component_is_measured_by_its_wheels(self):
+    def test_a_cancelled_attempts_leftovers_do_not_count(self):
+        name = asr_engines.RECOMMENDED_PARAKEET
+        spec = asr_engines.MANAGED_MODELS[name]
+        staging = asr_engines.staging_dir(spec, self.tmp.name)
+        staging.mkdir(parents=True)
+        old = staging / "left-from-last-time.onnx"
+        old.write_bytes(b"x" * 4000)
+        os.utime(old, (time.time() - 3600, time.time() - 3600))
+        (staging / "this-attempt.onnx").write_bytes(b"x" * 1000)
+        self.assertEqual(setup._size_of(staging, since=time.time() - 60), 1000)
+        self.assertEqual(setup._size_of(staging), 5000)
+        self.downloads.state[name] = {"state": "running", "message": "x", "log": [],
+                                      "started": time.time() - 60}
+        with mock.patch.object(setup, "_size_of", return_value=0) as size:
+            self.downloads.percent(name)
+        self.assertEqual(size.call_args.args[1], self.downloads.state[name]["started"])
+
+    def test_the_graphics_component_counts_finished_wheels(self):
         self.downloads.state[gpu.COMPONENT] = {"state": "running", "message": "x", "log": []}
-        partial = gpu.component_dir(Path(self.tmp.name)).parent / (gpu.VERSION + ".partial")
-        wheels = partial / "wheels"
+        wheels = gpu.staging_dir(Path(self.tmp.name)) / "wheels"
         wheels.mkdir(parents=True)
-        with mock.patch.object(setup, "_size_of", return_value=gpu.DOWNLOAD_BYTES // 2) as size:
-            self.assertEqual(self.downloads.percent(gpu.COMPONENT), 50)
-        self.assertEqual(Path(size.call_args.args[0]), wheels)
+        self.assertIsNone(self.downloads.percent(gpu.COMPONENT))        # none started yet
+        first, second = gpu.WHEELS[0], gpu.WHEELS[1]
+        (wheels / (first["name"] + ".whl")).write_bytes(b"x")
+        with mock.patch.object(setup, "_file_size", return_value=first["size"] // 2):
+            self.assertEqual(self.downloads.percent(gpu.COMPONENT),
+                             round(100 * (first["size"] // 2) / gpu.DOWNLOAD_BYTES))
+        (wheels / (first["name"] + ".whl")).unlink()                    # unpacked, deleted
+        (wheels / (second["name"] + ".whl")).write_bytes(b"x")
+        with mock.patch.object(setup, "_file_size", return_value=0):
+            # The first counts at its pinned size: the bar never drops back.
+            self.assertEqual(self.downloads.percent(gpu.COMPONENT),
+                             round(100 * first["size"] / gpu.DOWNLOAD_BYTES))
+
+    def test_install_builds_where_progress_looks(self):
+        # gpu.install and Downloads.percent share gpu.staging_dir: if install
+        # ever moved its staging folder, progress would follow it.
+        source = (ROOT / "workspace" / "gpu.py").read_text(encoding="utf-8")
+        install = source[source.index("def install("):]
+        self.assertIn("staging = _long(staging_dir(cache_dir))", install)
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_links_in_a_download_folder_are_never_followed(self):
+        base = Path(self.tmp.name)
+        elsewhere = base / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "big.bin").write_bytes(b"x" * 50000)
+        staging = base / "staging"
+        staging.mkdir()
+        (staging / "own.bin").write_bytes(b"x" * 1000)
+
+        def junction(link, target):
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
+                           check=True, capture_output=True)
+        junction(staging / "to-elsewhere", elsewhere)
+        junction(staging / "loop-a", staging)                # a loop back to the folder
+        junction(staging / "loop-b", staging)
+        self.assertEqual(setup._size_of(staging), 1000)     # only its own file, and it ends
+        self.assertEqual(setup._size_of(staging / "to-elsewhere"), 0)   # a link at the top
+        self.assertEqual(setup._size_of(base / "missing"), 0)
+
+    def test_a_file_link_in_a_download_folder_counts_nothing(self):
+        base = Path(self.tmp.name)
+        (base / "elsewhere.bin").write_bytes(b"x" * 50000)
+        staging = base / "staging"
+        staging.mkdir()
+        (staging / "own.bin").write_bytes(b"x" * 1000)
+        try:
+            os.symlink(base / "elsewhere.bin", staging / "linked.bin")
+        except OSError:
+            self.skipTest("creating symlinks needs Developer Mode or admin on Windows")
+        self.assertEqual(setup._size_of(staging), 1000)
 
     def test_setup_state_sends_the_number(self):
         from workspace.app import Workspace
@@ -131,7 +261,7 @@ class ProgressTests(unittest.TestCase):
             self.assertNotIn("percent", ws.downloads.state[name])      # a copy, not the state
             with mock.patch.object(gpu, "detected", return_value=None):
                 settings = ws.get_settings()
-            self.assertEqual(settings["gpu"]["min_driver"], gpu.MIN_DRIVER[0])
+            self.assertEqual(settings["gpu"]["min_driver"], gpu.MIN_DRIVER_TEXT)
             choices = settings["choices"]
             self.assertEqual([(c["name"], c["label"], c["recommended"]) for c in choices],
                              [(n, asr_engines.label(n), n == asr_engines.RECOMMENDED_PARAKEET)
@@ -141,7 +271,7 @@ class ProgressTests(unittest.TestCase):
 
 
 PROBE = r"""
-import json, sys
+import json, sys, types
 from unittest import mock
 attempted = set()
 
@@ -151,31 +281,45 @@ class Recorder:
         return None
 
 sys.meta_path.insert(0, Recorder())
+# The native libraries are stubbed; everything else in the load is real.
+class Model:
+    def with_vad(self, *a, **k): return self
+    def with_timestamps(self): return self
+onnx_asr = types.ModuleType("onnx_asr")
+onnx_asr.load_model = onnx_asr.load_vad = lambda *a, **k: Model()
+class Options:
+    def add_session_config_entry(self, *a): pass
+onnxruntime = types.ModuleType("onnxruntime")
+onnxruntime.disable_telemetry_events = lambda: None
+onnxruntime.SessionOptions = Options
+sys.modules.update(onnx_asr=onnx_asr, onnxruntime=onnxruntime)
 import asr_engines
-from workspace import engines
+from workspace import engines, worker
 with mock.patch.object(asr_engines, "parakeet_status", return_value=("ready", "")), \
-        mock.patch.object(asr_engines.ParakeetEngine, "load", lambda self: self):
+        mock.patch.object(asr_engines, "check_files", return_value=[]):
     engine = engines.load_engine(asr_engines.RECOMMENDED_PARAKEET, ".", 1)
-print(json.dumps({"attempted": sorted(attempted), "decoder": engine.decode_audio is None}))
+print(json.dumps({"attempted": sorted(attempted), "decoder": engine.decode_audio is None,
+                  "loaded": engine._asr is not None}))
 """
 
 
 class ParakeetWorkerTests(unittest.TestCase):
     def test_a_parakeet_engine_never_imports_faster_whisper(self):
         # A recorder sees every import attempt, even where faster_whisper and
-        # CTranslate2 are not installed (CI's test install).
+        # CTranslate2 are not installed (CI's test install). The worker module
+        # and the engine's own load run for real; only ONNX is stubbed.
         result = subprocess.run([sys.executable, "-c", PROBE], cwd=ROOT, capture_output=True,
                                 text=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         seen = json.loads(result.stdout.strip().splitlines()[-1])
-        self.assertTrue(seen["decoder"])
+        self.assertTrue(seen["decoder"] and seen["loaded"])
         self.assertNotIn("faster_whisper", seen["attempted"])
         self.assertNotIn("ctranslate2", seen["attempted"])
 
     def test_a_file_path_needs_a_decoder(self):
         engine = asr_engines.ParakeetEngine(asr_engines.RECOMMENDED_PARAKEET, ".", 1)
         engine._asr = object()                          # as if loaded
-        with self.assertRaises(asr_engines.ModelLoadError):
+        with self.assertRaises(TypeError):
             engine.transcribe("synthetic.wav")
 
 

@@ -52,6 +52,14 @@ DOWNLOAD_HOST = "https://download-r2.pytorch.org/whl/cu130/"
 DOWNLOAD_BYTES = sum(w["size"] for w in WHEELS)
 # CUDA 13.0 needs an NVIDIA driver from the R580 series or later.
 MIN_DRIVER = (580, 0)
+
+
+def version_text(version):
+    """A driver version as people write it: (591, 0) is "591", (591, 4) is "591.04"."""
+    return f"{version[0]}" if not version[1] else f"{version[0]}.{version[1]:02d}"
+
+
+MIN_DRIVER_TEXT = version_text(MIN_DRIVER)      # every message and the page use this (R12)
 # C++ headers, needed only to compile extensions, not to run: not unpacked
 # (9,379 files; they also pass Windows' 260-character path limit).
 SKIP_PREFIXES = ("torch/include/",)
@@ -71,6 +79,12 @@ def _long(path):
 
 class GpuError(RuntimeError):
     """A refused or failed GPU step (message is safe to show)."""
+
+
+def staging_dir(cache_dir):
+    """Where install() builds the component before it replaces anything; its
+    wheels folder is what Setup measures for progress."""
+    return component_dir(cache_dir).parent / (VERSION + ".partial")
 
 
 def component_dir(cache_dir):
@@ -248,7 +262,7 @@ def install(cache_dir, log, fetch):
     component. Runs in the download process. Nothing replaces a working copy
     until the new one is complete and verified."""
     base = _long(component_dir(cache_dir))
-    staging = base.parent / (VERSION + ".partial")
+    staging = _long(staging_dir(cache_dir))
     shutil.rmtree(staging, ignore_errors=True)
     (staging / "wheels").mkdir(parents=True)
     try:

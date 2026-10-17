@@ -1,1 +1,2 @@
 - **Downloads show how far they have got.** The progress bar for a model or the graphics card component now fills as the download arrives, instead of only showing that it is busy (#133).
+- **Model names read the same everywhere.** Settings, Setup and a meeting's details all call a model by the same name, for example "Whisper large-v3" instead of "large-v3" in the Settings list (#133).

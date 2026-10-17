@@ -1959,7 +1959,7 @@ class Workspace:
                              "all": self.settings.unreadable},
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
-                        "min_driver": gpu.MIN_DRIVER[0],
+                        "min_driver": gpu.MIN_DRIVER_TEXT,
                         "component": self._display_value(
                             "gpu", lambda: gpu.status(self.cache_dir))[0] if info
                         else "missing"},
@@ -1982,7 +1982,7 @@ class Workspace:
             info = gpu.detected()
             if info is None or not info["driver_ok"]:
                 raise WorkspaceError("This computer has no NVIDIA graphics card with a recent "
-                                     f"enough driver ({gpu.MIN_DRIVER[0]} or later).")
+                                     f"enough driver ({gpu.MIN_DRIVER_TEXT} or later).")
             if gpu.status(self.cache_dir)[0] != "ready":
                 raise WorkspaceError("Download the graphics card component in Setup first.")
         if changes.get("microphone") is False and self._recording is not None:

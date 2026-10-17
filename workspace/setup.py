@@ -15,6 +15,7 @@
 import multiprocessing as mp
 import os
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -37,13 +38,17 @@ def _speech_card(name, recommended, about):
             "about": about}
 
 
-# The page shows "label" and "title" as they are: it never reads either apart.
+# The page shows "label" as it is and never reads a title apart. Which speech
+# model is recommended comes from asr_engines, never from the order here.
+SPEECH = [
+    (asr_engines.PARAKEET_V2, "Fast and accurate for English. Runs on this computer's processor."),
+    (asr_engines.PARAKEET_V3,
+     "Newer multilingual version. In our tests it was less accurate for English."),
+    (asr_engines.WHISPER_TURBO, "Alternative engine; slower on a processor."),
+]
 CARDS = [
-    _speech_card(asr_engines.RECOMMENDED_PARAKEET, True,
-                 "Fast and accurate for English. Runs on this computer's processor."),
-    _speech_card(asr_engines.PARAKEET_V3, False,
-                 "Newer multilingual version. In our tests it was less accurate for English."),
-    _speech_card(asr_engines.WHISPER_TURBO, False, "Alternative engine; slower on a processor."),
+    *(_speech_card(name, name == asr_engines.RECOMMENDED_PARAKEET, about)
+      for name, about in SPEECH),
     {"name": asr_engines.SPEAKER_MODEL.name, "role": "speakers", "recommended": True,
      "label": "Speaker identification", "title": "Speaker identification (optional)",
      "about": "Works out who spoke when. Downloading it needs a free Hugging Face account "
@@ -85,7 +90,7 @@ def gpu_card(cache_dir):
              "on the processor.")
     if not info["driver_ok"]:
         about += (f" The NVIDIA driver ({info['driver']}) is too old: version "
-                  f"{gpu.MIN_DRIVER[0]} or later is needed. Ask IT to update it.")
+                  f"{gpu.MIN_DRIVER_TEXT} or later is needed. Ask IT to update it.")
     return {"name": gpu.COMPONENT, "role": "gpu", "recommended": False,
             "label": "Graphics card acceleration",
             "title": "Graphics card acceleration (optional)", "about": about,
@@ -292,15 +297,38 @@ def _download_main(conn, name, cache_dir):
         conn.send(("error", _friendly(exc.__cause__ or exc)))
 
 
-def _size_of(path):
+def _size_of(path, since=None):
+    """Bytes in the files under path (with since, only files changed since
+    then: a cancelled attempt's leftovers do not count). A link or junction
+    (any reparse point) is never followed, at the top or below (T5): a link
+    planted in a download folder cannot point the count elsewhere or loop it."""
+    if _not_followed(path):
+        return 0
     total = 0
-    for root, _, files in os.walk(path):
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if not _not_followed(os.path.join(root, d))]
         for f in files:
-            try:
-                total += os.path.getsize(os.path.join(root, f))
-            except OSError:
-                pass
+            total += _file_size(os.path.join(root, f), since)
     return total
+
+
+def _not_followed(path):
+    try:
+        return _is_link(path)
+    except OSError:
+        return True                             # gone or unreadable: nothing to count
+
+
+def _file_size(path, since=None):
+    """A file's own size; 0 for a link, a junction, a file that is gone, or
+    (with since) one last changed before then."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return 0
+    links = os.path.islink(path) or getattr(st, "st_file_attributes", 0) & 0x400
+    stale = since is not None and st.st_mtime < since - 2       # 2 s: coarse clocks
+    return 0 if links or stale else st.st_size
 
 
 def removal_targets(name, cache_dir):
@@ -433,8 +461,9 @@ class Downloads:
                                  "or cancel it.")
             self._running = name
             self._proc = None
+            # started: only what this attempt writes counts towards its progress.
             self.state[name] = {"state": "running", "message": "Starting the download…",
-                                "log": []}
+                                "log": [], "started": time.time()}
         threading.Thread(target=self._run, args=(name, token, on_success), daemon=True,
                          name="model-download").start()
 
@@ -563,24 +592,36 @@ class Downloads:
             log.write("worker_exit", process="setup", exitcode=proc.exitcode, code=code)
 
     def percent(self, name):
-        """How far a running download is, from the size of what it has written
-        so far against what it fetches (R12: a number for the page, never read
-        out of a message); None when that cannot be told (checking, unpacking)."""
+        """How far a running download is, from the size of what this attempt
+        has written so far against what it fetches (R12: a number for the
+        page, never read out of a message). While a downloaded file is checked
+        or unpacked it shows how much has arrived. None for a check of an
+        installed copy (Check every file), or when nothing has been written."""
         entry = self.state.get(name)
         if not entry or entry.get("state") != "running" or entry.get("verify"):
             return None
+        since = entry.get("started")
         cache = Path(self.cache_dir)
         if name == gpu.COMPONENT:
-            folder = gpu.component_dir(cache).parent / (gpu.VERSION + ".partial") / "wheels"
-            total = gpu.DOWNLOAD_BYTES
-        elif name in asr_engines.MANAGED_MODELS:
+            # One wheel at a time, each deleted once it is unpacked: the ones
+            # before it count at their pinned size.
+            wheels = gpu.staging_dir(cache) / "wheels"
+            done = 0
+            for w in gpu.WHEELS:
+                current = wheels / (w["name"] + ".whl")
+                if not _not_followed(current):
+                    return min(100, round(100 * (done + _file_size(current, since))
+                                          / gpu.DOWNLOAD_BYTES))
+                done += w["size"]
+            return None
+        if name in asr_engines.MANAGED_MODELS:
             spec = asr_engines.MANAGED_MODELS[name]
             folder, total = asr_engines.staging_dir(spec, cache), spec.download_bytes
         else:
             return None
         if not total or not folder.is_dir():
             return None
-        return min(100, round(100 * _size_of(folder) / total))
+        return min(100, round(100 * _size_of(folder, since) / total))
 
     def busy(self):
         return self._running is not None

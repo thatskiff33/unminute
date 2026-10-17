@@ -179,11 +179,11 @@
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
-    model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", onboarded: true,
+    model: "parakeet-tdt-0.6b-v2", onboarded: true,
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true },
               { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false },
               { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false }],
-    gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: 580, component: "ready" },
+    gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: "580", component: "ready" },
     deployment: { mode: "self-service", version: "0.3.0" },
     update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
     repaired: { keys: [], all: false },
