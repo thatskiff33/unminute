@@ -222,22 +222,28 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(rec.stopped)
         self.assertEqual(rec.stop()["state"], "device_lost")
 
-    def test_sleep_is_reported_as_sleep_not_a_lost_microphone(self):
-        # The lid closes: the whole app is frozen, then wakes to find no audio.
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
-                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec, s = self.start()
-            s.feed(2)
-            real_get = rec._queue.get
+    # Sleep, as Windows presents it to the app: the monotonic clock jumps
+    # forward (it counts time asleep) while every thread was frozen.
 
-            def asleep(*args, **kwargs):
-                rec._queue.get = real_get
-                time.sleep(1.5)
-                return real_get(*args, **kwargs)
-            rec._queue.get = asleep
-            deadline = time.time() + 10
-            while not rec.stopped and time.time() < deadline:
-                time.sleep(0.1)
+    def start_ticking(self):
+        self.asleep = [0.0]
+        rec = recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
+                                 open_stream=opener(self.holder),
+                                 tick=lambda: time.monotonic() + self.asleep[0])
+        rec.start()
+        return rec, self.holder["stream"]
+
+    def wait_stopped(self, rec, seconds=10):
+        deadline = time.time() + seconds
+        while not rec.stopped and time.time() < deadline:
+            time.sleep(0.05)
+
+    def test_sleep_is_reported_as_sleep_not_a_lost_microphone(self):
+        rec, s = self.start_ticking()
+        s.feed(2)
+        time.sleep(0.3)
+        self.asleep[0] += 600                    # ten minutes asleep; nothing after
+        self.wait_stopped(rec)                   # the watchdog notices on its next beat
         journal = rec.stop()
         self.assertEqual(journal["state"], "slept")
         self.assertEqual([e["kind"] for e in journal["events"]], ["sleep"])
@@ -245,62 +251,82 @@ class RecordingTests(unittest.TestCase):
         _, seconds = recorder.assemble_wav(rec.folder, journal)
         self.assertAlmostEqual(seconds, 2.0, places=1)    # everything before it is kept
 
-    def freeze_writer(self, rec, seconds, on_wake=None):
-        """The next wait for audio lasts `seconds`, as when the computer sleeps."""
-        real_get = rec._queue.get
-
-        def asleep(*args, **kwargs):
-            rec._queue.get = real_get
-            time.sleep(seconds)
-            if on_wake:
-                on_wake()
-            return real_get(*args, **kwargs)
-        rec._queue.get = asleep
-
     def test_audio_resuming_after_sleep_is_not_joined_on(self):
-        # The driver delivers audio before the writer's first pass after the wake.
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
-                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec, s = self.start()
+        # The driver delivers audio before the watchdog's first beat after the wake.
+        with mock.patch.object(recorder, "ALIVE_S", 30):
+            rec, s = self.start_ticking()
             s.feed(2)
-            self.freeze_writer(rec, 1.5, on_wake=lambda: s.feed(2))
-            deadline = time.time() + 10
-            while not rec.stopped and time.time() < deadline:
-                time.sleep(0.1)
+            self.asleep[0] += 600
+            s.feed(2)
+            self.assertTrue(rec.stopped)
         journal = rec.stop()
         self.assertEqual(journal["state"], "slept")
-        self.assertEqual([e["kind"] for e in journal["events"]], ["sleep"])
         _, seconds = recorder.assemble_wav(rec.folder, journal)
         self.assertAlmostEqual(seconds, 2.0, places=1)    # only the audio before the sleep
 
     def test_driver_ending_the_stream_after_sleep_is_sleep(self):
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
-                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec, s = self.start()
+        with mock.patch.object(recorder, "ALIVE_S", 30):  # before the watchdog's beat
+            rec, s = self.start_ticking()
             s.feed(1)
-            self.freeze_writer(rec, 2.0)
-            time.sleep(1.2)                  # the writer is frozen in its wait
-            s.finished()                     # the driver ends the stream on wake
+            self.asleep[0] += 600
+            s.finished()
             self.assertEqual(rec.journal["state"], "slept")
-            self.assertTrue(rec.stopped)
-            self.assertEqual(rec.stop()["state"], "slept")
+        self.assertEqual(rec.stop()["state"], "slept")
+
+    def test_driver_ending_the_stream_after_sleep_while_paused_is_sleep(self):
+        rec, s = self.start_ticking()
+        s.feed(1)
+        rec.pause()
+        self.asleep[0] += 600
+        time.sleep(0.5)                          # the watchdog has seen the freeze
+        self.assertFalse(rec.stopped)
+        s.finished()                             # then the driver ends the stream
+        self.assertEqual(rec.stop()["state"], "slept")
+
+    def test_a_sleep_while_paused_leaves_it_paused(self):
+        # Nothing is being recorded, so nothing is lost: it stays paused and
+        # carries on in the same recording when resumed.
+        rec, s = self.start_ticking()
+        s.feed(1)
+        rec.pause()
+        self.asleep[0] += 600
+        time.sleep(0.5)
+        s.feed(0.5)                              # paused: not recorded
+        self.assertFalse(rec.stopped)
+        rec.resume()
+        s.feed(1)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        self.assertAlmostEqual(seconds, 2.0, places=1)
+
+    def test_sleep_closes_the_stream_at_once(self):
+        rec, s = self.start_ticking()
+        s.feed(1)
+        self.asleep[0] += 600
+        self.wait_stopped(rec)
+        deadline = time.time() + 5               # closed by the writer, before stop()
+        while not s.closed and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(rec.journal["state"], "slept")
+        self.assertTrue(s.stopped and s.closed)
+        rec.stop()
 
     def test_a_slow_save_is_not_mistaken_for_sleep(self):
-        # A microphone lost while a chunk takes a second to save is a lost microphone.
+        # A microphone lost while a chunk takes longer than the silence limit
+        # to save is a lost microphone: a slow save does not delay the watchdog.
         real = recorder._write_atomic
 
         def slow(path, data):
             if path.suffix == ".pcm":
-                time.sleep(0.8)              # slow, but within the silence limit
+                time.sleep(1.0)
             real(path, data)
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1), \
                 mock.patch.object(recorder, "_write_atomic", slow):
             rec, s = self.start()
             s.feed(6)                        # the 5 s chunk is saved slowly
-            deadline = time.time() + 10
-            while not rec.stopped and time.time() < deadline:
-                time.sleep(0.1)
+            self.wait_stopped(rec)
         journal = rec.stop()
         self.assertEqual(journal["state"], "device_lost")
 
@@ -310,6 +336,7 @@ class RecordingTests(unittest.TestCase):
         offset = [0.0]
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
                                  clock=lambda: time.time() + offset[0])
+        self.assertIs(rec._tick, time.monotonic)          # the default the app relies on
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
             rec.start()
@@ -339,39 +366,11 @@ class RecordingTests(unittest.TestCase):
         self.assertNotIn("sleep", [e["kind"] for e in journal["events"]])
         self.assertEqual(journal["state"], "stopped")
 
-    def test_sleep_closes_the_stream_at_once(self):
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
-                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec, s = self.start()
-            s.feed(1)
-            self.freeze_writer(rec, 1.5)
-            deadline = time.time() + 10
-            while not rec.stopped and time.time() < deadline:
-                time.sleep(0.05)
-            deadline = time.time() + 5           # closed by the writer, before stop()
-            while not s.closed and time.time() < deadline:
-                time.sleep(0.05)
-            self.assertEqual(rec.journal["state"], "slept")
-            self.assertTrue(s.stopped and s.closed)
-        rec.stop()
-
-    def test_a_sleep_while_paused_leaves_it_paused(self):
-        # Nothing is being recorded, so nothing is lost: it stays paused and
-        # carries on in the same recording when resumed.
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
-                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec, s = self.start()
-            s.feed(1)
-            rec.pause()
-            self.freeze_writer(rec, 1.5, on_wake=lambda: s.feed(0.5))
-            time.sleep(2.0)
-            self.assertFalse(rec.stopped)
-            rec.resume()
-            s.feed(1)
-        journal = rec.stop()
-        self.assertEqual(journal["state"], "stopped")
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
-        self.assertAlmostEqual(seconds, 2.0, places=1)
+    def test_a_lost_device_is_reported_once(self):
+        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}))
+        rec._device_lost()
+        rec._device_lost()                       # the driver and the silence check both
+        self.assertEqual([e["kind"] for e in rec.journal["events"]], ["device_lost"])
 
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
         real = recorder._write_atomic
