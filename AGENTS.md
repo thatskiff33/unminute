@@ -164,6 +164,7 @@ changes; or GitHub owner settings.
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
 | UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
 | Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it); `SECURITY.md` |
+| Encryption and keys (`workspace/vault.py`, `workspace/audiocrypt.py`, `workspace/dpapi.py`) | `docs/ENCRYPTION.md`; `docs/SECURITY_MODEL.md` T6 to T8 |
 | Tooling traps, flaky checks, Windows and WebView2 quirks | `docs/DEVELOPER_NOTES.md` |
 
 ## Checks

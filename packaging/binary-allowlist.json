@@ -410,6 +410,10 @@
    "signer": ""
   },
   {
+   "path": "runtime/lib/cryptography/hazmat/bindings/_rust.pyd",
+   "signer": ""
+  },
+  {
    "path": "runtime/lib/ctranslate2/_ext.cp314-win_amd64.pyd",
    "signer": ""
   },
