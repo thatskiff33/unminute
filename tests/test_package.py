@@ -899,25 +899,33 @@ class VerifyPrecompiledTests(unittest.TestCase):
     def package(self, files):
         return self.zip_of({f"Unminute-0.5.0/{name}": data for name, data in files.items()})
 
-    def verify(self, zpath, compiled):
+    def verify(self, zpath, compiled, version=None):
         """verify_precompiled, with precompile writing compiled (name -> bytes)."""
         seen = {}
 
-        def fake_precompile(folder):
-            seen["folder"] = folder
+        def fake_precompile(folder, python=None):
+            seen["folder"], seen["python"] = folder, python
             for name, data in compiled.items():
                 (folder / name).parent.mkdir(parents=True, exist_ok=True)
                 (folder / name).write_bytes(data)
-        with mock.patch.object(bp, "precompile", fake_precompile):
+        with mock.patch.object(bp, "precompile", fake_precompile), \
+                mock.patch.object(bp.platform, "python_version",
+                                  return_value=version or bp.PYTHON_VERSION):
             return bp.verify_precompiled(zpath), seen
 
     def test_the_same_bytes_pass(self):
         files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"same",
-                 f"runtime/lib/pkg/{self.PYC}": b"lib"}
+                 "runtime/lib/pkg/mod.py": "y = 2\n", f"runtime/lib/pkg/{self.PYC}": b"lib"}
         count, seen = self.verify(self.package(files), {f"app/{self.PYC}": b"same",
                                                         f"runtime/lib/pkg/{self.PYC}": b"lib"})
         self.assertEqual(2, count)
         self.assertFalse(seen["folder"].exists())          # the unpacked copy is removed
+        # Compiled by this Python, not the package's own runtime.
+        self.assertEqual(sys.executable, seen["python"])
+
+    def test_it_runs_only_on_the_packages_python_version(self):
+        with self.assertRaisesRegex(SystemExit, f"Verify with CPython {bp.PYTHON_VERSION}"):
+            self.verify(self.package({"app/mod.py": ""}), {}, version="3.14.0")
 
     def test_an_altered_pyc_is_found(self):
         files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"planted"}
@@ -930,9 +938,16 @@ class VerifyPrecompiledTests(unittest.TestCase):
             self.verify(self.package(files), {f"app/{self.PYC}": b"compiled"})
 
     def test_a_pyc_without_its_source_is_refused(self):
-        # Python imports a .pyc that sits where the module would, with no source.
-        with self.assertRaisesRegex(SystemExit, "outside __pycache__"):
-            self.verify(self.package({"app/mod.pyc": b"sourceless"}), {})
+        # Python imports a .pyc that sits where the module would, with no
+        # source; one in __pycache__ without its .py (or beside a .pyw, which
+        # compileall skips), or for another version, cannot be checked either.
+        for files in ({"app/mod.pyc": b"sourceless"},
+                      {f"app/{self.PYC}": b"orphan"},
+                      {"app/mod.pyw": "", f"app/{self.PYC}": b"orphan"},
+                      {"app/mod.py": "", "app/__pycache__/mod.cpython-313.pyc": b"other"}):
+            with self.subTest(files=list(files)), \
+                    self.assertRaisesRegex(SystemExit, "without their source beside them"):
+                self.verify(self.package(files), {})
 
     def test_a_zip_that_is_not_one_package_folder_is_refused(self):
         for entries in ({"Unminute-0.5.0/app/a.py": "", "Other/app/b.py": ""},

@@ -28,8 +28,10 @@ From then on, all changes reach `main` through a pull request, and nobody can fo
 
 The Release workflow relies on these owner settings. They were read back on 17 Oct 2026:
 
-- **Tag ruleset** "Protect release tags": active. It keeps a release tag from being moved or deleted.
-- **`release` environment:** the repository owner is the required reviewer, and only `v*` tags can deploy to it. The publish job waits here for approval.
+- **Tag ruleset** "Protect release tags": active. It stops a `v*` tag being created, moved or deleted by anyone but its bypass list. This is the control that keeps a collaborator from releasing: with it, only the owner can start a release. Confirm that the bypass list is the owner alone. Tags are matched by pattern, and whether that ignores case is not documented, so add `refs/tags/V*` too: IT's script refuses such a tag, but the workflow's own trigger may not.
+- **`release` environment:** the repository owner is the required reviewer, and only `v*` tags can deploy to it. The publish job waits here for approval. Administrators can bypass it (GitHub's default): turn that off after the move to the organisation.
+- **The owner's sign-in on machines where agents run.** An agent, or malware running as the user, could use a signed-in owner account to create release tags and approve the deployment. Recommended: sign the owner out of `gh` and Git Credential Manager on those machines, and tag and approve on GitHub's website with two-factor sign-in.
+- **Releases before v0.5.0** are not immutable, and their tags' `release.yml` still has a manual "Run workflow" route (with write access only; it has no signing rights).
 - **Immutable releases** (Settings > General > Releases): turned on by the owner on 16 Oct 2026. This could not be read back with a collaborator's access, so confirm it before the first signed release. Once on, a published release's files and tag cannot change.
 - **Moving the repository** to the Unlimit organisation changes the identity the attestations name. Do it before the first signed release, then change the default `-Repository` in `tools/intune/Get-VerifiedRelease.ps1`; a test fails in CI until they agree.
 
@@ -70,7 +72,7 @@ CI proves the code parses, the unit tests pass and the pins resolve. It does not
 
 ## Cutting a release
 
-The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs and publishes a release when a version tag is pushed. There is no manual "Run workflow" route: the tag is the single record of what was released. Nothing becomes public until the repository owner approves it.
+The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs and publishes a release when a version tag is pushed. There is no manual "Run workflow" route: the tag is the single record of what was released. The workflow publishes only after the repository owner approves it. That approval gates the workflow, not GitHub itself: anyone with write access can still edit or publish a draft by hand. So the publish job checks the published files afterwards, and IT verifies every download with `tools/intune/Get-VerifiedRelease.ps1`.
 
 1. **Changelog and version.** On a branch, run `python tools/changelog.py vX.Y.Z` (for a preview, `vX.Y.Z-preview.N`).
    - It moves the fragments in `changelog.d/` into a new `## vX.Y.Z (YYYY-MM-DD)` section at the top of `CHANGELOG.md`, sets `VERSION` to `X.Y.Z` (or `X.Y.Z-preview.N`), and deletes the fragments.
@@ -78,6 +80,12 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - Review both files, then merge them to `main`. `VERSION` is the one source of the version: the package build reads it, and the workflow refuses a tag that differs.
    - **Promoting a preview to a full release:** run `python tools/changelog.py vX.Y.Z` as usual. The full section brings in the notes of every `## vX.Y.Z-preview.N` section (oldest first, each group's notes kept together) and any fragments added since, so users on Latest see everything since the last full release, as long as the previews were numbered `vX.Y.Z-preview.N` (notes from an abandoned preview of another version are not brought in: add a fragment if they still apply). The preview sections stay as they were; leave them as the script wrote them, and put install notes in `--summary`. A preview's summary is not carried over; give the full release its own. `python tools/changelog.py --preview vX.Y.Z` shows the notes first.
 2. **Tag the merged commit and push the tag.** Publishing a release needs its own approval (AGENTS.md), so an agent pushes a tag only when the user has asked for that release.
+   - **Before tagging, the owner reviews what changed in the release machinery since the last release.** An attestation proves where and from which commit a package was built, not that the code is benign, and agents merge their own pull requests:
+
+     ```
+     git diff <last release tag>..<commit> -- .github/workflows tools/build_package.py tools/evidence.py packaging requirements.txt requirements
+     ```
+
 
    ```
    git tag -a vX.Y.Z -m "Unminute vX.Y.Z" <commit on main>
@@ -122,7 +130,7 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - both attestations verify against this repository's Release workflow, the tag and the tag's commit, on a GitHub-hosted runner;
    - the evidence is complete and names that zip and commit (`tools/evidence.py check --commit`).
 
-   Then it publishes. With immutable releases on, the files and the tag can no longer change. If a check fails, fix the cause (for example, attach a missing report) and re-run the failed job, which asks for approval again.
+   Then it publishes, and checks that the published release holds exactly the files it checked, by name and by the digest GitHub records for each. With immutable releases on, the files and the tag can no longer change. If a check fails before publishing, fix the cause (for example, attach a missing report) and re-run the failed job, which asks for approval again. If the check after publishing fails, someone changed the draft's files: withdraw the release ("Withdrawing a bad release") and release the next patch version.
 5. **Release type.** A `vX.Y.Z` tag publishes a full release, which becomes Latest, the default download. A `vX.Y.Z-preview.N` tag publishes a pre-release that does not.
 
 ## Building the package locally
@@ -132,7 +140,7 @@ The Release workflow builds every published package. The same command builds it 
 - `python -I tools/build_package.py --release` on Windows with 64-bit CPython 3.14 (without `-I` it refuses to run). It refuses a working tree with any change, untracked file or file hidden from `git status`, and a HEAD that is not the commit of tag `vX.Y.Z`. It packages that commit's files as git stores them, never the working folder, and takes the version from `VERSION` (a `--version` that differs is refused; see PACKAGING.md).
 - The command prints the zip's SHA-256 and writes the `.sha256` file and the bill of materials (`Unminute-X.Y.Z.cdx.json`) to `dist/`. The zip's `version.json` says `"release": true`; a build without `--release` says `false` and is never published.
 - The build is reproducible: building the same commit again with the same Python, pip and zlib versions (listed in the bill of materials) gives the same SHA-256.
-- `python -I tools/build_package.py --verify-precompiled <zip>` checks any package zip: every shipped `.pyc` must be what its source compiles to.
+- `python -I tools/build_package.py --verify-precompiled <zip>` checks any package zip, with this machine's CPython of the package's version (not the package's own runtime). Every `.pyc` the package ships outside its standard library must be what its `.py` beside it compiles to, and a `.pyc` without its source is refused. The standard library inside `python3XX.zip` comes from the official runtime, whose SHA-256 is pinned.
 
 ## Withdrawing a bad release
 

@@ -19,9 +19,13 @@
 #    owner's approval. Approve only after the five release-time evidence reports
 #    are attached to the draft. It then checks the draft holds exactly the zip
 #    built and attested here, that its attestations verify against this
-#    workflow and tag, that the evidence is complete and names that zip
-#    (tools/evidence.py check), and that nothing else was added; then it
-#    publishes. Immutable releases lock the files and the tag from then on.
+#    workflow at this tag and commit, that the evidence is complete and names
+#    that zip (tools/evidence.py check), and that nothing else was added; then
+#    it publishes, and checks the published files are the ones it checked.
+#    Immutable releases lock the files and the tag from then on. The approval
+#    gates this workflow only: anyone with write access can still edit or
+#    publish a draft by hand, which the last check and IT's verification of
+#    every download (tools/intune/Get-VerifiedRelease.ps1) are there to catch.
 #
 # A -preview.N tag publishes a pre-release that does not become Latest. Values
 # from the event reach scripts through environment variables, never ${{ }}
@@ -91,7 +95,7 @@ jobs:
           if [ ! -s notes.md ]; then
             echo "No section '## $TAG' found in CHANGELOG.md"; exit 1
           fi
-          cat notes.md
+          echo "Release notes: $(wc -l < notes.md) lines"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -240,7 +244,15 @@ jobs:
           fi
           # Every attestation for the zip (provenance and SBOM), for offline checks.
           gh attestation download "dist/$NAME.zip" --repo "$GITHUB_REPOSITORY" --limit 10
-          mv "sha256-$BUILT.jsonl" "dist/$NAME.attestations.jsonl"
+          # gh names the file sha256:<digest>.jsonl (with "-" for ":" on Windows).
+          bundle=""
+          for candidate in "sha256:$BUILT.jsonl" "sha256-$BUILT.jsonl"; do
+            if [ -f "$candidate" ]; then bundle="$candidate"; fi
+          done
+          if [ -z "$bundle" ]; then
+            echo "gh attestation download wrote no bundle for the zip"; ls -la; exit 1
+          fi
+          mv "$bundle" "dist/$NAME.attestations.jsonl"
           kind=()
           case "$TAG" in *-preview.*) kind=(--prerelease) ;; esac
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
@@ -255,8 +267,7 @@ jobs:
     timeout-minutes: 30
     environment: release
     permissions:
-      contents: write       # publish the draft
-      attestations: read    # verify the attestations
+      contents: write       # publish the draft (the attestations are checked offline)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -304,8 +315,8 @@ jobs:
           for predicate in https://slsa.dev/provenance/v1 https://cyclonedx.org/bom; do
             gh attestation verify "$NAME.zip" --repo "$GITHUB_REPOSITORY" \
               --bundle "$NAME.attestations.jsonl" --predicate-type "$predicate" \
-              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-              --source-ref "refs/tags/$TAG" --source-digest "$commit" \
+              --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/tags/$TAG" \
+              --signer-digest "$commit" --source-ref "refs/tags/$TAG" --source-digest "$commit" \
               --deny-self-hosted-runners
           done
 
@@ -324,3 +335,23 @@ jobs:
           latest=(--latest)
           case "$TAG" in *-preview.*) latest=(--latest=false) ;; esac
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false "${latest[@]}"
+
+      # Anyone with write access could change a draft's files between the checks
+      # above and publishing: the published release must hold exactly the files
+      # checked, by name and by the digest GitHub records for each.
+      - name: The published release holds exactly the files checked
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[] | "\(.name) \(.digest)"' | sort > published.txt
+          (cd release && for f in *; do
+            echo "$f sha256:$(sha256sum "$f" | cut -d' ' -f1)"
+          done) | sort > checked.txt
+          if ! diff checked.txt published.txt; then
+            echo "::error::The published release's files differ from the ones checked. Withdraw it (docs/RELEASING.md)."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '"immutable: \(.immutable)"'

@@ -419,10 +419,18 @@ def verify_precompiled(zpath):
     """Every shipped .pyc is what its .py compiles to (#111 B3). Python runs
     the .pyc and never checks it against the source (unchecked-hash), so a
     reviewer reading the shipped .py files would not see an altered .pyc.
-    Unpacks the package, notes every .pyc, compiles every module again exactly
-    as the build does (precompile is deterministic and path-independent), and
-    compares the bytes. A .pyc outside __pycache__ (a module shipped without
-    its source) cannot be checked and is refused. Returns the count compared."""
+    Unpacks the package, notes every .pyc, compiles every module again as the
+    build does (precompile is deterministic and path-independent), and compares
+    the bytes. The compiler is this Python, which must be the package's
+    version, not the package's own runtime, so nothing in the package takes
+    part in checking itself. A .pyc that is not __pycache__/<module>.cpython-
+    <tag>.pyc beside its .py (a module shipped without its source) cannot be
+    checked and is refused. The standard library inside python3XX.zip is not
+    covered here: the runtime's pinned SHA-256 covers it. Returns the count
+    compared."""
+    if platform.python_version() != PYTHON_VERSION or sys.implementation.name != "cpython":
+        sys.exit(f"Verify with CPython {PYTHON_VERSION}, the package's version "
+                 f"(this is {sys.implementation.name} {platform.python_version()}).")
     work = Path(tempfile.mkdtemp(prefix="wwverify-")).resolve()
     if os.name == "nt":
         work = Path("\\\\?\\" + str(work))
@@ -438,11 +446,19 @@ def verify_precompiled(zpath):
         def digests():
             return {p.relative_to(folder).as_posix(): sha256(p) for p in folder.rglob("*.pyc")}
         shipped = digests()
-        sourceless = sorted(n for n in shipped if n.split("/")[-2:-1] != ["__pycache__"])
+        suffix = f".cpython-{PYTHON_TAG}.pyc"
+
+        def has_source(name):
+            parts = name.split("/")
+            if len(parts) < 2 or parts[-2] != "__pycache__" or not parts[-1].endswith(suffix):
+                return False
+            return (folder.joinpath(*parts[:-2]) / (parts[-1][:-len(suffix)] + ".py")).is_file()
+        sourceless = sorted(n for n in shipped if not has_source(n))
         if sourceless:
-            sys.exit("The package has .pyc files outside __pycache__, which cannot be "
-                     "checked against a source:\n" + "\n".join(sourceless[:20]))
-        precompile(folder)
+            sys.exit("The package has .pyc files without their source beside them (outside "
+                     "__pycache__, an unexpected name, or no .py), which cannot be checked:\n"
+                     + "\n".join(sourceless[:20]))
+        precompile(folder, python=sys.executable)
         rebuilt = digests()
         differ = sorted(n for n in shipped.keys() | rebuilt.keys()
                         if shipped.get(n) != rebuilt.get(n))

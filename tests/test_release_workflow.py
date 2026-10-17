@@ -45,7 +45,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual({"contents": "read", "id-token": "write", "attestations": "write"},
                          permissions(j["build"]))
         self.assertEqual({"contents": "write", "attestations": "read"}, permissions(j["draft"]))
-        self.assertEqual({"contents": "write", "attestations": "read"}, permissions(j["publish"]))
+        self.assertEqual({"contents": "write"}, permissions(j["publish"]))    # verified offline
         self.assertIn("    needs: check\n", j["build"])
         self.assertIn("    needs: [check, build]\n", j["draft"])
         self.assertIn("    needs: [build, draft]\n", j["publish"])
@@ -103,7 +103,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("diff expected.txt found.txt", publish)       # nothing added, nothing missing
         self.assertIn('= "$BUILT"', publish)                          # the zip that was built
         self.assertIn('= "$SBOM"', publish)
-        for flag in ('--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"',
+        for flag in ('--cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/'
+                     'release.yml@refs/tags/$TAG"', '--signer-digest "$commit"',
                      '--source-ref "refs/tags/$TAG"', '--source-digest "$commit"',
                      "commit=$(git rev-parse HEAD)",
                      "--deny-self-hosted-runners", "https://slsa.dev/provenance/v1",
@@ -116,10 +117,20 @@ class WorkflowTests(unittest.TestCase):
         # The checks come before publishing.
         self.assertLess(publish.index("tools/evidence.py check"), publish.index("--draft=false"))
         self.assertLess(publish.index("attestation verify"), publish.index("--draft=false"))
+        self.assertNotIn("--signer-workflow", publish)          # a prefix match, not exact
+        # After publishing, the published files are exactly the ones checked.
+        after = publish[publish.index("--draft=false"):]
+        self.assertIn('"\\(.name) \\(.digest)"', after)
+        self.assertIn("diff checked.txt published.txt", after)
+
+    def test_the_draft_finds_the_bundle_whatever_gh_names_it(self):
+        draft = jobs()["draft"]
+        self.assertIn('"sha256:$BUILT.jsonl" "sha256-$BUILT.jsonl"', draft)     # Linux, Windows
+        self.assertNotIn("cat notes.md", read(WORKFLOW))     # changelog text never reaches the log
 
     def test_the_tag_shape_is_the_same_everywhere(self):
         workflow = re.search(r"grep -Eq '(\^v[^']+\$)'", read(WORKFLOW)).group(1)
-        script = re.search(r"ValidatePattern\('(\^v[^']+\$)'\)", read(VERIFY)).group(1)
+        script = re.search(r"\$_ -cmatch '(\^v[^']+\$)'", read(VERIFY)).group(1)
         self.assertEqual(r"^v[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?$", workflow)
         self.assertEqual(workflow, script)
         self.assertEqual(build_package.VERSION_SHAPE.pattern,
@@ -132,13 +143,21 @@ class VerificationScriptTests(unittest.TestCase):
         for name in ('"$name.zip"', '"$name.zip.sha256"', '"$name.cdx.json"',
                      '"$name.attestations.jsonl"'):
             self.assertIn(name, script)
-        for flag in ("--bundle $bundle", "--signer-workflow $workflow",
-                     '--source-ref "refs/tags/$Tag"', "--deny-self-hosted-runners",
+        for flag in ("--bundle $bundle", "--cert-identity $identity", "--signer-digest $commit",
+                     '--source-ref "refs/tags/$Tag"', "--source-digest $commit",
+                     "--deny-self-hosted-runners",
                      "'https://slsa.dev/provenance/v1', 'https://cyclonedx.org/bom'"):
             self.assertIn(flag, script)
-        self.assertIn('$workflow = "$Repository/.github/workflows/release.yml"', script)
+        self.assertIn('$identity = "https://github.com/$Repository/.github/workflows/release.yml'
+                      '@refs/tags/$Tag"', script)
+        self.assertNotIn("--signer-workflow", script)
+        # Case matters: a "V0.5.0" tag is not this release's.
+        self.assertIn("[ValidateScript({ $_ -cmatch ", script)
+        self.assertNotIn("ValidatePattern('^v", script)
+        self.assertIn("$release.tag_name -cne $Tag", script)
         self.assertIn("if ($release.draft)", script)
         self.assertIn("$release.prerelease -and -not $AllowPrerelease", script)
+        self.assertIn("$Tag -cmatch '-preview\\.' -and -not $AllowPrerelease", script)
 
     def test_the_repository_is_named_once_and_is_this_one(self):
         # The signer identity names the repository, so a move to another owner
