@@ -127,7 +127,10 @@ when all of these hold, after checking the live repository settings:
 
 - the PR is out of draft and every required check passes on its final commit;
 - an independent review of that exact commit has signed off, with a security review for
-  anything under "Stop and ask", and its findings are fixed or answered on the PR;
+  anything under "Stop and ask", and its findings are fixed or answered on the PR. A rebase
+  onto a moved `main` keeps the review only if `git range-diff <old base>..<reviewed>
+  <new base>..HEAD` shows every commit identical ("="), the PR records that, and CI passes on
+  the rebased head; any other change after the review needs that change reviewed;
 - no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
 
 Neither these instructions nor an approved plan authorise: publishing a release (pushing a `v*`
