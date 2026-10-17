@@ -1,0 +1,1 @@
+- **The drop outline shows in dark mode.** When you drag a recording onto the window, the dashed outline of the light drop panel was nearly invisible in dark mode; it now uses the same blue as in light mode, which stands out on the panel in both (#183).

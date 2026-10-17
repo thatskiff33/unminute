@@ -96,9 +96,11 @@
   --toast: #142966;
   --toast-fg: #FFFFFF;
   --shadow-toast: 0 8px 24px rgba(20, 41, 102, 0.3);
-  /* The drop overlay stays light in the dark theme too (its dark text keeps
-     it legible); a dark version needs a design board first (#183). */
+  /* The drop overlay stays light in both themes (the user's decision, #183):
+     these tokens have no dark values. Its dashed border has its own token,
+     so it keeps its contrast on the light panel in the dark theme too. */
   --drop-overlay: rgba(238, 247, 253, 0.94);
+  --drop-border: #2B61BF;
   --drop-icon: #142966;
   --drop-icon-fg: #FFFFFF;
   --drop-title: #142966;

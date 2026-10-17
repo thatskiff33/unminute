@@ -301,7 +301,7 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 /* Drop overlay */
 .drop-overlay {
   position: fixed; top: 16px; right: 16px; bottom: 16px; left: 240px; z-index: 5;
-  border-radius: var(--r-dialog); border: 3px dashed var(--fill);
+  border-radius: var(--r-dialog); border: 3px dashed var(--drop-border);
   background: var(--drop-overlay); display: flex; flex-direction: column; align-items: center;
   justify-content: center; gap: 14px; pointer-events: none;
 }
@@ -369,9 +369,14 @@ body[data-view="meeting"] .drop-overlay { left: 80px; }
 .toast:empty { padding: 0; background: none; box-shadow: none; }
 .toast:empty::before { display: none; }   /* stays in the page: a live region */
 .toast.ok::before {
-  content: ""; width: 16px; height: 16px; flex: none;
-  background: no-repeat center / 16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2362D098' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E");
+  /* The tick is a mask (only its shape counts), filled from the token. */
+  content: ""; width: 16px; height: 16px; flex: none; background: var(--success);
+  -webkit-mask: no-repeat center / 16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E");
+          mask: no-repeat center / 16px url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5 9-10'/%3E%3C/svg%3E");
 }
+/* Windows contrast themes force background colours, which would hide the
+   masked tick: there it takes the system text colour. */
+@media (forced-colors: active) { .toast.ok::before { background: CanvasText; } }
 
 /* -- hold surfaces (meeting side panel) ------------------------------------------------------ */
 /* Pink (hold) surfaces keep their light look in both themes, so text and
