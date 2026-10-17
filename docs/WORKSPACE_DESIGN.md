@@ -198,6 +198,7 @@ Failure reasons are stored without file paths.
 - **Restarts.** Because work is found by scanning, a restart resumes exactly where processing stopped. Explicit pauses stay paused.
 - **Intake thread.** Imports (hash and decode) run on a separate thread, so adding a recording never waits behind a transcription.
 - **Battery.** Automatic work waits on battery unless the user overrides it in Settings.
+- **Database check (R11).** When the app last ended without closing (its run marker, `logs\app.running`, is still there) or the last check found damage, a background thread runs SQLite's `PRAGMA quick_check` at start. Until it passes, no transcription, speaker pass or import starts. If it finds damage, the hold stays (the user's choice of 17 Oct 2026, #132), the page shows a message with an incident code, and **Continue anyway** (`continue_despite_damage`) releases it for this run. Cleanup the user confirmed is not held. The hold is kept in memory, so nothing is written to the damaged database. The result goes to the log (`integrity` record) and to `logs\integrity.json` (result, code and time, no content), which the next start, `--status` and `--health` read.
 - **Failed cleanup.** A failed cleanup is retried at most once a minute, or at once on Try again.
 - **Receipts.** Expired receipts are purged at startup and hourly while the app is open.
 
@@ -240,6 +241,8 @@ Failure reasons are stored without file paths.
   - speech model;
   - speaker identification on or off;
   - cleanup receipts.
+
+  `settings.json` carries `settings_version` (R11). Settings this version does not know, and a newer version's value for a setting it cannot use, are kept and written back unchanged, so going back a version and then forward loses nothing. A value the app refuses falls back to its default, and Settings names it ("on their defaults"); a file that cannot be read (damaged, not an object, or larger than 64 KB) means all defaults, and Settings says so. Each save is flushed to disk before it replaces the old file.
 
 ### Edits and versions
 

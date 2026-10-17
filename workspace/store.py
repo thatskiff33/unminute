@@ -442,6 +442,16 @@ class Store:
         with self._lock:
             self.db.close()
 
+    def quick_check(self):
+        """SQLite's quick integrity check (R11): True if it finds no damage.
+        Its findings name pages and tables, never content, and are not kept."""
+        with self._lock:
+            try:
+                rows = self.db.execute("PRAGMA quick_check(1)").fetchall()
+            except sqlite3.DatabaseError:
+                return False
+        return len(rows) == 1 and rows[0][0] == "ok"
+
     @contextmanager
     def tx(self):
         """One atomic transaction; any database error rolls everything back."""

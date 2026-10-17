@@ -9,7 +9,8 @@
 # Support options (no window):
 #   --version     the installed package version
 #   --status      workspace contents as JSON counts (meetings, holds, pending
-#                 cleanup); used by installers and updates (#26). No content.
+#                 cleanup) and the last database check; used by installers and
+#                 updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency and check the offline guard
 #   --health      for an Intune Remediation detection script run as the
@@ -58,13 +59,18 @@ def package_version():
 
 
 def status(root=None):
-    """Counts only: never titles, names or text."""
+    """Counts only: never titles, names or text. integrity: the last
+    database check (R11), "ok", "failed" or "unchecked"."""
     import sqlite3
 
+    from workspace import diag
     from workspace.store import default_root
-    db = Path(root or default_root()).absolute() / "workspace.db"
+    root = Path(root or default_root()).absolute()
+    db = root / "workspace.db"
+    checked = diag.integrity_state(root / "logs")
     out = {"version": package_version(), "workspace": db.exists(), "meetings": 0,
-           "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None}
+           "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None,
+           "integrity": checked["result"] if checked else "unchecked", "readable": True}
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
@@ -74,6 +80,8 @@ def status(root=None):
                        pending_cleanup=q("SELECT COUNT(*) FROM cleanup_jobs"),
                        receipts=q("SELECT COUNT(*) FROM receipts"),
                        schema=q("SELECT MAX(version) FROM schema_version"))
+        except sqlite3.DatabaseError:
+            out["readable"] = False             # damaged (or not ours): counts unknown
         finally:
             con.close()
     return out
@@ -82,10 +90,11 @@ def status(root=None):
 def health(root=None):
     """For device management (an Intune Remediation run as the signed-in
     user): states and counts only, and never an error message. Needs
-    attention when the workspace cannot be used, when run as SYSTEM (which
-    sees no user's workspace, and must never run the user's own install), or
-    when something crashed in the last 7 days (including a run that ended
-    without closing, which the next start records as a crash)."""
+    attention when the workspace cannot be used (including when its last
+    database check found damage), when run as SYSTEM (which sees no user's
+    workspace, and must never run the user's own install), or when something
+    crashed in the last 7 days (including a run that ended without closing,
+    which the next start records as a crash)."""
     out = {"version": "?", "workspace": "unreadable", "running": False,
            "last_run": "clean", "crashes_7d": 0, "schema": None}
     try:
@@ -125,7 +134,12 @@ def _health(out, root):
     except Exception:
         out["workspace"] = "unreadable"
         return
+    if not counts["readable"]:
+        out["workspace"] = "unreadable"
+        return
     out["workspace"] = "ok" if counts["workspace"] else "none"   # none: never opened here
+    if counts["integrity"] == "failed":
+        out["workspace"] = "damaged"            # the last database check found damage
     out["schema"] = counts["schema"]
 
 
@@ -288,7 +302,9 @@ def main():
         _message("Unminute is already open. Look for its window on the taskbar.")
         return 0
     try:
-        ws = Workspace(cache_dir=model_cache())
+        # check_integrity: after an unclean exit (this run's marker is not
+        # written yet, diag.install below), the database is checked (R11).
+        ws = Workspace(cache_dir=model_cache(), check_integrity=True)
     except StoreError as exc:
         # e.g. a workspace from a newer version, or one that cannot be migrated:
         # explain instead of disappearing (pythonw has no console).

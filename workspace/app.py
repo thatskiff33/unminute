@@ -53,6 +53,8 @@ POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
 # and again at once after a download, removal, token or settings change (R7b).
 DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
+SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
+SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
@@ -97,19 +99,49 @@ class Settings:
         self.path = Path(path)
         self.allow_test_engines = allow_test_engines
         self.values = dict(DEFAULT_SETTINGS)
-        self.repaired = []                 # keys whose saved value was refused
-        try:
-            saved = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
-        for key, value in (saved.items() if isinstance(saved, dict) else ()):
+        self.repaired = []                 # keys on their default: the saved value was refused
+        self.unreadable = False            # the file exists but could not be read: all defaults
+        self.version = SETTINGS_VERSION
+        # Saved values this version does not use, written back unchanged (R11):
+        # settings only a newer version knows, and a newer version's value for
+        # a setting this one knows but cannot use. A rollback then loses none.
+        self._kept = {}
+        saved = self._read()
+        version = saved.pop("settings_version", 0)
+        newer = isinstance(version, int) and not isinstance(version, bool) \
+            and SETTINGS_VERSION < version < 10 ** 6
+        if newer:
+            self.version = version
+        for key, value in saved.items():
             if key not in DEFAULT_SETTINGS:
+                self._kept[key] = value
                 continue
             try:
                 self._check(key, value)
                 self.values[key] = value
             except WorkspaceError:
                 self.repaired.append(key)
+                if newer:
+                    self._kept[key] = value
+
+    def _read(self):
+        """The saved settings as a dict ({} if there is no file yet)."""
+        try:
+            with open(self.path, "rb") as f:
+                data = f.read(SETTINGS_MAX_BYTES + 1)
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            data = None
+        try:
+            saved = json.loads(data.decode("utf-8-sig")) \
+                if data is not None and len(data) <= SETTINGS_MAX_BYTES else None
+        except (ValueError, RecursionError):
+            saved = None
+        if not isinstance(saved, dict):
+            self.unreadable = True
+            return {}
+        return saved
 
     def __getitem__(self, key):
         return self.values[key]
@@ -133,20 +165,33 @@ class Settings:
     def update(self, **changes):
         for key, value in changes.items():
             self._check(key, value)
+        for key, value in changes.items():
             self.values[key] = value
+            self._kept.pop(key, None)              # the user's choice replaces a kept value
+            if key in self.repaired:
+                self.repaired.remove(key)
+        saved = {"settings_version": self.version, **self.values, **self._kept}
+        # Written in full or not at all: flushed to disk before the swap, so a
+        # power cut leaves the old file or the new one, never a part.
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(saved, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(self.path)
+        self.unreadable = False
 
 
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None):
+                 policy_reader=None, check_integrity=False):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
-        app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy)."""
+        app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy).
+        check_integrity: the app's own start (R11): check the database when
+        the app last ended without closing, or the last check found damage."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
@@ -208,6 +253,19 @@ class Workspace:
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
+        # Database check (R11): after the app last ended without closing (its
+        # run marker is still there: __main__ reads this before diag.install
+        # replaces it), or while the last check found damage. Until it passes,
+        # or the user chooses Continue anyway, no transcription, speaker pass or
+        # import starts (the user's choice, 17 Oct 2026); cleanup still runs.
+        # The hold is kept in memory, so nothing is written to a damaged database.
+        last = diag.integrity_state(self.log.folder)
+        due = check_integrity and (self.log.running_path.exists()
+                                   or bool(last and last["result"] == "failed"))
+        self._integrity = {"state": "checking" if due else None, "code": None}
+        self._integrity_ok = threading.Event()      # set: work may start
+        if not due:
+            self._integrity_ok.set()
         self._reconcile_imports()
         intake.recover(self.store)        # imports queued when the app last closed
         if start:
@@ -216,6 +274,11 @@ class Workspace:
     # -- lifecycle --------------------------------------------------------------------
 
     def start(self):
+        if self._integrity["state"] == "checking":
+            t = threading.Thread(target=self._check_integrity, daemon=True,
+                                 name="workspace-integrity")
+            t.start()
+            self._threads.append(t)
         for target, name in ((self._process_loop, "workspace-processing"),
                              (self._intake_loop, "workspace-intake"),
                              (self._watch_loop, "workspace-watch"),
@@ -250,6 +313,7 @@ class Workspace:
         self._wake.set()
         self._scan_wake.set()
         self._policy_wake.set()
+        self._integrity_ok.set()          # an import waiting on the check ends with the app
         self._imports.put(None)
         self.handle.close()
         for t in self._threads:
@@ -378,6 +442,8 @@ class Workspace:
         while True:
             item = self._imports.get()
             try:
+                if item is not None:
+                    self._integrity_ok.wait()   # held while the database check holds work
                 if item is None or self._closing.is_set():
                     return
                 if item[0] in ("__recording__", "__recovered__"):
@@ -974,6 +1040,11 @@ class Workspace:
                     self._status = "Waiting before trying again"
                     break
                 kind, mid, ref = work
+                if kind != "cleanup" and not self._integrity_ok.is_set():
+                    self._status = ("Waiting: checking the workspace"
+                                    if self._integrity["state"] == "checking"
+                                    else "On hold: the workspace database is damaged")
+                    break
                 if kind in ("transcribe", "speakers") and not resources.may_start_automatic_work(
                         self.settings["battery_override"], battery=self._battery):
                     self._status = "Waiting: the computer is on battery power"
@@ -1693,6 +1764,12 @@ class Workspace:
                                           f"{'supported' if info.get('driver_ok') else 'too old'}"
                                           if info else "none found"))
         lines.append(f"Crashes in the last 7 days: {diag.recent_crashes(self.log.folder)}")
+        checked = diag.integrity_state(self.log.folder)       # values it has checked
+        if checked is None:
+            lines.append("Database check: not run")
+        else:
+            code = f", code {checked['code']}" if checked["code"] else ""
+            lines.append(f"Database check: {checked['result']} ({checked['t'] or '?'}{code})")
         lines.append("Recent log records (newest last):")
         lines += [json.dumps(r, separators=(",", ":"))
                   for r in diag.shareable_records(self.log.folder, limit=40)]
@@ -1708,12 +1785,45 @@ class Workspace:
             raise WorkspaceError(str(exc)) from exc
         return {"chars": len(text)}
 
+    # -- database check (R11, #132) ------------------------------------------------------
+
+    def _check_integrity(self):
+        """Run SQLite's quick check once, record the result (a log record and
+        logs\\integrity.json for the next start, --status and --health), then
+        let work start, or hold it with a code the user sees."""
+        ok = self.store.quick_check()
+        code = None if ok else diag.new_code()
+        result = "ok" if ok else "failed"
+        self.log.write("integrity", result=result, code=code)
+        diag.record_integrity(self.log.folder, result, code)
+        with self._lock:
+            self._integrity = {"state": None if ok else "failed", "code": code}
+        if ok:
+            self._integrity_ok.set()
+        self._wake.set()
+
+    def continue_despite_damage(self):
+        """Continue anyway: the user lets work start on a damaged database.
+        The next start checks again (and holds again while the damage stays)."""
+        with self._lock:
+            if self._integrity["state"] != "failed":
+                return
+            self._integrity = {"state": "continued", "code": self._integrity["code"]}
+        self._integrity_ok.set()
+        self._wake.set()
+
+    def _integrity_notice(self):
+        """For the page: the damage found and its code, while work is held."""
+        with self._lock:
+            info = dict(self._integrity)
+        return info if info["state"] == "failed" else None
+
     def status(self):
         return {"busy": self._busy[1] if self._busy else None, "message": self._status,
                 "mode": self.settings["mode"],
                 "import_errors": list(self._import_errors),
                 "importing": self._imports.unfinished_tasks,
-                "changes": self._changes()}
+                "changes": self._changes(), "integrity": self._integrity_notice()}
 
     def _changes(self):
         """A number that differs whenever the Meetings list or the reminders
@@ -1745,6 +1855,10 @@ class Workspace:
         if not self._allowed("AllowGpuComponent"):
             effective["gpu_speakers"] = False
         return {**effective, "choices": choices, "managed": self.managed(),
+                # Settings on their default because the saved value could not
+                # be used (R11): names of settings only, never their values.
+                "repaired": {"keys": list(self.settings.repaired),
+                             "all": self.settings.unreadable},
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
                         "component": self._display_value(

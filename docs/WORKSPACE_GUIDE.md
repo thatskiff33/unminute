@@ -131,6 +131,8 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
+| Settings says some settings are on their defaults | A saved setting could not be used: the settings file was damaged, or a newer version of Unminute saved a value this one does not know (after going back to an earlier version). Check the settings it names and set them again. A newer version's values are kept, and come back when you update again. |
+| A message says Unminute found damage in its workspace database | See [If Unminute finds damage](#if-unminute-finds-damage) below. |
 | A message says "Something went wrong (code U-…)", or the app closed by itself | Open **Help and shortcuts**, select **Copy diagnostics**, and paste them into your support request with the code. They hold versions, settings, counts and error locations in the app's code, never meeting content, names or folders. |
 
 For IT support:
@@ -141,6 +143,26 @@ For IT support:
 - The app keeps small content-free logs in `%LOCALAPPDATA%\whisper\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
+
+## If Unminute finds damage
+
+After Unminute last closed unexpectedly (a crash, a power cut, or ending it in Task Manager), it checks its workspace database when it next starts. If it finds damage, it shows a message with a code, and holds new transcription and imports so that nothing more is written to the damaged database. You can still read, copy and hand off meetings, and cleanup you have already confirmed still runs. While the damage stays, the check runs again at every start, and the hold comes back.
+
+What to do:
+
+1. Hand off anything you need now: open each meeting you still need and copy its text.
+2. Tell your IT team, with the code from the message.
+3. Select **Continue anyway** only if IT agrees, or if you must carry on working. Processing then writes to the damaged database, which can make the damage worse.
+
+For IT support (there are no backups, by design):
+
+1. Ask the user to hand off what they need, then close Unminute.
+2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` and the number of active holds. If it says `"readable": false`, the database cannot be read at all.
+3. Rename the workspace folder `%LOCALAPPDATA%\whisper\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never email or upload it.
+4. Start Unminute. It creates a new, empty workspace. Models and the Hugging Face token are kept, but guided setup, settings, handoff templates and watched folders start again.
+5. Delete the renamed folder once nothing in it is needed. If `--status` showed any active hold, or could not read the database (so holds could not be counted), keep the folder until whoever placed the hold agrees: holds never expire.
+
+To get meetings back that were not handed off, SQLite's own recovery tool can sometimes rebuild a damaged database. It is not part of Unminute, and SQLite warns that a recovered database is usually defective: some content can be lost, altered, or come back after it was deleted (see SQLite's guide, [Recovering data from a corrupt SQLite database](https://sqlite.org/recovery.html)). Work only on a copy, and ask the Unminute maintainers before putting a recovered database back in place: this has not been tested with an Unminute workspace.
 
 ## If the earlier app is still installed
 

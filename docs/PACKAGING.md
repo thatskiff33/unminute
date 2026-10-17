@@ -165,14 +165,14 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
 - **Detection rule:** Registry; key path `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace`; value name `DisplayVersion`; detection method "String comparison", equals, `<version>`. Associated with a 32-bit app on 64-bit clients: No.
 - **Requirements:** Windows 10 1809 or later, x64. If WebView2 cannot be assumed, deploy the WebView2 Evergreen runtime as a dependency, and keep it updated (see the prerequisites above).
 
-For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content.
+For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content, plus `integrity` (the last database check after an unclean close: `ok`, `failed` or `unchecked`) and `readable` (false when the database cannot be read at all). See "If Unminute finds damage" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md).
 
 For an Intune Remediation detection script, run `runtime\python.exe -m workspace --health` from the user's installed version folder, with **Run this script using the logged-on credentials** set to **Yes**. Never run it as SYSTEM: the install is the user's own and the user can change its files, so a SYSTEM run would run the user's code as SYSTEM, and SYSTEM sees no user's workspace. Run as SYSTEM, it reports `"workspace": "system_account"` and exits 1.
 
 It prints one line of JSON (well within Intune's 2,048-character output limit) and exits 0 when healthy, 1 when it needs attention (Intune's "issue detected"). It never prints an error message or a traceback. Fields:
 
 - `version`.
-- `workspace`: `ok`; `none` (this user has not opened the app yet; still healthy); `location` (the app data location is missing or synced); `unreadable` (also when Windows cannot say which account it runs as); `system_account`.
+- `workspace`: `ok`; `none` (this user has not opened the app yet; still healthy); `damaged` (the last database check found damage: see "If Unminute finds damage" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md)); `location` (the app data location is missing or synced); `unreadable` (also when Windows cannot say which account it runs as); `system_account`.
 - `running`: the app is open, asked of Windows through its single-instance lock and the process it recorded at start, so from any session.
 - `last_run`: `clean`, or `did_not_close` when the app last ended without closing and has not been opened since (its next start records that as a crash).
 - `crashes_7d`: crashes (including runs that ended without closing) and worker or download processes that ended by themselves in the last 7 days, each counted once, from the content-free logs.

@@ -1,0 +1,2 @@
+- **Settings survive going back a version.** Settings a newer version saved are kept, and come back when you update again. If a saved setting cannot be used, Settings now names it (#132).
+- **A database check after an unexpected close.** If Unminute last closed unexpectedly, it checks its workspace database at the next start. If it finds damage, it shows a message with a code and holds new transcription and imports until you choose Continue anyway; `--status` and `--health` report it (#132).

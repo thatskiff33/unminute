@@ -247,9 +247,9 @@ Status is one of:
 | Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; enforced by security plan B3 |
 | Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
 | Durable processing; crash and resume give identical results | 4 | Unit tests; `tools/packaged_crash_check.py` | Unit tests in place; packaged check manual |
-| Integrity check after an unclean shutdown | 4 | Unit tests; `--status` | Planned: R11 (#132) |
+| Integrity check after an unclean shutdown | 4 | `PRAGMA quick_check` at start after an unclean close; damage holds new work until Continue anyway; `--status` and `--health` report it; unit tests (`tests/test_integrity.py`) | In place (R11) |
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
-| Settings versioned; unknown keys kept on rollback | 9 | Unit tests | Planned: R11 (#132) |
+| Settings versioned; unknown keys kept on rollback | 9 | `settings_version`; kept keys and newer values; reset settings named in Settings; fsync before the swap; unit tests (`tests/test_integrity.py`) | In place (R11) |
 | Local content-free log, crash hooks, incident codes | 5, 6 | `workspace/diag.py`; unit tests and the marker test (`tests/test_diagnostics.py`); forced crashes in the app and the worker | In place (R9a) |
 | Page errors, Copy diagnostics, `--health` | 5, 6, 14 | `report_ui_error` (fixed kind and numbers, rate-limited); Help > Copy diagnostics; `--health`; unit tests and the marker test (`tests/test_diagnostics.py`) | In place (R9b) |
 | Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |

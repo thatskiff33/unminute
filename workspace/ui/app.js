@@ -344,6 +344,25 @@ async function renderStatus() {
   }
   $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,
     linkButton("Dismiss", () => attempt(() => call("clear_import_errors").then(refresh))))));
+  renderIntegrity(s.integrity);
+}
+
+// The database check after an unexpected close (R11) found damage: new work
+// is held until the user chooses Continue anyway. Rebuilt only on a change,
+// so the button keeps its focus between polls.
+function renderIntegrity(info) {
+  const sig = info ? `${info.state}:${info.code || ""}` : "";
+  if (sig === state.integritySig) return;
+  state.integritySig = sig;
+  const box = $("integrity");
+  box.hidden = !info;
+  box.replaceChildren(...(info ? [notice("alert",
+    `Unminute found damage in its workspace database (code ${info.code}). New transcription ` +
+    "and imports are on hold, so nothing more is written. You can still read, copy and hand " +
+    "off meetings. Ask your IT team before you continue: the Unminute user guide has the " +
+    "steps, under \"If Unminute finds damage\".",
+    button("Continue anyway", () => attempt(() => call("continue_despite_damage").then(refresh)))
+  )] : []));
 }
 
 async function renderReminders() {
@@ -1714,10 +1733,29 @@ const MODE_NOTE = {
   faster: "Faster uses more of the computer while transcribing.",
 };
 
+// Settings on their default because the saved value could not be used (R11).
+const SETTING_NAMES = {
+  mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
+  battery_override: "Process on battery power", onboarded: "Guided setup",
+  microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card for speakers",
+  recording_display: "Recording display",
+};
+function renderRepaired(r) {
+  const names = ((r && r.keys) || []).map((k) => SETTING_NAMES[k]).filter(Boolean);
+  const text = r && r.all
+    ? "Your saved settings could not be read, so all of them are on their defaults. Check them below."
+    : names.length
+      ? `Some saved settings could not be used, so they are on their defaults: ${names.join(", ")}. Check them below.`
+      : "";
+  $("s-repaired").textContent = text;
+  $("s-repaired").hidden = !text;
+}
+
 async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
   $("s-managed").hidden = !(s.managed && s.managed.managed.length);
+  renderRepaired(s.repaired);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
