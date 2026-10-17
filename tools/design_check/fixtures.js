@@ -28,8 +28,13 @@
   // ready, as its kind, line and column only. This listener is added before
   // app.js's, so it sees each error first.
   const early = query.get("early") === "1";
-  const earlyLog = { thrown: [], reports: [], ready: false };
-  if (early) window.addEventListener("error", (e) => { earlyLog.thrown.push([e.lineno, e.colno]); });
+  const earlyLog = { thrown: [], thrown_after_ready: 0, reports: [], ready: false };
+  if (early) {
+    window.addEventListener("error", (e) => {
+      if (earlyLog.ready) earlyLog.thrown_after_ready++;
+      else earlyLog.thrown.push([e.lineno, e.colno]);
+    });
+  }
   if (perfMode) {
     const realSetInterval = window.setInterval.bind(window);
     const realClearInterval = window.clearInterval.bind(window);
@@ -513,7 +518,8 @@
   // Tell app.js the bridge is ready, then run the scenario's steps in order.
   window.addEventListener("load", () => {
     if (early) {
-      // Each thrown in its own task, so each reaches the page's error listener.
+      // Each thrown in its own task, so each reaches the page's error listener,
+      // and from its own line: the check tells the first from the second by place.
       realSetTimeout(() => { throw new Error("first early error"); }, 0);
       realSetTimeout(() => { throw new Error("second early error"); }, 20);
       realSetTimeout(() => {

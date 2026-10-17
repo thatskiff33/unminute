@@ -114,6 +114,16 @@ class EarlyErrorTests(unittest.TestCase):
         self.assertEqual(1, len(problems))
         self.assertIn("not the 2 thrown", problems[0])
 
+    def test_errors_from_one_place_or_after_the_bridge_is_ready_fail(self):
+        first = {"args": ["error", 517, 30], "before_ready": False}
+        problems = self.problems(first, thrown=[[517, 30], [517, 30]])
+        self.assertEqual(1, len(problems))
+        self.assertIn("same place", problems[0])
+        late = ui_idle_check.early_problems({"thrown": self.THROWN, "reports": [first],
+                                             "thrown_after_ready": 1})
+        self.assertEqual(1, len(late))
+        self.assertIn("after its bridge was ready", late[0])
+
 
 if __name__ == "__main__":
     unittest.main()
