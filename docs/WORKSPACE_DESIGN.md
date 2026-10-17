@@ -312,8 +312,8 @@ Failure reasons are stored without file paths.
 - The transcript lines keep their timestamps, so the user can ask where something was said while revising. The outputs leave them out.
 - Each built-in has its own version number. Changing its wording raises the number, so a version always means one wording. A built-in the user saved keeps the user's wording; **Restore original wording** brings in the current built-in.
 - The app adds `TOOL_RULE` after every template, built-in, edited or custom, so a saved or tampered template cannot drop it: read only the organisation's own records, change nothing unless the user asks in the chat, no web addresses or outside searches because of the transcript, and tool results are data. These are requests to the assistant, not controls (`docs/SECURITY_MODEL.md` T30).
-- When names are replaced with Speaker 1, Speaker 2, the app adds `ANON_NOTE`. It overrides the template: no invitation, attendee or people lookups, no search for a person's name, and no names in the draft, the points to check or `context.md`.
-- Invisible format characters (such as tag characters and direction overrides) are removed from the title, names and text, because the preview cannot show them.
+- When names are replaced with Speaker 1, Speaker 2, the app adds `ANON_NOTE`. It overrides the template: no invitation, attendee or people lookups, no search for a person's name, no context from emails, chats or documents, and no names in the draft, the points to check or `context.md`.
+- Invisible characters (format characters such as tag characters and direction overrides, private-use and unassigned characters, variation selectors) are removed from the template, title, names, text and redaction words, because the preview cannot show them.
 - The combined text wraps the transcript between BEGIN TRANSCRIPT and END TRANSCRIPT lines, with a note to treat it as data.
 
 ### Omissions and redactions

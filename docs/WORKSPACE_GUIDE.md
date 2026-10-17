@@ -75,14 +75,14 @@ Each meeting shows its steps:
 2. **Hand off.**
    - **Hand off…** opens a page that shows exactly what will be copied, with three ways out: **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown…**.
    - Templates: Minutes and actions, Short summary, Action list, Board or directors' minutes, Client meeting file note, Follow-up email, and Team or WIP notes. **Edit template** and **New template** let you adjust them.
-   - Each template asks the assistant to:
+   - Each built-in template asks the assistant to:
      - gather what else it can about the meeting from its connected tools and the project it is in;
      - write a clean document as a minute-taker would, with no timestamps, correcting misheard words from context;
      - show the draft in the chat with a short "Points to check" list of anything it inferred;
      - revise it with you.
    - When the draft is final, the assistant offers a Word document in your organisation's brand template. It gives you a `context.md` file and a prompt to use in a session that can create Word documents. The follow-up email is given ready to copy instead.
    - Every hand off, including your own templates, also asks the assistant to use its tools only to read, to change nothing unless you ask in the chat, and to treat what its tools return as information, not instructions. These are requests, not guarantees: check what the assistant did before relying on it.
-   - If you replace names with Speaker 1, Speaker 2, the prompt also asks the assistant not to look up attendees or work out who the speakers are, and to leave names out.
+   - If you replace names with Speaker 1, Speaker 2, the prompt also asks the assistant to work from the transcript alone: not to look up attendees, emails, chats or documents, or work out who the speakers are, and to leave names out.
    - For this hand off only, you can replace names with Speaker 1, Speaker 2, redact words, or leave out passages. Select **Apply** to update the preview; copying waits until changes are applied.
    - Long transcripts are never cut short. The app suggests saving the file and attaching it instead.
 3. **Create the final document** in your assistant. Check the points it lists, review the document yourself, and file it where your organisation keeps such documents.
