@@ -326,7 +326,11 @@ def check_files(spec, folder, full=False, marker=None):
     if problems:
         return problems
 
-    recorded = _read_marker(marker)
+    # Through a link at the model or record folder a record is neither trusted
+    # nor written (T5): that copy is hashed in full every time. A recorded
+    # failure is still honoured (_recorded_failure): it can only refuse a copy.
+    linked = is_link(marker.parent)
+    recorded = None if linked else _read_marker(marker)
     trusted = (not full and recorded is not None and recorded.get("ok", True)
                and recorded.get("revision") == spec.revision
                and recorded.get("files") == _fingerprint(folder, spec))
@@ -336,8 +340,8 @@ def check_files(spec, folder, full=False, marker=None):
     for f in spec.files:
         if _sha256(folder / f.name) != f.sha256:
             problems.append(f"{f.name} does not match the expected checksum")
-    if is_link(marker.parent):
-        return problems   # never written through a link (T5): it re-hashes next time
+    if linked:
+        return problems
     try:
         # Record the outcome either way: a failure makes the quick status show
         # "needs repair" until these exact files change.

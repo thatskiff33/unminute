@@ -208,6 +208,15 @@ def _outside_folder(base, at):
         shutil.rmtree(outside)
 
 
+def _synthetic_model():
+    """A small pinned model (spec, {file name: bytes}) for check-record tests."""
+    contents = {"config.json": b"{}", "weights.onnx": b"\x01\x02" * 500}
+    files = tuple(asr_engines.ModelFile(n, len(d), hashlib.sha256(d).hexdigest())
+                  for n, d in contents.items())
+    return asr_engines.ModelSpec(name="synthetic", folder="synthetic", repo="example/x",
+                                 revision="0" * 40, files=files), contents
+
+
 def _tree(folder):
     """Every entry under `folder`, relative, sorted."""
     return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*"))
@@ -393,11 +402,7 @@ class ProgressTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_a_check_record_is_never_written_through_a_link(self):
         base = Path(self.tmp.name)
-        contents = {"config.json": b"{}", "weights.onnx": b"\x01\x02" * 500}
-        files = tuple(asr_engines.ModelFile(n, len(d), hashlib.sha256(d).hexdigest())
-                      for n, d in contents.items())
-        spec = asr_engines.ModelSpec(name="synthetic", folder="synthetic", repo="example/x",
-                                     revision="0" * 40, files=files)
+        spec, contents = _synthetic_model()
         for case in ("model folder", "record folder"):
             with self.subTest(case=case):
                 at = base / "models" / "parakeet" / ("synthetic" if case == "model folder"
@@ -413,6 +418,32 @@ class ProgressTests(unittest.TestCase):
                     # Only what the test put there: no check record.
                     expected = [*_OUTSIDE, *contents] if case == "model folder" else _OUTSIDE
                     self.assertEqual(_tree(outside), sorted(expected))
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_a_check_record_is_not_trusted_through_a_link(self):
+        # A redirected model folder that carries an old "ok" record: a file
+        # changed without changing its size or time is still found.
+        base = Path(self.tmp.name)
+        spec, contents = _synthetic_model()
+        real = base / "redirected"
+        real.mkdir()
+        for n, d in contents.items():
+            (real / n).write_bytes(d)
+        self.assertEqual(asr_engines.check_files(spec, real, full=True), [])   # records "ok"
+        weights = real / "weights.onnx"
+        st = weights.stat()
+        weights.write_bytes(b"\x02\x01" * 500)                         # same size
+        os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))        # same time
+        self.assertEqual(asr_engines.check_files(spec, real), [])      # trusted where it is
+        link = base / "models" / "parakeet" / "synthetic"
+        link.parent.mkdir(parents=True)
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                       check=True, capture_output=True)
+        try:
+            self.assertEqual(asr_engines.check_files(spec, link),
+                             ["weights.onnx does not match the expected checksum"])
+        finally:
+            os.rmdir(link)                                             # the junction only
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):
