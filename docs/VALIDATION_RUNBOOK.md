@@ -19,7 +19,7 @@ These are the checks still open before a business release. Each one needs a mach
 1. Install with `install.cmd`, or with `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Package Unminute-<version>.zip`. Expect exit code 0 and no administrator prompt.
 2. Open **Unminute** from the Start menu. Complete Setup: download Parakeet v2, and optionally speaker identification with a Hugging Face token.
 3. Import a synthetic recording, review it, and confirm review and then the final save.
-4. Run `<install>\runtime\python.exe -m workspace --self-test` from `<install>\app`. Expect `PASS`.
+4. Run `<install>\runtime\python.exe -I -B -m workspace --self-test` from `<install>\app`. Expect `PASS`.
 5. Uninstall from Settings > Apps. Check that `%LOCALAPPDATA%\Programs\WhisperWorkspace` is gone, and that the workspace and models are kept, as documented.
 
 **Record:** the Windows version, whether each step passed, and any prompt or error text.

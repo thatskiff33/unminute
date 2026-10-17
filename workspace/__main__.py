@@ -224,7 +224,8 @@ def self_test():
     ok = True
     offline_guard.disable_onnxruntime_telemetry()   # before onnxruntime is used below
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
-                 "torch", "pyannote.audio", "huggingface_hub", "webview", "clr_loader",
+                 "torch", "pyannote.audio", "huggingface_hub", "webview",
+                 "webview.platforms.edgechromium", "clr_loader",
                  "sounddevice",                    # loads PortAudio (microphone, #30)
                  "truststore",                     # Windows certificates for downloads
                  "workspace.app", "workspace.api", "asr_engines"):
@@ -269,6 +270,13 @@ def self_test():
         except OSError as exc:              # incl. TimeoutError: reached Windows, not blocked
             ok = False
             print(f"FAILED  network guard did not intercept {label} ({type(exc).__name__})")
+    # The app starts with -X disable-remote-debug (Python 3.14's debugger
+    # interface, PEP 768). A support run started without it says so; not a failure.
+    if getattr(sys, "is_remote_debug_enabled", lambda: False)():
+        print("note    remote debugging is on in this run (the app itself starts with "
+              "-X disable-remote-debug)")
+    else:
+        print("ok      remote debugging off")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

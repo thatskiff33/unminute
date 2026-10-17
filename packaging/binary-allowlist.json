@@ -1698,7 +1698,15 @@
    "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
   {
+   "path": "runtime/lib/webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+   "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  {
    "path": "runtime/lib/webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+   "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+  },
+  {
+   "path": "runtime/lib/webview/lib/runtimes/win-x86/native/WebView2Loader.dll",
    "signer": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
   {

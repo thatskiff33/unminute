@@ -91,7 +91,7 @@ The workflow publishes the notes and the source archives only. The Windows packa
    - The build is reproducible: building the same commit again with the same Python, pip and zlib versions (listed in the bill of materials) gives the same SHA-256.
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
-   - Run `runtime\python.exe -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
+   - Run `runtime\python.exe -I -B -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
    - Measure it against the budgets in `docs/perf-budgets.json`. From a checkout of the tagged commit, run `<installed version>\runtime\python.exe -B tools\perf_check.py perf-X.Y.Z.json --app <installed version>\app --zip dist\Unminute-X.Y.Z.zip --leak-minutes 30`. Leave the laptop idle, on mains power and the Balanced power plan, with the window visible for about 90 minutes. Expect WITHIN BUDGET (exit 0), and attach the JSON to the release.
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.

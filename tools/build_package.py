@@ -121,9 +121,10 @@ PRUNED_SUFFIXES = (".h", ".hpp", ".hxx", ".cuh", ".lib", ".pdb", ".pyi", ".pyx",
                    ".pxi", ".c", ".cc", ".cpp", ".cxx")
 PRUNED_PATHS = (                        # under runtime/lib
     "torch/bin/protoc.exe",             # the protocol buffers compiler
-    "clr_loader/ffi/dlls/x86",          # 32-bit and Arm builds: the app is x64 only
-    "webview/lib/runtimes/win-x86",
-    "webview/lib/runtimes/win-arm64",
+    "clr_loader/ffi/dlls/x86",          # 32-bit: the app is x64 only
+    # Only a 32-bit Python loads it (webview/util.py). pywebview's runtimes\win-x86
+    # and win-arm64 folders stay: importing its WebView2 module looks them all up
+    # and fails if one is missing, which stops the window opening.
     "webview/lib/WebBrowserInterop.x86.dll",
 )
 PRUNED_RUNTIME = ("libtommath.dll",)   # in the embeddable package; nothing loads it
@@ -234,18 +235,24 @@ def write_record(info, rows, newline):
     (info / "RECORD").write_bytes(out.getvalue().encode("utf-8"))
 
 
+def inside(rel):
+    """A RECORD path that stays inside the folder it is relative to."""
+    parts = rel.replace("\\", "/").split("/")
+    return bool(rel) and ".." not in parts and not rel.startswith(("/", "\\")) and ":" not in rel
+
+
 def sync_records(site):
     """Every RECORD lists only files that are in the package: rows for files
     removed or never placed here (pip's launchers, headers and man pages, and
-    pruned or moved files) go, so RECORD is a true list of what ships."""
+    pruned or moved files) go, so RECORD lists only installed files that ship
+    (the .pyc added later by precompile are not listed)."""
     for info in sorted(site.glob("*.dist-info")):
         if not (info / "RECORD").is_file():
             continue
         rows, newline = read_record(info)
-        # A row with ".." points outside the package folder (lib/../bin and the
-        # like); with the \\?\ build path Windows would not resolve it anyway.
-        kept = [row for row in rows if ".." not in row[0].replace("\\", "/").split("/")
-                and (site / row[0]).is_file()]
+        # A row with ".." or an absolute path points outside the package folder
+        # (lib/../bin and the like).
+        kept = [row for row in rows if inside(row[0]) and (site / row[0]).is_file()]
         if kept != rows:
             write_record(info, kept, newline)
 
@@ -319,7 +326,7 @@ def prune(site, runtime):
         rows, _ = read_record(info)
         for row in rows:
             p = site / row[0]
-            if ".." not in row[0].replace("\\", "/").split("/") and p.is_file():
+            if inside(row[0]) and p.is_file():
                 p.unlink()
         shutil.rmtree(info)
     for rel in PRUNED_PATHS:
@@ -354,22 +361,49 @@ def remove_empty_dirs(root):
             d.rmdir()
 
 
-def precompile(folder):
-    """Unchecked-hash .pyc for every module in the packages and the app, so
-    nothing is compiled or written when the app runs (it starts with -B).
-    A fixed hash seed, one process (marshal marks an object shared only if
-    something else holds it at that moment, which parallel workers change
-    from run to run) and paths relative to the package make the bytes the
-    same in every build; at import Python records the file's real path."""
+def precompile(folder, python=None):
+    """Unchecked-hash .pyc for every module in the packages, the app and the
+    runtime's sitecustomize, so nothing is compiled or written when the app
+    runs (it starts with -B). Compiled by the package's own Python (python=
+    is for tests) without site (-S) or import-time caching (-B), rewriting any
+    .pyc already there (-f: compileall would keep a timestamp .pyc it thinks is
+    current, with the build path in it). A fixed hash seed, one process (marshal
+    marks an object shared only if something else holds it at that moment,
+    which parallel workers change from run to run) and paths relative to the
+    package make the bytes the same in every build; at import Python records
+    the file's real path."""
+    python = python or str(folder / "runtime" / "python.exe").removeprefix("\\\\?\\")
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONHASHSEED"] = "0"
-    for sub in (f"runtime/{SITE}", "app"):
-        r = subprocess.run([sys.executable, "-P", "-s", "-m", "compileall", "-q",
+    for sub, flags in ((f"runtime/{SITE}", []), ("app", []), ("runtime", ["-l"])):
+        r = subprocess.run([python, "-S", "-B", "-m", "compileall", "-q", "-f", *flags,
                             "--invalidation-mode", "unchecked-hash", "-s", str(folder),
                             str(folder / sub)], env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
-        if r.returncode:
-            sys.exit(f"Precompiling {sub} failed:\n" + (r.stdout + r.stderr)[-2000:])
+        out = r.stdout + r.stderr
+        if r.returncode or "not a valid prefix" in out:      # compileall only warns of that
+            sys.exit(f"Precompiling {sub} failed:\n" + out[-2000:])
+    check_precompiled(folder)
+
+
+def check_precompiled(folder):
+    """Every module has its unchecked-hash .pyc, and no .pyc holds the build
+    folder's path (which would also name the build machine's user)."""
+    marks = {str(folder).encode(), str(folder).removeprefix("\\\\?\\").encode()}
+    problems = []
+    for sub, pattern in ((f"runtime/{SITE}", "**/*.py"), ("app", "**/*.py"), ("runtime", "*.py")):
+        for py in sorted((folder / sub).glob(pattern)):
+            pyc = py.parent / "__pycache__" / f"{py.stem}.cpython-{PYTHON_TAG}.pyc"
+            if not pyc.is_file():
+                problems.append(f"no .pyc: {py.relative_to(folder).as_posix()}")
+                continue
+            data = pyc.read_bytes()
+            if int.from_bytes(data[4:8], "little") != 1:
+                problems.append(f"not unchecked-hash: {pyc.relative_to(folder).as_posix()}")
+            if any(m in data for m in marks):
+                problems.append(f"build path inside: {pyc.relative_to(folder).as_posix()}")
+    if problems:
+        sys.exit("Precompiled files are wrong:\n" + "\n".join(problems[:20]))
 
 
 def package_budget(zip_bytes, files, budgets_text):
@@ -428,10 +462,13 @@ def committed_tree(sha, paths):
         name = name.decode("utf-8")
         if mode not in ("100644", "100755") or kind != "blob":
             sys.exit(f"{name} in the commit is not a regular file ({mode}).")
-        # git allows names Windows reads as other paths ("a\..\b", "C:x"): refuse
+        # git allows names Windows reads as other paths ("a\..\b", "C:x") or as
+        # devices ("NUL.py"), and names Windows trims ("a. ", "b "): refuse
         # anything but plain relative names.
         if (".." in name.split("/") or name.startswith("/")
-                or re.search(r'[\\:*?"<>|\x00-\x1f]', name)):
+                or re.search(r'[\\:*?"<>|\x00-\x1f]', name)
+                or any(re.fullmatch(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?", part)
+                       or part.endswith((".", " ")) for part in name.split("/"))):
             sys.exit(f"Unexpected path in the commit: {name!r}")
         blobs[name] = oid
     for p in paths:
