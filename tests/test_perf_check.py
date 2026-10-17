@@ -88,7 +88,6 @@ class BudgetTests(unittest.TestCase):
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
 
 
-
 class ParentTests(unittest.TestCase):
     def test_a_failing_environment_probe_is_not_measured_not_a_traceback(self):
         import tempfile

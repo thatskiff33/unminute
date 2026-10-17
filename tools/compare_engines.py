@@ -19,6 +19,8 @@
 # Each clip is decoded by the app's own decoder in its contained process
 # (workspace.media.decode_to_file), so the measured process loads only what
 # the app's worker loads: no faster_whisper or CTranslate2 for Parakeet (#187).
+# Manifest paths are not checked as the app checks imports (workspace.safe_paths):
+# list local files on this computer only.
 #
 # Keep real recordings, transcripts and per-clip results private; publish only
 # aggregate figures (see issue #12). Run heavy engines one at a time.
@@ -174,9 +176,16 @@ def cmd_run(args):
                               "threads": threads, "load_s": round(load_s, 2)}) + "\n")
         for i, clip in enumerate(clips, 1):
             raw = Path(tmp) / f"{i}.f32"
-            media.decode_to_file(clip["wav"], raw)     # 16 kHz mono float32
+            try:
+                samples, _ = media.decode_to_file(clip["wav"], raw)   # 16 kHz mono float32
+            except media.DecodeError as exc:
+                # The set is incomplete without it, so stop; name the clip, not its path.
+                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')} could not be decoded: {exc}")
             wav = np.fromfile(raw, dtype="<f4")
             raw.unlink()
+            if len(wav) != samples:
+                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')}: the decoded file is "
+                         f"{len(wav)} samples, not {samples}.")
             t = time.perf_counter()
             segments, duration = engine.transcribe(wav)
             text = " ".join(s.text for s in segments)

@@ -134,7 +134,9 @@ with open(manifest, "w", encoding="utf-8") as f:
     f.write(json.dumps({"set": "s", "id": 1, "wav": wav}) + "\n")
 compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
                                            threads=1, manifest=[manifest], out=out))
-print(json.dumps({"attempted": sorted(attempted), "seen": seen}))
+from workspace import media
+print(json.dumps({"attempted": sorted(attempted), "seen": seen,
+                  "integrity": media.last_decoder_integrity}))
 """
 
 
@@ -157,13 +159,19 @@ class RunTests(unittest.TestCase):
                 w.setframerate(16000)
                 w.writeframes(b"\0\0" * 32000)
             out = Path(tmp) / "run.jsonl"
-            r = subprocess.run([sys.executable, "-c", RUN_PROBE, str(root / "tools"), str(root),
-                                str(wav), str(out)], capture_output=True, text=True, timeout=180)
+            # -B: no bytecode in the checkout (evidence runs refuse an unclean tools/).
+            r = subprocess.run([sys.executable, "-B", "-c", RUN_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(out)],
+                               capture_output=True, text=True, timeout=180)
             self.assertEqual(r.returncode, 0, r.stderr[-2000:])
             probe = json.loads(r.stdout.strip().splitlines()[-1])
             self.assertEqual(probe["seen"], [32000])
             self.assertNotIn("faster_whisper", probe["attempted"])
             self.assertNotIn("ctranslate2", probe["attempted"])
+            # Decoded in the contained process (Low integrity, 0x1000), not here:
+            # this process never even imports PyAV.
+            self.assertEqual(probe["integrity"], 0x1000)
+            self.assertNotIn("av", probe["attempted"])
             lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([lines[0]["engine"], lines[1]["audio_s"]], ["fake", 2.0])
             self.assertIn("peak_ram_gb", lines[-1])
