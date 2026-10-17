@@ -236,7 +236,7 @@ Status is one of:
 | GPU wheel pins match the lock (`requirements.txt`) | 1 | Unit test (`tests/test_consistency.py`) | In place |
 | Install identity (taskbar ID, exit codes, name, install folder, registry key) agrees across app, build and installer | 1 | Unit test (`tests/test_consistency.py`); later `packaging/identity.json` with Pester tests | In place; security plan B6 replaces the copies |
 | Docs' required-checks lists match the CI job names; no partial job lists; no hard-coded test counts | 1, 10 | Unit test (`tests/test_consistency.py`) | In place |
-| Raw colours in `app.css` at or below the ratchet | 1 | Unit test (`tests/test_consistency.py`, ratchet in `tests/budgets.json`) | In place; reaches 0 in R12 (#133) |
+| Raw colours in `app.css` at or below the ratchet | 1 | Unit test (`tests/test_consistency.py`, ratchet in `tests/budgets.json`, now 0) | In place; 0 since R12b (#133) |
 | One version source; tag, `VERSION` and dated changelog heading agree | 1, 8 | `tools/changelog.py` sets `VERSION` and the dated heading together; `tools/build_package.py` builds from `VERSION`; the Release workflow refuses a tag that differs; a unit test ties `VERSION` to the newest heading (`tests/test_consistency.py`) | In place; security plan B3 carries the checks into the CI-built release |
 | Minimum NVIDIA driver, model names and progress fields from one source | 1 | Unit test | Planned: R12 (#133) |
 | UI process imports only allowlisted packages, and no heavy library | 3 | Unit test on Linux and Windows (`tests/test_import_hygiene.py`); module count budget on Windows | In place |

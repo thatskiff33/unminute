@@ -85,6 +85,24 @@
   --player-fg: #FFFFFF;
   --player-muted: rgba(255, 255, 255, 0.78);
   --player-track: rgba(255, 255, 255, 0.24);
+  --player-hover: rgba(255, 255, 255, 0.1);
+
+  /* The same in both themes (R12b: each was a raw colour in app.css) */
+  --record-halo: rgba(229, 102, 0, 0.22);   /* the pulse round the recording dot */
+  --hold-button: #FFFFFF;     /* buttons on a hold (pink) notice */
+  --handoff-dot: #DD5EB9;     /* the Hand off stage's dot */
+  --badge-fg: #FFFFFF;        /* text on a speaker's coloured badge */
+  --switch-knob: #FFFFFF;
+  --toast: #142966;
+  --toast-fg: #FFFFFF;
+  --shadow-toast: 0 8px 24px rgba(20, 41, 102, 0.3);
+  /* The drop overlay stays light in the dark theme too (its dark text keeps
+     it legible); a dark version needs a design board first. */
+  --drop-overlay: rgba(238, 247, 253, 0.94);
+  --drop-icon: #142966;
+  --drop-icon-fg: #FFFFFF;
+  --drop-title: #142966;
+  --drop-sub: #566591;
 
   /* Shape */
   --r-sm: 8px;
