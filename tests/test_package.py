@@ -979,10 +979,14 @@ class AppAllowlistTests(unittest.TestCase):
         self.allowed = json.loads(path.read_text(encoding="utf-8"))["app"]
 
     def test_the_app_folder_holds_exactly_the_allowlist(self):
-        # The files the build copies: workspace/ as git has it, and APP_FILES.
-        listed = subprocess.run(["git", "-C", str(bp.ROOT), "ls-files", "-z", "--", "workspace"],
+        # The files the build copies: APP_FILES, and workspace/ as a development
+        # build selects it (copy_app: tracked and untracked but not ignored, and
+        # only files still there). A release build takes the committed ones.
+        listed = subprocess.run(["git", "-C", str(bp.ROOT), "ls-files", "-z", "--cached",
+                                 "--others", "--exclude-standard", "--", "workspace"],
                                 capture_output=True, check=True).stdout.decode("utf-8")
-        shipped = sorted({*bp.APP_FILES, *filter(None, listed.split("\0"))})
+        shipped = sorted({*bp.APP_FILES, *(p for p in listed.split("\0")
+                                           if p and (bp.ROOT / p).is_file())})
         self.assertEqual(self.allowed, sorted(set(self.allowed)))      # sorted, no repeats
         self.assertEqual(shipped, self.allowed,
                          "packaging/app-allowlist.json must list exactly the shipped files")

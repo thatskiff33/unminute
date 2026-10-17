@@ -1,6 +1,6 @@
 # Workspace processing design (#14 to #18)
 
-Technical design for the durable core of the meeting workspace. It defines state ownership, chunk identity and the lifecycle that the worker (#15), speaker (#16), cleanup (#17) and hold (#18) issues build on. Product behaviour is in [WORKSPACE_PLAN.md](WORKSPACE_PLAN.md); this document does not change it.
+Technical design for the durable core of the meeting workspace. It defines state ownership, chunk identity and the lifecycle that the worker (#15), speaker (#16), cleanup (#17) and hold (#18) issues build on. Product behaviour is in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md); the original product plan, no longer maintained, is in [history/WORKSPACE_PLAN.md](history/WORKSPACE_PLAN.md).
 
 ## Ownership
 

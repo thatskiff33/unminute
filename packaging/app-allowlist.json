@@ -1,5 +1,5 @@
 {
- "_about": "Every file the package's app folder holds. tools/build_package.py copies them from git (workspace/ and APP_FILES); tests/test_package.py fails if the two differ. Adding a shipped file means adding it here in the same pull request, where review sees it.",
+ "_about": "Every source file the package's app folder holds (the build adds each module's .pyc). tools/build_package.py copies them from git (workspace/ and APP_FILES); tests/test_package.py fails if the two differ. Adding a shipped file means adding it here in the same pull request, where review sees it.",
  "app": [
   "CHANGELOG.md",
   "LICENSE",
