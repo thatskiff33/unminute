@@ -15,7 +15,6 @@
 # speed need real models and come from tools/packaged_check.py.
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -31,6 +30,9 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))           # evidence.py, also under python -I
+import evidence  # noqa: E402
+
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
 STATES = ("meetings", "settings", "minimised")
 MEETINGS = 3                      # synthetic meetings in the measured workspace
@@ -360,8 +362,6 @@ def environment(args):
         name = version.read_text(encoding="utf-8-sig").strip() + "+source" \
             if version.exists() else "source"
         env["app"] = {"version": name, "commit": r.stdout.strip() or None}
-    if args.zip:
-        env["package_sha256"] = hashlib.sha256(Path(args.zip).read_bytes()).hexdigest()
     return env
 
 
@@ -376,8 +376,10 @@ def child_command(args, workdir):
     if os.path.normcase(base) != os.path.normcase(exe):
         env["__PYVENV_LAUNCHER__"] = exe
         exe = base
-    # -B: never write bytecode into the package being measured.
-    command = [exe, "-B", str(Path(__file__).resolve()), "--child", "--workdir", str(workdir)]
+    # -B: never write bytecode into the package being measured. Release
+    # evidence (--zip) starts the window as the Start menu shortcut does.
+    flags = ["-I", "-B", "-X", "disable-remote-debug"] if args.zip else ["-B"]
+    command = [exe, *flags, str(Path(__file__).resolve()), "--child", "--workdir", str(workdir)]
     if args.app:
         command += ["--app", args.app]
     return command, env
@@ -644,7 +646,8 @@ def main():
     parser.add_argument("--leak-minutes", type=int, default=0,
                         help="hold the Meetings view this long, once, and report growth")
     parser.add_argument("--app", help="an installed package's app folder")
-    parser.add_argument("--zip", help="the package zip measured, to record its SHA-256")
+    parser.add_argument("--zip", help="the package zip installed at --app: records it as release "
+                        "evidence (tools/evidence.py); needs --app and that package's Python")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -652,7 +655,17 @@ def main():
         return child(args)
     if not args.report:
         parser.error("give a report path")
-    return parent(args)
+    if args.zip and not args.app:
+        parser.error("--zip needs --app, the app folder installed from that zip")
+    if args.zip:
+        evidence.require_package_runtime(args.app)
+    rc = parent(args)
+    if args.zip:
+        # Release evidence is a full run against the budgets, leak check included.
+        evidence.stamp_file(args.report, "perf", args.zip, Path(args.app).parent,
+                            passed=rc == 0 and not args.quick and BUDGETS.exists()
+                            and args.leak_minutes >= LEAK_BUDGET_MINUTES)
+    return rc
 
 
 if __name__ == "__main__":

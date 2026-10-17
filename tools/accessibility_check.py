@@ -14,16 +14,23 @@
 # It does not replace testing with screen-reader users and pilot users (#27).
 #
 #   python tools/accessibility_check.py <report.json>
+#
+# Against an installed or extracted package, as release evidence
+# (tools/evidence.py), with that package's own Python:
+#
+#   <v>\runtime\python.exe -I -B -X disable-remote-debug tools\accessibility_check.py
+#       <report.json> --app <v>\app --zip <the zip it came from>
 
+import argparse
 import json
 import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from workspace_ui_check import FAKE, WAIT, evaluate, write_wav  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # also under -I
+# workspace_ui_check puts the app checked (this checkout, or --app) on the path.
+import evidence  # noqa: E402
+from workspace_ui_check import APP, FAKE, WAIT, evaluate, write_wav  # noqa: E402
 
 from workspace import api, shell  # noqa: E402
 from workspace.app import Workspace  # noqa: E402
@@ -216,7 +223,18 @@ def checks(window, ws, mid, report):
 
 
 def main():
-    out = Path(sys.argv[1])
+    ap = argparse.ArgumentParser(description="Technical accessibility audit (#27).")
+    ap.add_argument("report", help="where to write the JSON report")
+    ap.add_argument("--app", help="an installed or extracted package's app folder")
+    ap.add_argument("--zip", help="the zip that package came from: records it as release "
+                    "evidence (tools/evidence.py); needs --app")
+    args = ap.parse_args()
+    if args.zip and not args.app:
+        ap.error("--zip needs --app")
+    if args.app:
+        evidence.require_package_runtime(APP)
+        evidence.require_app_modules(APP)
+    out = Path(args.report)
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -263,6 +281,8 @@ def main():
                 problems.append(f"{view}: content cut off or scrolling at {width} CSS px "
                                 f"({', '.join(r['cut_off'][:3]) or 'page'})")
     print("FINDINGS:\n- " + "\n- ".join(problems) if problems else "NO FINDINGS")
+    if args.zip:
+        evidence.stamp_file(out, "accessibility", args.zip, APP.parent, passed=not problems)
     return 1 if problems else 0
 
 

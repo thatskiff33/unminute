@@ -5,6 +5,10 @@
 #
 #   <install>\versions\<v>\runtime\python.exe tools\packaged_check.py
 #       <install>\versions\<v> <model cache> <recording.wav> <report.json>
+#       [--zip <the zip it was installed from>]
+#
+# With --zip the report is release evidence (tools/evidence.py): it names the
+# zip and says whether the version folder still holds exactly its files.
 #
 # It uses a throwaway LOCALAPPDATA, so no real workspace is touched, and checks:
 #   - self-test (dependencies, network guard) from the packaged runtime;
@@ -14,8 +18,10 @@
 #     no backup or copy of content exists;
 #   - idle CPU and memory of the open app window, and peak memory of the
 #     worker during a long transcription.
-# Measurements, not promises: compare them on the lowest-supported laptop.
+# Measurements, not promises: compare them on the lowest-supported laptop. The
+# report ends with "pass" and the criteria that failed; exit code 1 if any did.
 
+import argparse
 import ctypes
 import json
 import os
@@ -25,6 +31,9 @@ import tempfile
 import time
 from ctypes import wintypes
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))    # evidence.py, also under -I
+import evidence  # noqa: E402
 
 MARKER = "zebracrossingquartz"     # distinctive text written into the transcript
 
@@ -236,16 +245,48 @@ if __name__ == "__main__":
 '''
 
 
+def verdict(r):
+    """Names of the criteria that failed (empty when everything passed). The
+    idle window and the worker's peak have no budget yet (docs/RELEASE_STANDARD.md),
+    so they only have to be measured."""
+    life, res = r.get("lifecycle") or {}, r.get("residual") or {}
+    checks = {
+        "no error": not r.get("error") and not life.get("error"),
+        "self-test passed": r.get("self_test") == "PASS",
+        "transcribed with speakers": life.get("meetings_imported") == 1
+            and life.get("speakers") == "done" and (life.get("passages") or 0) > 0,
+        "cleaned up, with both receipts": life.get("meetings_left") == 0
+            and sorted(life.get("receipts") or []) == ["audio removed", "transcript removed"],
+        "no network attempts": life.get("blocked_network_attempts") == 0,
+        "no content left behind": res.get("marker_found_in") == []
+            and res.get("content_backups") == [],
+        "idle window measured": bool((r.get("idle_window") or {}).get("processes")),
+    }
+    return [name for name, ok in checks.items() if not ok]
+
+
 def main():
-    version_dir, cache, wav, out = sys.argv[1:5]
+    ap = argparse.ArgumentParser(description="Lifecycle evidence from an installed package (#28).")
+    ap.add_argument("version_dir", help=r"the installed version folder (<install>\versions\<v>)")
+    ap.add_argument("cache", help="a model cache with the models already downloaded")
+    ap.add_argument("wav", help="a non-sensitive recording")
+    ap.add_argument("out", help="where to write the JSON report")
+    ap.add_argument("--zip", help="the zip installed in version_dir: records it as release "
+                    "evidence (tools/evidence.py)")
+    args = ap.parse_args()
     report = {"when": time.strftime("%Y-%m-%d %H:%M"), "cpu_count": os.cpu_count()}
     try:
-        check(version_dir, cache, wav, report)
+        check(args.version_dir, args.cache, args.wav, report)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
-    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report["failed"] = verdict(report)
+    report["pass"] = not report["failed"]
+    Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
+    if args.zip:
+        evidence.stamp_file(args.out, "packaged", args.zip, args.version_dir, report["pass"])
+    return 0 if report["pass"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

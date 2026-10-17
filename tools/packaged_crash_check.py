@@ -8,12 +8,19 @@
 #
 #   <install>\versions\<v>\runtime\python.exe tools\packaged_crash_check.py
 #       <install>\versions\<v> <model cache> <recording.wav> <report.json> [seconds]
+#       [--zip <the zip it was installed from>]
+#
+# With --zip the report is release evidence (tools/evidence.py): it names the
+# zip and says whether the version folder still holds exactly its files. The app
+# runs with the Start menu shortcut's flags (-I -B -X disable-remote-debug).
 #
 # Uses two throwaway LOCALAPPDATA profiles ("crash" and "reference"), deleted
 # at the end; no real workspace or saved token is touched. The model cache is
 # used as given: pass a copy if it must stay untouched. Synthetic audio only.
-# The report ends with "pass" and the list of criteria that failed.
+# The report ends with "pass" and the list of criteria that failed; exit code 1
+# if any did.
 
+import argparse
 import ctypes
 import json
 import os
@@ -27,7 +34,11 @@ import time
 import wave
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))    # evidence.py, also under -I
+import evidence  # noqa: E402
+
 MARKER = "quokkalanternmeridian"    # distinctive text written into the transcript
+FLAGS = ["-I", "-B", "-X", "disable-remote-debug"]   # as the Start menu shortcut starts it
 
 
 def clip(wav, seconds, out):
@@ -41,7 +52,7 @@ class Child:
     """One run of CHILD in the packaged runtime; status lines arrive on a queue."""
 
     def __init__(self, ctx, *args):
-        self.p = subprocess.Popen([ctx["py"], str(ctx["script"]), *map(str, args)],
+        self.p = subprocess.Popen([ctx["py"], *FLAGS, str(ctx["script"]), *map(str, args)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                   env=ctx["env"], cwd=ctx["app"])
         self.lines, self.err = queue.Queue(), []
@@ -113,7 +124,8 @@ def act(ctx, action, kill_after=None):
 
 
 def inspect(ctx):
-    r = subprocess.run([ctx["py"], str(ctx["script"]), "inspect", ctx["cache"], "-", MARKER],
+    r = subprocess.run([ctx["py"], *FLAGS, str(ctx["script"]), "inspect", ctx["cache"], "-",
+                        MARKER],
                        capture_output=True, text=True, env=ctx["env"], cwd=ctx["app"])
     return json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -210,7 +222,7 @@ def check(version_dir, cache, wav, report, seconds):
     report["hold_race"] = hold
 
     # 6. Token removal with a test-only credential name.
-    r = subprocess.run([crash["py"], str(script), "token", "-", "-", MARKER],
+    r = subprocess.run([crash["py"], *FLAGS, str(script), "token", "-", "-", MARKER],
                        capture_output=True, text=True, env=crash["env"], cwd=app)
     report["token_removal"] = json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -390,16 +402,28 @@ if __name__ == "__main__":
 
 
 def main():
-    version_dir, cache, wav, out = sys.argv[1:5]
-    seconds = float(sys.argv[5]) if len(sys.argv) > 5 else 240
-    report = {"when": time.strftime("%Y-%m-%d %H:%M"), "audio_seconds": seconds}
+    ap = argparse.ArgumentParser(description="Crash evidence from an installed package (#28).")
+    ap.add_argument("version_dir", help=r"the installed version folder (<install>\versions\<v>)")
+    ap.add_argument("cache", help="a model cache with the models already downloaded")
+    ap.add_argument("wav", help="a non-sensitive recording")
+    ap.add_argument("out", help="where to write the JSON report")
+    ap.add_argument("seconds", nargs="?", type=float, default=240,
+                    help="how much of the recording to use (default 240)")
+    ap.add_argument("--zip", help="the zip installed in version_dir: records it as release "
+                    "evidence (tools/evidence.py)")
+    args = ap.parse_args()
+    report = {"when": time.strftime("%Y-%m-%d %H:%M"), "audio_seconds": args.seconds}
     try:
-        check(version_dir, cache, wav, report, seconds)
+        check(args.version_dir, args.cache, args.wav, report, args.seconds)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
-    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    passed = report.get("pass") is True and not report.get("error")
+    Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
+    if args.zip:
+        evidence.stamp_file(args.out, "crash", args.zip, args.version_dir, passed)
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
