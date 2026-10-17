@@ -98,5 +98,76 @@ class EditDistanceTests(unittest.TestCase):
         self.assertEqual(edit_distance("a b".split(), "a b".split()), 0)
 
 
+# The real `run` path in a child process, with only the engine faked: each clip
+# is decoded by the app's decoder, and nothing imports faster_whisper or
+# CTranslate2, which the app's Parakeet worker never loads (#187).
+RUN_PROBE = r"""
+import argparse, json, sys
+attempted = set()
+
+
+class Recorder:
+    def find_spec(self, name, path=None, target=None):
+        attempted.add(name.split(".")[0])
+        return None
+
+
+sys.meta_path.insert(0, Recorder())
+tools, repo, wav, out = sys.argv[1:5]
+sys.path[:0] = [repo, tools]
+import compare_engines
+from workspace import engines
+seen = []
+
+
+class Fake:
+    description = "fake"
+
+    def transcribe(self, samples):
+        seen.append(len(samples))
+        return iter([]), len(samples) / 16000
+
+
+engines.load_engine = lambda name, cache, threads: Fake()
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 1, "wav": wav}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=1, manifest=[manifest], out=out))
+print(json.dumps({"attempted": sorted(attempted), "seen": seen}))
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "the app's decoder runs in a Windows job")
+class RunTests(unittest.TestCase):
+    def test_clips_are_decoded_by_the_app_without_faster_whisper(self):
+        import importlib.util
+        import json
+        import subprocess
+        import tempfile
+        import wave
+        if not (importlib.util.find_spec("av") and importlib.util.find_spec("numpy")):
+            self.skipTest("PyAV and numpy are not installed")
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "synthetic.wav"
+            with wave.open(str(wav), "wb") as w:      # 2 s of silence, 16 kHz mono
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(b"\0\0" * 32000)
+            out = Path(tmp) / "run.jsonl"
+            r = subprocess.run([sys.executable, "-c", RUN_PROBE, str(root / "tools"), str(root),
+                                str(wav), str(out)], capture_output=True, text=True, timeout=180)
+            self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+            probe = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual(probe["seen"], [32000])
+            self.assertNotIn("faster_whisper", probe["attempted"])
+            self.assertNotIn("ctranslate2", probe["attempted"])
+            lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([lines[0]["engine"], lines[1]["audio_s"]], ["fake", 2.0])
+            self.assertIn("peak_ram_gb", lines[-1])
+
+
 if __name__ == "__main__":
     unittest.main()

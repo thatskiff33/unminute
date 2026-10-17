@@ -16,8 +16,9 @@
 #   python tools/compare_engines.py run   --engine parakeet-tdt-0.6b-v2 --out v2.jsonl m.jsonl
 #   python tools/compare_engines.py score v2.jsonl v3.jsonl turbo.jsonl --side-by-side sbs.md
 #
-# Manifest paths must be local files you trust: this tool decodes them in its
-# own process, not in the app's sandboxed decode process.
+# Each clip is decoded by the app's own decoder in its contained process
+# (workspace.media.decode_to_file), so the measured process loads only what
+# the app's worker loads: no faster_whisper or CTranslate2 for Parakeet (#187).
 #
 # Keep real recordings, transcripts and per-clip results private; publish only
 # aggregate figures (see issue #12). Run heavy engines one at a time.
@@ -152,9 +153,11 @@ def cmd_run(args):
     offline_guard.disable_telemetry()
     offline_guard.install()
     offline_guard.disable_onnxruntime_telemetry()
-    from faster_whisper.audio import decode_audio
+    import tempfile
 
-    from workspace import resources
+    import numpy as np
+
+    from workspace import media, resources
     from workspace.engines import load_engine
     from workspace.store import local_appdata
 
@@ -165,11 +168,15 @@ def cmd_run(args):
     t0 = time.perf_counter()
     engine = load_engine(args.engine, str(cache), threads)
     load_s = time.perf_counter() - t0
-    with open(args.out, "w", encoding="utf-8") as out:
+    with open(args.out, "w", encoding="utf-8") as out, \
+            tempfile.TemporaryDirectory(prefix="compare-") as tmp:
         out.write(json.dumps({"engine": args.engine, "description": engine.description,
                               "threads": threads, "load_s": round(load_s, 2)}) + "\n")
         for i, clip in enumerate(clips, 1):
-            wav = decode_audio(clip["wav"], sampling_rate=16000)
+            raw = Path(tmp) / f"{i}.f32"
+            media.decode_to_file(clip["wav"], raw)     # 16 kHz mono float32
+            wav = np.fromfile(raw, dtype="<f4")
+            raw.unlink()
             t = time.perf_counter()
             segments, duration = engine.transcribe(wav)
             text = " ".join(s.text for s in segments)

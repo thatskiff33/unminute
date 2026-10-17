@@ -88,5 +88,29 @@ class BudgetTests(unittest.TestCase):
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
 
 
+
+class ParentTests(unittest.TestCase):
+    def test_a_failing_environment_probe_is_not_measured_not_a_traceback(self):
+        import tempfile
+        from types import SimpleNamespace
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "perf.json"
+            args = SimpleNamespace(quick=True, settle=0, window=0, runs=1, leak_minutes=0,
+                                   report=str(report), app=None)
+            with mock.patch.object(perf_check, "environment",
+                                   side_effect=ValueError("damaged version.json")), \
+                    mock.patch.object(perf_check, "one_run") as run, \
+                    mock.patch("builtins.print"):
+                self.assertEqual(perf_check.parent(args), 2)
+            run.assert_not_called()
+            saved = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(saved["error"], "damaged version.json")
+            self.assertEqual(saved["each_run"], [])
+
+    def test_the_help_says_the_worker_unload_uses_the_slowest_run(self):
+        self.assertIn("the slowest run", perf_check.HELP)
+
+
 if __name__ == "__main__":
     unittest.main()
