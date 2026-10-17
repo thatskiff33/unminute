@@ -47,6 +47,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# A relative -InstallDir is taken from PowerShell's current folder, once, so every
+# check, copy and removal, and the registered uninstall command, use the same full path.
+$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
@@ -78,17 +81,23 @@ function Get-FileSha256([string]$Path) {
 
 # -- prerequisites -----------------------------------------------------------------
 
+# The data (workspace and models) is in %LOCALAPPDATA%\Unminute, and uninstalling
+# deletes the install folder, so the two must never overlap. Returns the data folder
+# when the install folder is, holds or sits inside it. install.ps1 and uninstall.ps1
+# have the same function (tests/test_hardening.py keeps them equal).
+function Get-DataOverlap([string]$Dir) {
+    $data = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "Unminute")).TrimEnd("\") + "\"
+    $full = [IO.Path]::GetFullPath($Dir).TrimEnd("\") + "\"
+    if ($full.StartsWith($data, [StringComparison]::OrdinalIgnoreCase) -or
+        $data.StartsWith($full, [StringComparison]::OrdinalIgnoreCase)) {
+        return $data.TrimEnd("\")
+    }
+    return $null
+}
+
 function Test-Prerequisite {
     # Package paths are at most 140 characters below <InstallDir>\versions\<version>\
     # and Windows PowerShell stops at 259; allow up to 16 characters of version.
-    # The data (workspace and models) is in %LOCALAPPDATA%\Unminute; the uninstaller
-    # deletes the install folder, so the two must never overlap.
-    $data = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "Unminute")).TrimEnd("\") + "\"
-    $dir = [IO.Path]::GetFullPath($Options.InstallDir).TrimEnd("\") + "\"
-    if ($dir.StartsWith($data, [StringComparison]::OrdinalIgnoreCase) -or
-        $data.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Install 2 "The install folder must not be in, or hold, $AppName's data folder ($($data.TrimEnd('\'))). Choose another -InstallDir."
-    }
     if ($Options.InstallDir.Length -gt 92) {
         Stop-Install 2 "The install folder path is too long for Windows (over 92 characters). Choose a shorter -InstallDir."
     }
@@ -450,6 +459,15 @@ function Invoke-Rollback {
 }
 
 try {
+    # A network, device or long-path (\\?\) form is refused: the checks below
+    # compare paths as text, and the install belongs on this computer's own drive.
+    if ($Options.InstallDir.StartsWith("\\")) {
+        Stop-Install 2 "The install folder must be on this computer's own drive, not a path starting with \\. Choose another -InstallDir."
+    }
+    $overlap = Get-DataOverlap $Options.InstallDir
+    if ($overlap) {
+        Stop-Install 2 "The install folder must not be in, or hold, $AppName's data folder ($overlap). Choose another -InstallDir."
+    }
     if ($Options.Rollback) { Invoke-Rollback }
     Test-Prerequisite
     $root = Get-PackageRoot

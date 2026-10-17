@@ -135,18 +135,28 @@ class InstallIdentityTests(unittest.TestCase):
         self.assertTrue((ROOT / "unminute.ico").is_file())
         self.assertIn('ICON = Path(__file__).resolve().parents[1] / "unminute.ico"',
                       read("workspace/shell.py"))
+        self.assertEqual({r"app\unminute.ico"}, set(re.findall(r'"(app\\[^"]+\.ico)"',
+                                                                 self.install)))
+        # The data folder the installer and uninstaller keep clear of is the
+        # store's and the model cache's parent.
+        for script in (self.install, self.uninstall):
+            self.assertIn('(Join-Path $env:LOCALAPPDATA "Unminute")', script)
 
     def test_no_earlier_app_name_is_left_in_shipped_code(self):
         # The app was "Whisper Transcriber", then "Meeting Workspace"; OpenAI's
         # Whisper speech model keeps its own name, so only the app's are listed.
         old = re.compile(r"WhisperWorkspace|WhisperTranscriber|MeetingWorkspace|Meeting Workspace"
                          r"|whisper\.ico|whisper-models|whisper[\\/]+workspace"
-                         r'|"whisper" / "workspace"|earlier app|Whisper Transcriber', re.IGNORECASE)
-        files = [ROOT / "asr_engines.py", ROOT / "offline_guard.py",
-                 ROOT / "tools" / "build_package.py",
+                         r"""|["']whisper["']\s*[/,]\s*["']workspace["']"""
+                         r"|earlier app|Whisper Transcriber", re.IGNORECASE)
+        # Everything the package ships (APP_FILES, the app, the installer), and the
+        # changelog fragments that become its CHANGELOG.md.
+        files = [ROOT / "asr_engines.py", ROOT / "offline_guard.py", ROOT / "README.md",
+                 ROOT / "CHANGELOG.md", ROOT / "LICENSE", ROOT / "tools" / "build_package.py",
                  *(p for p in (ROOT / "workspace").rglob("*")
                    if p.suffix in (".py", ".js", ".html", ".css")),
-                 *(ROOT / "packaging").glob("*.ps1")]
+                 *(ROOT / "packaging").glob("*.ps1"), *(ROOT / "packaging").glob("*.cmd"),
+                 *(ROOT / "changelog.d").glob("*.md")]
         found = [f"{p.relative_to(ROOT)}:{n}" for p in files
                  for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
                  if old.search(line)]
@@ -336,7 +346,9 @@ INVARIANT_GUARDS = {
            "tests/test_recorder.py": ["test_a_recording_needs_the_confirmation_and_keeps_it",
                                       "test_the_indicator_follows_every_way_a_recording_ends"],
            "tests/test_policy.py": ["test_a_bad_value_keeps_the_recording_confirmation"]},
-    "K1": {"tests/test_consistency.py": ["InstallIdentityTests"]},
+    "K1": {"tests/test_consistency.py": ["InstallIdentityTests",
+                                        "test_the_install_identity_names_are_pinned",
+                                        "test_no_earlier_app_name_is_left_in_shipped_code"]},
     "K2": {},
     "K3": {"tests/test_policy.py": ["WorkspacePolicyTests",
                                    "test_a_bad_value_never_grants_a_permission"]},
