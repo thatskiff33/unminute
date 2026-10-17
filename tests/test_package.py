@@ -724,6 +724,25 @@ class PrunedBuildTests(unittest.TestCase):
             self.assertNotIn(b"build1", data)                # no build folder in the bytes
             self.assertNotIn(str(self.root).encode(), data)
 
+    def test_precompiling_is_one_process_with_a_fixed_hash_seed(self):
+        # Parallel workers (compileall -j) made two release builds differ in a
+        # .pyc's marshal flags; the hash seed orders sets of constants.
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                mock.patch.dict(os.environ, {"PYTHONHASHSEED": "random", "PYTHONOPTIMIZE": "2"}):
+            bp.precompile(self.root / "Unminute-0.5.0")
+        self.assertEqual(len(calls), 2)                      # the packages, then the app
+        for cmd, env in calls:
+            self.assertNotIn("-j", cmd)
+            self.assertNotIn("--workers", cmd)
+            self.assertEqual(cmd[cmd.index("--invalidation-mode") + 1], "unchecked-hash")
+            self.assertEqual(env["PYTHONHASHSEED"], "0")
+            self.assertNotIn("PYTHONOPTIMIZE", env)          # no other PYTHON* setting
+
     def test_the_package_is_held_to_its_budget(self):
         budgets = json.dumps({"package_zip_mb": {"value": 100.0}, "package_files": {"value": 50}})
         self.assertEqual(bp.package_budget(99_949_999, 50, budgets),

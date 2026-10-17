@@ -6,14 +6,14 @@
     "note": "Modules loaded by importing the window process's modules (tests/test_import_hygiene.py), Windows. 303 on Python 3.12.10 (CI test install, 16 Oct 2026); 313 on Python 3.14.8 (full runtime lock, 17 Oct 2026, #111 B4: the standard library imports a few more modules), within the unchanged budget; the test prints the current count. About 5% headroom at 313 (10% at 303) for patch-level differences between Python and package builds."
   },
   "package_zip_mb": {
-    "value": 9999,
-    "measured": 0,
-    "note": "PLACEHOLDER"
+    "value": 393.4,
+    "measured": 374.7,
+    "note": "Size of the package zip in MB (tools/build_package.py checks every build). Release build of fff7dbf (#111 B2b: pruned, precompiled), Python 3.14.8, 17 Oct 2026: 374.7 MB. About 5% headroom; the precompiled .pyc are about 79 MB of it. A dependency change that adds size must say why in its pull request."
   },
   "package_files": {
-    "value": 999999,
-    "measured": 0,
-    "note": "PLACEHOLDER"
+    "value": 23950,
+    "measured": 22812,
+    "note": "Files in the package zip (tools/build_package.py checks every build). Release build of fff7dbf (#111 B2b), Python 3.14.8, 17 Oct 2026: 22,812 (27,794 before pruning and precompiling). About 5% headroom."
   },
   "app_css_raw_colours": {
     "value": 24,
