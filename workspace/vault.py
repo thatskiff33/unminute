@@ -189,7 +189,9 @@ def open_root(blob):
 
 
 class Keyring:
-    """The keys derived from a workspace's root key."""
+    """The keys derived from a workspace's root key. It holds a Sealer and a
+    cache of fingerprint keys, so the Sealer's thread rule applies: use it one
+    call at a time (the store's lock) or keep one per thread."""
 
     def __init__(self, root):
         _key(root)

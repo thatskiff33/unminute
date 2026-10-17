@@ -195,8 +195,10 @@ class AudioWriter:
             self._f = None
 
     def abort(self):
-        """Stop without finishing the file (it stays incomplete)."""
+        """Stop without finishing the file (it stays incomplete). A later
+        close() raises, as after a failure."""
         with self._lock:
+            self._failed = True
             if self._f is not None:
                 self._buf.clear()
                 try:

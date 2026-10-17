@@ -14,6 +14,7 @@ import struct
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -264,6 +265,46 @@ class AudioCryptTests(unittest.TestCase):
         for _ in range(2):
             with self.assertRaises(ValueError):
                 w.close()
+
+    def test_a_close_from_another_thread_waits_for_writes(self):
+        # Writers in several threads race a close: every frame a write
+        # reported is in the finished file, and nothing after the close got in.
+        for _ in range(20):
+            p = self.path()
+            w = audiocrypt.AudioWriter(p, KEY, CTX)
+            written, go = [], threading.Event()
+
+            def keep_writing(w=w, go=go, written=written):
+                go.wait()
+                while True:
+                    try:
+                        w.write(samples(3000))
+                    except ValueError:                       # closed
+                        return
+                    written.append(3000)
+
+            threads = [threading.Thread(target=keep_writing) for _ in range(3)]
+            for t in threads:
+                t.start()
+            go.set()
+            deadline = time.monotonic() + 30
+            while len(written) < 20 and time.monotonic() < deadline:
+                time.sleep(0)
+            w.close()
+            for t in threads:
+                t.join(30)
+            with audiocrypt.AudioReader(p, KEY, CTX) as r:
+                self.assertTrue(r.complete)
+                self.assertEqual(sum(written), len(r))
+                r.verify()
+
+    def test_after_abort_close_says_the_file_is_unfinished(self):
+        p = self.path()
+        w = audiocrypt.AudioWriter(p, KEY, CTX)
+        w.write(samples(10))
+        w.abort()
+        with self.assertRaises(ValueError):
+            w.close()
 
     def test_a_failed_flush_stops_the_writer(self):
         p = self.path()
