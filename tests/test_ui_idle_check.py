@@ -83,5 +83,37 @@ class RatchetTests(unittest.TestCase):
             self.assertEqual(METRICS, set(limits), mode)
 
 
+class EarlyErrorTests(unittest.TestCase):
+    # The page keeps the first error thrown before its bridge is ready and
+    # reports it once the bridge is (#171).
+    THROWN = [[517, 30], [518, 30]]
+
+    def problems(self, *reports, thrown=THROWN):
+        return ui_idle_check.early_problems({"thrown": thrown, "reports": list(reports)})
+
+    def test_the_first_error_reported_once_after_the_bridge_is_ready_passes(self):
+        self.assertEqual([], self.problems({"args": ["error", 517, 30], "before_ready": False}))
+
+    def test_a_lost_repeated_or_premature_report_fails(self):
+        first = {"args": ["error", 517, 30], "before_ready": False}
+        for reports, words in (((), "reported 0"), ((first, first), "reported 2"),
+                               ((dict(first, before_ready=True),), "before it was ready")):
+            problems = self.problems(*reports)
+            self.assertEqual(1, len(problems), words)
+            self.assertIn(words, problems[0])
+
+    def test_a_report_of_anything_but_the_first_errors_place_fails(self):
+        for args in (["error", 518, 30], ["error", 517, 30, "first early error"],
+                     ["rejection", 0, 0]):
+            problems = self.problems({"args": args, "before_ready": False})
+            self.assertEqual(1, len(problems), args)
+            self.assertIn("not the first error's", problems[0])
+
+    def test_a_page_that_did_not_see_both_errors_fails(self):
+        problems = self.problems(thrown=[[517, 30]])
+        self.assertEqual(1, len(problems))
+        self.assertIn("not the 2 thrown", problems[0])
+
+
 if __name__ == "__main__":
     unittest.main()
