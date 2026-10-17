@@ -3,9 +3,11 @@ model names and what the app calls them, and download progress as a number.
 The page shows what Python sends and reads nothing out of a title or message.
 """
 import ast
+import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -181,6 +183,44 @@ def _raw_model_name(expr):
     return isinstance(expr, ast.Attribute) and expr.attr in ("name", "label")
 
 
+# What a junction's outside folder holds: a file, and a .cache folder of its own.
+_OUTSIDE = [".cache", ".cache/app.txt", "keep", "keep/file.txt"]
+
+
+@contextlib.contextmanager
+def _outside_folder(base, at):
+    """A junction at `at` to a fresh folder outside the cache holding _OUTSIDE.
+    Afterwards only the junction is removed, never what it points to."""
+    outside = base / "elsewhere"
+    for rel in ("keep/file.txt", ".cache/app.txt"):
+        (outside / rel).parent.mkdir(parents=True, exist_ok=True)
+        (outside / rel).write_text("synthetic", encoding="utf-8")
+    at.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(at), str(outside)],
+                   check=True, capture_output=True)
+    try:
+        yield outside
+    finally:
+        # Checked here, not with the is_link() under test.
+        if os.path.lexists(at) and os.lstat(at).st_file_attributes & 0x400:
+            os.rmdir(at)                    # removes the junction itself
+        shutil.rmtree(outside)
+
+
+def _tree(folder):
+    """Every entry under `folder`, relative, sorted."""
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*"))
+
+
+def _raised(call):
+    """What `call` raised, or None (checked after the outside folder)."""
+    try:
+        call()
+    except Exception as exc:
+        return exc
+    return None
+
+
 class ProgressTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -283,31 +323,50 @@ class ProgressTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_install_never_follows_a_linked_download_folder(self):
-        # A junction at the staging folder must not be followed: deleting or
-        # writing through it would reach whatever it points to.
+        # A junction at the gpu, component or staging folder must not be
+        # followed: deleting or writing through it would reach whatever it
+        # points to.
         base = Path(self.tmp.name)
         cache = base / "models"
-        (cache / "gpu").mkdir(parents=True)
-        canary = base / "elsewhere"
-        (canary / "keep").mkdir(parents=True)
-        (canary / "keep" / "file.txt").write_text("synthetic", encoding="utf-8")
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(gpu.staging_dir(cache)), str(canary)],
-                       check=True, capture_output=True)
-        fetched = []
+        for at in (cache / "gpu", gpu.component_dir(cache), gpu.staging_dir(cache)):
+            with self.subTest(at=at.name):
+                fetched = []
 
-        def fetch(url, dest, size):      # writes, so without the refusal install carries on
-            fetched.append(url)
-            Path(dest).write_bytes(b"x")
-        try:
-            gpu.install(cache, log=lambda m: None, fetch=fetch)
-            error = None
-        except Exception as exc:         # checked after the outside folder
-            error = exc
-        self.assertTrue((canary / "keep" / "file.txt").is_file())
-        self.assertEqual(sorted(p.name for p in canary.iterdir()), ["keep"])   # nothing written
-        self.assertEqual(fetched, [])
-        self.assertIsInstance(error, gpu.GpuError)
-        self.assertIn("is a link", str(error))
+                # Writes its file, so without the refusal install would carry on.
+                def fetch(url, dest, size, fetched=fetched):
+                    fetched.append(url)
+                    Path(dest).write_bytes(b"x")
+                with _outside_folder(base, at) as outside:
+                    error = _raised(lambda: gpu.install(cache, log=lambda m: None, fetch=fetch))
+                    self.assertEqual(_tree(outside), _OUTSIDE)    # nothing deleted or written
+                self.assertEqual(fetched, [])
+                self.assertIsInstance(error, gpu.GpuError)
+                self.assertIn("is a link", str(error))
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_a_model_install_never_follows_a_linked_folder(self):
+        # The same for a speech model's family, model and download folders.
+        # Without the refusal the download is written through the link, and
+        # its .cache clean-up deletes the linked folder's own .cache.
+        base = Path(self.tmp.name)
+        cache = base / "models"
+        spec = asr_engines.MANAGED_MODELS[asr_engines.PARAKEET_V3]
+        target = asr_engines.model_dir(spec, cache)
+        for at in (target.parent, target, asr_engines.staging_dir(spec, cache)):
+            with self.subTest(at=at.name):
+                downloaded = []
+
+                def download(spec, dest, downloaded=downloaded):
+                    downloaded.append(spec.name)
+                    (Path(dest) / ".cache").mkdir(parents=True, exist_ok=True)
+                    (Path(dest) / "a.bin").write_bytes(b"x")
+                with _outside_folder(base, at) as outside:
+                    error = _raised(lambda: asr_engines.install_model(
+                        spec, cache, log=lambda m: None, download=download))
+                    self.assertEqual(_tree(outside), _OUTSIDE)
+                self.assertEqual(downloaded, [])
+                self.assertIsInstance(error, asr_engines.ModelLoadError)
+                self.assertRegex(str(error), "^A Parakeet v3 folder .* is a link")
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):

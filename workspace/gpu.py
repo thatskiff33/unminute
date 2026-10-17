@@ -25,6 +25,8 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+import asr_engines
+
 COMPONENT = "gpu-speakers"
 VERSION = "torch-2.14.1-cu130"
 LICENCE = ("PyTorch BSD-3-Clause; NVIDIA CUDA runtime and cuDNN under NVIDIA's licences",
@@ -75,15 +77,6 @@ def _long(path):
     if p.startswith("\\\\"):                       # a network (UNC) folder
         return Path("\\\\?\\UNC\\" + p[2:])
     return Path("\\\\?\\" + p)
-
-
-def _is_reparse(path):
-    """A symbolic link or junction (any reparse point)."""
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return False
-    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
 
 
 class GpuError(RuntimeError):
@@ -270,14 +263,17 @@ def install(cache_dir, log, fetch):
     """Download (with `fetch(url, dest, expected_size)`), verify and unpack the
     component. Runs in the download process. Nothing replaces a working copy
     until the new one is complete and verified."""
+    # A link or junction at the gpu, component or download folder is refused
+    # before anything is deleted or written. Following one would put the
+    # download, the component and the clean-up of older damaged copies outside
+    # the cache, and rmtree would delete whatever the download folder points
+    # to (T5). remove() refuses the same.
+    if any(asr_engines.is_link(p) for p in (Path(cache_dir) / "gpu", component_dir(cache_dir),
+                                            staging_dir(cache_dir))):
+        raise GpuError("A graphics card component folder is a link to somewhere else, so "
+                       "it was not used. Ask your IT team.")
     base = _long(component_dir(cache_dir))
-    # Only the parent is resolved (in base): the staging folder itself is never
-    # followed. If it is a link or junction it is refused before anything is
-    # deleted or written, or rmtree would delete whatever it points to (T5).
-    staging = base.parent / staging_dir(cache_dir).name
-    if _is_reparse(staging):
-        raise GpuError("The graphics card component's download folder is a link, so it "
-                       "was not used. Ask your IT team.")
+    staging = base.parent / staging_dir(cache_dir).name   # the staging folder is never resolved
     shutil.rmtree(staging, ignore_errors=True)
     (staging / "wheels").mkdir(parents=True)
     try:

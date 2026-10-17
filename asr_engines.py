@@ -26,6 +26,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -272,6 +273,16 @@ def staging_dir(spec, cache_dir):
     return Path(cache_dir) / spec.family / f"~dl-{zlib.crc32(spec.folder.encode()):08x}"
 
 
+def is_link(path):
+    """A symbolic link or junction (any reparse point), checked without
+    following it. A missing path is not one."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
 # --- Integrity checks ---------------------------------------------------------
 
 def _sha256(path, chunk=8 * 1024 * 1024):
@@ -485,6 +496,13 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
+    # A link or junction at the family, model or download folder is refused
+    # before anything is read, deleted or downloaded: following one would write
+    # outside the cache, and the clean-up of the download's bookkeeping would
+    # delete the linked folder's own .cache (T5). remove() refuses the same.
+    if any(is_link(p) for p in (target.parent, target, staging_dir(spec, cache_dir))):
+        raise ModelLoadError(f"A {label(spec.name)} folder in the model cache is a link to "
+                             f"somewhere else, so it was not used. Ask your IT team.")
     hub_cached = bool(spec.hub_repos)
     if hub_cached:
         # Reuse any copy that verifies, including an older Hugging Face cache.
