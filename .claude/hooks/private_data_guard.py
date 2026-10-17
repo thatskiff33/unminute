@@ -2,15 +2,18 @@
 # Claude Code PreToolUse hook, configured in .claude/settings.json. It keeps real
 # meeting content out of an agent's context and out of commits (AGENTS.md,
 # invariants P1 and P2):
-#   - file tools may not touch a repo's extracted/ folder (the earlier app's
-#     transcripts) or the live workspace (%LOCALAPPDATA%\whisper\workspace);
+#   - file tools may not touch a repo's extracted/ folder (old transcripts) or the
+#     live workspace (%LOCALAPPDATA%\Unminute\workspace, or that data folder other
+#     than its models, and the old %LOCALAPPDATA%\whisper\workspace, which keeps
+#     real content until deleted);
 #   - shell commands may not name either of them as something to read, list,
 #     copy or stage;
 #   - git add and git commit may not name a media file.
 # Message text (commit messages, PR bodies, heredocs) and the patterns given to
 # text searches are ignored, so rules can be quoted and searched for.
 # It is a guard rail, not a security boundary: a command can build a path these
-# patterns do not see. Codex does not run it. Stdlib only, so any Python works.
+# patterns do not see (a variable set in one command and used in the next, say).
+# Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
 # settings run it through PowerShell (Git Bash may be missing), skip it when the
@@ -18,6 +21,7 @@
 # "exit $LASTEXITCODE": PowerShell otherwise turns the 2 into a 1, which only warns.
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,9 +31,42 @@ from pathlib import Path
 MEDIA_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac", ".ogg", ".aac",
                     ".wma", ".webm", ".avi", ".f32")
 
-# The live workspace, however the path is written: %LOCALAPPDATA%\whisper\workspace,
-# $env:LOCALAPPDATA/whisper/workspace, ~/AppData/Local/whisper/workspace.
-LIVE_WORKSPACE = re.compile(r"(?<![\w-])whisper[\\/]+workspace(?![\w-])", re.IGNORECASE)
+
+def _local_appdata():
+    """Local AppData however a path names it: %LOCALAPPDATA%, $env:LOCALAPPDATA,
+    AppData\\Local, GetFolderPath('LocalApplicationData'), or this user's own
+    LOCALAPPDATA written out, which a redirected profile puts elsewhere
+    (D:\\Profiles\\name\\Local, say)."""
+    forms = [r"AppData[\\/]+Local", "LOCALAPPDATA", "LocalApplicationData"]
+    parts = [part for part in re.split(r"[\\/]+", os.environ.get("LOCALAPPDATA", "")) if part]
+    if len(parts) > 1:
+        forms.append(r"[\\/]+".join(re.escape(part) for part in parts))
+    return "(?:" + "|".join(forms) + ")"
+
+
+# The live workspace, however the path is written, and a renamed copy of it (the
+# guide's workspace-damaged). The old one anywhere: %LOCALAPPDATA%\whisper\workspace,
+# ~/AppData/Local/whisper/workspace (or its short name, WORKSP~1), or "whisper",
+# "workspace" as parts of a path in code. The new one is in %LOCALAPPDATA%\Unminute,
+# beside the models agents may use: that folder is blocked, except its models, but
+# only next to local AppData, allowing a few characters of shell syntax between them
+# (Join-Path, "$(...)", concatenation, a list of path parts). A clone of this
+# repository is a folder named unminute holding the workspace package, so the name
+# alone is not enough.
+LOCAL_APPDATA = _local_appdata()
+DATA_FOLDER = r"Unminute(?!\w)(?![\\/'\",\s]{1,4}models(?!\w))"
+LIVE_WORKSPACE = re.compile(
+    r"(?<![\w-])whisper(?:[\\/]+|['\"]\s*,\s*['\"])(?:workspace(?!\w)|WORKSP~\d)"
+    r"|" + LOCAL_APPDATA + r"[%}\)\]'\"\s+,\\/]{1,10}" + DATA_FOLDER,
+    re.IGNORECASE)
+# The data folder named relative to local AppData: after a change of folder to it in
+# the same command, or with it as the working folder.
+TO_LOCAL_APPDATA = re.compile(
+    r"(?<![\w-])(?:cd|chdir|pushd|sl|set-location|push-location)\s+(?:-(?:literal)?path\s+)?"
+    r"[\"']?[^\s;&|]*?" + LOCAL_APPDATA + r"[%}\)\"']*[\\/]?[\"']?\s*$",
+    re.IGNORECASE)
+LOCAL_APPDATA_FOLDER = re.compile(LOCAL_APPDATA + r"[\\/]?$", re.IGNORECASE)
+RELATIVE_WORKSPACE = re.compile(r"(?<![\w\\/.:-])" + DATA_FOLDER, re.IGNORECASE)
 # extracted/ as a path of its own (not "unextracted/"), with or without a separator.
 EXTRACTED = re.compile(r"(?<![\w.-])extracted(?:[\\/]|(?![\w.-]))", re.IGNORECASE)
 MEDIA_TOKEN = re.compile(r"[^\s\"']+(?:" + "|".join(re.escape(e) for e in MEDIA_EXTENSIONS)
@@ -98,7 +135,10 @@ def _drop_first_argument(text, git):
     return text
 
 
-def _check_shell(command):
+def _check_shell(command, cwd=""):
+    if LIVE_WORKSPACE.search(cwd):
+        return f"A command run in the live Unminute workspace is blocked. {ADVICE}"
+    in_local = bool(LOCAL_APPDATA_FOLDER.search(cwd.rstrip("\"'")))
     for words, text in _segments(command):
         program = _program(words)
         sub = words[1] if len(words) > 1 else ""
@@ -106,7 +146,8 @@ def _check_shell(command):
             # A search pattern may name anything; the paths searched may not.
             stripped = PATTERN_VALUE.sub(" ", text)
             text = stripped if stripped != text else _drop_first_argument(text, program == "git")
-        if LIVE_WORKSPACE.search(text):
+        in_local = in_local or bool(TO_LOCAL_APPDATA.search(text))
+        if LIVE_WORKSPACE.search(text) or (in_local and RELATIVE_WORKSPACE.search(text)):
             return f"A command naming the live Unminute workspace is blocked. {ADVICE}"
         # Most git subcommands cannot read an ignored folder's files (check-ignore,
         # status); staging and --no-index diffs can.
@@ -134,7 +175,11 @@ def decide(payload):
             value = tool_input.get(field)
             if not isinstance(value, str) or not value:
                 continue
-            if LIVE_WORKSPACE.search(value):
+            # A relative path is read from the working folder, and Glob's pattern
+            # from its path.
+            base = tool_input.get("path") if tool == "Glob" and field == "pattern" else None
+            full = value if Path(value).is_absolute() else f"{base or cwd}/{value}"
+            if LIVE_WORKSPACE.search(value) or LIVE_WORKSPACE.search(full):
                 return f"{tool} on the live Unminute workspace is blocked. {ADVICE}"
             if _repo_extracted(value, cwd):
                 return f"{tool} inside the repo's extracted/ folder is blocked. {ADVICE}"
@@ -142,7 +187,7 @@ def decide(payload):
 
     if tool in SHELL_TOOLS:
         command = tool_input.get("command")
-        return _check_shell(command) if isinstance(command, str) else None
+        return _check_shell(command, cwd) if isinstance(command, str) else None
     return None
 
 

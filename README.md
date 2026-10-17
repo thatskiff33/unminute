@@ -10,8 +10,6 @@ It was built for a professional-services office where recordings are confidentia
 
 The screenshots show a fictional sample meeting, spoken by the Windows built-in text-to-speech voices. No real people or recordings appear in them.
 
-Unminute was previously called Meeting Workspace, and this repository Whisper Transcriber. Only the name changed: an installed copy updates in place and keeps its meetings, settings and models.
-
 ## What it does
 
 - **Transcribes on your computer.** Uses NVIDIA Parakeet (recommended for English) or OpenAI Whisper, on the processor. Accepts mp3, m4a, wav, mp4, mov, mkv, flac, ogg, aac, wma, webm and avi.
@@ -131,17 +129,17 @@ The threat model, the controls in place and the remaining risks are in [docs/SEC
 
 | What | Where |
 | --- | --- |
-| Program | `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>` |
-| Workspace (meetings, edits, holds, settings) | `%LOCALAPPDATA%\whisper\workspace` |
-| Models, and the optional graphics card component | `%LOCALAPPDATA%\whisper-models` |
+| Program | `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` |
+| Workspace (meetings, edits, holds, settings) | `%LOCALAPPDATA%\Unminute\workspace` |
+| Models, and the optional graphics card component | `%LOCALAPPDATA%\Unminute\models` |
 | Hugging Face token (if remembered) | Windows Credential Manager |
 | Start menu shortcut | Unminute |
 
-`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. The folder names keep the app's earlier names so that existing installs, meetings and models carry over without being moved.
+`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it.
 
 ## Updates, rollback and uninstall
 
-- **Update:** run the new package's `install.cmd` with the app closed. An update that keeps the storage format keeps everything. One that changes it waits until the workspace is empty (no meetings in the workspace, active holds, unfinished cleanup or unimported microphone recordings), and says what it is waiting for. No update expires a hold, deletes your work or makes a backup copy of it.
+- **Update:** run the new package's `install.cmd` with the app closed. An update that keeps the storage format keeps everything. One that changes it waits until the workspace is empty (no meetings in the workspace, active holds, unfinished cleanup or unimported microphone recordings), and says what it is waiting for. No update expires a hold, deletes your work or makes a backup copy of it. From 0.4.3 or earlier this is not an update in place: this version starts with an empty workspace, so finish with the earlier version and uninstall it first (the steps are under Updates in [docs/PACKAGING.md](docs/PACKAGING.md)).
 - **Rollback:** the previous version is kept. To return to it, run `install.ps1 -Rollback` from the current version's folder (`versions\<version>`). Rollback is refused if the previous version cannot open your workspace, for example after a storage-format change.
 - **Uninstall:** Settings > Apps > Unminute. The workspace and downloaded models are kept, because meeting content is only removed through the app's confirmed cleanup steps.
 
@@ -184,10 +182,6 @@ On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error 
 
 What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md). The evidence recorded so far is in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
-## The earlier app
-
-The original source-installed app, Whisper Transcriber (a file queue with a tkinter window), was retired and removed from this repository (#111). If it is still installed on a computer, the [user guide](docs/WORKSPACE_GUIDE.md#if-the-earlier-app-is-still-installed) explains how to remove it safely. Unminute deletes nothing the earlier app created, except a shared model you choose to remove in Settings > Manage downloads.
-
 ## For developers
 
 Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) natively (Claude Code 2.1.277 or later, which needs the repo to have no `CLAUDE.md`). Routine tooling traps are in [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md).
@@ -199,7 +193,7 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
 | `packaging/` | Per-user installer and uninstaller for the package |
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.14 runtime |
-| `tools/make_icon.py` | Draws the app icon with Pillow: `python tools/make_icon.py whisper.ico preview.png` |
+| `tools/make_icon.py` | Draws the app icon with Pillow: `python tools/make_icon.py unminute.ico preview.png` |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
 | `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
@@ -238,7 +232,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
 | PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Setup from download-r2.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
-| sounddevice | MIT | Optional microphone recording in the meeting workspace. Verified 14 October 2026. |
+| sounddevice | MIT | Optional microphone recording in Unminute. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
 
 Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.

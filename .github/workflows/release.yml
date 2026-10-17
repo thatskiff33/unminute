@@ -143,7 +143,7 @@ jobs:
         id: build
         shell: pwsh
         run: |
-          python -I tools/build_package.py --release --out dist --cache "$env:RUNNER_TEMP/wwbuild-cache"
+          python -I tools/build_package.py --release --out dist --cache "$env:RUNNER_TEMP/umbuild-cache"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $zip = @(Get-ChildItem -LiteralPath dist -Filter "Unminute-*.zip")
           if ($zip.Count -ne 1) { throw "Expected one package zip in dist, found $($zip.Count)." }

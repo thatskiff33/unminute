@@ -1,5 +1,5 @@
 # workspace/store.py
-# SQLite state for the meeting workspace (#14). One state-owning process opens
+# SQLite state for Unminute's workspace (#14). One state-owning process opens
 # this; workers never write to it. See docs/WORKSPACE_DESIGN.md.
 #
 # Atomic boundaries:
@@ -321,7 +321,7 @@ def _remote_drive(path):
 
 
 def default_root():
-    return local_appdata() / "whisper" / "workspace"
+    return local_appdata() / "Unminute" / "workspace"
 
 
 def new_id():

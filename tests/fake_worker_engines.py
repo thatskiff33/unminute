@@ -56,7 +56,7 @@ def crash_always(threads):
 
 
 def crash_once(threads):
-    marker = os.environ["WHISPER_TEST_MARKER"]
+    marker = os.environ["UNMINUTE_TEST_MARKER"]
 
     def run(a):
         if not os.path.exists(marker):

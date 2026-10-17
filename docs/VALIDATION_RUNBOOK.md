@@ -8,8 +8,8 @@ These are the checks still open before a business release. Each one needs a mach
 - The scripts run with the installed app's own Python runtime, so nothing else needs installing.
 
 **Paths used below:**
-- `<install>` is `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`.
-- Models live in `%LOCALAPPDATA%\whisper-models`, after Setup has downloaded them.
+- `<install>` is `%LOCALAPPDATA%\Programs\Unminute\versions\<version>`.
+- Models live in `%LOCALAPPDATA%\Unminute\models`, after Setup has downloaded them.
 - Use synthetic or consented, non-client audio only.
 
 ## 1. Clean standard-user profile (#189, sitting 3)
@@ -20,7 +20,7 @@ These are the checks still open before a business release. Each one needs a mach
 2. Open **Unminute** from the Start menu. Complete Setup: download Parakeet v2, and optionally speaker identification with a Hugging Face token.
 3. Import a synthetic recording, review it, and confirm review and then the final save.
 4. Run `<install>\runtime\python.exe -I -B -m workspace --self-test` from `<install>\app`. Expect `PASS`.
-5. Uninstall from Settings > Apps. Check that `%LOCALAPPDATA%\Programs\WhisperWorkspace` is gone, and that the workspace and models are kept, as documented.
+5. Uninstall from Settings > Apps. Check that `%LOCALAPPDATA%\Programs\Unminute` is gone, and that the workspace and models are kept, as documented.
 
 **Record:** the Windows version, whether each step passed, and any prompt or error text.
 
@@ -43,8 +43,8 @@ Follow `docs/PACKAGING.md`, "Managed deployment (Intune)": a Win32 app in user c
 From the extracted source folder, using the installed runtime:
 
 ```
-<install>\runtime\python.exe tools\packaged_check.py <install> %LOCALAPPDATA%\whisper-models <15-minute synthetic recording.wav> packaged_check.json
-<install>\runtime\python.exe tools\packaged_crash_check.py <install> %LOCALAPPDATA%\whisper-models <recording.wav> crash_check.json 240
+<install>\runtime\python.exe tools\packaged_check.py <install> %LOCALAPPDATA%\Unminute\models <15-minute synthetic recording.wav> packaged_check.json
+<install>\runtime\python.exe tools\packaged_crash_check.py <install> %LOCALAPPDATA%\Unminute\models <recording.wav> crash_check.json 240
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps1 -Version <install> -Wav <recording.wav>
 ```
 

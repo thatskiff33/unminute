@@ -56,7 +56,7 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 | Windows 10 x64 (1809 or later) | Supported by the installer checks, not yet tested |
 | Edge WebView2 Runtime | Required. The installer checks for it |
 | Parakeet v2 (recommended) | Tested in the workspace (real-engine checks), and offline Parakeet inference from an earlier package build |
-| Parakeet v3, Whisper large-v3 turbo | Tested in the earlier app's engine only (Parakeet v3 dropped speech on some clips) |
+| Parakeet v3, Whisper large-v3 turbo | Tested only in the retired source app's engine (Parakeet v3 dropped speech on some clips) |
 | pyannote community-1 speaker identification | Tested from source and from the package |
 | GPU acceleration | Optional, for speaker identification only (Setup component, Faster mode). Tested on an NVIDIA RTX 500 Ada laptop GPU (4 GB, driver 595.95). Transcription stays on the CPU. See below. |
 

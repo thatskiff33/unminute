@@ -80,9 +80,10 @@ PYTHON_MINOR = ".".join(PYTHON_VERSION.split(".")[:2])
 PYTHON_TAG = PYTHON_MINOR.replace(".", "")
 
 APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md",
-             "whisper.ico"]
+             "unminute.ico"]
 # Windows PowerShell 5.1 and many tools stop at 260-character paths. With the
-# default install folder (about 85 characters plus the user name) every path
+# default install folder (68 characters plus the user name, with a 16-character
+# version) every path
 # inside the package must stay at or under this length.
 MAX_RELATIVE_PATH = 140
 SITE = "lib"                 # runtime/lib instead of runtime/Lib/site-packages
@@ -1024,7 +1025,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
     # deepest wheel files can pass 260 characters on the build machine, and
     # Windows APIs then silently skip those files. (Paths inside the package
     # are still kept to MAX_RELATIVE_PATH for the machines it installs on.)
-    work = Path(tempfile.mkdtemp(prefix="wwbuild-")).resolve()
+    work = Path(tempfile.mkdtemp(prefix="umbuild-")).resolve()
     if os.name == "nt":
         work = Path("\\\\?\\" + str(work))
     folder = work / name
@@ -1145,7 +1146,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--version", help="must match the VERSION file, if given")
     ap.add_argument("--out", default=str(ROOT / "dist"))
-    ap.add_argument("--cache", default=str(Path(tempfile.gettempdir()) / "wwbuild-cache"))
+    ap.add_argument("--cache", default=str(Path(tempfile.gettempdir()) / "umbuild-cache"))
     ap.add_argument("--release", action="store_true",
                     help="refuse a dirty tree or a HEAD that is not the vX.Y.Z tag")
     ap.add_argument("--update-binary-allowlist", action="store_true",

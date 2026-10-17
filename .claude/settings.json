@@ -4,7 +4,10 @@
       "Read(./extracted/**)",
       "Edit(./extracted/**)",
       "Read(~/AppData/Local/whisper/workspace/**)",
-      "Edit(~/AppData/Local/whisper/workspace/**)"
+      "Edit(~/AppData/Local/whisper/workspace/**)",
+      "Read(~/AppData/Local/Unminute/workspace/**)",
+      "Edit(~/AppData/Local/Unminute/workspace/**)",
+      "Edit(~/AppData/Local/Unminute/models/**)"
     ]
   },
   "hooks": {

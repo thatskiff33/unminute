@@ -84,7 +84,7 @@ class NetworkGuardTests(unittest.TestCase):
         self.assertEqual(og.blocked, [])
 
     def test_there_is_no_switch_that_turns_the_guard_off(self):
-        # The earlier app's permit() bypassed the guard for the whole process;
+        # A permit() that bypassed the guard for the whole process is gone;
         # downloads now run only in their own process, with checked hosts.
         self.assertFalse(hasattr(og, "permit"))
         self.assertFalse(hasattr(og, "_permits"))

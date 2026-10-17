@@ -93,7 +93,7 @@ class WorkerTests(unittest.TestCase):
 
     def test_crash_is_detected_and_next_request_restarts(self):
         marker = Path(self.tmp.name) / "crashed"
-        os.environ["WHISPER_TEST_MARKER"] = str(marker)
+        os.environ["UNMINUTE_TEST_MARKER"] = str(marker)
         try:
             self.h.load(fake("crash_once"), 1)
             first = self.h.pid
@@ -103,7 +103,7 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(self.h.transcribe(np.zeros(100, np.float32))[0][0].text, "recovered")
             self.assertNotEqual(self.h.pid, first)
         finally:
-            os.environ.pop("WHISPER_TEST_MARKER", None)
+            os.environ.pop("UNMINUTE_TEST_MARKER", None)
 
     def test_stop_now_returns_promptly(self):
         import threading
