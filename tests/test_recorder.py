@@ -450,6 +450,22 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(journal["state"], "stopped")
         self.assertEqual([e["kind"] for e in journal["events"]], ["stall"])
 
+    def test_the_silence_check_waits_while_the_beat_is_late(self):
+        # The same, with the writer certain to check before the watchdog beats
+        # (the watchdog is held off): it must not call the microphone lost.
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 0.05), \
+                mock.patch.object(recorder, "ALIVE_S", 30):
+            rec, s = self.start_ticking()
+            s.feed(1)
+            time.sleep(0.3)
+            self.asleep[0] += 2                  # held up 2 s; no beat follows
+            time.sleep(0.4)                      # several silence checks run
+            self.assertFalse(rec.stopped)
+            s.feed(1)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+
     def test_a_microphone_lost_after_a_stall_is_a_lost_microphone(self):
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 30):
