@@ -494,7 +494,11 @@ def parent(args):
     try:
         # Inside the guard: a probe that fails (a damaged version.json, a
         # missing system tool) is "not measured", not a traceback.
-        report["environment"] = environment(args)
+        try:
+            report["environment"] = environment(args)
+        except Exception as exc:
+            raise RuntimeError(
+                f"the environment probe failed ({type(exc).__name__}: {exc})") from exc
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1

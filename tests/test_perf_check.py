@@ -104,7 +104,8 @@ class ParentTests(unittest.TestCase):
                 self.assertEqual(perf_check.parent(args), 2)
             run.assert_not_called()
             saved = json.loads(report.read_text(encoding="utf-8"))
-            self.assertEqual(saved["error"], "damaged version.json")
+            self.assertEqual(saved["error"],
+                             "the environment probe failed (ValueError: damaged version.json)")
             self.assertEqual(saved["each_run"], [])
 
     def test_the_help_says_the_worker_unload_uses_the_slowest_run(self):

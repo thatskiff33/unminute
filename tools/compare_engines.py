@@ -17,8 +17,9 @@
 #   python tools/compare_engines.py score v2.jsonl v3.jsonl turbo.jsonl --side-by-side sbs.md
 #
 # Each clip is decoded by the app's own decoder in its contained process
-# (workspace.media.decode_to_file), so the measured process loads only what
-# the app's worker loads: no faster_whisper or CTranslate2 for Parakeet (#187).
+# (workspace.media.decode_to_file, from the --repo checkout; contained since
+# A3, #119), so the measured process loads only what the app's worker loads:
+# no faster_whisper or CTranslate2 for Parakeet (#187).
 # Manifest paths are not checked as the app checks imports (workspace.safe_paths):
 # list local files on this computer only.
 #
@@ -167,6 +168,9 @@ def cmd_run(args):
     threads = args.threads or resources.worker_threads(resources.FASTER)
     clips = [json.loads(line) for m in args.manifest
              for line in Path(m).read_text(encoding="utf-8").splitlines() if line.strip()]
+    missing = [f"{c.get('set')}/{c.get('id')}" for c in clips if not Path(c["wav"]).is_file()]
+    if missing:                      # before the model loads, which takes a while
+        sys.exit(f"{len(missing)} clip(s) not found: {', '.join(missing[:5])}")
     t0 = time.perf_counter()
     engine = load_engine(args.engine, str(cache), threads)
     load_s = time.perf_counter() - t0
