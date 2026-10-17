@@ -616,6 +616,18 @@ class ReproducibleBuildTests(unittest.TestCase):
             with self._patched(repo), self.assertRaisesRegex(SystemExit, "Unexpected path"):
                 bp.export_app(self.root / "c" / "Unminute-0.5.0" / "app", sha)
             self.assertFalse((self.root / "c" / "runtime").exists())
+        # Two names that differ only by case: one would overwrite the other.
+        other = run("hash-object", "-w", "--stdin", data=b"other")
+        workspace = run("mktree", data=(f"100644 blob {blob}\tApp.py\n"
+                                        f"100644 blob {other}\tapp.py\n").encode())
+        packaging = run("mktree", data=f"100644 blob {blob}\tinstall.ps1\n".encode())
+        root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
+                                   f"040000 tree {packaging}\tpackaging\n"
+                                   f"040000 tree {workspace}\tworkspace\n").encode())
+        sha = run("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                  "commit-tree", root, "-m", "case")
+        with self._patched(repo), self.assertRaisesRegex(SystemExit, "differ only by case"):
+            bp.export_app(self.root / "d" / "Unminute-0.5.0" / "app", sha)
 
     def test_a_release_must_run_isolated(self):
         with mock.patch.object(bp.sys, "flags", mock.Mock(isolated=0)), \
