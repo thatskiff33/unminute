@@ -426,8 +426,8 @@ def verify_precompiled(zpath):
     part in checking itself. A .pyc that is not __pycache__/<module>.cpython-
     <tag>.pyc beside its .py (a module shipped without its source) cannot be
     checked and is refused. The standard library inside python3XX.zip is not
-    covered here: the runtime's pinned SHA-256 covers it. Returns the count
-    compared."""
+    covered here: the build checks the runtime's pinned SHA-256, and a
+    downloaded zip's attestation covers it. Returns the count compared."""
     if platform.python_version() != PYTHON_VERSION or sys.implementation.name != "cpython":
         sys.exit(f"Verify with CPython {PYTHON_VERSION}, the package's version "
                  f"(this is {sys.implementation.name} {platform.python_version()}).")

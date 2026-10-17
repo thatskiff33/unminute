@@ -352,8 +352,20 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[] | "\(.name) \(.digest)"' | sort > published.txt
+          # Read it again until every file has its digest; a read that keeps
+          # failing is reported as that, not as changed files.
+          for attempt in 1 2 3 4 5 6; do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > published.json \
+                && jq -e '[.assets[] | .digest] | all(. != null)' published.json > /dev/null; then
+              break
+            fi
+            if [ "$attempt" = 6 ]; then
+              echo "::error::Could not read the published release's files to compare them. Compare them by hand (docs/RELEASING.md, step 4)."
+              exit 1
+            fi
+            sleep 10
+          done
+          jq -r '.assets[] | "\(.name) \(.digest)"' published.json | sort > published.txt
           (cd release && for f in *; do
             echo "$f sha256:$(sha256sum "$f" | cut -d' ' -f1)"
           done) | sort > checked.txt
@@ -361,7 +373,7 @@ jobs:
             echo "::error::The published release's files differ from the ones checked. Withdraw it (docs/RELEASING.md)."
             exit 1
           fi
-          immutable=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.immutable')
+          immutable=$(jq -r '.immutable' published.json)
           echo "immutable: $immutable"
           if [ "$immutable" != "true" ]; then
             echo "::warning::This release is not immutable: turn on immutable releases (docs/RELEASING.md, Protecting releases)."

@@ -59,6 +59,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("environment:", j["draft"] + j["build"] + j["check"])
         self.assertIn("--draft --verify-tag", j["draft"])
         self.assertIn("already exists; nothing was changed", j["draft"])   # never over a release
+        self.assertIn('if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then',
+                      j["draft"])
         self.assertIn("--draft=false", j["publish"])
         self.assertNotIn("--draft=false", j["draft"])
 
@@ -129,6 +131,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('"\\(.name) \\(.digest)"', after)
         self.assertIn("diff checked.txt published.txt", after)
         self.assertIn("cut -d' ' -f1 published.txt | diff expected.txt -", after)
+        # A read that keeps failing says so, rather than that the files changed.
+        self.assertIn("Could not read the published release's files", after)
+        self.assertIn("all(. != null)", after)
         self.assertIn("ls -A release | sort | diff expected.txt -", publish)    # downloaded set
 
     def test_the_draft_finds_the_bundle_whatever_gh_names_it(self):
