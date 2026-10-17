@@ -389,14 +389,15 @@ class IntegrityTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertIsNone(ws.store.meeting(self.mid))
         self.assertFalse((ws.media / self.mid).exists())
-        # The real end state on a damaged database: the audio job finishes; the
-        # transcript job removed the rows and files but its final compaction
-        # fails, so it stays failed and is retried (#198).
-        self.assertEqual([r["result"] for r in ws.receipts()], ["audio removed"])
-        job = ws.store._one("SELECT state, error FROM cleanup_jobs WHERE meeting_id = ? "
-                            "AND phase = 'transcript'", (self.mid,))
-        self.assertEqual(job["state"], "failed")
-        self.assertIn("compact", job["error"])
+        # The real end state on a damaged database (#198): both jobs finish; the
+        # damaged file cannot be compacted, so that is owed to the next start
+        # whose check passes, and the receipt says so.
+        from workspace import cleanup
+        self.assertEqual(sorted(r["result"] for r in ws.receipts()),
+                         ["audio removed", "transcript removed; " + cleanup.DEFERRED_NOTE])
+        self.assertIsNone(ws.store._one("SELECT 1 FROM cleanup_jobs WHERE meeting_id = ?",
+                                        (self.mid,)))
+        self.assertTrue((self.root / "compact.pending").exists())
 
     def test_an_unfinished_import_is_removed_only_when_discard_is_allowed(self):
         ws = self.open()

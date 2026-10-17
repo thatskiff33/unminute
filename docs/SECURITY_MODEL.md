@@ -178,6 +178,7 @@ Cross-border points to confirm with a privacy adviser: pasting a handoff into an
 | Receipts | `workspace.db` | Content-free | 30 days, purged while the app runs |
 | Watched-folder paths, path hashes, content fingerprints | `workspace.db` | Paths in plain text; path hashes keyed with a key stored in the same database | Paths until the folder is removed; fingerprints 120 days |
 | `settings.json`, `templates.json` | `workspace\` | Plain files. Since R11, `settings.json` keeps values this version does not use (from a newer version) without interpreting them, up to 64 KB | Until changed; templates may contain names |
+| `compact.pending` | `workspace\` | Empty marker file | Only while a compaction is owed after a removal on a damaged database (#198); no content |
 | Database check result (`integrity.json`: ok or failed, an incident code, a time) | `workspace\logs\` (since R11) | Content-free | Until the next check |
 | `settings.unreadable.json` (a settings file that could not be read, kept once) | `workspace\` (since R11) | Plain file; settings only | Until replaced by the next unreadable file |
 | `power_restore.json` | `workspace\` | Plain file | Only while the lid switch is in force: the power scheme and the original lid action values; no content |

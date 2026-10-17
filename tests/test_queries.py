@@ -77,6 +77,9 @@ def reference_meetings(ws):
                     "paused": bool(m["paused"]),
                     "error": m["last_error"] if m["phase"] == "error" else None,
                     "busy": busy or None, "stage": stage,
+                    # #193: no version, no import running, not yet discarded.
+                    "unfinished": v is None and ws._imports.unfinished_tasks == 0
+                    and not m["reviewed_at"],
                     "can_skip": bool(v) and ws._can_skip(m, runs),
                     "action": ws._action(m, stage)})
     return out

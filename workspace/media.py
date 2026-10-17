@@ -328,7 +328,7 @@ def import_recording(store, media_root, src_path, title=None):
     before = src.stat()
     original_sha = sha256_file(src)
     mid = store.create_meeting(title or "Untitled meeting")
-    folder = Path(media_root) / mid
+    folder = meeting_folder(media_root, mid)
     try:
         folder.mkdir(parents=True, exist_ok=False)
         samples, audio_sha = decode_to_file(src, folder / AUDIO_FILE)
@@ -351,5 +351,21 @@ def import_recording(store, media_root, src_path, title=None):
     return mid, sid
 
 
+class BadMeetingId(ValueError):
+    """A meeting id that is not the app's own format (#194): never joined to a
+    path. The message is safe to show."""
+
+
+def meeting_folder(media_root, mid):
+    """The meeting's folder in the media store. Ids are the app's own
+    (store.new_id: 32 lowercase hex characters); anything else, such as an id
+    from a damaged or edited database, is refused before any path is built,
+    so it can never point outside the media store."""
+    if not (isinstance(mid, str) and len(mid) == 32
+            and all(c in "0123456789abcdef" for c in mid)):
+        raise BadMeetingId("Meeting not found.")
+    return Path(media_root) / mid
+
+
 def audio_path(media_root, mid):
-    return Path(media_root) / mid / AUDIO_FILE
+    return meeting_folder(media_root, mid) / AUDIO_FILE
