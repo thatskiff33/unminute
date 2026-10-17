@@ -533,7 +533,7 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .who:hover:not(:disabled) { background: var(--sp-bg, var(--soft)); filter: brightness(0.96); }
 .avatar {
   width: 20px; height: 20px; border-radius: 50%; font-size: 10px; display: inline-flex; align-items: center; justify-content: center;
-  background: var(--sp-fg, var(--muted)); color: var(--badge-fg);
+  background: var(--sp-fg, var(--muted)); color: var(--avatar-fg);
 }
 .sp1 { --sp-bg: var(--sp1); --sp-fg: var(--sp1-fg); }
 .sp2 { --sp-bg: var(--sp2); --sp-fg: var(--sp2-fg); }

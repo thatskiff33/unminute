@@ -91,13 +91,13 @@
   --record-halo: rgba(229, 102, 0, 0.22);   /* the pulse round the recording dot */
   --hold-button: #FFFFFF;     /* buttons on a hold (pink) notice */
   --handoff-dot: #DD5EB9;     /* the Hand off stage's dot */
-  --badge-fg: #FFFFFF;        /* text on a speaker's coloured badge */
+  --avatar-fg: #FFFFFF;       /* initials on a speaker's avatar */
   --switch-knob: #FFFFFF;
   --toast: #142966;
   --toast-fg: #FFFFFF;
   --shadow-toast: 0 8px 24px rgba(20, 41, 102, 0.3);
   /* The drop overlay stays light in the dark theme too (its dark text keeps
-     it legible); a dark version needs a design board first. */
+     it legible); a dark version needs a design board first (#183). */
   --drop-overlay: rgba(238, 247, 253, 0.94);
   --drop-icon: #142966;
   --drop-icon-fg: #FFFFFF;

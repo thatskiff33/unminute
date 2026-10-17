@@ -204,7 +204,8 @@ powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandy
 seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen
 steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow
 yellowgreen""".split())
-COLOUR = re.compile(r"#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color"
+# Hex also as %23 (a colour written inside an SVG data URI).
+COLOUR = re.compile(r"(?:#|%23)[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color"
                     r"|color-mix)\(|(?<![\w-])(" + "|".join(sorted(NAMED_COLOURS)) + r")(?![\w-])",
                     re.IGNORECASE)
 
@@ -220,8 +221,9 @@ class DesignTokenTests(unittest.TestCase):
     def test_colour_pattern(self):
         found = raw_colours("/* #133 */ .red, .a:hover { color: white; background: #fff; "
                             "border: 1px solid oklch(0.5 0.1 200); white-space: nowrap; "
-                            "fill: var(--x); }")
-        self.assertEqual(["white", "#fff", "oklch("], found)
+                            "fill: var(--x); mask: url(\"data:image/svg+xml,"
+                            "%3Csvg stroke='%2362D098'%3E\"); }")
+        self.assertEqual(["white", "#fff", "oklch(", "%2362D098"], found)
 
     def test_raw_colours_within_ratchet(self):
         colours = raw_colours(read("workspace/ui/app.css"))

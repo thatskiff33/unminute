@@ -16,9 +16,9 @@
     "note": "Files in the package zip (tools/build_package.py checks every build). Release build of b12e462 (#111 B2b), Python 3.14.8, 17 Oct 2026: 22,815 (27,794 before pruning and precompiling). About 5% headroom."
   },
   "app_css_raw_colours": {
-    "value": 0,
-    "measured": 0,
-    "note": "Hex, rgb() and hsl() colour literals in workspace/ui/app.css outside tokens.css (tests/test_consistency.py). 24 on 16 Oct 2026; 0 since R12b (#133, 17 Oct 2026): each moved to a token in tokens.css with the same value, and the design check's app screens are unchanged. A new colour goes in tokens.css."
+    "value": 1,
+    "measured": 1,
+    "note": "Colour literals in workspace/ui/app.css outside tokens.css: hex (also %23 hex inside a data URI), rgb(), hsl() and named colours (tests/test_consistency.py). 24 on 16 Oct 2026; R12b (#133, 17 Oct 2026) moved each to a token with the same value (the design check's app screens unchanged), and the count now also sees data URIs: 1 left, the success toast's tick drawn as an SVG with its green inside (#186 makes it a mask filled from a token; then 0). A new colour goes in tokens.css."
   },
   "ui_idle": {
     "note": "What the idle Meetings page does per minute of page time (tools/ui_idle_check.py, headless Edge with the design fixtures). Lowered by R6 (#127) on 16 Oct 2026: visible 120 bridge calls and 30 list rebuilds a minute became 24 and 0, and hidden became nothing at all (the standard, section 3: while hidden, nothing polls faster than once every 30 s). Polling is now a timeout chain (one timeout per poll, every 10 s when idle) instead of a 2 s interval, so timeouts_per_minute was raised from 0 to 6 on purpose. Lowered again by R7b (#128) on 16 Oct 2026: visible 24 bridge calls a minute became 14, because the page asks for the meeting list and reminders only when status() reports a change, and every 6th poll anyway (status and recording_status every poll, the two lists once a minute). fastest_interval_ms is a floor: an interval faster than it fails, and no interval passes. A page that throws, or makes no bridge calls when visible, fails regardless.",
