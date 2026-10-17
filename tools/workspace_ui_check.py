@@ -96,14 +96,27 @@ def page_dialogs():
 
 
 def find_dialog(title, timeout=15):
-    """The top-level window of a confirmation with this title, once shown."""
+    """The top-level window of a confirmation with this title, once shown, in
+    this process only: a real Unminute's confirmation open at the same time
+    (such as "Discard this meeting?") is never pressed or closed."""
     import ctypes
+    from ctypes import wintypes
     user32 = ctypes.WinDLL("user32")
+    user32.FindWindowExW.restype = wintypes.HWND
+    user32.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR,
+                                     wintypes.LPCWSTR]
+    pid = os.getpid()
     end = time.time() + timeout
     while time.time() < end:
-        hwnd = user32.FindWindowW(None, title)
-        if hwnd and user32.IsWindowVisible(hwnd):
-            return hwnd
+        hwnd = None
+        while True:                           # every top-level window with the title
+            hwnd = user32.FindWindowExW(None, hwnd, None, title)
+            if not hwnd:
+                break
+            owner = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and user32.IsWindowVisible(hwnd):
+                return hwnd
         time.sleep(0.05)
     return 0
 
@@ -190,8 +203,12 @@ def native_checks(window, ws, mid):
 
         def click():
             done["ok"] = press(script, title, seen)
+            # Wait for the confirmation to close. If the script found none, keep
+            # looking: one that shows late is closed too, rather than waited on.
             end = time.time() + STUCK_DIALOG_S
-            while time.time() < end and find_dialog(title, timeout=0.2):
+            while time.time() < end:
+                if not find_dialog(title, timeout=0.2) and done["ok"]:
+                    return
                 time.sleep(0.5)
             hwnd = find_dialog(title, timeout=0.2)
             if hwnd:

@@ -524,12 +524,40 @@ class ToolTests(TempDir):
                 self.assertIn(f"passed={verdict},", main)
                 self.assertIn('return 0 if ev["pass"] else 1', main)
 
+    @unittest.skipUnless(os.name == "nt", "Windows windows")
+    def test_the_ui_check_only_presses_its_own_confirmations(self):
+        # A window with the same title in another process (a real Unminute's
+        # "Discard this meeting?") is never found, so never pressed or closed.
+        import workspace_ui_check
+        title = f"Unminute evidence test {os.getpid()}"
+        script = ("Add-Type -AssemblyName System.Windows.Forms; "
+                  "$f = New-Object Windows.Forms.Form; $f.Text = $env:UNMINUTE_TITLE; "
+                  "$f.Opacity = 0; $f.ShowInTaskbar = $false; $f.Show(); "
+                  "[Console]::Out.WriteLine('shown'); [Console]::Out.Flush(); "
+                  "for ($i = 0; $i -lt 100; $i++) { [Windows.Forms.Application]::DoEvents(); "
+                  "Start-Sleep -Milliseconds 100 }")
+        other = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                  script], stdout=subprocess.PIPE, text=True,
+                                 env=dict(os.environ, UNMINUTE_TITLE=title))
+        try:
+            self.assertEqual("shown", other.stdout.readline().strip())
+            import ctypes
+            self.assertTrue(ctypes.WinDLL("user32").FindWindowW(None, title))   # it is there
+            self.assertEqual(0, workspace_ui_check.find_dialog(title, timeout=1))
+        finally:
+            other.kill()
+            other.wait(10)
+
     def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
         source = self.source("workspace_ui_check.py")
         run_with = source.split("    def run_with(", 1)[1].split("\n    title = ", 1)[0]
         self.assertIn("0x0010", run_with)                                   # WM_CLOSE
         self.assertIn('out.setdefault("stuck_dialogs", []).append(title)', run_with)
         self.assertIn("clicker.join(STUCK_DIALOG_S + 15)", run_with)
+        # A dialog the script never found (shown late) is still watched and closed.
+        self.assertIn('if not find_dialog(title, timeout=0.2) and done["ok"]:', run_with)
+        finder = source.split("def find_dialog(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("owner.value == pid", finder)
         self.assertIn('if nv.get("stuck_dialogs"):', source)
 
     def test_package_checks_start_the_app_as_the_shortcut_does(self):
