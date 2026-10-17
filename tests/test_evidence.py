@@ -23,6 +23,12 @@ import evidence  # noqa: E402
 
 SHA = "a" * 64
 COMMIT = "c" * 40
+CLEAN = {"tools_commit": COMMIT, "tools_clean": True}
+
+
+def clean():
+    """tools_identity() as from a clean checkout of the package's commit."""
+    return mock.patch.object(evidence, "tools_identity", return_value=CLEAN)
 LONG_S = chr(0x17F)      # Latin small long s: a different name on NTFS, "s" to casefold()
 
 
@@ -139,6 +145,15 @@ class IdentityTests(TempDir):
         listed = self.listed(zpath, folder)
         self.assertEqual(["link: app/linked"], listed)        # no name from outside
 
+    def test_a_hard_link_is_a_difference(self):
+        # Content that matches but lives elsewhere too could change after the run.
+        zpath, folder = make_package(self.root)
+        outside = self.root / "outside.exe"
+        outside.write_bytes(b"MZ not really")
+        (folder / "runtime" / "python.exe").unlink()
+        os.link(outside, folder / "runtime" / "python.exe")
+        self.assertEqual(["hard link: runtime/python.exe"], self.listed(zpath, folder))
+
     def test_an_extra_folder_is_a_difference(self):
         zpath, folder = make_package(self.root)
         (folder / "app" / "empty").mkdir()
@@ -176,16 +191,27 @@ class IdentityTests(TempDir):
         self.assertEqual(evidence.MAX_LISTED + 5, ident["folder_differences"])
         self.assertEqual(evidence.MAX_LISTED, len(ident["folder_differences_listed"]))
 
-    def test_the_checkout_the_tools_ran_from_is_recorded(self):
+    def tools_identity_with(self, status="", tags="H tools/evidence.py\n"):
         def git(cmd, **kwargs):
-            out = {"rev-parse": COMMIT + "\n", "status": "?? tools/extra.py\n"}[cmd[3]]
-            if cmd[3] == "status":
-                self.assertEqual(["--untracked-files=all", "--", "tools", "tests", "docs"],
-                                 cmd[5:])
+            self.assertEqual(["git", "--no-replace-objects", "-C"], cmd[:3])
+            sub = cmd[4]
+            if sub == "status":
+                self.assertEqual(["--porcelain", "--untracked-files=all", "--ignored", "--",
+                                  "tools", "tests", "docs"], cmd[5:])
+            out = {"rev-parse": COMMIT + "\n", "status": status, "ls-files": tags}[sub]
             return subprocess.CompletedProcess(cmd, 0, out, "")
         with mock.patch.object(evidence.subprocess, "run", git):
-            self.assertEqual({"tools_commit": COMMIT, "tools_clean": False},
-                             evidence.tools_identity())
+            return evidence.tools_identity()
+
+    def test_the_checkout_the_tools_ran_from_is_recorded(self):
+        self.assertEqual(CLEAN, self.tools_identity_with())
+        for status, tags in (("?? tools/extra.py\n", "H tools/evidence.py\n"),
+                             ("!! tools/__pycache__/evidence.cpython-314.pyc\n",
+                              "H tools/evidence.py\n"),
+                             ("", "h tools/evidence.py\n"),          # assume-unchanged
+                             ("", "S docs/perf-budgets.json\n")):     # skip-worktree
+            with self.subTest(status=status, tags=tags):
+                self.assertFalse(self.tools_identity_with(status, tags)["tools_clean"])
         with mock.patch.object(evidence.subprocess, "run", side_effect=OSError("no git")):
             self.assertEqual({"tools_commit": None, "tools_clean": False},
                              evidence.tools_identity())
@@ -286,6 +312,16 @@ class CheckTests(TempDir):
                 self.assertEqual(1, len(problems), problems)
                 self.assertIn(words.strip(), problems[0])
 
+    def test_malformed_fields_fail_without_a_crash(self):
+        for words, bad in (("was not a full release run", report("perf", run=[1])),
+                           ("was not a full release run", report("perf", run="full")),
+                           ("differs from the package", report("perf", folder_differences=False)),
+                           ("differs from the package", report("perf", folder_differences=0.0))):
+            with self.subTest(bad=bad["evidence"]):
+                problems = evidence.check(SHA, self.complete(perf=bad))
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn(words, problems[0])
+
     def test_the_commit_given_must_be_the_packages(self):
         problems = evidence.check(SHA, self.complete(), commit="d" * 40)
         self.assertEqual(5, len(problems))
@@ -362,7 +398,7 @@ class PrepareTests(TempDir):
                 mock.patch.object(sys, "flags", f),
                 mock.patch.object(sys, "_xoptions",
                                   {"disable-remote-debug": True} if flags else {}),
-                mock.patch.dict(sys.modules, modules)]
+                mock.patch.dict(sys.modules, modules), clean()]
 
     def run_prepare(self, patches, ap, args, app=None, version_dir=None):
         for p in patches:
@@ -413,12 +449,30 @@ class PrepareTests(TempDir):
     def test_a_wrong_zip_or_a_changed_folder_stops_before_the_check(self):
         zpath, folder = make_package(self.root)
         ap, args = self.parse("--zip", str(self.root / "no.zip"))
-        with self.assertRaisesRegex(SystemExit, "is not a package zip"):
+        with self.assertRaisesRegex(SystemExit, "is not a package zip"), clean():
             evidence.prepare(ap, args, version_dir=folder)
         (folder / "app" / "planted.py").write_bytes(b"")
         ap, args = self.parse("--zip", str(zpath))
-        with self.assertRaisesRegex(SystemExit, "does not hold exactly the files"):
+        with self.assertRaisesRegex(SystemExit, "does not hold exactly the files"), clean():
             evidence.prepare(ap, args, version_dir=folder)
+
+    def test_an_unclean_checkout_stops_before_the_check(self):
+        zpath, folder = make_package(self.root)
+        ap, args = self.parse("--zip", str(zpath))
+        with self.assertRaisesRegex(SystemExit, "git clean -fdX -- tools tests docs"), \
+                mock.patch.object(evidence, "tools_identity",
+                                  return_value=dict(CLEAN, tools_clean=False)):
+            evidence.prepare(ap, args, version_dir=folder)
+
+    def test_the_app_goes_on_the_path_only_if_it_is_not_there(self):
+        app = self.root / "app"
+        app.mkdir()
+        with mock.patch.object(sys, "path", ["", str(self.root / "lib"), str(app)]):
+            evidence.add_app(app)
+            self.assertEqual(["", str(self.root / "lib"), str(app)], sys.path)
+        with mock.patch.object(sys, "path", ["", str(self.root / "lib")]):
+            evidence.add_app(app)
+            self.assertEqual(str(app.resolve()), sys.path[0])
 
     def test_app_folder_reads_app_from_the_command_line(self):
         default = Path("checkout")
@@ -502,6 +556,7 @@ class ToolTests(TempDir):
         with mock.patch.object(perf_check, "parent", parent), \
                 mock.patch.object(perf_check.evidence, "require_package_runtime"), \
                 mock.patch.object(perf_check.evidence, "require_app_modules"), \
+                clean(), \
                 mock.patch.object(sys, "argv", argv), mock.patch("builtins.print"):
             code = perf_check.main()
         return code, json.loads(out.read_text(encoding="utf-8"))["evidence"]
@@ -597,7 +652,7 @@ class PackagedCheckTests(TempDir):
             report.update(json.loads(json.dumps(filled)))
         argv = ["tool.py", str(folder), "cache", "x.wav", str(out), *extra]
         with mock.patch.object(tool, "check", check), mock.patch.object(sys, "argv", argv), \
-                mock.patch("builtins.print"):
+                clean(), mock.patch("builtins.print"):
             code = tool.main()
         saved = json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
         return code, saved, calls
@@ -624,7 +679,7 @@ class PackagedCheckTests(TempDir):
                     argv = ["tool.py", str(folder), "cache", "x.wav",
                             str(self.root / "report.json"), "--zip", str(zpath)]
                     with self.assertRaisesRegex(SystemExit, words), \
-                            mock.patch.object(tool, "check", check), \
+                            mock.patch.object(tool, "check", check), clean(), \
                             mock.patch.object(sys, "argv", argv):
                         tool.main()
                     check.assert_not_called()

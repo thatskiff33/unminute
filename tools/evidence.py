@@ -68,6 +68,20 @@ def app_folder(default, argv=None):
     return Path(default)
 
 
+def add_app(app):
+    """Put the app folder on the import path for a check, unless it is already
+    there: the package's own runtime lists it (its ._pth names ..\\app), and
+    keeping that order checks the app as it runs."""
+    app = Path(app).resolve()
+    for entry in sys.path:
+        try:
+            if entry and Path(entry).resolve() == app:
+                return
+        except OSError:
+            continue
+    sys.path.insert(0, str(app))
+
+
 def require_package_runtime(app):
     """A check run against a package uses that package's own Python, started as
     the app is, so it exercises the shipped runtime and libraries."""
@@ -179,7 +193,11 @@ def folder_differences(version_dir, manifest_bytes):
         size, digest = manifest[name]
         if name not in present:
             out.append(f"missing: {name}")
-        elif (folder / name).stat().st_size != size or sha256(folder / name) != digest:
+            continue
+        st = (folder / name).stat()
+        if st.st_nlink > 1:               # the installer's copies have one link each
+            out.append(f"hard link: {name}")
+        elif st.st_size != size or sha256(folder / name) != digest:
             out.append(f"changed: {name}")
     if ("package-manifest.json" not in present
             or (folder / "package-manifest.json").read_bytes() != manifest_bytes):
@@ -205,19 +223,27 @@ def identity(zpath, version_dir):
 
 def tools_identity():
     """The checkout these checks ran from: its commit, and whether its tools,
-    tests and docs are exactly as committed (no change and no extra file)."""
+    tests and docs are exactly as committed. Clean means no change and no extra
+    file, ignored ones included (an ignored .pyc in tools/__pycache__ would run
+    instead of its source), and no file hidden from git status
+    (assume-unchanged or skip-worktree), as the release build requires."""
     root = Path(__file__).resolve().parents[1]
 
     def git(*args):
         try:
-            r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
-                               timeout=120)
+            r = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
+                               capture_output=True, text=True, timeout=120)
         except (OSError, subprocess.SubprocessError):
             return None
         return r.stdout if r.returncode == 0 else None
     commit = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain", "--untracked-files=all", "--", *CHECKER_PATHS)
-    return {"tools_commit": commit.strip() if commit else None, "tools_clean": status == ""}
+    status = git("status", "--porcelain", "--untracked-files=all", "--ignored", "--",
+                 *CHECKER_PATHS)
+    tags = git("ls-files", "-v", "--", *CHECKER_PATHS)
+    hidden = None if tags is None else [line for line in tags.splitlines()
+                                        if line[:1].islower() or line.startswith("S ")]
+    return {"tools_commit": commit.strip() if commit else None,
+            "tools_clean": status == "" and hidden == []}
 
 
 def prepare(parser, args, app=None, version_dir=None):
@@ -234,6 +260,11 @@ def prepare(parser, args, app=None, version_dir=None):
         version_dir = Path(app).resolve().parent
     if not args.zip:
         return None
+    if not tools_identity()["tools_clean"]:
+        sys.exit("This checkout's tools, tests or docs are not exactly as committed (a change, "
+                 "an extra or ignored file such as tools/__pycache__, or a file hidden from git "
+                 "status). Check out the release's commit, run "
+                 "`git clean -fdX -- tools tests docs`, and start the check with -B.")
     before = identity(args.zip, version_dir)
     if not before["folder_matches_package"]:
         sys.exit(f"{version_dir} does not hold exactly the files of {Path(args.zip).name} "
@@ -245,6 +276,8 @@ def prepare(parser, args, app=None, version_dir=None):
 
 def perf_release_run(run):
     """A performance run with at least the release run's shape."""
+    if not isinstance(run, dict):
+        return False
     return run.get("quick") is False and all(
         isinstance(run.get(key), int) and run[key] >= least
         for key, least in PERF_RELEASE.items())
@@ -326,7 +359,8 @@ def check(expected_sha256, paths, commit=None):
             found.append(f"names commit {ev.get('commit')}, not {commit}")
         if not (ev.get("folder_matches_package") is True
                 and ev.get("folder_matched_before") is True
-                and ev.get("folder_differences") == 0):
+                and type(ev.get("folder_differences")) is int
+                and ev["folder_differences"] == 0):
             found.append("ran on a folder that differs from the package")
         if ev.get("tools_commit") is None or ev.get("tools_commit") != ev.get("commit"):
             found.append(f"ran from a checkout of another commit ({ev.get('tools_commit')})")
@@ -335,7 +369,7 @@ def check(expected_sha256, paths, commit=None):
         if (ev.get("check_passed") is not True or ev.get("pass") is not True
                 or body.get("pass", True) is not True or body.get("failed")):
             found.append("did not pass")
-        if kind == "perf" and not perf_release_run(ev.get("run") or {}):
+        if kind == "perf" and not perf_release_run(ev.get("run")):
             found.append(f"was not a full release run (at least {PERF_RELEASE}, not --quick)")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():

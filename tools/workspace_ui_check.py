@@ -32,7 +32,7 @@ import evidence  # noqa: E402
 
 # The app checked: this checkout, or a package's app folder with --app.
 APP = evidence.app_folder(TOOLS.parent)
-sys.path.insert(0, str(APP))
+evidence.add_app(APP)
 from webview_trial import listeners, process_tree  # noqa: E402
 
 from workspace import api, shell  # noqa: E402

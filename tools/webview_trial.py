@@ -19,10 +19,10 @@ from pathlib import Path
 import numpy as np
 
 sys.path.append(str(Path(__file__).resolve().parent))      # evidence.py, also under -I
-from evidence import app_folder  # noqa: E402
+from evidence import add_app, app_folder  # noqa: E402
 
 # This checkout's app, or a package's with --app (tools/evidence.py).
-sys.path.insert(0, str(app_folder(Path(__file__).resolve().parents[1])))
+add_app(app_folder(Path(__file__).resolve().parents[1]))
 from workspace import shell  # noqa: E402
 from workspace.bridge import make_bridge  # noqa: E402
 

@@ -534,7 +534,7 @@ def parent(args):
 def child(args):
     t0 = time.perf_counter()
     app = Path(args.app) if args.app else ROOT
-    sys.path.insert(0, str(app))
+    evidence.add_app(app)                     # as the package's own runtime has it, if so
     sys.path.append(str(ROOT / "tests"))      # fake engines, after the standard library
     import offline_guard                   # as the app itself starts (workspace/__main__.py)
     offline_guard.disable_telemetry()
