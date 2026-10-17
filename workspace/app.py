@@ -31,7 +31,7 @@ from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, hand
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
-from workspace.store import Store, StoreError, default_root
+from workspace.store import Store, StoreError, default_root, quick_check_file
 from workspace.worker import WorkerEngine, WorkerHandle, safe_message
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
@@ -53,6 +53,8 @@ POLICY_IDLE_WAIT_S = 30.0           # policy thread when not recording
 # and again at once after a download, removal, token or settings change (R7b).
 DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
+SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
+SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
@@ -97,19 +99,64 @@ class Settings:
         self.path = Path(path)
         self.allow_test_engines = allow_test_engines
         self.values = dict(DEFAULT_SETTINGS)
-        self.repaired = []                 # keys whose saved value was refused
-        try:
-            saved = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            saved = {}
-        for key, value in (saved.items() if isinstance(saved, dict) else ()):
+        self.unreadable = False            # the file exists but could not be read: all defaults
+        self._locked = False               # ...because it could not be opened (in use)
+        self._save_lock = threading.Lock()
+        self._load(self._read())
+
+    def _load(self, saved):
+        """Apply saved settings over the defaults."""
+        self.values = dict(DEFAULT_SETTINGS)
+        self.repaired = []                 # keys on their default: the saved value was refused
+        self.version = SETTINGS_VERSION
+        # Saved values this version does not use, written back unchanged (R11):
+        # settings only a newer version knows, and a newer version's value for
+        # a setting this one knows but cannot use. A rollback then loses none.
+        self._kept = {}
+        version = saved.pop("settings_version", 0)
+        newer = isinstance(version, int) and not isinstance(version, bool) \
+            and SETTINGS_VERSION < version < 10 ** 6
+        if newer:
+            self.version = version
+        for key, value in saved.items():
             if key not in DEFAULT_SETTINGS:
+                self._kept[key] = value
                 continue
             try:
                 self._check(key, value)
                 self.values[key] = value
             except WorkspaceError:
                 self.repaired.append(key)
+                if newer:
+                    self._kept[key] = value
+
+    def _read(self):
+        """The saved settings as a dict ({} if there is no file yet). Sets
+        unreadable (and _locked, if the file could not even be opened)."""
+        self.unreadable = self._locked = False
+        data = None
+        for attempt in range(2):                # once more: an antivirus scan may hold it
+            try:
+                with open(self.path, "rb") as f:
+                    data = f.read(SETTINGS_MAX_BYTES + 1)
+                break
+            except FileNotFoundError:
+                return {}
+            except OSError:
+                time.sleep(0.2 * (1 - attempt))
+        if data is None:                        # in use: unknown, not damaged
+            self.unreadable = self._locked = True
+            return {}
+        try:
+            saved = json.loads(data.decode("utf-8-sig")) \
+                if len(data) <= SETTINGS_MAX_BYTES else None
+            json.dumps(saved, indent=2)         # too deeply nested to write back: unreadable
+        except (ValueError, RecursionError):
+            saved = None
+        if not isinstance(saved, dict):
+            self.unreadable = True
+            return {}
+        return saved
 
     def __getitem__(self, key):
         return self.values[key]
@@ -133,26 +180,82 @@ class Settings:
     def update(self, **changes):
         for key, value in changes.items():
             self._check(key, value)
-            self.values[key] = value
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        with self._save_lock:                      # page calls run on their own threads
+            if self._locked:
+                # It could not be opened at start: read it now, rather than
+                # replace settings that may be good with the defaults.
+                self._load(self._read())
+                if self._locked:
+                    raise WorkspaceError("Unminute cannot open its settings file just now. "
+                                         "Try again in a moment.")
+            values = {**self.values, **changes}
+            kept = {k: v for k, v in self._kept.items() if k not in changes}
+            # settings_version is the newest version that wrote the file. A key's
+            # meaning never changes between versions: a new meaning takes a new key.
+            saved = {"settings_version": self.version, **values, **kept}
+            text = json.dumps(saved, indent=2)
+            if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
+                text = json.dumps(saved, separators=(",", ":"))
+            if len(text.encode("utf-8")) > SETTINGS_MAX_BYTES:
+                kept = {}                          # not a file the app wrote: drop the extras
+                text = json.dumps({"settings_version": self.version, **values})
+            if self.unreadable and self.path.exists():
+                # Copied once, aside, before it is replaced: it may hold values
+                # a newer version wrote, or the read failed only for a moment.
+                # A copy, so a write that fails next still leaves it in place.
+                import shutil
+                try:
+                    shutil.copyfile(self.path, self.path.with_name("settings.unreadable.json"))
+                except OSError:
+                    pass
+            # Written in full or not at all: flushed to disk before the swap,
+            # so a power cut leaves the old file or the new one, never a part.
+            tmp = self.path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            for attempt in range(3):
+                try:
+                    tmp.replace(self.path)
+                    break
+                except PermissionError:            # held open for a moment (an antivirus scan)
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.05)
+            # Only once the file is saved does the app use the new values.
+            self.values, self._kept = values, kept
+            self.repaired = [k for k in self.repaired if k not in changes]
+            self.unreadable = False
 
 
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None):
+                 policy_reader=None, check_integrity=False):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
-        app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy)."""
+        app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy).
+        check_integrity: the app's own start (R11): check the database when
+        the app last ended without closing, or the last check found damage."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
         self.root.mkdir(parents=True, exist_ok=True)
         self.media = self.root / "media"
-        self.store = Store(self.root / "workspace.db")
+        # Content-free diagnostics (R9): workspace\logs. The app's start
+        # (__main__) installs it as the process's log; tests read it directly.
+        self.log = diag.Log(self.root / "logs", "app")
+        self._integrity = {"state": None, "code": None}
+        self._check_database(check_integrity)
+        held = self._integrity["state"] == "failed"
+        self._integrity_ok = threading.Event()      # set: work may start
+        if not held:
+            self._integrity_ok.set()
+        # A damaged database opens without marking interrupted work, and the
+        # start-up upkeep below waits too: on damaged pages it could delete.
+        self.store = Store(self.root / "workspace.db", housekeeping=not held)
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
@@ -168,9 +271,6 @@ class Workspace:
         self._battery = battery           # tests: fixed value instead of asking Windows
         kw = {} if idle_unload_s is None else {"idle_unload_s": idle_unload_s}
         self.cache_dir = Path(cache_dir or self.root / "models")
-        # Content-free diagnostics (R9): workspace\logs. The app's start
-        # (__main__) installs it as the process's log; tests read it directly.
-        self.log = diag.Log(self.root / "logs", "app")
         self.handle = WorkerHandle(self.cache_dir,
                                    quiet=self.settings["mode"] == resources.QUIET,
                                    allow_test_engines=allow_test_engines, log=self.log, **kw)
@@ -208,10 +308,49 @@ class Workspace:
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
-        self._reconcile_imports()
-        intake.recover(self.store)        # imports queued when the app last closed
+        if not held:
+            self._upkeep()
         if start:
             self.start()
+
+    def _check_database(self, check_integrity):
+        """The database check (R11), before the store opens: after the app
+        last ended without closing (its run marker is still there: __main__
+        builds the Workspace before diag.install replaces it), or while the
+        last check found damage. On damage, every job (cleanup too), import,
+        folder scan and receipt purge waits until the user chooses Continue
+        anyway (the user's choices, 17 Oct 2026, #132). The hold is in memory
+        only, so it adds no write to the damaged database."""
+        db = self.root / "workspace.db"
+        last = diag.integrity_state(self.log.folder)
+        failed_before = bool(last and last["result"] == "failed")
+        skipped_before = bool(last and last["result"] == "skipped")
+        if not (check_integrity and db.exists()
+                and (self.log.running_path.exists() or failed_before or skipped_before)):
+            return
+        sound = quick_check_file(db)
+        if sound is None:                       # could not be checked (busy, memory)
+            self.log.write("integrity", result="skipped")
+            if failed_before:                   # the damage found before still stands
+                self._integrity = {"state": "failed", "code": last["code"]}
+            else:                               # kept, so the next start checks again
+                diag.record_integrity(self.log.folder, "skipped")
+            return
+        code = None if sound else diag.new_code()
+        result = "ok" if sound else "failed"
+        self.log.write("integrity", result=result, code=code)
+        diag.record_integrity(self.log.folder, result, code)
+        if not sound:
+            self._integrity = {"state": "failed", "code": code}
+
+    def _upkeep(self, discard=True):
+        """Start-up upkeep that writes: finish (or, with discard, remove)
+        imports cut short by a crash, and line up imports queued when the app
+        last closed. Run at open, or once a damaged database's hold is
+        released: then nothing is removed, because damaged pages can make a
+        finished meeting look unfinished; a start whose check passes does it."""
+        self._reconcile_imports(discard)
+        intake.recover(self.store)
 
     # -- lifecycle --------------------------------------------------------------------
 
@@ -250,6 +389,7 @@ class Workspace:
         self._wake.set()
         self._scan_wake.set()
         self._policy_wake.set()
+        self._integrity_ok.set()          # an import waiting on the check ends with the app
         self._imports.put(None)
         self.handle.close()
         for t in self._threads:
@@ -378,6 +518,8 @@ class Workspace:
         while True:
             item = self._imports.get()
             try:
+                if item is not None and not self._only_reports(item):
+                    self._integrity_ok.wait()   # held while damage holds work (R11)
                 if item is None or self._closing.is_set():
                     return
                 if item[0] in ("__recording__", "__recovered__"):
@@ -406,6 +548,17 @@ class Workspace:
                 self._imports.task_done()
                 self._status = ""
                 self._wake.set()
+
+    def _only_reports(self, item):
+        """Does this queued item only ask the user, writing nothing to the
+        database? A recording recovered after a crash waits for Keep or
+        Delete; the database is not touched until the user chooses. Shown
+        even while damage holds work (R11), so it is never hidden."""
+        if item[0] != "__recovered__":
+            return False
+        folder = Path(item[1])
+        journal = recorder.read_journal(folder)
+        return journal is None or journal.get("state") == "recording"
 
     def _import_one(self, path, folder_id=None, title=None):
         title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
@@ -801,9 +954,10 @@ class Workspace:
         except StoreError:
             pass
 
-    def _reconcile_imports(self):
+    def _reconcile_imports(self, discard=True):
         """At startup: finish or remove imports cut short by a crash or close
-        (a meeting with no transcript version would otherwise wait forever)."""
+        (a meeting with no transcript version would otherwise wait forever).
+        discard False: finish only, never remove (a damaged database, R11)."""
         for m in self.store._all("SELECT m.id FROM meetings m WHERE NOT EXISTS "
                                  "(SELECT 1 FROM versions v WHERE v.meeting_id = m.id)"):
             src = self.store._one("SELECT id FROM sources WHERE meeting_id = ?", (m["id"],))
@@ -811,9 +965,12 @@ class Workspace:
                 try:
                     self._plan_version(m["id"], src["id"])
                     continue
+                except StoreError:
+                    continue                # the database, not the import: kept for next time
                 except Exception:
                     pass
-            self._discard_import(m["id"])
+            if discard:
+                self._discard_import(m["id"])
 
     def _new_version(self, mid, sid, plan):
         model = self.settings["model"]
@@ -841,7 +998,8 @@ class Workspace:
             self.log.limit_crash_file()     # keep the raw crash file small (R9)
             self._scan_wake.clear()          # a request made during the scan scans again
             due = self._clock() + intake.SCAN_INTERVAL_S
-            self._scan_folders()
+            if self._integrity_ok.is_set():  # held while damage holds work (R11)
+                self._scan_folders()
 
     def _scan_folders(self):
         try:
@@ -957,6 +1115,8 @@ class Workspace:
             self._wake.clear()
             last, repeats = None, 0
             while not self._closing.is_set():
+                if not self._integrity_ok.is_set():
+                    break                    # damage holds every job and the purge (R11)
                 try:
                     self._maybe_purge()
                     work = self._next_work()
@@ -1693,6 +1853,12 @@ class Workspace:
                                           f"{'supported' if info.get('driver_ok') else 'too old'}"
                                           if info else "none found"))
         lines.append(f"Crashes in the last 7 days: {diag.recent_crashes(self.log.folder)}")
+        checked = diag.integrity_state(self.log.folder)       # values it has checked
+        if checked is None:
+            lines.append("Database check: not run")
+        else:
+            code = f", code {checked['code']}" if checked["code"] else ""
+            lines.append(f"Database check: {checked['result']} ({checked['t'] or '?'}{code})")
         lines.append("Recent log records (newest last):")
         lines += [json.dumps(r, separators=(",", ":"))
                   for r in diag.shareable_records(self.log.folder, limit=40)]
@@ -1708,12 +1874,45 @@ class Workspace:
             raise WorkspaceError(str(exc)) from exc
         return {"chars": len(text)}
 
+    # -- database check (R11, #132) ------------------------------------------------------
+
+    def continue_despite_damage(self):
+        """Continue anyway: the user lets work start on a damaged database,
+        and the start-up upkeep that waited runs now. The next start checks
+        again (and holds again while the damage stays)."""
+        with self._lock:
+            if self._integrity["state"] != "failed":
+                return
+            self._integrity = {"state": "continued", "code": self._integrity["code"]}
+        self.log.write("integrity", result="continued", code=self._integrity["code"])
+        try:
+            self.store.mark_interrupted()
+            self._upkeep(discard=False)       # nothing removed on a damaged database
+        except StoreError:
+            pass                              # damaged pages: tried again at the next start
+        finally:
+            self._integrity_ok.set()
+            self._wake.set()
+            self._scan_wake.set()
+
+    def _integrity_notice(self):
+        """For the page: the damage found and its code, while work is held."""
+        with self._lock:
+            info = dict(self._integrity)
+        return info if info["state"] == "failed" else None
+
     def status(self):
-        return {"busy": self._busy[1] if self._busy else None, "message": self._status,
+        held = not self._integrity_ok.is_set()
+        waiting = self._imports.unfinished_tasks
+        message = self._status
+        if held:                              # nothing runs: say why, once (R11)
+            message = "On hold: the workspace database is damaged" + (
+                f" · {waiting} import{'s' if waiting > 1 else ''} waiting" if waiting else "")
+        return {"busy": self._busy[1] if self._busy else None, "message": message,
                 "mode": self.settings["mode"],
                 "import_errors": list(self._import_errors),
-                "importing": self._imports.unfinished_tasks,
-                "changes": self._changes()}
+                "importing": 0 if held else waiting,
+                "changes": self._changes(), "integrity": self._integrity_notice()}
 
     def _changes(self):
         """A number that differs whenever the Meetings list or the reminders
@@ -1745,6 +1944,10 @@ class Workspace:
         if not self._allowed("AllowGpuComponent"):
             effective["gpu_speakers"] = False
         return {**effective, "choices": choices, "managed": self.managed(),
+                # Settings on their default because the saved value could not
+                # be used (R11): names of settings only, never their values.
+                "repaired": {"keys": list(self.settings.repaired),
+                             "all": self.settings.unreadable},
                 "gpu": {"card": info["name"] if info else None,
                         "driver_ok": bool(info and info["driver_ok"]),
                         "component": self._display_value(

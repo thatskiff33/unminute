@@ -186,6 +186,7 @@
     gpu: { card: "NVIDIA RTX 500", driver_ok: true, component: "ready" },
     deployment: { mode: "self-service", version: "0.3.0" },
     update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
+    repaired: { keys: [], all: false },
   };
   const TEMPLATE = { id: "minutes", title: "Meeting minutes (sample)", version: 1, edited: false, builtin: true,
                      prompt: "[Your prompt wording. Edits are saved as a new version; the original wording can always be restored.]" };
@@ -250,7 +251,7 @@
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
     recording: { enabled: true, display: "flow", recording: null, reports: [] },
-    status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet" },
+    status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet", integrity: null },
     reminders: { holds_due: [], awaiting_confirmation: [] },
   };
 
@@ -459,6 +460,7 @@
       return items;
     },
     report_ui_error: () => null,
+    continue_despite_damage: () => null,
     copy_diagnostics: () => ({ chars: 1200 }),
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.

@@ -56,7 +56,8 @@ FRAME_FILE = re.compile(r"(<[A-Za-z0-9_.-]{1,60}>|([A-Za-z0-9_.-]{1,60}/){0,7}"
                         r"[A-Za-z0-9_.-]{1,60}\.pyx?)")
 SECRET = re.compile(r"hf_[A-Za-z0-9]{20,}")          # never kept, whatever the field
 KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_error",
-         "output"}
+         "output", "integrity"}
+INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 # The number and true/false fields the app writes (FIELDS has the text ones).
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
@@ -96,12 +97,13 @@ def _frames(value):
 FIELDS = {
     "code": _pattern(re.compile(r"U-[0-9A-F]{6}")),
     "area": _set("bridge", "processing", "import", "recording_import", "worker",
-                 "worker_start", "setup", "uncaught", "thread", "page"),
+                 "worker_start", "setup", "uncaught", "thread", "page", "open"),
     "process": _set("app", "worker", "gpu-worker", "setup"),
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
     "op": _set("load", "transcribe", "diarize", "exit"),
     "stream": _set("stdout", "stderr"),
     "event": _set("error", "rejection"),  # a page error (report_ui_error)
+    "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)
     "version": _pattern(re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-preview\.[0-9]{1,4})?"
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),
@@ -628,6 +630,42 @@ def shareable_records(folder, limit=60):
             out.append(record)
     out.sort(key=lambda r: (r["t"] != "?", r["t"]))
     return out[-limit:]
+
+
+def integrity_state(folder):
+    """The last database check (R11), from <logs>\\integrity.json:
+    {"result": "ok" | "failed" | "skipped", "code": "U-..." or None, "t":
+    time}, or None if none was recorded (or the file cannot be read)."""
+    try:
+        with open(Path(folder) / INTEGRITY_FILE, "rb") as f:
+            raw = json.loads(f.read(500).decode("ascii"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(raw, dict) or raw.get("result") not in ("ok", "failed", "skipped"):
+        return None
+    code, t = raw.get("code"), raw.get("t")
+    return {"result": raw["result"],
+            "code": code if FIELDS["code"](code) == code else None,
+            "t": t if isinstance(t, str) and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else None}
+
+
+def record_integrity(folder, result, code=None):
+    """Keep the result of a database check for the next start, --status and
+    --health: written in full or not at all. Never raises."""
+    folder = Path(folder)
+    state = {"result": result, "code": code,
+             "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    tmp = folder / (INTEGRITY_FILE + ".tmp")
+    try:
+        folder.mkdir(exist_ok=True)
+        with open(tmp, "w", encoding="ascii") as f:
+            json.dump(state, f)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(folder / INTEGRITY_FILE)
+    except OSError:
+        pass
 
 
 def recent_crashes(folder, days=7, now=None):

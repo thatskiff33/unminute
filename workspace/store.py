@@ -347,8 +347,52 @@ def config_hash(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
 
 
+# SQLite result codes that mean the file is damaged (the primary code, the
+# low byte of sqlite_errorcode): CORRUPT and NOTADB; IOERR too, if it happens
+# again a moment later (another program can lock part of the file briefly).
+# Others (busy, out of memory) say nothing about damage.
+DAMAGE_CODES = {11, 26}
+IOERR = 10
+
+
+def quick_check_file(path, retry_s=1.0):
+    """SQLite's quick check (R11) on its own read-only connection, before the
+    workspace opens and before anything writes to it: True if sound, False if
+    damaged, None if it could not be checked. Its findings name pages and
+    tables, never content, and are not kept."""
+    result = _quick_check(path)
+    if result == "io":
+        time.sleep(retry_s)
+        result = _quick_check(path)
+    return False if result == "io" else result
+
+
+def _quick_check(path):
+    try:
+        con = sqlite3.connect(Path(path).absolute().as_uri() + "?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error as exc:
+        return _damaged(exc)
+    try:
+        rows = con.execute("PRAGMA quick_check(1)").fetchall()
+    except sqlite3.Error as exc:
+        return _damaged(exc)
+    finally:
+        con.close()
+    return len(rows) == 1 and rows[0][0] == "ok"
+
+
+def _damaged(exc):
+    code = getattr(exc, "sqlite_errorcode", None)
+    primary = code & 0xFF if isinstance(code, int) else None
+    if primary == IOERR:
+        return "io"
+    return False if primary in DAMAGE_CODES else None
+
+
 class Store:
-    def __init__(self, path):
+    def __init__(self, path, housekeeping=True):
+        """housekeeping False (R11): open a database the check found damaged
+        without marking interrupted work; mark_interrupted() runs later."""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -368,7 +412,7 @@ class Store:
             # Temporary tables and indices (VACUUM builds a copy of the whole
             # database) stay in memory, never in %TEMP% outside the workspace.
             self.db.execute("PRAGMA temp_store=MEMORY")
-            self._migrate_if_needed()
+            self._migrate_if_needed(housekeeping)
             self.db.executescript(SCHEMA)       # outside any transaction; idempotent
             with self.tx() as db:
                 row = db.execute("SELECT MAX(version) AS v FROM schema_version").fetchone()
@@ -377,22 +421,19 @@ class Store:
                 elif row["v"] > SCHEMA_VERSION:
                     raise SchemaTooNew(f"This workspace was created by a newer version of "
                                        f"the app (schema {row['v']}).")
-                # Attempts still 'running' were cut short by a crash or kill of
-                # the previous session (this process owns the state, #15).
-                db.execute("UPDATE attempts SET result = 'interrupted' "
-                           "WHERE result = 'running'")
-                # Same for a speaker pass cut short: it restarts from the start.
-                db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
-                           "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
+            if housekeeping:
+                self.mark_interrupted()
         except BaseException:
             self.db.close()          # never leave the file locked on a refused open
             raise
 
-    def _migrate_if_needed(self):
+    def _migrate_if_needed(self, housekeeping=True):
         """Opening a workspace written with an older schema (#26): migrate only
         if it holds no meeting content, no active hold and no unfinished
         cleanup. Migration rebuilds the tables; receipts and watched-folder
-        configuration (CARRY_OVER) are carried over. No backup is made."""
+        configuration (CARRY_OVER) are carried over. No backup is made. Never
+        while the database check holds work (housekeeping False, R11): damaged
+        tables can read as empty, and rebuilding would drop what is left."""
         db = self.db
         has_version = db.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
                                  "name = 'schema_version'").fetchone()
@@ -401,6 +442,9 @@ class Store:
         current = db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
         if current is None or current >= SCHEMA_VERSION:
             return                              # same schema, or "too new" (checked later)
+        if not housekeeping:
+            raise MigrationBlocked("Unminute found damage in its workspace database, so it "
+                                   "will not update the workspace's storage.")
         from workspace import update
         found = update.blockers(self.path)
         if found:
@@ -441,6 +485,16 @@ class Store:
     def close(self):
         with self._lock:
             self.db.close()
+
+    def mark_interrupted(self):
+        """Attempts and speaker passes still 'running' were cut short by a
+        crash or kill of the previous session (this process owns the state,
+        #15). Run at open, or (R11) once a damaged database's hold is released."""
+        with self.tx() as db:
+            db.execute("UPDATE attempts SET result = 'interrupted' WHERE result = 'running'")
+            # Same for a speaker pass cut short: it restarts from the start.
+            db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
+                       "WHERE status = 'running'", (SPEAKER_RESTART_NOTE,))
 
     @contextmanager
     def tx(self):

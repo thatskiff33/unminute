@@ -344,6 +344,32 @@ async function renderStatus() {
   }
   $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,
     linkButton("Dismiss", () => attempt(() => call("clear_import_errors").then(refresh))))));
+  renderIntegrity(s.integrity);
+}
+
+// The database check after an unexpected close (R11) found damage: work is
+// held until the user chooses Continue anyway. Rebuilt only on a change, so
+// the buttons keep their focus between polls; announced once when it appears.
+function renderIntegrity(info) {
+  const sig = info ? `${info.state}:${info.code || ""}` : "";
+  if (sig === state.integritySig) return;
+  const appeared = !!info && !state.integritySig;
+  state.integritySig = sig;
+  const box = $("integrity");
+  box.hidden = !info;
+  const text = `Unminute found damage in its workspace database (code ${info && info.code}). ` +
+    "Processing, imports and cleanup are on hold, so as little as possible is written to it. " +
+    "You can still read, copy and hand off meetings; changes you make are still saved. " +
+    "Ask your IT team before you continue.";
+  box.replaceChildren(...(info ? [notice("alert", text,
+    linkButton("How to recover", () => attempt(() => call("open_help", "recovery"))),
+    button("Continue anyway", () => attempt(async () => {
+      await call("continue_despite_damage");
+      await refresh();
+      $("import").focus();              // the button has gone: keep the focus on the page
+    })),
+  )] : []));
+  if (appeared) say(text);              // announced once; the notice itself stays
 }
 
 async function renderReminders() {
@@ -1714,10 +1740,29 @@ const MODE_NOTE = {
   faster: "Faster uses more of the computer while transcribing.",
 };
 
+// Settings on their default because the saved value could not be used (R11).
+const SETTING_NAMES = {
+  mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
+  battery_override: "Process on battery power", onboarded: "Guided setup",
+  microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card for speakers",
+  recording_display: "Recording display",
+};
+function renderRepaired(r) {
+  const names = ((r && r.keys) || []).map((k) => SETTING_NAMES[k] || k);
+  const text = r && r.all
+    ? "Your saved settings could not be read, so all of them are on their defaults. Check them below."
+    : names.length
+      ? `Some saved settings could not be used, so they are on their defaults: ${names.join(", ")}. Check them below.`
+      : "";
+  $("s-repaired").textContent = text;
+  $("s-repaired").hidden = !text;
+}
+
 async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
   $("s-managed").hidden = !(s.managed && s.managed.managed.length);
+  renderRepaired(s.repaired);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";

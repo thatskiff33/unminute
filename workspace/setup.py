@@ -24,6 +24,9 @@ HELP_LINKS = {   # fixed pages the user can open in their own browser (allowlist
     "account": "https://huggingface.co/join",
     "terms": "https://huggingface.co/pyannote/speaker-diarization-community-1",
     "tokens": "https://huggingface.co/settings/tokens",
+    # The user guide's recovery steps, from the database damage message (R11).
+    "recovery": "https://github.com/thatskiff33/unminute/blob/main/docs/WORKSPACE_GUIDE.md"
+                "#if-unminute-finds-damage",
 }
 
 CARDS = [
