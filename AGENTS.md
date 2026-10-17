@@ -147,7 +147,7 @@ cannot be done there is raised as a new issue, linked to where it came from, nev
 in a PR or issue comment; an agent may open issues for this.
 
 Neither these instructions nor an approved plan authorise: publishing a release (pushing a `v*`
-tag publishes one); opening other issues; changing the user's installed copy; Intune or tenant
+tag starts one); opening other issues; changing the user's installed copy; Intune or tenant
 changes; or GitHub owner settings.
 
 ## Where the rules live
