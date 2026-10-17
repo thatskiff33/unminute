@@ -582,9 +582,15 @@ class SharingTests(unittest.TestCase):
         attrs = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
         name = f"Local\\Unminute.Test.Denied.{os.getpid()}"
         handle = kernel32.CreateMutexW(ctypes.byref(attrs), False, name)
+        error = ctypes.get_last_error()
         kernel32.LocalFree(descriptor)
-        self.assertTrue(handle, ctypes.get_last_error())
+        self.assertTrue(handle, error)
         try:
+            # The premise: opening it as _app_running does is refused with 5,
+            # so the branches below are the ones under test.
+            kernel32.OpenMutexW.restype = ctypes.c_void_p
+            self.assertIsNone(kernel32.OpenMutexW(0x00100000, False, name))     # SYNCHRONIZE
+            self.assertEqual(5, ctypes.get_last_error())     # access denied, not "not found"
             self.assertTrue(main._app_running(name))
             self.assertIsNone(main._single_instance(name))
         finally:

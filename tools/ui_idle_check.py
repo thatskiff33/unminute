@@ -86,9 +86,16 @@ def early_problems(result):
     ready: it must report the first one once the bridge is ready, as the
     error's kind, line and column only, and the second not at all."""
     thrown, reports = result.get("thrown") or [], result.get("reports") or []
+    if result.get("thrown_after_ready"):
+        return [f"early: the page threw {result['thrown_after_ready']} error(s) of its own "
+                "after its bridge was ready"]
     if len(thrown) != 2:
         return [f"early: the page saw {len(thrown)} error(s), not the 2 thrown before its "
                 "bridge was ready"]
+    if thrown[0] == thrown[1]:
+        # Then a page keeping the last error instead of the first would pass.
+        return ["early: the two errors were thrown from the same place, so the check cannot "
+                "tell the first from the second"]
     if any(r.get("before_ready") for r in reports):
         return ["early: the page called the bridge before it was ready"]
     if len(reports) != 1:
