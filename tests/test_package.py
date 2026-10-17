@@ -525,7 +525,7 @@ class ReproducibleBuildTests(unittest.TestCase):
         smudge filter."""
         repo = self.root / "repo"
         files = {"workspace/app.py": "a = 1\nb = 2\n", "workspace/ui/index.html": "<p>\n",
-                 "workspace/ui/trial.html": "trial\n", "workspace/consent.py": "c = 1\n",
+                 "workspace/consent.py": "c = 1\n",
                  "LICENSE": "MIT\n", "packaging/install.ps1": "Write-Host 1\nWrite-Host 2\n",
                  ".gitattributes": "* text=auto\n*.ps1 text eol=crlf\n", ".gitignore": "*.log\n"}
         for rel, text in files.items():

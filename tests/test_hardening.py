@@ -60,12 +60,12 @@ class NavigationTests(unittest.TestCase):
         self.assertTrue(shell._allowed(page))
         self.assertTrue(shell._allowed(page + "#meeting"))
         self.assertTrue(shell._allowed(page + "?x=1"))
-        for other in (shell.ui_url("trial.html"), shell.ui_url("app.js"),
+        for other in (shell.ui_url("other.html"), shell.ui_url("app.js"),
                       shell.ui_url("img/logo.svg"), page + "%23/evil.html",
-                      page + "%3F/../trial.html"):
+                      page + "%3F/../other.html"):
             self.assertFalse(shell._allowed(other), other)
-        self.assertTrue(shell._allowed(shell.ui_url("trial.html"), "trial.html"))
-        self.assertFalse(shell._allowed(page, "trial.html"))
+        self.assertTrue(shell._allowed(shell.ui_url("other.html"), "other.html"))
+        self.assertFalse(shell._allowed(page, "other.html"))
 
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")

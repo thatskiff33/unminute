@@ -122,39 +122,6 @@ class FileValidationTests(unittest.TestCase):
             sp.validate_input_file(self.root / "ok.wav", AUDIO, 10, roots=[self.root])
 
 
-@unittest.skipUnless(importlib.util.find_spec("numpy"), "numpy not installed")
-class BridgeTests(unittest.TestCase):
-    def setUp(self):
-        import numpy as np
-
-        from workspace.bridge import make_bridge
-        self.bridge = make_bridge(np.zeros(16000 * 60, dtype=np.float32),
-                                  [(i, "S", f"p{i}") for i in range(10)])
-
-    def test_facade_has_three_methods_and_no_state(self):
-        from workspace.bridge import BRIDGE_METHODS
-        public = sorted(n for n in dir(self.bridge) if not n.startswith("_"))
-        self.assertEqual(public, sorted(BRIDGE_METHODS))
-        self.assertFalse(hasattr(self.bridge, "__dict__"))       # __slots__ = ()
-        with self.assertRaises(AttributeError):
-            self.bridge.anything = 1
-
-    def test_clip_is_bounded_and_validated(self):
-        ok = self.bridge.clip(1, 4)
-        self.assertTrue(ok["ok"] and ok["value"].startswith("data:audio/wav;base64,"))
-        for args in ((0, 31), (5, 5), (-1, 2), ("0", 2), (True, 2), (float("nan"), 1),
-                     (70, 80)):
-            r = self.bridge.clip(*args)
-            self.assertFalse(r["ok"], msg=repr(args))
-            self.assertNotIn("Traceback", r["error"])
-
-    def test_transcript_pages_and_rejects_bad_ranges(self):
-        page = self.bridge.transcript(8, 5)["value"]
-        self.assertEqual((page["total"], [i["text"] for i in page["items"]]), (10, ["p8", "p9"]))
-        for args in ((0, 0), (0, 5000), (1.5, 2), ("1", 2)):
-            self.assertFalse(self.bridge.transcript(*args)["ok"])
-
-
 @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):
     """pywebview resolves page calls with getattr over any dotted name; the

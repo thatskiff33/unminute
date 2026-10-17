@@ -4,7 +4,7 @@
 # The UI is loaded from a file:// URL. pywebview starts its built-in HTTP
 # server (a localhost listener) for plain local paths, but not for file://
 # URLs or inline HTML, so this keeps the app free of local listeners. The
-# trial (tools/webview_trial.py) verifies that by listing listening sockets.
+# window checks (tools/process_listeners.py) verify that by listing sockets.
 # private_mode keeps WebView2 from persisting cookies/storage between runs.
 
 import json
@@ -489,29 +489,26 @@ def lock_navigation(window, page="index.html"):
     control.NavigationStarting += on_navigation_starting
 
 
-def create_window(bridge, title="Unminute", hidden=False, harden=True,
-                  page="index.html", allowed=None):
+def create_window(bridge, *, allowed, title="Unminute", hidden=False, harden=True):
     """`allowed` is the exact set of bridge names the page may call
-    (workspace.api.API_METHODS for the workspace, the trial's by default)."""
+    (workspace.api.API_METHODS); there is no default."""
     import webview
 
-    from workspace.bridge import BRIDGE_METHODS
     if harden:
         harden_webview2()
-    install_dispatch_guard(BRIDGE_METHODS if allowed is None else allowed)
+    install_dispatch_guard(allowed)
     # New-window requests (window.open, target=_blank) must not reach the
     # system browser: load them in place, where the navigation lock refuses them.
     webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = False
     webview.settings["ALLOW_DOWNLOADS"] = False
     # Otherwise pywebview adds --allow-file-access-from-files to WebView2.
     webview.settings["ALLOW_FILE_URLS"] = False
-    window = webview.create_window(title, url=ui_url(page), js_api=bridge,
+    window = webview.create_window(title, url=ui_url(), js_api=bridge,
                                    width=1100, height=760, min_size=(640, 480),
                                    hidden=hidden, text_select=True,
                                    # Ctrl+wheel zoom (#27); pywebview turns it off
                                    # by default. Ctrl+plus/minus/0: set_zoom().
                                    zoomable=True)
-    window.unminute_page = page
     window.events.before_load += lambda: _lock_once(window)
     return window
 
@@ -523,7 +520,7 @@ def _lock_once(window):
     if getattr(window, "_nav_locked", False):
         return
     try:
-        lock_navigation(window, getattr(window, "unminute_page", "index.html"))
+        lock_navigation(window)
         quiet_script_dialogs(window)
         window._nav_locked = True
     except Exception:

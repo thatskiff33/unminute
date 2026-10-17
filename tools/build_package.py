@@ -97,9 +97,6 @@ PACKAGED_SCRIPTS = ("install.ps1", "install.cmd", "uninstall.ps1")
 # Files git checks out with CRLF (.gitattributes "eol=crlf"; a test keeps the two
 # the same). A release writes these with CRLF and every other file as stored.
 CRLF_SUFFIXES = (".cmd", ".ps1")
-# The shell trial page (tools/webview_trial.py) is a development tool: it is
-# left out so the package holds no page other than the app's own.
-TRIAL_PAGE = re.compile(r"(^|/)trial\.(html|js|css)$")
 # Signature states a package binary may have; anything else (a hash mismatch, an
 # untrusted or unreadable signature) fails the build, and so does a signature
 # found in this machine's catalogs rather than in the file itself.
@@ -504,7 +501,7 @@ def copy_app(app):
         sys.exit("A development build needs git, to leave ignored files out.")
     for rel in sorted(filter(None, listed.split("\0"))):
         source = ROOT / rel
-        if TRIAL_PAGE.search(rel) or not source.is_file():   # deleted, not yet committed
+        if not source.is_file():                         # deleted, not yet committed
             continue
         (app / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, app / rel)
@@ -589,8 +586,6 @@ def export_app(app, sha):
     and no git setting on this machine changes a byte)."""
     paths = ["workspace", *APP_FILES, *(f"packaging/{s}" for s in PACKAGED_SCRIPTS)]
     for name, data in sorted(committed_tree(sha, paths).items()):
-        if TRIAL_PAGE.search(name):
-            continue
         if name.startswith("packaging/"):
             target = app.parent / name.split("/", 1)[1]
         else:
