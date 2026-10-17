@@ -371,6 +371,33 @@ class IntegrityTests(unittest.TestCase):
         self.assertTrue((ws.media / self.mid).exists())        # but removed nothing that run
         self.assertIsNotNone(ws.store.meeting(self.mid))
 
+    def test_after_continue_anyway_an_unfinished_import_can_be_discarded(self):
+        # #181: the Continue anyway run keeps it (by design); Discard removes it.
+        def interrupted_import(ws):
+            mid = ws.store.create_meeting("Synthetic interrupted import")   # no version
+            (ws.media / mid).mkdir(parents=True)
+            (ws.media / mid / "note.txt").write_text("synthetic", encoding="utf-8")
+            self.mid = mid
+        self.unclean(meetings=5, prepare=interrupted_import)
+        damage(self.root / "workspace.db", table="intake_content")   # cleanup never reads it
+        ws = self.open(check_integrity=True)
+        self.assertEqual(ws._integrity["state"], "failed")
+        ws.continue_despite_damage()
+        self.assertIsNotNone(ws.store.meeting(self.mid))
+        ws.discard_meeting(self.mid)
+        ws.start()
+        self.assertTrue(ws.wait_idle(60))
+        self.assertIsNone(ws.store.meeting(self.mid))
+        self.assertFalse((ws.media / self.mid).exists())
+        # The real end state on a damaged database: the audio job finishes; the
+        # transcript job removed the rows and files but its final compaction
+        # fails, so it stays failed and is retried (#198).
+        self.assertEqual([r["result"] for r in ws.receipts()], ["audio removed"])
+        job = ws.store._one("SELECT state, error FROM cleanup_jobs WHERE meeting_id = ? "
+                            "AND phase = 'transcript'", (self.mid,))
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("compact", job["error"])
+
     def test_an_unfinished_import_is_removed_only_when_discard_is_allowed(self):
         ws = self.open()
         mid = ws.store.create_meeting("Synthetic interrupted import")   # no source, no audio

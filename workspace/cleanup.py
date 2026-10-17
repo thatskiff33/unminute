@@ -85,12 +85,17 @@ def confirm_final_saved(store, mid):
         return _add_job(db, mid, TRANSCRIPT)
 
 
-def discard(store, mid):
+def discard(store, mid, unfinished=False):
     """The user's explicit choice to delete a meeting they do not need (a test
     or a wrong recording), with one confirmation instead of the two review
     checkpoints. Removal uses the same jobs as the checkpoints (secure
     deletion, minimal receipts). Refused while a hold is active. The original
-    file is never deleted: any deletion authority for it is withdrawn first."""
+    file is never deleted: any deletion authority for it is withdrawn first.
+
+    A meeting with no version is refused as still importing, unless the
+    caller has checked that no import is running or queued (unfinished=True):
+    then it is an import that never finished, for example one kept after a
+    damaged database was opened with Continue anyway (#181)."""
     with store.tx() as db:
         meeting = db.execute("SELECT * FROM meetings WHERE id = ?", (mid,)).fetchone()
         if meeting is None:
@@ -104,8 +109,9 @@ def discard(store, mid):
             # confirmation, never discarded (two-checkpoint rule).
             raise CleanupError("This meeting's transcript review is confirmed. Finish it with "
                                "the final confirmation instead.")
-        if db.execute("SELECT 1 FROM versions WHERE meeting_id = ? AND state = 'active'",
-                      (mid,)).fetchone() is None:
+        if not unfinished and db.execute(
+                "SELECT 1 FROM versions WHERE meeting_id = ? AND state = 'active'",
+                (mid,)).fetchone() is None:
             raise CleanupError("The recording is still being imported. Try again in a moment.")
         db.execute("UPDATE sources SET delete_original = 0 WHERE meeting_id = ?", (mid,))
         now = time.time()

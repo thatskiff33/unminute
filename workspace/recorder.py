@@ -617,11 +617,24 @@ class Recording:
 
 # -- after recording: assemble, recover ---------------------------------------------
 
+JOURNAL_READ_TRIES = 5      # a journal locked for a moment (an antivirus scan, a save)
+JOURNAL_READ_WAIT_S = 0.1
+
+
 def read_journal(folder):
-    try:
-        return json.loads((Path(folder) / "journal.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    """The journal, or None if it is missing, damaged or stays locked. A
+    PermissionError (Windows: another process has the file open, briefly) is
+    tried again a few times (#148); damaged JSON is not."""
+    path = Path(folder) / "journal.json"
+    for attempt in range(JOURNAL_READ_TRIES):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt + 1 < JOURNAL_READ_TRIES:
+                time.sleep(JOURNAL_READ_WAIT_S)
+        except (OSError, ValueError):
+            return None
+    return None
 
 
 def assemble_wav(folder, journal):

@@ -531,6 +531,38 @@ class RecordingTests(unittest.TestCase):
         rec._callback(np.zeros((1600, 1), dtype=np.int16), 1600, None, None)
         self.assertEqual(rec.journal["state"], "recording")
 
+    def test_a_journal_locked_for_a_moment_is_read_again(self):
+        # #148: a file another process holds for a moment (Windows sharing
+        # violation) is retried; damaged JSON is not, and a lasting lock gives up.
+        folder = self.root / "rec"
+        folder.mkdir()
+        (folder / "journal.json").write_text('{"state": "recording"}', encoding="utf-8")
+        real = Path.read_text
+        calls = []
+
+        def locked_twice(path, *args, **kwargs):
+            calls.append(path.name)
+            if len(calls) <= 2:
+                raise PermissionError("in use by another process")
+            return real(path, *args, **kwargs)
+        with mock.patch.object(recorder, "JOURNAL_READ_WAIT_S", 0.01):
+            with mock.patch.object(Path, "read_text", locked_twice):
+                self.assertEqual(recorder.read_journal(folder), {"state": "recording"})
+            self.assertEqual(len(calls), 3)
+            held = mock.Mock(side_effect=PermissionError("held"))
+            with mock.patch.object(Path, "read_text", held):
+                self.assertIsNone(recorder.read_journal(folder))
+            self.assertEqual(held.call_count, recorder.JOURNAL_READ_TRIES)
+            missing = mock.Mock(side_effect=FileNotFoundError("gone"))
+            with mock.patch.object(Path, "read_text", missing):
+                self.assertIsNone(recorder.read_journal(folder))
+            self.assertEqual(missing.call_count, 1)          # only a lock is retried
+        (folder / "journal.json").write_text("{damaged", encoding="utf-8")
+        calls.clear()
+        with mock.patch.object(Path, "read_text", lambda p, *a, **k: calls.append(1) or "{x"):
+            self.assertIsNone(recorder.read_journal(folder))
+        self.assertEqual(len(calls), 1)
+
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
         real = recorder._write_atomic
         calls = {"n": 0}
@@ -1053,7 +1085,8 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.start()
         self.assertTrue(self.ws.wait_idle(60))
         waiting = self.ws.recording_status()["reports"][-1]
-        self.assertTrue(waiting["recovered"])
+        # Self-explaining (#148): a failure shows which report came instead.
+        self.assertTrue(waiting.get("recovered"), waiting)
         locked = mock.patch("shutil.rmtree", lambda *a, **k: None)   # a file is locked
         with locked, self.assertRaises(WorkspaceError):               # and it says so
             self.ws.delete_pending_recording(waiting["id"])

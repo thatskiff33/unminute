@@ -303,6 +303,25 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(cleanup.CleanupError):
             cleanup.discard(ws.store, importing)              # no version yet
 
+    def test_an_import_that_never_finished_can_be_discarded_when_none_is_running(self):
+        # #181: after Continue anyway, a meeting with no version stays listed;
+        # Discard removes it once no import is running or queued.
+        ws = self.open(start=False)
+        unfinished = ws.store.create_meeting("import did not finish")
+        ws._imports.put(("__recording__", str(self.root / "elsewhere")))   # one queued
+        with self.assertRaisesRegex(WorkspaceError, "still being imported"):
+            ws.discard_meeting(unfinished)
+        ws._imports.get()
+        ws._imports.task_done()                          # the queue is idle again
+        ws.discard_meeting(unfinished)
+        self.assertIsNone(ws.store._one("SELECT 1 FROM meetings WHERE id = ? AND "
+                                        "final_saved_at IS NULL", (unfinished,)))
+        ws.start()
+        self.assertTrue(ws.wait_idle(60))
+        self.assertIsNone(ws.store.meeting(unfinished))
+        self.assertEqual(sorted(r["result"] for r in ws.receipts()),
+                         ["audio removed", "transcript removed"])
+
     def test_models_can_be_removed_unless_still_needed(self):
         import asr_engines
         from workspace import gpu
