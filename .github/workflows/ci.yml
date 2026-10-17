@@ -43,12 +43,12 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q -f *.py tests tools workspace
 
-      # Model-free tests. numpy and PyAV (at their pinned versions) let the
-      # workspace core tests run here; Windows-only tests skip on Linux and run
-      # in the "Unit tests (Windows)" job.
+      # Model-free tests. numpy, PyAV and cryptography (at their pinned
+      # versions) let the workspace core and encryption tests run here;
+      # Windows-only tests skip on Linux and run in the "Unit tests (Windows)" job.
       - name: Install test dependencies
         run: |
-          python tools/lock.py --subset numpy av --output "$RUNNER_TEMP/test-requirements.txt"
+          python tools/lock.py --subset numpy av cryptography --output "$RUNNER_TEMP/test-requirements.txt"
           pip install --disable-pip-version-check --only-binary=:all: --require-hashes \
             --no-deps -r "$RUNNER_TEMP/test-requirements.txt"
       - name: Unit tests
@@ -85,12 +85,12 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install test dependencies
-        # The window shell's packages, numpy and PyAV, and the download stack
+        # The window shell's packages, numpy, PyAV, cryptography, and the download stack
         # (huggingface_hub, httpx) for the download-process tests: these and
         # their dependencies from the lock, every file checked against its hash.
         shell: pwsh
         run: |
-          python tools/lock.py --subset numpy av huggingface_hub pywebview sounddevice truststore `
+          python tools/lock.py --subset numpy av cryptography huggingface_hub pywebview sounddevice truststore `
             --output "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
           python -m pip install --disable-pip-version-check --only-binary=:all: `

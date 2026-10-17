@@ -30,6 +30,11 @@ av==17.1.0
 numpy==2.4.6
 sounddevice==0.5.6
 
+# Encryption at rest (#111 phase C): AES-256-GCM and HKDF from pyca's OpenSSL
+# bindings (HMAC comes from the standard library), never hand-written
+# primitives. Apache-2.0 or BSD-3-Clause; the wheel bundles OpenSSL (Apache-2.0).
+cryptography==50.0.2
+
 # Model downloads (the separate download process)
 huggingface_hub==1.18.0
 truststore==0.10.4

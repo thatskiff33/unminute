@@ -11,6 +11,7 @@
   "workspace/__main__.py",
   "workspace/api.py",
   "workspace/app.py",
+  "workspace/audiocrypt.py",
   "workspace/chunking.py",
   "workspace/cleanup.py",
   "workspace/clipboard.py",
@@ -18,6 +19,7 @@
   "workspace/credentials.py",
   "workspace/decode_child.py",
   "workspace/diag.py",
+  "workspace/dpapi.py",
   "workspace/engines.py",
   "workspace/gpu.py",
   "workspace/handoff.py",
@@ -45,6 +47,7 @@
   "workspace/ui/index.html",
   "workspace/ui/tokens.css",
   "workspace/update.py",
+  "workspace/vault.py",
   "workspace/worker.py"
  ]
 }
