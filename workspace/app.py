@@ -1030,9 +1030,12 @@ class Workspace:
     def _reconcile_imports(self, discard=True):
         """At startup: finish or remove imports cut short by a crash or close
         (a meeting with no transcript version would otherwise wait forever).
-        discard False: finish only, never remove (a damaged database, R11)."""
-        for m in self.store._all("SELECT m.id FROM meetings m WHERE NOT EXISTS "
-                                 "(SELECT 1 FROM versions v WHERE v.meeting_id = m.id)"):
+        discard False: finish only, never remove (a damaged database, R11).
+        A meeting already confirmed for removal (Discard marks it reviewed) is
+        left to its cleanup jobs: nothing is planned for it again (#181)."""
+        for m in self.store._all("SELECT m.id FROM meetings m WHERE m.reviewed_at IS NULL "
+                                 "AND NOT EXISTS (SELECT 1 FROM versions v "
+                                 "WHERE v.meeting_id = m.id)"):
             src = self.store._one("SELECT id FROM sources WHERE meeting_id = ?", (m["id"],))
             if src is not None and media.audio_path(self.media, m["id"]).is_file():
                 try:
@@ -2448,8 +2451,10 @@ class Workspace:
         """Delete a meeting that is not needed, with one explicit confirmation
         (cleanup.discard). Work in progress on it is stopped first. A meeting
         whose import never finished can be discarded too, but only while no
-        import is running or queued (#181): every import runs on the intake
-        thread from self._imports, so none can still add to it."""
+        import is running or queued (#181). Only the intake thread (fed by
+        self._imports) creates meetings, adds sources or sets delete_original,
+        so no import can still give the meeting a source or deletion authority.
+        (Start-up upkeep plans no version for a meeting Discard has marked.)"""
         self._meeting(mid)
         with self._lock:
             self._reruns.pop(mid, None)

@@ -549,8 +549,14 @@ class RecordingTests(unittest.TestCase):
             with mock.patch.object(Path, "read_text", locked_twice):
                 self.assertEqual(recorder.read_journal(folder), {"state": "recording"})
             self.assertEqual(len(calls), 3)
-            with mock.patch.object(Path, "read_text", side_effect=PermissionError("held")):
+            held = mock.Mock(side_effect=PermissionError("held"))
+            with mock.patch.object(Path, "read_text", held):
                 self.assertIsNone(recorder.read_journal(folder))
+            self.assertEqual(held.call_count, recorder.JOURNAL_READ_TRIES)
+            missing = mock.Mock(side_effect=FileNotFoundError("gone"))
+            with mock.patch.object(Path, "read_text", missing):
+                self.assertIsNone(recorder.read_journal(folder))
+            self.assertEqual(missing.call_count, 1)          # only a lock is retried
         (folder / "journal.json").write_text("{damaged", encoding="utf-8")
         calls.clear()
         with mock.patch.object(Path, "read_text", lambda p, *a, **k: calls.append(1) or "{x"):
