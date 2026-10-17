@@ -1,0 +1,1 @@
+- **The drop outline shows in the dark theme.** When you drag a recording onto the window, the dashed outline of the light drop panel was nearly invisible in the dark theme; it now uses the same blue as in the light theme, which stands out on the panel in both (#183).
