@@ -137,7 +137,7 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 
 For IT support:
 
-- `runtime\python.exe -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
+- `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
 - The app keeps small content-free logs in `%LOCALAPPDATA%\whisper\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.

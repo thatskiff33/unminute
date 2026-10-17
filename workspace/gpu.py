@@ -357,6 +357,11 @@ def activate(site):
     build first on the import path and make its DLLs loadable."""
     import sys
     site = str(site)
+    # The app starts with -B (its own folder ships precompiled), and this
+    # worker inherits it. The component is unpacked from wheels without .pyc:
+    # let Python cache its bytecode beside it, as before #111 B2, rather than
+    # compile torch again at every worker start.
+    sys.dont_write_bytecode = False
     sys.path.insert(0, site)
     lib = os.path.join(site, "torch", "lib")
     if os.path.isdir(lib):

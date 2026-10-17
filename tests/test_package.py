@@ -4,6 +4,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -603,7 +604,8 @@ class ReproducibleBuildTests(unittest.TestCase):
             return subprocess.run(["git", "-C", str(repo), *args], input=data, check=True,
                                   capture_output=True).stdout.decode().strip()
         blob = run("hash-object", "-w", "--stdin", data=b"PWNED")
-        for bad in ("..\\..\\runtime\\sitecustomize.py", "C:x.py", "a\x01.py"):
+        for bad in ("..\\..\\runtime\\sitecustomize.py", "C:x.py", "a\x01.py", "NUL.py",
+                    "com1", "trail.", "space ", "CONOUT$", "lpt\u00b9.txt"):
             workspace = run("mktree", data=f"100644 blob {blob}\t{bad}\n".encode())
             packaging = run("mktree", data=f"100644 blob {blob}\tinstall.ps1\n".encode())
             root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
@@ -614,6 +616,18 @@ class ReproducibleBuildTests(unittest.TestCase):
             with self._patched(repo), self.assertRaisesRegex(SystemExit, "Unexpected path"):
                 bp.export_app(self.root / "c" / "Unminute-0.5.0" / "app", sha)
             self.assertFalse((self.root / "c" / "runtime").exists())
+        # Two names that differ only by case: one would overwrite the other.
+        other = run("hash-object", "-w", "--stdin", data=b"other")
+        workspace = run("mktree", data=(f"100644 blob {blob}\tApp.py\n"
+                                        f"100644 blob {other}\tapp.py\n").encode())
+        packaging = run("mktree", data=f"100644 blob {blob}\tinstall.ps1\n".encode())
+        root = run("mktree", data=(f"100644 blob {blob}\tLICENSE\n"
+                                   f"040000 tree {packaging}\tpackaging\n"
+                                   f"040000 tree {workspace}\tworkspace\n").encode())
+        sha = run("-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                  "commit-tree", root, "-m", "case")
+        with self._patched(repo), self.assertRaisesRegex(SystemExit, "differ only by case"):
+            bp.export_app(self.root / "d" / "Unminute-0.5.0" / "app", sha)
 
     def test_a_release_must_run_isolated(self):
         with mock.patch.object(bp.sys, "flags", mock.Mock(isolated=0)), \
@@ -634,6 +648,232 @@ class ReproducibleBuildTests(unittest.TestCase):
                                    "workspace/stray.py", "workspace/ui/index.html"])
         self.assertEqual((app / "workspace" / "app.py").read_bytes(),
                          b"a = 'changed, not committed'\n")        # as it is in the folder
+
+class PrunedBuildTests(unittest.TestCase):
+    """#111 B2: what the app never uses is left out; every module ships
+    precompiled; the package is held to its size and file-count budget."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _site(self, base="a"):
+        runtime = self.root / base / "runtime"
+        site = runtime / bp.SITE
+        files = ["jinja2/__init__.py", "jinja2/tests.py",             # a module, not a test suite
+                 "numpy/__init__.py", "numpy/testing/__init__.py",    # used at run time
+                 "numpy/tests/test_core.py", "scipy/io/test/data.mat",
+                 "numpy/_core/include/numpy/ndarrayobject.h", "torch/lib/torch_cpu.lib",
+                 "torch/lib/torch_cpu.dll", "torch/bin/protoc.exe", "torch/__init__.pyi",
+                 "av/filter/loudnorm_impl.h", "cffi/_cffi_include.h",
+                 "clr_loader/ffi/dlls/x86/ClrLoader.dll", "clr_loader/ffi/dlls/amd64/ClrLoader.dll",
+                 "webview/lib/runtimes/win-x86/native/WebView2Loader.dll",
+                 "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+                 "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+                 "webview/lib/WebBrowserInterop.x86.dll",
+                 "torch-9.dist-info/licenses/third_party/x/test/LICENSE",  # licences stay
+                 "torch-9.dist-info/licenses/third_party/y/include/z.h",
+                 "pyannote/audio/data/config.yaml", "certifi/cacert.pem",   # run-time data
+                 "matplotlib/mpl-data/matplotlibrc", "onnx_asr/models.json"]
+        for rel in files:
+            (site / rel).parent.mkdir(parents=True, exist_ok=True)
+            (site / rel).write_bytes(b"x")
+        (runtime / "libtommath.dll").write_bytes(b"x")
+        for dist, owned in (("grpcio-1.0", ["grpc/__init__.py", "grpc/_cython/cygrpc.pyd"]),
+                            ("pyannoteai_sdk-0.4.0", ["pyannoteai/sdk/__init__.py"]),
+                            ("setuptools-83.0.0", ["setuptools/__init__.py",
+                                                   "_distutils_hack/__init__.py",
+                                                   "distutils-precedence.pth"])):
+            info = site / f"{dist}.dist-info"
+            info.mkdir()
+            for rel in owned:
+                (site / rel).parent.mkdir(parents=True, exist_ok=True)
+                (site / rel).write_bytes(b"x")
+            (info / "RECORD").write_text("".join(f"{r},sha256=x,1\n" for r in owned)
+                                         + f"{dist}.dist-info/RECORD,,\n")
+        return runtime, site
+
+    def test_what_the_app_never_uses_is_left_out(self):
+        runtime, site = self._site()
+        removed = bp.prune(site, runtime)
+        self.assertEqual(removed, {"grpcio", "pyannoteai-sdk", "setuptools"})
+        left = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
+        self.assertEqual(left, [
+            "certifi/cacert.pem",
+            "clr_loader/ffi/dlls/amd64/ClrLoader.dll", "jinja2/__init__.py", "jinja2/tests.py",
+            "matplotlib/mpl-data/matplotlibrc",
+            "numpy/__init__.py", "numpy/testing/__init__.py", "onnx_asr/models.json",
+            "pyannote/audio/data/config.yaml",
+            "torch-9.dist-info/licenses/third_party/x/test/LICENSE",
+            "torch-9.dist-info/licenses/third_party/y/include/z.h",
+            "torch/lib/torch_cpu.dll",
+            # pywebview looks every architecture's folder up when imported (#111 B2 review).
+            "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+            "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+            "webview/lib/runtimes/win-x86/native/WebView2Loader.dll"])
+        self.assertFalse((runtime / "libtommath.dll").exists())
+        self.assertFalse((site / "torch" / "bin").exists())        # empty folders go too
+
+    def test_a_stale_prune_entry_stops_the_build(self):
+        runtime, site = self._site()
+        (site / "torch" / "bin" / "protoc.exe").unlink()
+        with self.assertRaisesRegex(SystemExit, "torch/bin/protoc.exe is no longer"):
+            bp.prune(site, runtime)
+        runtime, site = self._site("b")
+        shutil.rmtree(site / "grpcio-1.0.dist-info")
+        with self.assertRaisesRegex(SystemExit, "No dist-info folder for grpcio"):
+            bp.prune(site, runtime)
+        runtime, site = self._site("c")
+        (runtime / "libtommath.dll").unlink()
+        with self.assertRaisesRegex(SystemExit, "libtommath.dll is no longer"):
+            bp.prune(site, runtime)
+
+    def test_record_paths_outside_the_folder_are_never_followed(self):
+        for rel in ("../evil.dll", "a/../../evil.dll", "/etc/evil", "\\\\server\\x",
+                    "C:/Windows/evil.dll", "C:evil.dll", ""):
+            self.assertFalse(bp.inside(rel), rel)
+        for rel in ("pkg/mod.py", "pkg-1.0.dist-info/RECORD", "a..b/c.py"):
+            self.assertTrue(bp.inside(rel), rel)
+        runtime, site = self._site()
+        outside = self.root / "a" / "keep-me.txt"
+        outside.write_text("not the package's")
+        info = site / "setuptools-83.0.0.dist-info"
+        (info / "RECORD").write_text("../keep-me.txt,,\nsetuptools/__init__.py,,\n"
+                                     + str(outside).replace("\\", "/") + ",,\n")
+        bp.prune(site, runtime)
+        self.assertTrue(outside.exists())
+
+    def test_every_module_is_precompiled_the_same_way_twice(self):
+        builds = []
+        for n in (1, 2):
+            folder = self.root / f"build{n}" / "Unminute-0.5.0"
+            for rel, text in ((f"runtime/{bp.SITE}/pkg/__init__.py", "X = {'a', 'b', 'c'}\n"),
+                              ("app/workspace/mod.py", "def f():\n    return 1\n"),
+                              ("runtime/sitecustomize.py", "import site\n")):
+                (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+                (folder / rel).write_text(text)
+            bp.precompile(folder, python=sys.executable)
+            pycs = sorted(p for p in folder.rglob("*.pyc"))
+            self.assertEqual(len(pycs), 3)
+            builds.append({p.relative_to(folder).as_posix(): p.read_bytes() for p in pycs})
+        self.assertEqual(builds[0], builds[1])               # same bytes in a different folder
+        for name, data in builds[0].items():
+            self.assertEqual(int.from_bytes(data[4:8], "little"), 1, name)  # unchecked-hash
+            self.assertNotIn(b"build1", data)                # no build folder in the bytes
+            self.assertNotIn(str(self.root).encode(), data)
+
+    def test_precompiling_is_one_process_with_a_fixed_hash_seed(self):
+        # Parallel workers (compileall -j) made two release builds differ in a
+        # .pyc's marshal flags; the hash seed orders sets of constants.
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs["env"]))
+            return subprocess.CompletedProcess(cmd, 0, "0 1\n", "")
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                mock.patch.dict(os.environ, {"PYTHONHASHSEED": "random", "PYTHONOPTIMIZE": "2"}):
+            bp.precompile(self.root / "Unminute-0.5.0")
+        self.assertEqual(len(calls), 4)       # the seed check, packages, app, sitecustomize
+        self.assertIn("hash_randomization", calls[0][0][-1])
+        for n, (cmd, env) in enumerate(calls):
+            self.assertTrue(cmd[0].endswith("runtime\\python.exe")
+                            or cmd[0].endswith("runtime/python.exe"), cmd[0])   # its own Python
+            self.assertEqual(cmd[1:4], ["-S", "-s", "-B"])     # -s: no user site-packages
+            self.assertEqual(env["PYTHONHASHSEED"], "0")
+            self.assertNotIn("PYTHONOPTIMIZE", env)          # no other PYTHON* setting
+            if n:                                           # the compile runs
+                self.assertIn("-f", cmd)                    # rewrite, never keep a stale .pyc
+                self.assertFalse([a for a in cmd if a.startswith(("-j", "--workers"))], cmd)
+                self.assertEqual(cmd[cmd.index("--invalidation-mode") + 1], "unchecked-hash")
+
+    def test_a_compile_run_without_a_fixed_seed_stops_the_build(self):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 0, "1 1\n", "")   # hash randomised
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                self.assertRaisesRegex(SystemExit, "fixed hash seed"):
+            bp.precompile(self.root / "Unminute-0.5.0")
+
+    def test_a_missing_or_leaky_pyc_stops_the_build(self):
+        folder = self.root / "Unminute-0.5.0"
+        mod = folder / "app" / "workspace" / "mod.py"
+        mod.parent.mkdir(parents=True)
+        mod.write_text("X = 1\n")
+        (folder / "runtime" / bp.SITE).mkdir(parents=True)
+        with self.assertRaisesRegex(SystemExit, "no .pyc: app/workspace/mod.py"):
+            bp.check_precompiled(folder)
+        pyc = mod.parent / "__pycache__" / f"mod.cpython-{bp.PYTHON_TAG}.pyc"
+        pyc.parent.mkdir()
+        pyc.write_bytes(b"\0\0\0\0" + (3).to_bytes(4, "little") + bytes(8))
+        with self.assertRaisesRegex(SystemExit, "not unchecked-hash"):
+            bp.check_precompiled(folder)
+        pyc.write_bytes(b"\0\0\0\0" + (1).to_bytes(4, "little") + bytes(8)
+                        + str(folder).encode())
+        with self.assertRaisesRegex(SystemExit, "build path inside"):
+            bp.check_precompiled(folder)
+        pyc.write_bytes(b"\0\0\0\0" + (1).to_bytes(4, "little") + bytes(8))
+        bp.check_precompiled(folder)                       # now it passes
+        (folder / "runtime" / "sitecustomize.py").write_text("import site\n")
+        with self.assertRaisesRegex(SystemExit, "no .pyc: runtime/sitecustomize.py"):
+            bp.check_precompiled(folder)
+
+    def test_the_build_runs_each_step_in_order(self):
+        source = Path(bp.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def build("):source.index("def release_version")]
+        order = ["removed = prune(site, runtime)", "sync_records(site)",
+                 "precompile(folder)", "sbom(", "write_zip(", "enforce_budget("]
+        at = [body.index(step) for step in order]
+        self.assertEqual(at, sorted(at), order)
+        self.assertIn("build_tools(), removed)", body)       # the SBOM records what went
+        self.assertIn('source_date_epoch(sha or "HEAD")', body)    # the commit's own time
+        self.assertIn("budgets = committed(sha, BUDGETS)", body)   # a release obeys the commit
+        pre = source[source.index("def precompile("):source.index("def check_precompiled(")]
+        self.assertIn("\n    check_precompiled(folder)\n", pre)    # the leak and flag guard runs
+
+    def test_the_self_test_imports_the_window_module_pruning_could_break(self):
+        main = (bp.ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn('"webview.platforms.edgechromium"', main)
+
+    def test_an_over_budget_zip_is_deleted_and_the_build_stops(self):
+        zpath = self.root / "Unminute-0.5.0.zip"
+        zpath.write_bytes(b"x" * 200_000)
+        budgets = json.dumps({"package_zip_mb": {"value": 0.1}, "package_files": {"value": 50}})
+        with self.assertRaisesRegex(SystemExit, "package_zip_mb: 0.2 is over"):
+            bp.enforce_budget(zpath, 10, budgets)
+        self.assertFalse(zpath.exists())
+        zpath.write_bytes(b"x" * 50_000)
+        self.assertEqual(bp.enforce_budget(zpath, 50, budgets),
+                         {"package_zip_mb": 0.1, "package_files": 50})
+        self.assertTrue(zpath.exists())
+
+    def test_a_strip_warning_stops_the_build(self):
+        # compileall only warns when -s does not match, and keeps the build path.
+        def fake_run(cmd, **kwargs):
+            out = "0 1\n" if "-c" in cmd else "not a valid prefix\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                self.assertRaisesRegex(SystemExit, "Precompiling"):
+            bp.precompile(self.root / "Unminute-0.5.0")
+
+    def test_the_bill_of_materials_records_removed_packages(self):
+        bom = bp.sbom([], "Unminute", "0.5.0", "c" * 40, 1760000000, "d" * 64,
+                      removed={"setuptools", "grpcio"})
+        self.assertIn({"name": "unminute:removed", "value": "grpcio, setuptools"},
+                      bom["metadata"]["component"]["properties"])
+
+    def test_the_package_is_held_to_its_budget(self):
+        budgets = json.dumps({"package_zip_mb": {"value": 100.0}, "package_files": {"value": 50}})
+        self.assertEqual(bp.package_budget(99_949_999, 50, budgets),
+                         ([], {"package_zip_mb": 99.9, "package_files": 50}))
+        problems, _ = bp.package_budget(100_100_000, 51, budgets)
+        self.assertEqual(len(problems), 2)
+        self.assertIn("package_zip_mb: 100.1 is over its budget of 100.0", problems[0])
+        committed = json.loads((bp.ROOT / bp.BUDGETS).read_text(encoding="utf-8"))
+        for key in ("package_zip_mb", "package_files"):
+            self.assertGreaterEqual(committed[key]["value"], committed[key]["measured"])
+
 
 if __name__ == "__main__":
     unittest.main()

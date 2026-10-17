@@ -98,8 +98,10 @@ def check(version_dir, cache, wav, report):
     tmp = Path(tempfile.mkdtemp(prefix="ww28-"))
     env["LOCALAPPDATA"] = str(tmp)
     py = str(runtime / "python.exe")
+    flags = ["-I", "-B", "-X", "disable-remote-debug"]    # as the Start menu shortcut starts it
 
-    r = subprocess.run([py, "-m", "workspace", "--self-test"], capture_output=True, text=True,
+    r = subprocess.run([py, *flags, "-m", "workspace", "--self-test"], capture_output=True,
+                       text=True,
                        env=env, cwd=Path(version_dir) / "app")
     report["self_test"] = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "no output"
 
@@ -107,7 +109,8 @@ def check(version_dir, cache, wav, report):
     script = tmp / "lifecycle.py"
     script.write_text(LIFECYCLE, encoding="utf-8")
     try:
-        r = subprocess.run([py, str(script), str(cache), str(wav), MARKER], capture_output=True,
+        r = subprocess.run([py, *flags, str(script), str(cache), str(wav), MARKER],
+                           capture_output=True,
                            text=True, env=env, cwd=Path(version_dir) / "app", timeout=7200)
         report["lifecycle"] = json.loads(r.stdout.strip().splitlines()[-1])
     except subprocess.TimeoutExpired:
@@ -131,7 +134,7 @@ def check(version_dir, cache, wav, report):
                               (".bak", ".backup", ".old", ".copy")) or "backup" in n.lower()]}
 
     # Idle window: CPU and memory of the whole process tree for 60 s.
-    p = subprocess.Popen([str(runtime / "pythonw.exe"), "-m", "workspace"], env=env,
+    p = subprocess.Popen([str(runtime / "pythonw.exe"), *flags, "-m", "workspace"], env=env,
                          cwd=Path(version_dir) / "app")
     time.sleep(20)
     pids = tree(p.pid)

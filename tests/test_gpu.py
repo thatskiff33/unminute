@@ -44,6 +44,19 @@ def make_wheel(name, version, files):
                   "record_sha256": hashlib.sha256(record).hexdigest()}
 
 
+class ActivateTests(unittest.TestCase):
+    def test_the_component_caches_its_bytecode_although_the_app_runs_with_b(self):
+        # The app starts with -B and ships precompiled; the component is unpacked
+        # from wheels without .pyc, so torch would be compiled at every start.
+        from workspace import gpu
+        with tempfile.TemporaryDirectory() as site, \
+                mock.patch.object(sys, "dont_write_bytecode", True), \
+                mock.patch.object(sys, "path", list(sys.path)):
+            gpu.activate(site)
+            self.assertFalse(sys.dont_write_bytecode)
+            self.assertEqual(sys.path[0], site)
+
+
 class DetectTests(unittest.TestCase):
     def run_smi(self, stdout, code=0):
         result = subprocess.CompletedProcess([], code, stdout=stdout, stderr="")

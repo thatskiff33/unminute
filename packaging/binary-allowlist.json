@@ -406,10 +406,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/clr_loader/ffi/dlls/x86/ClrLoader.dll",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/contourpy/_contourpy.cp314-win_amd64.pyd",
    "signer": ""
   },
@@ -463,18 +459,6 @@
   },
   {
    "path": "runtime/lib/greenlet/_greenlet.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/greenlet/tests/_test_extension.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/greenlet/tests/_test_extension_cpp.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/grpc/_cython/cygrpc.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1290,38 +1274,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/setuptools/cli-32.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/cli-64.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/cli-arm64.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/cli.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/gui-32.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/gui-64.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/gui-arm64.exe",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/setuptools/gui.exe",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/sklearn/.libs/msvcp140.dll",
    "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
   },
@@ -1634,10 +1586,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/torch/bin/protoc.exe",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/torch/lib/c10.dll",
    "signer": ""
   },
@@ -1766,10 +1714,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/webview/lib/WebBrowserInterop.x86.dll",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/yaml/_yaml.cp314-win_amd64.pyd",
    "signer": ""
   },
@@ -1787,10 +1731,6 @@
   },
   {
    "path": "runtime/libssl-3.dll",
-   "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
-  },
-  {
-   "path": "runtime/libtommath.dll",
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
