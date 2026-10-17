@@ -266,9 +266,9 @@ class LidSwitch:
         with self._lock:
             if self.managed():
                 return False, "managed"
-            if self.path.exists():          # originals still waiting to go back
+            if self.active:                 # originals still waiting (file or memory)
                 self._restore_locked()
-                if self.path.exists():
+                if self.active:
                     return False, "refused"  # never overwrite them with "Do nothing"
             try:
                 api = self._calls()
@@ -329,6 +329,8 @@ class LidSwitch:
                          else None)
             except (ValueError, RecursionError):
                 saved = None
+        if not _valid_saved(saved) and _valid_saved(self._saved):
+            saved = self._saved             # a damaged file, but this process knows them
         if not _valid_saved(saved):
             self.problem = "lost"           # nothing safe to put back: left as it is
             self._remove()

@@ -934,7 +934,14 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertTrue(any(r.get("lid") for r in self.ws.recording_status()["reports"]))
         scheme.write_rc = 0
         self.ws._lid_retry_at = float("-inf")
-        self.ws._policy_tick()
+        held, real = [], self.ws._capturing
+
+        def checked():                                   # R1/T1: decided under the lock
+            held.append(self.ws._indicator_lock.locked())
+            return real()
+        with mock.patch.object(self.ws, "_capturing", checked):
+            self.ws._policy_tick()
+        self.assertTrue(held and all(held), held)       # every read held the lock
         self.assertEqual(scheme.values, {True: 1, False: 2})
         self.assertFalse(self.ws.lid.active)
 

@@ -418,6 +418,28 @@ class LidSwitchReviewTests(unittest.TestCase):
         self.assertEqual(api.values, {True: 1, False: 2})
         self.assertFalse(sw.active)
 
+    def test_the_copy_in_memory_also_blocks_a_new_override(self):
+        # N1: record deleted, a half-failed restore from memory, a new recording.
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        self.path.unlink()
+        api.fail_side = False
+        sw.restore()                                     # {1, 0}: battery still waiting
+        self.assertEqual(sw.override(), (False, "refused"))
+        api.fail_side = None
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+
+    def test_a_damaged_file_gives_way_to_the_copy_in_memory(self):
+        # N2: the right values at once, and no "could not put back" notice.
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        self.path.write_text("{damaged", encoding="utf-8")
+        sw.restore()
+        self.assertEqual((api.values, sw.problem, sw.active), ({True: 1, False: 2}, None, False))
+
     def test_an_original_out_of_range_is_never_changed(self):
         api = FakeScheme(ac=7, dc=1)
         self.assertEqual(self.switch(api).override(), (False, "refused"))
