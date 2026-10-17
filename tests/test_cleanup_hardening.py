@@ -43,7 +43,7 @@ class MeetingIdTests(unittest.TestCase):
         self.assertEqual(media.audio_path(root, GOOD), root / GOOD / media.AUDIO_FILE)
         for bad in ("..", "../" + GOOD[3:], GOOD.upper(), GOOD[:31], GOOD + "0",
                     GOOD[:30] + "/x", GOOD[:30] + chr(92) + "x", GOOD[:31] + "g",
-                    GOOD[:31] + chr(10), None, 32):
+                    GOOD[:31] + chr(10), GOOD + chr(10), None, 32):
             with self.subTest(bad=bad):
                 with self.assertRaises(media.BadMeetingId):
                     media.meeting_folder(root, bad)
@@ -143,6 +143,20 @@ class CleanupHardeningTests(unittest.TestCase):
         self.assertTrue((ws.media / mid / "partial.bin").exists())
         [row] = [m for m in ws.meetings() if m["id"] == mid]
         self.assertTrue(row["unfinished"])
+
+    def test_a_folder_that_cannot_be_removed_keeps_the_meeting(self):
+        # #202 N1: no orphaned folder with decoded audio and no record of it.
+        ws = self.open()
+        mid = ws.store.create_meeting("synthetic unfinished")
+        (ws.media / mid).mkdir(parents=True)
+        (ws.media / mid / "audio.f32").write_bytes(b"synthetic")
+        with mock.patch("shutil.rmtree", side_effect=PermissionError("locked")):
+            self.assertFalse(ws._discard_import(mid))
+        self.assertIsNotNone(ws.store.meeting(mid))      # rolled back: listed, retried
+        self.assertTrue((ws.media / mid / "audio.f32").exists())
+        self.assertTrue(ws._discard_import(mid))         # unlocked later
+        self.assertIsNone(ws.store.meeting(mid))
+        self.assertFalse((ws.media / mid).exists())
 
     def test_the_hold_check_inside_the_removal_is_effective(self):
         # F5: the check made under the lock, in the removal's own transaction.

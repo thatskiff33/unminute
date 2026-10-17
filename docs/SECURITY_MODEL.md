@@ -173,7 +173,7 @@ Cross-border points to confirm with a privacy adviser: pasting a handoff into an
 | Decoded audio `audio.f32` | `workspace\media\<meeting id>\` | Inherited folder permissions | Until the audio cleanup after review (or a discard) completes; longer while a hold applies or a cleanup has failed |
 | `recording.json` (meeting title, microphone name, recording events, consent confirmation record) | `workspace\media\<meeting id>\` | Inherited folder permissions | With the decoded audio |
 | Recording chunks, `recording.wav` and journal (with the consent record: confirmed, wording version, time; no names) | `workspace\recordings\<id>\` | Inherited folder permissions | Removed after import; after a crash, kept until the user decides |
-| Transcript, edits, history, snapshot, speaker names, redaction words, hold reasons, titles | `workspace.db` and its WAL | Inherited folder permissions; deleted rows are overwritten | Until final cleanup, then the WAL is truncated and the file is compacted |
+| Transcript, edits, history, snapshot, speaker names, redaction words, hold reasons, titles | `workspace.db` and its WAL | Inherited folder permissions; deleted rows are overwritten | Until final cleanup, then the WAL is truncated and the file is compacted; on a damaged database the compaction waits for the next start whose check passes (`compact.pending`, #198) |
 | SQLite temporary data during VACUUM | Memory (since A2) | Not written to disk | Seconds |
 | Receipts | `workspace.db` | Content-free | 30 days, purged while the app runs |
 | Watched-folder paths, path hashes, content fingerprints | `workspace.db` | Paths in plain text; path hashes keyed with a key stored in the same database | Paths until the folder is removed; fingerprints 120 days |

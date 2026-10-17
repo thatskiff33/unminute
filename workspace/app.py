@@ -1040,9 +1040,14 @@ class Workspace:
                         return False
                     db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
                     db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
-                shutil.rmtree(folder, ignore_errors=True)
-        except StoreError:
-            return False                      # unreadable: kept for next time
+                    # Inside the transaction: a folder that cannot be removed
+                    # (a locked file) rolls the rows back, so the meeting stays
+                    # listed and the next start tries again; never an orphaned
+                    # folder holding decoded audio with no record of it.
+                    if folder.exists():
+                        shutil.rmtree(folder)
+        except (StoreError, OSError):
+            return False                      # unreadable or locked: kept for next time
         return True
 
     def _reconcile_imports(self, discard=True):
