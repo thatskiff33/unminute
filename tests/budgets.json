@@ -7,13 +7,13 @@
   },
   "package_zip_mb": {
     "value": 393.4,
-    "measured": 374.7,
-    "note": "Size of the package zip in MB (tools/build_package.py checks every build). Release build of fff7dbf (#111 B2b: pruned, precompiled), Python 3.14.8, 17 Oct 2026: 374.7 MB. About 5% headroom; the precompiled .pyc are about 79 MB of it. A dependency change that adds size must say why in its pull request."
+    "measured": 374.8,
+    "note": "Size of the package zip in MB (tools/build_package.py checks every build). Release build of b12e462 (#111 B2b: pruned, precompiled), Python 3.14.8, 17 Oct 2026: 374.8 MB. About 5% headroom; the precompiled .pyc are about 79 MB of it. A dependency change that adds size must say why in its pull request."
   },
   "package_files": {
     "value": 23950,
-    "measured": 22812,
-    "note": "Files in the package zip (tools/build_package.py checks every build). Release build of fff7dbf (#111 B2b), Python 3.14.8, 17 Oct 2026: 22,812 (27,794 before pruning and precompiling). About 5% headroom."
+    "measured": 22815,
+    "note": "Files in the package zip (tools/build_package.py checks every build). Release build of b12e462 (#111 B2b), Python 3.14.8, 17 Oct 2026: 22,815 (27,794 before pruning and precompiling). About 5% headroom."
   },
   "app_css_raw_colours": {
     "value": 24,

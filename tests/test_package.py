@@ -803,22 +803,53 @@ class PrunedBuildTests(unittest.TestCase):
             bp.check_precompiled(folder)
         pyc.write_bytes(b"\0\0\0\0" + (1).to_bytes(4, "little") + bytes(8))
         bp.check_precompiled(folder)                       # now it passes
+        (folder / "runtime" / "sitecustomize.py").write_text("import site\n")
+        with self.assertRaisesRegex(SystemExit, "no .pyc: runtime/sitecustomize.py"):
+            bp.check_precompiled(folder)
 
     def test_the_build_runs_each_step_in_order(self):
         source = Path(bp.__file__).read_text(encoding="utf-8")
         body = source[source.index("def build("):source.index("def release_version")]
         order = ["removed = prune(site, runtime)", "sync_records(site)",
-                 "precompile(folder)", "sbom(", "write_zip(", "package_budget("]
+                 "precompile(folder)", "sbom(", "write_zip(", "enforce_budget("]
         at = [body.index(step) for step in order]
         self.assertEqual(at, sorted(at), order)
         self.assertIn("build_tools(), removed)", body)       # the SBOM records what went
         self.assertIn('source_date_epoch(sha or "HEAD")', body)    # the commit's own time
         self.assertIn("budgets = committed(sha, BUDGETS)", body)   # a release obeys the commit
-        self.assertIn("zpath.unlink()", body[body.index("package_budget("):])
+        pre = source[source.index("def precompile("):source.index("def check_precompiled(")]
+        self.assertIn("\n    check_precompiled(folder)\n", pre)    # the leak and flag guard runs
 
     def test_the_self_test_imports_the_window_module_pruning_could_break(self):
         main = (bp.ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('"webview.platforms.edgechromium"', main)
+
+    def test_an_over_budget_zip_is_deleted_and_the_build_stops(self):
+        zpath = self.root / "Unminute-0.5.0.zip"
+        zpath.write_bytes(b"x" * 200_000)
+        budgets = json.dumps({"package_zip_mb": {"value": 0.1}, "package_files": {"value": 50}})
+        with self.assertRaisesRegex(SystemExit, "package_zip_mb: 0.2 is over"):
+            bp.enforce_budget(zpath, 10, budgets)
+        self.assertFalse(zpath.exists())
+        zpath.write_bytes(b"x" * 50_000)
+        self.assertEqual(bp.enforce_budget(zpath, 50, budgets),
+                         {"package_zip_mb": 0.1, "package_files": 50})
+        self.assertTrue(zpath.exists())
+
+    def test_a_strip_warning_stops_the_build(self):
+        # compileall only warns when -s does not match, and keeps the build path.
+        def fake_run(cmd, **kwargs):
+            out = "0 1\n" if "-c" in cmd else "not a valid prefix\n"
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        with mock.patch.object(bp.subprocess, "run", fake_run), \
+                self.assertRaisesRegex(SystemExit, "Precompiling"):
+            bp.precompile(self.root / "Unminute-0.5.0")
+
+    def test_the_bill_of_materials_records_removed_packages(self):
+        bom = bp.sbom([], "Unminute", "0.5.0", "c" * 40, 1760000000, "d" * 64,
+                      removed={"setuptools", "grpcio"})
+        self.assertIn({"name": "unminute:removed", "value": "grpcio, setuptools"},
+                      bom["metadata"]["component"]["properties"])
 
     def test_the_package_is_held_to_its_budget(self):
         budgets = json.dumps({"package_zip_mb": {"value": 100.0}, "package_files": {"value": 50}})

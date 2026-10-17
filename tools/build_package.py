@@ -424,6 +424,16 @@ def package_budget(zip_bytes, files, budgets_text):
             for key, value in measured.items() if value > budgets[key]["value"]], measured
 
 
+def enforce_budget(zpath, files, budgets_text):
+    """Delete the zip and stop the build if it is over its size or file-count
+    budget. Returns the measured figures."""
+    problems, measured = package_budget(zpath.stat().st_size, files, budgets_text)
+    if problems:
+        zpath.unlink()
+        sys.exit("The package is over budget (nothing was written):\n" + "\n".join(problems))
+    return measured
+
+
 def copy_app(app):
     """A development build: the app as it is in the working folder, tracked and
     untracked files only, so an ignored file (a recording or log left in
@@ -1023,10 +1033,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
         out.mkdir(parents=True, exist_ok=True)
         zpath = out / f"{name}.zip"
         write_zip(folder, zpath, epoch)
-        problems, measured = package_budget(zpath.stat().st_size, count + 1, budgets)
-        if problems:
-            zpath.unlink()
-            sys.exit("The package is over budget (nothing was written):\n" + "\n".join(problems))
+        measured = enforce_budget(zpath, count + 1, budgets)
         digest = sha256(zpath)
         (out / f"{name}.zip.sha256").write_text(f"{digest}  {zpath.name}\n", encoding="ascii")
         shutil.copyfile(folder / "sbom.cdx.json", out / f"{name}.cdx.json")
