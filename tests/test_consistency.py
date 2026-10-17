@@ -116,11 +116,41 @@ class InstallIdentityTests(unittest.TestCase):
         built = one(r'"name":\s*"([^"]+)"', read("tools/build_package.py"), "package name")
         for script, text in (("install.ps1", self.install), ("uninstall.ps1", self.uninstall)):
             self.assertEqual(built, one(r'^\$AppName = "([^"]+)"', text, f"$AppName in {script}"))
-        names = [one(r"^\$KnownAppNames = (@\(.*\))", text, "$KnownAppNames")
-                 for text in (self.install, self.uninstall)]
-        self.assertEqual(names[0], names[1],
-                         "install.ps1 and uninstall.ps1 list different earlier names")
-        self.assertIn(f'"{built}"', names[0])
+            # One name since the rename (#136): no earlier names to clean up after.
+            self.assertNotIn("KnownAppNames", text, script)
+
+    def test_the_install_identity_names_are_pinned(self):
+        # K1: the user renamed every one of these to Unminute (#136, 17 Oct 2026);
+        # changing one again needs the user's say-so.
+        main, store = read("workspace/__main__.py"), read("workspace/store.py")
+        self.assertEqual("Unlimit.Unminute", one(r'^APP_ID = "([^"]+)"', main, "APP_ID"))
+        self.assertEqual("Unminute/HuggingFaceToken",
+                         one(r'^TARGET = "([^"]+)"', read("workspace/credentials.py"), "TARGET"))
+        self.assertIn('return local_appdata() / "Unminute" / "workspace"', store)
+        self.assertIn('return local_appdata() / "Unminute" / "models"', main)
+        self.assertEqual(r"Programs\Unminute",
+                         one(r'"(Programs\\[^"]+)"', self.install, "install folder"))
+        self.assertEqual(r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute",
+                         one(r'^\$RegKey = "([^"]+)"', self.install, "uninstall key"))
+        self.assertTrue((ROOT / "unminute.ico").is_file())
+        self.assertIn('ICON = Path(__file__).resolve().parents[1] / "unminute.ico"',
+                      read("workspace/shell.py"))
+
+    def test_no_earlier_app_name_is_left_in_shipped_code(self):
+        # The app was "Whisper Transcriber", then "Meeting Workspace"; OpenAI's
+        # Whisper speech model keeps its own name, so only the app's are listed.
+        old = re.compile(r"WhisperWorkspace|WhisperTranscriber|MeetingWorkspace|Meeting Workspace"
+                         r"|whisper\.ico|whisper-models|whisper[\\/]+workspace"
+                         r'|"whisper" / "workspace"|earlier app|Whisper Transcriber', re.IGNORECASE)
+        files = [ROOT / "asr_engines.py", ROOT / "offline_guard.py",
+                 ROOT / "tools" / "build_package.py",
+                 *(p for p in (ROOT / "workspace").rglob("*")
+                   if p.suffix in (".py", ".js", ".html", ".css")),
+                 *(ROOT / "packaging").glob("*.ps1")]
+        found = [f"{p.relative_to(ROOT)}:{n}" for p in files
+                 for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
+                 if old.search(line)]
+        self.assertEqual(found, [])
 
     def test_install_folder_and_registry_key_match_uninstaller(self):
         for pattern, what in ((r'"(Programs\\[^"]+)"', "install folder"),

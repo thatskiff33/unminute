@@ -4,7 +4,7 @@
 # The state-owning process: it installs the offline network guard before
 # anything else, owns the database and runs processing on background threads;
 # heavy models run in the managed worker process. Models are read from the
-# existing local cache (%LOCALAPPDATA%\whisper-models); nothing is downloaded.
+# existing local cache (%LOCALAPPDATA%\Unminute\models); nothing is downloaded.
 #
 # Support options (no window):
 #   --version     the installed package version
@@ -39,19 +39,18 @@ offline_guard.install()
 
 from workspace import credentials  # noqa: E402
 
-# A Hugging Face token the earlier app left in the user's environment is taken
+# A Hugging Face token left in the user's environment (HF_TOKEN) is taken
 # out of this process's environment before anything starts, so no child
 # process (workers, WebView2, nvidia-smi) inherits it.
 credentials.drop_environment_token()
 
-APP_ID = "WhisperTranscriber.MeetingWorkspace"     # also in packaging/install.ps1; kept from
-                                                   # the earlier name so taskbar pins still group
+APP_ID = "Unlimit.Unminute"     # also in packaging/install.ps1: shortcuts group with the window
 
 
 def model_cache():
-    """%LOCALAPPDATA%\\whisper-models (refuses a missing or synced location)."""
+    """%LOCALAPPDATA%\\Unminute\\models (refuses a missing or synced location)."""
     from workspace.store import local_appdata
-    return local_appdata() / "whisper-models"
+    return local_appdata() / "Unminute" / "models"
 
 
 def package_version():

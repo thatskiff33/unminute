@@ -115,8 +115,6 @@ def cards(cache_dir):
         # Remove is offered whenever something is on disk, including leftover
         # damaged or unfinished copies of a model that is not installed.
         c["removable"] = bool(removal_targets(c["name"], cache_dir))
-        c["shared_with_earlier_app"] = c["role"] != "gpu" and not asr_engines.is_parakeet(
-            c["name"])
     return out
 
 
@@ -428,7 +426,7 @@ def _fetch(url, dest, expected_size):
     if not url.startswith(gpu.DOWNLOAD_HOST):
         raise SetupError("Unexpected download address.")
     opener = urllib.request.build_opener(_SameHost)
-    req = urllib.request.Request(url, headers={"User-Agent": "MeetingWorkspace"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Unminute"})
     done = 0
     with opener.open(req, timeout=120) as r, open(dest, "wb") as out:
         while block := r.read(8 << 20):

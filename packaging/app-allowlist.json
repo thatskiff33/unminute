@@ -6,7 +6,7 @@
   "README.md",
   "asr_engines.py",
   "offline_guard.py",
-  "whisper.ico",
+  "unminute.ico",
   "workspace/__init__.py",
   "workspace/__main__.py",
   "workspace/api.py",

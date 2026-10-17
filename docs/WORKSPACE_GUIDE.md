@@ -4,7 +4,7 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace. The earlier source-installed app (Whisper Transcriber) has been retired; if it is still on your computer, see [If the earlier app is still installed](#if-the-earlier-app-is-still-installed).
+This guide covers the packaged workspace.
 
 ## What stays on your computer, and what does not
 
@@ -12,8 +12,8 @@ This guide covers the packaged workspace. The earlier source-installed app (Whis
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\whisper\workspace`). This is not a synced folder. |
-| **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\whisper-models`. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`). This is not a synced folder. |
+| **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
 
@@ -146,7 +146,7 @@ For IT support:
 - `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
-- The app keeps small content-free logs in `%LOCALAPPDATA%\whisper\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
+- The app keeps small content-free logs in `%LOCALAPPDATA%\Unminute\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 
@@ -164,25 +164,12 @@ For IT support (there are no backups, by design):
 
 1. Ask the user to hand off what they need, then close Unminute. Check that no Unminute processes are left in Task Manager before going on.
 2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` (or `"readable": false` if the database cannot be read at all), the number of active holds, `pending_cleanup` and `recordings`. The holds and cleanup counts come from the damaged database and may be wrong: a hold can be missing from them. `recordings` counts recording folders on disk, including any the user discarded that are waiting to be removed.
-3. Rename the workspace folder `%LOCALAPPDATA%\whisper\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never copy it to a share or another computer, and never email or upload it.
+3. Rename the workspace folder `%LOCALAPPDATA%\Unminute\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never copy it to a share or another computer, and never email or upload it.
 4. Start Unminute. It creates a new, empty workspace. Models and the Hugging Face token are kept, but guided setup, settings, handoff templates and watched folders start again.
 5. Tell the user what did not happen: cleanup they confirmed in the old workspace (`pending_cleanup`) has not run, so audio, transcripts or originals in watched folders they asked to delete may still be there. `recordings` counts recordings that never became meetings; their audio is in the renamed folder's `recordings` folder.
 6. Before deleting the renamed folder, check with whoever manages holds in your organisation, whatever `--status` showed: hold records in a damaged database can be lost, and holds never expire. Delete it once nothing in it is needed.
 
 To get meetings back that were not handed off, SQLite's own recovery tool can sometimes rebuild a damaged database. It is not part of Unminute, and SQLite warns that a recovered database is usually defective: some content can be lost, altered, or come back after it was deleted (see SQLite's guide, [Recovering data from a corrupt SQLite database](https://sqlite.org/recovery.html)). Work only on a copy kept in the same profile, and delete the copy and the SQL text the tool writes when you are done: both hold meeting content. Ask the Unminute maintainers before putting a recovered database back in place: this has not been tested with an Unminute workspace.
-
-## If the earlier app is still installed
-
-The earlier source-installed app, Whisper Transcriber, is no longer maintained and gets no security fixes. Unminute deletes nothing it created, except a shared model you choose to remove in Settings > Manage downloads. The two share only the downloaded models: if a shared model fails verification, Repair (Settings > Manage downloads) downloads a fresh copy and keeps the damaged one aside.
-
-To remove the earlier app, close it, then delete:
-
-1. The folder you installed it from. Move any transcripts you still need out of its `extracted` folder first.
-2. `%LOCALAPPDATA%\whisper\.venv` and `%LOCALAPPDATA%\whisper\ui-settings.json`.
-3. The Whisper Transcriber shortcut in the Start menu.
-4. The `HF_TOKEN` user environment variable, if you set one: search the Start menu for "Edit environment variables for your account". Because that variable kept the token in plain text, also delete the token in your Hugging Face account's access token settings and create a new one if you need it. Unminute keeps its own token in Windows Credential Manager.
-
-Do not delete the whole `%LOCALAPPDATA%\whisper` folder or `%LOCALAPPDATA%\whisper-models`: Unminute keeps its workspace and its models there.
 
 ## Supported configuration
 
@@ -190,7 +177,7 @@ These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
 - **Hardware:** the minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. So far it has only been tested on a faster laptop (#28).
-- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested in the earlier app's engine only; in that comparison Parakeet v3 dropped speech on some clips.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
 **Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 1.92 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".

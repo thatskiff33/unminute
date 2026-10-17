@@ -235,7 +235,7 @@ class SetupTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS, "Windows Credential Manager")
 class CredentialManagerTests(unittest.TestCase):
-    TARGET = "WhisperTranscriber/UnitTest-" + str(os.getpid())
+    TARGET = "Unminute/UnitTest-" + str(os.getpid())
 
     def test_round_trip_and_remove(self):
         try:

@@ -174,7 +174,7 @@
   };
   const card = (over) => ({ state: "ready", status: "Downloaded and verified.", licence: "CC BY 4.0",
     source: "NVIDIA, ONNX export", revision: "0bbb45a", removable: true, needs_token: false, recommended: false,
-    shared_with_earlier_app: false, download: null, ...over });
+    download: null, ...over });
   const CARDS = [
     card({ name: "parakeet-tdt-0.6b-v2", role: "speech", recommended: true, size_gb: 0.66,
            label: "Parakeet v2", title: "Speech to text: Parakeet v2 (recommended)",

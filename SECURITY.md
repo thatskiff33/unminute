@@ -21,10 +21,9 @@ Include the version (from Settings, or `version.json` in the install folder), wh
 
 ## Scope
 
-In scope: the Meeting Workspace app, its private runtime and installer, model download and verification, and the build and release workflows in this repository.
+In scope: Unminute, its private runtime and installer, model download and verification, and the build and release workflows in this repository.
 
 Out of scope:
 
-- The earlier source-installed app (Whisper Transcriber), removed from this repository by #111 slice A7. A copy still installed on a computer gets no fixes and should be removed (see "If the earlier app is still installed" in [docs/WORKSPACE_GUIDE.md](docs/WORKSPACE_GUIDE.md)).
 - Windows, WebView2 and third-party packages themselves. Report those upstream; where we pin a package, we will update the pin.
 - Attacks that need administrator rights on the device, or code already running as the signed-in user (see "What the controls do not cover" in the threat model).

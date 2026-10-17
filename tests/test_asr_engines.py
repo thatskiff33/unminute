@@ -278,7 +278,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(ae.check_files(self.spec, self.target, full=True), [])
 
     def test_without_a_downloader_it_only_verifies(self):
-        # The earlier app's own downloader is gone: a missing model needs the
+        # There is no in-process downloader: a missing model needs the
         # app's download process, and nothing is written meanwhile.
         with self.assertRaises(ae.ModelLoadError) as ctx:
             ae.install_model(self.spec, self.cache, lambda message: None)
