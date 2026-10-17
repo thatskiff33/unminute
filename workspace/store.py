@@ -784,7 +784,8 @@ class Store:
                          "ORDER BY started_at, rowid", (vid,))
 
     def current_speakers(self, vid):
-        """{segment_id: (label, overlap)} from the latest completed run, or {}."""
+        """{segment_id: (label, overlap)} from the latest completed run, or {}.
+        Test helper: the app does not call it."""
         run = self._one("SELECT id FROM speaker_runs WHERE version_id = ? AND status = 'done' "
                         "ORDER BY started_at DESC, rowid DESC LIMIT 1", (vid,))
         if run is None:

@@ -25,7 +25,7 @@ from workspace.media import SAMPLE_RATE
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
 # (used only for drag and drop of recordings onto the window).
 API_METHODS = frozenset({
-    "ping", "status", "meetings", "detail", "transcript", "search", "edit", "undo", "clip",
+    "status", "meetings", "detail", "transcript", "search", "edit", "undo", "clip",
     "pause", "stop_now", "resume", "rename", "retranscribe", "rerun_speakers",
     "skip_speakers",
     "add_hold", "release_hold", "keep_hold", "confirm_reviewed", "confirm_final_saved",
@@ -133,9 +133,6 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             shell.show_recording(window, recording)
 
     ws.recording_indicator = indicate
-
-    def ping(self):
-        return {"ok": True, "value": "ok"}
 
     def status(self):
         return _safe(ws.status)
@@ -441,7 +438,7 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def continue_despite_damage(self):
         return _safe(ws.continue_despite_damage)
 
-    names = dict(ping=ping, status=status, meetings=meetings, detail=detail,
+    names = dict(status=status, meetings=meetings, detail=detail,
                  transcript=transcript, search=search, edit=edit, undo=undo, clip=clip,
                  pause=pause, stop_now=stop_now, resume=resume, rename=rename,
                  retranscribe=retranscribe, rerun_speakers=rerun_speakers,

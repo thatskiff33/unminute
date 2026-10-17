@@ -156,7 +156,7 @@ Cleanup (`workspace/cleanup.py`) follows exactly two explicit confirmations. Cop
    - Leftover files are removed last.
    - Transcript cleanup waits until audio cleanup has finished, because it removes the source records that audio cleanup needs.
 
-Each confirmation records a `cleanup_jobs` row before anything is removed, and `resume_pending` retries unfinished jobs at startup.
+Each confirmation records a `cleanup_jobs` row before anything is removed. The processing loop runs due cleanup jobs before any other work, whenever it looks for work: a pending job at once, a failed one again after `FAILED_RETRY_S`, and a held one only once its hold is released. So unfinished jobs resume after a restart.
 
 Before removal:
 
