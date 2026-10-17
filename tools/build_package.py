@@ -494,10 +494,16 @@ def copy_app(app):
         shutil.copy2(PACKAGING / script, app.parent / script)
 
 
+def git_env():
+    """The environment for git: no GIT_DIR, GIT_WORK_TREE or other git setting
+    from outside, so the build reads this checkout and nothing else."""
+    return {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+
+
 def git_bytes(*args, data=None):
     """Raw git output; replace refs are ignored so a commit means what it says."""
     r = subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
-                       input=data, capture_output=True)
+                       input=data, capture_output=True, env=git_env())
     if r.returncode:
         sys.exit(f"git {args[0]} failed: " + r.stderr.decode("utf-8", "replace").strip())
     return r.stdout
@@ -580,7 +586,7 @@ def git(*args):
     try:
         return subprocess.run(["git", "--no-replace-objects", "-C", str(ROOT), *args],
                               check=True, capture_output=True, encoding="utf-8",
-                              errors="replace").stdout.strip()
+                              errors="replace", env=git_env()).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         return None
 

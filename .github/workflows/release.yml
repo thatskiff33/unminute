@@ -149,6 +149,18 @@ jobs:
           "sha256=$sha" >> $env:GITHUB_OUTPUT
           "sbom_sha256=$sbom" >> $env:GITHUB_OUTPUT
 
+      # The package's own record of what it is: this tag's version, this
+      # tag's commit, and a release build.
+      - name: The package names this tag and commit
+        shell: pwsh
+        env:
+          NAME: ${{ steps.build.outputs.name }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          $commit = git rev-parse HEAD
+          python -I tools/evidence.py names "dist/$env:NAME.zip" $env:TAG.Substring(1) $commit
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Packaged self-test
         shell: pwsh
         env:
@@ -284,6 +296,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          commit=$(git rev-parse HEAD)      # the commit the tag points at, as checked out
           cd release
           [ "$(sha256sum "$NAME.zip" | cut -d' ' -f1)" = "$BUILT" ] || { echo "The draft's zip is not the one built"; exit 1; }
           [ "$(sha256sum "$NAME.cdx.json" | cut -d' ' -f1)" = "$SBOM" ] || { echo "The draft's SBOM is not the one built"; exit 1; }
@@ -292,14 +305,16 @@ jobs:
             gh attestation verify "$NAME.zip" --repo "$GITHUB_REPOSITORY" \
               --bundle "$NAME.attestations.jsonl" --predicate-type "$predicate" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
-              --source-ref "refs/tags/$TAG" --source-digest "$GITHUB_SHA" \
+              --source-ref "refs/tags/$TAG" --source-digest "$commit" \
               --deny-self-hosted-runners
           done
 
-      - name: The release evidence is complete and names this zip
+      - name: The release evidence is complete and names this zip and commit
         env:
           BUILT: ${{ needs.build.outputs.sha256 }}
-        run: python tools/evidence.py check "$BUILT" release/evidence-*.json
+        run: |
+          python -I tools/evidence.py check "$BUILT" --commit "$(git rev-parse HEAD)" \
+            release/evidence-*.json
 
       - name: Publish
         env:

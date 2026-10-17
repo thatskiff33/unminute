@@ -82,6 +82,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("python -I tools/build_package.py --release", build)
         self.assertIn("-I -B -X disable-remote-debug -m workspace --self-test", build)
         self.assertIn("tools/build_package.py --verify-precompiled", build)
+        self.assertIn('python -I tools/evidence.py names "dist/$env:NAME.zip"', build)
         self.assertNotIn("cache:", build)                    # nothing restored from a cache
         self.assertEqual(2, build.count("uses: actions/attest@"))
         self.assertIn("sbom-path:", build)
@@ -103,11 +104,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('= "$BUILT"', publish)                          # the zip that was built
         self.assertIn('= "$SBOM"', publish)
         for flag in ('--signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"',
-                     '--source-ref "refs/tags/$TAG"', '--source-digest "$GITHUB_SHA"',
+                     '--source-ref "refs/tags/$TAG"', '--source-digest "$commit"',
+                     "commit=$(git rev-parse HEAD)",
                      "--deny-self-hosted-runners", "https://slsa.dev/provenance/v1",
                      "https://cyclonedx.org/bom"):
             self.assertIn(flag, publish)
-        self.assertIn('python tools/evidence.py check "$BUILT" release/evidence-*.json', publish)
+        self.assertIn('python -I tools/evidence.py check "$BUILT" --commit "$(git rev-parse HEAD)"',
+                      publish)
+        self.assertIn("release/evidence-*.json", publish)
+        self.assertNotIn("GITHUB_SHA", publish)
         # The checks come before publishing.
         self.assertLess(publish.index("tools/evidence.py check"), publish.index("--draft=false"))
         self.assertLess(publish.index("attestation verify"), publish.index("--draft=false"))

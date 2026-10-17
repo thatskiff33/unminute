@@ -259,6 +259,29 @@ class ZipTests(TempDir):
                 evidence.check_zip(path)
 
 
+class NamesTests(TempDir):
+    """evidence.py names: the release job's check that the zip it built is the
+    release build of the tag's version and commit (#111 B3b)."""
+
+    def test_the_release_build_of_this_version_and_commit(self):
+        zpath, _ = make_package(self.root)
+        self.assertEqual([], evidence.names(zpath, "0.5.0", COMMIT))
+        with mock.patch("builtins.print"):
+            self.assertEqual(0, evidence.main(["names", str(zpath), "0.5.0", COMMIT]))
+
+    def test_anything_else_is_named(self):
+        zpath, _ = make_package(self.root)
+        self.assertEqual(["its folder is Unminute-0.5.0, not Unminute-0.5.1",
+                          "it is version 0.5.0, not 0.5.1"],
+                         evidence.names(zpath, "0.5.1", COMMIT))
+        self.assertEqual([f"it was built from {COMMIT}, not {'d' * 40}"],
+                         evidence.names(zpath, "0.5.0", "d" * 40))
+        dev, _ = make_package(self.root / "dev", release=False)
+        self.assertEqual(["it is not a release build"], evidence.names(dev, "0.5.0", COMMIT))
+        with mock.patch("builtins.print"):
+            self.assertEqual(1, evidence.main(["names", str(dev), "0.5.0", COMMIT]))
+
+
 class StampTests(TempDir):
     def test_evidence_passes_only_on_the_unchanged_package_before_and_after(self):
         zpath, folder = make_package(self.root)
