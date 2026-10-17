@@ -92,7 +92,10 @@ The workflow publishes the notes and the source archives only. The Windows packa
 3. **Test the build.**
    - Install it with `install.ps1 -Package dist\Unminute-X.Y.Z.zip`.
    - Run `runtime\python.exe -I -B -m workspace --self-test` from the installed version's `app` folder. Expect PASS.
-   - **Release evidence** (docs/RELEASE_STANDARD.md, section 8). Run the five checks against the installed package from a checkout of the tagged commit, with the installed version's own Python. `<v>` is the installed version folder (`%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\X.Y.Z`). Use a copy of the models, never the live workspace, and a non-sensitive recording, such as a public meeting. Each check names the zip given with `--zip` in its report, and checks afterwards that the version folder still holds exactly that zip's files (`tools/evidence.py`). The UI, accessibility and performance checks refuse to run under any other Python, or with app code from outside `<v>`.
+   - **Release evidence** (docs/RELEASE_STANDARD.md, section 8). Run the five checks against the installed package from a clean checkout of the tagged commit (`git checkout vX.Y.Z`, with no change or extra file under `tools`, `tests` or `docs`), with the installed version's own Python. `<v>` is the installed version folder (`%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\X.Y.Z`). Use a copy of the models, never the live workspace, and a non-sensitive recording, such as a public meeting.
+     - **What each report records** (`tools/evidence.py`): the zip given with `--zip`; the checkout's commit, and whether it was clean; and whether the version folder held exactly that zip's files before and after the run. Names are compared exactly, and nothing may be missing, changed or added, with no link or extra folder.
+     - **What stops a check before it starts:** a `--zip` that is not a package, or a version folder that already differs from it. The UI, accessibility and performance checks also stop under any other Python, without the app's flags (`-I -B -X disable-remote-debug`), or with app code from outside `<v>`.
+     - **Exit code:** with `--zip`, a check exits 1 unless its evidence passes.
 
      ```
      <v>\runtime\python.exe -I -B -X disable-remote-debug tools\perf_check.py evidence-perf.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip --leak-minutes 30
@@ -100,12 +103,12 @@ The workflow publishes the notes and the source archives only. The Windows packa
      <v>\runtime\python.exe -B tools\packaged_crash_check.py <v> <model cache> <recording.wav> evidence-crash.json --zip dist\Unminute-X.Y.Z.zip
      <v>\runtime\python.exe -I -B -X disable-remote-debug tools\workspace_ui_check.py evidence-ui.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip
      <v>\runtime\python.exe -I -B -X disable-remote-debug tools\accessibility_check.py evidence-accessibility.json --app <v>\app --zip dist\Unminute-X.Y.Z.zip
-     python tools\evidence.py check <the zip's SHA-256> evidence-perf.json evidence-packaged.json evidence-crash.json evidence-ui.json evidence-accessibility.json
+     python -I tools\evidence.py check <the zip's SHA-256> --commit <the tag's commit> evidence-perf.json evidence-packaged.json evidence-crash.json evidence-ui.json evidence-accessibility.json
      ```
 
-     - The performance check measures against `docs/perf-budgets.json`. Leave the laptop idle, on mains power and the Balanced power plan, with the window visible for about 90 minutes. It counts as evidence only as a full run with the leak check (`--leak-minutes 30`, not `--quick`) that is within budget.
+     - The performance check measures against `docs/perf-budgets.json`. Leave the laptop idle, on mains power and the Balanced power plan, with the window visible for about 90 minutes. It counts as evidence only as a full release run within budget: at least 3 runs, 60 s settle and 300 s windows (the defaults), with the leak check (`--leak-minutes 30`), not `--quick`.
      - The UI and accessibility checks open a window for about a minute each, and `packaged_check` opens one at the end. Do not copy anything during the crash check.
-     - Each check prints `EVIDENCE <kind>: PASS`. `tools/evidence.py check` prints `EVIDENCE COMPLETE` only when there is one passing report of each kind, from a release build, naming that SHA-256 and run on the unchanged package. Anything else is a failed gate: fix it and run the check again; never edit a report.
+     - Each check prints `EVIDENCE <kind>: PASS`. `tools/evidence.py check` prints `EVIDENCE COMPLETE` only when there is one passing report of each kind that names that SHA-256 and commit. Each report must also come from a release build, be made by a clean checkout of that commit, and have run on the unchanged package. Anything else is a failed gate: fix it and run the check again. Never edit a report. A failing report may hold error text with local paths, so do not publish one.
      - Until security plan B3b moves releases into CI, attach the five `evidence-*.json` reports with the zip in step 4. From B3b, the Release workflow refuses to publish without them.
    - If a previous version is installed, check that the update keeps the workspace.
    - Work through docs/RELEASE_CHECKLIST.md. For a full release, decide explicitly on each open item in "Before a business release": either verified, or listed as a known limitation in the notes.

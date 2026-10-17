@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))      # evidence.py, also under -I
+sys.path.append(str(Path(__file__).resolve().parent))      # evidence.py, also under -I
 from evidence import app_folder  # noqa: E402
 
 # This checkout's app, or a package's with --app (tools/evidence.py).

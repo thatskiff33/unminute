@@ -24,13 +24,15 @@ from pathlib import Path
 import numpy as np
 
 TOOLS = Path(__file__).resolve().parent
-sys.path.insert(0, str(TOOLS))                  # evidence.py and webview_trial.py, also under -I
+# evidence.py, webview_trial.py and the fake engines (tests/), also under -I,
+# after the standard library and the app's packages so they cannot shadow one.
+sys.path.append(str(TOOLS))
+sys.path.append(str(TOOLS.parent / "tests"))
 import evidence  # noqa: E402
 
 # The app checked: this checkout, or a package's app folder with --app.
 APP = evidence.app_folder(TOOLS.parent)
 sys.path.insert(0, str(APP))
-sys.path.insert(0, str(TOOLS.parent / "tests"))
 from webview_trial import listeners, process_tree  # noqa: E402
 
 from workspace import api, shell  # noqa: E402
@@ -482,17 +484,15 @@ def checks(window, ws, mid, long_mid, report):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Real-window UI check on synthetic data (#20).")
+    ap = argparse.ArgumentParser(description="Real-window UI check on synthetic data (#20).",
+                                 allow_abbrev=False)
     ap.add_argument("report", help="where to write the JSON report")
-    ap.add_argument("--app", help="an installed or extracted package's app folder")
+    ap.add_argument("--app", help="an installed or extracted package's app folder (run with "
+                    "that package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
     ap.add_argument("--zip", help="the zip that package came from: records it as release "
-                    "evidence (tools/evidence.py); needs --app")
+                    "evidence (tools/evidence.py); exit 1 unless that evidence passes")
     args = ap.parse_args()
-    if args.zip and not args.app:
-        ap.error("--zip needs --app")
-    if args.app:
-        evidence.require_package_runtime(APP)
-        evidence.require_app_modules(APP)
+    before = evidence.prepare(ap, args, APP if args.app else None)
     out = Path(args.report)
     report = {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -614,7 +614,9 @@ def main():
         bad.append("transcript pane scrolling")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
-        evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad)
+        ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,
+                                 before=before)
+        return 0 if ev["pass"] else 1
     return 1 if bad else 0
 
 

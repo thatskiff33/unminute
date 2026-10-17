@@ -34,7 +34,7 @@ import time
 import wave
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))    # evidence.py, also under -I
+sys.path.append(str(Path(__file__).resolve().parent))    # evidence.py, also under -I
 import evidence  # noqa: E402
 
 MARKER = "quokkalanternmeridian"    # distinctive text written into the transcript
@@ -402,7 +402,8 @@ if __name__ == "__main__":
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Crash evidence from an installed package (#28).")
+    ap = argparse.ArgumentParser(description="Crash evidence from an installed package (#28).",
+                                 allow_abbrev=False)
     ap.add_argument("version_dir", help=r"the installed version folder (<install>\versions\<v>)")
     ap.add_argument("cache", help="a model cache with the models already downloaded")
     ap.add_argument("wav", help="a non-sensitive recording")
@@ -410,18 +411,24 @@ def main():
     ap.add_argument("seconds", nargs="?", type=float, default=240,
                     help="how much of the recording to use (default 240)")
     ap.add_argument("--zip", help="the zip installed in version_dir: records it as release "
-                    "evidence (tools/evidence.py)")
+                    "evidence (tools/evidence.py); exit 1 unless that evidence passes")
     args = ap.parse_args()
+    # A wrong --zip, or a folder that is not that zip's, stops now, not after the run.
+    before = evidence.prepare(ap, args, version_dir=Path(args.version_dir))
     report = {"when": time.strftime("%Y-%m-%d %H:%M"), "audio_seconds": args.seconds}
     try:
         check(args.version_dir, args.cache, args.wav, report, args.seconds)
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
+        report["failed"] = [f"the check stopped ({type(exc).__name__})"]
+        report["pass"] = False
     passed = report.get("pass") is True and not report.get("error")
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     if args.zip:
-        evidence.stamp_file(args.out, "crash", args.zip, args.version_dir, passed)
+        ev = evidence.stamp_file(args.out, "crash", args.zip, args.version_dir, passed,
+                                 before=before)
+        return 0 if ev["pass"] else 1
     return 0 if passed else 1
 
 

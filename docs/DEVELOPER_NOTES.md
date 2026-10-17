@@ -69,8 +69,9 @@ real time, and remove it when the cause is fixed.
 - **Clipboard tests** skip as "clipboard busy" while another app holds the clipboard.
 - **Real-window checks** (`tools/workspace_ui_check.py`, `tools/accessibility_check.py`) open
   windows on the user's screen and answer their own dialogs. Tell the user before running one.
-  With `--app` they check a package instead of the checkout: run them with that package's
-  `runtime\python.exe -I -B -X disable-remote-debug`, or they stop (`tools/evidence.py`).
+  With `--app` they check a package instead of the checkout. Run them with that package's
+  `runtime\python.exe` and the app's flags (`-I -B -X disable-remote-debug`); with any other
+  Python, without those flags, or with app modules from elsewhere, they stop (`tools/evidence.py`).
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 
