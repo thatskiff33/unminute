@@ -32,6 +32,7 @@
 import faulthandler
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -49,9 +50,21 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 WORD = re.compile(r"[A-Za-z0-9_-]{1,40}")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
 FUNC = re.compile(r"<?[A-Za-z_][A-Za-z0-9_]{0,63}>?")
-FRAME_FILE = re.compile(r"(<[A-Za-z0-9_.-]{1,60}>|[A-Za-z0-9_.-]{1,60}(/[A-Za-z0-9_.-]{1,60})*)")
+# A frame's file: <frozen ...>, or a Python (or Cython) source file within the
+# app, a library or the standard library, at most 8 folders deep.
+FRAME_FILE = re.compile(r"(<[A-Za-z0-9_.-]{1,60}>|([A-Za-z0-9_.-]{1,60}/){0,7}"
+                        r"[A-Za-z0-9_.-]{1,60}\.pyx?)")
+SECRET = re.compile(r"hf_[A-Za-z0-9]{20,}")          # never kept, whatever the field
 KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_error",
          "output"}
+# The number and true/false fields the app writes (FIELDS has the text ones).
+# Copy diagnostics keeps only these and FIELDS of a record.
+NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
+           "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s"}
+LOG_NAME = re.compile(r"(app|worker|gpu-worker|setup)(\.[0-9])?")   # a log file's stem
+BIG = 10 ** 12                  # no number the app writes is this large
+INCIDENT_REPEATS = 3            # the same incident is written this often a run,
+INCIDENTS_MAX = 200             # and no more than this many incidents in all
 _current = None
 
 
@@ -64,15 +77,18 @@ def _pattern(regex):
 
 
 def _frames(value):
+    def text(v, regex):
+        return v if isinstance(v, str) and regex.fullmatch(v) and not SECRET.search(v) else "?"
     out = []
     for item in list(value)[:40] if isinstance(value, (list, tuple)) else []:
         try:
             file, line, func = item
         except (TypeError, ValueError):
             continue
-        out.append([file if isinstance(file, str) and FRAME_FILE.fullmatch(file) else "?",
-                    line if isinstance(line, int) and not isinstance(line, bool) else 0,
-                    func if isinstance(func, str) and FUNC.fullmatch(func) else "?"])
+        out.append([text(file, FRAME_FILE),
+                    line if isinstance(line, int) and not isinstance(line, bool)
+                    and 0 <= line < BIG else 0,
+                    text(func, FUNC)])
     return out
 
 
@@ -85,6 +101,7 @@ FIELDS = {
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
     "op": _set("load", "transcribe", "diarize", "exit"),
     "stream": _set("stdout", "stderr"),
+    "event": _set("error", "rejection"),  # a page error (report_ui_error)
     "version": _pattern(re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-preview\.[0-9]{1,4})?"
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),
@@ -102,9 +119,11 @@ def _clean(key, value):
     if value is None or isinstance(value, bool):
         return value
     if isinstance(value, int):
-        return value
+        return value if abs(value) < BIG else "?"
     if isinstance(value, float):
-        return round(value, 3)
+        return round(value, 3) if math.isfinite(value) and abs(value) < BIG else "?"
+    if isinstance(value, str) and SECRET.search(value):
+        return "?"
     rule = FIELDS.get(key)
     return rule(value) if rule else "?"
 
@@ -205,6 +224,8 @@ class Log:
         self.crash_path = self.folder / f"{name}.crash"
         self.running_path = self.folder / f"{name}.running"
         self._crash_file = None
+        self._incidents = {}            # incident -> (its last code, times written)
+        self._incidents_written = 0
 
     # -- writing ----------------------------------------------------------------
 
@@ -255,10 +276,21 @@ class Log:
 
     def incident(self, area, exc, **fields):
         """Record an unexpected error (type and frames only) and return its
-        code, for the message the user sees."""
-        code = new_code()
-        self.write("incident", code=code, area=area, error=_type_name(exc),
-                   frames=frames(exc.__traceback__), **fields)
+        code, for the message the user sees. The same incident (area, type,
+        frames and fields) is written INCIDENT_REPEATS times a run and then
+        keeps its last code, and at most INCIDENTS_MAX are written a run: a
+        failure that repeats (a page calling a broken method again and again)
+        cannot push older records, such as a crash, out of the log."""
+        error, found = _type_name(exc), frames(exc.__traceback__)
+        key = (area, error, json.dumps(found), json.dumps(fields, sort_keys=True, default=str))
+        with self._lock:
+            code, times = self._incidents.get(key, (None, 0))
+            if times >= INCIDENT_REPEATS or self._incidents_written >= INCIDENTS_MAX:
+                return code or new_code()
+            code = new_code()
+            self._incidents[key] = (code, times + 1)
+            self._incidents_written += 1
+        self.write("incident", code=code, area=area, error=error, frames=found, **fields)
         return code
 
     # -- this run --------------------------------------------------------------
@@ -269,12 +301,18 @@ class Log:
         counted, and this run is marked running. Returns whether the previous
         run ended uncleanly."""
         unclean = self.running_path.exists()
-        self.collect_crash(unclean)
+        if self.collect_crash(unclean) is None and unclean:
+            # Ended without closing and without a native crash (ended in Task
+            # Manager's Details, power lost): still a crash, counted once.
+            self.write("crash", code=new_code(), process=self.name, fatal="did_not_close")
         for name in others:
             self.collect_crash(False, crash_path=self.folder / f"{name}.crash", process=name)
         try:
             self.folder.mkdir(exist_ok=True)
-            self.running_path.write_text("", encoding="ascii")
+            # Which process is running (--health asks Windows whether it still
+            # is, from any session): its id and start time, no names.
+            self.running_path.write_text(json.dumps(
+                {"pid": os.getpid(), "created": process_created()}), encoding="ascii")
         except OSError:
             pass
         return unclean
@@ -551,10 +589,116 @@ def incident(area, exc, **fields):
     return log.incident(area, exc, **fields)
 
 
+def shareable_records(folder, limit=60):
+    """The newest records of each log the app writes in folder, oldest first
+    (undated ones before all others), passed through the field rules again
+    for Copy diagnostics: only FIELDS and NUMBERS are kept, each to its rule.
+    That keeps a record to the shapes the app writes; it cannot tell a word
+    the app wrote from the same-shaped word written by another program that
+    can already write to the user's logs folder. Never the raw crash files,
+    and no more of a file than a log can grow to."""
+    out = []
+    for path in files(folder):
+        if not LOG_NAME.fullmatch(path.stem):
+            continue                            # not a log the app writes
+        try:
+            with open(path, "rb") as f:
+                size = f.seek(0, os.SEEK_END)
+                f.seek(max(0, size - 2 * MAX_BYTES))   # write() never grows a log past this
+                lines = f.read().decode("ascii", errors="replace").splitlines()
+        except OSError:
+            continue
+        if size > 2 * MAX_BYTES:
+            lines = lines[1:]                   # started part way through a line
+        for line in lines[-limit:]:
+            try:
+                raw = json.loads(line)
+            except (ValueError, RecursionError):  # RecursionError: nested too deeply
+                continue
+            if not isinstance(raw, dict):
+                continue
+            t = raw.get("t")
+            record = {"t": t if isinstance(t, str) and re.fullmatch(
+                          r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else "?",
+                      "kind": raw.get("kind") if raw.get("kind") in KINDS else "?",
+                      "log": path.stem}
+            for key, value in raw.items():
+                if key in FIELDS or key in NUMBERS:
+                    record[key] = _clean(key, value)
+            out.append(record)
+    out.sort(key=lambda r: (r["t"] != "?", r["t"]))
+    return out[-limit:]
+
+
+def recent_crashes(folder, days=7, now=None):
+    """Crashes (including runs that ended without closing) and worker or
+    download processes that ended by themselves, in the last days. A crash
+    and its process's exit share a code and count once; a time more than a
+    day ahead (the clock was wrong) does not count."""
+    now = now or time.time()
+    cutoff, ahead = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + d))
+                     for d in (-days * 86400, 86400))
+    seen = set()
+    for i, r in enumerate(shareable_records(folder, limit=100000)):
+        if r["t"] == "?" or not cutoff <= r["t"] <= ahead:
+            continue
+        if r["kind"] == "crash" or (r["kind"] == "worker_exit" and not r.get("hung")):
+            code = r.get("code")
+            seen.add(code if isinstance(code, str) and code != "?" else i)
+    return len(seen)
+
+
 def files(folder):
     """The log files in folder (never the raw .crash files, which can hold
     program folders): what Copy diagnostics may read, and what tests check."""
-    folder = Path(folder)
-    if not folder.is_dir():
+    try:
+        return sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix == ".log")
+    except OSError:                             # missing, or not readable
         return []
-    return sorted(p for p in folder.iterdir() if p.is_file() and p.suffix == ".log")
+
+
+def process_created(pid=None):
+    """When a running process started (a Windows FILETIME), or None if it has
+    ended or cannot be asked. pid None: this process."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except (AttributeError, OSError):
+        return None
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    if pid is None:
+        handle = kernel32.GetCurrentProcess()
+    else:
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+    try:
+        status = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(wintypes.HANDLE(handle), ctypes.byref(status)) \
+                or status.value != 259:                    # STILL_ACTIVE
+            return None
+        times = [wintypes.FILETIME() for _ in range(4)]    # created, exited, kernel, user
+        if not kernel32.GetProcessTimes(wintypes.HANDLE(handle),
+                                        *(ctypes.byref(t) for t in times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        if pid is not None:
+            kernel32.CloseHandle(wintypes.HANDLE(handle))
+
+
+def run_owner_alive(marker):
+    """Is the process a run marker names (open_run) still running? None if
+    the marker names none (written before R9b, or unreadable)."""
+    try:
+        with open(marker, "rb") as f:
+            owner = json.loads(f.read(200).decode("ascii"))
+        pid, created = owner["pid"], owner["created"]
+    except (OSError, ValueError, RecursionError, TypeError, KeyError):
+        return None
+    if isinstance(pid, bool) or not isinstance(pid, int) or not isinstance(created, int):
+        return None
+    return process_created(pid) == created

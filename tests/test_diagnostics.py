@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -296,6 +297,267 @@ class RecordTests(unittest.TestCase):
         self.assertFalse(gone.parent.exists())
 
 
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class SharingTests(unittest.TestCase):
+    """R9b: page errors, Copy diagnostics and --health."""
+
+    def setUp(self):
+        from workspace.app import Workspace
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.values, self.invalid = {}, ()
+        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                            allow_test_engines=True,
+                            policy_reader=lambda: (self.values, self.invalid))
+        self.now = [100.0]
+        self.ws._clock = lambda: self.now[0]
+
+    def tearDown(self):
+        diag.set_current(None)
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def incidents(self, area=None):
+        return [r for r in records(self.ws.log.folder)
+                if r.get("kind") == "incident" and (area is None or r.get("area") == area)]
+
+    # -- page errors and incidents ---------------------------------------------------
+
+    def test_page_errors_are_fixed_values_and_rate_limited(self):
+        from workspace import api
+        page = api.make_api(self.ws)
+        self.assertTrue(page.report_ui_error("error", 12, 3)["ok"])
+        self.assertFalse(page.report_ui_error(f"{MARKER} text", 1, 1)["ok"])   # refused
+        self.assertFalse(page.report_ui_error("error", MARKER, 1)["ok"])
+        for bad in (float("nan"), float("inf"), -1, 10 ** 8, 1.5, True, None):
+            self.assertFalse(page.report_ui_error("error", bad, 1)["ok"])
+        self.assertEqual(self.incidents("bridge"), [])         # refusals are not incidents
+        page.report_ui_error("rejection", 0, 0)                 # within a second: dropped
+        self.assertEqual(len(self.incidents("page")), 1)
+        for _ in range(40):
+            self.now[0] += 2
+            page.report_ui_error("rejection", 0, 0)
+        pages = self.incidents("page")
+        self.assertEqual(len(pages), 20)                        # PAGE_ERRORS a run
+        self.assertEqual((pages[0]["event"], pages[0]["line"], pages[0]["col"]),
+                         ("error", 12, 3))
+        self.assertEqual(leaks(self.ws.log.folder), [])
+
+    def test_a_repeated_incident_cannot_flood_the_log(self):
+        log = self.ws.log
+
+        def fail(method):
+            try:
+                raise KeyError(MARKER)
+            except KeyError as exc:
+                return log.incident("bridge", exc, method=method)
+        codes = [fail("meetings") for _ in range(10)]
+        written = self.incidents()
+        self.assertEqual(len(written), diag.INCIDENT_REPEATS)
+        self.assertEqual(set(codes[diag.INCIDENT_REPEATS - 1:]), {written[-1]["code"]})
+        with mock.patch.object(diag, "INCIDENTS_MAX", 5):
+            for i in range(10):
+                fail(f"method{i}")                              # all different
+        self.assertEqual(len(self.incidents()), 5)
+
+    # -- Copy diagnostics ------------------------------------------------------------
+
+    def test_shared_records_keep_only_what_the_app_writes(self):
+        log = self.ws.log
+        log.write("start", version="0.5.0")
+        token = "hf_" + "A1b2" * 9
+        with open(log.path, "a", encoding="ascii") as f:     # hand-edited lines
+            for record in (
+                {"t": "2020-01-01T00:00:00Z", "kind": "incident", "title": MARKER,
+                 "area": f"C:/Users/{MARKER}", "log": MARKER, MARKER: 1, "error": token,
+                 "count": 10 ** 40, "line": float("nan"),
+                 "frames": [[f"C:/Users/{MARKER}/x.py", 1, "run"],
+                            [f"Users/{MARKER}/Clients/notes.txt", 2, "run"],
+                            [f"{token}/x.py", 10 ** 15, token]]},
+                {"t": "2020-01-01T00:00:01Z", "kind": MARKER, "code": "U-ABCDEF"},
+                {"t": MARKER, "kind": "crash"},                     # no valid time
+            ):
+                f.write(json.dumps(record) + "\n")
+            f.write("[1]\n" + "[" * 100000 + "\n" + "not json\n")
+        (log.folder / f"{MARKER} Client Ltd.log").write_text(          # not a log the app writes
+            json.dumps({"t": "2020-01-01T00:00:02Z", "kind": "start"}) + "\n", encoding="ascii")
+        shared = diag.shareable_records(log.folder)
+        self.assertEqual([r["kind"] for r in shared], ["crash", "incident", "?", "start"])
+        undated, edited = shared[0], shared[1]
+        self.assertEqual(undated["t"], "?")                     # sorted first: never "newest"
+        self.assertEqual(set(edited), {"t", "kind", "log", "area", "error", "count", "line",
+                                       "frames"})
+        self.assertEqual((edited["log"], edited["area"], edited["error"], edited["count"],
+                          edited["line"]), ("app", "?", "?", "?", "?"))
+        self.assertEqual([f[0] for f in edited["frames"]], ["?", "?", "?"])
+        self.assertEqual(edited["frames"][2][1:], [0, "?"])     # line bounded, no token
+        self.assertNotIn(MARKER, json.dumps(shared))
+        self.assertNotIn(token, json.dumps(shared))
+        self.assertEqual(diag.recent_crashes(log.folder), 0)   # undated: not counted
+
+    def test_shared_records_read_no_more_than_a_log_can_hold(self):
+        log = self.ws.log
+        log.folder.mkdir(exist_ok=True)
+        early = json.dumps({"t": "2020-01-01T00:00:00Z", "kind": "timing"})
+        part = json.dumps({"t": "2020-01-01T00:00:01Z", "kind": "stop"})   # the read starts here
+        last = json.dumps({"t": "2020-01-01T00:00:02Z", "kind": "start"})
+        with mock.patch.object(diag, "MAX_BYTES", 1000):
+            tail = 2 * diag.MAX_BYTES                   # the most a log can hold
+            last += " " * (tail - len(part) - 1 - len(last) - 1)
+            with open(log.path, "w", encoding="ascii", newline="\n") as f:
+                # Beyond the tail: two whole records, then a line that the
+                # read starts part way through, where it happens to parse.
+                f.write(f"{early}\n{early}\n{'x' * 5000}{part}\n{last}\n")
+            self.assertEqual([r["kind"] for r in diag.shareable_records(log.folder)],
+                             ["start"])
+
+    def test_diagnostics_hold_known_values_only(self):
+        from workspace import clipboard, gpu, policy, setup, update
+        self.values.update(AllowModelDownloads=False, HandoffDefaultFolder=f"C:\\{MARKER}")
+        self.invalid = ("ClipboardClearMinutes",)
+        self.ws.policy = policy.PolicySource(reader=lambda: (self.values, self.invalid))
+        self.ws._forget_display()
+        odd = f"{MARKER} text"
+        with mock.patch.object(setup, "cards", return_value=[{"name": odd, "state": odd}]), \
+                mock.patch.object(gpu, "detected",
+                                  return_value={"driver": odd, "driver_ok": True}), \
+                mock.patch("platform.version", return_value=odd), \
+                mock.patch.object(update, "deployment", return_value={"mode": odd}):
+            text = self.ws.diagnostics()
+        self.assertIn("AllowModelDownloads=False", text)
+        self.assertIn("HandoffDefaultFolder=set", text)
+        self.assertIn("ClipboardClearMinutes=invalid", text)
+        self.assertIn("mode=quiet", text)
+        self.assertNotIn(MARKER, text)
+        self.ws.settings.values["model"] = MARKER               # past validation somehow
+        self.assertIn("model=?", self.ws.diagnostics())
+        with mock.patch.object(clipboard, "copy_text") as copy:
+            self.assertEqual(self.ws.copy_diagnostics()["chars"], len(copy.call_args.args[0]))
+
+    # -- --health ----------------------------------------------------------------------
+
+    def test_health_reports_how_the_last_run_ended(self):
+        from workspace import __main__ as main
+        root, marker = self.ws.root, self.ws.log.running_path
+        with mock.patch.object(main, "_app_running", return_value=False):
+            report = main.health(root)
+            self.assertEqual((report["healthy"], report["workspace"], report["last_run"],
+                              report["crashes_7d"], report["running"]),
+                             (True, "ok", "clean", 0, False))
+            self.assertIsInstance(report["schema"], int)
+            self.assertEqual(set(report), {"version", "workspace", "running", "last_run",
+                                           "crashes_7d", "schema", "healthy"})
+            self.ws.log.open_run()
+            marker.write_text(json.dumps({"pid": 0, "created": 1}))   # its process has ended
+            report = main.health(root)
+            self.assertEqual((report["running"], report["last_run"], report["healthy"]),
+                             (False, "did_not_close", False))
+            marker.write_text("")                       # from before R9b: the mutex decides
+            self.assertEqual(main.health(root)["last_run"], "did_not_close")
+        with mock.patch.object(main, "_app_running", return_value=True):
+            report = main.health(root)
+            self.assertEqual((report["running"], report["last_run"]), (True, "clean"))
+        self.ws.log.close_run()
+
+    def test_crashes_count_once_and_only_recently(self):
+        log, folder = self.ws.log, self.ws.log.folder
+        log.write("worker_exit", code="U-ABCDE0", process="worker", hung=True)   # app stopped it
+        self.assertEqual(diag.recent_crashes(folder), 0)
+        log.write("crash", code="U-ABCDEF", process="worker", fatal="x")
+        log.write("worker_exit", code="U-ABCDEF", process="worker", exitcode=3)  # the same crash
+        self.assertEqual(diag.recent_crashes(folder), 1)
+        log.write("worker_exit", code="U-ABCDE1", process="setup", exitcode=1)
+        self.assertEqual(diag.recent_crashes(folder), 2)
+        self.assertEqual(diag.recent_crashes(folder, now=time.time() + 8 * 86400), 0)
+        self.assertEqual(diag.recent_crashes(folder, now=time.time() - 2 * 86400), 0)  # ahead
+
+    def test_a_run_that_did_not_close_counts_as_a_crash(self):
+        log = self.ws.log
+        self.assertFalse(log.open_run())
+        self.assertTrue(log.open_run())                 # the first never closed
+        crashes = [r for r in records(log.folder) if r["kind"] == "crash"]
+        self.assertEqual([r["fatal"] for r in crashes], ["did_not_close"])
+        self.assertEqual(diag.recent_crashes(log.folder), 1)
+        log.close_run()
+
+    def test_health_states_without_a_traceback(self):
+        import io
+        import sqlite3
+
+        from workspace import __main__ as main
+        from workspace.app import Workspace
+        from workspace.store import StoreError
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "never"
+            empty.mkdir()
+            report = main.health(empty)                 # the app never opened here
+            self.assertEqual((report["workspace"], report["schema"], report["healthy"]),
+                             ("none", None, True))
+            hashed = Workspace(Path(tmp) / "a#b" / "ws", Path(tmp) / "models", start=False,
+                               battery=False)           # # in a folder name (SQLite's URI)
+            try:
+                self.assertEqual(main.health(hashed.root)["workspace"], "ok")
+            finally:
+                hashed.close()
+        with mock.patch("workspace.store.default_root", side_effect=StoreError(MARKER)):
+            report = main.health()
+            self.assertEqual((report["workspace"], report["healthy"]), ("location", False))
+        with mock.patch.object(main, "_system_account", return_value=True):
+            report = main.health(self.ws.root)
+            self.assertEqual((report["workspace"], report["healthy"]), ("system_account", False))
+        with mock.patch.object(main, "_system_account", return_value=None):   # cannot tell
+            report = main.health(self.ws.root)
+            self.assertEqual((report["workspace"], report["healthy"]), ("unreadable", False))
+        with mock.patch.object(main, "package_version", return_value=f"{MARKER} 1.0"):
+            self.assertEqual(main.health(self.ws.root)["version"], "?")   # from the install
+        with mock.patch.object(main, "status", side_effect=sqlite3.DatabaseError(MARKER)):
+            self.assertEqual(main.health(self.ws.root)["workspace"], "unreadable")
+        with mock.patch.object(diag, "recent_crashes",
+                               side_effect=PermissionError(f"C:\\Users\\{MARKER}\\logs")):
+            report = main.health(self.ws.root)
+            self.assertEqual((report["workspace"], report["healthy"]), ("unreadable", False))
+        with mock.patch.object(main, "_health", side_effect=RuntimeError(MARKER)), \
+                mock.patch.object(sys, "argv", ["workspace", "--health"]), \
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out, \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+            self.assertEqual(main.main(), 1)
+        self.assertEqual(json.loads(out.getvalue())["workspace"], "unreadable")
+        self.assertNotIn(MARKER, out.getvalue() + err.getvalue())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows processes, mutexes and accounts")
+    def test_health_asks_windows_whether_the_app_runs(self):
+        import ctypes
+
+        from workspace import __main__ as main
+        name = f"Local\\Unminute.Test.{os.getpid()}"
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        self.assertFalse(main._app_running(name))
+        handle = kernel32.CreateMutexW(None, False, name)
+        try:
+            self.assertTrue(main._app_running(name))
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+        self.assertFalse(main._app_running(name))
+        self.assertFalse(main._system_account())        # tests never run as SYSTEM
+        marker = self.ws.log.running_path
+        self.ws.log.open_run()                          # names this process
+        self.assertTrue(diag.run_owner_alive(marker))
+        with mock.patch.object(main, "_app_running", return_value=False):   # another session
+            report = main.health(self.ws.root)
+            self.assertEqual((report["running"], report["last_run"]), (True, "clean"))
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            owner = {"pid": child.pid, "created": diag.process_created(child.pid)}
+            marker.write_text(json.dumps(owner))
+            self.assertTrue(diag.run_owner_alive(marker))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(diag.run_owner_alive(marker))  # the same process, ended
+        self.ws.log.close_run()
+
+
 class DownloadStartTests(unittest.TestCase):
     def test_a_download_that_cannot_start_does_not_leave_setup_busy(self):
         from workspace import setup
@@ -467,7 +729,12 @@ class LifecycleTests(unittest.TestCase):
         methods = {r.get("method") for r in records(self.logs()) if r.get("area") == "bridge"}
         self.assertEqual(methods, {"rename", "rename_speaker", "edit", "search",
                                    "download_model", "meetings"})
-        self.assertEqual(leaks(self.logs(), *ws.status()["import_errors"]), [])
+        # A page error, then what Copy diagnostics would copy (R9b).
+        page.report_ui_error("error", 412, 9)
+        shared = ws.diagnostics()
+        self.assertIn('"area":"page"', shared)
+        self.assertIn("Unminute diagnostics (no meeting content)", shared)
+        self.assertEqual(leaks(self.logs(), shared, *ws.status()["import_errors"]), [])
 
     def test_a_worker_crash_is_recorded_with_a_code(self):
         from workspace.worker import WorkerCrashed

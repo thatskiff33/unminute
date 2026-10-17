@@ -251,7 +251,7 @@ Status is one of:
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
 | Settings versioned; unknown keys kept on rollback | 9 | Unit tests | Planned: R11 (#132) |
 | Local content-free log, crash hooks, incident codes | 5, 6 | `workspace/diag.py`; unit tests and the marker test (`tests/test_diagnostics.py`); forced crashes in the app and the worker | In place (R9a) |
-| Page errors, Copy diagnostics, `--health` | 5, 6, 14 | Unit tests and the marker test | Planned: R9b (#130) |
+| Page errors, Copy diagnostics, `--health` | 5, 6, 14 | `report_ui_error` (fixed kind and numbers, rate-limited); Help > Copy diagnostics; `--health`; unit tests and the marker test (`tests/test_diagnostics.py`) | In place (R9b) |
 | Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |
 | CodeQL for Python, JavaScript and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
 | JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/quality.yml` | In place, not yet required |
@@ -272,7 +272,7 @@ Status is one of:
 | Screenshots match the shipped app | 10 | Pull request template and review | In place |
 | Known limitations stated in each full release's notes | 10, 14 | [RELEASING.md](RELEASING.md), "Unminute package releases", step 3 | Manual |
 | Pilot ring before a full release | 14 | Release decision | Not yet possible: no pilot group chosen (#121) |
-| Device-management health check without telemetry | 14 | `--status` (in place); `--health` for Intune Remediation | `--status` in place; `--health` planned: R9 (#130) |
+| Device-management health check without telemetry | 14 | `--status`; `--health` for Intune Remediation (`docs/PACKAGING.md`) | In place |
 | Withdrawal runbook | 14 | [RELEASING.md](RELEASING.md) | In place |
 | Pull request definition of done and bug template | 10, 14 | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` | In place |
 | Agent instructions: the paths and invariant guard tests that `AGENTS.md` names exist; no `CLAUDE.md`; no tracked media | 1, 10 | Unit test (`tests/test_consistency.py`); Claude Code guard tested in `tests/test_agent_guard.py` | In place |

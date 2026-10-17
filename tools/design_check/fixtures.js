@@ -458,6 +458,8 @@
       }
       return items;
     },
+    report_ui_error: () => null,
+    copy_diagnostics: () => ({ chars: 1200 }),
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.
       if (data.levels && data.recording.recording) {

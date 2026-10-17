@@ -167,6 +167,20 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
 
 For support, `runtime\python.exe -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content.
 
+For an Intune Remediation detection script, run `runtime\python.exe -m workspace --health` from the user's installed version folder, with **Run this script using the logged-on credentials** set to **Yes**. Never run it as SYSTEM: the install is the user's own and the user can change its files, so a SYSTEM run would run the user's code as SYSTEM, and SYSTEM sees no user's workspace. Run as SYSTEM, it reports `"workspace": "system_account"` and exits 1.
+
+It prints one line of JSON (well within Intune's 2,048-character output limit) and exits 0 when healthy, 1 when it needs attention (Intune's "issue detected"). It never prints an error message or a traceback. Fields:
+
+- `version`.
+- `workspace`: `ok`; `none` (this user has not opened the app yet; still healthy); `location` (the app data location is missing or synced); `unreadable` (also when Windows cannot say which account it runs as); `system_account`.
+- `running`: the app is open, asked of Windows through its single-instance lock and the process it recorded at start, so from any session.
+- `last_run`: `clean`, or `did_not_close` when the app last ended without closing and has not been opened since (its next start records that as a crash).
+- `crashes_7d`: crashes (including runs that ended without closing) and worker or download processes that ended by themselves in the last 7 days, each counted once, from the content-free logs.
+- `schema`: the workspace's storage version, or null.
+- `healthy`: `workspace` `ok` or `none`, `last_run` `clean`, and no crashes.
+
+It reads counts and the logs only, never content. It writes nothing of its own, though opening the database read-only can leave SQLite's `-wal` and `-shm` files beside it. A user can add the detail with Help > **Copy diagnostics**.
+
 ### Managed settings (policy)
 
 From the first release after v0.4.3, the app reads policy values from `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` (64-bit view): at start, every 15 minutes, on each refresh while Settings or Downloads is open, and again just before it would delete an original recording. Standard users cannot change this key. Policy overrides the user's settings: Settings says some settings are managed and disables those controls, and the app enforces each value itself.

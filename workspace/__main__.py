@@ -12,6 +12,11 @@
 #                 cleanup); used by installers and updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency and check the offline guard
+#   --health      for an Intune Remediation detection script run as the
+#                 signed-in user (R9b): JSON with the version, whether the
+#                 workspace opens, whether the app is running, how the last run
+#                 ended and crashes in the last 7 days. Exit 0 healthy, 1 needs
+#                 attention. No content (docs/PACKAGING.md).
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
@@ -48,19 +53,8 @@ def model_cache():
 
 
 def package_version():
-    """version.json beside app/ in an installed package. From a source checkout,
-    the newest prepared release from VERSION with "+source" (later changes may
-    be included), or just "source" if there is no VERSION file."""
-    path = Path(__file__).resolve().parents[2] / "version.json"
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))["version"]
-    except (OSError, ValueError, KeyError):
-        pass
-    try:
-        version = (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8")
-        return version.strip() + "+source"
-    except OSError:
-        return "source"
+    from workspace.update import package_version
+    return package_version()
 
 
 def status(root=None):
@@ -68,11 +62,11 @@ def status(root=None):
     import sqlite3
 
     from workspace.store import default_root
-    db = Path(root or default_root()) / "workspace.db"
+    db = Path(root or default_root()).absolute() / "workspace.db"
     out = {"version": package_version(), "workspace": db.exists(), "meetings": 0,
            "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None}
     if db.exists():
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
             q = lambda sql: con.execute(sql).fetchone()[0]  # noqa: E731
             out.update(meetings=q("SELECT COUNT(*) FROM meetings"),
@@ -83,6 +77,119 @@ def status(root=None):
         finally:
             con.close()
     return out
+
+
+def health(root=None):
+    """For device management (an Intune Remediation run as the signed-in
+    user): states and counts only, and never an error message. Needs
+    attention when the workspace cannot be used, when run as SYSTEM (which
+    sees no user's workspace, and must never run the user's own install), or
+    when something crashed in the last 7 days (including a run that ended
+    without closing, which the next start records as a crash)."""
+    out = {"version": "?", "workspace": "unreadable", "running": False,
+           "last_run": "clean", "crashes_7d": 0, "schema": None}
+    try:
+        _health(out, root)
+    except Exception:                           # never a traceback (it holds folders)
+        out["workspace"] = "unreadable"
+    out["healthy"] = (out["workspace"] in ("ok", "none") and out["crashes_7d"] == 0
+                      and out["last_run"] == "clean")
+    return out
+
+
+def _health(out, root):
+    from workspace import diag
+    from workspace.store import StoreError, default_root
+    out["version"] = diag._clean("version", package_version())   # read from the install
+    account = _system_account()
+    if account is None:                         # cannot tell: needs attention, never healthy
+        return                                  # (workspace stays "unreadable")
+    if account:
+        out["workspace"] = "system_account"
+        return
+    try:
+        root = Path(root or default_root())
+    except StoreError:
+        out["workspace"] = "location"           # missing or synced LOCALAPPDATA
+        return
+    logs = root / "logs"
+    marker = logs / "app.running"
+    left = marker.exists()                      # before asking whether it runs
+    owner = diag.run_owner_alive(marker) if left else None
+    out["running"] = bool(owner) or _app_running()
+    if left and not out["running"]:
+        out["last_run"] = "did_not_close"
+    out["crashes_7d"] = diag.recent_crashes(logs)
+    try:
+        counts = status(root)
+    except Exception:
+        out["workspace"] = "unreadable"
+        return
+    out["workspace"] = "ok" if counts["workspace"] else "none"   # none: never opened here
+    out["schema"] = counts["schema"]
+
+
+def _app_running(name=None):
+    """Is the app open in this session (its single-instance mutex exists)?
+    Never creates it. A copy run as administrator holds one this process may
+    not open: that is running too, as in _single_instance."""
+    import ctypes
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenMutexW.restype = ctypes.c_void_p
+        handle = kernel32.OpenMutexW(0x00100000, False, name or MUTEX_NAME)   # SYNCHRONIZE
+        error = ctypes.get_last_error()
+    except (AttributeError, OSError):
+        return False
+    if handle:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return True
+    return error == 5                           # ERROR_ACCESS_DENIED
+
+
+def _system_account():
+    """Is this process running as Local System (S-1-5-18)? Intune runs a
+    script there unless it is set to use the logged-on credentials. None if
+    Windows cannot say (so --health never reports healthy on a guess); False
+    off Windows."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except AttributeError:                      # not Windows (tests on Linux)
+        return False
+    except OSError:
+        return None
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD,
+                                          ctypes.POINTER(wintypes.HANDLE))
+    advapi32.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                             wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    advapi32.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p,
+                                                ctypes.POINTER(ctypes.c_wchar_p))
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,   # TOKEN_QUERY
+                                     ctypes.byref(token)):
+        return None
+    try:
+        size = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
+        buffer = ctypes.create_string_buffer(size.value)
+        if not size.value or not advapi32.GetTokenInformation(
+                token, 1, buffer, size, ctypes.byref(size)):
+            return None
+        sid = ctypes.c_void_p.from_buffer(buffer).value   # TOKEN_USER.User.Sid
+        text = ctypes.c_wchar_p()
+        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            return None
+        try:
+            return text.value == "S-1-5-18"
+        finally:
+            kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        kernel32.CloseHandle(token)
 
 
 def self_test():
@@ -156,6 +263,10 @@ def main():
         return 0
     if "--self-test" in sys.argv:
         return self_test()
+    if "--health" in sys.argv:
+        result = health()                   # never raises: no traceback on stderr
+        print(json.dumps(result))
+        return 0 if result["healthy"] else 1
     if "--gate" in sys.argv:
         from workspace import update
         from workspace.store import SCHEMA_VERSION, default_root
