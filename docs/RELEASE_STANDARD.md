@@ -251,7 +251,7 @@ Status is one of:
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |
 | Settings versioned; unknown keys kept on rollback | 9 | `settings_version`; kept keys and newer values; reset settings named in Settings; fsync before the swap; unit tests (`tests/test_integrity.py`) | In place (R11) |
 | Local content-free log, crash hooks, incident codes | 5, 6 | `workspace/diag.py`; unit tests and the marker test (`tests/test_diagnostics.py`); forced crashes in the app and the worker | In place (R9a) |
-| Page errors, Copy diagnostics, `--health` | 5, 6, 14 | `report_ui_error` (fixed kind and numbers, rate-limited); Help > Copy diagnostics; `--health`; unit tests and the marker test (`tests/test_diagnostics.py`) | In place (R9b) |
+| Page errors, Copy diagnostics, `--health` | 5, 6, 14 | `report_ui_error` (fixed kind and numbers, rate-limited); Help > Copy diagnostics; `--health`; unit tests and the marker test (`tests/test_diagnostics.py`); a page error before the bridge is ready, kept and reported once it is (`tools/ui_idle_check.py`) | In place (R9b, #171) |
 | Every job in `.github/workflows/ci.yml` (the required ones are listed in [RELEASING.md](RELEASING.md)) | 7 | CI | In place |
 | CodeQL for Python, JavaScript and workflows | 7 | CI (`.github/workflows/codeql.yml`) | In place |
 | JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/quality.yml` | In place, not yet required |
