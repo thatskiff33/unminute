@@ -77,6 +77,15 @@ def _long(path):
     return Path("\\\\?\\" + p)
 
 
+def _is_reparse(path):
+    """A symbolic link or junction (any reparse point)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
 class GpuError(RuntimeError):
     """A refused or failed GPU step (message is safe to show)."""
 
@@ -262,7 +271,13 @@ def install(cache_dir, log, fetch):
     component. Runs in the download process. Nothing replaces a working copy
     until the new one is complete and verified."""
     base = _long(component_dir(cache_dir))
-    staging = _long(staging_dir(cache_dir))
+    # Only the parent is resolved (in base): the staging folder itself is never
+    # followed. If it is a link or junction it is refused before anything is
+    # deleted or written, or rmtree would delete whatever it points to (T5).
+    staging = base.parent / staging_dir(cache_dir).name
+    if _is_reparse(staging):
+        raise GpuError("The graphics card component's download folder is a link, so it "
+                       "was not used. Ask your IT team.")
     shutil.rmtree(staging, ignore_errors=True)
     (staging / "wheels").mkdir(parents=True)
     try:

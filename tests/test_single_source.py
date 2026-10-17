@@ -220,12 +220,36 @@ class ProgressTests(unittest.TestCase):
                                                "started": time.time()}
         self.assertIsNone(self.downloads.percent(gpu.COMPONENT))      # not 100% from leftovers
 
-    def test_install_builds_where_progress_looks(self):
-        # gpu.install and Downloads.percent share gpu.staging_dir: if install
-        # ever moved its staging folder, progress would follow it.
-        source = (ROOT / "workspace" / "gpu.py").read_text(encoding="utf-8")
-        install = source[source.index("def install("):]
-        self.assertIn("staging = _long(staging_dir(cache_dir))", install)
+    def test_install_downloads_where_progress_looks(self):
+        cache = Path(self.tmp.name) / "models"
+        seen = []
+
+        def fetch(url, dest, size):
+            seen.append(os.path.samefile(Path(dest).parent, gpu.staging_dir(cache) / "wheels"))
+            raise OSError("no network in tests")
+        with self.assertRaises(OSError):
+            gpu.install(cache, log=lambda m: None, fetch=fetch)
+        self.assertEqual(seen, [True])
+        self.assertFalse(gpu.staging_dir(cache).exists())          # cleaned up after a failure
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
+    def test_install_never_follows_a_linked_download_folder(self):
+        # A junction at the staging folder must not be followed: deleting or
+        # writing through it would reach whatever it points to.
+        base = Path(self.tmp.name)
+        cache = base / "models"
+        (cache / "gpu").mkdir(parents=True)
+        canary = base / "elsewhere"
+        (canary / "keep").mkdir(parents=True)
+        (canary / "keep" / "file.txt").write_text("synthetic", encoding="utf-8")
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(gpu.staging_dir(cache)), str(canary)],
+                       check=True, capture_output=True)
+        fetched = []
+        with self.assertRaisesRegex(gpu.GpuError, "is a link"):
+            gpu.install(cache, log=lambda m: None, fetch=lambda *a: fetched.append(a))
+        self.assertEqual(fetched, [])
+        self.assertTrue((canary / "keep" / "file.txt").is_file())
+        self.assertEqual(sorted(p.name for p in canary.iterdir()), ["keep"])   # nothing written
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):
