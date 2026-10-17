@@ -157,6 +157,7 @@ The Release workflow builds every published package. The same command builds it 
 3. **People who installed it.**
    - Ask them to roll back, as described in [PACKAGING.md](PACKAGING.md): from `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` (the bad version), run `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback`.
    - Rollback is refused if the bad version changed the storage format. In that case, fix forward instead.
+   - The first release after the rename (#136) has no earlier version in its install folder to roll back to. To go back past it, uninstall it and install the earlier release again, which opens that release's own workspace.
 4. **Fix forward.**
    - Release the next patch version through the normal process.
    - Its changelog entry says what was wrong and who was affected, without meeting content.

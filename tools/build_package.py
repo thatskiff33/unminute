@@ -82,7 +82,8 @@ PYTHON_TAG = PYTHON_MINOR.replace(".", "")
 APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md",
              "unminute.ico"]
 # Windows PowerShell 5.1 and many tools stop at 260-character paths. With the
-# default install folder (about 77 characters plus the user name) every path
+# default install folder (68 characters plus the user name, with a 16-character
+# version) every path
 # inside the package must stay at or under this length.
 MAX_RELATIVE_PATH = 140
 SITE = "lib"                 # runtime/lib instead of runtime/Lib/site-packages

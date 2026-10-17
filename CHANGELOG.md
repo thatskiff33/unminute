@@ -63,7 +63,7 @@ Discard, review layout and privacy improvements, and a new README. An installed 
 - **Long meeting titles** now use the available width instead of being cut short.
 - **Clearer microphone disconnection message.** When a microphone is unplugged mid-recording, Windows also reports a brief overrun. That is now part of the disconnection message rather than a separate "could not keep up" gap.
 - **ONNX Runtime telemetry off in the workspace.** The workspace now switches off ONNX Runtime's Windows telemetry events, before any speech model loads.
-- **New README**, with current screenshots of a fictional sample meeting.
+- **New README** with current screenshots of a fictional sample meeting.
 
 ## v0.2.2
 
@@ -85,7 +85,7 @@ The known limitations listed for v0.2.0 still apply. In addition, graphics card 
 
 A Windows app that transcribes, reviews and cleans up meeting recordings on your own computer. This first full release brings together the four previews (v0.2.0-preview.1 to preview.4).
 
-**Install:** it installs for your Windows account without administrator rights. It is built for unattended deployment through Intune, which has not yet been tested on a managed device (see Known limitations). An installed preview updates and keeps your workspace.
+**Install:** for your Windows account, without administrator rights. It is built for unattended deployment through Intune, which has not yet been tested on a managed device (see Known limitations). An installed preview updates and keeps your workspace.
 
 ### What it does
 
@@ -163,6 +163,7 @@ Not yet verified (see docs/RELEASE_CHECKLIST.md):
 
 - Docs: a business-user guide (docs/WORKSPACE_GUIDE.md) and a release checklist with tested compatibility (docs/RELEASE_CHECKLIST.md). The privacy wording now separates local processing from synced storage and from deliberate sharing with an AI assistant (#29, #8).
 - Workspace updates: one gate for self-service and IT-managed installs. An update that changes how the workspace is stored waits, and explains why, until there are no meetings, retention holds or unfinished cleanup. Holds are never expired and no content backups are made. Compatible updates keep everything, and rollback to the previous version is supported (#26).
+- Speech models: Whisper and Parakeet files are pinned to exact revisions and SHA-256 checksums, and a model folder that merely exists is not treated as installed.
 - Workspace package: a preassembled per-user Windows package (private Python runtime, pinned wheels, verified file by file) with an unattended install for Intune, uninstall, and support options (`--self-test`, `--status`). See docs/PACKAGING.md (#11).
 - Workspace: watched folders with reconciliation, catch-up after the app was closed, stable-file checks and duplicate suppression (#23). Cloud-only files wait or are fetched on request. Deleting reviewed originals needs a separate, explicit, revocable per-folder permission. See docs/INTAKE.md (#24).
 - Workspace: guided Setup with model cards (download, verification and repair), shown on first run. Optional speaker identification has step-by-step Hugging Face account, terms and token guidance. The token is remembered in Windows Credential Manager (removable) and used only by a separate download process. Downloaded models keep working offline without it (#19).

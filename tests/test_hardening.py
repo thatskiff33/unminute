@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -616,40 +617,113 @@ class EnvironmentTokenTests(unittest.TestCase):
 
 class DataFolderOverlapTests(unittest.TestCase):
     """#136: uninstalling deletes the install folder, so the install folder must
-    never be, hold or sit inside %LOCALAPPDATA%\\Unminute (workspace and models)."""
+    never be, hold or sit inside %LOCALAPPDATA%\\Unminute (workspace and models),
+    and the uninstaller removes only what the installer put there. Both scripts run
+    for real, with a temporary LOCALAPPDATA."""
 
     MESSAGE = "must not be in, or hold"
+    PROGRAMS = '[Environment]::GetFolderPath("Programs")'
+    KEY = r'$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"'
 
-    def run_installer(self, install_dir, local):
-        env = dict(os.environ, LOCALAPPDATA=str(local))
-        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                               str(ROOT / "packaging" / "install.ps1"), "-InstallDir",
-                               str(install_dir), "-Silent"],
-                              capture_output=True, text=True, env=env, timeout=180)
+    def run_script(self, script, install_dir, local, extra="", location=None, cwd=None):
+        call = f"& '{script}' -InstallDir '{install_dir}' -Silent {extra}"
+        if location:
+            # A relative -InstallDir is read from PowerShell's location, which
+            # Set-Location moves away from the process's own folder.
+            call = f"Set-Location -LiteralPath '{location}'; {call}"
+        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-Command", f"{call}; exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=180, cwd=cwd,
+                              env=dict(os.environ, LOCALAPPDATA=str(local)))
 
     @unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
     def test_the_installer_refuses_an_install_folder_that_overlaps_the_data(self):
-        # A temporary LOCALAPPDATA: the check is the first thing the installer
-        # does, so nothing real is read or written.
+        # A temporary LOCALAPPDATA and a package that does not exist: the checks
+        # come first, so nothing real is read or written.
+        install = ROOT / "packaging" / "install.ps1"
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / "Local"
+            local.mkdir()
+            absent = f"-Package '{Path(tmp) / 'absent.zip'}'"
             for where in (local / "Unminute", local / "Unminute" / "app", local):
                 with self.subTest(where=where.name):
-                    r = self.run_installer(where, local)
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
                     self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                    self.assertIn(self.MESSAGE, r.stdout + r.stderr)
-            r = self.run_installer(local / "Programs" / "Unminute", local)   # the default shape
-            self.assertNotIn(self.MESSAGE, r.stdout + r.stderr)
-            self.assertFalse((local / "Unminute").exists())
+                    self.assertIn(self.MESSAGE, r.stderr)
+            r = self.run_script(install, "Unminute", local, absent, location=local, cwd=tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(self.MESSAGE, r.stderr)
+            r = self.run_script(install, r"\\localhost\C$\Unminute", local, absent, cwd=tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("own drive", r.stderr)
+            # The default shape, and a sibling of the data folder: allowed, so the
+            # run stops later, at a prerequisite or the missing package.
+            for where in (local / "Programs" / "Unminute", local / "Unminute2"):
+                with self.subTest(where=where.name):
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
+                    self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertNotIn(self.MESSAGE, r.stdout + r.stderr)
+            self.assertEqual(list(local.iterdir()), [])          # nothing was written
 
-    def test_the_uninstaller_checks_before_it_removes_anything(self):
-        # Not run for real: on a mistake it would remove this computer's
-        # Start menu shortcut. The check comes before every removal.
+    def uninstaller_copy(self, tmp):
+        """uninstall.ps1 with this computer's Start menu folder and uninstall key
+        swapped for a temporary folder and a key that does not exist, so a
+        mistake removes nothing real."""
         text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        check = text.index("$data.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)")
-        self.assertIn("so nothing was removed", text[check:check + 400])
-        for removal in ('$programs = [Environment]::GetFolderPath("Programs")', "Remove-Item"):
-            self.assertLess(check, text.index(removal), removal)
+        self.assertEqual((text.count(self.PROGRAMS), text.count(self.KEY)), (1, 1))
+        programs = Path(tmp) / "programs"
+        programs.mkdir()
+        text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
+            self.KEY, f'$RegKey = "HKCU:\\Software\\Unminute-UnitTest-absent-{os.getpid()}"')
+        copy = Path(tmp) / "uninstall-copy.ps1"
+        copy.write_text(text, encoding="utf-8")
+        return copy, programs / "Unminute.lnk"
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_removes_only_its_own_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            data = local / "Unminute" / "workspace"
+            data.mkdir(parents=True)
+            kept = data / "workspace.db"
+            kept.write_text("synthetic")
+            copy, link = self.uninstaller_copy(tmp)
+            link.write_text("shortcut")
+            for where, location in ((local / "Unminute", None), (data, None), (local, None),
+                                    ("Unminute", local)):           # relative to the location
+                with self.subTest(where=str(where)):
+                    r = self.run_script(copy, where, local, location=location, cwd=tmp)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn("data folder", r.stderr)      # this check, not a later one
+                    self.assertIn("so nothing was removed", r.stderr)
+                    self.assertTrue(kept.is_file() and link.is_file())
+            # An install folder holding something the installer did not put there
+            # is left as it is.
+            install = local / "Programs" / "Unminute"
+            (install / "versions" / "0.5.0").mkdir(parents=True)
+            (install / "current.json").write_text("{}")
+            shutil.copy(copy, install / "uninstall.ps1")
+            (install / "notes.txt").write_text("not the installer's")
+            r = self.run_script(copy, install, local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("did not put there", r.stderr)
+            self.assertTrue((install / "versions" / "0.5.0").is_dir() and link.is_file())
+            # Only its own: all removed, with the shortcut, and the data kept.
+            (install / "notes.txt").unlink()
+            r = self.run_script(copy, install, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(install.exists())
+            self.assertFalse(link.exists())
+            self.assertTrue(kept.is_file())
+
+    def test_both_scripts_have_the_same_overlap_check(self):
+        # The installer's copy is the one run for every case above.
+        def check(name):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            start = text.index("# The data (workspace and models) is in")
+            return text[start:text.index("\n}\n", start) + 3]
+        self.assertEqual(check("install.ps1"), check("uninstall.ps1"))
+        self.assertIn("function Get-DataOverlap", check("uninstall.ps1"))
 
 
 class RemoteDebugTests(unittest.TestCase):
