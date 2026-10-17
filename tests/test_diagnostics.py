@@ -557,6 +557,46 @@ class SharingTests(unittest.TestCase):
         self.assertFalse(diag.run_owner_alive(marker))  # the same process, ended
         self.ws.log.close_run()
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows mutexes and security descriptors")
+    def test_a_mutex_this_process_may_not_open_counts_as_running(self):
+        # A copy run as administrator holds a mutex this process may not open
+        # (#171). An empty DACL denies even the process that made it, so
+        # OpenMutexW and CreateMutexW fail with access denied (5), as there.
+        import ctypes
+        from ctypes import wintypes
+
+        from workspace import __main__ as main
+
+        class SecurityAttributes(ctypes.Structure):
+            _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", ctypes.c_void_p),
+                        ("bInheritHandle", wintypes.BOOL)]
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+        convert.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                            ctypes.c_void_p]
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        descriptor = ctypes.c_void_p()
+        self.assertTrue(convert("D:", 1, ctypes.byref(descriptor), None))   # no ACE: nobody
+        attrs = SecurityAttributes(ctypes.sizeof(SecurityAttributes), descriptor, False)
+        name = f"Local\\Unminute.Test.Denied.{os.getpid()}"
+        handle = kernel32.CreateMutexW(ctypes.byref(attrs), False, name)
+        error = ctypes.get_last_error()
+        kernel32.LocalFree(descriptor)
+        self.assertTrue(handle, error)
+        try:
+            # The premise: opening it as _app_running does is refused with 5,
+            # so the branches below are the ones under test.
+            kernel32.OpenMutexW.restype = ctypes.c_void_p
+            self.assertIsNone(kernel32.OpenMutexW(0x00100000, False, name))     # SYNCHRONIZE
+            self.assertEqual(5, ctypes.get_last_error())     # access denied, not "not found"
+            self.assertTrue(main._app_running(name))
+            self.assertIsNone(main._single_instance(name))
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+        self.assertFalse(main._app_running(name))
+
 
 class DownloadStartTests(unittest.TestCase):
     def test_a_download_that_cannot_start_does_not_leave_setup_busy(self):

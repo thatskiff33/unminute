@@ -6,7 +6,9 @@
 # perf mode, which counts bridge calls per method, timers and meeting-list
 # rebuilds over a minute of page time. Edge's virtual time budget lets that
 # minute pass in a few seconds of real time. Run once visible and once with the
-# page reporting itself hidden, as a minimised window should.
+# page reporting itself hidden, as a minimised window should. A third run
+# throws page errors before the bridge is ready, which the page must keep and
+# report once it is (#171).
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
@@ -32,23 +34,29 @@ BUDGETS = ROOT / "tests" / "budgets.json"
 MODES = ("visible", "hidden")
 SCENARIO = "home"            # the Meetings view with the sample meetings, nothing busy
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
+EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
 AT_LEAST = {"fastest_interval_ms"}
 
 
-def run_page(base, mode, page_ms):
-    """The page's perf result for one mode, from Edge's dump of the final DOM."""
-    url = f"{base}/app/index.html?perf={mode}&ms={page_ms}#{SCENARIO}"
+def final_dom(url, budget_ms):
+    """Edge's dump of the page's DOM after budget_ms of page time."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
         cmd = [str(design_check.edge()), "--headless=new", "--disable-gpu", "--no-first-run",
                "--disable-extensions", f"--user-data-dir={profile}", "--mute-audio",
-               "--window-size=1100,760",
-               # page time: the scenario's start-up steps plus the measured window
-               # + up to 60 s for the next list fetch and 11 s for the redraw
-               # after a change (visible), or 1 s of catch-up (hidden).
-               f"--virtual-time-budget={page_ms + 90000}", "--dump-dom", url]
-        out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", timeout=300)
+               "--window-size=1100,760", f"--virtual-time-budget={budget_ms}",
+               "--dump-dom", url]
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=300)
+
+
+def run_page(base, mode, page_ms):
+    """The page's perf result for one mode, from Edge's dump of the final DOM."""
+    # page time: the scenario's start-up steps plus the measured window + up to
+    # 60 s for the next list fetch and 11 s for the redraw after a change
+    # (visible), or 1 s of catch-up (hidden).
+    out = final_dom(f"{base}/app/index.html?perf={mode}&ms={page_ms}#{SCENARIO}",
+                    page_ms + 90000)
     found = RESULT.search(out.stdout or "")
     if not found:
         ready = 'data-ready="1"' in (out.stdout or "")
@@ -59,6 +67,44 @@ def run_page(base, mode, page_ms):
             + f". stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
     import html
     return json.loads(html.unescape(found.group(1)))
+
+
+def run_early(base):
+    """What the page reported of the errors fixtures.js threw before the bridge
+    was ready (early-error mode)."""
+    out = final_dom(f"{base}/app/index.html?early=1#{SCENARIO}", 5000)
+    found = EARLY_RESULT.search(out.stdout or "")
+    if not found:
+        raise RuntimeError(f"Edge returned no early-error result (exit {out.returncode}). "
+                           f"stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
+    import html
+    return json.loads(html.unescape(found.group(1)))
+
+
+def early_problems(result):
+    """Reasons the page mishandled the two errors thrown before its bridge was
+    ready: it must report the first one once the bridge is ready, as the
+    error's kind, line and column only, and the second not at all."""
+    thrown, reports = result.get("thrown") or [], result.get("reports") or []
+    if result.get("thrown_after_ready"):
+        return [f"early: the page threw {result['thrown_after_ready']} error(s) of its own "
+                "after its bridge was ready"]
+    if len(thrown) != 2:
+        return [f"early: the page saw {len(thrown)} error(s), not the 2 thrown before its "
+                "bridge was ready"]
+    if thrown[0] == thrown[1]:
+        # Then a page keeping the last error instead of the first would pass.
+        return ["early: the two errors were thrown from the same place, so the check cannot "
+                "tell the first from the second"]
+    if any(r.get("before_ready") for r in reports):
+        return ["early: the page called the bridge before it was ready"]
+    if len(reports) != 1:
+        return [f"early: the page reported {len(reports)} of its early errors, not the "
+                "first one once"]
+    if reports[0].get("args") != ["error", *thrown[0]]:
+        return [f"early: the page reported {reports[0].get('args')!r}, not the first "
+                f"error's kind, line and column {['error', *thrown[0]]!r}"]
+    return []
 
 
 def compare(results, ratchets):
@@ -123,12 +169,14 @@ def main():
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
         results = {mode: run_page(base, mode, args.page_ms) for mode in MODES}
+        early = run_early(base)
     finally:
         server.shutdown()
     ratchets = json.loads(BUDGETS.read_text(encoding="utf-8"))["ui_idle"]["ratchets"]
     over = compare(results, ratchets)
-    problems = sanity(results)
+    problems = sanity(results) + early_problems(early)
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
+              "early_error": early,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -140,6 +188,8 @@ def main():
               f"{r.get('timeouts_per_minute')} timeouts/min, "
               f"{r.get('pending_animation_frames')} pending frame(s), "
               f"{r.get('live_intervals')} interval(s), fastest {r.get('fastest_interval_ms')} ms")
+    if not early_problems(early):
+        print("early: the first error before the bridge was ready was reported once, after it")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:
