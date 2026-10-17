@@ -35,7 +35,7 @@ jobs:
         # also ships but is documentation, so it is left out on purpose.
         run: |
           changed=$(git diff --name-only HEAD^1 HEAD)
-          shipped=$(echo "$changed" | grep -E '^(workspace/|packaging/|asr_engines\.py$|offline_guard\.py$|requirements\.txt$|tools/build_package\.py$|whisper\.ico$|LICENSE$)' || true)
+          shipped=$(echo "$changed" | grep -E '^(workspace/|packaging/|asr_engines\.py$|offline_guard\.py$|requirements\.txt$|tools/build_package\.py$|unminute\.ico$|LICENSE$)' || true)
           # A fragment added or changed in this pull request (not the folder's README).
           notes=$(git diff --name-only --diff-filter=AM HEAD^1 HEAD -- 'changelog.d/*.md' | grep -v '^changelog\.d/README\.md$' || true)
           if [ -z "$shipped" ]; then echo "Nothing shipped changed: no entry needed."; exit 0; fi

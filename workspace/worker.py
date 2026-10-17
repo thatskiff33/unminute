@@ -210,8 +210,8 @@ class WorkerHandle:
         self._proc = self._ctx.Process(target=_worker_main,
                                        args=(child, self.cache_dir, self.quiet, self.gpu_site,
                                              self.allow_test_engines, log_dir, self._log_name),
-                                       daemon=True, name="whisper-gpu-worker" if self.gpu_site
-                                       else "whisper-worker")
+                                       daemon=True, name="unminute-gpu-worker" if self.gpu_site
+                                       else "unminute-worker")
         self._proc.start()
         child.close()
         self._conn, self._loaded = parent, None

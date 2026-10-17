@@ -2,8 +2,9 @@
 # Claude Code PreToolUse hook, configured in .claude/settings.json. It keeps real
 # meeting content out of an agent's context and out of commits (AGENTS.md,
 # invariants P1 and P2):
-#   - file tools may not touch a repo's extracted/ folder (the earlier app's
-#     transcripts) or the live workspace (%LOCALAPPDATA%\whisper\workspace);
+#   - file tools may not touch a repo's extracted/ folder (old transcripts) or the
+#     live workspace (%LOCALAPPDATA%\Unminute\workspace, and the old
+#     %LOCALAPPDATA%\whisper\workspace, which keeps real content until deleted);
 #   - shell commands may not name either of them as something to read, list,
 #     copy or stage;
 #   - git add and git commit may not name a media file.
@@ -27,9 +28,14 @@ from pathlib import Path
 MEDIA_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac", ".ogg", ".aac",
                     ".wma", ".webm", ".avi", ".f32")
 
-# The live workspace, however the path is written: %LOCALAPPDATA%\whisper\workspace,
-# $env:LOCALAPPDATA/whisper/workspace, ~/AppData/Local/whisper/workspace.
-LIVE_WORKSPACE = re.compile(r"(?<![\w-])whisper[\\/]+workspace(?![\w-])", re.IGNORECASE)
+# The live workspace, however the path is written. The old one anywhere
+# (%LOCALAPPDATA%\whisper\workspace, ~/AppData/Local/whisper/workspace). The new one
+# only under local AppData (%LOCALAPPDATA%, $env:LOCALAPPDATA, AppData\Local): a clone of
+# this repository is a folder named unminute holding the workspace package.
+LIVE_WORKSPACE = re.compile(
+    r"(?<![\w-])whisper[\\/]+workspace(?![\w-])"
+    r"|(?:AppData[\\/]+Local|LOCALAPPDATA[%}]?)[\\/]+Unminute[\\/]+workspace(?![\w-])",
+    re.IGNORECASE)
 # extracted/ as a path of its own (not "unextracted/"), with or without a separator.
 EXTRACTED = re.compile(r"(?<![\w.-])extracted(?:[\\/]|(?![\w.-]))", re.IGNORECASE)
 MEDIA_TOKEN = re.compile(r"[^\s\"']+(?:" + "|".join(re.escape(e) for e in MEDIA_EXTENSIONS)

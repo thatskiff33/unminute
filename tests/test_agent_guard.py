@@ -43,7 +43,10 @@ class FileToolTests(unittest.TestCase):
 
     def test_live_workspace_is_blocked(self):
         local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
-        for path in (local + r"\whisper\workspace\workspace.db",
+        for path in (local + r"\Unminute\workspace\workspace.db",
+                     "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
+                     # the old folder keeps real content until the user deletes it
+                     local + r"\whisper\workspace\workspace.db",
                      "C:/Users/someone/AppData/Local/whisper/workspace/media/1/audio.f32"):
             with self.subTest(path=path):
                 self.assertIsNotNone(guard.decide(tool("Read", file_path=path)))
@@ -57,6 +60,10 @@ class FileToolTests(unittest.TestCase):
                             tool("Read", file_path=str(unrelated)),
                             tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute-r7"
                                                    r"\workspace\app.py"),
+                            # a plain clone of this repository: unminute\workspace
+                            tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute"
+                                                   r"\workspace\app.py"),
+                            tool("Read", file_path="unminute/workspace/store.py"),
                             tool("Grep", pattern="extracted/", path="."),
                             tool("Read", file_path=str(ROOT / "AGENTS.md"))):
                 with self.subTest(payload=payload):
@@ -70,6 +77,9 @@ class ShellTests(unittest.TestCase):
                         "ls extracted",
                         "git add -f extracted",
                         r"Get-Content $env:LOCALAPPDATA\whisper\workspace\workspace.db",
+                        r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\workspace.db",
+                        r'Get-Content "%LOCALAPPDATA%\Unminute\workspace\settings.json"',
+                        "sqlite3 ~/AppData/Local/Unminute/workspace/workspace.db .dump",
                         r'Get-Content "$env:LOCALAPPDATA\whisper\workspace\settings.json"',
                         "sqlite3 ~/AppData/Local/whisper/workspace/workspace.db .dump",
                         "rg -n budget extracted/",
@@ -180,6 +190,7 @@ class SettingsTests(unittest.TestCase):
         deny = settings["permissions"]["deny"]
         self.assertIn("Read(./extracted/**)", deny)
         self.assertTrue(any("whisper/workspace" in rule for rule in deny))
+        self.assertTrue(any("Unminute/workspace" in rule for rule in deny))
         hooks = [hook for entry in settings["hooks"]["PreToolUse"] for hook in entry["hooks"]]
         guards = [h for h in hooks if ".claude/hooks/private_data_guard.py" in h["command"]]
         self.assertEqual(1, len(guards))

@@ -1560,7 +1560,7 @@ function downloadRow(c, s, inUse) {
   if (action.tagName === "BUTTON") action.disabled = busy && !running;
   const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
     title: `Remove ${cardName(c)}?`,
-    body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.${c.shared_with_earlier_app ? " If the earlier Whisper Transcriber app is installed, it uses the same model files." : ""}`,
+    body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.`,
     check: "Remove it from this computer.", limits: false, danger: true,
     onConfirm: () => attempt(async () => {
       const gb = await call("remove_model", c.name);

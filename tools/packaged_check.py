@@ -105,7 +105,7 @@ def check(version_dir, cache, wav, report):
     runtime = Path(version_dir) / "runtime"
     env = dict(os.environ)
     env.pop("HF_TOKEN", None)                         # cached processing needs no token
-    tmp = Path(tempfile.mkdtemp(prefix="ww28-"))
+    tmp = Path(tempfile.mkdtemp(prefix="umpkg-"))
     env["LOCALAPPDATA"] = str(tmp)
     py = str(runtime / "python.exe")
     flags = ["-I", "-B", "-X", "disable-remote-debug"]    # as the Start menu shortcut starts it
@@ -131,14 +131,14 @@ def check(version_dir, cache, wav, report):
     # Residual content: every file the app wrote under the throwaway profile.
     # A file that cannot be read cannot be shown free of the marker: it fails.
     hits, unreadable = [], []
-    for p in (tmp / "whisper").rglob("*"):
+    for p in (tmp / "Unminute").rglob("*"):
         if p.is_file():
             try:
                 if MARKER.encode() in p.read_bytes():
                     hits.append(str(p.relative_to(tmp)))
             except OSError:
                 unreadable.append(str(p.relative_to(tmp)))
-    names = sorted(str(p.relative_to(tmp)) for p in (tmp / "whisper").rglob("*") if p.is_file())
+    names = sorted(str(p.relative_to(tmp)) for p in (tmp / "Unminute").rglob("*") if p.is_file())
     report["residual"] = {"files_after_cleanup": names, "marker_found_in": hits,
                           "unreadable": unreadable,
                           "content_backups": [n for n in names if n.endswith(

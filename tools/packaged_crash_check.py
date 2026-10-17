@@ -133,7 +133,7 @@ def inspect(ctx):
 def residue(profile):
     """Every file left in the profile, and any that still contain the marker."""
     names, hits = [], []
-    for p in (profile / "whisper").rglob("*"):
+    for p in (profile / "Unminute").rglob("*"):
         if p.is_file():
             names.append(p.relative_to(profile).as_posix())
             if MARKER.encode() in p.read_bytes():
@@ -147,7 +147,7 @@ def clipboard_sequence():
 
 def check(version_dir, cache, wav, report, seconds):
     runtime, app = Path(version_dir) / "runtime", Path(version_dir) / "app"
-    base = Path(tempfile.mkdtemp(prefix="ww28crash-"))
+    base = Path(tempfile.mkdtemp(prefix="umcrash-"))
     script = base / "child.py"
     script.write_text(CHILD, encoding="utf-8")
     short = base / "clip.wav"
@@ -367,7 +367,7 @@ def inspect(root, marker):
 
 def token(marker):
     from workspace import credentials
-    target = "WhisperTranscriberCrashCheck/" + marker   # never the real token's name
+    target = "UnminuteCrashCheck/" + marker   # never the real token's name
     credentials.save_token("hf_testonly" + marker, target=target)
     saved = credentials.has_token(target=target)
     credentials.remove_token(target=target)

@@ -1,11 +1,11 @@
 # Workspace processing design (#14 to #18)
 
-Technical design for the durable core of the meeting workspace. It defines state ownership, chunk identity and the lifecycle that the worker (#15), speaker (#16), cleanup (#17) and hold (#18) issues build on. Product behaviour is in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md); the original product plan, no longer maintained, is in [history/WORKSPACE_PLAN.md](history/WORKSPACE_PLAN.md).
+Technical design for Unminute's durable core. It defines state ownership, chunk identity and the lifecycle that the worker (#15), speaker (#16), cleanup (#17) and hold (#18) issues build on. Product behaviour is in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md); the original product plan, no longer maintained, is in [history/WORKSPACE_PLAN.md](history/WORKSPACE_PLAN.md).
 
 ## Ownership
 
-- One state-owning process opens the database: `%LOCALAPPDATA%\whisper\workspace\workspace.db`. That is per user, never synced, and in the same family of locations as the model cache. Only the owner writes. Workers (#15) send results back and never touch the database.
-- Meeting media lives in `%LOCALAPPDATA%\whisper\workspace\media\<meeting id>\`. The meeting id is random; no names or paths from the source appear in any app path.
+- One state-owning process opens the database: `%LOCALAPPDATA%\Unminute\workspace\workspace.db`. That is per user, never synced, and in the same family of locations as the model cache. Only the owner writes. Workers (#15) send results back and never touch the database.
+- Meeting media lives in `%LOCALAPPDATA%\Unminute\workspace\media\<meeting id>\`. The meeting id is random; no names or paths from the source appear in any app path.
 - SQLite runs in WAL mode with `synchronous=FULL` and foreign keys on. Each state change that must be atomic is one transaction.
 
 ## Source identity
@@ -368,7 +368,7 @@ Failure reasons are stored without file paths.
 - By default it is remembered in the user's Windows Credential Manager. The user can untick Remember to use it once. Remove the remembered token removes it.
 - It is never written to settings, logs or the database, and never returned to the page. The page learns only whether a token is remembered, and clears the input after use.
 - Removing the token does not affect models already downloaded: they load offline.
-- A legacy `HF_TOKEN` user variable, left by the earlier app (removed in #111 A7), stays in the user's Windows environment until the user removes it. At start the app removes it (and `HUGGING_FACE_HUB_TOKEN`, an older name the Hugging Face library also reads) from its own environment (`credentials.drop_environment_token`), so its worker, download and WebView2 processes do not inherit it (#111 A2), and never uses it. New tokens never go into the environment.
+- An `HF_TOKEN` user variable, an older way to give Hugging Face tools a token, stays in the user's Windows environment until the user removes it. At start the app removes it (and `HUGGING_FACE_HUB_TOKEN`, an older name the Hugging Face library also reads) from its own environment (`credentials.drop_environment_token`), so its worker, download and WebView2 processes do not inherit it (#111 A2), and never uses it. New tokens never go into the environment.
 - A token is remembered only after a download has shown that it works.
 - Model work waits while a model is being downloaded or checked. The two are coordinated with the processing thread under one lock, and processing resumes when the download ends.
 - A download can be cancelled.

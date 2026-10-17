@@ -157,9 +157,9 @@ class RecordTests(unittest.TestCase):
         # libraries in runtime\lib, the app in app\, and the GPU component's
         # site folder in the model cache.
         temp = Path(tempfile.gettempdir()).resolve()          # as where() sees paths
-        base = temp / "Programs" / "WhisperWorkspace" / "versions" / "0.5.0"
+        base = temp / "Programs" / "Unminute" / "versions" / "0.5.0"
         runtime, app = base / "runtime", base / "app"
-        gpu = temp / "whisper-models" / "gpu" / "torch-2.13.0-cu130"
+        gpu = temp / "Unminute" / "models" / "gpu" / "torch-2.13.0-cu130"
         with mock.patch.object(diag, "APP_ROOT", app), \
                 mock.patch.object(diag, "_ROOTS", [(runtime / "python312.zip", "stdlib/"),
                                                    (runtime / "lib", "")]):

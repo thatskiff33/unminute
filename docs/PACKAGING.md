@@ -9,11 +9,9 @@ This guide covers the preassembled package from #11:
 
 Updates and the empty-workspace migration gate are #26.
 
-The earlier source app (Whisper Transcriber) was removed from the repository by #111 slice A7; see "If the earlier app is still installed" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md).
-
 ## What the package contains
 
-One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<version>.zip.sha256`. Releases up to v0.2.3 used the earlier name, `WhisperWorkspace-<version>.zip`; the installer treats both the same.
+One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<version>.zip.sha256`.
 
 | Path | Contents |
 | --- | --- |
@@ -27,7 +25,7 @@ One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<v
 | `binary-inventory.json` | Every executable file (by suffix, or by its Windows, Linux or macOS executable header), with its size, SHA-256 and Authenticode signature: whether it is signed, the signer, the certificate thumbprint and whether the signature is time-stamped. |
 | `model-manifest.json` | The pinned model files, by size and SHA-256, for checking a copy staged by IT. The models themselves are not in the package. |
 
-Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\whisper-models` (shared with the earlier app where it is still installed). To keep models elsewhere, redirect that whole folder, not folders inside it: downloading, repairing or removing refuses a model folder that is a link or junction.
+Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\Unminute\models`. To keep models elsewhere, redirect that whole folder, not folders inside it: downloading, repairing or removing refuses a model folder that is a link or junction.
 
 Users never need Python, Git, FFmpeg or GPU tools.
 
@@ -92,9 +90,9 @@ The installer runs as the current user and needs no administrator rights. It:
   - In every mode it checks every file against `package-manifest.json`, and refuses files that are missing, different or not listed.
   - The manifest travels inside the package. In the extracted-folder route it therefore detects corruption and accidental changes, not deliberate tampering. Prefer `-Package`, or verify the zip's `.sha256` before extracting it.
   - Nothing is installed if any check fails.
-- **Installs side by side** to `%LOCALAPPDATA%\Programs\WhisperWorkspace\versions\<version>`. It keeps the previous version for rollback and removes older ones.
+- **Installs side by side** to `%LOCALAPPDATA%\Programs\Unminute\versions\<version>`. It keeps the previous version for rollback and removes older ones.
 - **Refuses to install while the app is running.**
-- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps. An update from a version that used the earlier name, "Meeting Workspace", replaces that shortcut. The install folder and uninstall registry key keep their earlier name (`WhisperWorkspace`), so Intune detection rules keep working, and the taskbar identity (`WhisperTranscriber.MeetingWorkspace`) is unchanged, so taskbar pins still group with the window. A rollback to a version from before the rename restores its "Meeting Workspace" shortcut and entry.
+- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps (registry key `Uninstall\Unminute`). The shortcut carries the taskbar identity `Unlimit.Unminute`, so taskbar pins group with the window. The install folder must not be, hold or sit inside `%LOCALAPPDATA%\Unminute` (the workspace and models), because uninstalling deletes the install folder: the installer and the uninstaller both refuse one that overlaps it.
 
 Exit codes:
 
@@ -141,7 +139,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback
 
 It runs the same check with the previous version, so it refuses if that version cannot open the workspace (exit code 6). This happens, for example, after a newer version has changed the storage format.
 
-Use `-Rollback` from the current version to go back, rather than running an older package's installer over a newer install. Installers from before the rename to Unminute only know the "Meeting Workspace" shortcut, so an older installer run that way can leave an extra Start menu shortcut.
+Use `-Rollback` from the current version to go back, rather than running an older package's installer over a newer install.
 
 ## Uninstalling
 
@@ -149,8 +147,8 @@ Use Settings > Apps > Unminute, or `uninstall.ps1` (with `-Silent` for unattende
 
 Uninstalling removes the program, the shortcut and the uninstall entry. It does not remove:
 
-- **The workspace** (`%LOCALAPPDATA%\whisper\workspace`): meetings, holds, settings and receipts. Meeting content is only ever removed through the app's confirmed cleanup steps, which honour retention holds. The uninstaller says when a workspace remains.
-- **Downloaded models** (`%LOCALAPPDATA%\whisper-models`).
+- **The workspace** (`%LOCALAPPDATA%\Unminute\workspace`): meetings, holds, settings and receipts. Meeting content is only ever removed through the app's confirmed cleanup steps, which honour retention holds. The uninstaller says when a workspace remains.
+- **Downloaded models** (`%LOCALAPPDATA%\Unminute\models`).
 
 ## Managed deployment (Intune)
 
@@ -164,10 +162,10 @@ Package the extracted folder as a Win32 app with the Microsoft Win32 Content Pre
   Before wrapping the folder, verify the zip's `.sha256` in the packaging pipeline.
 - **Uninstall command:**
   ```
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\WhisperWorkspace\uninstall.ps1" -Silent
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\Unminute\uninstall.ps1" -Silent
   ```
 - **Return codes:** map 2, 3 and 4 to Failed. Code 3 (app running) is worth a retry.
-- **Detection rule:** Registry; key path `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace`; value name `DisplayVersion`; detection method "String comparison", equals, `<version>`. Associated with a 32-bit app on 64-bit clients: No.
+- **Detection rule:** Registry; key path `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute`; value name `DisplayVersion`; detection method "String comparison", equals, `<version>`. Associated with a 32-bit app on 64-bit clients: No.
 - **Requirements:** Windows 10 1809 or later, x64. If WebView2 cannot be assumed, deploy the WebView2 Evergreen runtime as a dependency, and keep it updated (see the prerequisites above).
 
 For support, `runtime\python.exe -I -B -m workspace --self-test` (in the installed version folder) imports every dependency and confirms the network guard. `--status` prints workspace counts only, never content, plus `integrity` (the last database check after an unclean close: `ok`, `failed`, `skipped` when it could not run, which the next start retries, or `unchecked`), `readable` (false when the database cannot be read at all) and `recordings` (recordings not yet in a meeting). See "If Unminute finds damage" in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md).
@@ -249,7 +247,7 @@ Whichever route is chosen, record it in the release notes. A changed signature o
   - **Install:** `-Package` mode, verifying the checksum and every file, took 244 s.
   - **Self-test:** every dependency imported from the private runtime, `PYTHONPATH` was ignored, and the network guard blocked outside connections.
   - **Inference:** Parakeet transcribed and pyannote separated two speakers, offline, through the managed worker.
-  - **Window:** the app opened ("Meeting workspace", with its WebView2 child) using an isolated profile.
+  - **Window:** the app opened ("Unminute", with its WebView2 child) using an isolated profile.
   - **Uninstall:** removed the program and its uninstall entry, and kept the models.
 - Testing on a clean standard-user Windows profile, and on a managed Intune device, is still to be done before release. It is tracked in #11 and #28.
 - Paths inside the package are kept to 140 characters or fewer. The default install folder has room for user names of up to about 30 characters, and the installer refuses install folders longer than 100 characters. Windows PowerShell 5.1 cannot handle paths over 260 characters.

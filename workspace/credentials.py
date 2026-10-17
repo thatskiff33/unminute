@@ -11,7 +11,7 @@
 import ctypes
 import sys
 
-TARGET = "WhisperTranscriber/HuggingFaceToken"
+TARGET = "Unminute/HuggingFaceToken"
 CRED_TYPE_GENERIC = 1
 CRED_PERSIST_LOCAL_MACHINE = 2
 ERROR_NOT_FOUND = 1168
@@ -111,11 +111,11 @@ def remove_token(target=TARGET):
                           f"{ctypes.get_last_error()}).")
 
 
-# The earlier source-installed app (removed in #111 A7) asked users to keep
-# their token in the HF_TOKEN environment variable, where it may still be. The
-# app takes it (and the older name the Hugging Face library also reads) out of
-# its own environment at start, so worker, download and WebView2 processes
-# never inherit it. It is not used: Setup asks for a token.
+# A token may sit in the HF_TOKEN environment variable, the way Hugging Face
+# tools used to be given one. The app takes it (and the older name the Hugging
+# Face library also reads) out of its own environment at start, so worker,
+# download and WebView2 processes never inherit it. It is not used: Setup asks
+# for a token.
 ENVIRONMENT_TOKENS = ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
 
 

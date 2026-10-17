@@ -38,7 +38,7 @@
 [CmdletBinding()]
 param(
     [string]$Package = "",
-    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\WhisperWorkspace"),
+    [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\Unminute"),
     [switch]$Silent,
     [switch]$SkipShortcut,
     [switch]$Managed,
@@ -51,15 +51,10 @@ $ErrorActionPreference = "Stop"
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
 $AppName = "Unminute"
-# Every Start menu / Settings > Apps name a version has used. Each version records its
-# own in version.json ("name"); versions from before that used "Meeting Workspace".
-$KnownAppNames = @("Unminute", "Meeting Workspace")
-$NameBeforeRecorded = "Meeting Workspace"
 $script:TempExtract = $null
-$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WhisperWorkspace"
-# Must match APP_ID in workspace/__main__.py (taskbar grouping and icon). Kept from the
-# earlier name on purpose: changing it would split existing taskbar pins.
-$AppId = "WhisperTranscriber.MeetingWorkspace"
+$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# Must match APP_ID in workspace/__main__.py (taskbar grouping and icon).
+$AppId = "Unlimit.Unminute"
 # How the app is started. -I: isolated (no PYTHON* variables, user site-packages or
 # current folder); -B: write no bytecode into the install (it ships precompiled, #111
 # B2). Python 3.14 lets another process attach a debugger and run code in a running
@@ -86,6 +81,14 @@ function Get-FileSha256([string]$Path) {
 function Test-Prerequisite {
     # Package paths are at most 140 characters below <InstallDir>\versions\<version>\
     # and Windows PowerShell stops at 259; allow up to 16 characters of version.
+    # The data (workspace and models) is in %LOCALAPPDATA%\Unminute; the uninstaller
+    # deletes the install folder, so the two must never overlap.
+    $data = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "Unminute")).TrimEnd("\") + "\"
+    $dir = [IO.Path]::GetFullPath($Options.InstallDir).TrimEnd("\") + "\"
+    if ($dir.StartsWith($data, [StringComparison]::OrdinalIgnoreCase) -or
+        $data.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Install 2 "The install folder must not be in, or hold, $AppName's data folder ($($data.TrimEnd('\'))). Choose another -InstallDir."
+    }
     if ($Options.InstallDir.Length -gt 92) {
         Stop-Install 2 "The install folder path is too long for Windows (over 92 characters). Choose a shorter -InstallDir."
     }
@@ -161,7 +164,7 @@ function Get-PackageRoot {
         Stop-Install 4 "The package does not match its checksum. Download it again."
     }
     # Short folder: Windows PowerShell cannot handle paths over 260 characters.
-    $temp = Join-Path ([IO.Path]::GetTempPath()) ("ww" + [guid]::NewGuid().ToString("N").Substring(0, 6))
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ("um" + [guid]::NewGuid().ToString("N").Substring(0, 6))
     $script:TempExtract = $temp
     Write-Step "Extracting..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem     # much faster than Expand-Archive
@@ -342,7 +345,7 @@ function Get-VersionAppName([string]$Target) {
         $info = Get-Content -LiteralPath (Join-Path $Target "version.json") -Raw | ConvertFrom-Json
         if ($info.name) { return [string]$info.name }
     } catch { }
-    return $NameBeforeRecorded
+    return $AppName
 }
 
 function New-Shortcut([string]$Target) {
@@ -356,12 +359,11 @@ function New-Shortcut([string]$Target) {
     $link.Arguments = $LaunchArgs
     $link.WorkingDirectory = Join-Path $Target "app"
     $link.Description = "Transcribe and review meetings on this computer"
-    $icon = Join-Path $Target "app\whisper.ico"
+    $icon = Join-Path $Target "app\unminute.ico"
     if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
     $link.Save()
     try { Set-ShortcutAppId $link.FullName $AppId }
     catch { Write-Warning "Could not set the taskbar identity on the shortcut: $($_.Exception.Message)" }
-    Remove-OtherShortcut $programs $shell $name
 }
 
 # Pinning copies the Start menu shortcut, so a taskbar or Start pin keeps pointing at
@@ -390,7 +392,7 @@ function Update-PinnedShortcut([string]$Target, [string[]]$Folders = @()) {
                 $sc.TargetPath = Join-Path $Target "runtime\pythonw.exe"
                 $sc.Arguments = $LaunchArgs
                 $sc.WorkingDirectory = Join-Path $Target "app"
-                $icon = Join-Path $Target "app\whisper.ico"
+                $icon = Join-Path $Target "app\unminute.ico"
                 if (Test-Path -LiteralPath $icon) { $sc.IconLocation = "$icon,0" }
                 $sc.Save()
                 [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
@@ -398,33 +400,6 @@ function Update-PinnedShortcut([string]$Target, [string[]]$Folders = @()) {
             } catch { Write-Warning "Could not update the pinned shortcut $($file.Name): $($_.Exception.Message)" }
             finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
         }
-    }
-}
-
-# Remove Start menu shortcuts this app made under its other names (after a rename or a
-# rollback), but only ones that point into this install: a same-named shortcut to
-# anything else is not ours and is left alone. Failures only warn.
-function Remove-OtherShortcut([string]$Programs, $Shell, [string]$Keep) {
-    # Long form: a .lnk stores its target as a long path, so a short (8.3) InstallDir
-    # would otherwise never match.
-    $dir = $Options.InstallDir
-    try { $dir = (Get-Item -LiteralPath $dir -ErrorAction Stop).FullName } catch { }
-    $prefix = $dir.TrimEnd("\") + "\"
-    foreach ($name in $KnownAppNames) {
-        if ($name -eq $Keep) { continue }
-        $path = Join-Path $Programs "$name.lnk"
-        if (-not (Test-Path -LiteralPath $path)) { continue }
-        $sc = $null
-        try {
-            $sc = $Shell.CreateShortcut($path)
-            $old = $sc.TargetPath
-            # Release the shortcut object before deleting: while alive it keeps the .lnk open.
-            [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc); $sc = $null
-            if ($old -and $old.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-                Remove-Item -LiteralPath $path -Force
-            }
-        } catch { Write-Warning "Could not remove the old shortcut $($name): $($_.Exception.Message)" }
-        finally { if ($sc) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($sc) } }
     }
 }
 
@@ -438,7 +413,7 @@ function Register-Uninstall([string]$Target, [string]$Version) {
         QuietUninstallString = "$uninstall -Silent"; EstimatedSize = $sizeKb
         NoModify = 1; NoRepair = 1
     }
-    $icon = Join-Path $Target "app\whisper.ico"
+    $icon = Join-Path $Target "app\unminute.ico"
     if (Test-Path -LiteralPath $icon) { $values.DisplayIcon = $icon }
     foreach ($k in $values.Keys) {
         $type = if ($values[$k] -is [int]) { "DWord" } else { "String" }

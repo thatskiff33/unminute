@@ -614,6 +614,44 @@ class EnvironmentTokenTests(unittest.TestCase):
         self.assertNotIn("hf_example", r.stdout + r.stderr)
 
 
+class DataFolderOverlapTests(unittest.TestCase):
+    """#136: uninstalling deletes the install folder, so the install folder must
+    never be, hold or sit inside %LOCALAPPDATA%\\Unminute (workspace and models)."""
+
+    MESSAGE = "must not be in, or hold"
+
+    def run_installer(self, install_dir, local):
+        env = dict(os.environ, LOCALAPPDATA=str(local))
+        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                               str(ROOT / "packaging" / "install.ps1"), "-InstallDir",
+                               str(install_dir), "-Silent"],
+                              capture_output=True, text=True, env=env, timeout=180)
+
+    @unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
+    def test_the_installer_refuses_an_install_folder_that_overlaps_the_data(self):
+        # A temporary LOCALAPPDATA: the check is the first thing the installer
+        # does, so nothing real is read or written.
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            for where in (local / "Unminute", local / "Unminute" / "app", local):
+                with self.subTest(where=where.name):
+                    r = self.run_installer(where, local)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(self.MESSAGE, r.stdout + r.stderr)
+            r = self.run_installer(local / "Programs" / "Unminute", local)   # the default shape
+            self.assertNotIn(self.MESSAGE, r.stdout + r.stderr)
+            self.assertFalse((local / "Unminute").exists())
+
+    def test_the_uninstaller_checks_before_it_removes_anything(self):
+        # Not run for real: on a mistake it would remove this computer's
+        # Start menu shortcut. The check comes before every removal.
+        text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        check = text.index("$data.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase)")
+        self.assertIn("so nothing was removed", text[check:check + 400])
+        for removal in ('$programs = [Environment]::GetFolderPath("Programs")', "Remove-Item"):
+            self.assertLess(check, text.index(removal), removal)
+
+
 class RemoteDebugTests(unittest.TestCase):
     """#111 B4: Python 3.14 lets another process run code in a running Python
     process (PEP 768). Every app process starts with -X disable-remote-debug."""
