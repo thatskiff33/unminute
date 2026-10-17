@@ -1017,28 +1017,32 @@ class Workspace:
 
     def _discard_import(self, mid):
         """Remove a meeting whose import never completed. Only the app's own
-        fresh copy is removed; the original recording is never touched. A
-        meeting under an active hold is kept (#193, invariant C2): it stays
-        listed as an import that did not finish, and Discard removes it once
-        the hold is released."""
+        fresh copy is removed; the original recording is never touched.
+
+        A meeting that has ever had a hold, active or released, is kept
+        (#193, invariant C2: releasing a hold deletes nothing): it stays listed
+        as an import that did not finish, and only the user's Discard removes
+        it. The check, the row deletion and the folder removal happen under
+        the store's lock, so no hold can be added in between. Returns whether
+        it was removed."""
         import shutil
         try:
-            if self.store._one("SELECT 1 FROM holds WHERE meeting_id = ? AND "
-                               "released_at IS NULL", (mid,)):
-                return False
             folder = media.meeting_folder(self.media, mid)
-        except (StoreError, media.BadMeetingId):
-            return False                      # unreadable or not the app's own id: kept
-        shutil.rmtree(folder, ignore_errors=True)
+        except media.BadMeetingId:
+            return False                      # not the app's own id: never touched
         try:
-            with self.store.tx() as db:
-                if db.execute("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at "
-                              "IS NULL", (mid,)).fetchone() is None and db.execute(
-                        "SELECT 1 FROM versions WHERE meeting_id = ?", (mid,)).fetchone() is None:
+            with self.store._lock:            # re-entrant; add_hold takes it too
+                with self.store.tx() as db:
+                    if (db.execute("SELECT 1 FROM holds WHERE meeting_id = ?",
+                                   (mid,)).fetchone()
+                            or db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
+                                          (mid,)).fetchone()):
+                        return False
                     db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
                     db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+                shutil.rmtree(folder, ignore_errors=True)
         except StoreError:
-            pass
+            return False                      # unreadable: kept for next time
         return True
 
     def _reconcile_imports(self, discard=True):
@@ -1549,7 +1553,11 @@ class Workspace:
     # -- review -------------------------------------------------------------------------
 
     def _audio_available(self, m):
-        return m["audio_removed_at"] is None and media.audio_path(self.media, m["id"]).is_file()
+        try:
+            return (m["audio_removed_at"] is None
+                    and media.audio_path(self.media, m["id"]).is_file())
+        except media.BadMeetingId:
+            return False                      # a damaged row never breaks the list (#194)
 
     def _version(self, mid, version):
         """The active version, or (read-only) an earlier one by its position in
@@ -1711,9 +1719,9 @@ class Workspace:
         number of meetings (R7b). Read under the store's lock: one consistent
         view, with no write from another thread in between."""
         q, active = self.store._all, "SELECT id FROM versions WHERE state = 'active'"
-        with self._imports.mutex:         # an import running or queued (#181, #193)
-            importing = self._imports.unfinished_tasks > 0
         with self.store._lock:
+            with self._imports.mutex:     # an import running or queued (#181, #193)
+                importing = self._imports.unfinished_tasks > 0
             rows = holds.unfinished_work(self.store)
             if not rows:
                 return []

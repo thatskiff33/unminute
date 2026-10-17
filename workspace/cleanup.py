@@ -27,7 +27,7 @@ from pathlib import Path
 from workspace import media, safe_paths
 from workspace.holds import record_receipt
 from workspace.media import sha256_file
-from workspace.store import StoreError, new_id
+from workspace.store import DAMAGE_CODES, StoreError, new_id
 
 AUDIO, TRANSCRIPT = "audio", "transcript"
 
@@ -347,12 +347,13 @@ def _remove_transcript(store, mid, media_root):
     try:
         compact(store)
     except StoreError as exc:
-        if not _damaged(exc):
-            raise                             # in use: retried as before
-        # The rows are deleted but a damaged database cannot be compacted
-        # (#198): done, with the compaction left to the next start whose
-        # database check passes, rather than a job retried for ever.
-        _deferred_marker(store).write_text("", encoding="ascii")
+        if not _damaged(exc) or not _wal_truncated(store):
+            raise                             # in use, or the log not emptied: retried
+        # The rows are deleted (secure_delete overwrote their pages) and the
+        # write-ahead log is emptied into the main file, but a damaged database
+        # cannot be rebuilt by VACUUM (#198): done, with the compaction left
+        # to the next start whose database check passes.
+        _mark_deferred(store)
         deferred = True
     folder = media.meeting_folder(media_root, mid)   # anything left (clips, exports)
     if folder.exists():
@@ -364,11 +365,31 @@ DEFERRED_NOTE = "database compaction deferred until the workspace is repaired"
 
 
 def _damaged(exc):
-    """A compaction that failed because the database file is damaged (not
-    merely busy or locked, which sqlite reports as OperationalError)."""
-    cause = exc.__cause__
-    return isinstance(cause, sqlite3.DatabaseError) and not isinstance(
-        cause, sqlite3.OperationalError)
+    """A compaction that failed because the database file is damaged: SQLite's
+    own damage codes (CORRUPT, NOTADB, as the store's check uses), not busy,
+    locked, a closed connection or any other error."""
+    code = getattr(exc.__cause__, "sqlite_errorcode", None)
+    return isinstance(code, int) and (code & 0xFF) in DAMAGE_CODES
+
+
+def _wal_truncated(store):
+    """The write-ahead log is checkpointed into the main file and truncated
+    (nothing busy), so no copy of the deleted rows is left in it."""
+    with store._lock:
+        try:
+            return store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        except sqlite3.Error:
+            return False
+
+
+def _mark_deferred(store):
+    """Create the marker without following a link planted in its place: an
+    existing file (or link) is left as it is, never written through."""
+    try:
+        fd = os.open(_deferred_marker(store), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return
+    os.close(fd)
 
 
 def _deferred_marker(store):
@@ -387,7 +408,10 @@ def compact_deferred(store):
         compact(store)
     except StoreError:
         return False
-    marker.unlink(missing_ok=True)
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        return False        # locked or read-only: compacted anyway, tried again next start
     return True
 
 
