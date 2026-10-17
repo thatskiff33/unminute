@@ -326,10 +326,11 @@ def check_files(spec, folder, full=False, marker=None):
     if problems:
         return problems
 
-    # Through a link at the model or record folder a record is neither trusted
-    # nor written (T5): that copy is hashed in full every time. A recorded
-    # failure is still honoured (_recorded_failure): it can only refuse a copy.
-    linked = is_link(marker.parent)
+    # Through a link at the record's folder or the one above it (the model or
+    # .verified folder, and the family folder) a record is neither trusted nor
+    # written (T5): that copy is hashed in full every time. A recorded failure
+    # is still honoured (_recorded_failure): it can only refuse a copy.
+    linked = is_link(marker.parent) or is_link(marker.parent.parent)
     recorded = None if linked else _read_marker(marker)
     trusted = (not full and recorded is not None and recorded.get("ok", True)
                and recorded.get("revision") == spec.revision

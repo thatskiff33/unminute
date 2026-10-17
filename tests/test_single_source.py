@@ -392,31 +392,48 @@ class ProgressTests(unittest.TestCase):
         base = Path(self.tmp.name)
         cache = base / "models"
         spec = asr_engines.MANAGED_MODELS[asr_engines.WHISPER_LARGE]
+        family = cache / spec.family
         record = f"{spec.folder}-{'b' * 16}.json"          # the pattern remove() deletes
-        with _outside_folder(base, cache / spec.family / ".verified") as outside:
-            (outside / record).write_text("{}", encoding="utf-8")
-            with self.assertRaisesRegex(setup.RemovalRefused, "is a link"):
-                setup.remove(asr_engines.WHISPER_LARGE, cache)
-            self.assertEqual(_tree(outside), sorted([*_OUTSIDE, record]))
+        # A Hugging Face cache copy lies outside the family folder, so its own
+        # parents never pass through a link there.
+        hub = cache / ("models--" + spec.hub_repos[0].replace("/", "--"))
+        hub.mkdir(parents=True)
+        for at, rel in ((family / ".verified", record), (family, f".verified/{record}")):
+            with self.subTest(at=at.name):
+                if at.exists():
+                    at.rmdir()                          # empty, left by the earlier case
+                with _outside_folder(base, at) as outside:
+                    (outside / rel).parent.mkdir(exist_ok=True)
+                    (outside / rel).write_text("{}", encoding="utf-8")
+                    with self.assertRaisesRegex(setup.RemovalRefused, "is a link"):
+                        setup.remove(asr_engines.WHISPER_LARGE, cache)
+                    self.assertTrue(hub.is_dir())
+                    extra = [rel] if at.name == ".verified" else [".verified", rel]
+                    self.assertEqual(_tree(outside), sorted([*_OUTSIDE, *extra]))
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_a_check_record_is_never_written_through_a_link(self):
         base = Path(self.tmp.name)
         spec, contents = _synthetic_model()
-        for case in ("model folder", "record folder"):
+        family = base / "models" / "parakeet"
+        hub_copy = base / "models" / "synthetic"        # a copy outside the family folder
+        record = family / ".verified" / "synthetic-x.json"
+        # Where the junction is, the folder checked, and its record (None: its own).
+        cases = {"model folder": (family / "synthetic", family / "synthetic", None),
+                 "record folder": (family / ".verified", hub_copy, record),
+                 "family folder": (family, hub_copy, record)}
+        for case, (at, folder, marker) in cases.items():
             with self.subTest(case=case):
-                at = base / "models" / "parakeet" / ("synthetic" if case == "model folder"
-                                                     else ".verified")
+                if at.exists():
+                    at.rmdir()                          # empty, left by an earlier case
                 with _outside_folder(base, at) as outside:
-                    folder = at if case == "model folder" else base / "models" / "synthetic"
                     folder.mkdir(parents=True, exist_ok=True)
                     for n, d in contents.items():
                         (folder / n).write_bytes(d)
-                    marker = None if case == "model folder" else at / "synthetic-x.json"
                     self.assertEqual(asr_engines.check_files(spec, folder, full=True,
                                                              marker=marker), [])
                     # Only what the test put there: no check record.
-                    expected = [*_OUTSIDE, *contents] if case == "model folder" else _OUTSIDE
+                    expected = [*_OUTSIDE, *contents] if folder == at else _OUTSIDE
                     self.assertEqual(_tree(outside), sorted(expected))
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")

@@ -382,10 +382,12 @@ def remove(name, cache_dir):
     from pathlib import Path
     cache = Path(cache_dir).resolve()
     targets = removal_targets(name, cache_dir)
-    # The check records' folder too: matching records are deleted through it.
+    # The check records' folder and the family folder above it too: matching
+    # records are deleted through them, also for a Hugging Face cache copy,
+    # whose own parents are not inside the family folder.
     marks = (None if name == gpu.COMPONENT
              else Path(cache_dir) / asr_engines.MANAGED_MODELS[name].family / ".verified")
-    if marks is not None and asr_engines.is_link(marks):
+    if marks is not None and (asr_engines.is_link(marks) or asr_engines.is_link(marks.parent)):
         raise RemovalRefused("A model folder is a link to somewhere else, so nothing was "
                              "removed.")
     for p in targets:
