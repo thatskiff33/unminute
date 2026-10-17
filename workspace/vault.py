@@ -8,8 +8,9 @@
 #   - Keys derived from it with HKDF-SHA256 and fixed labels (Keyring): the
 #     wrap key (wraps meeting keys and nothing else), the workspace key
 #     (workspace-wide values such as watched-folder paths), the fingerprint
-#     key (HMAC-SHA256 instead of plain hashes) and a check value that tells
-#     a wrong or damaged root key apart from a good one.
+#     key (HMAC-SHA256, from the standard library, instead of plain hashes)
+#     and a check value that tells a wrong or damaged root key apart from a
+#     good one.
 #   - Meeting keys: 32 random bytes each (text and audio), stored only
 #     wrapped. Destroying the wrapped key makes everything sealed under it
 #     unreadable, wherever copies of the ciphertext remain (crypto-erase, C3).
@@ -17,8 +18,9 @@
 # A sealed value is: format version (1 byte) | random nonce (12) |
 # AES-256-GCM ciphertext | tag (16). Its associated data names where it
 # belongs (the context: for example table, column and row), so a value copied
-# to another row, column or meeting does not open. Contexts are encoded with
-# a type and length per part, so no two different contexts encode the same.
+# to another row, column or meeting does not open. Contexts are encoded as
+# the label, a zero byte, then a type and length per part, so no two
+# different contexts encode the same.
 #
 # Errors never carry content, keys or contexts (P3). cryptography is imported
 # on first use: the window process starts without it until C2 needs it.
@@ -71,7 +73,7 @@ def encode(kind, context):
     str, int (not bool) and bytes parts."""
     if not isinstance(context, tuple):
         raise TypeError("a context is a tuple")
-    out = [b"unminute/v1/", _label(kind)]
+    out = [b"unminute/v1/", _label(kind), b"\0"]         # the label ends here
     for part in context:
         if isinstance(part, bool):
             raise TypeError("a context part is str, int or bytes")
@@ -96,47 +98,76 @@ def derive(key, kind, context=(), salt=None):
                 info=encode(kind, context)).derive(_key(key))
 
 
-def _aead(key):
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    return AESGCM(_key(key))
+def _bytes(data, what):
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError(f"{what} takes bytes")
+    return bytes(data)
+
+
+class Sealer:
+    """Seals and opens values under one key. Keep one per key to avoid
+    setting up the cipher for every value (C2 seals many small values).
+    kind labels what the key seals ("cell" for stored values, "key" for
+    wrapped keys), so the two can never be taken for each other."""
+
+    def __init__(self, key, kind="cell"):
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        self._kind = _label(kind).decode()
+        self._aead = AESGCM(_key(key))
+
+    def __repr__(self):
+        return "<Sealer>"                      # never the key
+
+    def seal(self, data, context):
+        """data (bytes) sealed for the place context names."""
+        data = _bytes(data, "seal")
+        head = bytes([VERSION])
+        nonce = secrets.token_bytes(NONCE_BYTES)
+        return head + nonce + self._aead.encrypt(nonce, data,
+                                                 head + encode(self._kind, context))
+
+    def unseal(self, blob, context):
+        """The bytes seal() was given, if the key and context are the ones
+        it used and the blob is unchanged."""
+        if not isinstance(blob, bytes) or len(blob) < OVERHEAD or blob[0] != VERSION:
+            raise VaultError("A stored value is damaged or from a newer version of Unminute.")
+        from cryptography.exceptions import InvalidTag
+        aad = blob[:1] + encode(self._kind, context)
+        try:
+            return self._aead.decrypt(blob[1:1 + NONCE_BYTES], blob[1 + NONCE_BYTES:], aad)
+        except InvalidTag:
+            pass                    # raised below, so no exception is chained to it
+        raise VaultError("A stored value could not be opened: the key is wrong, or the "
+                         "value is damaged or not where it was stored.")
+
+    def seal_text(self, text, context):
+        if not isinstance(text, str):
+            raise TypeError("seal_text takes str")
+        return self.seal(text.encode("utf-8"), context)
+
+    def unseal_text(self, blob, context):
+        data = self.unseal(blob, context)
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            pass                    # its .object is the plain text: never chain it
+        raise VaultError("A stored value is not text.")
 
 
 def seal(key, data, context):
-    """data (bytes) sealed under key for the place context names."""
-    if not isinstance(data, (bytes, bytearray, memoryview)):
-        raise TypeError("seal takes bytes; use seal_text for text")
-    head = bytes([VERSION])
-    nonce = secrets.token_bytes(NONCE_BYTES)
-    return head + nonce + _aead(key).encrypt(nonce, bytes(data), head + encode("cell", context))
+    return Sealer(key).seal(data, context)
 
 
 def unseal(key, blob, context):
-    """The bytes seal() was given, if key and context are the ones it used
-    and the blob is unchanged."""
-    if not isinstance(blob, bytes) or len(blob) < OVERHEAD or blob[0] != VERSION:
-        raise VaultError("A stored value is damaged or from a newer version of Unminute.")
-    from cryptography.exceptions import InvalidTag
-    nonce = blob[1:1 + NONCE_BYTES]
-    try:
-        return _aead(key).decrypt(nonce, blob[1 + NONCE_BYTES:],
-                                  blob[:1] + encode("cell", context))
-    except InvalidTag:
-        raise VaultError("A stored value could not be opened: the key is wrong, or the "
-                         "value is damaged or not where it was stored.") from None
+    return Sealer(key).unseal(blob, context)
 
 
 def seal_text(key, text, context):
-    if not isinstance(text, str):
-        raise TypeError("seal_text takes str")
-    return seal(key, text.encode("utf-8"), context)
+    return Sealer(key).seal_text(text, context)
 
 
 def unseal_text(key, blob, context):
-    data = unseal(key, blob, context)
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise VaultError("A stored value is not text.") from None
+    return Sealer(key).unseal_text(blob, context)
 
 
 def seal_root(root):
@@ -159,9 +190,10 @@ class Keyring:
 
     def __init__(self, root):
         _key(root)
-        self._wrap = derive(root, "wrap")
+        self._wrap = Sealer(derive(root, "wrap"), kind="key")
         self.workspace_key = derive(root, "workspace")
         self._fingerprint = derive(root, "fingerprint")
+        self._purpose_keys = {}
         self.check_value = derive(root, "check")
 
     def __repr__(self):
@@ -176,17 +208,22 @@ class Keyring:
         """A meeting key sealed for storage, bound to its purpose (for example
         "text" or "audio") and its meeting reference, so it cannot be used in
         another meeting's or purpose's place."""
-        return seal(self._wrap, _key(key), ("key", _label(purpose).decode(), ref))
+        return self._wrap.seal(_key(key), (_label(purpose).decode(), ref))
 
     def unwrap(self, blob, purpose, ref):
-        key = unseal(self._wrap, blob, ("key", _label(purpose).decode(), ref))
+        key = self._wrap.unseal(blob, (_label(purpose).decode(), ref))
         if len(key) != KEY_BYTES:
             raise VaultError("A stored key is damaged.")
         return key
 
     def fingerprint(self, purpose, data):
-        """HMAC-SHA256 of data under a key for this purpose, as hex: compares
-        like a hash, but cannot be checked against a guessed file without the
-        workspace's key."""
-        key = derive(self._fingerprint, "fingerprint", (_label(purpose).decode(),))
-        return hmac.new(key, bytes(data), hashlib.sha256).hexdigest()
+        """HMAC-SHA256 of data (bytes, for example a file's SHA-256 digest,
+        so large files are still hashed as they stream) under a key for this
+        purpose, as hex: compares like a hash, but cannot be checked against a
+        guessed file without the workspace's key."""
+        data = _bytes(data, "fingerprint")
+        key = self._purpose_keys.get(purpose)
+        if key is None:
+            key = derive(self._fingerprint, "fingerprint", (_label(purpose).decode(),))
+            self._purpose_keys[purpose] = key
+        return hmac.new(key, data, hashlib.sha256).hexdigest()

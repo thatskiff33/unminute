@@ -86,6 +86,31 @@ class DpapiTests(unittest.TestCase):
         self.assertEqual([("CryptProtectData", "Unminute", 1), ("CryptUnprotectData", None, 1)],
                          seen)
 
+    def test_key_copies_are_wiped_and_windows_buffers_freed(self):
+        # protect wipes its copy of the key and Windows's output buffer;
+        # unprotect wipes the output buffer (the plain key); each frees it.
+        import ctypes
+        wiped, freed = [], []
+        real_memset, real_kernel = ctypes.memset, dpapi._kernel
+
+        def memset(dst, c, n):
+            wiped.append(n)
+            return real_memset(dst, c, n)
+
+        class Kernel:
+            def LocalFree(self, p):
+                freed.append(p)
+                return real_kernel.LocalFree(p)
+
+        with mock.patch.object(dpapi.ctypes, "memset", memset), \
+                mock.patch.object(dpapi, "_kernel", Kernel()):
+            blob = dpapi.protect(SECRET, ENTROPY)
+            self.assertEqual([len(SECRET), len(blob)], wiped)
+            self.assertEqual(1, len(freed))
+            self.assertEqual(SECRET, dpapi.unprotect(blob, ENTROPY))
+            self.assertEqual([len(SECRET), len(blob), len(SECRET)], wiped)
+            self.assertEqual(2, len(freed))
+
     def test_only_bytes(self):
         for bad in ("text", None, 5, memoryview(SECRET)):
             with self.subTest(bad=type(bad).__name__), self.assertRaises(TypeError):
