@@ -438,29 +438,46 @@ class ProgressTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_a_check_record_is_not_trusted_through_a_link(self):
-        # A redirected model folder that carries an old "ok" record: a file
-        # changed without changing its size or time is still found.
+        # A redirected folder that carries an old "ok" record: a file changed
+        # without changing its size or time is still found, whether the link
+        # is at the model, family or record folder.
         base = Path(self.tmp.name)
         spec, contents = _synthetic_model()
-        real = base / "redirected"
-        real.mkdir()
-        for n, d in contents.items():
-            (real / n).write_bytes(d)
-        self.assertEqual(asr_engines.check_files(spec, real, full=True), [])   # records "ok"
-        weights = real / "weights.onnx"
-        st = weights.stat()
-        weights.write_bytes(b"\x02\x01" * 500)                         # same size
-        os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))        # same time
-        self.assertEqual(asr_engines.check_files(spec, real), [])      # trusted where it is
-        link = base / "models" / "parakeet" / "synthetic"
-        link.parent.mkdir(parents=True)
-        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
-                       check=True, capture_output=True)
-        try:
-            self.assertEqual(asr_engines.check_files(spec, link),
-                             ["weights.onnx does not match the expected checksum"])
-        finally:
-            os.rmdir(link)                                             # the junction only
+        for case in ("model folder", "family folder", "record folder"):
+            with self.subTest(case=case):
+                root = base / case.replace(" ", "-")      # a fresh layout per case
+                real = root / "real"                       # where the link points
+                family = root / "models" / "parakeet"
+                # The files, their record (None: their own), the link, and the
+                # folder and record as reached through the link.
+                if case == "model folder":
+                    files, record, link = real, None, family / "synthetic"
+                    via, via_record = link, None
+                elif case == "family folder":
+                    files, record, link = real / "synthetic", None, family
+                    via, via_record = family / "synthetic", None
+                else:
+                    files, record = root / "models" / "hub", real / "synthetic-x.json"
+                    link = family / ".verified"
+                    via, via_record = files, link / record.name
+                files.mkdir(parents=True)
+                for n, d in contents.items():
+                    (files / n).write_bytes(d)
+                self.assertEqual(asr_engines.check_files(spec, files, full=True,
+                                                         marker=record), [])    # records "ok"
+                weights = files / "weights.onnx"
+                st = weights.stat()
+                weights.write_bytes(b"\x02\x01" * 500)                   # same size
+                os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))  # same time
+                self.assertEqual(asr_engines.check_files(spec, files, marker=record), [])
+                link.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
+                               check=True, capture_output=True)
+                try:
+                    self.assertEqual(asr_engines.check_files(spec, via, marker=via_record),
+                                     ["weights.onnx does not match the expected checksum"])
+                finally:
+                    os.rmdir(link)                                     # the junction only
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_links_in_a_download_folder_are_never_followed(self):
