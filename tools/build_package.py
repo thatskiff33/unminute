@@ -357,12 +357,14 @@ def remove_empty_dirs(root):
 def precompile(folder):
     """Unchecked-hash .pyc for every module in the packages and the app, so
     nothing is compiled or written when the app runs (it starts with -B).
-    A fixed hash seed and paths relative to the package make the bytes the
+    A fixed hash seed, one process (marshal marks an object shared only if
+    something else holds it at that moment, which parallel workers change
+    from run to run) and paths relative to the package make the bytes the
     same in every build; at import Python records the file's real path."""
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONHASHSEED"] = "0"
     for sub in (f"runtime/{SITE}", "app"):
-        r = subprocess.run([sys.executable, "-P", "-s", "-m", "compileall", "-q", "-j", "0",
+        r = subprocess.run([sys.executable, "-P", "-s", "-m", "compileall", "-q",
                             "--invalidation-mode", "unchecked-hash", "-s", str(folder),
                             str(folder / sub)], env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
