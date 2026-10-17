@@ -28,7 +28,7 @@ def jobs():
     """Each job's text, by job id (the two-space-indented keys under jobs:)."""
     text = read(WORKFLOW).split("\njobs:\n", 1)[1]
     parts = re.split(r"(?m)^  ([A-Za-z0-9_-]+):\n", text)
-    return dict(zip(parts[1::2], parts[2::2]))
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
 
 
 def permissions(job_text):
