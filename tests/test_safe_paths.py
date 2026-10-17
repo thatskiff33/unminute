@@ -1,5 +1,5 @@
-# Tests for workspace.safe_paths and the bridge's argument validation.
-# Stdlib only for paths; the bridge tests need numpy and skip without it.
+# Tests for workspace.safe_paths and the shell's dispatch guard and navigation lock.
+# Stdlib only for paths; the dispatch guard tests need pywebview and skip without it.
 # The junction test creates a real NTFS junction (no admin needed) on Windows.
 #   python -m unittest discover -s tests -v
 

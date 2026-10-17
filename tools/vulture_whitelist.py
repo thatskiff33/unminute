@@ -65,6 +65,7 @@ _.encoding              # a text stream's protocol (workspace/diag.py)
 _.errors
 _.writable
 time_info               # sounddevice callback signature (workspace/recorder.py)
+context                 # ctypes power-notification callback signature (workspace/power.py)
 
 # Test helpers, named as such where they are defined: tests and tools call them.
 _.current_speakers      # workspace/store.py

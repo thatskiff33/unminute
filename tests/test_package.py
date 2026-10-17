@@ -995,6 +995,30 @@ class AppAllowlistTests(unittest.TestCase):
         for path in self.allowed:
             self.assertFalse(path.startswith(("tools/", "tests/", "docs/", "packaging/")), path)
             self.assertNotRegex(path, r"(^|/)trial\.|unlimit-white|webview_trial|make_icon")
+            self.assertNotRegex(path, r"(^|/)(test_[^/]*|[^/]*_test)\.py$")
+
+    def test_the_build_stops_on_a_file_the_allowlist_does_not_name(self):
+        # A development build copies untracked files too, so the build itself
+        # checks the folder, before precompiling adds the .pyc files.
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp) / "app"
+            for rel in self.allowed:
+                (app / rel).parent.mkdir(parents=True, exist_ok=True)
+                (app / rel).write_text("x", encoding="utf-8")
+            bp.check_app_files(app)                                    # exact: passes
+            extra = app / "workspace" / "ui" / "extra.html"
+            extra.write_text("x", encoding="utf-8")
+            with self.assertRaisesRegex(SystemExit, "not listed: workspace/ui/extra.html"):
+                bp.check_app_files(app)
+            extra.unlink()
+            (app / "LICENSE").unlink()
+            with self.assertRaisesRegex(SystemExit, "listed but missing: LICENSE"):
+                bp.check_app_files(app)
+        source = (bp.ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
+        body = source[source.index("\ndef build("):]
+        self.assertLess(body.index('check_app_files(folder / "app", app_list)'),
+                        body.index("precompile(folder)"))
+        self.assertIn('committed(sha, "packaging/app-allowlist.json")', body)   # a release's own
 
 
 if __name__ == "__main__":

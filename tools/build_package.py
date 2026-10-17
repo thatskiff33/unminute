@@ -102,6 +102,7 @@ CRLF_SUFFIXES = (".cmd", ".ps1")
 # found in this machine's catalogs rather than in the file itself.
 SIGNATURE_OK = ("Valid", "NotSigned")
 ALLOWLIST = PACKAGING / "binary-allowlist.json"
+APP_ALLOWLIST = PACKAGING / "app-allowlist.json"     # the app folder's source files (#136)
 BUDGETS = "tests/budgets.json"
 # Left out after installing (#111 B2). An import trace of the window process,
 # transcription and speaker identification on CPython 3.14 (17 October 2026)
@@ -580,6 +581,18 @@ def checkout_bytes(name, data):
     return data
 
 
+def check_app_files(app, path=APP_ALLOWLIST):
+    """Stop unless the app folder holds exactly the source files the allowlist
+    names (#136): a development build also copies untracked files."""
+    allowed = set(json.loads(Path(path).read_text(encoding="utf-8"))["app"])
+    found = {p.relative_to(app).as_posix() for p in Path(app).rglob("*") if p.is_file()}
+    problems = ([f"not listed: {p}" for p in sorted(found - allowed)]
+                + [f"listed but missing: {p}" for p in sorted(allowed - found)])
+    if problems:
+        sys.exit("The app folder differs from packaging/app-allowlist.json ("
+                 + "; ".join(problems[:5]) + "). List a new shipped file there, or remove it.")
+
+
 def export_app(app, sha):
     """A release build: the app and installer files of commit `sha`, as stored
     in git (so no ignored, untracked, locally changed or hidden file can ship,
@@ -1021,11 +1034,14 @@ def build(version, out, cache, release=False, update_allowlist=False):
         work.mkdir(exist_ok=True)
         # What the build obeys: from the commit for a release, else the folder.
         lock_file, allowlist = ROOT / "requirements.txt", ALLOWLIST
+        app_list = APP_ALLOWLIST
         budgets = (ROOT / BUDGETS).read_text(encoding="utf-8")
         if release:
             lock_file, allowlist = work / "requirements.txt", work / "binary-allowlist.json"
             lock_file.write_bytes(committed(sha, "requirements.txt"))
             allowlist.write_bytes(committed(sha, "packaging/binary-allowlist.json"))
+            app_list = work / "app-allowlist.json"
+            app_list.write_bytes(committed(sha, "packaging/app-allowlist.json"))
             budgets = committed(sha, BUDGETS).decode("utf-8")
             for path in ("tools/build_package.py",
                          *(f"packaging/wheels/{w}" for w in VENDORED)):
@@ -1048,6 +1064,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
             export_app(folder / "app", sha)
         else:
             copy_app(folder / "app")
+        check_app_files(folder / "app", app_list)       # before precompile adds the .pyc
         precompile(folder)
         info = {
             # "name": Start menu and Settings > Apps name; installers read it so a
