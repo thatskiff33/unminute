@@ -262,7 +262,9 @@ class Recording:
         self._viz_cache = None                        # (block number, its display data)
         self._last_audio = tick()
         self._alive = tick()                    # the watchdog's latest beat
-        self._froze_at = None                   # when the watchdog last found a freeze
+        self._froze_at = None                   # when the watchdog last found a sleep
+        self._stall_end = float("-inf")         # when the watchdog last found a stall
+        self._started_tick = tick()             # for the time limit (set again at start)
         self._watchdog = None
         self._close_lock = threading.Lock()     # one thread closes the stream after a sleep
         self._stop = threading.Event()         # the writer's signal to finish
@@ -279,12 +281,20 @@ class Recording:
     def _callback(self, indata, frames, time_info, status):
         now = self._tick()
         frozen = self._frozen(now)          # read before writing our own mark
+        held_up = now - self._alive > SILENT_DEVICE_S
+        gap, previous = now - self._last_audio, self._last_audio
         self._last_audio = now
         if self._stop.is_set():
             return                 # stopped (or slept, or lost): nothing more is captured
         if frozen and not self.paused:
             self._slept()          # the first audio after a sleep: not joined on
             return
+        # The microphone went quiet for longer than the silence limit and came
+        # back before the silence check ran: the gap is reported, never hidden.
+        # (A hold-up of the whole app is the watchdog's "stall" instead.)
+        if (gap > SILENT_DEVICE_S and not self.paused and not held_up
+                and self._stall_end < previous):
+            self._event("gap", seconds=gap, note="No audio came from the microphone here.")
         if status and getattr(status, "input_overflow", False):
             self._event("overrun", note="The computer could not keep up; a short piece of "
                                         "audio was lost here.")
@@ -347,7 +357,7 @@ class Recording:
         self._save_journal()
 
     def _write_loop(self):
-        last_beat = 0.0
+        last_beat = float("-inf")       # monotonic, like every interval here
         try:
             while True:
                 self._close_after_sleep()        # if the callback noticed it
@@ -362,18 +372,26 @@ class Recording:
                     break
                 if self._buffered >= CHUNK_S * self.rate:
                     self._flush_chunk()
-                now = self._clock()
-                if now - last_beat >= HEARTBEAT_S:
-                    last_beat = now
+                # Intervals on the monotonic clock, so setting the time back
+                # cannot pause these checks; the wall clock is written only as
+                # the "last seen" time that recovery after a crash compares.
+                tick = self._tick()
+                if tick - last_beat >= HEARTBEAT_S:
+                    last_beat = tick
+                    now = self._clock()
                     self.journal["last_seen"] = now
                     try:                 # only an estimate: never end a recording over it
                         (self.folder / "heartbeat").write_text(str(now), encoding="ascii")
                     except OSError:
                         pass
+                    # Silence counts from the last audio or the end of a stall,
+                    # whichever is later, and not while the watchdog's beat is
+                    # late (the app was just held up and audio has not caught up).
                     if (not self.paused and not self._stop.is_set()
-                            and self._tick() - self._last_audio > SILENT_DEVICE_S):
+                            and tick - self._alive <= SILENT_DEVICE_S
+                            and tick - max(self._last_audio, self._stall_end) > SILENT_DEVICE_S):
                         self._device_lost()
-                    if now - self.journal["started_at"] > MAX_HOURS * 3600:
+                    if tick - self._started_tick > MAX_HOURS * 3600:
                         self._event("time_limit", note=f"Stopped after {MAX_HOURS} hours.")
                         self._stop.set()
             self._close_after_sleep()
@@ -415,6 +433,7 @@ class Recording:
                     self._close_after_sleep()
             elif (late > SILENT_DEVICE_S and not self.paused
                   and self.journal["state"] == "recording"):
+                self._stall_end = tick            # audio gets a full silence period again
                 self._event("stall", seconds=late,
                             note="The computer was held up; audio from this moment may "
                                  "be missing.")
@@ -502,7 +521,7 @@ class Recording:
             raise RecorderError("The microphone could not be started. Check that it is "
                                 "connected and that Windows allows apps to use it "
                                 "(Settings > Privacy > Microphone).") from exc
-        self._last_audio = self._alive = self._tick()
+        self._last_audio = self._alive = self._started_tick = self._tick()
         self._writer = threading.Thread(target=self._write_loop, name="recorder-writer",
                                         daemon=True)
         self._writer.start()
