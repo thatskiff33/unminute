@@ -26,6 +26,7 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -92,12 +93,27 @@ class ModelSpec:
         return sum(f.size for f in self.files)
 
 
+# Speech model names (the keys below) and what the app calls them: one source
+# for Setup, Settings and a meeting's details (R12, #133).
+PARAKEET_V2 = "parakeet-tdt-0.6b-v2"
+PARAKEET_V3 = "parakeet-tdt-0.6b-v3"
+WHISPER_TURBO = "large-v3-turbo"
+WHISPER_LARGE = "large-v3"
+LABELS = {PARAKEET_V2: "Parakeet v2", PARAKEET_V3: "Parakeet v3",
+          WHISPER_TURBO: "Whisper large-v3 turbo", WHISPER_LARGE: "Whisper large-v3"}
+
+
+def label(name):
+    """What the app calls a speech model ("Parakeet v2"); any other name as it is."""
+    return LABELS.get(name, name)
+
+
 # Hashes were taken from the pinned revisions. Large files match the LFS
 # SHA-256 Hugging Face publishes; small files were checked against Hugging
 # Face's git blob IDs before their SHA-256 was recorded.
 PARAKEET_MODELS = {
-    "parakeet-tdt-0.6b-v2": ModelSpec(
-        name="parakeet-tdt-0.6b-v2",
+    PARAKEET_V2: ModelSpec(
+        name=PARAKEET_V2,
         folder="parakeet-tdt-0.6b-v2-int8",
         onnx_asr_name="nemo-parakeet-tdt-0.6b-v2",
         repo="istupakov/parakeet-tdt-0.6b-v2-onnx",
@@ -114,8 +130,8 @@ PARAKEET_MODELS = {
                       "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d"),
         ),
     ),
-    "parakeet-tdt-0.6b-v3": ModelSpec(
-        name="parakeet-tdt-0.6b-v3",
+    PARAKEET_V3: ModelSpec(
+        name=PARAKEET_V3,
         folder="parakeet-tdt-0.6b-v3-int8",
         onnx_asr_name="nemo-parakeet-tdt-0.6b-v3",
         repo="istupakov/parakeet-tdt-0.6b-v3-onnx",
@@ -148,7 +164,7 @@ SILERO_VAD = ModelSpec(
     ),
 )
 
-RECOMMENDED_PARAKEET = "parakeet-tdt-0.6b-v2"
+RECOMMENDED_PARAKEET = PARAKEET_V2
 
 # faster-whisper (CTranslate2) models. File hashes match Hugging Face's LFS
 # SHA-256 and git blob IDs; the model files are identical across turbo
@@ -164,8 +180,8 @@ _WHISPER_SHARED = (
 )
 
 WHISPER_MODELS = {
-    "large-v3-turbo": ModelSpec(
-        name="large-v3-turbo",
+    WHISPER_TURBO: ModelSpec(
+        name=WHISPER_TURBO,
         folder="faster-whisper-large-v3-turbo",
         family="whisper",
         repo="dropbox-dash/faster-whisper-large-v3-turbo",
@@ -183,8 +199,8 @@ WHISPER_MODELS = {
             *_WHISPER_SHARED,
         ),
     ),
-    "large-v3": ModelSpec(
-        name="large-v3",
+    WHISPER_LARGE: ModelSpec(
+        name=WHISPER_LARGE,
         folder="faster-whisper-large-v3",
         family="whisper",
         repo="Systran/faster-whisper-large-v3",
@@ -257,6 +273,16 @@ def staging_dir(spec, cache_dir):
     return Path(cache_dir) / spec.family / f"~dl-{zlib.crc32(spec.folder.encode()):08x}"
 
 
+def is_link(path):
+    """A symbolic link or junction (any reparse point), checked without
+    following it. A missing path is not one."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
 # --- Integrity checks ---------------------------------------------------------
 
 def _sha256(path, chunk=8 * 1024 * 1024):
@@ -300,7 +326,12 @@ def check_files(spec, folder, full=False, marker=None):
     if problems:
         return problems
 
-    recorded = _read_marker(marker)
+    # Through a link at the record's folder or the one above it (the model or
+    # .verified folder, and the family folder) a record is neither trusted nor
+    # written (T5): that copy is hashed in full every time. A recorded failure
+    # is still honoured (_recorded_failure): it can only refuse a copy.
+    linked = is_link(marker.parent) or is_link(marker.parent.parent)
+    recorded = None if linked else _read_marker(marker)
     trusted = (not full and recorded is not None and recorded.get("ok", True)
                and recorded.get("revision") == spec.revision
                and recorded.get("files") == _fingerprint(folder, spec))
@@ -310,6 +341,8 @@ def check_files(spec, folder, full=False, marker=None):
     for f in spec.files:
         if _sha256(folder / f.name) != f.sha256:
             problems.append(f"{f.name} does not match the expected checksum")
+    if linked:
+        return problems
     try:
         # Record the outcome either way: a failure makes the quick status show
         # "needs repair" until these exact files change.
@@ -382,7 +415,7 @@ def _preprocessor_problems(spec, folder):
         return ["preprocessor_config.json has no feature_size"]
     if config["feature_size"] != spec.n_mels:
         return [f"preprocessor_config.json sets feature_size {config['feature_size']}, "
-                f"but {spec.name} needs {spec.n_mels}"]
+                f"but {label(spec.name)} needs {spec.n_mels}"]
     return []
 
 
@@ -450,10 +483,11 @@ def feature_width_problem(model, spec):
     produced = int(model.feature_extractor.mel_filters.shape[0])
     expected = int(model.model.n_mels)
     if produced != expected:
-        return (f"{spec.name} expects {expected} mel bands but its preprocessing "
+        return (f"{label(spec.name)} expects {expected} mel bands but its preprocessing "
                 f"settings produce {produced}")
     if spec.n_mels and expected != spec.n_mels:
-        return f"{spec.name} reports {expected} mel bands; this model should use {spec.n_mels}"
+        return (f"{label(spec.name)} reports {expected} mel bands; this model should use "
+                f"{spec.n_mels}")
     return None
 
 
@@ -469,13 +503,22 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     fresh download that is verified BEFORE it is moved into place. Re-running
     on a good installation only re-checks it."""
     target = model_dir(spec, cache_dir)
+    # A link or junction at the family, model, download or check-record folder
+    # is refused before anything is read, deleted or downloaded: following one
+    # would write outside the cache, and the clean-up of the download's
+    # bookkeeping would delete the linked folder's own .cache (T5). remove()
+    # refuses the same.
+    if any(is_link(p) for p in (target.parent, target, staging_dir(spec, cache_dir),
+                                target.parent / ".verified")):
+        raise ModelLoadError(f"A {label(spec.name)} folder in the model cache is a link to "
+                             f"somewhere else, so it was not used. Ask your IT team.")
     hub_cached = bool(spec.hub_repos)
     if hub_cached:
         # Reuse any copy that verifies, including an older Hugging Face cache.
         if find_verified_whisper(spec, cache_dir, full=True) is not None:
             return "ok"
         for snap in _hub_snapshots(spec, cache_dir):
-            log(f"{spec.name}: the cached copy in {snap} is not usable "
+            log(f"{label(spec.name)}: the cached copy in {snap} is not usable "
                 f"({'; '.join(_quick_problems(spec, snap)) or 'checksum mismatch'}). "
                 f"It is left untouched for diagnosis.")
     had_folder = target.exists()
@@ -485,37 +528,38 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
                     if hub_cached else check_files(spec, target, full=True))
         if not problems and not hub_cached:
             return "ok"
-        log(f"{spec.name}: installed files are not usable "
+        log(f"{label(spec.name)}: installed files are not usable "
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
     if spec.gated and not has_token and not staging_dir(spec, cache_dir).is_dir():
         raise ModelLoadError(
-            f"{spec.name} needs downloading again, which needs your Hugging Face token. "
+            f"{label(spec.name)} needs downloading again, which needs your Hugging Face token. "
             f"Download it in Unminute's Setup.")
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
         # A verified download from an attempt whose final move failed.
-        log(f"Reusing the verified {spec.name} download from the last attempt.")
+        log(f"Reusing the verified {label(spec.name)} download from the last attempt.")
         return _move_into_place(spec, target, staging, had_folder, log)
     if download is None:
-        raise ModelLoadError(f"{spec.name} needs downloading. Download it in Unminute's Setup.")
+        raise ModelLoadError(f"{label(spec.name)} needs downloading. "
+                             f"Download it in Unminute's Setup.")
     shutil.rmtree(staging, ignore_errors=True)   # leftover of an interrupted run
     staging.parent.mkdir(parents=True, exist_ok=True)
-    log(f"Downloading {spec.name} ({spec.download_bytes / 1e9:.2f} GB, "
+    log(f"Downloading {label(spec.name)} ({spec.download_bytes / 1e9:.2f} GB, "
         f"revision {spec.revision[:7]})...")
     try:
         try:
             download(spec, staging)
         except Exception as exc:
             raise ModelLoadError(
-                f"Could not download {spec.name} ({type(exc).__name__}: {exc}). "
+                f"Could not download {label(spec.name)} ({type(exc).__name__}: {exc}). "
                 f"Nothing was changed. Check the internet connection and try again.") from exc
         # Download bookkeeping only; dropping it keeps the model folder clean.
         shutil.rmtree(staging / ".cache", ignore_errors=True)
         problems = check_files(spec, staging, full=True)
         if problems:
             raise ModelLoadError(
-                f"The downloaded {spec.name} files failed verification "
+                f"The downloaded {label(spec.name)} files failed verification "
                 f"({'; '.join(problems)}). Nothing was changed; try the download again.")
     except BaseException:
         # Only our own fresh, unverified download is discarded here.
@@ -541,9 +585,9 @@ def _move_into_place(spec, target, staging, had_folder, log):
         if kept is not None and not target.exists():
             kept.rename(target)
         raise ModelLoadError(
-            f"Could not move the verified {spec.name} files into place ({exc}). "
+            f"Could not move the verified {label(spec.name)} files into place ({exc}). "
             f"Wait a minute and try the download again.") from exc
-    log(f"{spec.name} verified and ready.")
+    log(f"{label(spec.name)} verified and ready.")
     return "repaired" if had_folder else "installed"
 
 
@@ -575,11 +619,11 @@ find_verified = find_verified_whisper
 
 # Licences as published on each model card (checked 13 October 2026).
 LICENCES = {
-    "parakeet-tdt-0.6b-v2": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v2, ONNX export by istupakov"),
-    "parakeet-tdt-0.6b-v3": ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v3, ONNX export by istupakov"),
+    PARAKEET_V2: ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v2, ONNX export by istupakov"),
+    PARAKEET_V3: ("CC BY 4.0", "NVIDIA parakeet-tdt-0.6b-v3, ONNX export by istupakov"),
     "silero-vad": ("MIT", "Silero VAD, ONNX packaging by istupakov"),
-    "large-v3-turbo": ("MIT", "OpenAI whisper-large-v3-turbo, CTranslate2 conversion"),
-    "large-v3": ("MIT", "OpenAI whisper-large-v3, CTranslate2 conversion by Systran"),
+    WHISPER_TURBO: ("MIT", "OpenAI whisper-large-v3-turbo, CTranslate2 conversion"),
+    WHISPER_LARGE: ("MIT", "OpenAI whisper-large-v3, CTranslate2 conversion by Systran"),
     "speaker-diarization-community-1": (
         "CC BY 4.0 (gated)",
         "pyannoteAI speaker-diarization-community-1; accept terms to download"),
@@ -710,7 +754,7 @@ class ParakeetEngine:
 
     device = "cpu"
 
-    def __init__(self, name, cache_dir, threads, decode_audio):
+    def __init__(self, name, cache_dir, threads, decode_audio=None):
         self.spec = PARAKEET_MODELS[name]
         self.cache_dir = cache_dir
         self.threads = threads
@@ -730,7 +774,7 @@ class ParakeetEngine:
             problems = check_files(spec, model_dir(spec, self.cache_dir))
             if problems:
                 raise ModelLoadError(
-                    f"{spec.name} cannot be used: {'; '.join(problems)}. "
+                    f"{label(spec.name)} cannot be used: {'; '.join(problems)}. "
                     f"Repair it in Settings > Manage downloads.")
         try:
             import onnx_asr
@@ -756,7 +800,7 @@ class ParakeetEngine:
                                      max_speech_duration_s=MAX_SEGMENT_SECONDS).with_timestamps()
         except Exception as exc:
             raise ModelLoadError(
-                f"{self.label} failed to load ({type(exc).__name__}: {exc}). "
+                f"{label(self.spec.name)} failed to load ({type(exc).__name__}: {exc}). "
                 f"Repair it in Settings > Manage downloads; if it keeps failing, "
                 f"choose a Whisper model.") from exc
         return self
@@ -767,9 +811,11 @@ class ParakeetEngine:
         Segments are produced lazily, one speech piece at a time, so callers
         can pause or stop between them."""
         if self._asr is None:
-            raise ModelLoadError(f"{self.label} is not loaded.")
+            raise ModelLoadError(f"{label(self.spec.name)} is not loaded.")
         wav = audio
         if isinstance(audio, (str, Path)):
+            if self.decode_audio is None:       # the app passes decoded arrays (R12)
+                raise TypeError("Pass the audio as an array, or give a decoder.")
             wav = self.decode_audio(str(audio), sampling_rate=SAMPLE_RATE)
         duration = len(wav) / SAMPLE_RATE
 

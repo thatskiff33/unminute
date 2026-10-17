@@ -27,7 +27,7 @@ One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<v
 | `binary-inventory.json` | Every executable file (by suffix, or by its Windows, Linux or macOS executable header), with its size, SHA-256 and Authenticode signature: whether it is signed, the signer, the certificate thumbprint and whether the signature is time-stamped. |
 | `model-manifest.json` | The pinned model files, by size and SHA-256, for checking a copy staged by IT. The models themselves are not in the package. |
 
-Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\whisper-models` (shared with the earlier app where it is still installed).
+Models are not in the package. They are separate, verified downloads in the app's Setup view (#19), stored in `%LOCALAPPDATA%\whisper-models` (shared with the earlier app where it is still installed). To keep models elsewhere, redirect that whole folder, not folders inside it: downloading, repairing or removing refuses a model folder that is a link or junction.
 
 Users never need Python, Git, FFmpeg or GPU tools.
 

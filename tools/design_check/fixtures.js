@@ -164,26 +164,26 @@
     shared_with_earlier_app: false, download: null, ...over });
   const CARDS = [
     card({ name: "parakeet-tdt-0.6b-v2", role: "speech", recommended: true, size_gb: 0.66,
-           title: "Speech to text: Parakeet v2 (recommended)",
+           label: "Parakeet v2", title: "Speech to text: Parakeet v2 (recommended)",
            about: "Fast and accurate for English. Runs on this computer's processor." }),
-    card({ name: "parakeet-tdt-0.6b-v3", role: "speech", size_gb: 0.67, title: "Speech to text: Parakeet v3",
+    card({ name: "parakeet-tdt-0.6b-v3", role: "speech", size_gb: 0.67, label: "Parakeet v3", title: "Speech to text: Parakeet v3",
            about: "Newer multilingual version. In our tests it was less accurate for English." }),
     card({ name: "large-v3-turbo", role: "speech", size_gb: 1.62, state: "missing", status: "Not downloaded.",
-           removable: false, title: "Speech to text: Whisper large-v3 turbo", about: "Alternative engine; slower on a processor." }),
+           removable: false, label: "Whisper large-v3 turbo", title: "Speech to text: Whisper large-v3 turbo", about: "Alternative engine; slower on a processor." }),
     card({ name: "pyannote/speaker-diarization-community-1", role: "speakers", recommended: true, size_gb: 0.03,
-           needs_token: true, title: "Speaker identification (optional)",
+           needs_token: true, label: "Speaker identification", title: "Speaker identification (optional)",
            about: "Works out who spoke when. Downloading it needs a free Hugging Face account and token." }),
     card({ name: "gpu-component", role: "gpu", size_gb: 1.92, state: "missing", status: "Not downloaded.",
-           removable: false, title: "Graphics card acceleration (optional)",
+           removable: false, label: "Graphics card acceleration", title: "Graphics card acceleration (optional)",
            about: "Speeds up speaker identification on this computer's NVIDIA RTX 500. Used only in Faster mode." }),
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
     model: "parakeet-tdt-0.6b-v2", onboarded: true,
-    choices: [{ name: "parakeet-tdt-0.6b-v2", label: "parakeet-tdt-0.6b-v2 (recommended)" },
-              { name: "parakeet-tdt-0.6b-v3", label: "parakeet-tdt-0.6b-v3" },
-              { name: "large-v3-turbo", label: "large-v3-turbo" }],
-    gpu: { card: "NVIDIA RTX 500", driver_ok: true, component: "ready" },
+    choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true },
+              { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false },
+              { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false }],
+    gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: "580", component: "ready" },
     deployment: { mode: "self-service", version: "0.3.0" },
     update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
     repaired: { keys: [], all: false },
@@ -221,7 +221,7 @@
       id: "m-garden", title: "Community garden planning (sample)", created_at: at(1, 57),
       stage: "review", paused: false, error: null, busy: null, progress: 100,
       audio_available: true, audio_removed_at: null, reviewed_at: null, final_saved_at: null,
-      model: "parakeet-tdt-0.6b-v2", edits: 1, can_undo: true, older_versions: [],
+      model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", edits: 1, can_undo: true, older_versions: [],
       speakers: { status: "done", error: null, device: "cpu", count: null, started_at: at(2, 5) },
       holds: [], cleanup: [], limits: LIMITS, duration_s: 1085, speaker_count: 2, mode: "quiet",
       ...over,
@@ -239,14 +239,14 @@
     meetings: [
       { id: "m-garden", title: "Community garden planning (sample)", age_days: 0, action: "Review the transcript",
         held: false, progress: 100, paused: false, error: null, busy: null, stage: "review",
-        duration_s: 1085, speaker_count: 2, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
+        duration_s: 1085, speaker_count: 2, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true, cleanup: [] },
       { id: "m-quarterly", title: "Quarterly planning (sample)", age_days: 1,
         action: "Hand off, then confirm the final document is saved", held: false, progress: 100,
         paused: false, error: null, busy: null, stage: "handoff",
-        duration_s: 2520, speaker_count: 4, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
+        duration_s: 2520, speaker_count: 4, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true, cleanup: [] },
       { id: "m-catchup", title: "Team catch-up (sample)", age_days: 0, action: "Transcribing",
         held: false, progress: 46, paused: false, error: null, busy: "transcribe", stage: "inbox",
-        duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true, cleanup: [] },
+        duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true, cleanup: [] },
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
@@ -258,7 +258,7 @@
   // -- scenarios -----------------------------------------------------------------------
   // Each changes the data and lists steps to run once the page is ready.
   const row = (over) => ({ held: false, progress: 100, paused: false, error: null, busy: null,
-    duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", audio_available: true,
+    duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true,
     cleanup: [], age_days: 0, action: "", can_skip: true, ...over });
   // Board heights of the level meter's bars, as microphone levels in dB.
   const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
@@ -387,7 +387,7 @@
     "setup-2": {
       change: (d) => {
         firstRun(d);
-        d.cards[0] = { ...d.cards[0], state: "missing", download: { state: "running", message: "Downloading 0.41 of 0.66 GB" } };
+        d.cards[0] = { ...d.cards[0], state: "missing", download: { state: "running", message: "Downloading 0.41 of 0.66 GB", percent: 62 } };
       },
       steps: [() => window.workspace.setStep(2)],
     },
@@ -411,6 +411,7 @@
     "meeting-earlier": {
       change: (d) => {
         d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",
+                                                            model_label: "Parakeet v3",
                                                             created_at: at(1, 20), edits: 2 }] });
       },
       steps: [...openAndPlay(), () => document.querySelector('[role=tab][data-tab="versions"]').click(),
