@@ -31,27 +31,54 @@ def clean():
     return mock.patch.object(evidence, "tools_identity", return_value=CLEAN)
 
 
+IMPORT_LISTS = ("path", "meta_path", "path_hooks")     # what decides where imports come from
+SAFE_METHODS = ("append", "extend", "count", "index", "copy")
+
+
 def path_prepends(source):
-    """Lines where code (not text in a string) puts something ahead of the
-    rest of sys.path: sys.path.insert, or an assignment to sys.path or a
-    slice of it."""
+    """Lines where code (not text in a string) could put something ahead of
+    the standard library: any method but append, extend, count, index or copy
+    called on sys.path, sys.meta_path or sys.path_hooks; an assignment to or
+    deletion of one of them or its items (`sys.path += [x]` only appends); or
+    an alias of sys or of those lists, which the rest of the check could not
+    follow."""
     import ast
 
-    def is_sys_path(node):
-        return (isinstance(node, ast.Attribute) and node.attr == "path"
+    def is_list(node):
+        return (isinstance(node, ast.Attribute) and node.attr in IMPORT_LISTS
                 and isinstance(node.value, ast.Name) and node.value.id == "sys")
 
-    found = []
+    def names(target):
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                yield from names(item)
+        elif isinstance(target, ast.Starred):
+            yield from names(target.value)
+        else:
+            yield target
+
+    found = set()
     for node in ast.walk(ast.parse(source)):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "insert" and is_sys_path(node.func.value)):
-            found.append(node.lineno)
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if is_sys_path(target) or (isinstance(target, ast.Subscript)
-                                           and is_sys_path(target.value)):
-                    found.append(node.lineno)
-    return found
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if is_list(node.func.value) and node.func.attr not in SAFE_METHODS:
+                found.add(node.lineno)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Delete)):
+            targets = node.targets if isinstance(node, (ast.Assign, ast.Delete)) else [
+                node.target]
+            for target in (t for each in targets for t in names(each)):
+                item = isinstance(target, ast.Subscript) and is_list(target.value)
+                whole = is_list(target) and not isinstance(node, ast.AugAssign)
+                if item or whole:
+                    found.add(node.lineno)
+        elif isinstance(node, ast.Import):
+            if any(a.name == "sys" and a.asname for a in node.names):
+                found.add(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and node.module == "sys":
+            if any(a.name in IMPORT_LISTS for a in node.names):
+                found.add(node.lineno)
+    return sorted(found)
+
+
 LONG_S = chr(0x17F)      # Latin small long s: a different name on NTFS, "s" to casefold()
 
 
@@ -620,14 +647,34 @@ class ToolTests(TempDir):
         for folder in (ROOT / "tools", ROOT / "tests"):
             for p in folder.glob("*.py"):
                 self.assertNotIn(p.stem, taken, p)
-        # Their own code never puts anything ahead of the standard library: no
-        # sys.path.insert, no slice or whole assignment. The app goes first
-        # only through evidence.add_app. (Text inside strings, such as the
-        # scripts the package checks run in the package, is not code.)
+        # Their own code never puts anything ahead of the standard library
+        # (path_prepends). The app goes first only through evidence.add_app.
         for tool in ("perf_check.py", "packaged_check.py", "packaged_crash_check.py",
                      "workspace_ui_check.py", "accessibility_check.py", "process_listeners.py"):
             with self.subTest(tool=tool):
                 self.assertEqual([], path_prepends(self.source(tool)))
+        # Code they import: the fake engines the UI check loads in-process, and
+        # evidence.py, whose only change is add_app's.
+        self.assertEqual([], path_prepends((ROOT / "tests" / "fake_worker_engines.py")
+                                           .read_text(encoding="utf-8")))
+        import ast
+        source = self.source("evidence.py")
+        add_app = next(n for n in ast.walk(ast.parse(source))
+                       if isinstance(n, ast.FunctionDef) and n.name == "add_app")
+        lines = path_prepends(source)
+        self.assertTrue(lines)
+        self.assertTrue(all(add_app.lineno <= n <= add_app.end_lineno for n in lines), lines)
+        # The scripts the package checks run inside the package (from its app
+        # folder, under -I) put only that folder first.
+        for tool, name in (("packaged_check.py", "LIFECYCLE"),
+                           ("packaged_crash_check.py", "CHILD")):
+            with self.subTest(script=name):
+                script = next(n.value.value for n in ast.parse(self.source(tool)).body
+                              if isinstance(n, ast.Assign) and n.targets[0].id == name)
+                lines = path_prepends(script)
+                self.assertEqual(1, len(lines))
+                self.assertEqual('sys.path.insert(0, ".")',
+                                 script.splitlines()[lines[0] - 1].strip())
 
     def test_the_path_check_sees_every_way_to_prepend(self):
         for code in ('sys.path.insert(0, str(ROOT / "tools"))',
@@ -635,13 +682,33 @@ class ToolTests(TempDir):
                      "sys.path.insert(0, str(Path(__file__).resolve().parent))",
                      "sys.path.insert(len(sys.path) - 1, here)",
                      "sys.path[:0] = [str(HERE)]",
+                     "sys.path[:] = [x] + sys.path",
                      "sys.path = [str(HERE)] + sys.path",
-                     "sys.path += []\nsys.path[0:0] = [x]"):
+                     "sys.path[0] = x",
+                     "sys.path.__setitem__(slice(0, 0), [x])",
+                     "sys.path.clear()",
+                     "sys.path.reverse()",
+                     "sys.path: list = [x]",
+                     "sys.path, other = [x], 1",
+                     "del sys.path[:1]",
+                     "sys.meta_path.insert(0, finder)",
+                     "sys.path_hooks.insert(0, hook)",
+                     "from sys import path as p",
+                     "import sys as _s",
+                     "if True:\n    sys.path.insert(0, x)"):
             with self.subTest(code=code):
-                self.assertNotEqual([], path_prepends(code))
+                self.assertEqual([code.count("\n") + 1], path_prepends(code))
+        self.assertEqual([2], path_prepends("sys.path += [x]\nsys.path[0:0] = [x]"))
         for code in ('sys.path.append(str(ROOT / "tools"))',
+                     "sys.path.extend([x])",
+                     "sys.path += [x]",
+                     "n = sys.path.index(x) + sys.path.count(x)",
+                     "saved = sys.path.copy()",
                      "CHILD = 'sys.path.insert(0, \".\")'",
-                     "paths.insert(0, x)"):
+                     "paths.insert(0, x)",
+                     "self.path.insert(0, x)",
+                     "import sys",
+                     "from sys import argv"):
             with self.subTest(code=code):
                 self.assertEqual([], path_prepends(code))
 
