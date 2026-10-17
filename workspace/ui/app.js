@@ -2050,7 +2050,7 @@ function reportItem(rep) {
       dismiss);
   const done = rep.note ? ` ${rep.note}` : rep.meeting ? " It is in Meetings now." : " It is being imported.";
   if (rep.events.some((e) => e.kind === "sleep"))
-    return notice("alert", `The computer went to sleep, so the recording stopped. ${fmtSeconds(rep.seconds)} recorded before that was saved. If you closed the lid: to record with it closed, set Windows to do nothing when the lid is closed, and stop the recording here before you close it.${done}`, dismiss);
+    return notice("alert", `The computer went to sleep, so the recording stopped. ${fmtSeconds(rep.seconds)} recorded before that was saved. If you closed the lid: to keep recording with it closed, set Windows to do nothing when the lid is closed; the recording then carries on until you stop it here.${done}`, dismiss);
   if (rep.events.some((e) => e.kind === "device_lost"))
     return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);

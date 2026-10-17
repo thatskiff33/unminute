@@ -291,9 +291,9 @@ class RecordingTests(unittest.TestCase):
 
         def slow(path, data):
             if path.suffix == ".pcm":
-                time.sleep(1.0)
+                time.sleep(0.8)              # slow, but within the silence limit
             real(path, data)
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1), \
                 mock.patch.object(recorder, "_write_atomic", slow):
             rec, s = self.start()
@@ -303,6 +303,75 @@ class RecordingTests(unittest.TestCase):
                 time.sleep(0.1)
         journal = rec.stop()
         self.assertEqual(journal["state"], "device_lost")
+
+    def test_changing_the_clock_does_not_end_a_recording(self):
+        # The wall clock jumps (the user or Windows time service sets it); the
+        # audio never stops. Journal times follow the wall clock; gaps do not.
+        offset = [0.0]
+        rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
+                                 clock=lambda: time.time() + offset[0])
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
+            rec.start()
+            s = self.holder["stream"]
+            for _ in range(10):
+                s.feed(0.2)
+                offset[0] += 5.0                 # forward 5 s each time
+                time.sleep(0.2)
+            self.assertFalse(rec.stopped)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+        self.assertEqual(journal["events"], [])
+
+    def test_a_microphone_that_stalls_is_not_sleep(self):
+        # No audio for longer than the limit while the app keeps running (a
+        # Bluetooth headset reconnecting), and it comes back before the next
+        # silence check: never "slept".
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 30):
+            rec, s = self.start()
+            s.feed(1)
+            time.sleep(1.2)
+            s.feed(1)                            # it comes back
+            time.sleep(0.3)
+            self.assertFalse(rec.stopped)
+        journal = rec.stop()
+        self.assertNotIn("sleep", [e["kind"] for e in journal["events"]])
+        self.assertEqual(journal["state"], "stopped")
+
+    def test_sleep_closes_the_stream_at_once(self):
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
+            rec, s = self.start()
+            s.feed(1)
+            self.freeze_writer(rec, 1.5)
+            deadline = time.time() + 10
+            while not rec.stopped and time.time() < deadline:
+                time.sleep(0.05)
+            deadline = time.time() + 5           # closed by the writer, before stop()
+            while not s.closed and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(rec.journal["state"], "slept")
+            self.assertTrue(s.stopped and s.closed)
+        rec.stop()
+
+    def test_a_sleep_while_paused_leaves_it_paused(self):
+        # Nothing is being recorded, so nothing is lost: it stays paused and
+        # carries on in the same recording when resumed.
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
+            rec, s = self.start()
+            s.feed(1)
+            rec.pause()
+            self.freeze_writer(rec, 1.5, on_wake=lambda: s.feed(0.5))
+            time.sleep(2.0)
+            self.assertFalse(rec.stopped)
+            rec.resume()
+            s.feed(1)
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "stopped")
+        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        self.assertAlmostEqual(seconds, 2.0, places=1)
 
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
         real = recorder._write_atomic

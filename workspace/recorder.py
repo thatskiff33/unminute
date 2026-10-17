@@ -36,10 +36,11 @@ CHUNK_S = 5                  # durable unit; also the most a crash can lose (plu
 QUEUE_S = 20                 # seconds of audio buffered between callback and writer
 BLOCK_S = 0.1                # PortAudio block length
 SILENT_DEVICE_S = 3.0        # no audio at all for this long while recording: device lost
-# Sleep (the lid closed, the power button) freezes the whole app. It shows as
-# a wait for audio (0.2 s at most) that lasted longer than SILENT_DEVICE_S, or
-# as audio blocks arriving that far apart. Either way the recording stops with
-# state "slept", keeping what came before; audio after the wake is not joined on.
+# Sleep (the lid closed, the power button) freezes the whole app: no audio and
+# no writer pass for longer than SILENT_DEVICE_S, measured on the monotonic
+# clock (changing the time cannot fake it). A microphone that stalls while the
+# writer keeps running is not sleep. The recording stops with state "slept",
+# keeping what came before; audio after the wake is not joined on.
 HEARTBEAT_S = 1.0            # how often the "still recording" time is noted
 MAX_HOURS = 8                # a forgotten recording stops itself
 
@@ -235,10 +236,11 @@ class Recording:
     a fake in tests."""
 
     def __init__(self, folder, device, device_name, rate, open_stream=_sounddevice_stream,
-                 clock=time.time):
+                 clock=time.time, tick=time.monotonic):
         self.folder = Path(folder)
         self.rate = int(rate)
-        self._clock = clock
+        self._clock = clock               # wall clock: journal times only
+        self._tick = tick                 # gaps and silence: changing the time cannot move it
         self._open_stream = open_stream
         self._queue = queue.Queue(maxsize=max(1, int(QUEUE_S / BLOCK_S)))
         self._buffer = []
@@ -250,8 +252,8 @@ class Recording:
         self._level_seq = 0                           # blocks measured so far
         self._display_block = None                    # (block number, latest block) to draw
         self._viz_cache = None                        # (block number, its display data)
-        self._last_audio = clock()
-        self._wait_started = None               # the writer's current wait for audio, if any
+        self._last_audio = tick()
+        self._loop_mark = tick()                # the start of the writer's latest pass
         self._stop = threading.Event()         # the writer's signal to finish
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
         self._writer = None
@@ -264,11 +266,11 @@ class Recording:
     # -- capture (PortAudio callback thread: no disk work, no blocking) --------------
 
     def _callback(self, indata, frames, time_info, status):
-        now = self._clock()
+        now = self._tick()
         gap, self._last_audio = now - self._last_audio, now
         if self._stop.is_set():
             return                 # stopped (or slept, or lost): nothing more is captured
-        if gap > SILENT_DEVICE_S and not self.paused:
+        if gap > SILENT_DEVICE_S and not self.paused and self._writer_stalled(now):
             self._slept()          # the first audio after a sleep: not joined on
             return
         if status and getattr(status, "input_overflow", False):
@@ -336,16 +338,21 @@ class Recording:
         last_beat = 0.0
         try:
             while True:
-                waited = self._wait_started = self._clock()
+                # A pass normally starts every 0.2 s or so. A long gap with no
+                # audio either means the whole app was frozen: the computer slept.
+                tick = self._tick()
+                frozen = (tick - self._loop_mark > SILENT_DEVICE_S
+                          and tick - self._last_audio > SILENT_DEVICE_S)
+                self._loop_mark = tick
+                if frozen and not self.paused and not self._stop.is_set():
+                    self._slept()
+                if self.journal["state"] == "slept" and not self._stopping.is_set():
+                    self._stopping.set()         # however it was noticed: close at once
+                    self._close_stream()
                 try:
                     block = self._queue.get(timeout=0.2)
                 except queue.Empty:
                     block = None
-                self._wait_started = None
-                if self._clock() - waited > SILENT_DEVICE_S and not self._stop.is_set():
-                    self._slept()                # frozen mid-wait: the computer slept
-                    self._stopping.set()
-                    self._close_stream()
                 if block is not None:
                     self._buffer.append(block)
                     self._buffered += len(block)
@@ -362,7 +369,7 @@ class Recording:
                     except OSError:
                         pass
                     if (not self.paused and not self._stop.is_set()
-                            and now - self._last_audio > SILENT_DEVICE_S):
+                            and self._tick() - self._last_audio > SILENT_DEVICE_S):
                         self._device_lost()
                     if now - self.journal["started_at"] > MAX_HOURS * 3600:
                         self._event("time_limit", note=f"Stopped after {MAX_HOURS} hours.")
@@ -384,18 +391,23 @@ class Recording:
             except OSError:
                 pass        # the journal on disk still lists every saved chunk
 
+    def _writer_stalled(self, tick):
+        """The writer has not started a pass for longer than the silence
+        limit: with no audio either, the whole app was frozen by sleep."""
+        return self._writer is not None and tick - self._loop_mark > SILENT_DEVICE_S
+
     def _device_lost(self):
-        if self.journal["state"] != "recording":
-            return
-        # The writer has been frozen in its wait for audio: the computer was
-        # asleep, and the audio stopped because of that, not the microphone.
-        waited = self._wait_started
-        if waited is not None and self._clock() - waited > SILENT_DEVICE_S:
+        # The writer is frozen too: the computer was asleep, and the audio
+        # stopped because of that, not because the microphone went.
+        if self._writer_stalled(self._tick()):
             self._slept()
             return
         # Windows reports an overrun at the moment a device disappears; that is
         # part of the disconnection, not the computer falling behind.
         with self._lock:
+            if self.journal["state"] != "recording":
+                return                   # already stopped, slept or lost (checked once)
+            self.journal["state"] = "device_lost"
             events = self.journal["events"]
             # The same clock the events use: audio the writer has not saved yet
             # still counts, or a writer that is behind makes an old overrun look
@@ -410,7 +422,6 @@ class Recording:
                                         "switch to another device."
                                         + (" A fraction of a second may be missing at the "
                                            "moment it disconnected." if during else ""))
-        self.journal["state"] = "device_lost"
         self._display_block = None
         self._stop.set()
 
@@ -447,7 +458,6 @@ class Recording:
             self._stream = self._open_stream(self.journal["device"], self.rate,
                                              self._callback, self._finished)
             _stream_opened(+1)
-            self._last_audio = self._clock()     # opening can take a while: not a gap
             self._stream.start()
         except Exception as exc:
             self._close_stream()
@@ -455,7 +465,7 @@ class Recording:
             raise RecorderError("The microphone could not be started. Check that it is "
                                 "connected and that Windows allows apps to use it "
                                 "(Settings > Privacy > Microphone).") from exc
-        self._last_audio = self._clock()
+        self._last_audio = self._loop_mark = self._tick()
         self._writer = threading.Thread(target=self._write_loop, name="recorder-writer",
                                         daemon=True)
         self._writer.start()
@@ -468,7 +478,7 @@ class Recording:
 
     def resume(self):
         if self.paused:
-            self._last_audio = self._clock()
+            self._last_audio = self._tick()
             self.paused = False
             self._event("resumed")
 
