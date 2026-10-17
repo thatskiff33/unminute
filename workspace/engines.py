@@ -31,8 +31,8 @@ def load_engine(name, cache_dir, threads, allow_test=False):
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
         if state != "ready":
-            raise ModelLoadError(f"{name} is not ready ({detail}). Download or repair it "
-                                 f"in Setup.")
+            raise ModelLoadError(f"{asr_engines.label(name)} is not ready ({detail}). "
+                                 "Download or repair it in Setup.")
         # No decoder: the worker passes decoded arrays. faster_whisper's
         # decoder would load faster_whisper, and CTranslate2 with it, into
         # every Parakeet worker (R12, #133).
@@ -42,18 +42,18 @@ def load_engine(name, cache_dir, threads, allow_test=False):
         spec = asr_engines.WHISPER_MODELS[name]
         folder = asr_engines.find_verified(spec, cache_dir)
         if folder is None:
-            raise ModelLoadError(f"{name} is not installed or failed verification. "
-                                 f"Download or repair it in Setup.")
+            raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
+                                 "verification. Download or repair it in Setup.")
         from faster_whisper import WhisperModel
         model = WhisperModel(str(folder), device="cpu", compute_type="int8",
                              cpu_threads=threads)
         problem = asr_engines.feature_width_problem(model, spec)
         if problem:
-            raise ModelLoadError(f"{problem}. Repair {name} in Setup.")
+            raise ModelLoadError(f"{problem}. Repair {asr_engines.label(name)} in Setup.")
         # Word times are required: chunk ownership is decided per word.
         return asr_engines.WhisperEngine(model, name, "int8", "en", word_timestamps=True)
 
-    raise ModelLoadError(f"Unknown model: {name}")
+    raise ModelLoadError(f"Unknown model: {asr_engines.label(name)}")
 
 
 SPEAKER_MODEL = "pyannote"

@@ -125,6 +125,17 @@ class ModelNameTests(unittest.TestCase):
             asr_engines.install_model(spec, tmp, log=said.append, download=refuse)
         self.assertTrue(any(m.startswith("Downloading Parakeet v3 (") for m in said), said)
 
+    def test_every_model_message_names_the_model_by_its_label(self):
+        # No message in asr_engines or engines puts a model's raw name in
+        # front of the user: each goes through label().
+        for path in (ROOT / "asr_engines.py", ROOT / "workspace" / "engines.py"):
+            raw = re.findall(r"\{(?:spec\.name|name)\}", path.read_text(encoding="utf-8"))
+            self.assertEqual(raw, [], path.name)
+        from workspace import engines
+        with mock.patch.object(asr_engines, "parakeet_status", return_value=("missing", "x")), \
+                self.assertRaisesRegex(asr_engines.ModelLoadError, "^Parakeet v3 is not ready"):
+            engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
+
     def test_the_page_reads_no_names_out_of_titles_or_ids(self):
         self.assertNotIn("c.title", APP_JS)
         self.assertNotIn("modelName", APP_JS)
