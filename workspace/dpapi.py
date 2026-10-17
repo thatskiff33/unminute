@@ -2,11 +2,14 @@
 # Windows Data Protection (DPAPI) for the workspace root key (#111 C1).
 #
 #   - User scope: only this Windows user, signed in, can unprotect what this
-#     protects: not other users, and usually not on another computer (with a
-#     roaming profile Windows can, per Microsoft; whether a domain or Entra ID
-#     key backup also allows it is to confirm). Any process running as the
-#     user can, so DPAPI protects the key at rest, not from malware in the
-#     session (docs/ENCRYPTION.md, "What it does not do").
+#     protects: not other users, and usually not on another computer. Per
+#     Microsoft: with a roaming profile it can be unprotected on another
+#     computer; on an Active Directory domain, the domain's DPAPI backup keys
+#     unlock any domain user's data; and the user's keys are derived from
+#     their password. What applies with Entra ID is to confirm (#189). Any
+#     process running as the user can unprotect it, so DPAPI protects the key
+#     at rest, not from malware in the session (docs/ENCRYPTION.md, "What it
+#     does not do").
 #   - Never shows a prompt (CRYPTPROTECT_UI_FORBIDDEN): a window that needs
 #     an answer would block a background start.
 #   - The optional entropy separates Unminute's blobs from other uses of the

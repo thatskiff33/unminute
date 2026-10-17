@@ -97,10 +97,17 @@ class _Layout:
         return _NONCE.pack(index)
 
 
+def _check_format(view, sample_format):
+    if view.format not in _RAW_FORMATS and view.format not in _ITEM_FORMATS[sample_format]:
+        raise TypeError("use bytes or samples of the file's format")
+    return view.cast("B")
+
+
 class AudioWriter:
     """Writes a new encrypted audio file. Use as a context manager: leaving
     normally finishes the file; leaving with an exception leaves it
-    unfinished (it then opens only with allow_incomplete)."""
+    unfinished (it then opens only with allow_incomplete). Its methods take
+    a lock, so a write and a close from two threads cannot interleave."""
 
     def __init__(self, path, key, context, sample_format="float32", channels=1,
                  rate=16000):
@@ -115,6 +122,7 @@ class AudioWriter:
         self._sample_format = sample_format
         self._aead = _file_aead(key, file_id, context)
         self._failed = False
+        self._lock = threading.RLock()
         self._f = open(path, "xb")              # never over an existing file
         try:
             self._f.write(header + self._aead.encrypt(_HEADER_NONCE, b"", header))
@@ -135,67 +143,66 @@ class AudioWriter:
             self._failed = True
             raise
 
-    def _view(self, data):
-        view = memoryview(data)
-        if view.format not in _RAW_FORMATS and view.format not in _ITEM_FORMATS[
-                self._sample_format]:
-            raise TypeError("write bytes or samples of the file's format")
-        return view.cast("B")
-
     def write(self, data):
         """Append whole frames: bytes (little-endian samples, interleaved
         channels) or an array of the file's sample format."""
-        if self._f is None or self._failed:
-            raise ValueError("the file is closed")
-        view = self._view(data)
-        L = self._layout
-        if len(view) % L.frame_bytes:
-            raise ValueError("write whole frames")
-        self._buf += view
-        while len(self._buf) >= L.block_bytes:
-            self._seal(self._buf[:L.block_bytes], last=False)
-            del self._buf[:L.block_bytes]
-        self.frames += len(view) // L.frame_bytes
+        with self._lock:
+            if self._f is None or self._failed:
+                raise ValueError("the file is closed")
+            view = _check_format(memoryview(data), self._sample_format)
+            L = self._layout
+            if len(view) % L.frame_bytes:
+                raise ValueError("write whole frames")
+            self._buf += view
+            while len(self._buf) >= L.block_bytes:
+                self._seal(self._buf[:L.block_bytes], last=False)
+                del self._buf[:L.block_bytes]
+            self.frames += len(view) // L.frame_bytes
 
     def flush(self, durable=True):
         """Write the whole blocks so far to disk (the part block waits)."""
-        if self._f is None:
-            raise ValueError("the file is closed")
-        try:
-            self._f.flush()
-            if durable:
-                os.fsync(self._f.fileno())
-        except BaseException:
-            self._failed = True
-            raise
+        with self._lock:
+            if self._f is None:
+                raise ValueError("the file is closed")
+            try:
+                self._f.flush()
+                if durable:
+                    os.fsync(self._f.fileno())
+            except BaseException:
+                self._failed = True
+                raise
 
     def close(self, durable=True):
         """Finish the file: seal the last block, marked as last. After a
-        failed write the file cannot be finished: it is left unfinished and
-        this raises."""
-        if self._f is None:
-            return
-        if self._failed:
-            self.abort()
-            raise ValueError("an earlier write failed; the file was left unfinished")
-        try:
-            self._seal(self._buf, last=True)
-            self._buf.clear()
-            self.flush(durable)
-        except BaseException:
-            self.abort()
-            raise
-        self._f.close()
-        self._f = None
+        failed write, flush or close the file cannot be finished: it is left
+        unfinished, and this raises every time it is called, so a retry
+        never reports success."""
+        with self._lock:
+            if self._failed:
+                self.abort()
+                raise ValueError("an earlier write failed; the file was left unfinished")
+            if self._f is None:
+                return
+            try:
+                self._seal(self._buf, last=True)
+                self._buf.clear()
+                self.flush(durable)
+            except BaseException:
+                self._failed = True
+                self.abort()
+                raise
+            self._f.close()
+            self._f = None
 
     def abort(self):
         """Stop without finishing the file (it stays incomplete)."""
-        if self._f is not None:
-            self._buf.clear()
-            try:
-                self._f.close()
-            finally:
-                self._f = None
+        with self._lock:
+            if self._f is not None:
+                self._buf.clear()
+                try:
+                    self._f.close()
+                finally:
+                    self._f = None
 
     def __enter__(self):
         return self
@@ -229,6 +236,8 @@ class AudioReader:
         self._aead = _file_aead(key, L.file_id, context)
         tag = self._f.read(TAG_BYTES)
         if len(tag) != TAG_BYTES:
+            # Even with allow_incomplete: the header and its tag are written
+            # together when the file is created, so nothing was saved.
             raise AudioCryptError("The audio file is damaged (too short).")
         try:
             self._aead.decrypt(_HEADER_NONCE, tag, L.header)
@@ -276,7 +285,7 @@ class AudioReader:
         array of the file's sample format) with frames from frame start.
         Returns the number of frames copied: fewer than the buffer holds at
         the end of the audio."""
-        out = memoryview(buffer).cast("B")
+        out = _check_format(memoryview(buffer), self.sample_format)
         fb = self._layout.frame_bytes
         if not 0 <= start <= self.frames or len(out) % fb:
             raise ValueError("outside the audio, or not whole frames")

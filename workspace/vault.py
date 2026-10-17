@@ -108,7 +108,10 @@ class Sealer:
     """Seals and opens values under one key. Keep one per key to avoid
     setting up the cipher for every value (C2 seals many small values).
     kind labels what the key seals ("cell" for stored values, "key" for
-    wrapped keys), so the two can never be taken for each other."""
+    wrapped keys), so the two can never be taken for each other.
+    pyca does not document whether one AESGCM object may be shared between
+    threads, so a caller that shares a Sealer serialises its use (the store
+    does all its work under its own lock) or keeps one per thread."""
 
     def __init__(self, key, kind="cell"):
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM

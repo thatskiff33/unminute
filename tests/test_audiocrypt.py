@@ -149,6 +149,9 @@ class AudioCryptTests(unittest.TestCase):
                 r.readinto(bytearray(6), 0)                         # not whole frames
             with self.assertRaises(ValueError):
                 r.readinto(buf, F + 201)
+            for bad in (array.array("d", bytes(16)), array.array("h", bytes(8))):
+                with self.subTest(bad=bad.typecode), self.assertRaises(TypeError):
+                    r.readinto(bad, 0)                              # not float32 samples
 
     def test_writes_in_any_pieces_and_after_a_flush(self):
         data = samples(2 * F + 7)
@@ -257,6 +260,36 @@ class AudioCryptTests(unittest.TestCase):
         os.replace(q, self.dir / "moved-after-failure.uma")   # Windows: not open
         with self.assertRaises(audiocrypt.AudioCryptError):
             audiocrypt.AudioReader(self.dir / "moved-after-failure.uma", KEY, CTX)
+        # Every later close says so too: a retry never reports a finished file.
+        for _ in range(2):
+            with self.assertRaises(ValueError):
+                w.close()
+
+    def test_a_failed_flush_stops_the_writer(self):
+        p = self.path()
+        w = audiocrypt.AudioWriter(p, KEY, CTX)
+        w.write(samples(F + 5))
+
+        class FailingFlush:
+            def __init__(self, f):
+                self._f = f
+
+            def flush(self):
+                raise OSError(5, "Input/output error")
+
+            def __getattr__(self, name):
+                return getattr(self._f, name)
+
+        w._f = FailingFlush(w._f)
+        with self.assertRaises(OSError):
+            w.flush()
+        with self.assertRaises(ValueError):
+            w.write(samples(1))
+        for _ in range(2):
+            with self.assertRaises(ValueError):
+                w.close()
+        with audiocrypt.AudioReader(p, KEY, CTX, allow_incomplete=True) as r:
+            self.assertEqual((False, F), (r.complete, len(r)))
 
     def test_an_interrupted_file_opens_only_when_allowed(self):
         data = samples(2 * F + 10)
