@@ -24,10 +24,10 @@ import sqlite3
 import time
 from pathlib import Path
 
-from workspace import safe_paths
+from workspace import media, safe_paths
 from workspace.holds import record_receipt
 from workspace.media import sha256_file
-from workspace.store import StoreError, new_id
+from workspace.store import DAMAGE_CODES, StoreError, new_id
 
 AUDIO, TRANSCRIPT = "audio", "transcript"
 
@@ -202,7 +202,7 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
     except HeldDuringCleanup:
         _mark(store, jid, "pending", HELD_NOTE)
         return JobResult.HELD
-    except (OSError, StoreError) as exc:
+    except (OSError, StoreError, media.BadMeetingId) as exc:
         _mark(store, jid, "failed", _reason(exc))
         return JobResult.FAILED
     # Success: the job row is replaced by a minimal receipt (#18).
@@ -267,7 +267,7 @@ def _mark(store, jid, state, error):
 
 
 def _remove_audio(store, mid, media_root, original_roots):
-    folder = media_root / mid
+    folder = media.meeting_folder(media_root, mid)
     if folder.exists():
         shutil.rmtree(folder)         # raises on a locked file: job stays 'failed'
     notes = []
@@ -343,11 +343,76 @@ def _remove_transcript(store, mid, media_root):
         db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
         db.execute("DELETE FROM holds WHERE meeting_id = ? AND released_at IS NOT NULL", (mid,))
         db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
-    compact(store)
-    folder = media_root / mid                 # anything left (clips, exports)
+    deferred = False
+    try:
+        compact(store)
+    except StoreError as exc:
+        if not _damaged(exc) or not _wal_truncated(store):
+            raise                             # in use, or the log not emptied: retried
+        # The rows are deleted (secure_delete overwrote their pages) and the
+        # write-ahead log is emptied into the main file, but a damaged database
+        # cannot be rebuilt by VACUUM (#198): done, with the compaction left
+        # to the next start whose database check passes.
+        _mark_deferred(store)
+        deferred = True
+    folder = media.meeting_folder(media_root, mid)   # anything left (clips, exports)
     if folder.exists():
         shutil.rmtree(folder)                 # a failure is retried; the rows are gone
-    return None
+    return DEFERRED_NOTE if deferred else None
+
+
+DEFERRED_NOTE = "database compaction deferred until the workspace is repaired"
+
+
+def _damaged(exc):
+    """A compaction that failed because the database file is damaged: SQLite's
+    own damage codes (CORRUPT, NOTADB, as the store's check uses), not busy,
+    locked, a closed connection or any other error."""
+    code = getattr(exc.__cause__, "sqlite_errorcode", None)
+    return isinstance(code, int) and (code & 0xFF) in DAMAGE_CODES
+
+
+def _wal_truncated(store):
+    """The write-ahead log is checkpointed into the main file and truncated
+    (nothing busy), so no copy of the deleted rows is left in it."""
+    with store._lock:
+        try:
+            return store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        except sqlite3.Error:
+            return False
+
+
+def _mark_deferred(store):
+    """Create the marker without following a link planted in its place: an
+    existing file (or link) is left as it is, never written through."""
+    try:
+        fd = os.open(_deferred_marker(store), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
+def _deferred_marker(store):
+    """A file beside the database (configuration, no content): a compaction
+    is owed (#198)."""
+    return store.path.with_name("compact.pending")
+
+
+def compact_deferred(store):
+    """At a start whose database check passed: the compaction a damaged
+    database could not do. Kept for the next such start if it fails again."""
+    marker = _deferred_marker(store)
+    if not marker.exists():
+        return False
+    try:
+        compact(store)
+    except StoreError:
+        return False
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        return False        # locked or read-only: compacted anyway, tried again next start
+    return True
 
 
 def compact(store):

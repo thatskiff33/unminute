@@ -70,7 +70,7 @@ How it handles problems:
 
 ## Handing off and cleaning up
 
-**Recordings you do not need** (a test, or the wrong file) can be removed with **Discard…** on the meeting's row. This works only before the transcript review is confirmed. One confirmation deletes the meeting's audio, transcript, edits and speaker names, with the same secure cleanup as below. Any work on it stops first. Discard is refused while a hold is active, and your original recording file is never deleted. A meeting whose import never finished (for example after **Continue anyway** on a damaged workspace) can be discarded too, once no import is running. Once a review is confirmed, the meeting is finished with the final confirmation instead.
+**Recordings you do not need** (a test, or the wrong file) can be removed with **Discard…** on the meeting's row. This works only before the transcript review is confirmed. One confirmation deletes the meeting's audio, transcript, edits and speaker names, with the same secure cleanup as below. Any work on it stops first. Discard is refused while a hold is active, and your original recording file is never deleted. A meeting whose import never finished shows **Import did not finish** (for example after **Continue anyway** on a damaged workspace, or when a hold kept it) and can be discarded once no import is running and any hold is released. Releasing a hold on it removes nothing by itself. If the workspace is damaged, a removal's receipt may say the database compaction is deferred: the meeting's text and audio are removed, and the space is reclaimed at the next start once the workspace is sound. Once a review is confirmed, the meeting is finished with the final confirmation instead.
 
 Each meeting shows its steps:
 

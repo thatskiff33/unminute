@@ -369,6 +369,8 @@ class Workspace:
         finished meeting look unfinished; a start whose check passes does it."""
         self._reconcile_imports(discard)
         intake.recover(self.store)
+        if discard:                       # a sound database: owed compaction (#198)
+            cleanup.compact_deferred(self.store)
 
     # -- lifecycle --------------------------------------------------------------------
 
@@ -978,7 +980,7 @@ class Workspace:
             sidecar = {**report, **({"consent": journal["consent"]}
                                     if "consent" in journal else {})}
             recorder._retrying(lambda: recorder._write_atomic(
-                self.media / mid / "recording.json",
+                media.meeting_folder(self.media, mid) / "recording.json",
                 json.dumps(sidecar, indent=1).encode("utf-8")))
         except OSError:
             pass
@@ -1015,17 +1017,38 @@ class Workspace:
 
     def _discard_import(self, mid):
         """Remove a meeting whose import never completed. Only the app's own
-        fresh copy is removed; the original recording is never touched."""
+        fresh copy is removed; the original recording is never touched.
+
+        A meeting that has ever had a hold, active or released, is kept
+        (#193, invariant C2: releasing a hold deletes nothing): it stays listed
+        as an import that did not finish, and only the user's Discard removes
+        it. The check, the row deletion and the folder removal happen under
+        the store's lock, so no hold can be added in between. Returns whether
+        it was removed."""
         import shutil
-        shutil.rmtree(self.media / mid, ignore_errors=True)
         try:
-            with self.store.tx() as db:
-                if db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
-                              (mid,)).fetchone() is None:
+            folder = media.meeting_folder(self.media, mid)
+        except media.BadMeetingId:
+            return False                      # not the app's own id: never touched
+        try:
+            with self.store._lock:            # re-entrant; add_hold takes it too
+                with self.store.tx() as db:
+                    if (db.execute("SELECT 1 FROM holds WHERE meeting_id = ?",
+                                   (mid,)).fetchone()
+                            or db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
+                                          (mid,)).fetchone()):
+                        return False
                     db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
                     db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
-        except StoreError:
-            pass
+                    # Inside the transaction: a folder that cannot be removed
+                    # (a locked file) rolls the rows back, so the meeting stays
+                    # listed and the next start tries again; never an orphaned
+                    # folder holding decoded audio with no record of it.
+                    if folder.exists():
+                        shutil.rmtree(folder)
+        except (StoreError, OSError):
+            return False                      # unreadable or locked: kept for next time
+        return True
 
     def _reconcile_imports(self, discard=True):
         """At startup: finish or remove imports cut short by a crash or close
@@ -1037,7 +1060,11 @@ class Workspace:
                                  "AND NOT EXISTS (SELECT 1 FROM versions v "
                                  "WHERE v.meeting_id = m.id)"):
             src = self.store._one("SELECT id FROM sources WHERE meeting_id = ?", (m["id"],))
-            if src is not None and media.audio_path(self.media, m["id"]).is_file():
+            try:
+                has_audio = media.audio_path(self.media, m["id"]).is_file()
+            except media.BadMeetingId:
+                continue                    # not the app's own id (#194): never touched
+            if src is not None and has_audio:
                 try:
                     self._plan_version(m["id"], src["id"])
                     continue
@@ -1351,8 +1378,10 @@ class Workspace:
     # -- controls -------------------------------------------------------------------------
 
     def _meeting(self, mid):
-        if not isinstance(mid, str) or len(mid) != 32:
-            raise WorkspaceError("Meeting not found.")
+        try:
+            media.meeting_folder(self.media, mid)   # the app's own id format only (#194)
+        except media.BadMeetingId:
+            raise WorkspaceError("Meeting not found.") from None
         m = self.store.meeting(mid)
         if m is None:
             raise WorkspaceError("Meeting not found.")
@@ -1529,7 +1558,11 @@ class Workspace:
     # -- review -------------------------------------------------------------------------
 
     def _audio_available(self, m):
-        return m["audio_removed_at"] is None and media.audio_path(self.media, m["id"]).is_file()
+        try:
+            return (m["audio_removed_at"] is None
+                    and media.audio_path(self.media, m["id"]).is_file())
+        except media.BadMeetingId:
+            return False                      # a damaged row never breaks the list (#194)
 
     def _version(self, mid, version):
         """The active version, or (read-only) an earlier one by its position in
@@ -1692,6 +1725,8 @@ class Workspace:
         view, with no write from another thread in between."""
         q, active = self.store._all, "SELECT id FROM versions WHERE state = 'active'"
         with self.store._lock:
+            with self._imports.mutex:     # an import running or queued (#181, #193)
+                importing = self._imports.unfinished_tasks > 0
             rows = holds.unfinished_work(self.store)
             if not rows:
                 return []
@@ -1743,6 +1778,10 @@ class Workspace:
                         "paused": bool(m["paused"]), "error": m["last_error"]
                         if m["phase"] == "error" else None,
                         "busy": busy or None, "stage": stage,
+                        # No version and no import running: an import that did
+                        # not finish (kept by a hold, or after Continue anyway).
+                        "unfinished": v is None and not importing
+                        and not m["reviewed_at"],
                         "can_skip": bool(v) and self._can_skip(m, runs.get(v["id"], [])),
                         "action": self._action(m, stage)})
         return out

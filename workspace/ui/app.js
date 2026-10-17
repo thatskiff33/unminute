@@ -262,6 +262,10 @@ function workRow(m, busyTitle) {
     pill = ["paused", "Paused"];
     bar = ["paused", m.progress];
     actions = [resume(), discardLink(m)];
+  } else if (m.unfinished) {                       // #193: kept by a hold, or after Continue anyway
+    meta = "the import did not finish";
+    pill = ["waiting", "Import did not finish"];
+    actions = [discardLink(m)];
   } else if (m.stage === "inbox" && m.busy === "transcribe") {
     meta = joinParts(`${m.progress}%`, MODE[state.mode]);
     bar = ["", m.progress];
