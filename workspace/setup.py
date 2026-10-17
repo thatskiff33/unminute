@@ -610,6 +610,9 @@ class Downloads:
             for w in gpu.WHEELS:
                 current = wheels / (w["name"] + ".whl")
                 if not _not_followed(current):
+                    if since is not None and _file_size(current, since) == 0 \
+                            and _file_size(current):
+                        return None                  # left by a cancelled attempt
                     return min(100, round(100 * (done + _file_size(current, since))
                                           / gpu.DOWNLOAD_BYTES))
                 done += w["size"]
@@ -621,7 +624,8 @@ class Downloads:
             return None
         if not total or not folder.is_dir():
             return None
-        return min(100, round(100 * _size_of(folder, since) / total))
+        written = _size_of(folder, since)
+        return min(100, round(100 * written / total)) if written else None
 
     def busy(self):
         return self._running is not None

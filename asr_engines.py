@@ -397,7 +397,7 @@ def _preprocessor_problems(spec, folder):
         return ["preprocessor_config.json has no feature_size"]
     if config["feature_size"] != spec.n_mels:
         return [f"preprocessor_config.json sets feature_size {config['feature_size']}, "
-                f"but {spec.name} needs {spec.n_mels}"]
+                f"but {label(spec.name)} needs {spec.n_mels}"]
     return []
 
 
@@ -465,10 +465,11 @@ def feature_width_problem(model, spec):
     produced = int(model.feature_extractor.mel_filters.shape[0])
     expected = int(model.model.n_mels)
     if produced != expected:
-        return (f"{spec.name} expects {expected} mel bands but its preprocessing "
+        return (f"{label(spec.name)} expects {expected} mel bands but its preprocessing "
                 f"settings produce {produced}")
     if spec.n_mels and expected != spec.n_mels:
-        return f"{spec.name} reports {expected} mel bands; this model should use {spec.n_mels}"
+        return (f"{label(spec.name)} reports {expected} mel bands; this model should use "
+                f"{spec.n_mels}")
     return None
 
 
@@ -490,7 +491,7 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
         if find_verified_whisper(spec, cache_dir, full=True) is not None:
             return "ok"
         for snap in _hub_snapshots(spec, cache_dir):
-            log(f"{spec.name}: the cached copy in {snap} is not usable "
+            log(f"{label(spec.name)}: the cached copy in {snap} is not usable "
                 f"({'; '.join(_quick_problems(spec, snap)) or 'checksum mismatch'}). "
                 f"It is left untouched for diagnosis.")
     had_folder = target.exists()
@@ -500,12 +501,12 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
                     if hub_cached else check_files(spec, target, full=True))
         if not problems and not hub_cached:
             return "ok"
-        log(f"{spec.name}: installed files are not usable "
+        log(f"{label(spec.name)}: installed files are not usable "
             f"({'; '.join(problems) or 'checksum mismatch'}).")
 
     if spec.gated and not has_token and not staging_dir(spec, cache_dir).is_dir():
         raise ModelLoadError(
-            f"{spec.name} needs downloading again, which needs your Hugging Face token. "
+            f"{label(spec.name)} needs downloading again, which needs your Hugging Face token. "
             f"Download it in Unminute's Setup.")
     staging = staging_dir(spec, cache_dir)
     if staging.is_dir() and not check_files(spec, staging, full=True):
@@ -513,7 +514,8 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
         log(f"Reusing the verified {label(spec.name)} download from the last attempt.")
         return _move_into_place(spec, target, staging, had_folder, log)
     if download is None:
-        raise ModelLoadError(f"{spec.name} needs downloading. Download it in Unminute's Setup.")
+        raise ModelLoadError(f"{label(spec.name)} needs downloading. "
+                             f"Download it in Unminute's Setup.")
     shutil.rmtree(staging, ignore_errors=True)   # leftover of an interrupted run
     staging.parent.mkdir(parents=True, exist_ok=True)
     log(f"Downloading {label(spec.name)} ({spec.download_bytes / 1e9:.2f} GB, "
@@ -523,14 +525,14 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
             download(spec, staging)
         except Exception as exc:
             raise ModelLoadError(
-                f"Could not download {spec.name} ({type(exc).__name__}: {exc}). "
+                f"Could not download {label(spec.name)} ({type(exc).__name__}: {exc}). "
                 f"Nothing was changed. Check the internet connection and try again.") from exc
         # Download bookkeeping only; dropping it keeps the model folder clean.
         shutil.rmtree(staging / ".cache", ignore_errors=True)
         problems = check_files(spec, staging, full=True)
         if problems:
             raise ModelLoadError(
-                f"The downloaded {spec.name} files failed verification "
+                f"The downloaded {label(spec.name)} files failed verification "
                 f"({'; '.join(problems)}). Nothing was changed; try the download again.")
     except BaseException:
         # Only our own fresh, unverified download is discarded here.
@@ -556,9 +558,9 @@ def _move_into_place(spec, target, staging, had_folder, log):
         if kept is not None and not target.exists():
             kept.rename(target)
         raise ModelLoadError(
-            f"Could not move the verified {spec.name} files into place ({exc}). "
+            f"Could not move the verified {label(spec.name)} files into place ({exc}). "
             f"Wait a minute and try the download again.") from exc
-    log(f"{spec.name} verified and ready.")
+    log(f"{label(spec.name)} verified and ready.")
     return "repaired" if had_folder else "installed"
 
 
@@ -745,7 +747,7 @@ class ParakeetEngine:
             problems = check_files(spec, model_dir(spec, self.cache_dir))
             if problems:
                 raise ModelLoadError(
-                    f"{spec.name} cannot be used: {'; '.join(problems)}. "
+                    f"{label(spec.name)} cannot be used: {'; '.join(problems)}. "
                     f"Repair it in Settings > Manage downloads.")
         try:
             import onnx_asr

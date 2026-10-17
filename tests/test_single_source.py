@@ -168,6 +168,8 @@ class ProgressTests(unittest.TestCase):
             self.assertEqual(self.downloads.percent(name), 25)
         with mock.patch.object(setup, "_size_of", return_value=spec.download_bytes * 2):
             self.assertEqual(self.downloads.percent(name), 100)          # never past 100
+        with mock.patch.object(setup, "_size_of", return_value=0):
+            self.assertIsNone(self.downloads.percent(name))   # nothing of this attempt's yet
         self.downloads.state[name] = {"state": "running", "message": "Checking", "log": [],
                                       "verify": True}
         self.assertIsNone(self.downloads.percent(name))                 # a check: no number
@@ -207,6 +209,16 @@ class ProgressTests(unittest.TestCase):
             # The first counts at its pinned size: the bar never drops back.
             self.assertEqual(self.downloads.percent(gpu.COMPONENT),
                              round(100 * first["size"] / gpu.DOWNLOAD_BYTES))
+
+    def test_a_wheel_left_by_a_cancelled_attempt_shows_no_number(self):
+        wheels = gpu.staging_dir(Path(self.tmp.name)) / "wheels"
+        wheels.mkdir(parents=True)
+        stale = wheels / (gpu.WHEELS[1]["name"] + ".whl")      # cancelled during the second
+        stale.write_bytes(b"x" * 1000)
+        os.utime(stale, (time.time() - 3600, time.time() - 3600))
+        self.downloads.state[gpu.COMPONENT] = {"state": "running", "message": "x", "log": [],
+                                               "started": time.time()}
+        self.assertIsNone(self.downloads.percent(gpu.COMPONENT))      # not 100% from leftovers
 
     def test_install_builds_where_progress_looks(self):
         # gpu.install and Downloads.percent share gpu.staging_dir: if install
