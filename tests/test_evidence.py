@@ -216,6 +216,20 @@ class IdentityTests(TempDir):
             self.assertEqual({"tools_commit": None, "tools_clean": False},
                              evidence.tools_identity())
 
+    def test_git_settings_from_the_environment_are_not_used(self):
+        seen = []
+
+        def git(cmd, **kwargs):
+            seen.append(kwargs["env"])
+            out = {"rev-parse": COMMIT, "status": "", "ls-files": ""}[cmd[4]]
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+        with mock.patch.dict(os.environ, {"GIT_DIR": "elsewhere/.git", "GIT_WORK_TREE": "x"}), \
+                mock.patch.object(evidence.subprocess, "run", git):
+            evidence.tools_identity()
+        self.assertTrue(seen)
+        for env in seen:
+            self.assertFalse([k for k in env if k.upper().startswith("GIT_")])
+
 
 class ZipTests(TempDir):
     def test_a_package_zip_is_read(self):
@@ -229,8 +243,9 @@ class ZipTests(TempDir):
         not_zip.write_text("x")
         two = self.root / "two.zip"
         with zipfile.ZipFile(two, "w") as z:
-            z.writestr("A/version.json", "{}")
-            z.writestr("B/version.json", "{}")
+            for top in ("A", "B"):
+                z.writestr(f"{top}/version.json", "{}")
+                z.writestr(f"{top}/package-manifest.json", "{}")
         bare = self.root / "bare.zip"
         with zipfile.ZipFile(bare, "w") as z:
             z.writestr("Unminute-0.5.0/version.json", "{}")
@@ -335,8 +350,10 @@ class CheckTests(TempDir):
                 bad.update(body)
                 problems = evidence.check(SHA, self.complete(packaged=bad))
                 self.assertEqual(["packaged.json: packaged did not pass"], problems)
-        problems = evidence.check(SHA, self.complete(ui=report("ui", **{"pass": "true"})))
-        self.assertEqual(["ui.json: ui did not pass"], problems)
+        for change in ({"pass": "true"}, {"check_passed": False}):
+            with self.subTest(change=change):
+                problems = evidence.check(SHA, self.complete(ui=report("ui", **change)))
+                self.assertEqual(["ui.json: ui did not pass"], problems)
 
     def test_missing_duplicate_unknown_and_unreadable_reports(self):
         paths = self.complete()
@@ -507,6 +524,14 @@ class ToolTests(TempDir):
                 self.assertIn(f"passed={verdict},", main)
                 self.assertIn('return 0 if ev["pass"] else 1', main)
 
+    def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
+        source = self.source("workspace_ui_check.py")
+        run_with = source.split("    def run_with(", 1)[1].split("\n    title = ", 1)[0]
+        self.assertIn("0x0010", run_with)                                   # WM_CLOSE
+        self.assertIn('out.setdefault("stuck_dialogs", []).append(title)', run_with)
+        self.assertIn("clicker.join(STUCK_DIALOG_S + 15)", run_with)
+        self.assertIn('if nv.get("stuck_dialogs"):', source)
+
     def test_package_checks_start_the_app_as_the_shortcut_does(self):
         flags = '"-I", "-B", "-X", "disable-remote-debug"'
         for tool in ("packaged_check.py", "packaged_crash_check.py", "perf_check.py"):
@@ -580,9 +605,12 @@ class ToolTests(TempDir):
     def test_perf_evidence_needs_the_app_it_measured(self):
         import perf_check
         argv = ["perf_check.py", str(self.root / "perf.json"), "--zip", "x.zip"]
+        never = mock.Mock(side_effect=AssertionError("a real run started"))
         with mock.patch.object(sys, "argv", argv), mock.patch("sys.stderr"), \
-                self.assertRaises(SystemExit):
+                mock.patch.object(perf_check, "parent", never), \
+                mock.patch.object(perf_check, "child", never), self.assertRaises(SystemExit):
             perf_check.main()
+        never.assert_not_called()
 
 
 @unittest.skipUnless(os.name == "nt", "the checks import Windows-only modules")
@@ -666,6 +694,32 @@ class PackagedCheckTests(TempDir):
         self.assertEqual((0, True), (code, saved["pass"]))
         code, saved, _ = self.run_main(self.tool, self.changed(None, self_test="FAIL"))
         self.assertEqual((1, ["self-test passed"]), (code, saved["failed"]))
+
+    def test_with_zip_a_failing_check_or_a_changed_folder_exits_1(self):
+        import packaged_crash_check as crash
+        for tool, good, bad in ((self.tool, self.GOOD, self.changed(None, self_test="FAIL")),
+                                (crash, {"pass": True, "failed": []},
+                                 {"pass": False, "failed": ["x"]})):
+            with self.subTest(tool=tool.__name__):
+                zpath, folder = make_package(self.root / tool.__name__)
+                code, saved, _ = self.run_main(tool, good, "--zip", str(zpath), folder=folder)
+                self.assertEqual((0, True), (code, saved["evidence"]["pass"]))
+                code, saved, _ = self.run_main(tool, bad, "--zip", str(zpath), folder=folder)
+                self.assertEqual((1, False, False), (code, saved["evidence"]["check_passed"],
+                                                     saved["evidence"]["pass"]))
+
+                def plant(version_dir, cache, wav, report, *rest, filled=good):
+                    report.update(json.loads(json.dumps(filled)))
+                    (Path(version_dir) / "app" / "planted.py").write_bytes(b"")
+                out = self.root / "planted.json"
+                argv = ["tool.py", str(folder), "cache", "x.wav", str(out), "--zip", str(zpath)]
+                with mock.patch.object(tool, "check", plant), clean(), \
+                        mock.patch.object(sys, "argv", argv), mock.patch("builtins.print"):
+                    self.assertEqual(1, tool.main())
+                ev = json.loads(out.read_text(encoding="utf-8"))["evidence"]
+                self.assertEqual((True, True, False, False),
+                                 (ev["check_passed"], ev["folder_matched_before"],
+                                  ev["folder_matches_package"], ev["pass"]))
 
     def test_a_wrong_zip_or_folder_stops_before_the_run(self):
         other_zip = make_package(self.root / "other", version="0.6.0")[0]

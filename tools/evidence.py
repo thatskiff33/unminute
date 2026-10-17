@@ -229,10 +229,14 @@ def tools_identity():
     (assume-unchanged or skip-worktree), as the release build requires."""
     root = Path(__file__).resolve().parents[1]
 
+    # No GIT_DIR, GIT_WORK_TREE or other git setting from the environment: the
+    # check is of this checkout, as it is.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+
     def git(*args):
         try:
             r = subprocess.run(["git", "--no-replace-objects", "-C", str(root), *args],
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, timeout=120, env=env)
         except (OSError, subprocess.SubprocessError):
             return None
         return r.stdout if r.returncode == 0 else None
@@ -263,7 +267,8 @@ def prepare(parser, args, app=None, version_dir=None):
     if not tools_identity()["tools_clean"]:
         sys.exit("This checkout's tools, tests or docs are not exactly as committed (a change, "
                  "an extra or ignored file such as tools/__pycache__, or a file hidden from git "
-                 "status). Check out the release's commit, run "
+                 "status). Check out the release's commit, see what "
+                 "`git clean -ndX -- tools tests docs` would remove, then run "
                  "`git clean -fdX -- tools tests docs`, and start the check with -B.")
     before = identity(args.zip, version_dir)
     if not before["folder_matches_package"]:

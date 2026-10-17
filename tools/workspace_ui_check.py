@@ -42,6 +42,10 @@ FAKE = "test:fake_worker_engines:"
 VAULT = {}          # stands in for Windows Credential Manager during the check
 HOSTILE = '<img src=x onerror="window.__pwned=1"> and <script>window.__pwned=2</script>'
 SR = 16000
+# A confirmation still open this long after its script has finished (a lost
+# click, or a locked screen, where it cannot be answered) is closed, so the
+# check fails instead of waiting for ever.
+STUCK_DIALOG_S = 20
 
 
 def write_wav(path, seconds):
@@ -183,11 +187,20 @@ def native_checks(window, ws, mid):
 
     def run_with(script, title, call, seen=None):
         done = {}
-        clicker = threading.Thread(target=lambda: done.update(ok=press(script, title, seen)),
-                                   daemon=True)
+
+        def click():
+            done["ok"] = press(script, title, seen)
+            end = time.time() + STUCK_DIALOG_S
+            while time.time() < end and find_dialog(title, timeout=0.2):
+                time.sleep(0.5)
+            hwnd = find_dialog(title, timeout=0.2)
+            if hwnd:
+                out.setdefault("stuck_dialogs", []).append(title)
+                ctypes.WinDLL("user32").PostMessageW(hwnd, 0x0010, 0, 0)       # WM_CLOSE
+        clicker = threading.Thread(target=click, daemon=True)
         clicker.start()
         result = call()
-        clicker.join(10)
+        clicker.join(STUCK_DIALOG_S + 15)
         return result, done.get("ok", False)
 
     title = "Workspace UI check: confirm"
@@ -591,6 +604,8 @@ def main():
             and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
     nv = report.get("native") or {}
+    if nv.get("stuck_dialogs"):
+        bad.append("a confirmation was left open (is the screen locked?)")
     if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
             and nv.get("bridge_no") and nv.get("meeting_kept")
             and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
