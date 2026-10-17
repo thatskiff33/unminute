@@ -16,8 +16,12 @@
 #   python tools/compare_engines.py run   --engine parakeet-tdt-0.6b-v2 --out v2.jsonl m.jsonl
 #   python tools/compare_engines.py score v2.jsonl v3.jsonl turbo.jsonl --side-by-side sbs.md
 #
-# Manifest paths must be local files you trust: this tool decodes them in its
-# own process, not in the app's sandboxed decode process.
+# Each clip is decoded by the app's own decoder in its contained process
+# (workspace.media.decode_to_file, from the --repo checkout; contained since
+# A3, #119), so the measured process loads only what the app's worker loads:
+# no faster_whisper or CTranslate2 for Parakeet (#187).
+# Manifest paths are not checked as the app checks imports (workspace.safe_paths):
+# list local files on this computer only.
 #
 # Keep real recordings, transcripts and per-clip results private; publish only
 # aggregate figures (see issue #12). Run heavy engines one at a time.
@@ -152,9 +156,11 @@ def cmd_run(args):
     offline_guard.disable_telemetry()
     offline_guard.install()
     offline_guard.disable_onnxruntime_telemetry()
-    from faster_whisper.audio import decode_audio
+    import tempfile
 
-    from workspace import resources
+    import numpy as np
+
+    from workspace import media, resources
     from workspace.engines import load_engine
     from workspace.store import local_appdata
 
@@ -162,14 +168,28 @@ def cmd_run(args):
     threads = args.threads or resources.worker_threads(resources.FASTER)
     clips = [json.loads(line) for m in args.manifest
              for line in Path(m).read_text(encoding="utf-8").splitlines() if line.strip()]
+    missing = [f"{c.get('set')}/{c.get('id')}" for c in clips if not Path(c["wav"]).is_file()]
+    if missing:                      # before the model loads, which takes a while
+        sys.exit(f"{len(missing)} clip(s) not found: {', '.join(missing[:5])}")
     t0 = time.perf_counter()
     engine = load_engine(args.engine, str(cache), threads)
     load_s = time.perf_counter() - t0
-    with open(args.out, "w", encoding="utf-8") as out:
+    with open(args.out, "w", encoding="utf-8") as out, \
+            tempfile.TemporaryDirectory(prefix="compare-") as tmp:
         out.write(json.dumps({"engine": args.engine, "description": engine.description,
                               "threads": threads, "load_s": round(load_s, 2)}) + "\n")
         for i, clip in enumerate(clips, 1):
-            wav = decode_audio(clip["wav"], sampling_rate=16000)
+            raw = Path(tmp) / f"{i}.f32"
+            try:
+                samples, _ = media.decode_to_file(clip["wav"], raw)   # 16 kHz mono float32
+            except media.DecodeError as exc:
+                # The set is incomplete without it, so stop; name the clip, not its path.
+                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')} could not be decoded: {exc}")
+            wav = np.fromfile(raw, dtype="<f4")
+            raw.unlink()
+            if len(wav) != samples:
+                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')}: the decoded file is "
+                         f"{len(wav)} samples, not {samples}.")
             t = time.perf_counter()
             segments, duration = engine.transcribe(wav)
             text = " ".join(s.text for s in segments)

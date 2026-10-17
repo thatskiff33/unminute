@@ -56,7 +56,8 @@ for 30 minutes, so a shorter hold is reported but not compared: short-window
 noise cannot be scaled up.
 
 Output: a JSON report with the machine, the app and WebView2 versions, every
-run's figures, the medians, anything over budget or not measured, and budgets
+run's figures, the medians (for the worker's unload, the slowest run: a pass or
+fail, not a noisy figure), anything over budget or not measured, and budgets
 proposed from these figures (plus 20%).
 
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
@@ -488,9 +489,16 @@ def parent(args):
     settle, window, runs = (20, 60, 1) if args.quick else (args.settle, args.window, args.runs)
     report = {"tool": "tools/perf_check.py", "mode": "quick" if args.quick else "release",
               "settle_s": settle, "window_s": window, "runs": runs,
-              "leak_minutes": args.leak_minutes, "environment": environment(args)}
+              "leak_minutes": args.leak_minutes}
     results = []
     try:
+        # Inside the guard: a probe that fails (a damaged version.json, a
+        # missing system tool) is "not measured", not a traceback.
+        try:
+            report["environment"] = environment(args)
+        except Exception as exc:
+            raise RuntimeError(
+                f"the environment probe failed ({type(exc).__name__}: {exc})") from exc
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1

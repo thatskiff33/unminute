@@ -98,5 +98,174 @@ class EditDistanceTests(unittest.TestCase):
         self.assertEqual(edit_distance("a b".split(), "a b".split()), 0)
 
 
+# The real `run` path in a child process, with only the engine faked: each clip
+# is decoded by the app's decoder, and nothing imports faster_whisper or
+# CTranslate2, which the app's Parakeet worker never loads (#187).
+RUN_PROBE = r"""
+import argparse, json, sys
+attempted = set()
+
+
+class Recorder:
+    def find_spec(self, name, path=None, target=None):
+        attempted.add(name.split(".")[0])
+        return None
+
+
+sys.meta_path.insert(0, Recorder())
+tools, repo, wav, out, scratch = sys.argv[1:6]
+sys.path[:0] = [repo, tools]
+import os, tempfile, wave
+tempfile.tempdir = scratch                   # the run's temporary files go here
+import compare_engines
+from workspace import engines
+seen = []
+
+
+class Fake:
+    description = "fake"
+
+    def transcribe(self, samples):
+        import numpy as np
+        with wave.open(wav) as w:            # the clip's own 16-bit samples, as floats
+            pcm = np.frombuffer(w.readframes(w.getnframes()), "<i2") / 32768.0
+        seen.append([len(samples), str(samples.dtype), float(np.abs(samples - pcm).max())])
+        return iter([]), len(samples) / 16000
+
+
+engines.load_engine = lambda name, cache, threads: Fake()
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 1, "wav": wav}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=1, manifest=[manifest], out=out))
+from workspace import media
+print(json.dumps({"attempted": sorted(attempted), "seen": seen,
+                  "integrity": media.last_decoder_integrity, "left": os.listdir(scratch)}))
+"""
+
+
+MISSING_PROBE = r"""
+import argparse, json, sys
+tools, repo, out = sys.argv[1:4]
+sys.path[:0] = [repo, tools]
+import compare_engines
+from workspace import engines
+
+
+def never(*args):
+    raise AssertionError("the model loaded")
+
+
+engines.load_engine = never
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 7, "wav": out + ".missing.wav"}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=1, manifest=[manifest], out=out))
+"""
+
+
+DAMAGED_PROBE = r"""
+import argparse, json, sys
+tools, repo, wav, out = sys.argv[1:5]
+sys.path[:0] = [repo, tools]
+import compare_engines
+from workspace import engines
+
+
+class Fake:
+    description = "fake"
+
+    def transcribe(self, samples):
+        raise AssertionError("a refused clip reached the engine")
+
+
+engines.load_engine = lambda name, cache, threads: Fake()
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 9, "wav": wav}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=1, manifest=[manifest], out=out))
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "the app's decoder runs in a Windows job")
+class RunTests(unittest.TestCase):
+    def test_a_clip_the_decoder_refuses_stops_the_run_naming_the_clip(self):
+        import importlib.util
+        import subprocess
+        import tempfile
+        if not importlib.util.find_spec("av"):
+            self.skipTest("PyAV is not installed")
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "damaged-synthetic.wav"
+            wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVEjunk" + bytes(range(256)) * 8)
+            r = subprocess.run([sys.executable, "-B", "-c", DAMAGED_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(Path(tmp) / "run.jsonl")],
+                               capture_output=True, text=True, timeout=180)
+        self.assertEqual(r.returncode, 1, r.stderr[-2000:])
+        self.assertIn("Clip s/9 could not be decoded", r.stderr)
+        self.assertNotIn("reached the engine", r.stderr)
+        self.assertNotIn("damaged-synthetic", r.stderr)      # the clip, not its path
+
+    def test_a_missing_clip_stops_the_run_before_the_model_loads(self):
+        import subprocess
+        import tempfile
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            r = subprocess.run([sys.executable, "-B", "-c", MISSING_PROBE, str(root / "tools"),
+                                str(root), str(Path(tmp) / "run.jsonl")],
+                               capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 1, r.stderr[-2000:])
+        self.assertIn("1 clip(s) not found: s/7", r.stderr)
+        self.assertNotIn("the model loaded", r.stderr)
+        self.assertNotIn("missing.wav", r.stderr)            # the clip, not its path
+
+    def test_clips_are_decoded_by_the_app_without_faster_whisper(self):
+        import importlib.util
+        import json
+        import subprocess
+        import tempfile
+        import wave
+        if not (importlib.util.find_spec("av") and importlib.util.find_spec("numpy")):
+            self.skipTest("PyAV and numpy are not installed")
+        import math
+        import struct
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "synthetic.wav"
+            tone = [round(16000 * math.sin(2 * math.pi * 440 * i / 16000)) for i in range(32000)]
+            with wave.open(str(wav), "wb") as w:      # 2 s of a 440 Hz tone, 16 kHz mono
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(struct.pack(f"<{len(tone)}h", *tone))
+            out = Path(tmp) / "run.jsonl"
+            scratch = Path(tmp) / "scratch"
+            scratch.mkdir()
+            # -B: no bytecode in the checkout (evidence runs refuse an unclean tools/).
+            r = subprocess.run([sys.executable, "-B", "-c", RUN_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(out), str(scratch)],
+                               capture_output=True, text=True, timeout=180)
+            self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+            probe = json.loads(r.stdout.strip().splitlines()[-1])
+            # The engine gets the clip's samples as float32: each 16-bit value / 32768.
+            [(count, dtype, worst)] = probe["seen"]
+            self.assertEqual((count, dtype), (32000, "float32"))
+            self.assertLessEqual(worst, 1e-6)
+            self.assertEqual(probe["left"], [])                 # no temporary file left
+            self.assertNotIn("faster_whisper", probe["attempted"])
+            self.assertNotIn("ctranslate2", probe["attempted"])
+            # Decoded in the contained process (Low integrity, 0x1000), not here:
+            # this process never even imports PyAV.
+            self.assertEqual(probe["integrity"], 0x1000)
+            self.assertNotIn("av", probe["attempted"])
+            lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([lines[0]["engine"], lines[1]["audio_s"]], ["fake", 2.0])
+            self.assertIn("peak_ram_gb", lines[-1])
+
+
 if __name__ == "__main__":
     unittest.main()
