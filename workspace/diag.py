@@ -97,7 +97,7 @@ def _frames(value):
 FIELDS = {
     "code": _pattern(re.compile(r"U-[0-9A-F]{6}")),
     "area": _set("bridge", "processing", "import", "recording_import", "worker",
-                 "worker_start", "setup", "uncaught", "thread", "page"),
+                 "worker_start", "setup", "uncaught", "thread", "page", "open"),
     "process": _set("app", "worker", "gpu-worker", "setup"),
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
     "op": _set("load", "transcribe", "diarize", "exit"),
@@ -634,14 +634,14 @@ def shareable_records(folder, limit=60):
 
 def integrity_state(folder):
     """The last database check (R11), from <logs>\\integrity.json:
-    {"result": "ok" | "failed", "code": "U-..." or None, "t": time}, or None
-    if none was recorded (or the file cannot be read)."""
+    {"result": "ok" | "failed" | "skipped", "code": "U-..." or None, "t":
+    time}, or None if none was recorded (or the file cannot be read)."""
     try:
         with open(Path(folder) / INTEGRITY_FILE, "rb") as f:
             raw = json.loads(f.read(500).decode("ascii"))
     except (OSError, ValueError, RecursionError):
         return None
-    if not isinstance(raw, dict) or raw.get("result") not in ("ok", "failed"):
+    if not isinstance(raw, dict) or raw.get("result") not in ("ok", "failed", "skipped"):
         return None
     code, t = raw.get("code"), raw.get("t")
     return {"result": raw["result"],

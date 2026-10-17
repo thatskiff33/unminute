@@ -99,15 +99,20 @@ class Settings:
         self.path = Path(path)
         self.allow_test_engines = allow_test_engines
         self.values = dict(DEFAULT_SETTINGS)
-        self.repaired = []                 # keys on their default: the saved value was refused
         self.unreadable = False            # the file exists but could not be read: all defaults
+        self._locked = False               # ...because it could not be opened (in use)
+        self._save_lock = threading.Lock()
+        self._load(self._read())
+
+    def _load(self, saved):
+        """Apply saved settings over the defaults."""
+        self.values = dict(DEFAULT_SETTINGS)
+        self.repaired = []                 # keys on their default: the saved value was refused
         self.version = SETTINGS_VERSION
         # Saved values this version does not use, written back unchanged (R11):
         # settings only a newer version knows, and a newer version's value for
         # a setting this one knows but cannot use. A rollback then loses none.
         self._kept = {}
-        self._save_lock = threading.Lock()
-        saved = self._read()
         version = saved.pop("settings_version", 0)
         newer = isinstance(version, int) and not isinstance(version, bool) \
             and SETTINGS_VERSION < version < 10 ** 6
@@ -126,7 +131,9 @@ class Settings:
                     self._kept[key] = value
 
     def _read(self):
-        """The saved settings as a dict ({} if there is no file yet)."""
+        """The saved settings as a dict ({} if there is no file yet). Sets
+        unreadable (and _locked, if the file could not even be opened)."""
+        self.unreadable = self._locked = False
         data = None
         for attempt in range(2):                # once more: an antivirus scan may hold it
             try:
@@ -137,9 +144,12 @@ class Settings:
                 return {}
             except OSError:
                 time.sleep(0.2 * (1 - attempt))
+        if data is None:                        # in use: unknown, not damaged
+            self.unreadable = self._locked = True
+            return {}
         try:
             saved = json.loads(data.decode("utf-8-sig")) \
-                if data is not None and len(data) <= SETTINGS_MAX_BYTES else None
+                if len(data) <= SETTINGS_MAX_BYTES else None
             json.dumps(saved, indent=2)         # too deeply nested to write back: unreadable
         except (ValueError, RecursionError):
             saved = None
@@ -171,6 +181,13 @@ class Settings:
         for key, value in changes.items():
             self._check(key, value)
         with self._save_lock:                      # page calls run on their own threads
+            if self._locked:
+                # It could not be opened at start: read it now, rather than
+                # replace settings that may be good with the defaults.
+                self._load(self._read())
+                if self._locked:
+                    raise WorkspaceError("Unminute cannot open its settings file just now. "
+                                         "Try again in a moment.")
             values = {**self.values, **changes}
             kept = {k: v for k, v in self._kept.items() if k not in changes}
             # settings_version is the newest version that wrote the file. A key's
@@ -183,10 +200,12 @@ class Settings:
                 kept = {}                          # not a file the app wrote: drop the extras
                 text = json.dumps({"settings_version": self.version, **values})
             if self.unreadable and self.path.exists():
-                # Kept once, aside, before it is replaced: it may hold values
+                # Copied once, aside, before it is replaced: it may hold values
                 # a newer version wrote, or the read failed only for a moment.
+                # A copy, so a write that fails next still leaves it in place.
+                import shutil
                 try:
-                    self.path.replace(self.path.with_name("settings.unreadable.json"))
+                    shutil.copyfile(self.path, self.path.with_name("settings.unreadable.json"))
                 except OSError:
                     pass
             # Written in full or not at all: flushed to disk before the swap,
@@ -305,14 +324,17 @@ class Workspace:
         db = self.root / "workspace.db"
         last = diag.integrity_state(self.log.folder)
         failed_before = bool(last and last["result"] == "failed")
+        skipped_before = bool(last and last["result"] == "skipped")
         if not (check_integrity and db.exists()
-                and (self.log.running_path.exists() or failed_before)):
+                and (self.log.running_path.exists() or failed_before or skipped_before)):
             return
         sound = quick_check_file(db)
         if sound is None:                       # could not be checked (busy, memory)
             self.log.write("integrity", result="skipped")
             if failed_before:                   # the damage found before still stands
                 self._integrity = {"state": "failed", "code": last["code"]}
+            else:                               # kept, so the next start checks again
+                diag.record_integrity(self.log.folder, "skipped")
             return
         code = None if sound else diag.new_code()
         result = "ok" if sound else "failed"
@@ -321,11 +343,13 @@ class Workspace:
         if not sound:
             self._integrity = {"state": "failed", "code": code}
 
-    def _upkeep(self):
-        """Start-up upkeep that writes and can delete: finish or remove imports
-        cut short by a crash, and line up imports queued when the app last
-        closed. Run at open, or once a damaged database's hold is released."""
-        self._reconcile_imports()
+    def _upkeep(self, discard=True):
+        """Start-up upkeep that writes: finish (or, with discard, remove)
+        imports cut short by a crash, and line up imports queued when the app
+        last closed. Run at open, or once a damaged database's hold is
+        released: then nothing is removed, because damaged pages can make a
+        finished meeting look unfinished; a start whose check passes does it."""
+        self._reconcile_imports(discard)
         intake.recover(self.store)
 
     # -- lifecycle --------------------------------------------------------------------
@@ -930,9 +954,10 @@ class Workspace:
         except StoreError:
             pass
 
-    def _reconcile_imports(self):
+    def _reconcile_imports(self, discard=True):
         """At startup: finish or remove imports cut short by a crash or close
-        (a meeting with no transcript version would otherwise wait forever)."""
+        (a meeting with no transcript version would otherwise wait forever).
+        discard False: finish only, never remove (a damaged database, R11)."""
         for m in self.store._all("SELECT m.id FROM meetings m WHERE NOT EXISTS "
                                  "(SELECT 1 FROM versions v WHERE v.meeting_id = m.id)"):
             src = self.store._one("SELECT id FROM sources WHERE meeting_id = ?", (m["id"],))
@@ -944,7 +969,8 @@ class Workspace:
                     continue                # the database, not the import: kept for next time
                 except Exception:
                     pass
-            self._discard_import(m["id"])
+            if discard:
+                self._discard_import(m["id"])
 
     def _new_version(self, mid, sid, plan):
         model = self.settings["model"]
@@ -1861,7 +1887,7 @@ class Workspace:
         self.log.write("integrity", result="continued", code=self._integrity["code"])
         try:
             self.store.mark_interrupted()
-            self._upkeep()
+            self._upkeep(discard=False)       # nothing removed on a damaged database
         except StoreError:
             pass                              # damaged pages: tried again at the next start
         finally:

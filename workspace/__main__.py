@@ -475,18 +475,21 @@ def _open_failed(exc):
     except StoreError:
         return str(exc)
     db, logs = root / "workspace.db", root / "logs"
+    log = diag.Log(logs, "app")
     if db.exists() and quick_check_file(db) is False:
         last = diag.integrity_state(logs)
-        code = last["code"] if last and last["result"] == "failed" and last["code"] \
-            else diag.new_code()
-        diag.record_integrity(logs, "failed", code)
-        diag.Log(logs, "app").write("integrity", result="failed", code=code)
+        if last and last["result"] == "failed" and last["code"]:
+            code = last["code"]                 # recorded already (this start's own check)
+        else:
+            code = diag.new_code()
+            diag.record_integrity(logs, "failed", code)
+            log.write("integrity", result="failed", code=code)
         return (f"Unminute found damage in its workspace database and cannot open it "
                 f"(code {code}). Ask your IT team: the steps are in the Unminute user "
                 f"guide, under \"If Unminute finds damage\".")
     if isinstance(exc, StoreError):
         return str(exc)
-    return f"Unminute could not open its workspace (code {diag.new_code()})."
+    return f"Unminute could not open its workspace (code {log.incident('open', exc)})."
 
 
 def _message(text):

@@ -369,7 +369,7 @@ function renderIntegrity(info) {
       $("import").focus();              // the button has gone: keep the focus on the page
     })),
   )] : []));
-  if (appeared) say(text, { sticky: true });
+  if (appeared) say(text);              // announced once; the notice itself stays
 }
 
 async function renderReminders() {

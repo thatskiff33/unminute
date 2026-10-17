@@ -19,7 +19,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from workspace import diag  # noqa: E402
+from workspace import diag, store  # noqa: E402
 from workspace.app import DEFAULT_SETTINGS, SETTINGS_VERSION, Settings, Workspace  # noqa: E402
 from workspace.store import Store, StoreError, quick_check_file  # noqa: E402
 
@@ -163,6 +163,36 @@ class SettingsFormatTests(unittest.TestCase):
         s.update(speakers=False)                       # only once
         self.assertEqual(aside.read_text(encoding="utf-8"), '{"mode": "faster", "theme": ')
         self.assertFalse(Settings(self.path).unreadable)
+
+    def test_a_failed_save_still_leaves_the_unreadable_file_in_place(self):
+        self.path.write_text('{"mode": "faster", "theme": ', encoding="utf-8")
+        s = Settings(self.path)
+        with mock.patch("os.fsync", side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            s.update(onboarded=True)
+        self.assertEqual(self.path.read_text(encoding="utf-8"), '{"mode": "faster", "theme": ')
+        self.assertTrue(Settings(self.path).unreadable)          # still said at the next start
+
+    def test_a_file_in_use_at_start_is_read_again_never_replaced(self):
+        self.write({"mode": "faster", "microphone": True})
+        real_open = open
+
+        def in_use(path, *a, **k):
+            if Path(path) == self.path and "r" in (a[0] if a else k.get("mode", "r")):
+                raise PermissionError("in use by another program")
+            return real_open(path, *a, **k)
+        with mock.patch("builtins.open", in_use), mock.patch("time.sleep"):
+            s = Settings(self.path)
+            self.assertTrue(s.unreadable)                 # Settings says so meanwhile
+            with self.assertRaisesRegex(Exception, "cannot open its settings file"):
+                s.update(speakers=False)                  # still in use: nothing replaced
+        self.assertEqual(self.saved(), {"mode": "faster", "microphone": True})
+        s.update(speakers=False)                          # readable now: read, then saved
+        saved = self.saved()
+        self.assertEqual((saved["mode"], saved["microphone"], saved["speakers"]),
+                         ("faster", True, False))
+        self.assertEqual((s.unreadable, s["mode"]), (False, "faster"))
+        self.assertFalse(self.path.with_name("settings.unreadable.json").exists())
 
     def test_a_moment_when_the_file_cannot_be_read_is_tried_again(self):
         self.write({"mode": "faster"})
@@ -333,9 +363,33 @@ class IntegrityTests(unittest.TestCase):
             self.assertFalse(marked.called)          # opened without marking interrupted work
             self.assertTrue((ws.media / self.mid).exists())   # upkeep waited: nothing removed
             self.assertIsNotNone(ws.store.meeting(self.mid))
-            ws.continue_despite_damage()
+            with mock.patch.object(ws, "_reconcile_imports",
+                                   wraps=ws._reconcile_imports) as reconciled:
+                ws.continue_despite_damage()
             self.assertTrue(marked.called)
-        self.assertFalse((ws.media / self.mid).exists())       # the upkeep ran on Continue
+            reconciled.assert_called_once_with(False)            # the upkeep ran on Continue
+        self.assertTrue((ws.media / self.mid).exists())        # but removed nothing that run
+        self.assertIsNotNone(ws.store.meeting(self.mid))
+
+    def test_an_unfinished_import_is_removed_only_when_discard_is_allowed(self):
+        ws = self.open()
+        mid = ws.store.create_meeting("Synthetic interrupted import")   # no source, no audio
+        (ws.media / mid).mkdir(parents=True)
+        ws._reconcile_imports(discard=False)
+        self.assertTrue((ws.media / mid).exists())
+        ws._reconcile_imports()
+        self.assertFalse((ws.media / mid).exists())
+
+    def test_no_migration_while_the_check_holds_work(self):
+        db = Path(self.tmp.name) / "older.db"
+        Store(db).close()
+        con = sqlite3.connect(db)
+        con.execute("DELETE FROM schema_version")
+        con.execute("INSERT INTO schema_version VALUES (?)", (store.SCHEMA_VERSION - 1,))
+        con.commit()
+        con.close()
+        with self.assertRaisesRegex(store.MigrationBlocked, "found damage"):
+            Store(db, housekeeping=False)
 
     def test_a_database_error_never_discards_an_import(self):
         ws = self.open()
@@ -379,8 +433,27 @@ class IntegrityTests(unittest.TestCase):
         with failing(7):                                    # SQLITE_NOMEM
             self.assertIsNone(quick_check_file(good))
         for code in (10, 11, 26, 10 | (3 << 8)):            # IOERR, CORRUPT, NOTADB, IOERR_WRITE
-            with failing(code):
+            with failing(code), mock.patch("workspace.store.time.sleep"):
                 self.assertIs(quick_check_file(good), False, code)
+
+    def test_an_io_error_is_tried_once_more_before_it_counts(self):
+        good = Path(self.tmp.name) / "fine.db"
+        Store(good).close()
+        real = sqlite3.connect
+        calls = []
+
+        def locked_once(*a, **k):                 # another program held part of the file
+            calls.append(1)
+            if len(calls) == 1:
+                exc = sqlite3.OperationalError("disk I/O error")
+                exc.sqlite_errorcode = 10
+                raise exc
+            return real(*a, **k)
+        with mock.patch("sqlite3.connect", side_effect=locked_once), \
+                mock.patch("workspace.store.time.sleep") as waited:
+            self.assertIs(quick_check_file(good), True)
+        self.assertEqual(len(calls), 2)
+        waited.assert_called_once_with(1.0)
 
     def test_a_check_that_cannot_run_holds_only_what_was_held(self):
         self.unclean()
@@ -388,6 +461,13 @@ class IntegrityTests(unittest.TestCase):
             ws = self.open(check_integrity=True)
         self.assertTrue(ws._integrity_ok.is_set())
         self.assertEqual([r["result"] for r in self.checks()], ["skipped"])
+        self.assertEqual(diag.integrity_state(ws.log.folder)["result"], "skipped")   # kept
+        ws.log.close_run()                       # the next start closes cleanly...
+        ws.close()
+        with mock.patch("workspace.app.quick_check_file", return_value=True) as checked:
+            ws = self.open(check_integrity=True)
+        self.assertTrue(checked.called)          # ...and still checks: it was skipped
+        self.assertEqual(diag.integrity_state(ws.log.folder)["result"], "ok")
         ws.close()
         diag.record_integrity(self.root / "logs", "failed", "U-ABCDEF")   # damage found before
         with mock.patch("workspace.app.quick_check_file", return_value=None):
@@ -434,13 +514,18 @@ class IntegrityTests(unittest.TestCase):
             code = diag.integrity_state(self.root / "logs")["code"]
             self.assertIn(code, text)
             self.assertIn(code, main._open_failed(StoreError("again")))   # the same code
+        self.assertEqual([r["result"] for r in self.checks()], ["failed"])   # recorded once
         db.unlink()
         Store(db).close()                                    # sound: the store's own message
         with mock.patch("workspace.store.default_root", return_value=self.root):
             self.assertEqual(main._open_failed(StoreError("Newer schema")), "Newer schema")
             with mock.patch("workspace.store.quick_check_file", return_value=None):
-                self.assertRegex(main._open_failed(sqlite3.DatabaseError("x")),
-                                 r"could not open its workspace \(code U-[0-9A-F]{6}\)")
+                text = main._open_failed(sqlite3.DatabaseError("x"))
+        code = text.split("code ")[1].rstrip(").")
+        self.assertRegex(text, r"could not open its workspace \(code U-[0-9A-F]{6}\)")
+        opened = [r for r in diag.shareable_records(self.root / "logs")
+                  if r["kind"] == "incident" and r.get("area") == "open"]
+        self.assertEqual([(r["code"], r["error"]) for r in opened], [(code, "DatabaseError")])
 
     def test_the_app_checks_before_diagnostics_replace_the_run_marker(self):
         from workspace import __main__ as main

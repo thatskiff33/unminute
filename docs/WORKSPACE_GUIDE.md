@@ -152,12 +152,12 @@ What to do:
 
 1. Hand off anything you need now: open each meeting you still need and copy its text.
 2. Tell your IT team, with the code from the message.
-3. Select **Continue anyway** only if IT agrees, or if you must carry on working. Processing and cleanup then write to the damaged database, which can make the damage worse, and cleanup relies on hold records that may be damaged.
+3. Select **Continue anyway** only if IT agrees, or if you must carry on working. Processing and cleanup then write to the damaged database, which can make the damage worse, and cleanup relies on hold records that may be damaged. Unminute never removes an import that looks unfinished in that run: damaged records can make a finished meeting look unfinished.
 
 For IT support (there are no backups, by design):
 
 1. Ask the user to hand off what they need, then close Unminute. Check that no Unminute processes are left in Task Manager before going on.
-2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` (or `"readable": false` if the database cannot be read at all), the number of active holds, `pending_cleanup` and `recordings`. The counts come from the damaged database and may be wrong: a hold can be missing from them.
+2. Run `runtime\python.exe -m workspace --status` in the installed version folder. It shows `"integrity": "failed"` (or `"readable": false` if the database cannot be read at all), the number of active holds, `pending_cleanup` and `recordings`. The holds and cleanup counts come from the damaged database and may be wrong: a hold can be missing from them. `recordings` counts recording folders on disk, including any the user discarded that are waiting to be removed.
 3. Rename the workspace folder `%LOCALAPPDATA%\whisper\workspace` (for example to `workspace-damaged`). Leave it in the user's profile on this computer: it holds meeting content, so never copy it to a share or another computer, and never email or upload it.
 4. Start Unminute. It creates a new, empty workspace. Models and the Hugging Face token are kept, but guided setup, settings, handoff templates and watched folders start again.
 5. Tell the user what did not happen: cleanup they confirmed in the old workspace (`pending_cleanup`) has not run, so audio, transcripts or originals in watched folders they asked to delete may still be there. `recordings` counts recordings that never became meetings; their audio is in the renamed folder's `recordings` folder.
