@@ -332,7 +332,8 @@ class LidSwitchReviewTests(unittest.TestCase):
         api = FakeScheme(ac=1, dc=2)
         sw = self.switch(api)
         sw.override()
-        with mock.patch.object(Path, "read_text", side_effect=PermissionError("locked")):
+        with mock.patch("workspace.power.open", side_effect=PermissionError("locked"),
+                        create=True):
             sw.restore()
         self.assertTrue(self.path.exists())
         self.assertEqual(api.values, {True: 0, False: 0})
@@ -397,6 +398,25 @@ class LidSwitchReviewTests(unittest.TestCase):
         sw = self.switch(api)
         sw.restore()
         self.assertEqual((api.writes, self.path.exists(), sw.problem), ([], False, "lost"))
+
+    def test_an_oversized_or_deeply_nested_record_is_lost_without_raising(self):
+        # R2: "never raises" holds for any file content.
+        for text in ("[" * 100000 + "]" * 100000, " " * 5000 + "{}"):
+            self.path.write_text(text, encoding="utf-8")
+            api = FakeScheme(ac=0, dc=0)
+            sw = self.switch(api)
+            sw.restore()
+            self.assertEqual((api.writes, self.path.exists(), sw.problem), ([], False, "lost"))
+
+    def test_a_record_deleted_meanwhile_is_put_back_from_memory(self):
+        api = FakeScheme(ac=1, dc=2)
+        sw = self.switch(api)
+        sw.override()
+        self.path.unlink()                               # removed by something else
+        self.assertTrue(sw.active)
+        sw.restore()
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertFalse(sw.active)
 
     def test_an_original_out_of_range_is_never_changed(self):
         api = FakeScheme(ac=7, dc=1)

@@ -868,19 +868,36 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.settings.update(microphone=True, lid_override=True)
         self.ws.start()
         scheme, _ = self.fake_lid(self.ws)
-        unreadable = policy.PolicySource(
-            reader=lambda: ({"AllowMicrophoneRecording": True}, policy.UNREADABLE))
         self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
         self.ws.start_recording(3, consent=CONSENT)
         self.assertEqual(scheme.values, {True: 0, False: 0})
+        unreadable = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        self.assertTrue(unreadable.current().unreadable)   # a key that cannot be read at all
         self.ws.policy = unreadable
         self.ws._policy_tick()
         self.assertEqual(scheme.values, {True: 1, False: 1})
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
         self.ws.stop_recording()
         writes = len(scheme.writes)
-        self.ws.start_recording(3, consent=CONSENT)      # still unreadable: never set
+        self.ws.policy = policy.PolicySource(              # a bad value: withheld, never set
+            reader=lambda: ({}, ("AllowLidOverride",)))
+        self.ws.start_recording(3, consent=CONSENT)
         self.assertEqual(len(scheme.writes), writes)
         self.ws.stop_recording()
+
+    def test_the_idle_retry_never_undoes_a_recording_that_has_started(self):
+        # R1: the retry runs under the lock that sets the lid for a recording.
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._lid_retry_at = float("-inf")
+        with mock.patch.object(self.ws, "_capturing", lambda: False):   # the racing read
+            self.ws._policy_tick()
+        self.assertEqual(scheme.values, {True: 0, False: 0})
+        self.assertTrue(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()
+        self.assertEqual(scheme.values, {True: 1, False: 1})
 
     def test_a_damaged_record_is_left_and_the_user_told_once(self):
         # The user's decision on #188: leave the lid as it is, say so once.

@@ -138,6 +138,7 @@ SUB_BUTTONS = "4f971e89-eebd-4455-a8de-9e59040e7347"    # power buttons and lid
 LIDACTION = "5ca83367-6e45-459f-a27b-476b1d01c936"      # what closing the lid does
 LIDSWITCH_STATE = "ba3e0f4d-b817-4094-a2d1-d56379e6a0f3"  # GUID_LIDSWITCH_STATE_CHANGE
 DO_NOTHING = 0
+MAX_RESTORE_BYTES = 4096                                # a real restore record is about 80 bytes
 # Where Group Policy (values ACSettingIndex/DCSettingIndex) or Intune (the
 # Power CSP values) set the lid action; either means it is managed.
 _SEP = chr(92)                                          # a backslash, kept out of literals
@@ -239,6 +240,7 @@ class LidSwitch:
         # None, "failed" (a restore is waiting and will be tried again) or
         # "lost" (the record was damaged; the user is told once).
         self.problem = None
+        self._saved = None               # this process's own override, also kept in memory
 
     def _calls(self):
         if self._api is None:
@@ -250,7 +252,7 @@ class LidSwitch:
     @property
     def active(self):
         """A change is in force (or waits to be put back)."""
-        return self.path.exists()
+        return self._saved is not None or self.path.exists()
 
     def managed(self):
         try:
@@ -283,6 +285,7 @@ class LidSwitch:
                 self._save(original)
             except OSError:
                 return False, "refused"     # never change what could not be put back
+            self._saved = dict(original)    # also kept in memory, in case the file goes
             try:
                 for plugged_in in (True, False):
                     if api.write(scheme, plugged_in, DO_NOTHING):
@@ -309,16 +312,23 @@ class LidSwitch:
         damaged file cannot say what to put back: the lid action is left as it
         is and the user is told ("lost", the user's decision on #188)."""
         try:
-            text = self.path.read_text(encoding="utf-8")
+            with open(self.path, "rb") as f:
+                raw = f.read(MAX_RESTORE_BYTES + 1)
         except FileNotFoundError:
-            return
+            if self._saved is None:
+                return
+            raw = None                      # removed by something else: use the copy in memory
         except OSError:
             self.problem = "failed"         # briefly locked or unreadable: try again later
             return
-        try:
-            saved = json.loads(text)
-        except ValueError:
-            saved = None
+        if raw is None:
+            saved = self._saved
+        else:
+            try:                            # a real record is about 80 bytes
+                saved = (json.loads(raw.decode("utf-8")) if len(raw) <= MAX_RESTORE_BYTES
+                         else None)
+            except (ValueError, RecursionError):
+                saved = None
         if not _valid_saved(saved):
             self.problem = "lost"           # nothing safe to put back: left as it is
             self._remove()
@@ -335,6 +345,7 @@ class LidSwitch:
         except Exception:
             self.problem = "failed"         # kept, so the next try puts it back
             return
+        self._saved = None
         if self._remove():
             self.problem = None
 

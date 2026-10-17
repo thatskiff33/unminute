@@ -2063,7 +2063,10 @@ class Workspace:
         quiet_before = self.handle.quiet
         self.settings.update(**changes)
         if changes.get("lid_override") is False and self.lid.active:
-            self.lid.restore()                # turned off mid-recording: put it back now
+            try:
+                self.lid.restore()            # turned off mid-recording: put it back now
+            except Exception:
+                pass                          # never fails the setting; retried while idle
             self._lid_result = None
         self._forget_display()
         self.handle.quiet = self.settings["mode"] == resources.QUIET
@@ -2199,10 +2202,13 @@ class Workspace:
             if not p.get("AllowLidOverride") and self.lid.active:
                 self.lid.restore()            # IT turned it off: put the lid action back
                 self._lid_result = None
-            elif (self.lid.active and not self._capturing()
-                  and self._clock() - self._lid_retry_at >= LID_RETRY_S):
-                self._lid_retry_at = self._clock()
-                self.lid.restore()            # a restore that failed earlier: try again
+            elif self.lid.active and self._clock() - self._lid_retry_at >= LID_RETRY_S:
+                # Under the lock that sets the lid for a recording, so a retry
+                # can never undo the override of one that has just started.
+                with self._indicator_lock:
+                    if not self._power_on and not self._capturing():
+                        self._lid_retry_at = self._clock()
+                        self.lid.restore()    # a restore that failed earlier: try again
             self._lid_problem_report()
         except Exception:
             pass
