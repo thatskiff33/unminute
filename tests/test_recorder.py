@@ -396,6 +396,37 @@ class RecordingTests(unittest.TestCase):
             self.assertTrue(rec.stopped)
         self.assertIn("time_limit", [e["kind"] for e in rec.stop()["events"]])
 
+    def test_a_lid_closed_while_recording_is_noted_on_opening(self):
+        with mock.patch.object(recorder, "LID_NOTE_S", 0.2), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 30):
+            rec, s = self.start()
+            s.feed(1)
+            rec.lid_changed(False)
+            rec.lid_changed(False)               # repeated: the first closing counts
+            time.sleep(0.4)
+            s.feed(0.5)
+            rec.lid_changed(True)
+            rec.lid_changed(True)                # repeated opening: noted once
+            rec.lid_changed(False)
+            rec.lid_changed(True)                # closed only briefly: not noted
+        journal = rec.stop()
+        lids = [e for e in journal["events"] if e["kind"] == "lid"]
+        self.assertEqual(len(lids), 1)
+        self.assertGreaterEqual(lids[0]["seconds"], 0.35)
+        self.assertEqual(journal["state"], "stopped")    # the recording carried on
+
+    def test_a_lid_closed_while_paused_is_noted_too(self):
+        # M19: the recording marks stay while paused, so it is noted alike.
+        with mock.patch.object(recorder, "LID_NOTE_S", 0.1), \
+                mock.patch.object(recorder, "HEARTBEAT_S", 30):
+            rec, s = self.start()
+            s.feed(1)
+            rec.pause()
+            rec.lid_changed(False)
+            time.sleep(0.2)
+            rec.lid_changed(True)
+        self.assertIn("lid", [e["kind"] for e in rec.stop()["events"]])
+
     def test_a_lost_device_is_reported_once(self):
         rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}))
         rec._device_lost()
@@ -589,6 +620,17 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.holder = {}
         self.devices = mock.patch.object(recorder, "list_devices", lambda: self.DEVICES)
         self.devices.start()
+        # No test may change the real power scheme (#188): any write or apply
+        # through the real API fails the test instead.
+        from workspace import power
+
+        def never(*args, **kwargs):
+            raise AssertionError("a test reached the real power scheme")
+        self.power_guard = [mock.patch.object(power._PowrProf, name, never)
+                            for name in ("write", "apply")]
+        for guard in self.power_guard:
+            guard.start()
+        self.addCleanup(lambda: [guard.stop() for guard in self.power_guard])
         self.ws = self.make()
 
     def make(self, **kw):
@@ -702,6 +744,231 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws.start_recording(3, consent=CONSENT)
         self.assertIsNotNone(self.ws._recording)
         self.ws.stop_recording()
+
+    def fake_lid(self, ws, ac=1, dc=1, managed=False):
+        """A fake power scheme and lid watch: tests never change the real one."""
+        from test_power import FakeScheme
+
+        from workspace import power
+        scheme = FakeScheme(ac=ac, dc=dc)
+        ws.lid = power.LidSwitch(ws.root / "power_restore.json", api=scheme,
+                                 managed=lambda: managed)
+        watch = type("Watch", (), {"on": 0, "start": lambda s: setattr(s, "on", s.on + 1),
+                                   "stop": lambda s: setattr(s, "on", s.on - 1)})()
+        ws.lid_watch = watch
+        return scheme, watch
+
+    def test_the_lid_action_is_do_nothing_exactly_while_recording(self):
+        from workspace import policy
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        scheme, watch = self.fake_lid(self.ws, ac=1, dc=2)
+        self.ws.start_recording(3, consent=CONSENT)      # setting off: nothing changes
+        self.assertEqual((scheme.values, watch.on), ({True: 1, False: 2}, 1))
+        self.assertFalse(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()
+        self.assertEqual(watch.on, 0)
+        self.ws.set_settings({"lid_override": True})
+        seen = []
+        self.ws.recording_indicator = lambda on: seen.append(dict(scheme.values))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertTrue(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()                         # stopped
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.discard_recording()                      # discarded
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._recording._device_lost()                # stops itself
+        deadline = time.time() + 10
+        while self.ws._recording is not None and time.time() < deadline:
+            time.sleep(0.05)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.policy = policy.PolicySource(               # IT turns recording off
+            reader=lambda: ({"AllowMicrophoneRecording": False}, ()))
+        self.ws._policy_tick()
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.close()                                  # saved at close
+        do_nothing, original = {True: 0, False: 0}, {True: 1, False: 2}
+        self.assertEqual(seen, [do_nothing, original] * 5)
+        self.assertFalse((self.ws.root / "power_restore.json").exists())
+
+    def test_turning_the_lid_setting_off_or_a_policy_puts_it_back_at_once(self):
+        from workspace import policy
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(scheme.values, {True: 0, False: 0})
+        self.ws.set_settings({"lid_override": False})    # mid-recording
+        self.assertEqual(scheme.values, {True: 1, False: 1})
+        self.assertFalse(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()
+        self.ws.set_settings({"lid_override": True})
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws.policy = policy.PolicySource(               # IT turns it off mid-recording
+            reader=lambda: ({"AllowLidOverride": False}, ()))
+        self.ws._policy_tick()
+        self.assertEqual(scheme.values, {True: 1, False: 1})
+        with self.assertRaisesRegex(WorkspaceError, "organisation"):
+            self.ws.set_settings({"lid_override": True})
+        self.assertFalse(self.ws.get_settings()["lid_override"])
+        self.ws.stop_recording()
+        self.ws.start_recording(3, consent=CONSENT)      # policy off: never set
+        self.assertEqual(scheme.writes[-1], (False, 1))
+        self.ws.stop_recording()
+
+    def test_a_lid_managed_by_the_organisation_is_left_alone(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws, managed=True)
+        with self.assertRaisesRegex(WorkspaceError, "IT team"):
+            self.ws.set_settings({"lid_override": True})
+        s = self.ws.get_settings()
+        self.assertEqual((s["lid_override"], s["lid_managed"]), (False, True))
+        self.ws.settings.update(lid_override=True)       # saved before IT took it over
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(scheme.writes, [])
+        self.assertFalse(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()
+
+    def test_a_lid_left_by_a_crash_is_put_back_before_anything_else(self):
+        # M6 and F4: the restore runs at construction, before the database.
+        from test_power import FakeScheme
+
+        from workspace import power
+        root = self.root / "crashed"
+        root.mkdir()
+        scheme = FakeScheme(ac=1, dc=2)
+        sw = power.LidSwitch(root / "power_restore.json", api=scheme, managed=lambda: False)
+        sw.override()                                    # the app died here
+        with mock.patch("workspace.app.Store", side_effect=RuntimeError("damaged")):
+            with self.assertRaises(RuntimeError):        # even a start that fails later
+                Workspace(root, self.root / "models", start=False, lid_switch=sw)
+        self.assertEqual(scheme.values, {True: 1, False: 2})
+        self.assertFalse((root / "power_restore.json").exists())
+
+    def test_a_lid_error_never_stops_a_recording_ending(self):
+        # F1: the recorder is always told to stop.
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        self.fake_lid(self.ws)
+
+        def broken():
+            raise PermissionError("locked")
+        self.ws.lid.restore = broken
+        self.ws.start_recording(3, consent=CONSENT)
+        rec = self.ws._recording
+        self.ws.stop_recording()
+        self.assertTrue(rec.stopped)
+        self.assertIsNone(self.ws._recording)
+
+    def test_an_unreadable_policy_grants_no_lid_change(self):
+        # M11 and M12: withheld at the start, and put back on the tick.
+        from workspace import policy
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws)
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(scheme.values, {True: 0, False: 0})
+        unreadable = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        self.assertTrue(unreadable.current().unreadable)   # a key that cannot be read at all
+        self.ws.policy = unreadable
+        self.ws._policy_tick()
+        self.assertEqual(scheme.values, {True: 1, False: 1})
+        self.ws.policy = policy.PolicySource(reader=lambda: ({}, ()))
+        self.ws.stop_recording()
+        writes = len(scheme.writes)
+        self.ws.policy = policy.PolicySource(              # a bad value: withheld, never set
+            reader=lambda: ({}, ("AllowLidOverride",)))
+        self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(len(scheme.writes), writes)
+        self.ws.stop_recording()
+
+    def test_the_idle_retry_never_undoes_a_recording_that_has_started(self):
+        # R1: the retry runs under the lock that sets the lid for a recording.
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws)
+        self.ws.start_recording(3, consent=CONSENT)
+        self.ws._lid_retry_at = float("-inf")
+        with mock.patch.object(self.ws, "_capturing", lambda: False):   # the racing read
+            self.ws._policy_tick()
+        self.assertEqual(scheme.values, {True: 0, False: 0})
+        self.assertTrue(self.ws.recording_status()["lid_override"])
+        self.ws.stop_recording()
+        self.assertEqual(scheme.values, {True: 1, False: 1})
+
+    def test_a_damaged_record_is_left_and_the_user_told_once(self):
+        # The user's decision on #188: leave the lid as it is, say so once.
+        from test_power import FakeScheme
+
+        from workspace import power
+        root = self.root / "lost"
+        root.mkdir()
+        (root / "power_restore.json").write_text("{damaged", encoding="utf-8")
+        scheme = FakeScheme(ac=0, dc=0)
+        sw = power.LidSwitch(root / "power_restore.json", api=scheme, managed=lambda: False)
+        ws = Workspace(root, self.root / "models", start=False, lid_switch=sw)
+        try:
+            ws._policy_tick()
+            lids = [r for r in ws.recording_status()["reports"] if r.get("lid")]
+            self.assertEqual(len(lids), 1)
+            self.assertIn("could not put your lid setting back", lids[0]["note"])
+            self.assertEqual(scheme.writes, [])          # never guessed
+            ws._policy_tick()
+            self.assertEqual(len([r for r in ws.recording_status()["reports"]
+                                  if r.get("lid")]), 1)  # told once
+        finally:
+            ws.close()
+
+    def test_a_failed_restore_is_retried_while_idle(self):
+        # F6: a restore that fails at the end of a recording is not silent.
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        scheme, _ = self.fake_lid(self.ws, ac=1, dc=2)
+        self.ws.start_recording(3, consent=CONSENT)
+        scheme.write_rc = 5                              # Windows refuses for now
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.lid.active)
+        self.assertTrue(any(r.get("lid") for r in self.ws.recording_status()["reports"]))
+        scheme.write_rc = 0
+        self.ws._lid_retry_at = float("-inf")
+        held, real = [], self.ws._capturing
+
+        def checked():                                   # R1/T1: decided under the lock
+            held.append(self.ws._indicator_lock.locked())
+            return real()
+        with mock.patch.object(self.ws, "_capturing", checked):
+            self.ws._policy_tick()
+        self.assertTrue(held and all(held), held)       # every read held the lock
+        self.assertEqual(scheme.values, {True: 1, False: 2})
+        self.assertFalse(self.ws.lid.active)
+
+    def test_the_card_says_when_the_lid_setting_could_not_be_changed(self):
+        self.ws.settings.update(microphone=True, lid_override=True)
+        self.ws.start()
+        self.fake_lid(self.ws, managed=True)
+        self.ws.start_recording(3, consent=CONSENT)
+        status = self.ws.recording_status()
+        self.assertEqual((status["lid_override"], status["lid_refused"]), (False, "managed"))
+        self.ws.stop_recording()
+        self.assertIsNone(self.ws.recording_status()["lid_refused"])
+
+    def test_lid_changes_reach_the_recording(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.fake_lid(self.ws)
+        self.ws._lid_changed(False)                      # not recording: ignored
+        with mock.patch.object(recorder, "LID_NOTE_S", 0.1):
+            self.ws.start_recording(3, consent=CONSENT)
+            self.holder["stream"].feed(1)
+            self.ws._lid_changed(False)
+            time.sleep(0.2)
+            self.ws._lid_changed(True)
+            kinds = [e["kind"] for e in self.ws.recording_status()["recording"]["events"]]
+            self.ws.stop_recording()
+        self.assertIn("lid", kinds)
 
     def test_off_by_default(self):
         self.ws.start()

@@ -26,6 +26,11 @@ Disabled: the component cannot be downloaded or used; speaker identification run
 
 Disabled: microphone recording is off and cannot be turned on, and a recording in progress is stopped and saved when the app next reads the policy (within 15 minutes). Recordings can still be imported.</string>
 
+      <string id="AllowLidOverride">Allow keeping a recording going with the lid closed</string>
+      <string id="AllowLidOverride_Help">Enabled or not configured: users can turn on "Keep recording when the lid is closed" in Settings. While a recording is open, Unminute then sets the active power plan's lid action to "Do nothing" (plugged in and on battery) and puts the original values back when the recording ends, or at the next start after a crash. It never changes the lid action where Group Policy or Intune sets it.
+
+Disabled: the setting cannot be turned on, and a change already in force is put back when the app next reads the policy.</string>
+
       <string id="RequireRecordingConsent">Confirm before each recording that everyone has been told</string>
       <string id="RequireRecordingConsent_Help">Enabled or not configured: before each microphone recording, the person recording confirms that everyone in the meeting has been told that it is being recorded, and why. The recording starts only after they tick that statement and select Start recording. The confirmation is a window the app draws outside its web page, so the page cannot answer it.
 

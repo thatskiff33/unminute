@@ -33,6 +33,9 @@ SPEC = {
     "AllowGpuComponent": ("bool", True, True),
     # Microphone recording (the user may still turn it off).
     "AllowMicrophoneRecording": ("bool", True, True),
+    # Setting the Windows lid action to "Do nothing" while recording, if the
+    # user turns it on (#172). Off by policy: never changed, and put back.
+    "AllowLidOverride": ("bool", True, True),
     # A confirmation before each recording that everyone present has
     # been told (#111 A6). Not a permission: a bad value keeps the confirmation.
     "RequireRecordingConsent": ("bool", True, False),
