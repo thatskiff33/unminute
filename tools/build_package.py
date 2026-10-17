@@ -415,6 +415,45 @@ def check_precompiled(folder):
         sys.exit("Precompiled files are wrong:\n" + "\n".join(problems[:20]))
 
 
+def verify_precompiled(zpath):
+    """Every shipped .pyc is what its .py compiles to (#111 B3). Python runs
+    the .pyc and never checks it against the source (unchecked-hash), so a
+    reviewer reading the shipped .py files would not see an altered .pyc.
+    Unpacks the package, notes every .pyc, compiles every module again exactly
+    as the build does (precompile is deterministic and path-independent), and
+    compares the bytes. A .pyc outside __pycache__ (a module shipped without
+    its source) cannot be checked and is refused. Returns the count compared."""
+    work = Path(tempfile.mkdtemp(prefix="wwverify-")).resolve()
+    if os.name == "nt":
+        work = Path("\\\\?\\" + str(work))
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            names = z.namelist()
+            tops = {n.split("/", 1)[0] for n in names}
+            if len(tops) != 1 or not all(inside(n) for n in names):
+                sys.exit(f"{Path(zpath).name} is not one package folder.")
+            z.extractall(work)
+        folder = work / tops.pop()
+
+        def digests():
+            return {p.relative_to(folder).as_posix(): sha256(p) for p in folder.rglob("*.pyc")}
+        shipped = digests()
+        sourceless = sorted(n for n in shipped if n.split("/")[-2:-1] != ["__pycache__"])
+        if sourceless:
+            sys.exit("The package has .pyc files outside __pycache__, which cannot be "
+                     "checked against a source:\n" + "\n".join(sourceless[:20]))
+        precompile(folder)
+        rebuilt = digests()
+        differ = sorted(n for n in shipped.keys() | rebuilt.keys()
+                        if shipped.get(n) != rebuilt.get(n))
+        if differ:
+            sys.exit(f"{len(differ)} shipped .pyc files are not what their sources compile "
+                     "to (or a module has none):\n" + "\n".join(differ[:20]))
+        return len(shipped)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def package_budget(zip_bytes, files, budgets_text):
     """Over-budget messages for the zip's size (MB, one decimal) and file count,
     against the ratchets in tests/budgets.json."""
@@ -1075,7 +1114,14 @@ def main():
                     help="refuse a dirty tree or a HEAD that is not the vX.Y.Z tag")
     ap.add_argument("--update-binary-allowlist", action="store_true",
                     help="rewrite packaging/binary-allowlist.json from this build (review it)")
+    ap.add_argument("--verify-precompiled", metavar="ZIP",
+                    help="build nothing: check that every .pyc in this package zip is what "
+                         "its source compiles to (on Windows, with the package's own Python)")
     a = ap.parse_args()
+    if a.verify_precompiled:
+        count = verify_precompiled(Path(a.verify_precompiled))
+        print(f"{count} .pyc files are what their sources compile to.")
+        return
     if a.release and a.update_binary_allowlist:
         ap.error("--release cannot rewrite the binary allowlist")
     build(release_version(a.version), Path(a.out), Path(a.cache), a.release,

@@ -875,5 +875,77 @@ class PrunedBuildTests(unittest.TestCase):
             self.assertGreaterEqual(committed[key]["value"], committed[key]["measured"])
 
 
+class VerifyPrecompiledTests(unittest.TestCase):
+    """--verify-precompiled (#111 B3): every shipped .pyc is what its source
+    compiles to. The real compile is the build's precompile(), tested above;
+    here a fake writes known bytes in its place."""
+    PYC = f"__pycache__/mod.cpython-{bp.PYTHON_TAG}.pyc"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def zip_of(self, entries):
+        """A zip holding entries (full names -> data), as given."""
+        zpath = self.root / "Unminute-0.5.0.zip"
+        with zipfile.ZipFile(zpath, "w") as z:
+            for name, data in entries.items():
+                z.writestr(name, data)
+        return zpath
+
+    def package(self, files):
+        return self.zip_of({f"Unminute-0.5.0/{name}": data for name, data in files.items()})
+
+    def verify(self, zpath, compiled):
+        """verify_precompiled, with precompile writing compiled (name -> bytes)."""
+        seen = {}
+
+        def fake_precompile(folder):
+            seen["folder"] = folder
+            for name, data in compiled.items():
+                (folder / name).parent.mkdir(parents=True, exist_ok=True)
+                (folder / name).write_bytes(data)
+        with mock.patch.object(bp, "precompile", fake_precompile):
+            return bp.verify_precompiled(zpath), seen
+
+    def test_the_same_bytes_pass(self):
+        files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"same",
+                 f"runtime/lib/pkg/{self.PYC}": b"lib"}
+        count, seen = self.verify(self.package(files), {f"app/{self.PYC}": b"same",
+                                                        f"runtime/lib/pkg/{self.PYC}": b"lib"})
+        self.assertEqual(2, count)
+        self.assertFalse(seen["folder"].exists())          # the unpacked copy is removed
+
+    def test_an_altered_pyc_is_found(self):
+        files = {"app/mod.py": "x = 1\n", f"app/{self.PYC}": b"planted"}
+        with self.assertRaisesRegex(SystemExit, f"1 shipped .pyc(.|\n)*app/{self.PYC}"):
+            self.verify(self.package(files), {f"app/{self.PYC}": b"compiled"})
+
+    def test_a_module_shipped_without_its_pyc_is_found(self):
+        files = {"app/mod.py": "x = 1\n"}
+        with self.assertRaisesRegex(SystemExit, f"app/{self.PYC}"):
+            self.verify(self.package(files), {f"app/{self.PYC}": b"compiled"})
+
+    def test_a_pyc_without_its_source_is_refused(self):
+        # Python imports a .pyc that sits where the module would, with no source.
+        with self.assertRaisesRegex(SystemExit, "outside __pycache__"):
+            self.verify(self.package({"app/mod.pyc": b"sourceless"}), {})
+
+    def test_a_zip_that_is_not_one_package_folder_is_refused(self):
+        for entries in ({"Unminute-0.5.0/app/a.py": "", "Other/app/b.py": ""},
+                        {"Unminute-0.5.0/../evil.py": ""}):
+            with self.subTest(entries=list(entries)), \
+                    self.assertRaisesRegex(SystemExit, "not one package folder"):
+                self.verify(self.zip_of(entries), {})
+
+    def test_the_release_job_runs_it(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows"
+                    / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("tools/build_package.py --verify-precompiled", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
