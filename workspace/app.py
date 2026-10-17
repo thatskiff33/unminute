@@ -2452,7 +2452,7 @@ class Workspace:
         (cleanup.discard). Work in progress on it is stopped first. A meeting
         whose import never finished can be discarded too, but only while no
         import is running or queued (#181). Only the intake thread (fed by
-        self._imports) creates meetings, adds sources or sets delete_original,
+        self._imports) creates meetings, adds sources or grants delete_original,
         so no import can still give the meeting a source or deletion authority.
         (Start-up upkeep plans no version for a meeting Discard has marked.)"""
         self._meeting(mid)
