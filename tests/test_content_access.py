@@ -36,22 +36,35 @@ from workspace import store  # noqa: E402
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
 # -- the static check -----------------------------------------------------------------
-# Every string the parser sees is a candidate. Pieces joined with "+", and with
-# "+=" on one name within a function, are folded into one text first; f-string
-# placeholders and other pieces known only at run time become HOLE. A string
-# that is itself Python (a script for a child process) is parsed and checked
-# as code. Matching ignores case, quoted and schema-qualified names
-# ("meetings", [meetings], main.meetings) are unquoted, and a table counts as
-# used wherever its name appears (comma joins and subqueries included).
-# It cannot see SQL assembled across functions, from data or with str.join:
-# the authorizer below covers the paths the scrambling tests run.
+# Every string the parser sees is a candidate. Pieces joined with "+" are
+# folded into one text first, and so are the pieces of a name built up in one
+# function or at module level ("q += piece", "q = q + piece"): a name assigned
+# a string earlier in the same function, or at module level, stands for its
+# text there, in f-string placeholders too. Other pieces known only at run
+# time become HOLE. A text is SQL if it has a statement's shape or names a
+# content table after FROM, JOIN, INTO or UPDATE (so half a query held in one
+# name still counts). A string that is itself Python (a script for a child
+# process) is parsed and checked as code. Matching ignores case, quoted and
+# schema-qualified names ("meetings", [meetings], main.meetings, "{t}") are
+# unquoted, and a table counts as used wherever its name appears (comma joins
+# and subqueries included). Names are followed in line order within one
+# function, so of a name assigned on two branches the later text counts; the
+# expression is also checked with each name as a piece known only at run time
+# (so the earlier text is not lost, at the cost of flagging a run-time build
+# around a content table even where the name's text is plain).
+# It cannot see SQL passed between functions, held in attributes, read from
+# data or joined with str.join: the authorizer below covers the paths the
+# scrambling tests run.
 
 HOLE = " \x00 "
 LOOKS_LIKE_SQL = re.compile(
     r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE)\b"
     r"|(?i:\bselect\b[\s\S]*\bfrom\b|\binsert\s+(?:or\s+\w+\s+)?into\b|\breplace\s+into\b"
     r"|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b)")
+NAMES_CONTENT_TABLE = re.compile(
+    r"\b(?:from|join|into|update)\s+(?:" + "|".join(store.CONTENT_COLUMNS) + r")\b")
 QUOTED = re.compile(r'"(\w+)"|\[(\w+)\]|`(\w+)`')
+QUOTED_HOLE = re.compile(r"[\"'`\[]\s*\x00\s*[\"'`\]]")
 QUOTED_TABLE = re.compile(r"\b(from|join|into|update|table)\s+'(\w+)'")
 SCHEMA_NAME = re.compile(r"\b(?:main|temp)\s*\.\s*")
 FORMAT_SLOT = re.compile(r"%\(\w+\)s|%s|\{\w*\}")
@@ -63,18 +76,32 @@ POSITIONAL = (r"\b(?:insert|replace)\s+(?:or\s+\w+\s+)?into\s+{}\s*(?:as\s+\w+\s
 RUN_TIME = "<run-time table>"
 
 
-def _fold(node):
-    """The text of a string expression, or None if it is not one."""
+def _fold(node, env=None):
+    """The text of a string expression, or None if it is not one. With env,
+    a name it holds stands for that text."""
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return (env or {}).get(node.id)
     if isinstance(node, ast.JoinedStr):
-        return "".join(v.value if isinstance(v, ast.Constant) else HOLE for v in node.values)
+        return "".join(_placeholder(v, env) for v in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _fold(node.left), _fold(node.right)
+        left, right = _fold(node.left, env), _fold(node.right, env)
         if left is None and right is None:
             return None
         return (HOLE if left is None else left) + (HOLE if right is None else right)
     return None
+
+
+def _placeholder(value, env):
+    """One piece of an f-string: its text, a known name's text, or HOLE."""
+    if isinstance(value, ast.Constant):
+        return value.value
+    if (isinstance(value, ast.FormattedValue) and value.conversion == -1
+            and value.format_spec is None and isinstance(value.value, ast.Name)
+            and (text := (env or {}).get(value.value.id)) is not None):
+        return text
+    return HOLE
 
 
 def _texts(tree):
@@ -118,21 +145,47 @@ def _scopes(tree, prefix):
     return out
 
 
-def _built_up(scope):
-    """(line, text) for each name in a scope extended with +=: its pieces joined."""
-    pieces = {}
-    for node in sorted((n for n in _own_nodes(scope) if hasattr(n, "lineno")),
-                       key=lambda n: (n.lineno, n.col_offset)):
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and (text := _fold(node.value)) is not None):
-            pieces[node.targets[0].id] = [node.lineno, text, False]
-        elif (isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add)
-              and isinstance(node.target, ast.Name) and node.target.id in pieces):
-            entry = pieces[node.target.id]
-            entry[1] += _fold(node.value) or HOLE
-            entry[2] = True
-    return [(line, text) for line, text, grown in pieces.values() if grown]
+def _with_names(scope, env):
+    """(line, text) for each string expression in a scope that uses a name
+    assigned a string before it (in env, which starts with the module's names
+    and is updated in place, in line order): the names' texts put in."""
+    nodes = sorted((n for n in _own_nodes(scope) if hasattr(n, "lineno")),
+                   key=lambda n: (n.lineno, n.col_offset))
+    parts, out = set(), []
+    for node in nodes:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            parts.update((id(node.left), id(node.right)))
+        elif isinstance(node, ast.JoinedStr):
+            parts.update(id(v) for v in ast.walk(node) if v is not node)
+
+    def joined(node):
+        """The node's text with names put in, if that differs from without."""
+        if isinstance(node, (ast.BinOp, ast.JoinedStr)):
+            text = _fold(node, env)
+            if text is not None and text != _fold(node):
+                out.append((node.lineno, text))
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            text = None
+            if node.value is not None:
+                parts.add(id(node.value))
+                joined(node.value)
+                text = _fold(node.value, env)
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    env.pop(target.id, None)
+                    if text is not None and len(targets) == 1:
+                        env[target.id] = text
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            name, before = node.target.id, env.pop(node.target.id, None)
+            if isinstance(node.op, ast.Add) and before is not None:
+                parts.add(id(node.value))
+                env[name] = before + (_fold(node.value, env) or HOLE)
+                out.append((node.lineno, env[name]))
+        elif id(node) not in parts:
+            joined(node)
+    return out
 
 
 def _script(text):
@@ -150,22 +203,31 @@ def sql_in_source(source, prefix=""):
     tree = ast.parse(source)
     scopes = _scopes(tree, prefix)
     owner = {id(node): name for scope, name in scopes for node in _own_nodes(scope)}
-    for scope, name in scopes:
-        for line, text in _built_up(scope):
-            if LOOKS_LIKE_SQL.search(text):
+    module = {}
+    for i, (scope, name) in enumerate(scopes):
+        # The module comes first: its names are known in every function and class.
+        for line, text in _with_names(scope, module if i == 0 else dict(module)):
+            if _is_sql(text):
                 yield line, name, text
     for node, text in _texts(tree):
         name = owner.get(id(node), prefix or "<module>")
         if isinstance(node, ast.Constant) and _script(text) is not None:
             for line, scope, sql in sql_in_source(text, f"{name}:script"):
                 yield node.lineno + line - 1, scope, sql
-        elif LOOKS_LIKE_SQL.search(text):
+        elif _is_sql(text):
             yield node.lineno, name, text
 
 
+def _is_sql(text):
+    """Whether a text has a statement's shape or names a content table."""
+    return bool(LOOKS_LIKE_SQL.search(text) or NAMES_CONTENT_TABLE.search(_normal(text)))
+
+
 def _normal(text):
-    """Lower case; names unquoted and unqualified; %s and {} slots as HOLE."""
+    """Lower case; names unquoted (a quoted slot as HOLE) and unqualified; %s
+    and {} slots as HOLE."""
     text = FORMAT_SLOT.sub(HOLE, text).lower()
+    text = QUOTED_HOLE.sub(HOLE, text)
     text = QUOTED.sub(lambda m: m.group(m.lastindex), text)
     text = QUOTED_TABLE.sub(r"\1 \2", text)
     return SCHEMA_NAME.sub("", text)
@@ -190,8 +252,13 @@ def content_problems(text):
         out.append("* with " + ", ".join(tables + [RUN_TIME] * dynamic))
     out += [f"insert into {table} without columns" for table in tables
             if re.search(POSITIONAL.format(table), t)]
-    if tables and "\x00" in LIST_SLOT.sub("", t):
+    if dynamic and re.search(POSITIONAL.format("\x00"), t):
+        out.append(f"insert into {RUN_TIME} without columns")
+    rest = LIST_SLOT.sub("", t)
+    if tables and "\x00" in rest:
         out.append("built at run time with " + ", ".join(tables))
+    if dynamic and "\x00" in TABLE_SLOT.sub(" ", rest):
+        out.append(f"built at run time with {RUN_TIME}")
     return out
 
 
@@ -302,6 +369,16 @@ class StaticTests(unittest.TestCase):
             # format slots: a column chosen at run time
             "SELECT %s FROM meetings": "built at run time with meetings",
             "SELECT {} FROM holds": "built at run time with holds",
+            # a table named at run time, quoted or not, with another slot or
+            # a positional insert
+            'SELECT title FROM "{}"': "<run-time table>.title",
+            "SELECT * FROM [{}]": "* with <run-time table>",
+            "SELECT * FROM main.`{}`": "* with <run-time table>",
+            "SELECT %s FROM {}": "built at run time with <run-time table>",
+            "SELECT id FROM {} WHERE {} = ?": "built at run time with <run-time table>",
+            "INSERT INTO {} VALUES (?, ?)": "insert into <run-time table> without columns",
+            "INSERT OR REPLACE INTO '{}' VALUES (?)":
+                "insert into <run-time table> without columns",
         }
         for text, problem in caught.items():
             with self.subTest(text=text):
@@ -316,7 +393,9 @@ class StaticTests(unittest.TestCase):
                 "INSERT INTO speaker_turns VALUES (?,?,?,?,?)",
                 "SELECT (end_sample - start_sample) * 2 FROM chunks",
                 "UPDATE speaker_runs SET status = 'superseded' WHERE version_id = ?",
-                "SELECT * FROM versions WHERE state = 'active'"]
+                "SELECT * FROM versions WHERE state = 'active'",
+                'SELECT COUNT(*) FROM "{}"', "SELECT id FROM [{}] WHERE id IN ({})",
+                "DELETE FROM {} WHERE id = ?"]
         for text in fine:
             with self.subTest(text=text):
                 self.assertEqual([], content_problems(text))
@@ -338,9 +417,49 @@ class StaticTests(unittest.TestCase):
         for shape, source in sources.items():
             with self.subTest(shape=shape):
                 self.assertTrue(problems_in_source(source), shape)
+        # Names followed to their text, half a query, and a table named at run time.
+        named = {
+            "q = q + piece": (
+                'def f(db):\n    q = "SELECT id FROM holds"\n'
+                '    q = q + " WHERE reason = ?"\n    return db.execute(q)\n',
+                "holds.reason"),
+            "annotated, then +=": (
+                'def f(db):\n    q: str = "SELECT id FROM meetings"\n'
+                '    q += " WHERE title = ?"\n    return db.execute(q)\n',
+                "meetings.title"),
+            "module prefix": (
+                'BASE = "SELECT id, title "\n\n\ndef f(db):\n'
+                '    return db.execute(BASE + "FROM meetings")\n',
+                "meetings.title"),
+            "module name in an f-string": (
+                'COLS = "id, title"\n\n\ndef f(db):\n'
+                '    return db.execute(f"SELECT {COLS} FROM meetings")\n',
+                "meetings.title"),
+            "two names": (
+                'def f(db):\n    a = "SELECT id, "\n'
+                '    b = a + "path FROM watched_folders"\n    return db.execute(b)\n',
+                "watched_folders.path"),
+            "half a query": (
+                'def f(db, cols):\n'
+                '    return db.execute(cols + " FROM watched_folders WHERE path = ?")\n',
+                "watched_folders.path"),
+            "quoted run-time table": (
+                'def f(db, t):\n    return db.execute(f\'SELECT title FROM "{t}"\')\n',
+                "<run-time table>.title"),
+            "run-time table and column": (
+                'def f(db, t, c):\n    return db.execute(f"SELECT {c} FROM {t}")\n',
+                "built at run time with <run-time table>"),
+            "run-time positional insert": (
+                'def f(db, t):\n    db.execute(f"INSERT INTO [{t}] VALUES (?, ?)", (1, 2))\n',
+                "insert into <run-time table> without columns"),
+        }
+        for shape, (source, problem) in named.items():
+            with self.subTest(shape=shape):
+                self.assertIn(problem, problems_in_source(source))
         fine = ('def f(db, marks):\n    db.execute(f"SELECT id FROM meetings WHERE id IN '
                 '({marks})")\n',
                 'def f(db, t):\n    return db.execute(f"SELECT COUNT(*) FROM {t}")\n',
+                'def f(db, t):\n    return db.execute(f\'SELECT COUNT(*) FROM "{t}"\')\n',
                 'MESSAGE = "Holds never expire on their own; the update waits."\n')
         for source in fine:
             with self.subTest(source=source):
@@ -350,7 +469,9 @@ class StaticTests(unittest.TestCase):
         for where in ("title LIKE ?", "LAST_ERROR IS NULL", '"title" = ?', "phase != 'error'",
                       "id = ?; DROP TABLE meetings", "id = ? -- the rest", "id = ? /* x */",
                       "id IN (SELECT meeting_id FROM holds WHERE reason = ?)", "[path] = ?",
-                      "`reason` = ?", None):
+                      "`reason` = ?", "(?, ?, ?, ?, ?, ?, ?) IN (SELECT * FROM holds)",
+                      "id IN (SELECT meeting_id FROM versions)",
+                      "id IN (select meeting_id from versions)", None):
             with self.subTest(where=where), self.assertRaises(ValueError):
                 store.plain_condition(where)
         with tempfile.TemporaryDirectory() as tmp:

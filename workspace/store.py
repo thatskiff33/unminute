@@ -217,14 +217,16 @@ CONTENT_COLUMNS = {
 
 
 _CONTENT_NAMES = frozenset(c for cols in CONTENT_COLUMNS.values() for c in cols)
-_NOT_IN_A_CONDITION = re.compile(r"['\"`\[;]|--|/\*")
+_NOT_IN_A_CONDITION = re.compile(r"['\"`\[;*]|--|/\*|\bselect\b", re.I)
 
 
 def plain_condition(where):
     """A where= condition for Store.meetings(), holds() or folders(): a fixed
-    SQL expression on plain columns, with values passed as arguments. Refused
-    (ValueError) if it has a quote, a comment or a second statement, or names
-    a content column, so no content is matched or read outside the codec."""
+    SQL expression on plain columns of the one table, with values passed as
+    arguments. Refused (ValueError) if it has a quote, a comment, a second
+    statement, a subquery or *, or names a content column, so no content is
+    matched or read outside the codec (a subquery could compare a row of
+    content columns without naming them)."""
     if (not isinstance(where, str) or _NOT_IN_A_CONDITION.search(where)
             or _CONTENT_NAMES & set(re.findall(r"\w+", where.lower()))):
         raise ValueError("A condition may name plain columns only, with values as arguments.")
