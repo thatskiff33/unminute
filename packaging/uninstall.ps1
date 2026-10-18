@@ -14,6 +14,10 @@
   confirmed cleanup, which honours retention holds. If meetings remain, this
   says so.
 
+  Before removing anything, it puts back the Windows lid setting if the app
+  left it at "Do nothing" (#191): see Restore-LidSetting. That step never stops
+  the uninstall.
+
   Exit codes: 0 removed, 1 failed, 3 the app is running.
 #>
 [CmdletBinding()]
@@ -27,9 +31,90 @@ $ErrorActionPreference = "Stop"
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent }
 $AppName = "Unminute"
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# The longest the lid restore may take before it is stopped (it needs about a second).
+$LidRestoreSeconds = 60
 
 function Write-Step([string]$Message) {
     if (-not $Options.Silent) { Write-Host $Message }
+}
+
+function Write-Warn([string]$Message) {
+    if ($Options.Silent) { [Console]::Error.WriteLine("Warning: $Message") }
+    else { Write-Host "Warning: $Message" -ForegroundColor Yellow }
+}
+
+# -- the lid setting (#191) -----------------------------------------------------------
+# While recording, the app may set what closing the lid does to "Do nothing", having
+# saved the original values in power_restore.json in the workspace. It puts them back
+# when the recording ends and at every start. If it never starts again after a crash,
+# this puts them back before the program is removed, by running the installed app once
+# with --restore-lid: the app's own rules (only a valid record, only sides still at
+# "Do nothing"), which never touch IT's policy settings. Whatever happens, the
+# uninstall carries on; anything but success only says to check the setting.
+
+# The current version's folder, if it can run the restore: a plain folder name from
+# current.json (never a path), and a version.json that lists the feature, so an older
+# version never takes the switch for an ordinary start and opens its window.
+function Get-LidRestoreVersion {
+    $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
+    if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) { return $null }
+    $version = [string](Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).version
+    if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$') { return $null }
+    $target = [IO.Path]::Combine($Options.InstallDir, "versions", $version)
+    $info = Get-Content -LiteralPath ([IO.Path]::Combine($target, "version.json")) -Raw | ConvertFrom-Json
+    if (@($info.features) -notcontains "restore-lid") { return $null }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, "runtime", "python.exe")) -PathType Leaf)) { return $null }
+    return $target
+}
+
+# Runs the restore with a hard time limit. Returns its exit code, or -1 if it was stopped.
+function Invoke-LidRestore([string]$Target) {
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = [IO.Path]::Combine($Target, "runtime", "python.exe")
+    # As the installer starts the app: isolated, no bytecode written, no remote debugging.
+    $start.Arguments = "-I -B -X disable-remote-debug -m workspace --restore-lid"
+    $start.WorkingDirectory = [IO.Path]::Combine($Target, "app")
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    # Its output ({"lid": state}) is read so a full pipe never blocks it, and not shown.
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        [void]$process.StandardOutput.ReadToEndAsync()
+        [void]$process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($LidRestoreSeconds * 1000)) {
+            try { $process.Kill() } catch { }
+            [void]$process.WaitForExit(10000)        # so no file in the install stays open
+            return -1
+        }
+        return $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Restore-LidSetting {
+    try {
+        $local = $env:LOCALAPPDATA
+        # A missing, relative or network LOCALAPPDATA: the app refuses it too, so it never
+        # left a record there.
+        if ([string]::IsNullOrWhiteSpace($local) -or -not [IO.Path]::IsPathRooted($local) -or
+            $local -match '^[\\/]{2}') { return }
+        $record = [IO.Path]::Combine($local, $AppName, "workspace", "power_restore.json")
+        if (-not (Test-Path -LiteralPath $record -PathType Leaf)) { return }   # nothing waiting
+    } catch { return }
+    $code = -1
+    try {
+        $target = Get-LidRestoreVersion
+        if ($target) { $code = Invoke-LidRestore $target }
+    } catch { $code = -1 }
+    if ($code -eq 0) {
+        Write-Step "The lid setting that $AppName changed was put back."
+    } else {
+        Write-Warn ("$AppName could not put back what closing the lid does. Check it in Windows " +
+            "Settings > System > Power & battery > Lid & power button controls.")
+    }
 }
 
 function Stop-Uninstall([int]$Code, [string]$Message) {
@@ -108,6 +193,8 @@ try {
             Stop-Uninstall 1 "The install folder holds $($other.Count) item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
         }
     }
+    # Before anything is removed: the installed app puts the lid setting back (#191).
+    Restore-LidSetting
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove the rest first.
         foreach ($name in "versions", "current.json") {

@@ -21,6 +21,13 @@
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
+#   --restore-lid run by the uninstaller before it removes anything (#191): puts
+#                 back a lid action the app left at "Do nothing" (a crash, then
+#                 no start), with the app's own rules (power.restore_only).
+#                 Reads only power_restore.json; opens no window or database.
+#                 Prints {"lid": state}; exit 0 put back or nothing waiting,
+#                 1 not put back now, 2 damaged record (left as it is), 3 the
+#                 app is open (power.RESTORE_CODES). No content or paths.
 
 import json
 import sqlite3
@@ -215,6 +222,21 @@ def _system_account():
         kernel32.CloseHandle(token)
 
 
+def restore_lid():
+    """--restore-lid (#191): the lid restore only, at the workspace the app
+    itself uses. Returns a state in power.RESTORE_CODES; never raises."""
+    try:
+        from workspace import power
+        from workspace.store import default_root
+        try:
+            root = default_root()               # the same refusals as the app's own start
+        except Exception:
+            return "location"
+        return power.restore_only(root / "power_restore.json", _app_running)
+    except Exception:
+        return "failed"
+
+
 def self_test():
     """Import every dependency the app needs and prove the guard blocks the
     network. Prints one line per check; exit code 0 only if all pass."""
@@ -284,6 +306,11 @@ def main():
     if "--version" in sys.argv:
         print(package_version())
         return 0
+    if "--restore-lid" in sys.argv:
+        from workspace.power import RESTORE_CODES
+        state = restore_lid()
+        print(json.dumps({"lid": state}))
+        return RESTORE_CODES[state]
     from workspace.store import StoreError
     if "--status" in sys.argv:
         try:

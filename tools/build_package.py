@@ -1079,8 +1079,9 @@ def build(version, out, cache, release=False, update_allowlist=False):
             # A development build may hold uncommitted changes: "clean" says
             # whether the working tree had none (None when git cannot tell).
             "release": release, "clean": True if release else clean_tree(),
-            # Installers check for features before relying on them (#26).
-            "features": ["gate"]}
+            # Installers check for features before relying on them (#26): "gate"
+            # is --gate, "restore-lid" is --restore-lid (the uninstaller, #191).
+            "features": ["gate", "restore-lid"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         (folder / "model-manifest.json").write_text(
             json.dumps(model_manifest(folder / "app" / "asr_engines.py"), indent=1),

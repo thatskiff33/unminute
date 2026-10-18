@@ -104,7 +104,8 @@ On a laptop, with a synthetic recording or an idle workspace:
 - closing the app from the taskbar while it is minimised;
 - a long idle session;
 - that the app's timers count time asleep;
-- the lid and sleep checks listed on #189 (recording with the lid closed, if that setting is in the release).
+- the lid and sleep checks listed on #189 (recording with the lid closed, if that setting is in the release);
+- uninstalling puts the lid setting back (#191): with **Keep recording when the lid is closed** on, start a recording, end the app in Task Manager, check that Windows Settings > System > Power & battery > Lid & power button controls shows "Do nothing", then uninstall without starting the app again. The setting is back as it was, and the uninstaller showed no warning. Note the setting first, and put it back by hand if the check fails.
 
 ## After the checks
 
