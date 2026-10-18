@@ -430,7 +430,7 @@ def verify_precompiled(zpath):
     if platform.python_version() != PYTHON_VERSION or sys.implementation.name != "cpython":
         sys.exit(f"Verify with CPython {PYTHON_VERSION}, the package's version "
                  f"(this is {sys.implementation.name} {platform.python_version()}).")
-    work = Path(tempfile.mkdtemp(prefix="wwverify-")).resolve()
+    work = Path(tempfile.mkdtemp(prefix="umverify-")).resolve()
     if os.name == "nt":
         work = Path("\\\\?\\" + str(work))
     try:
