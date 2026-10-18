@@ -354,29 +354,80 @@ def checks(window, ws, mid, long_mid, report):
             const notifications = await Notification.requestPermission();
             const permission_ms = Math.round(performance.now() - t2);
             // Nor start printing (print preview offers Save as PDF) or open a
-            // file picker, from the page or a frame of its own (#175). Print
-            // is called only once it is known not to be the browser's, so a
-            // failure cannot leave a print preview open.
+            // file picker, from the page or a frame of its own made in any of
+            // the usual ways (#175). Print is called only once it is known not
+            // to be the browser's, so a failure cannot leave a print preview
+            // open (it blocks the page until closed).
+            const R = Reflect.apply, FTS = Function.prototype.toString;
+            const native = (f) => typeof f === 'function'
+                && R(FTS, f, []).includes('[native code]');
+            const made = [];
             const pframe = document.createElement('iframe');
             document.body.appendChild(pframe);
-            const wins = [window, pframe.contentWindow];
-            const native = (f) => typeof f === 'function' && String(f).includes('[native code]');
-            const print_native = wins.some((w) => native(w.print));
-            const exec_native = wins.some((w) => native(w.Document.prototype.execCommand));
-            const pickers = wins.flatMap((w) => ['showOpenFilePicker', 'showSaveFilePicker',
+            made.push(pframe);
+            const holder = document.createElement('div');
+            holder.innerHTML = '<iframe></iframe><object data="about:blank" type="text/html">'
+                + '</object>';
+            document.body.appendChild(holder);
+            made.push(holder);
+            pframe.contentDocument.write('<iframe></iframe>');
+            const sframe = document.createElement('iframe');
+            sframe.srcdoc = '<p>Synthetic</p>';
+            const loaded = new Promise((r) => sframe.addEventListener('load', r));
+            document.body.appendChild(sframe);
+            made.push(sframe);
+            await Promise.race([loaded, new Promise((r) => setTimeout(r, 2000))]);
+            for (let i = 0; i < 30 && !holder.lastChild.contentWindow; i++) {
+                await new Promise((r) => setTimeout(r, 100));
+            }
+            const wins =[window, pframe.contentWindow, holder.firstChild.contentWindow,
+                          holder.lastChild.contentWindow,
+                          pframe.contentDocument.querySelector('iframe')?.contentWindow,
+                          sframe.contentWindow];
+            const print_frames = wins.filter(Boolean).length;
+            const live = wins.filter(Boolean);
+            const print_native = live.some((w) => native(w.print));
+            const exec_native = live.some((w) => native(w.Document.prototype.execCommand));
+            const pickers = live.flatMap((w) => ['showOpenFilePicker', 'showSaveFilePicker',
                                                  'showDirectoryPicker'].map((n) => typeof w[n]));
+            // A page that replaces built-ins after the guard ran learns nothing
+            // and changes nothing: the guard never hands the browser's
+            // execCommand to them, and reads the command name just once.
+            const leak = {native_this: 0, string: 0, lower: 0, reflect: 0, reads: 0};
+            const keep = {call: Function.prototype.call, apply: Function.prototype.apply,
+                          refl: Reflect.apply, S: window.String,
+                          lower: String.prototype.toLowerCase};
+            const spy = (f) => { if (native(f) && f.name === 'execCommand') leak.native_this++; };
+            try {
+                Function.prototype.call = function (...a) {
+                    spy(this); return R(keep.call, this, a); };
+                Function.prototype.apply = function (...a) {
+                    spy(this); return R(keep.apply, this, a); };
+                Reflect.apply = function (t, ...a) { leak.reflect++; spy(t); return R(t, ...a); };
+                window.String = function (v) { leak.string++; return keep.S(v); };
+                keep.S.prototype.toLowerCase = function () {
+                    leak.lower++; return R(keep.lower, this, []); };
+                live.forEach((w) => w.document.execCommand('copy'));
+            } finally {
+                Function.prototype.call = keep.call; Function.prototype.apply = keep.apply;
+                Reflect.apply = keep.refl; window.String = keep.S;
+                keep.S.prototype.toLowerCase = keep.lower;
+            }
+            document.execCommand({toString() { leak.reads++; return 'copy'; }});
             let printed = 0, exec_print = null;
             const counted = () => { printed++; };
-            wins.forEach((w) => w.addEventListener('beforeprint', counted));
-            if (!print_native && !exec_native) {
-                wins.forEach((w) => w.print());
-                exec_print = wins.map((w) => w.document.execCommand('print'));
+            live.forEach((w) => w.addEventListener('beforeprint', counted));
+            if (!print_native && !exec_native && leak.native_this === 0 && leak.reads === 1) {
+                live.forEach((w) => w.print());
+                exec_print = live.flatMap((w) => ['print', 'PRINT'].map((c) =>
+                    w.document.execCommand(c)));
                 await new Promise((r) => setTimeout(r, 500));
             }
-            pframe.remove();
+            made.forEach((e) => e.remove());
             return {confirm: answer, confirm_ms, prompt: prompted, native_ms,
                     microphone, frame_microphone, screen, notifications, permission_ms,
-                    print_native, exec_native, pickers, printed, exec_print};""")
+                    print_frames, print_native, exec_native, pickers, leak, printed,
+                    exec_print};""")
         time.sleep(1.0)
         report["page_dialogs"]["new_windows"] = sorted(page_dialogs() - before)
         report["page_dialogs"]["alert_blocked"] = "_pywebviewAlert" in shell.blocked_calls
@@ -614,9 +665,12 @@ def main():
             and pd.get("permission_ms", 9999) < 2000
             and pd.get("new_windows") == [] and pd.get("alert_blocked")):
         bad.append("page dialogs")
-    if not (pd.get("print_native") is False and pd.get("exec_native") is False
-            and pd.get("pickers") == ["undefined"] * 6 and pd.get("printed") == 0
-            and pd.get("exec_print") == [False, False]):
+    frames = pd.get("print_frames")
+    if not (frames == 6 and pd.get("print_native") is False and pd.get("exec_native") is False
+            and pd.get("pickers") == ["undefined"] * (3 * frames)
+            and pd.get("leak") == {"native_this": 0, "string": 0, "lower": 0, "reflect": 0,
+                                   "reads": 1}
+            and pd.get("printed") == 0 and pd.get("exec_print") == [False] * (2 * frames)):
         bad.append("page print and file pickers")
     if report.get("edit_in_db") != "Edited in the page":
         bad.append("autosave")

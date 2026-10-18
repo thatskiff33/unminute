@@ -42,20 +42,31 @@ WEBVIEW2_ARGS = " ".join([
 # shows) nor open a file picker, whichever frame it calls from. The page uses
 # none of these. Each is replaced with a function that does nothing, fixed so
 # it cannot be put back; the pickers are also removed by the switch above, so
-# they are replaced only if a WebView2 Runtime still has them.
+# they are replaced only if a WebView2 Runtime still has them. The built-ins
+# the replacement execCommand uses are kept before any page script runs, and the
+# command is read once, so a page that later replaces Function.prototype.call,
+# Reflect.apply, String or toLowerCase, or passes an object that names another
+# command when read again, can neither reach the browser's execCommand nor
+# change what is checked.
 PAGE_GUARD = """(() => {
   "use strict";
+  const apply = Reflect.apply, text = String, lower = String.prototype.toLowerCase;
+  const define = Object.defineProperty;
   const refused = function () {};
   for (const name of ["print", "showOpenFilePicker", "showSaveFilePicker", "showDirectoryPicker"]) {
     if (name in window) {
-      Object.defineProperty(window, name, { value: refused, writable: false, configurable: false });
+      define(window, name, { value: refused, writable: false, configurable: false });
     }
   }
   const exec = Document.prototype.execCommand;
-  Object.defineProperty(Document.prototype, "execCommand", {
+  define(Document.prototype, "execCommand", {
     writable: false, configurable: false,
-    value: function execCommand(command, ...rest) {
-      return String(command).toLowerCase() === "print" ? false : exec.call(this, command, ...rest);
+    value: function execCommand(command, showUI, value) {
+      if (arguments.length === 0) return apply(exec, this, []);
+      const name = text(command);
+      if (apply(lower, name, []) === "print") return false;
+      return apply(exec, this, arguments.length === 1 ? [name]
+                   : arguments.length === 2 ? [name, showUI] : [name, showUI, value]);
     },
   });
 })();"""

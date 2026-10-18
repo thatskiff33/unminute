@@ -45,7 +45,11 @@ real time, and remove it when the cause is fixed.
   in that first page** (no need to wait for the task) **and in every frame the page makes**:
   `createElement`, `innerHTML`, `document.write`, `srcdoc` and `<object>` frames, before they
   can be used (WebView2 155, #175). `document.execCommand("print")` starts printing just as
-  `window.print()` does; a `beforeprint` listener shows whether printing started.
+  `window.print()` does, and the print preview blocks the page's script until it is closed, so a
+  check calls print only once it knows the browser's own is gone; a `beforeprint` listener shows
+  whether printing started. A script run with `evaluate_js` counts as a user click: on a file
+  input, `showPicker()` opens Windows' Open dialog from it, but throws `NotAllowedError` from
+  the same page seven seconds later, once that activation has expired.
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the

@@ -281,6 +281,16 @@ class AlertGuardTests(unittest.TestCase):
                      "execCommand"):
             self.assertIn(f'"{name}"', shell.PAGE_GUARD)
         self.assertIn('configurable: false', shell.PAGE_GUARD)
+        # The replacement execCommand looks nothing up when it runs: page
+        # script that later replaces Function.prototype.call, String or
+        # toLowerCase could otherwise be handed the browser's execCommand, or
+        # skip the check (tools/workspace_ui_check.py tries both in WebView2).
+        body = shell.PAGE_GUARD.split("function execCommand", 1)[1]
+        for looked_up in (".call(", ".apply(", "String(", ".toLowerCase(", "...", "Reflect."):
+            self.assertNotIn(looked_up, body)
+        self.assertIn("const apply = Reflect.apply, text = String, "
+                      "lower = String.prototype.toLowerCase;", shell.PAGE_GUARD)
+        self.assertEqual(body.count("text(command)"), 1)          # the command is read once
 
     def test_no_page_loads_when_the_guard_cannot_attach(self):
         # An older WebView2 Runtime without the screen-capture event, or one
