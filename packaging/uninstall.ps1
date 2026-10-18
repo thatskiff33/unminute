@@ -7,8 +7,9 @@
   entry. It removes only what the installer put in the install folder
   (versions, current.json and this script); if the folder holds anything
   else, or is neither an install nor the folder the uninstall entry names, it
-  removes nothing. When the uninstall entry names another folder, the shortcut
-  and the entry are that install's, and are kept. It does NOT remove the workspace (meetings, holds, settings) or the
+  removes nothing. When the uninstall entry names another folder that still
+  holds an install, the shortcut and the entry are that install's, and are
+  kept. It does NOT remove the workspace (meetings, holds, settings) or the
   downloaded models: meeting content is only removed through the app's own
   confirmed cleanup, which honours retention holds. If meetings remain, this
   says so.
@@ -50,6 +51,15 @@ function Get-DataOverlap([string]$Dir) {
     return $null
 }
 
+# True when the folder holds an install (current.json or versions). Built with
+# [IO.Path]::Combine, which unlike Join-Path does not fail on a drive that is gone.
+function Test-Install([string]$Dir) {
+    try {
+        return (Test-Path -LiteralPath ([IO.Path]::Combine($Dir, "current.json"))) -or
+            (Test-Path -LiteralPath ([IO.Path]::Combine($Dir, "versions")))
+    } catch { return $false }
+}
+
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so the checks and the removals below use the same path.
@@ -69,19 +79,14 @@ try {
     # The folder must be an install (current.json or versions), or the one the
     # uninstall entry names (its files already gone). A wrong -InstallDir would
     # otherwise remove the real install's shortcut and uninstall entry, and report
-    # success, while leaving the program itself in place. When the entry names
-    # another folder, this one is an older or second install: its own entries go,
-    # and the shortcut and entry stay with the install they belong to.
-    $isInstall = (Test-Path -LiteralPath (Join-Path $Options.InstallDir "current.json")) -or
-        (Test-Path -LiteralPath (Join-Path $Options.InstallDir "versions"))
+    # success, while leaving the program itself in place.
+    $isInstall = Test-Install $Options.InstallDir
     $registered = $false
-    $elsewhere = $false
+    $location = $null
     if (Test-Path -LiteralPath $RegKey) {
         $location = (Get-ItemProperty -LiteralPath $RegKey -ErrorAction SilentlyContinue).InstallLocation
         $registered = $location -and
             ($location.TrimEnd("\") -ieq $Options.InstallDir.TrimEnd("\"))
-        # The entry names another install: its shortcut and entry are that one's.
-        $elsewhere = $location -and -not $registered
     }
     if (-not ($isInstall -or $registered)) {
         Stop-Uninstall 1 "No $AppName install was found in the install folder, so nothing was removed. Check -InstallDir."
@@ -103,9 +108,6 @@ try {
             Stop-Uninstall 1 "The install folder holds $($other.Count) item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
         }
     }
-    $programs = [Environment]::GetFolderPath("Programs")
-    $link = Join-Path $programs "$AppName.lnk"
-    if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove the rest first.
         foreach ($name in "versions", "current.json") {
@@ -114,6 +116,15 @@ try {
         }
         Remove-Item -LiteralPath $Options.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    # The shortcut and the entry stay only when the entry names another folder that
+    # still holds an install: this one was an older or second install. Checked after
+    # the removal, by what is on disk, so the registered folder named another way
+    # (an 8.3 short name, a junction, a subst drive) is not taken for another
+    # install (R13b round 3 review).
+    $elsewhere = $location -and (-not $registered) -and (Test-Install $location)
+    $programs = [Environment]::GetFolderPath("Programs")
+    $link = Join-Path $programs "$AppName.lnk"
+    if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
     # Last: while any file remains, the app still shows as installed (Intune detection).
     if ($elsewhere) {
         Write-Step ("$AppName has been removed from this folder. The Start menu shortcut and the " +

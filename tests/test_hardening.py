@@ -785,9 +785,10 @@ class DataFolderOverlapTests(unittest.TestCase):
             r = self.run_script(copy, typo, local, cwd=tmp)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertTrue(link.is_file() and self.key_exists())
-            # An older or second install, while the entry names another folder: its
-            # own files go, but the shortcut and the entry are the other install's
-            # (R13b round 2 review).
+            # An older or second install, while the entry names another folder that
+            # still holds an install: its own files go, but the shortcut and the
+            # entry are the other install's (R13b round 2 review).
+            (registered / "versions" / "0.5.0").mkdir(parents=True)
             older = Path(tmp) / "Programs" / "OldInstall"
             (older / "versions" / "0.4.3").mkdir(parents=True)
             (older / "current.json").write_text("{}")
@@ -795,11 +796,54 @@ class DataFolderOverlapTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertFalse(older.exists())
             self.assertTrue(link.is_file() and self.key_exists())
+            self.assertTrue(registered.is_dir())
             # The registered folder, already deleted: the shortcut and entry go.
+            shutil.rmtree(registered)
             r = self.run_script(copy, registered, local, cwd=tmp)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             self.assertFalse(link.exists())
             self.assertFalse(self.key_exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_registered_folder_named_another_way_removes_its_entries(self):
+        # The registered folder given through a junction, or by its 8.3 short name,
+        # is the same install, not another one: the shortcut and the entry go with
+        # it (R13b round 3 review).
+        import ctypes
+        import winreg
+        self.addCleanup(self.delete_test_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            parent = Path(tmp) / "Programs With A Long Name"
+            registered = parent / "Unminute"
+            junction = Path(tmp) / "alias"
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(parent)],
+                                  capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, made.returncode, made.stdout + made.stderr)
+            aliases = [str(junction / "Unminute")]
+            # The short name, where the volume makes them (CI's may not).
+            registered.mkdir(parents=True)
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(str(registered), buffer, 1024)
+            if buffer.value and buffer.value.lower() != str(registered).lower():
+                aliases.append(buffer.value)
+            for alias in aliases:
+                with self.subTest(alias=alias):
+                    (registered / "versions" / "0.5.0").mkdir(parents=True, exist_ok=True)
+                    (registered / "current.json").write_text("{}")
+                    link.write_text("shortcut")
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ,
+                                          str(registered))
+                    r = self.run_script(copy, alias, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertFalse((registered / "current.json").exists())
+                    self.assertFalse(link.exists())
+                    self.assertFalse(self.key_exists())
+                    registered.mkdir(parents=True, exist_ok=True)
+            os.rmdir(junction)
 
     def key_exists(self):
         import winreg

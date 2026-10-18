@@ -11,9 +11,12 @@
 #   - shell commands (Bash, PowerShell, Monitor) may not name either of them as
 #     something to read, list, copy or stage, nor search local AppData whole
 #     (also with a wildcard or file name as the last part, or no folder named when
-#     run from local AppData or above);
+#     run from local AppData or above; inside brackets, a loop, a string run by
+#     another shell or after a wrapper such as timeout; or fed local AppData by a
+#     pipeline);
 #   - git add and git commit may not name a media file.
-# A leading ~ is the home folder, as the Grep and Glob tools read it.
+# A leading ~ is the home folder, as the Grep and Glob tools read it, and /c/x is
+# C:\x, as Git Bash reads it.
 # Message text (commit messages, PR bodies, quoted heredocs and here-strings not
 # fed to an interpreter, PowerShell text held in a variable) and the patterns given
 # to text searches are ignored, so rules can be quoted and searched for.
@@ -21,10 +24,13 @@
 # variable from an earlier tool call, or set with Set-Variable or in a scriptblock;
 # a script file written in one step (Write, cat > f <<EOF, Set-Content) and run in
 # another; a path the program builds itself (the app's own default_root(),
-# GetFolderPath(28), obfuscation such as backtick escapes, a wildcard in place of
-# AppData or Local); Set-Location -Path:<folder>; a copy or archive of local AppData
-# whole (Copy-Item -Recurse, robocopy, tar, Compress-Archive); and a link made and
-# used in the same command (a later command through it is resolved).
+# GetFolderPath(28), obfuscation such as backtick escapes or a format string
+# ("{0}\Unminute" -f ...), a wildcard in place of AppData or Local); a search
+# program named by a variable or a full path (& $rg, /usr/bin/grep) inside another
+# command; Set-Location -Path:<folder> followed by a relative path (it is taken as
+# the home folder); a copy or archive of local AppData whole (Copy-Item -Recurse,
+# robocopy, tar, Compress-Archive); and a link made and used in the same command (a
+# later command through it is resolved).
 # Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -146,9 +152,24 @@ TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
 # PowerShell's ${C:\path}, which reads the file, even inside double quotes.
 PROVIDER_VARIABLE = re.compile(r"\$\{([A-Za-z]:[^}]*)\}")
 # A search's pattern: the value of its pattern option, or else its first quoted argument.
-PATTERN_VALUE = re.compile(r"(?<![\w-])(?:-e|--regexp|-pattern|-simplematch)(?:\s+|=)"
+# PowerShell also joins a value with a colon (-Pattern:x), and grep and rg take -e's
+# value attached (-ex), case-sensitively (R13b round 3 review).
+PATTERN_VALUE = re.compile(r"(?<![\w-])(?:-e|--regexp|-pattern|-simplematch)(?:\s+|=|:)"
                            r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)", re.IGNORECASE)
+ATTACHED_PATTERN = re.compile(r"(?<![\w-])-e(?![\s=:-])(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)")
+GREP_LIKE = {"grep", "egrep", "fgrep", "rg", "ag"}
 SEGMENTS = re.compile(r"\|\||&&|[|;&\n]")
+# Words that run the program after them (R13b round 3 review: timeout, xargs).
+WRAPPERS = {"sudo", "env", "time", "&", ".", "command", "builtin", "exec", "nohup", "nice",
+            "timeout", "stdbuf", "xargs"}
+# A search or listing inside a segment: in (...), {...}, $(...), backticks, a string
+# run by pwsh -c, bash -c or Invoke-Expression, or after foreach (... in.
+NESTED = re.compile(r"(?<![\w.$:\\/-])(?:rg|ag|tree|find|grep|egrep|fgrep|get-childitem|gci|ls|"
+                    r"dir|findstr|git)(?:\.exe)?(?![\w.:\\/-])", re.IGNORECASE)
+NESTED_CMD = re.compile(r"cmd(?:\.exe)?\s+(?:/\S+\s+)*?/[ckr]\s*[\"']?\s*$", re.IGNORECASE)
+NESTED_POWERSHELL = re.compile(r"(?:pwsh|powershell)(?:\.exe)?\s.*?-c\w*\s+[\"']?\s*$"
+                               r"|(?:iex|invoke-expression)\s+[\"']?\s*$", re.IGNORECASE)
+NESTED_BASH = re.compile(r"(?:bash|sh|zsh)(?:\.exe)?\s.*?-c\s+[\"']?\s*$", re.IGNORECASE)
 # cmd's own part of cmd /c "program ...", with the opening quote.
 CMD_WRAPPER = re.compile(r"\s*(?:\S*[\\/])?cmd(?:\.exe)?\s+(?:/[^\s/]+\s+)*?/[ckr]\s+[\"']?",
                          re.IGNORECASE)
@@ -217,11 +238,19 @@ def _remote_drive(path):
         return False
 
 
+# Git Bash's spelling of a drive (/c/Users, /mnt/c), which the Grep and Glob tools
+# accept too (R13b round 3 review).
+MSYS_DRIVE = re.compile(r"^[\\/](?:mnt[\\/])?([A-Za-z])(?=[\\/]|$)")
+
+
 def _home(path):
     """path with a leading ~ (~, ~\\x, ~/x, ~name) as a home folder, as shells and
-    Claude Code's Grep and Glob read it; anything else unchanged."""
+    Claude Code's Grep and Glob read it, and a Git Bash drive (/c/x) as C:\\x;
+    anything else unchanged."""
     if isinstance(path, str) and path.startswith("~"):
         return ntpath.expanduser(path)
+    if isinstance(path, str):
+        return MSYS_DRIVE.sub(lambda m: m.group(1).upper() + ":\\", path, count=1)
     return path
 
 
@@ -463,25 +492,35 @@ def _drop_written(command, shell):
 
 
 def _substitute(command, shell):
-    """command with variables set in it written out where they are used later; a
+    """command with variables set in it written out where they are used later. A
     literal value (single quotes, a literal here-string), or PowerShell double-quoted
-    text other than what it runs, is left only where used."""
+    text other than what it runs, is left only where used, when it is the whole of
+    what is assigned and every later use is one written out here; otherwise it is
+    also kept where it is set (R13b round 3 review: concatenation, $script:p and
+    Get-Variable p hid a path)."""
     pattern = ASSIGNMENT.get(shell)
     if not pattern:
         return command
+    flags = re.IGNORECASE if shell == "PowerShell" else 0
+    scope = r"(?:(?:script|global|local|private):)?" if shell == "PowerShell" else ""
     offset = 0
     for match in list(pattern.finditer(command)):
         name, value = match.group(1), match.group(2).strip()
         if not value:
             continue
         start, end = match.start(2) + offset, match.end(2) + offset
-        use = re.compile(r"\$\{?" + re.escape(name) + r"(?!\w)\}?",
-                         re.IGNORECASE if shell == "PowerShell" else 0)
-        after = use.sub(lambda m, text=value: text, command[end:])
+        use = re.compile(r"\$\{?" + scope + re.escape(name) + r"(?!\w)\}?", flags)
+        # Any mention of the name: $name, $any:name, or the bare word (Get-Variable).
+        mention = re.compile(r"\$\{?(?:\w+:)?" + re.escape(name) + r"(?!\w)"
+                             r"|(?<![\w$:-])" + re.escape(name) + r"(?![\w-])", flags)
+        rest = command[end:]
+        after = use.sub(lambda m, text=value: text, rest)
+        whole = re.match(r"[ \t]*(?:[;\n|&]|$)", rest) is not None
+        hidden = whole and len(mention.findall(rest)) == len(use.findall(rest))
         literal = value.startswith("'") or value.startswith("@'")
-        if literal:
+        if literal and hidden:
             middle = "''"
-        elif shell == "PowerShell" and value.startswith('"'):
+        elif shell == "PowerShell" and value.startswith('"') and hidden:
             # A PowerShell variable holds text: only what the shell runs in it is
             # checked here; the whole value is checked where it is used.
             middle = _run_parts(value, shell)
@@ -494,21 +533,28 @@ def _substitute(command, shell):
 
 
 def _segments(command, shell):
-    """The command's segments with message text removed, each as (words, text)."""
+    """The command's segments with message text removed, each as (words, text,
+    dialect): the shell that reads the program's options, "cmd" for cmd /c."""
     for segment in SEGMENTS.split(command):
         words = segment.split()
-        # Skip assignments and wrappers to reach the program name.
-        while words and (words[0] in ("sudo", "env", "time", "&", ".") or "=" in words[0]):
+        # Skip assignments and wrappers (with their options, counts and durations)
+        # to reach the program name.
+        while words and (words[0].lower() in WRAPPERS or "=" in words[0]):
+            wrapper = words[0].lower() in WRAPPERS
             words = words[1:]
+            while wrapper and words and re.fullmatch(r"-\S*|\d+(?:\.\d+)?[smhd]?|\{\}", words[0]):
+                words = words[1:]
         words = [w.strip("\"'").lower() for w in words]
         program = _unwrap(words)
+        dialect = shell
         if program is not words:
+            dialect = "cmd"
             # cmd /c "program ...": the program's own text, without the quote.
             wrapper = CMD_WRAPPER.match(segment)
             if wrapper:
                 segment = segment[wrapper.end():]
         if program:
-            yield program, segment
+            yield program, segment, dialect
 
 
 def _program(words):
@@ -568,8 +614,13 @@ def _drop_pattern(text, program, sub=None):
     while i < len(tokens):
         token = tokens[i]
         key = token.lower() if insensitive else token
-        if key in NO_PATTERN:
+        # Patterns read from a file (-f x, --file=x, -fx, -rf x): none to drop.
+        if key in NO_PATTERN or key.startswith("--file=") or (
+                program in GREP_LIKE and re.fullmatch(r"-[A-Za-z]*f.*", token)):
             return text
+        # git log's pickaxe with its pattern attached: -S"text", -Gtext.
+        if sub == "log" and re.match(r"-[SG].", token):
+            return " ".join(tokens[:i] + tokens[i + 1:])
         if token.startswith("-") or (slash and token.startswith("/")):
             i += 2 if key in takes_value else 1
             continue
@@ -588,6 +639,8 @@ def _without_pattern(words, text):
     sub = _git_sub(words) if program == "git" else ""
     if program in SEARCHES or sub in GIT_SEARCHES:
         stripped = PATTERN_VALUE.sub(" ", text)
+        if program in GREP_LIKE:
+            stripped = ATTACHED_PATTERN.sub(" ", stripped)
         return stripped if stripped != text else _drop_pattern(text, program, sub)
     return text
 
@@ -623,7 +676,7 @@ def _first_argument(text):
     return None
 
 
-def _recursive(program, words):
+def _recursive(program, words, text="", dialect="PowerShell"):
     """True when the command reads a folder's files all the way down."""
     if program in ("rg", "ag", "tree", "find"):
         return True
@@ -633,6 +686,11 @@ def _recursive(program, words):
     if program in ("grep", "egrep", "fgrep"):
         return any(w in ("--recursive", "--dereference-recursive")
                    or re.fullmatch(r"-[a-z]*[rR][a-z]*", w) for w in flags)
+    if program in ("ls", "dir") and dialect == "Bash":
+        # GNU ls and dir: -R recurses, -r only reverses the order (R13b round 3
+        # review). Their options are case-sensitive, so read the text as written.
+        return "/s" in flags or any(w == "--recursive" or re.fullmatch(r"-[A-Za-z]*R[A-Za-z]*", w)
+                                    for w in TOKEN.findall(text))
     if program in LISTINGS:
         return any(w.startswith("-rec") or w in ("-r", "-depth", "/s") or
                    re.fullmatch(r"-[a-z]*R[a-z]*", w) for w in flags)
@@ -656,8 +714,9 @@ class _Folder:
             return
         target = "-" if rest.strip() == "-" else _first_argument(_expand(rest))
         if target is None:
-            # bash's cd goes home; PowerShell's stays. Either way, unknown.
-            self.previous, self.here = self.here, ""
+            # bash's (and PowerShell 7's) cd goes home; 5.1's stays. Taken as home,
+            # which a search from there must not reach (R13b round 3 review).
+            self.previous, self.here = self.here, "~"
         elif target == "-":
             self.previous, self.here = self.here, self.previous
         else:
@@ -666,22 +725,75 @@ class _Folder:
             self.previous, self.here = self.here, _resolve(self.here, target)
 
 
-def _searches_above_data(text, program, sub, here):
+def _searches_above_data(text, program, sub, here, dialect="PowerShell"):
     """True when a recursive command searches local AppData or a folder above it
     without naming it whole: the folder it runs in, when it names no path, and the
-    folder above a last part that is a wildcard (or, for a listing or findstr /s, a
-    file name it looks for in every folder below)."""
+    folder above a last part that is a wildcard (or, for findstr /s and a PowerShell
+    or cmd listing, a file name it looks for in every folder below; an existing
+    folder is listed itself, R13b round 3 review)."""
     args = _arguments(text, program, sub)
     folders = [] if args else [here]
+    filters = program == "findstr" or (program in FILTER_LEAF and dialect != "Bash") or \
+        program in ("get-childitem", "gci")
     for arg in args:
         head, sep, leaf = arg.strip("\"'").replace("/", "\\").rpartition("\\")
-        if re.search(r"[*?\[]", leaf) or program in FILTER_LEAF:
+        if re.search(r"[*?\[]", leaf) or filters:
+            if not re.search(r"[*?\[]", leaf) and program != "findstr":
+                full = _canonical(_resolve(here, arg))
+                if full and os.path.isdir(full):          # metadata only
+                    continue
             if not sep:
                 folders.append(here)
             elif head:
                 folders.append(_resolve(here, head + "\\" if head.endswith(":") else head))
     return any(folder and (BARE_LOCAL.search(folder) or _above_data(_canonical(folder)))
                for folder in folders)
+
+
+def _searches(words, text, here, dialect):
+    """True when the command is a recursive search or listing that reaches the data:
+    of local AppData named whole, of a folder above it, or from one."""
+    program = _program(words)
+    sub = _git_sub(words) if program == "git" else ""
+    if not _recursive(program, words, text, dialect):
+        return False
+    expanded = _expand(_without_pattern(words, text))
+    tokens = TOKEN.findall(expanded)
+    if program == "git" and "-C" in tokens[:-1]:     # git -C runs it from another folder
+        here = _resolve(here, tokens[tokens.index("-C") + 1])
+    # cmd's own options (/s, /c) are not Git Bash drives.
+    slash = program in ("findstr", "dir", "tree")
+    paths = [_resolve(here, token) for token in tokens
+             if not token.startswith("-") and not (slash and re.fullmatch(r"/\S", token))]
+    return bool(BARE_LOCAL.search(expanded)
+                or any(_above_data(_canonical(path)) for path in paths)
+                or _searches_above_data(expanded, program, sub, here, dialect))
+
+
+def _nested(text, shell):
+    """The searches and listings inside a segment, each as (words, text, dialect):
+    from the program's name to the end of the brackets around it (R13b round 3
+    review: (...), { }, $(...), pwsh -c, bash -c, timeout, xargs)."""
+    for match in NESTED.finditer(text):
+        inner, depth = text[match.start():], 0
+        for k, char in enumerate(inner):
+            if char in "({":
+                depth += 1
+            elif char in ")}":
+                if depth == 0:
+                    inner = inner[:k]
+                    break
+                depth -= 1
+            elif char == "`" and shell == "Bash":
+                inner = inner[:k]
+                break
+        before = text[:match.start()]
+        dialect = ("cmd" if NESTED_CMD.search(before) else
+                   "PowerShell" if NESTED_POWERSHELL.search(before) else
+                   "Bash" if NESTED_BASH.search(before) else shell)
+        words = [w.strip("\"'").lower() for w in inner.split()]
+        if words:
+            yield words, inner, dialect
 
 
 def _check_shell(command, cwd="", shell="Bash"):
@@ -694,14 +806,22 @@ def _check_shell(command, cwd="", shell="Bash"):
     # Local AppData and a data folder's name in one pipeline build the path; a
     # search's pattern is only text to find, so it adds neither.
     for statement in STATEMENTS.split(command):
+        parts = list(_segments(statement, shell))
         expanded = _expand(" | ".join(_without_pattern(words, text)
-                                      for words, text in _segments(statement, shell)))
+                                      for words, text, _ in parts))
         if BARE_LOCAL.search(expanded) and DATA_WORD.search(expanded):
             return blocked
-    for words, text in _segments(command, shell):
+        # Local AppData passed along a pipeline (or to a loop) into a recursive
+        # search or listing searches every folder below it (R13b round 3 review).
+        if BARE_LOCAL.search(expanded) and any(
+                _recursive(_program(w), w, t, d)
+                for words, text, dialect in parts
+                for w, t, d in [(words, text, dialect), *_nested(text, shell)]):
+            return searching
+    for words, text, dialect in _segments(command, shell):
         program = _program(words)
         sub = _git_sub(words) if program == "git" else ""
-        recursive = _recursive(program, words)
+        segment = text
         # A search pattern may name anything; the paths searched may not.
         text = _without_pattern(words, text)
         expanded = _expand(text)
@@ -715,11 +835,10 @@ def _check_shell(command, cwd="", shell="Bash"):
         paths = [_resolve(here, token) for token in tokens if not token.startswith("-")]
         if _names_workspace(expanded) or any(_reaches_data(path) for path in paths):
             return blocked
-        # A search or listing of local AppData, or a folder above it, reads the data.
-        if recursive and (BARE_LOCAL.search(expanded) or any(
-                _above_data(_canonical(path)) for path in paths)):
-            return searching
-        if recursive and _searches_above_data(expanded, program, sub, here):
+        # A search or listing of local AppData, or a folder above it, reads the
+        # data; so does one nested inside this segment.
+        if _searches(words, segment, folder.here, dialect) or any(
+                _searches(w, t, folder.here, d) for w, t, d in _nested(segment, shell)):
             return searching
         change = CHANGE_FOLDER.search(text)
         if change:
