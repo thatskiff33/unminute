@@ -48,6 +48,60 @@ class FileToolTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNotNone(guard.decide(tool("Read", file_path=path)))
 
+    def test_unminute_workspace_is_blocked(self):
+        # The renamed data folder (#136), in the forms the old one is checked in
+        # above. The old folder stays covered: it keeps real content until deleted.
+        local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
+        for path in (local + r"\Unminute\workspace\workspace.db",
+                     "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
+                     r"C:\Users\someone\AppData\Local\unminute\WORKSPACE",
+                     "~/AppData/Local/Unminute/workspace/settings.json",
+                     r"C:\Users\someone\AppData\Local\Temp\..\Unminute\workspace\workspace.db",
+                     # A "." segment before it (main blocks these for the old folder).
+                     r".\Unminute\workspace\a.json",
+                     "./Unminute/workspace/a.json",
+                     r"C:\Users\s\AppData\Local\.\Unminute\workspace\workspace.db"):
+            for payload in (tool("Read", file_path=path), tool("Edit", file_path=path),
+                            tool("Glob", pattern="**/*", path=path),
+                            tool("Grep", pattern="anything", path=path)):
+                with self.subTest(payload=payload):
+                    self.assertIsNotNone(guard.decide(payload))
+        # A Glob pattern naming it after a wildcard, as main blocks for the old folder.
+        self.assertIsNotNone(guard.decide(tool("Glob", pattern="**/Unminute/workspace/**",
+                                               path=r"C:\Users\someone\AppData\Local")))
+
+    def test_unminute_workspace_under_a_moved_local_appdata_is_blocked(self):
+        # LOCALAPPDATA redirected to a folder not named Local: the pattern also
+        # takes the configured value as a prefix.
+        pattern = guard.unminute_workspace_pattern(r"D:\Profiles\someone\Data")
+        for text in (r"D:\Profiles\someone\Data\Unminute\workspace\workspace.db",
+                     "D:/Profiles/someone/Data/Unminute/workspace"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(pattern.search(text))
+        self.assertIsNone(pattern.search(r"D:\Profiles\someone\Code\unminute\workspace\app.py"))
+        # An unset LOCALAPPDATA adds nothing, and the usual forms still match.
+        self.assertIsNotNone(guard.unminute_workspace_pattern("").search(
+            r"C:\Users\someone\AppData\Local\Unminute\workspace"))
+
+    def test_a_checkout_named_unminute_is_allowed(self):
+        # The repo is also called unminute and has a workspace/ package: working
+        # in it must not look like the data folder.
+        for payload in (tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute"
+                                               r"\workspace\app.py"),
+                        tool("Edit", file_path="C:/Users/x/Local_Repos/unminute"
+                                               "/workspace/store.py"),
+                        tool("Read", file_path=r"C:\Users\x\source\repos\Unminute"
+                                               r"\workspace\ui\app.js"),
+                        tool("Read", file_path=r"C:\Users\x\AppData\Local\Temp\unminute"
+                                               r"\workspace\app.py"),
+                        tool("Glob", pattern="workspace/**/*.py",
+                             path=r"C:\Users\x\Local_Repos\unminute"),
+                        tool("Grep", pattern="Unminute/workspace", path="."),
+                        tool("Grep", pattern="x",
+                             path=r"C:\Users\x\Local_Repos\unminute\workspace")):
+            with self.subTest(payload=payload):
+                self.assertIsNone(guard.decide(payload))
+
     def test_ordinary_paths_are_allowed(self):
         with tempfile.TemporaryDirectory() as temp:
             unrelated = Path(temp) / "extracted" / "build.txt"     # no AGENTS.md beside it
@@ -80,6 +134,69 @@ class ShellTests(unittest.TestCase):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))
+
+    def test_commands_naming_the_unminute_workspace_are_blocked(self):
+        # The renamed data folder (#136), in the forms the old one is checked in
+        # above, and the usual ways of building it from LOCALAPPDATA.
+        for command in (r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\workspace.db",
+                        r'Get-Content "$env:LOCALAPPDATA\Unminute\workspace\settings.json"',
+                        "sqlite3 ~/AppData/Local/Unminute/workspace/workspace.db .dump",
+                        r"type %LOCALAPPDATA%\Unminute\workspace\settings.json",
+                        'ls "${LOCALAPPDATA}/Unminute/workspace"',
+                        "cat /c/Users/someone/AppData/Local/unminute/WORKSPACE/settings.json",
+                        r"Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Unminute\workspace')",
+                        r"Get-Content ([Environment]::GetFolderPath('LocalApplicationData')"
+                        r" + '\Unminute\workspace\settings.json')",
+                        "rg -n budget ~/AppData/Local/Unminute/workspace",
+                        # Main's old pattern blocks any folder before whisper\workspace;
+                        # the new one takes any variable or substitution there.
+                        "d=$LOCALAPPDATA; cat $d/Unminute/workspace/settings.json",
+                        "cat \"${d}\"/Unminute/workspace/settings.json",
+                        'cat "$(cygpath -u "$LOCALAPPDATA")/Unminute/workspace/settings.json"',
+                        'cat "`cygpath -u $LOCALAPPDATA`/Unminute/workspace/settings.json"',
+                        "python -c \"print(open(f'{base}/Unminute/workspace/a.json').read())\"",
+                        r"Get-Content LOCALAPPDATA\Unminute\workspace\settings.json",
+                        r"Get-Content $env:TEMP\..\Unminute\workspace\settings.json",
+                        "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a",
+                        # A "." segment or a * wildcard straight before it: main blocks
+                        # these forms for the old folder.
+                        r"cd $env:LOCALAPPDATA; Get-Content .\Unminute\workspace\a.json",
+                        r"Push-Location $env:LOCALAPPDATA; gc .\Unminute\workspace\a",
+                        "cd ~/AppData/Local && cat ./Unminute/workspace/a.json",
+                        "cat ~/AppData/Local/./Unminute/workspace/a",
+                        r"Get-ChildItem -Path $env:LOCALAPPDATA -Recurse"
+                        r" | ? FullName -like '*Unminute\workspace*'",
+                        # A bound parameter (-Path:), a redirect, a ? wildcard, a
+                        # drive-relative path or a cmd substring expansion before it:
+                        # main blocks these forms for the old folder too.
+                        r"cd $env:LOCALAPPDATA; Get-Content -Path:.\Unminute\workspace\a.json",
+                        r"cd $env:LOCALAPPDATA; gci -LiteralPath:Unminute\workspace -Recurse",
+                        r"Join-Path -Path $env:LOCALAPPDATA -ChildPath:Unminute\workspace",
+                        r"cd $env:LOCALAPPDATA; type C:Unminute\workspace\a",
+                        "cd ~/AppData/Local && wc -l <Unminute/workspace/a",
+                        "ls ~/AppData/Loca?/Unminute/workspace",
+                        r"type %LOCALAPPDATA:~0%\Unminute\workspace\a"):
+            for name in ("Bash", "PowerShell"):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNotNone(guard.decide(shell(command, name)))
+
+    def test_commands_in_a_checkout_named_unminute_are_allowed(self):
+        for command in ("ls ../unminute/workspace",
+                        r"Get-Content -Path:C:\Users\x\Local_Repos\unminute\workspace\api.py",
+                        "git show HEAD:workspace/api.py",
+                        r"cd $env:TEMP\unminute; ruff check workspace",
+                        "ruff check C:/Users/x/Local_Repos/unminute/workspace",
+                        "ruff check $HOME/Local_Repos/unminute/workspace",
+                        r"cd $env:USERPROFILE\Local_Repos\unminute; ruff check workspace",
+                        r"python -m py_compile C:\Users\x\Local_Repos\unminute\workspace\store.py",
+                        "cd /c/Users/x/Local_Repos/unminute && git diff -- workspace/store.py",
+                        r"git -C C:\Users\x\Local_Repos\unminute log --oneline -- workspace",
+                        r'rg -n "Unminute\\workspace" workspace',
+                        r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\Unminute\workspace"',
+                        r'git commit -m "Guard %LOCALAPPDATA%\Unminute\workspace too"'):
+            for name in ("Bash", "PowerShell"):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_staging_media_is_blocked(self):
         for command in ("git add meeting.m4a", "git add docs/a.WAV tests/x.py",
@@ -180,6 +297,9 @@ class SettingsTests(unittest.TestCase):
         deny = settings["permissions"]["deny"]
         self.assertIn("Read(./extracted/**)", deny)
         self.assertTrue(any("whisper/workspace" in rule for rule in deny))
+        for rule in ("Read(~/AppData/Local/Unminute/workspace/**)",
+                     "Edit(~/AppData/Local/Unminute/workspace/**)"):
+            self.assertIn(rule, deny)
         hooks = [hook for entry in settings["hooks"]["PreToolUse"] for hook in entry["hooks"]]
         guards = [h for h in hooks if ".claude/hooks/private_data_guard.py" in h["command"]]
         self.assertEqual(1, len(guards))

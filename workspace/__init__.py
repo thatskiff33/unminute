@@ -1,1 +1,1 @@
-# workspace: Unminute, the local meeting workspace (roadmap #7).
+# workspace: Unminute, meetings transcribed and reviewed on this computer (roadmap #7).

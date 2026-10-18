@@ -3,7 +3,8 @@
 # meeting content out of an agent's context and out of commits (AGENTS.md,
 # invariants P1 and P2):
 #   - file tools may not touch a repo's extracted/ folder (the earlier app's
-#     transcripts) or the live workspace (%LOCALAPPDATA%\whisper\workspace);
+#     transcripts), the live workspace (%LOCALAPPDATA%\Unminute\workspace) or the
+#     old one (%LOCALAPPDATA%\whisper\workspace, real content until it is deleted);
 #   - shell commands may not name either of them as something to read, list,
 #     copy or stage;
 #   - git add and git commit may not name a media file.
@@ -18,6 +19,7 @@
 # "exit $LASTEXITCODE": PowerShell otherwise turns the 2 into a 1, which only warns.
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -27,9 +29,47 @@ from pathlib import Path
 MEDIA_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac", ".ogg", ".aac",
                     ".wma", ".webm", ".avi", ".f32")
 
-# The live workspace, however the path is written: %LOCALAPPDATA%\whisper\workspace,
-# $env:LOCALAPPDATA/whisper/workspace, ~/AppData/Local/whisper/workspace.
+# The old workspace (before the rename to Unminute, #136), however the path is
+# written: %LOCALAPPDATA%\whisper\workspace, $env:LOCALAPPDATA/whisper/workspace,
+# ~/AppData/Local/whisper/workspace.
 LIVE_WORKSPACE = re.compile(r"(?<![\w-])whisper[\\/]+workspace(?![\w-])", re.IGNORECASE)
+
+
+def unminute_workspace_pattern(local_appdata):
+    r"""The live workspace, %LOCALAPPDATA%\Unminute\workspace, however it is written.
+
+    The repo is also called unminute and has a workspace/ package, so unminute
+    and workspace straight after another folder's name (a checkout) are
+    allowed. The pattern matches after AppData\Local, the configured
+    LOCALAPPDATA folder, any variable or substitution ($env:LOCALAPPDATA,
+    %LOCALAPPDATA% or %LOCALAPPDATA:~0%, ${d}, $(...), a backtick, an f-string's
+    {base}), a climb
+    from a folder ($env:TEMP\..), or as a piece of its own ('Unminute\workspace'
+    given to Join-Path or appended to a folder, or after a * wildcard), each
+    with or without "." segments before it. A checkout in a folder named
+    Local, named through a variable ($env:TEMP\unminute\workspace), written as
+    ./unminute/workspace or reached by climbing more than one level is blocked
+    too: that errs on the safe side.
+    """
+    prefixes = [r"(?<![\w-])local(?:appdata)?", r"\$\{?[\w:]+\}?", r"%\w+(?::[^%\s]*)?%",
+                r"[)}`\"']",
+                r"[\\/]\.\."]
+    parts = [re.escape(part) for part in re.split(r"[\\/]+", local_appdata) if part]
+    if parts:
+        prefixes.append(r"(?<![\w-])" + r"[\\/]+".join(parts))
+    after_local = r"(?:" + "|".join(prefixes) + r")[%})\"'`]*[\\/]+"
+    # At the start or after a space, quote, bracket, operator, a * or ? wildcard,
+    # a bound parameter or drive colon (-Path:, C:) or a redirect (< >), with or
+    # without a leading separator; never straight after a folder name.
+    on_its_own = r"(?<![^\s\"'`=(\[{,;+*:<>?\]|&!])[\\/]*"
+    # Either may be followed by "." segments (.\Unminute, Local\.\Unminute). A
+    # climb at the start (..\unminute\workspace) stays allowed: a sibling checkout.
+    current_folder = r"(?:\.[\\/]+)*"
+    return re.compile(r"(?:" + after_local + r"|" + on_its_own + r")" + current_folder
+                      + r"unminute[\\/]+workspace(?![\w-])", re.IGNORECASE)
+
+
+UNMINUTE_WORKSPACE = unminute_workspace_pattern(os.environ.get("LOCALAPPDATA", ""))
 # extracted/ as a path of its own (not "unextracted/"), with or without a separator.
 EXTRACTED = re.compile(r"(?<![\w.-])extracted(?:[\\/]|(?![\w.-]))", re.IGNORECASE)
 MEDIA_TOKEN = re.compile(r"[^\s\"']+(?:" + "|".join(re.escape(e) for e in MEDIA_EXTENSIONS)
@@ -106,7 +146,7 @@ def _check_shell(command):
             # A search pattern may name anything; the paths searched may not.
             stripped = PATTERN_VALUE.sub(" ", text)
             text = stripped if stripped != text else _drop_first_argument(text, program == "git")
-        if LIVE_WORKSPACE.search(text):
+        if LIVE_WORKSPACE.search(text) or UNMINUTE_WORKSPACE.search(text):
             return f"A command naming the live Unminute workspace is blocked. {ADVICE}"
         # Most git subcommands cannot read an ignored folder's files (check-ignore,
         # status); staging and --no-index diffs can.
@@ -134,7 +174,7 @@ def decide(payload):
             value = tool_input.get(field)
             if not isinstance(value, str) or not value:
                 continue
-            if LIVE_WORKSPACE.search(value):
+            if LIVE_WORKSPACE.search(value) or UNMINUTE_WORKSPACE.search(value):
                 return f"{tool} on the live Unminute workspace is blocked. {ADVICE}"
             if _repo_extracted(value, cwd):
                 return f"{tool} inside the repo's extracted/ folder is blocked. {ADVICE}"

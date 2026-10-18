@@ -14,8 +14,8 @@ import time
 from pathlib import Path
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
-# The app's microphone icon (whisper.ico, a kept name); next to the app code in the package.
-ICON = Path(__file__).resolve().parents[1] / "whisper.ico"
+# The app's microphone icon; next to the app code in the package.
+ICON = Path(__file__).resolve().parents[1] / "unminute.ico"
 
 
 # Chromium switches for WebView2: resolve no host names (the page has nothing

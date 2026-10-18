@@ -8,6 +8,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -612,6 +613,261 @@ class EnvironmentTokenTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(r.stdout.split(), ["False", "False"], r.stderr)
         self.assertNotIn("hf_example", r.stdout + r.stderr)
+
+
+class DataFolderOverlapTests(unittest.TestCase):
+    """#136: uninstalling deletes the install folder, so the install folder must
+    never be, hold or sit inside %LOCALAPPDATA%\\Unminute (workspace and models),
+    and the uninstaller removes only what the installer put there. Both scripts run
+    for real, with a temporary LOCALAPPDATA."""
+
+    MESSAGE = "must not be in, or hold"
+    PROGRAMS = '[Environment]::GetFolderPath("Programs")'
+    KEY = r'$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"'
+    # The copy's uninstall key: absent unless a test creates it, and removed after.
+    TEST_KEY = rf"Software\Unminute-UnitTest-uninstall-{os.getpid()}"
+
+    def run_script(self, script, install_dir, local, extra="", location=None, cwd=None):
+        call = f"& '{script}' -InstallDir '{install_dir}' -Silent {extra}"
+        if location:
+            # A relative -InstallDir is read from PowerShell's location, which
+            # Set-Location moves away from the process's own folder.
+            call = f"Set-Location -LiteralPath '{location}'; {call}"
+        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-Command", f"{call}; exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=180, cwd=cwd,
+                              env=dict(os.environ, LOCALAPPDATA=str(local)))
+
+    @unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
+    def test_the_installer_refuses_an_install_folder_that_overlaps_the_data(self):
+        # A temporary LOCALAPPDATA and a package that does not exist: the checks
+        # come first, so nothing real is read or written.
+        install = ROOT / "packaging" / "install.ps1"
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            absent = f"-Package '{Path(tmp) / 'absent.zip'}'"
+            for where in (local / "Unminute", local / "Unminute" / "app", local):
+                with self.subTest(where=where.name):
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(self.MESSAGE, r.stderr)
+            r = self.run_script(install, "Unminute", local, absent, location=local, cwd=tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn(self.MESSAGE, r.stderr)
+            for where in (r"\\localhost\C$\Unminute", "//localhost/C$/Unminute"):
+                with self.subTest(where=where):
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("own drive", r.stderr)
+            r = self.run_script(install, "", local, absent, cwd=tmp)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("No install folder", r.stderr)
+            # The default shape, and a sibling of the data folder: allowed, so the
+            # run stops later, at a prerequisite or the missing package.
+            for where in (local / "Programs" / "Unminute", local / "Unminute2"):
+                with self.subTest(where=where.name):
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
+                    self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertNotIn(self.MESSAGE, r.stdout + r.stderr)
+            self.assertEqual(list(local.iterdir()), [])          # nothing was written
+
+    @unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
+    def test_the_installer_drops_a_trailing_backslash(self):
+        # The registered uninstall command quotes -InstallDir: a trailing \ there
+        # reads as \", a literal quote, and the uninstall fails (R13b round 2
+        # review). A copy that stops after the folder checks and prints the folder.
+        text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        stop = "    if ($Options.Rollback) { Invoke-Rollback }"
+        self.assertEqual(text.count(stop), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy = Path(tmp) / "install-copy.ps1"
+            report = '    Write-Output "DIR=$($Options.InstallDir)"; exit 0'
+            copy.write_text(text.replace(stop, report), encoding="utf-8")
+            folder = Path(tmp) / "Apps" / "Unminute"
+            for where in (f"{folder}\\", f"{folder}\\\\", f"{folder}/", str(folder)):
+                with self.subTest(where=where):
+                    r = self.run_script(copy, where, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertIn(f"DIR={folder}\n", r.stdout)
+            self.assertFalse(folder.exists())
+
+    def uninstaller_copy(self, tmp):
+        """uninstall.ps1 with this computer's Start menu folder and uninstall key
+        swapped for a temporary folder and a key that does not exist, so a
+        mistake removes nothing real."""
+        text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertEqual((text.count(self.PROGRAMS), text.count(self.KEY)), (1, 1))
+        programs = Path(tmp) / "programs"
+        programs.mkdir()
+        text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
+            self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"')
+        # Nothing else in it may reach this computer's own shortcuts or registry.
+        for reach in ("GetFolderPath", "Start Menu\\", "$env:APPDATA", "HKCU:\\Software\\Microsoft",
+                      "HKLM", "Registry::", "ComObject"):
+            self.assertNotIn(reach.lower(), text.lower(), reach)
+        copy = Path(tmp) / "uninstall-copy.ps1"
+        copy.write_text(text, encoding="utf-8")
+        return copy, programs / "Unminute.lnk"
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_removes_only_its_own_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            data = local / "Unminute" / "workspace"
+            data.mkdir(parents=True)
+            kept = data / "workspace.db"
+            kept.write_text("synthetic")
+            copy, link = self.uninstaller_copy(tmp)
+            link.write_text("shortcut")
+            for where, location in ((local / "Unminute", None), (data, None), (local, None),
+                                    ("Unminute", local)):           # relative to the location
+                with self.subTest(where=str(where)):
+                    r = self.run_script(copy, where, local, location=location, cwd=tmp)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn("data folder", r.stderr)      # this check, not a later one
+                    self.assertIn("so nothing was removed", r.stderr)
+                    self.assertTrue(kept.is_file() and link.is_file())
+            r = self.run_script(copy, "", local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("No install folder", r.stderr)
+            # An install folder holding something the installer did not put there
+            # is left as it is.
+            install = local / "Programs" / "Unminute"
+            (install / "versions" / "0.5.0").mkdir(parents=True)
+            (install / "current.json").write_text("{}")
+            shutil.copy(copy, install / "uninstall.ps1")
+            (install / "notes.txt").write_text("not the installer's")
+            r = self.run_script(copy, install, local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("did not put there", r.stderr)
+            self.assertTrue((install / "versions" / "0.5.0").is_dir() and link.is_file())
+            # Only its own: all removed, with the shortcut, and the data kept.
+            (install / "notes.txt").unlink()
+            r = self.run_script(copy, install, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(install.exists())
+            self.assertFalse(link.exists())
+            self.assertTrue(kept.is_file())
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_needs_an_install_or_the_registered_folder(self):
+        # A wrong -InstallDir (missing, empty, or a network or device form) must not
+        # remove the real install's shortcut and uninstall entry and report success
+        # (R13b review). The registered folder, with its files already gone, may.
+        import winreg
+        self.addCleanup(self.delete_test_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            link.write_text("shortcut")
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            typo = Path(tmp) / "typo"
+            for where, says in ((typo, "No Unminute install"),
+                                (empty, "No Unminute install"),
+                                (r"\\localhost\C$\Programs\Unminute", "own drive"),
+                                ("//localhost/C$/Programs/Unminute", "own drive"),
+                                ("\\\\?\\" + str(typo), "own drive")):
+                with self.subTest(where=str(where)):
+                    r = self.run_script(copy, where, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn(says, r.stderr)
+                    self.assertIn("so nothing was removed", r.stderr)
+                    self.assertTrue(link.is_file() and empty.is_dir())
+            # An uninstall entry for another folder does not make this one an install.
+            registered = Path(tmp) / "Programs" / "Unminute"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(registered))
+            r = self.run_script(copy, typo, local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertTrue(link.is_file() and self.key_exists())
+            # An older or second install, while the entry names another folder that
+            # still holds an install: its own files go, but the shortcut and the
+            # entry are the other install's (R13b round 2 review).
+            (registered / "versions" / "0.5.0").mkdir(parents=True)
+            older = Path(tmp) / "Programs" / "OldInstall"
+            (older / "versions" / "0.4.3").mkdir(parents=True)
+            (older / "current.json").write_text("{}")
+            r = self.run_script(copy, older, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(older.exists())
+            self.assertTrue(link.is_file() and self.key_exists())
+            self.assertTrue(registered.is_dir())
+            # The registered folder, already deleted: the shortcut and entry go.
+            shutil.rmtree(registered)
+            r = self.run_script(copy, registered, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(link.exists())
+            self.assertFalse(self.key_exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_registered_folder_named_another_way_removes_its_entries(self):
+        # The registered folder given through a junction, or by its 8.3 short name,
+        # is the same install, not another one: the shortcut and the entry go with
+        # it (R13b round 3 review).
+        import ctypes
+        import winreg
+        self.addCleanup(self.delete_test_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            parent = Path(tmp) / "Programs With A Long Name"
+            registered = parent / "Unminute"
+            junction = Path(tmp) / "alias"
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(parent)],
+                                  capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, made.returncode, made.stdout + made.stderr)
+            aliases = [str(junction / "Unminute")]
+            # The short name, where the volume makes them (CI's may not).
+            registered.mkdir(parents=True)
+            buffer = ctypes.create_unicode_buffer(1024)
+            ctypes.windll.kernel32.GetShortPathNameW(str(registered), buffer, 1024)
+            if buffer.value and buffer.value.lower() != str(registered).lower():
+                aliases.append(buffer.value)
+            for alias in aliases:
+                with self.subTest(alias=alias):
+                    (registered / "versions" / "0.5.0").mkdir(parents=True, exist_ok=True)
+                    (registered / "current.json").write_text("{}")
+                    link.write_text("shortcut")
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ,
+                                          str(registered))
+                    r = self.run_script(copy, alias, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertFalse((registered / "current.json").exists())
+                    self.assertFalse(link.exists())
+                    self.assertFalse(self.key_exists())
+                    registered.mkdir(parents=True, exist_ok=True)
+            os.rmdir(junction)
+
+    def key_exists(self):
+        import winreg
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY))
+            return True
+        except FileNotFoundError:
+            return False
+
+    def delete_test_key(self):
+        import winreg
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY)
+        except FileNotFoundError:
+            pass
+
+    def test_both_scripts_have_the_same_overlap_check(self):
+        # The installer's copy is the one run for every case above.
+        def check(name):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            start = text.index("# The data (workspace and models) is in")
+            return text[start:text.index("\n}\n", start) + 3]
+        self.assertEqual(check("install.ps1"), check("uninstall.ps1"))
+        self.assertIn("function Get-DataOverlap", check("uninstall.ps1"))
 
 
 class RemoteDebugTests(unittest.TestCase):

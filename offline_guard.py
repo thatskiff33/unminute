@@ -11,7 +11,7 @@
 #      Windows path (ConnectEx and WSASendTo, which bypass socket.connect),
 #      unless the host is on the allow_hosts() list (the workspace's download
 #      process). Nothing lets a download through in the app's own processes
-#      (the earlier app's permit() is gone); uninstall() is for tests only.
+#      (no permit() turns it off); uninstall() is for tests only.
 #      Refusals are recorded in `blocked` so tests can prove nothing tried to
 #      reach the network.
 #

@@ -10,7 +10,7 @@
 # ("ref" optional: without it you still get timings and side-by-side text).
 #
 # `run` loads the engine exactly as the app's worker does (workspace.engines,
-# offline, the verified model cache in %LOCALAPPDATA%\whisper-models, Faster
+# offline, the verified model cache in %LOCALAPPDATA%\Unminute\models, Faster
 # mode's thread count unless --threads is given).
 #
 #   python tools/compare_engines.py run   --engine parakeet-tdt-0.6b-v2 --out v2.jsonl m.jsonl
@@ -164,7 +164,7 @@ def cmd_run(args):
     from workspace.engines import load_engine
     from workspace.store import local_appdata
 
-    cache = Path(args.cache) if args.cache else local_appdata() / "whisper-models"
+    cache = Path(args.cache) if args.cache else local_appdata() / "Unminute" / "models"
     threads = args.threads or resources.worker_threads(resources.FASTER)
     clips = [json.loads(line) for m in args.manifest
              for line in Path(m).read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -254,7 +254,7 @@ def main():
     r.add_argument("--engine", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--repo", default=str(REPO))
-    r.add_argument("--cache", help="model cache (default %%LOCALAPPDATA%%\\whisper-models)")
+    r.add_argument("--cache", help="model cache (default %%LOCALAPPDATA%%\\Unminute\\models)")
     r.add_argument("--threads", type=int, help="processor threads (default: as Faster mode)")
     r.add_argument("manifest", nargs="+")
     s = sub.add_parser("score")

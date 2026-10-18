@@ -25,10 +25,12 @@ Privacy
   PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py` (tracked
   media only) and the PR template; partial.
 - **P2** Agents never open, print or summarise real content: `extracted/`, the live workspace
-  (`%LOCALAPPDATA%\whisper\workspace`) or real recordings. Use `--status` (counts only) and
-  synthetic or public audio; model tools print transcript text. Guard: the deny rules and hook
-  in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail rather than a security
-  boundary; review for Codex.
+  (`%LOCALAPPDATA%\Unminute\workspace`, and the old `%LOCALAPPDATA%\whisper\workspace`,
+  which keeps real content until the user deletes it) or real recordings. Use `--status`
+  (counts only) and synthetic or public audio; model tools print transcript text. Guard: the
+  deny rules and hook in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail
+  rather than a security boundary (it catches the paths as usually written; hardening it is
+  #221); review for Codex.
 - **P3** Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths
   or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`.
 
@@ -87,11 +89,11 @@ Recording and confirmations
 
 Compatibility, installation and policy
 
-- **K1** Never rename the names kept for compatibility: the install folder and uninstall key
-  `WhisperWorkspace`, the APP_ID `WhisperTranscriber.MeetingWorkspace`, the Credential Manager
-  name `WhisperTranscriber/HuggingFaceToken`, the data folders `whisper\workspace` and
-  `whisper-models`, and `whisper.ico` (the list moves to `docs/PACKAGING.md` with #136). Guard:
-  `tests/test_consistency.py`.
+- **K1** Never rename the install identity without the user: the install folder and
+  uninstall key `Unminute`, the APP_ID `Unlimit.Unminute`, the Credential Manager name
+  `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and `Unminute\models`
+  under `%LOCALAPPDATA%`, and `unminute.ico`. The user renamed them from the earlier names
+  (17 October 2026, #136), with no migration. Guard: `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in

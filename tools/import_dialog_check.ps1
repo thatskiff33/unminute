@@ -12,9 +12,9 @@ $A = [System.Windows.Automation.AutomationElement]
 $T = [System.Windows.Automation.TreeScope]
 
 # 1. Throwaway profile, onboarding already done (no models needed to import).
-$profileDir = Join-Path $env:TEMP ("ww28dialog-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Force (Join-Path $profileDir 'whisper\workspace') | Out-Null
-'{"onboarded": true, "speakers": false}' | Out-File -Encoding ascii (Join-Path $profileDir 'whisper\workspace\settings.json')
+$profileDir = Join-Path $env:TEMP ("umdialog-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force (Join-Path $profileDir 'Unminute\workspace') | Out-Null
+'{"onboarded": true, "speakers": false}' | Out-File -Encoding ascii (Join-Path $profileDir 'Unminute\workspace\settings.json')
 $env:LOCALAPPDATA = $profileDir
 $app = Join-Path $Version 'app'
 $proc = Start-Process -FilePath (Join-Path $Version 'runtime\pythonw.exe') -ArgumentList '-m', 'workspace' -WorkingDirectory $app -PassThru
@@ -97,7 +97,7 @@ public static class Dlg {
 
     # 4. The meeting appears: a read-only count, so the probe changes nothing.
     # as_uri() escapes the path: a '#' or '%41' in TEMP would break a raw URI (#164).
-    $db = Join-Path $profileDir 'whisper\workspace\workspace.db'
+    $db = Join-Path $profileDir 'Unminute\workspace\workspace.db'
     $probe = "import pathlib, sqlite3, sys; d = sqlite3.connect(pathlib.Path(sys.argv[1]).absolute().as_uri() + '?mode=ro', uri=True); print(d.execute('SELECT count(*) FROM meetings').fetchone()[0])"
     $end = (Get-Date).AddSeconds(120)
     do {

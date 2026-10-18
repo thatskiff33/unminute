@@ -152,7 +152,7 @@ class GatePathTests(unittest.TestCase):
         # The installer's check (python -m workspace --gate), in a child process
         # with LOCALAPPDATA pointing at a synthetic folder, never the real one.
         appdata = Path(self.tmp.name).joinpath(*AWKWARD)
-        self.workspace(appdata / "whisper" / "workspace" / "workspace.db")
+        self.workspace(appdata / "Unminute" / "workspace" / "workspace.db")
         env = dict(os.environ, LOCALAPPDATA=str(appdata))
         root = Path(__file__).resolve().parents[1]
         for schema, code, kind in ((store.SCHEMA_VERSION, update.ALLOWED, "compatible"),
