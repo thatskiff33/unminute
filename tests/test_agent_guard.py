@@ -56,12 +56,19 @@ class FileToolTests(unittest.TestCase):
                      "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
                      r"C:\Users\someone\AppData\Local\unminute\WORKSPACE",
                      "~/AppData/Local/Unminute/workspace/settings.json",
-                     r"C:\Users\someone\AppData\Local\Temp\..\Unminute\workspace\workspace.db"):
+                     r"C:\Users\someone\AppData\Local\Temp\..\Unminute\workspace\workspace.db",
+                     # A "." segment before it (main blocks these for the old folder).
+                     r".\Unminute\workspace\a.json",
+                     "./Unminute/workspace/a.json",
+                     r"C:\Users\s\AppData\Local\.\Unminute\workspace\workspace.db"):
             for payload in (tool("Read", file_path=path), tool("Edit", file_path=path),
                             tool("Glob", pattern="**/*", path=path),
                             tool("Grep", pattern="anything", path=path)):
                 with self.subTest(payload=payload):
                     self.assertIsNotNone(guard.decide(payload))
+        # A Glob pattern naming it after a wildcard, as main blocks for the old folder.
+        self.assertIsNotNone(guard.decide(tool("Glob", pattern="**/Unminute/workspace/**",
+                                               path=r"C:\Users\someone\AppData\Local")))
 
     def test_unminute_workspace_under_a_moved_local_appdata_is_blocked(self):
         # LOCALAPPDATA redirected to a folder not named Local: the pattern also
@@ -150,7 +157,15 @@ class ShellTests(unittest.TestCase):
                         "python -c \"print(open(f'{base}/Unminute/workspace/a.json').read())\"",
                         r"Get-Content LOCALAPPDATA\Unminute\workspace\settings.json",
                         r"Get-Content $env:TEMP\..\Unminute\workspace\settings.json",
-                        "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a"):
+                        "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a",
+                        # A "." segment or a * wildcard straight before it: main blocks
+                        # these forms for the old folder.
+                        r"cd $env:LOCALAPPDATA; Get-Content .\Unminute\workspace\a.json",
+                        r"Push-Location $env:LOCALAPPDATA; gc .\Unminute\workspace\a",
+                        "cd ~/AppData/Local && cat ./Unminute/workspace/a.json",
+                        "cat ~/AppData/Local/./Unminute/workspace/a",
+                        r"Get-ChildItem -Path $env:LOCALAPPDATA -Recurse"
+                        r" | ? FullName -like '*Unminute\workspace*'"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))

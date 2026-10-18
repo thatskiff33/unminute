@@ -44,9 +44,11 @@ def unminute_workspace_pattern(local_appdata):
     LOCALAPPDATA folder, any variable or substitution ($env:LOCALAPPDATA,
     %LOCALAPPDATA%, ${d}, $(...), a backtick, an f-string's {base}), a climb
     from a folder ($env:TEMP\..), or as a piece of its own ('Unminute\workspace'
-    given to Join-Path or appended to a folder). A checkout in a folder named
-    Local, named through a variable ($env:TEMP\unminute\workspace) or reached
-    by climbing more than one level is blocked too: that errs on the safe side.
+    given to Join-Path or appended to a folder, or after a * wildcard), each
+    with or without "." segments before it. A checkout in a folder named
+    Local, named through a variable ($env:TEMP\unminute\workspace), written as
+    ./unminute/workspace or reached by climbing more than one level is blocked
+    too: that errs on the safe side.
     """
     prefixes = [r"(?<![\w-])local(?:appdata)?", r"\$\{?[\w:]+\}?", r"%\w+%", r"[)}`\"']",
                 r"[\\/]\.\."]
@@ -54,11 +56,14 @@ def unminute_workspace_pattern(local_appdata):
     if parts:
         prefixes.append(r"(?<![\w-])" + r"[\\/]+".join(parts))
     after_local = r"(?:" + "|".join(prefixes) + r")[%})\"'`]*[\\/]+"
-    # At the start or after a space, quote, bracket or operator, with or without
-    # a leading separator; never straight after a folder name.
-    on_its_own = r"(?<![^\s\"'`=(\[{,;+])[\\/]*"
-    return re.compile(r"(?:" + after_local + r"|" + on_its_own + r")"
-                      r"unminute[\\/]+workspace(?![\w-])", re.IGNORECASE)
+    # At the start or after a space, quote, bracket, operator or * wildcard, with
+    # or without a leading separator; never straight after a folder name.
+    on_its_own = r"(?<![^\s\"'`=(\[{,;+*])[\\/]*"
+    # Either may be followed by "." segments (.\Unminute, Local\.\Unminute). A
+    # climb at the start (..\unminute\workspace) stays allowed: a sibling checkout.
+    current_folder = r"(?:\.[\\/]+)*"
+    return re.compile(r"(?:" + after_local + r"|" + on_its_own + r")" + current_folder
+                      + r"unminute[\\/]+workspace(?![\w-])", re.IGNORECASE)
 
 
 UNMINUTE_WORKSPACE = unminute_workspace_pattern(os.environ.get("LOCALAPPDATA", ""))
