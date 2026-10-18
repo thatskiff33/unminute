@@ -83,7 +83,8 @@ def parakeet(cache, audio, providers):
     vad = onnx_asr.load_vad(asr_engines.SILERO_VAD.onnx_asr_name,
                             asr_engines.model_dir(asr_engines.SILERO_VAD, cache),
                             providers=["CPUExecutionProvider"])
-    model = asr.with_vad(vad, batch_size=1, max_speech_duration_s=20)
+    model = asr.with_vad(vad, batch_size=1, max_speech_duration_s=20,
+                         min_silence_duration_ms=asr_engines.VAD_MIN_SILENCE_MS)
     # Report what ONNX Runtime really used (it falls back to CPU silently).
     import onnxruntime as rt
     enc = next(asr_engines.model_dir(spec, cache).glob("encoder*.onnx"))

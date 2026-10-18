@@ -12,8 +12,10 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -351,6 +353,42 @@ class EngineTests(unittest.TestCase):
             with self.assertRaises(ae.ModelLoadError) as ctx:
                 engine.load()
             self.assertIn("Manage downloads", str(ctx.exception))
+
+    def test_parakeet_vad_bridges_pauses_up_to_one_second(self):
+        # #107: onnx-asr's default (100 ms of silence ends a piece) cut meetings
+        # into pieces too short for Parakeet. The load must pass the 1 s pause
+        # bridge and keep the 20 s cap. ONNX is stubbed; the load is real.
+        calls = []
+
+        class FakeAsr:
+            def with_vad(self, vad, **kw):
+                calls.append(("with_vad", vad, kw))
+                return self
+
+            def with_timestamps(self):
+                calls.append(("with_timestamps",))
+                return self
+
+        vad = object()
+        onnx_asr = types.ModuleType("onnx_asr")
+        onnx_asr.load_model = lambda *a, **k: FakeAsr()
+        onnx_asr.load_vad = lambda *a, **k: vad
+
+        class Options:
+            def add_session_config_entry(self, *a):
+                pass
+
+        onnxruntime = types.ModuleType("onnxruntime")
+        onnxruntime.disable_telemetry_events = lambda: None
+        onnxruntime.SessionOptions = Options
+        with mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=onnxruntime), \
+                mock.patch.object(ae, "check_files", return_value=[]):
+            engine = ae.ParakeetEngine(ae.RECOMMENDED_PARAKEET, ".", 2).load()
+        self.assertIsInstance(engine._asr, FakeAsr)
+        self.assertEqual(calls, [
+            ("with_vad", vad, {"batch_size": 1, "max_speech_duration_s": 20.0,
+                               "min_silence_duration_ms": 1000}),
+            ("with_timestamps",)])
 
 
 # --- Whisper model integrity (the "expected 128 mel bands, got 80" failure) ---

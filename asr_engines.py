@@ -42,6 +42,13 @@ SAMPLE_RATE = 16000
 # so no piece may exceed this length. 20 s is onnx-asr's own default.
 MAX_SEGMENT_SECONDS = 20.0
 
+# Parakeet decodes each Silero VAD piece with no surrounding context. onnx-asr's
+# default (100 ms of silence ends a piece) cut meetings into pieces of 1.4 s
+# median; bridging pauses up to 1 s gives longer pieces and fewer recognition
+# errors on public AMI meetings (#107, docs/ENGINE_EVALUATION.md). The 20 s cap
+# above still bounds every piece.
+VAD_MIN_SILENCE_MS = 1000
+
 VERIFIED_MARKER = ".verified.json"
 
 
@@ -782,7 +789,8 @@ class ParakeetEngine:
                                     model_dir(SILERO_VAD, self.cache_dir),
                                     sess_options=opts, providers=cpu)
             self._asr = asr.with_vad(vad, batch_size=1,
-                                     max_speech_duration_s=MAX_SEGMENT_SECONDS).with_timestamps()
+                                     max_speech_duration_s=MAX_SEGMENT_SECONDS,
+                                     min_silence_duration_ms=VAD_MIN_SILENCE_MS).with_timestamps()
         except Exception as exc:
             raise ModelLoadError(
                 f"{label(self.spec.name)} failed to load ({type(exc).__name__}: {exc}). "
