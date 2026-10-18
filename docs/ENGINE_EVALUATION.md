@@ -7,6 +7,7 @@ All tests ran on one laptop: Intel Core Ultra 7 255H (16 logical processors, 32 
 ## Summary
 
 - **Most accurate: Qwen3-ASR-1.7B.** On eight whole meetings it had a word error rate of 19.4%, against 24.0% for Parakeet v2 (the default) and 23.9% for Whisper large-v3 turbo. It was the most accurate on every one of the eight meetings.
+- **Parakeet v2 since #107: 21.2%.** Its speech detection now bridges pauses of up to 1 second, which cut its word error rate on the same eight meetings from 24.0% to 21.2% and used less processor time. See [Speech detection pauses](#speech-detection-pauses-107). The other figures on this page were measured before that change.
 - **Fastest: Parakeet v2.** 20 times faster than real time (about 3 minutes per hour of audio), against about 3 times for Qwen3-ASR and turbo (about 20 minutes per hour).
 - **Qwen3-ASR needs much more memory.** Its peak was 11.2 GB per meeting, against 2.2 GB for turbo. That rules it out on 8 GB laptops and makes it tight on 16 GB.
 - **The NPU is not usable** on this laptop for any engine tested (details below).
@@ -46,6 +47,44 @@ Word error rate per meeting:
 - Qwen3-ASR's memory peak was 10.8 to 11.2 GB on every meeting regardless of length, so it is a fixed cost, not growth. A likely large share is the word-timing aligner running unquantised on PyTorch; this was not measured separately. An OpenVINO version of the aligner was merged upstream on 7 October 2026 but is not yet in a release (the latest at the time was 2026.4.1, 1 October).
 - Parakeet's peak memory was not recorded in this run. An earlier short-clip run (`tools/compare_engines.py`, 13 October 2026, #12) measured 1.2 GB. That run, like the app's Parakeet worker at the time, loaded faster-whisper's decoder and with it CTranslate2, which the worker has not loaded since R12a (#182), so the figure is likely higher than the worker's today. Since #187 the tool decodes clips as the app does, in its contained decoder process: mono clips differ only by 16-bit rounding and a damaged clip stops the run instead of being cut short. Since #220 the decoder mixes channels equally (their mean): stereo clips reach the engine at the same level as in the earlier runs, and clips with more channels keep every channel at an equal weight, where the earlier runs dropped a channel taken for a low-frequency one and weighted the others by speaker position. Re-measure memory and word error rates before comparing them with the figures here.
 - Background Windows services (Defender, the Intel Driver & Support Assistant) briefly used up to about a quarter of the processor's total capacity. Another process used 5% or more in 12% of the 15-second samples during the Qwen3-ASR run and 3% during turbo. That may have slowed Qwen3-ASR slightly. It cannot change any transcript.
+
+## Speech detection pauses (#107)
+
+Benchmark of 19 October 2026 on public AMI meetings, reproduced by an independent reviewer. The full report and the review are in issue #107.
+
+**Finding.** Parakeet hears each stretch of speech that the speech detector (Silero VAD, through onnx-asr) passes it, with no surrounding context. onnx-asr's default ends a stretch after 100 ms of silence. That cut the eight meetings into 5,324 pieces: median 1.4 s, 67% under 2 s. The full pass was losing words mainly through these short pieces, not through quiet speech the detector missed: a lower detection threshold gave no consistent gain, and only 0.7% of reference words lay wholly outside any piece.
+
+**Change.** Since #107 a piece ends only after 1 second of silence (`VAD_MIN_SILENCE_MS` in `asr_engines.py`, passed as onnx-asr's `min_silence_duration_ms`). Every other speech-detection setting is onnx-asr's default, and no piece is longer than 20 s (`MAX_SEGMENT_SECONDS`), as before. Whisper uses faster-whisper's own speech detection and is not affected.
+
+**Method.**
+- Twelve AMI meetings, headset mix, scored as in the whole-meeting test above. The eight above (39,100 reference words) were used to choose the setting. Four more (EN2002b, ES2004b, IS1009b, TS3003b; 140 minutes, 22,386 words) were held out and scored only for the settings already chosen.
+- The app's processing path at commit 7d5061f (45 s chunks, chunk ownership), Parakeet v2 INT8 in Faster mode (14 threads). Only the speech-detection arguments changed between runs.
+- Settings tried: 300, 600, 1,000 and 2,000 ms of silence to end a piece; 300 ms of padding; the #103 live-trial settings; lower detection thresholds; and no speech detection at all.
+- Noise floor: each main setting was run again with the input scaled by 0.99. The largest change on any one meeting was 0.82 points, and pooled changes were within 0.1 point. Runs are deterministic, so this measures sensitivity to the input, not run-to-run variation.
+- Intervals are 95% from a paired bootstrap over 2-minute blocks (10,000 resamples).
+
+**Results.**
+
+| Silence that ends a piece | Word error rate, 8 meetings | Substitutions | Deletions | Insertions | Word error rate, 4 held out | Pieces (8 meetings) | Words placed in silence | Processor time (8 meetings) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 ms (before) | 24.0% | 6.4% | 16.1% | 1.5% | 21.2% | 5,324 | 108 | 2,695 s |
+| 600 ms | 21.6% | 5.1% | 15.0% | 1.5% | 19.8% | 2,254 | 98 | 2,204 s |
+| **1,000 ms (adopted)** | **21.2%** | 4.9% | 14.8% | 1.5% | **19.8%** | 1,510 | 92 | 2,311 s |
+| 2,000 ms | 21.2% | 4.8% | 14.9% | 1.6% | not run | 1,074 | 92 | 2,343 s |
+
+- 1,000 ms against before: 2.9 points better on the eight meetings (interval 2.2 to 3.5), and better on all eight; 1.4 points better on the four held out (interval 0.6 to 2.1), and better on all four.
+- Insertions did not rise. Words placed in silence fell from 108 to 92 (held out: 60 to 58).
+- Processor time fell by 14% in this run, but varied by meeting (7% to 21% on the three meetings the reviewer reran).
+- Overlapped speech improved only a little: 43.9% of words spoken over another speaker were lost before, 41.5% after. One transcript cannot hold two speakers at once.
+- Word timing: the share of word starts within 0.5 s of the reference is unchanged (99.2%); within 0.25 s it fell from 97.7% to 97.2% (held out: 97.7% to 96.9%).
+
+**Why 1 second, not 0.6.** On the eight meetings 1,000 ms beat 600 ms by 0.41 points (interval 0.08 to 0.75). But those are the meetings the value was chosen on, and on the four held out the two tie (1.37 and 1.39 points better than before). 600 ms was fixed in advance from the #103 live trial; 1,000 ms was the best of four values tried. So the evidence for 1,000 ms over 600 ms is weak. The reviewer recommended 600 ms; the owner chose 1,000 ms on 19 October 2026, knowing this.
+
+**Costs.**
+- Speaker labels. The app gives each sentence one speaker, and longer pieces make sentences that span two speakers more common. The reviewer measured the best a perfect speaker model could do (the share of reference words in a sentence whose main speaker said them): ES2004a 90.2% before, 90.3% at 600 ms, 89.2% at 1,000 ms; IS1009a 86.6%, 86.1%, 85.2%; TS3003b 95.7%, 94.5%, 93.7%. 600 ms costs about half as much.
+- Longer pieces. In the reviewer's measurement, the share of audio in pieces of 15 s or more rose from 4.7% to 53% (33% at 600 ms). Parakeet occasionally drops a burst of clear speech within one piece (on TS3003b about 48 words in one minute), and a longer piece makes such a burst longer. Bursts happened about as often before.
+
+**Not tested.** Far-field (table microphone) and telephone audio; business recordings with long silences or hold music (#25); Parakeet v3, which uses the same setting; the graphics-card path in `tools/gpu_trial.py`; the 148 short public clips below, which were not re-run; and whether Parakeet was trained on AMI.
 
 ## Short clips (first screen)
 
