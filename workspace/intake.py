@@ -101,10 +101,8 @@ def add_folder(store, path, include_existing=False):
                           "your whole user folder.")
     from workspace.store import new_id
     fid = new_id()
-    try:
-        store.add_folder(fid, real, include_existing)
-    except Exception as exc:
-        raise IntakeError("That folder is already watched.") from exc
+    if not store.add_folder(fid, real, include_existing):
+        raise IntakeError("That folder is already watched.")
     return fid
 
 

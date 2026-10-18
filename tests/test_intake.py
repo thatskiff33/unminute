@@ -81,6 +81,17 @@ class IntakeTests(unittest.TestCase):
         with self.assertRaises(IntakeError):
             intake.add_folder(self.store, str(self.folder))       # already watched
 
+    def test_only_a_duplicate_is_called_already_watched(self):
+        # Any other failure (here a full disk) is not "already watched" (#111 C2a).
+        from workspace.store import StoreError
+        other = self.root / "Other"
+        other.mkdir()
+        with mock.patch.object(self.store, "tx", side_effect=StoreError("disk is full")):
+            with self.assertRaises(StoreError) as caught:
+                intake.add_folder(self.store, str(other))
+        self.assertNotIsInstance(caught.exception, IntakeError)
+        self.assertEqual([], intake.folders(self.store))
+
     def test_existing_files_only_when_asked(self):
         wav(self.folder / "before.wav")
         intake.add_folder(self.store, str(self.folder))

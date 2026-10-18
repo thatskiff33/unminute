@@ -26,8 +26,12 @@ from pathlib import Path
 ALLOWED, WAIT, TOO_NEW = 0, 5, 6     # exit codes used by the installer
 UNREADABLE = object()                  # current_schema(): the workspace exists but cannot be read
 
-# Tables that can hold meeting content (everything except configuration-like
-# bookkeeping: schema_version and the minimal receipts).
+# Tables that never make a migration wait: bookkeeping (schema_version, the
+# minimal receipts) and watched-folder configuration (#23). Every other table
+# can hold meeting content. A watched folder's path is kept through the
+# store's codec like content (store.CONTENT_COLUMNS, #111 C2) because it can
+# name a client, but it is configuration, not a meeting's content: it is
+# carried over (store.CARRY_OVER) and never blocks an update (C4).
 NON_CONTENT = {"schema_version", "receipts", "sqlite_sequence",
                # watched-folder configuration and bounded suppression data (#23)
                "watched_folders", "intake_seen", "intake_content", "intake_meta"}

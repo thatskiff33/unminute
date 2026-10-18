@@ -1,10 +1,16 @@
 # Meeting content is read and written only through the Store's codec (#111
 # C2a; docs/ENCRYPTION.md), so C2b can seal every content column in one place.
-#   - No module but store.py names a content column (store.CONTENT_COLUMNS) in
-#     its SQL, or selects * from a table that has one.
+#   - Static: no SQL in workspace/ outside store.py, and none in tools/ but
+#     the known sites C2b moves (TOOLS_RAW_SQL), names a content column
+#     (store.CONTENT_COLUMNS), selects or returns * with a table that has one,
+#     inserts into one without naming its columns, or is built at run time
+#     around one. Conditions given to the store's meetings(), holds() and
+#     folders() name plain columns only (store.plain_condition).
 #   - With a codec that changes every value, a whole meeting's life leaves no
 #     content readable in the database file, and everything the app shows is
 #     still right: any read or write that went around the codec would fail.
+#   - While those runs go, a SQLite authorizer (ContentGuard) refuses any
+#     statement outside store.py that reads or changes a content column.
 # Synthetic text only.
 #   python -m unittest discover -s tests -v
 
@@ -13,12 +19,14 @@ import importlib.util
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
 import types
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -27,75 +35,465 @@ from workspace import store  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
-SQL = re.compile(r"\b(SELECT|INSERT|UPDATE|DELETE)\b")
-TABLE = re.compile(r"\b(?:FROM|JOIN|INTO|UPDATE)\s+(\w+)")
-STAR = re.compile(r"\bSELECT\s+(?:DISTINCT\s+)?(?:\w+\.)?\*")
+# -- the static check -----------------------------------------------------------------
+# Every string the parser sees is a candidate. Pieces joined with "+", and with
+# "+=" on one name within a function, are folded into one text first; f-string
+# placeholders and other pieces known only at run time become HOLE. A string
+# that is itself Python (a script for a child process) is parsed and checked
+# as code. Matching ignores case, quoted and schema-qualified names
+# ("meetings", [meetings], main.meetings) are unquoted, and a table counts as
+# used wherever its name appears (comma joins and subqueries included).
+# It cannot see SQL assembled across functions, from data or with str.join:
+# the authorizer below covers the paths the scrambling tests run.
+
+HOLE = " \x00 "
+LOOKS_LIKE_SQL = re.compile(
+    r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE)\b"
+    r"|(?i:\bselect\b[\s\S]*\bfrom\b|\binsert\s+(?:or\s+\w+\s+)?into\b|\breplace\s+into\b"
+    r"|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b)")
+QUOTED = re.compile(r'"(\w+)"|\[(\w+)\]|`(\w+)`')
+QUOTED_TABLE = re.compile(r"\b(from|join|into|update|table)\s+'(\w+)'")
+SCHEMA_NAME = re.compile(r"\b(?:main|temp)\s*\.\s*")
+FORMAT_SLOT = re.compile(r"%\(\w+\)s|%s|\{\w*\}")
+TABLE_SLOT = re.compile(r"\b(?:from|join|into|update|table)\s+\x00")
+STAR = re.compile(r"(?:\bselect\s+(?:distinct\s+|all\s+)?|,\s*|\.\s*|\breturning\s+)\*")
+LIST_SLOT = re.compile(r"\bin\s*\(\s*\x00\s*\)")
+POSITIONAL = (r"\b(?:insert|replace)\s+(?:or\s+\w+\s+)?into\s+{}\s*(?:as\s+\w+\s*)?"
+              r"(?:values|select|default)\b")
+RUN_TIME = "<run-time table>"
 
 
-def sql_in(path):
-    """(line, text) of every string in a module that looks like SQL; the
-    parts of an f-string between its placeholders are joined."""
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            text = node.value
+def _fold(node):
+    """The text of a string expression, or None if it is not one."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value if isinstance(v, ast.Constant) else HOLE for v in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _fold(node.left), _fold(node.right)
+        if left is None and right is None:
+            return None
+        return (HOLE if left is None else left) + (HOLE if right is None else right)
+    return None
+
+
+def _texts(tree):
+    """(node, text) for each string expression not part of a larger one."""
+    parts = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            parts.update((id(node.left), id(node.right)))
         elif isinstance(node, ast.JoinedStr):
-            text = " x ".join(v.value for v in node.values if isinstance(v, ast.Constant))
-        else:
-            continue
-        if SQL.search(text):
-            yield node.lineno, text
+            parts.update(id(v) for v in ast.walk(node) if v is not node)
+    for node in ast.walk(tree):
+        if id(node) not in parts and (text := _fold(node)) is not None:
+            yield node, text
+
+
+SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+
+def _own_nodes(scope):
+    """A module's or function's nodes, without those of nested functions and classes."""
+    todo = list(ast.iter_child_nodes(scope))
+    while todo:
+        node = todo.pop()
+        yield node
+        if not isinstance(node, (*SCOPES, ast.Lambda)):
+            todo.extend(ast.iter_child_nodes(node))
+
+
+def _scopes(tree, prefix):
+    """(node, qualified name) for the module and every function and class in it."""
+    out, todo = [(tree, prefix or "<module>")], [(tree, prefix)]
+    while todo:
+        node, name = todo.pop()
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, SCOPES):
+                qual = f"{name}.{child.name}" if name else child.name
+                out.append((child, qual))
+                todo.append((child, qual))
+            else:
+                todo.append((child, name))
+    return out
+
+
+def _built_up(scope):
+    """(line, text) for each name in a scope extended with +=: its pieces joined."""
+    pieces = {}
+    for node in sorted((n for n in _own_nodes(scope) if hasattr(n, "lineno")),
+                       key=lambda n: (n.lineno, n.col_offset)):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and (text := _fold(node.value)) is not None):
+            pieces[node.targets[0].id] = [node.lineno, text, False]
+        elif (isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add)
+              and isinstance(node.target, ast.Name) and node.target.id in pieces):
+            entry = pieces[node.target.id]
+            entry[1] += _fold(node.value) or HOLE
+            entry[2] = True
+    return [(line, text) for line, text, grown in pieces.values() if grown]
+
+
+def _script(text):
+    """The parsed tree when a string is a Python program, else None."""
+    if "\n" not in text or not re.search(r"^(?:def|import|from)\s", text, re.M):
+        return None
+    try:
+        return ast.parse(text)
+    except SyntaxError:
+        return None
+
+
+def sql_in_source(source, prefix=""):
+    """(line, scope, text) for every SQL text in Python source."""
+    tree = ast.parse(source)
+    scopes = _scopes(tree, prefix)
+    owner = {id(node): name for scope, name in scopes for node in _own_nodes(scope)}
+    for scope, name in scopes:
+        for line, text in _built_up(scope):
+            if LOOKS_LIKE_SQL.search(text):
+                yield line, name, text
+    for node, text in _texts(tree):
+        name = owner.get(id(node), prefix or "<module>")
+        if isinstance(node, ast.Constant) and _script(text) is not None:
+            for line, scope, sql in sql_in_source(text, f"{name}:script"):
+                yield node.lineno + line - 1, scope, sql
+        elif LOOKS_LIKE_SQL.search(text):
+            yield node.lineno, name, text
+
+
+def _normal(text):
+    """Lower case; names unquoted and unqualified; %s and {} slots as HOLE."""
+    text = FORMAT_SLOT.sub(HOLE, text).lower()
+    text = QUOTED.sub(lambda m: m.group(m.lastindex), text)
+    text = QUOTED_TABLE.sub(r"\1 \2", text)
+    return SCHEMA_NAME.sub("", text)
 
 
 def content_problems(text):
-    """What a SQL string does with content columns: names one, or selects *
-    from a table that has one."""
-    out = []
-    for table in TABLE.findall(text):
-        columns = store.CONTENT_COLUMNS.get(table, ())
-        if not columns:
-            continue
-        if STAR.search(text):
-            out.append(f"SELECT * with {table}")
-        out += [f"{table}.{c}" for c in columns if re.search(rf"\b{c}\b", text)]
+    """What a SQL text does with content: names a content column of a table it
+    uses, selects or returns * with one, inserts into one without naming the
+    columns, or is built at run time around one (a slot other than "IN (?)").
+    A table named only at run time is taken to be any table with content."""
+    t = _normal(text)
+    tables = [name for name in store.CONTENT_COLUMNS if re.search(rf"\b{name}\b", t)]
+    dynamic = bool(TABLE_SLOT.search(t))
+    if not tables and not dynamic:
+        return []
+    out = [f"{table}.{column}" for table in tables for column in store.CONTENT_COLUMNS[table]
+           if re.search(rf"\b{column}\b", t)]
+    if dynamic:
+        out += sorted({f"{RUN_TIME}.{column}" for columns in store.CONTENT_COLUMNS.values()
+                       for column in columns if re.search(rf"\b{column}\b", t)})
+    if STAR.search(t):
+        out.append("* with " + ", ".join(tables + [RUN_TIME] * dynamic))
+    out += [f"insert into {table} without columns" for table in tables
+            if re.search(POSITIONAL.format(table), t)]
+    if tables and "\x00" in LIST_SLOT.sub("", t):
+        out.append("built at run time with " + ", ".join(tables))
     return out
+
+
+def problems_in(paths):
+    """{(path, scope, problem)} for the SQL in these files."""
+    found = set()
+    for path in paths:
+        rel = path.relative_to(ROOT).as_posix()
+        for _line, scope, text in sql_in_source(path.read_text(encoding="utf-8")):
+            found.update((rel, scope, problem) for problem in content_problems(text))
+    return found
+
+
+def conditions_in(paths):
+    """(path, line, text) for each constant condition given to the store's
+    meetings(), holds() or folders()."""
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("meetings", "holds", "folders") and node.args
+                    and (text := _fold(node.args[0])) is not None):
+                yield path.relative_to(ROOT).as_posix(), node.lineno, text
+
+
+def workspace_modules():
+    return sorted(p for p in (ROOT / "workspace").rglob("*.py") if p.name != "store.py")
+
+
+def tool_modules():
+    return sorted((ROOT / "tools").rglob("*.py"))
+
+
+# Tools that still read or write content columns directly (with the plain
+# codec that works). C2b moves them onto the store, recorded in #111. The test
+# keeps this list exact: a new site fails, and so does one that has gone.
+TOOLS_RAW_SQL = {
+    ("tools/packaged_crash_check.py", "<module>:script.inspect", "meetings.last_error"),
+    ("tools/packaged_crash_check.py", "<module>:script.inspect", "segments.text"),
+    ("tools/packaged_crash_check.py", "<module>:script.inspect", "edits.text"),
+    ("tools/packaged_crash_check.py", "<module>:script.inspect", "built at run time with edits"),
+    ("tools/workspace_ui_check.py", "main", "segments.text"),
+}
+
+
+def problems_in_source(source):
+    return [p for _line, _scope, text in sql_in_source(source) for p in content_problems(text)]
 
 
 class StaticTests(unittest.TestCase):
 
     def test_only_the_store_names_content_columns(self):
-        found = []
-        for path in sorted((ROOT / "workspace").glob("*.py")):
-            if path.name == "store.py":
-                continue
-            for line, text in sql_in(path):
-                for problem in content_problems(text):
-                    found.append(f"{path.name}:{line}: {problem}")
-        self.assertEqual([], found)
+        self.assertEqual(set(), problems_in(workspace_modules()))
+
+    def test_tools_with_raw_content_sql_are_exactly_the_known_ones(self):
+        self.assertEqual(TOOLS_RAW_SQL, problems_in(tool_modules()))
+
+    def test_conditions_given_to_the_store_are_plain(self):
+        found = list(conditions_in(workspace_modules() + tool_modules()))
+        self.assertTrue(found)
+        for path, line, text in found:
+            with self.subTest(at=f"{path}:{line}"):
+                self.assertEqual(text, store.plain_condition(text))
 
     def test_the_check_sees_content_sql(self):
-        caught = ["SELECT * FROM meetings", "SELECT m.* FROM meetings m",
-                  "SELECT id, title FROM meetings", "UPDATE meetings SET title = ?",
-                  "SELECT s.id FROM segments s JOIN edits e ON e.segment_id = s.id "
-                  "WHERE e.text IS NULL", "SELECT wf.path FROM sources s JOIN watched_folders wf",
-                  "INSERT INTO holds (id, reason) VALUES (?, ?)"]
-        for text in caught:
+        caught = {
+            "SELECT * FROM meetings": "* with meetings",
+            "SELECT m.* FROM meetings m": "* with meetings",
+            "SELECT id, title FROM meetings": "meetings.title",
+            "UPDATE meetings SET title = ?": "meetings.title",
+            "SELECT s.id FROM segments s JOIN edits e ON e.segment_id = s.id "
+            "WHERE e.text IS NULL": "edits.text",
+            "SELECT wf.path FROM sources s JOIN watched_folders wf": "watched_folders.path",
+            "INSERT INTO holds (id, reason) VALUES (?, ?)": "holds.reason",
+            # lower and mixed case
+            "select title from meetings": "meetings.title",
+            "Delete From holds Where Reason = ?": "holds.reason",
+            # comma joins, and alias.* or * anywhere in the list
+            "SELECT m.title FROM versions v, meetings m WHERE m.id = v.meeting_id":
+                "meetings.title",
+            "SELECT v.id, m.* FROM versions v, meetings m": "* with meetings",
+            "SELECT v.id, m.* FROM versions v JOIN meetings m ON m.id = v.meeting_id":
+                "* with meetings",
+            "SELECT id, * FROM holds": "* with holds",
+            "SELECT DISTINCT h.* FROM holds h": "* with holds",
+            # qualified and quoted names
+            "SELECT * FROM main.meetings": "* with meetings",
+            'SELECT * FROM "main"."meetings"': "* with meetings",
+            'SELECT "title" FROM "meetings"': "meetings.title",
+            "SELECT [title] FROM [meetings]": "meetings.title",
+            "SELECT `reason` FROM `holds`": "holds.reason",
+            "SELECT * FROM 'holds'": "* with holds",
+            "SELECT h.reason FROM temp.holds h": "holds.reason",
+            # inserts without a column list, REPLACE and RETURNING
+            "INSERT OR REPLACE INTO reviewed_snapshots VALUES (?,?,?,?)":
+                "insert into reviewed_snapshots without columns",
+            "INSERT INTO holds VALUES (?, ?, ?, ?, ?, ?, ?)":
+                "insert into holds without columns",
+            "insert into meetings select * from old_meetings":
+                "insert into meetings without columns",
+            "REPLACE INTO edits VALUES (?, ?, ?)": "insert into edits without columns",
+            "REPLACE INTO edits (segment_id, text, edited_at) VALUES (?, ?, ?)": "edits.text",
+            "DELETE FROM holds WHERE id = ? RETURNING *": "* with holds",
+            "UPDATE holds SET released_at = ? WHERE id = ? RETURNING reason": "holds.reason",
+            # a content column in a condition or a subquery
+            "DELETE FROM holds WHERE reason LIKE ?": "holds.reason",
+            "SELECT id FROM versions WHERE meeting_id IN "
+            "(SELECT id FROM meetings WHERE title = ?)": "meetings.title",
+            # format slots: a column chosen at run time
+            "SELECT %s FROM meetings": "built at run time with meetings",
+            "SELECT {} FROM holds": "built at run time with holds",
+        }
+        for text, problem in caught.items():
             with self.subTest(text=text):
-                self.assertTrue(content_problems(text))
+                self.assertIn(problem, content_problems(text))
         fine = ["SELECT COUNT(*) FROM meetings", "SELECT id, reviewed_at FROM meetings",
+                "select count(*) from holds where released_at is null",
+                "SELECT phase, COUNT(*) FROM meetings GROUP BY phase",
                 "DELETE FROM segments WHERE version_id = ?",
                 "UPDATE cleanup_jobs SET error = ? WHERE id = ?",
-                "UPDATE watched_folders SET last_error = ? WHERE id = ?"]
+                "UPDATE watched_folders SET last_error = ? WHERE id = ?",
+                "INSERT INTO segment_speakers VALUES (?,?,?,?)",
+                "INSERT INTO speaker_turns VALUES (?,?,?,?,?)",
+                "SELECT (end_sample - start_sample) * 2 FROM chunks",
+                "UPDATE speaker_runs SET status = 'superseded' WHERE version_id = ?",
+                "SELECT * FROM versions WHERE state = 'active'"]
         for text in fine:
             with self.subTest(text=text):
                 self.assertEqual([], content_problems(text))
 
+    def test_the_check_sees_sql_put_together_in_code(self):
+        sources = {
+            "+": 'def f(db):\n    db.execute("SELECT wf.path FROM sources s " +\n'
+                 '               "JOIN watched_folders wf ON wf.id = s.intake_folder")\n',
+            "+=": 'def f(db, mid):\n    q = "SELECT id FROM holds WHERE meeting_id = ?"\n'
+                  '    q += " AND reason LIKE ?"\n    return db.execute(q, (mid, "%x%"))\n',
+            "f-string column": 'def f(db, col):\n    db.execute(f"SELECT {col} FROM meetings")\n',
+            "f-string table": 'def f(db, t):\n    db.execute(f"SELECT title FROM {t}")\n',
+            "f-string star": 'def f(db, t):\n    db.execute(f"SELECT * FROM {t} WHERE id = ?")\n',
+            "% slot": 'def f(db, c):\n    db.execute("SELECT %s FROM meetings" % c)\n',
+            "variable piece": 'def f(db, w):\n    db.execute("SELECT id FROM holds WHERE " + w)\n',
+            "child script": 'CHILD = r"""\nimport sqlite3\n\n\ndef inspect(db):\n'
+                            '    return db.execute("SELECT text FROM segments").fetchall()\n"""\n',
+        }
+        for shape, source in sources.items():
+            with self.subTest(shape=shape):
+                self.assertTrue(problems_in_source(source), shape)
+        fine = ('def f(db, marks):\n    db.execute(f"SELECT id FROM meetings WHERE id IN '
+                '({marks})")\n',
+                'def f(db, t):\n    return db.execute(f"SELECT COUNT(*) FROM {t}")\n',
+                'MESSAGE = "Holds never expire on their own; the update waits."\n')
+        for source in fine:
+            with self.subTest(source=source):
+                self.assertEqual([], problems_in_source(source))
+
+    def test_store_conditions_refuse_content_and_quotes(self):
+        for where in ("title LIKE ?", "LAST_ERROR IS NULL", '"title" = ?', "phase != 'error'",
+                      "id = ?; DROP TABLE meetings", "id = ? -- the rest", "id = ? /* x */",
+                      "id IN (SELECT meeting_id FROM holds WHERE reason = ?)", "[path] = ?",
+                      "`reason` = ?", None):
+            with self.subTest(where=where), self.assertRaises(ValueError):
+                store.plain_condition(where)
+        with tempfile.TemporaryDirectory() as tmp:
+            s = store.Store(Path(tmp) / "w.db")
+            try:
+                s.create_meeting("synthetic")
+                for call, where in ((s.meetings, "title LIKE ?"), (s.holds, "reason = ?"),
+                                    (s.folders, "path = ?")):
+                    with self.subTest(call=call.__name__), self.assertRaises(ValueError):
+                        call(where, ("x",))
+                self.assertEqual(1, len(s.meetings("phase != ?", ("error",))))
+            finally:
+                s.close()
+
     def test_the_content_columns_are_the_schemas(self):
-        db = __import__("sqlite3").connect(":memory:")
+        db = sqlite3.connect(":memory:")
         db.executescript(store.SCHEMA)
         for table, columns in store.CONTENT_COLUMNS.items():
             have = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
             with self.subTest(table=table):
                 self.assertTrue(set(columns) <= have, (table, columns, have))
+        db.close()
+
+
+# -- the runtime check -------------------------------------------------------------------
+# Test only. While a ContentGuard is open, every SQLite connection opened gets
+# an authorizer that refuses, unless the statement is store.py's own, to read
+# or change a content column or to insert into a table that has one. The
+# statement cache is off, so every statement is checked as it is prepared, not
+# only its first use. A caller's SQL run through the store's _one() or _all()
+# counts as the caller's.
+
+STORE_FILE = os.path.normcase(os.path.abspath(store.__file__))
+PASS_THROUGH = {"_one", "_all"}
+
+
+def _in_store(frame):
+    return os.path.normcase(os.path.abspath(frame.f_code.co_filename)) == STORE_FILE
+
+
+def _author(frame):
+    """The frame whose SQL this is: past the store's pass-through helpers."""
+    while frame.f_back is not None and _in_store(frame) and frame.f_code.co_name in PASS_THROUGH:
+        frame = frame.f_back
+    return frame
+
+
+class ContentGuard:
+    def __init__(self):
+        self.refused = []
+
+    def __enter__(self):
+        real = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            kwargs["cached_statements"] = 0
+            con = real(*args, **kwargs)
+            con.set_authorizer(self._check)
+            return con
+        self._patch = mock.patch("sqlite3.connect", connect)
+        self._patch.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._patch.stop()
+
+    def _check(self, action, table, column, _db, _source):
+        if action in (sqlite3.SQLITE_READ, sqlite3.SQLITE_UPDATE):
+            content = column in store.CONTENT_COLUMNS.get(table, ())
+        elif action == sqlite3.SQLITE_INSERT:
+            content = table in store.CONTENT_COLUMNS
+        else:
+            return sqlite3.SQLITE_OK
+        caller = _author(sys._getframe(1))   # sys._getframe(1) ran the statement
+        if not content or _in_store(caller):
+            return sqlite3.SQLITE_OK
+        self.refused.append(f"{Path(caller.f_code.co_filename).name}:{caller.f_lineno} "
+                            f"{caller.f_code.co_name}: {table}.{column or '(insert)'}")
+        return sqlite3.SQLITE_DENY
+
+
+class GuardTests(unittest.TestCase):
+
+    def test_the_guard_refuses_content_outside_the_store(self):
+        with tempfile.TemporaryDirectory() as tmp, ContentGuard() as guard:
+            s = store.Store(Path(tmp) / "w.db")
+            try:
+                mid = s.create_meeting("synthetic")
+                s.add_hold("h1", mid, "all", "synthetic reason", 1.0)
+                self.assertEqual("synthetic", s.meeting(mid)["title"])
+                self.assertEqual(1, len(s.holds()))
+                s._one("SELECT id, reviewed_at FROM meetings")       # plain columns
+                s._one("SELECT COUNT(*) FROM holds")
+                self.assertEqual([], guard.refused)
+                # The store has just run the first of these itself.
+                for sql in ("SELECT * FROM meetings WHERE id = ?", "SELECT title FROM meetings",
+                            "SELECT id FROM holds WHERE reason = ?",
+                            "UPDATE meetings SET title = ? WHERE id = ?",
+                            "INSERT INTO holds VALUES (?, ?, ?, ?, ?, ?, ?)"):
+                    before = len(guard.refused)
+                    with self.subTest(sql=sql), self.assertRaises(store.StoreError):
+                        s._all(sql, (mid,) * sql.count("?"))
+                    self.assertGreater(len(guard.refused), before, sql)
+                before = len(guard.refused)
+                with self.assertRaises(store.StoreError):
+                    with s.tx() as db:
+                        db.execute("INSERT INTO meetings (id, created_at, updated_at, title) "
+                                   "VALUES ('m2', 1, 1, 'x')")
+                self.assertGreater(len(guard.refused), before)
+                self.assertTrue(all(r.startswith("test_content_access.py:")
+                                    for r in guard.refused), guard.refused)
+            finally:
+                s.close()
+
+    def test_a_run_whose_version_is_gone_is_still_ended(self):
+        # A damaged database opened with Continue anyway can lose a version row:
+        # its running speaker pass is still marked, with no note to bind.
+        for ending in ("restart", "failed"):
+            with self.subTest(ending=ending), tempfile.TemporaryDirectory() as tmp:
+                s = store.Store(Path(tmp) / "w.db", codec=Scrambling())
+                try:
+                    mid = s.create_meeting("synthetic")
+                    sid = s.add_source(mid, original_path=None, original_sha256="0",
+                                       original_size=1, original_mtime_ns=1, audio_sha256="0",
+                                       samples=16000, sample_rate=16000)
+                    vid = s.ensure_version(mid, sid, engine="e", model="m", model_revision="r",
+                                           precision="p", config={},
+                                           chunk_plan=[(0, 16000, 0, 16000)])
+                    rid = s.start_speaker_run(vid)
+                    s.db.execute("PRAGMA foreign_keys=OFF")
+                    s.db.execute("DELETE FROM chunks WHERE version_id = ?", (vid,))
+                    s.db.execute("DELETE FROM versions WHERE id = ?", (vid,))
+                    s.db.execute("PRAGMA foreign_keys=ON")
+                    if ending == "restart":
+                        s.mark_interrupted()
+                        want = "interrupted"
+                    else:
+                        s.end_speaker_run(rid, "failed", "synthetic failure")
+                        want = "failed"
+                    row = s._one("SELECT status, error FROM speaker_runs WHERE id = ?", (rid,))
+                    self.assertEqual((want, None), tuple(row))
+                finally:
+                    s.close()
 
 
 class Scrambling:
@@ -143,7 +541,7 @@ class ScramblingStoreTests(unittest.TestCase):
     def test_nothing_readable_on_disk_and_everything_right_in_the_app(self):
         from workspace import cleanup, handoff, holds, intake, speaker_names
         codec = Scrambling()
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ContentGuard() as guard:
             s = store.Store(Path(tmp) / "w.db", codec=codec)
             mid = s.create_meeting("MARKER-TITLE standup")
             sid = s.add_source(mid, original_path=r"C:\MARKER-PATH\a.wav", original_sha256="0",
@@ -174,6 +572,8 @@ class ScramblingStoreTests(unittest.TestCase):
             handoff.set_options(s, mid, [second], ["MARKER-REDACT"])
             hid = holds.add_hold(s, mid, "all", "MARKER-REASON for keeping")
             s.add_folder("f1", r"C:\MARKER-FOLDER", False)
+            intake.set_delete_originals(s, "f1", True)
+            s.set_source_intake(sid, "f1", may_delete=True)
             cleanup.confirm_transcript_reviewed(s, mid)
 
             # Everything the app reads comes back as written.
@@ -201,7 +601,9 @@ class ScramblingStoreTests(unittest.TestCase):
             snapshot = s.snapshot(mid)
             self.assertIn("MARKER-NAME Aroha: MARKER-EDIT kept", snapshot)
             self.assertEqual(snapshot, cleanup.render_reviewed(s, vid))
+            self.assertEqual([r"C:\MARKER-FOLDER"], intake.deletion_roots(s, mid))
             s.close()
+            self.assertEqual([], guard.refused)
 
             # Every content column was written through the codec, and none of
             # it is readable in the database file or its write-ahead log.
@@ -237,7 +639,7 @@ class ScramblingWorkspaceTests(unittest.TestCase):
 
         def fake(name):
             return f"test:fake_worker_engines:{name}"
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, ContentGuard() as guard:
             root = Path(tmp)
             rec = write_wav(root / "MARKER-TITLE synthetic.wav", 30)
             ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
@@ -264,6 +666,7 @@ class ScramblingWorkspaceTests(unittest.TestCase):
                 ws.release_hold(hold)
             finally:
                 ws.close()
+            self.assertEqual([], guard.refused)
             raw = b"".join(p.read_bytes() for p in (root / "ws").iterdir()
                            if p.name.startswith("workspace.db"))
             for marker in ("MARKER-TITLE", "MARKER-EDIT", "MARKER-REASON"):

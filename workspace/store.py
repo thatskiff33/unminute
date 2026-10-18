@@ -16,6 +16,7 @@
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -165,7 +166,10 @@ CREATE TABLE IF NOT EXISTS handoff_options (
     meeting_id TEXT PRIMARY KEY REFERENCES meetings(id),
     omitted TEXT NOT NULL, redactions TEXT NOT NULL);
 -- Watched-folder intake (#23): configuration plus bounded suppression data
--- (keyed path hashes, content hashes); no names, no meeting content.
+-- (keyed path hashes, content hashes); no meeting content. A folder's path can
+-- name a client, so it is kept through the codec like content (CONTENT_COLUMNS)
+-- but counts as configuration: it is carried over (CARRY_OVER) and never
+-- blocks an update (update.NON_CONTENT).
 CREATE TABLE IF NOT EXISTS watched_folders (
     id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, active INTEGER NOT NULL DEFAULT 1,
     created_at REAL NOT NULL, last_scan_at REAL, last_error TEXT,
@@ -192,10 +196,11 @@ CREATE TABLE IF NOT EXISTS receipts (
 """
 
 
-# Columns that hold meeting content (#111 C2; docs/ENCRYPTION.md). Only this
-# module names them in SQL, and every value read or written goes through the
-# Store's codec, so C2b can seal them in one place. tests/test_content_access.py
-# checks that no other module's SQL names them or selects * from their tables.
+# Columns that hold meeting content, and watched-folder paths, which can name a
+# client (#111 C2; docs/ENCRYPTION.md). Only this module names them in SQL, and
+# every value read or written goes through the Store's codec, so C2b can seal
+# them in one place. tests/test_content_access.py checks the SQL in workspace/
+# and tools/ (docs/WORKSPACE_DESIGN.md, "Content columns" says what it sees).
 CONTENT_COLUMNS = {
     "meetings": ("title", "last_error"),
     "reviewed_snapshots": ("text",),
@@ -209,6 +214,21 @@ CONTENT_COLUMNS = {
     "holds": ("reason",),
     "watched_folders": ("path",),
 }
+
+
+_CONTENT_NAMES = frozenset(c for cols in CONTENT_COLUMNS.values() for c in cols)
+_NOT_IN_A_CONDITION = re.compile(r"['\"`\[;]|--|/\*")
+
+
+def plain_condition(where):
+    """A where= condition for Store.meetings(), holds() or folders(): a fixed
+    SQL expression on plain columns, with values passed as arguments. Refused
+    (ValueError) if it has a quote, a comment or a second statement, or names
+    a content column, so no content is matched or read outside the codec."""
+    if (not isinstance(where, str) or _NOT_IN_A_CONDITION.search(where)
+            or _CONTENT_NAMES & set(re.findall(r"\w+", where.lower()))):
+        raise ValueError("A condition may name plain columns only, with values as arguments.")
+    return where
 
 
 class PlainCodec:
@@ -257,7 +277,9 @@ class SchemaTooNew(StoreError):
     """The database was written by a newer version of the app."""
 
 
-# Not meeting content: kept across an empty-workspace migration (#26).
+# Not meeting content: kept across an empty-workspace migration (#26). Rows are
+# copied as stored, so a migration that changes how the codec keeps a value
+# (watched_folders.path in C2b) must convert it on the way.
 CARRY_OVER = ("receipts", "watched_folders", "intake_content", "intake_meta",
               "intake_seen")
 
@@ -525,14 +547,17 @@ class Store:
         #15). Run at open, or (R11) once a damaged database's hold is released."""
         with self.tx() as db:
             db.execute("UPDATE attempts SET result = 'interrupted' WHERE result = 'running'")
-            # Same for a speaker pass cut short: it restarts from the start.
+            # Same for a speaker pass cut short: it restarts from the start. A
+            # run whose version row is missing (a damaged database opened with
+            # Continue anyway) is still marked, without a note: it has no
+            # meeting to bind one to, and it is never shown.
             for rid, mid in db.execute(
-                    "SELECT r.id, v.meeting_id FROM speaker_runs r JOIN versions v "
+                    "SELECT r.id, v.meeting_id FROM speaker_runs r LEFT JOIN versions v "
                     "ON v.id = r.version_id WHERE r.status = 'running'").fetchall():
+                note = (None if mid is None else
+                        self._seal(mid, "speaker_runs", "error", rid, SPEAKER_RESTART_NOTE))
                 db.execute("UPDATE speaker_runs SET status = 'interrupted', error = ? "
-                           "WHERE id = ?",
-                           (self._seal(mid, "speaker_runs", "error", rid, SPEAKER_RESTART_NOTE),
-                            rid))
+                           "WHERE id = ?", (note, rid))
 
     # -- content columns (CONTENT_COLUMNS) ---------------------------------------
 
@@ -614,7 +639,7 @@ class Store:
         """Meetings matching a condition on their plain columns (a fixed SQL
         expression from the caller, never user text), oldest first."""
         return [self._meeting(r) for r in self._all(
-            f"SELECT * FROM meetings WHERE {where} ORDER BY created_at", args)]
+            f"SELECT * FROM meetings WHERE {plain_condition(where)} ORDER BY created_at", args)]
 
     def rename_meeting(self, mid, title):
         with self.tx() as db:
@@ -840,7 +865,8 @@ class Store:
         and supersede earlier completed runs. Refused (False, nothing written)
         if the run is no longer 'running', its version is no longer active or
         the meeting's content changed meanwhile (cleanup, #17)."""
-        run = self._one("SELECT * FROM speaker_runs WHERE id = ?", (rid,))
+        run = self._one("SELECT status, version_id, epoch FROM speaker_runs WHERE id = ?",
+                        (rid,))
         if run is None or run["status"] != "running":
             return False
         # Attribution is computed outside the write lock (long meetings).
@@ -892,14 +918,15 @@ class Store:
     def end_speaker_run(self, rid, status, error=None):
         """Mark a run failed or interrupted. Its partial data was never written."""
         with self.tx() as db:
-            row = db.execute("SELECT v.meeting_id FROM speaker_runs r JOIN versions v "
+            row = db.execute("SELECT v.meeting_id FROM speaker_runs r LEFT JOIN versions v "
                              "ON v.id = r.version_id WHERE r.id = ?", (rid,)).fetchone()
             if row is None:
                 return
+            # No version row (a damaged database): no meeting to bind a note to.
+            note = None if row[0] is None else self._seal(row[0], "speaker_runs", "error",
+                                                          rid, error)
             db.execute("UPDATE speaker_runs SET status = ?, error = ?, finished_at = ? "
-                       "WHERE id = ? AND status = 'running'",
-                       (status, self._seal(row[0], "speaker_runs", "error", rid, error),
-                        time.time(), rid))
+                       "WHERE id = ? AND status = 'running'", (status, note, time.time(), rid))
 
     def _runs(self, where, args):
         """Speaker runs with their error opened, oldest first per version."""
@@ -1052,7 +1079,7 @@ class Store:
         """Holds matching a condition on their plain columns (a fixed SQL
         expression from the caller), oldest first, with their reasons opened."""
         return [self._opened("holds", r, r["meeting_id"], r["id"]) for r in self._all(
-            f"SELECT * FROM holds WHERE {where} ORDER BY created_at", args)]
+            f"SELECT * FROM holds WHERE {plain_condition(where)} ORDER BY created_at", args)]
 
     def handoff_options(self, mid):
         """(omitted, redactions) as stored (JSON text), or None."""
@@ -1089,14 +1116,23 @@ class Store:
     #    values, so meeting is None --------------------------------------------------
 
     def add_folder(self, fid, path, include_existing):
-        with self.tx() as db:
-            db.execute("INSERT INTO watched_folders (id, path, created_at, include_existing) "
-                       "VALUES (?, ?, ?, ?)",
-                       (fid, self._seal(None, "watched_folders", "path", fid, path),
-                        time.time(), 1 if include_existing else 0))
+        """False if the folder is already watched (the path is UNIQUE); any
+        other failure raises StoreError as usual."""
+        try:
+            with self.tx() as db:
+                db.execute("INSERT INTO watched_folders (id, path, created_at, "
+                           "include_existing) VALUES (?, ?, ?, ?)",
+                           (fid, self._seal(None, "watched_folders", "path", fid, path),
+                            time.time(), 1 if include_existing else 0))
+        except StoreError as exc:
+            if isinstance(exc.__cause__, sqlite3.IntegrityError):
+                return False
+            raise
+        return True
 
     def folders(self, where="1", args=()):
         """Watched folders matching a condition on their plain columns, oldest
         first, with their paths opened."""
         return [self._opened("watched_folders", r, None, r["id"]) for r in self._all(
-            f"SELECT * FROM watched_folders WHERE {where} ORDER BY created_at", args)]
+            f"SELECT * FROM watched_folders WHERE {plain_condition(where)} ORDER BY created_at",
+            args)]

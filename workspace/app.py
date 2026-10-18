@@ -1192,8 +1192,8 @@ class Workspace:
                 if m["paused"]:
                     continue                        # kept for Resume
                 return ("rerun", mid, (v["id"], count, self.store.skip_count(v["id"])))
-        for m in self.store.meetings("paused = 0 AND phase != 'error' AND reviewed_at IS NULL "
-                                     "AND audio_removed_at IS NULL"):
+        for m in self.store.meetings("paused = 0 AND phase != ? AND reviewed_at IS NULL "
+                                     "AND audio_removed_at IS NULL", ("error",)):
             v = self.store.active_version(m["id"])
             if v is None:
                 continue
