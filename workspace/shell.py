@@ -304,8 +304,8 @@ class _UiTimer:
 
 def _guarded(fn, *args):
     """Run a window-quietening step. A WebView2 failure never stops the app:
-    the window stays as it is (shown, or hidden but not suspended) and the
-    next minimise or restore tries again (#196)."""
+    the failed step is skipped, and the next minimise or restore runs its
+    steps again (#196)."""
     try:
         fn(*args)
     except Exception:
