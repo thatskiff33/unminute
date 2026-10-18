@@ -5,6 +5,7 @@
 # workspace/ package alone. Stdlib only.
 
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -30,6 +31,18 @@ def tool(name, cwd=ROOT, **tool_input):
 
 def shell(command, name="Bash"):
     return tool(name, command=command)
+
+
+@contextlib.contextmanager
+def profile_guard():
+    """The hook loaded afresh under a synthetic Windows profile, C:\\Users\\someone, so
+    checks of the folders above local AppData run the same on Linux CI."""
+    home = r"C:\Users\someone"
+    env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home}
+    with mock.patch.dict(os.environ, env):
+        fresh = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fresh)
+        yield fresh
 
 
 class FileToolTests(unittest.TestCase):
@@ -859,81 +872,89 @@ class ShellTests(unittest.TestCase):
     def test_other_recursive_programs_and_interpreter_walks_are_checked(self):
         # du, forfiles /s and where /r walk a folder's tree; so does code that walks
         # local AppData or the home folder named whole (R13b round 4 review).
-        for command, name in (
-                (r"forfiles /p %LOCALAPPDATA% /s /m *.json", "PowerShell"),
-                (r"where /r %LOCALAPPDATA% *.json", "Bash"),
-                ("du -a ~/AppData/Local", "Bash"),
-                (r"cd $env:LOCALAPPDATA; du -a", "PowerShell"),
-                ("python -c \"import os; [print(f) for r, d, f in "
-                 "os.walk(os.environ['LOCALAPPDATA'])]\"", "Bash"),
-                ("python - <<'EOF'\nimport os, pathlib\nfor p in pathlib.Path("
-                 "os.environ['LOCALAPPDATA']).rglob('*.json'): print(p)\nEOF", "Bash"),
-                ("node -e \"console.log(require('fs').readdirSync(process.env.LOCALAPPDATA, "
-                 "{recursive: true}))\"", "Bash"),
-                ("python -c \"from pathlib import Path; print(list(Path.home().rglob('*.db')))\"",
-                 "PowerShell"),
-                ("python -c \"import os; print(list(os.walk(os.path.expanduser('~'))))\"",
-                 "Bash"),
-                # a folder above local AppData written out, or the home folder read
-                # from the environment, in code that walks it
-                ("python -c \"import os; print(list(os.walk(r'C:\\Users')))\"", "Bash"),
-                ("python -c \"import os; print(list(os.walk('C:/Users/someone/AppData')))\"",
-                 "Bash"),
-                ("python -c \"import pathlib; print(list(pathlib.Path(r'C:\\Users')"
-                 ".rglob('*.db')))\"", "PowerShell"),
-                ("python -c \"import glob; print(glob.glob('C:/Users/**/*.db', recursive=True))\"",
-                 "Bash"),
-                ("python -c \"import os; print(list(os.walk(os.environ['USERPROFILE'])))\"",
-                 "Bash"),
-                ("python -c \"import os; print(list(os.walk(os.getenv('HOME'))))\"", "Bash"),
-                ("node -e \"require('fs').readdirSync(process.env.USERPROFILE, "
-                 "{recursive: true})\"", "Bash"),
-                # a relative start, run after a cd to a folder above local AppData
-                ("cd ~ && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
-                 "Bash"),
-                ("cd /c/Users && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
-                 "Bash"),
-                ("cd ~/.. && python -c \"import os; print(list(os.walk('.')))\"", "Bash"),
-                ("Set-Location C:\\Users; python -c \"import glob; print(glob.glob('**/*.db', "
-                 "recursive=True))\"", "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-        for command, name in (
-                ("du -sh workspace", "Bash"),
-                ("where python", "PowerShell"),
-                ("forfiles /p workspace /m *.py", "PowerShell"),
-                ("python -c \"import glob; print(glob.glob('workspace/**/*.py', "
-                 "recursive=True))\"", "Bash"),
-                ("python -c \"import os; print(os.listdir(os.environ['LOCALAPPDATA']))\"", "Bash"),
-                ("python -c \"from pathlib import Path; print(list((Path.home() / "
-                 "'Local_Repos').rglob('*.md')))\"", "Bash"),
-                ("python -c \"import os; print([r for r, d, f in os.walk('.')])\"", "Bash"),
-                ("python -c \"import os; print(list(os.walk('workspace')))\"", "PowerShell"),
-                ("python -c \"import pathlib; print(list(pathlib.Path('tests').rglob('*.py')))\"",
-                 "Bash"),
-                ("cd workspace && python -c \"import os; print(list(os.walk('.')))\"", "Bash")):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command, name)))
+        with profile_guard() as fresh:
+            for command, name in (
+                    (r"forfiles /p %LOCALAPPDATA% /s /m *.json", "PowerShell"),
+                    (r"where /r %LOCALAPPDATA% *.json", "Bash"),
+                    ("du -a ~/AppData/Local", "Bash"),
+                    (r"cd $env:LOCALAPPDATA; du -a", "PowerShell"),
+                    ("python -c \"import os; [print(f) for r, d, f in "
+                     "os.walk(os.environ['LOCALAPPDATA'])]\"", "Bash"),
+                    ("python - <<'EOF'\nimport os, pathlib\nfor p in pathlib.Path("
+                     "os.environ['LOCALAPPDATA']).rglob('*.json'): print(p)\nEOF", "Bash"),
+                    ("node -e \"console.log(require('fs').readdirSync(process.env.LOCALAPPDATA, "
+                     "{recursive: true}))\"", "Bash"),
+                    ("python -c \"from pathlib import Path; "
+                     "print(list(Path.home().rglob('*.db')))\"",
+                     "PowerShell"),
+                    ("python -c \"import os; print(list(os.walk(os.path.expanduser('~'))))\"",
+                     "Bash"),
+                    # a folder above local AppData written out, or the home folder read
+                    # from the environment, in code that walks it
+                    ("python -c \"import os; print(list(os.walk(r'C:\\Users')))\"", "Bash"),
+                    ("python -c \"import os; print(list(os.walk('C:/Users/someone/AppData')))\"",
+                     "Bash"),
+                    ("python -c \"import pathlib; print(list(pathlib.Path(r'C:\\Users')"
+                     ".rglob('*.db')))\"", "PowerShell"),
+                    ("python -c \"import glob; "
+                     "print(glob.glob('C:/Users/**/*.db', recursive=True))\"",
+                     "Bash"),
+                    ("python -c \"import os; print(list(os.walk(os.environ['USERPROFILE'])))\"",
+                     "Bash"),
+                    ("python -c \"import os; print(list(os.walk(os.getenv('HOME'))))\"", "Bash"),
+                    ("node -e \"require('fs').readdirSync(process.env.USERPROFILE, "
+                     "{recursive: true})\"", "Bash"),
+                    # a relative start, run after a cd to a folder above local AppData
+                    ("cd ~ && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
+                     "Bash"),
+                    ("cd /c/Users && python -c \"import os; "
+                     "print([r for r, d, f in os.walk('.')])\"",
+                     "Bash"),
+                    ("cd ~/.. && python -c \"import os; print(list(os.walk('.')))\"", "Bash"),
+                    ("Set-Location C:\\Users; python -c \"import glob; print(glob.glob('**/*.db', "
+                     "recursive=True))\"", "PowerShell")):
+                with self.subTest(command=command):
+                    self.assertIsNotNone(fresh.decide(shell(command, name)))
+            for command, name in (
+                    ("du -sh workspace", "Bash"),
+                    ("where python", "PowerShell"),
+                    ("forfiles /p workspace /m *.py", "PowerShell"),
+                    ("python -c \"import glob; print(glob.glob('workspace/**/*.py', "
+                     "recursive=True))\"", "Bash"),
+                    ("python -c \"import os; print(os.listdir(os.environ['LOCALAPPDATA']))\"",
+                     "Bash"),
+                    ("python -c \"from pathlib import Path; print(list((Path.home() / "
+                     "'Local_Repos').rglob('*.md')))\"", "Bash"),
+                    ("python -c \"import os; print([r for r, d, f in os.walk('.')])\"", "Bash"),
+                    ("python -c \"import os; print(list(os.walk('workspace')))\"", "PowerShell"),
+                    ("python -c \"import pathlib; "
+                     "print(list(pathlib.Path('tests').rglob('*.py')))\"",
+                     "Bash"),
+                    ("cd workspace && python -c \"import os; print(list(os.walk('.')))\"", "Bash")):
+                with self.subTest(command=command):
+                    self.assertIsNone(fresh.decide(shell(command, name)))
 
     def test_cygdrive_paths_and_variable_drive_reads_are_checked(self):
         # Git Bash's /proc/cygdrive/c is C:\, and a value read back through
         # PowerShell's variable: drive is substituted like $p (R13b round 4 review;
         # 27e1cac blocked the variable: forms).
-        data = r"C:\Users\someone\AppData\Local\Unminute\workspace\a.json"
-        for payload in (shell("rg -n budget /proc/cygdrive/c/Users"),
-                        shell("grep -rn budget /proc/cygdrive/c/Users/someone/AppData"),
-                        tool("Grep", pattern="budget", path="/proc/cygdrive/c/Users"),
-                        shell(f'$p = "{data}"; Get-Content (Get-Content variable:p)', "PowerShell"),
-                        shell(f'$p = "{data}"; Get-Content (Get-Item variable:p).Value',
-                              "PowerShell"),
-                        shell(f"$p = '{data}'; Get-Content (Get-Item variable:\\p).Value",
-                              "PowerShell")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(guard.decide(payload))
-        for payload in (shell("ls /proc/cygdrive/c/Users"),
-                        shell('$p = "notes: workspace"; Get-Content variable:q', "PowerShell")):
-            with self.subTest(payload=payload):
-                self.assertIsNone(guard.decide(payload))
+        with profile_guard() as fresh:
+            data = r"C:\Users\someone\AppData\Local\Unminute\workspace\a.json"
+            for payload in (shell("rg -n budget /proc/cygdrive/c/Users"),
+                            shell("grep -rn budget /proc/cygdrive/c/Users/someone/AppData"),
+                            tool("Grep", pattern="budget", path="/proc/cygdrive/c/Users"),
+                            shell(f'$p = "{data}"; Get-Content (Get-Content variable:p)',
+                                  "PowerShell"),
+                            shell(f'$p = "{data}"; Get-Content (Get-Item variable:p).Value',
+                                  "PowerShell"),
+                            shell(f"$p = '{data}'; Get-Content (Get-Item variable:\\p).Value",
+                                  "PowerShell")):
+                with self.subTest(payload=payload):
+                    self.assertIsNotNone(fresh.decide(payload))
+            for payload in (shell("ls /proc/cygdrive/c/Users"),
+                            shell('$p = "notes: workspace"; Get-Content variable:q', "PowerShell")):
+                with self.subTest(payload=payload):
+                    self.assertIsNone(fresh.decide(payload))
 
     def test_monitor_commands_are_checked(self):
         # Monitor runs a shell command too.
