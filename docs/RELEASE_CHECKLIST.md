@@ -89,7 +89,7 @@ Other results:
 
 ## GPU trial (engines)
 
-`tools/gpu_trial.py` runs the same audio on the CPU and on the GPU, verifies which ONNX Runtime provider was really used, and compares the outputs. Results for 5 minutes of synthetic speech, CPU against an NVIDIA RTX 500 Ada laptop GPU (4 GB), measured on 14 October 2026:
+`tools/gpu_trial.py` runs the same audio on the CPU and on the GPU, verifies which ONNX Runtime provider was really used, and compares the outputs. It loads the speaker model as the app does (the hash-checked bytes through `workspace/speaker_load.py`, weights only), so its speaker figures cover the app's own path. Results for 5 minutes of synthetic speech, CPU against an NVIDIA RTX 500 Ada laptop GPU (4 GB), measured on 14 October 2026:
 
 | Engine | CPU | GPU | Speed-up | Peak GPU memory | CPU vs GPU output |
 | --- | --- | --- | --- | --- | --- |

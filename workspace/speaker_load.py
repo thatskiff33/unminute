@@ -19,7 +19,10 @@
 #     is refused, because pyannote would resolve those against the working
 #     folder or import them;
 #   - PLDA arrays are read with np.load(allow_pickle=False).
-# Any failure is a ModelLoadError with fixed wording (P3): no path, no content.
+# Any failed check or load is a ModelLoadError with fixed wording (P3): no
+# path, no content. The libraries are imported first, outside that wrapper, so
+# an import failure (a broken install, a CUDA library in the GPU worker) or a
+# MemoryError keeps its own type: those are not safety failures.
 #
 # The SHA-256 pins (asr_engines.SPEAKER_MODEL) stay the main control. The
 # weights-only allowlist cannot run code, but a hostile pickle could still
@@ -311,16 +314,34 @@ def load_model(data, expected, classes):
     return model
 
 
+def import_libraries():
+    """Import every library the build uses, before any check runs. Not
+    wrapped: a broken install or, in the GPU worker, a missing CUDA, cuDNN or
+    cuBLAS library keeps its own type and text, so the GPU worker's failure
+    still falls back to the processor (D4, speakers._gpu_failure) and the
+    worker log names it. The build's own imports then find these loaded."""
+    import importlib
+    for name in ("yaml", "numpy", "torch", "pyannote.audio.core.task",
+                 "pyannote.audio.core.plda", "pyannote.audio.pipelines",
+                 SEGMENTATION.module, EMBEDDING.module):
+        importlib.import_module(name)
+
+
 def build_pipeline(blobs):
-    """The speaker pipeline from read_verified's bytes. Raises ModelLoadError."""
+    """The speaker pipeline from read_verified's bytes. A failed check, a
+    refused unpickling or a model that does not build raises ModelLoadError
+    with fixed wording (P3). Import failures and MemoryError are not safety
+    failures and keep their own type."""
+    import_libraries()
     try:
         return _build(blobs)
-    except ModelLoadError:
+    except (ModelLoadError, MemoryError):
         raise
     except Exception as exc:
-        # The cause keeps its type and frames for the worker log; its text is
-        # never shown (P3).
-        raise ModelLoadError(LOAD_FAILED) from exc
+        # The text of the cause is never shown (P3). The worker log's incident
+        # gets the cause's type name (diag: "type") and, through its
+        # traceback, the frames down to the check or library call that failed.
+        raise ModelLoadError(LOAD_FAILED).with_traceback(exc.__traceback__) from exc
 
 
 def _build(blobs):

@@ -8,6 +8,7 @@
 # Needs a test environment with onnxruntime-gpu (CUDA + cuDNN) and a CUDA
 # build of torch; never install those into the app's environment.
 
+import os
 import subprocess
 import sys
 import threading
@@ -26,7 +27,6 @@ SR = 16000
 
 def add_cuda_dll_dirs():
     """pip-installed NVIDIA libraries are not on the DLL search path."""
-    import os
     import site
     for sp in site.getsitepackages():
         root = Path(sp) / "nvidia"
@@ -106,11 +106,26 @@ def whisper(cache, audio, device):
     return text, time.perf_counter() - t
 
 
+def force_weights_only():
+    """As in the app's workers: every torch.load unpickles weights only."""
+    from workspace.worker import NOT_WEIGHTS_ONLY, WEIGHTS_ONLY
+    os.environ.update(WEIGHTS_ONLY)
+    os.environ.pop(NOT_WEIGHTS_ONLY, None)
+
+
 def pyannote(cache, audio, device):
+    # The app's own loader (engines.diarize_file): the hash-checked bytes,
+    # built in memory with weights-only unpickling, then moved to the device.
+    # Never pyannote's Pipeline.from_pretrained, which reopens the files by
+    # path and unpickles them in full (#111 B9, #218).
+    force_weights_only()
     import torch
-    from pyannote.audio import Pipeline
-    folder = asr_engines.find_verified(asr_engines.SPEAKER_MODEL, cache, full=True)
-    pipe = Pipeline.from_pretrained(str(folder)).to(torch.device(device))
+    from workspace import speaker_load
+    blobs = asr_engines.read_verified(asr_engines.SPEAKER_MODEL, cache)
+    if blobs is None:
+        raise SystemExit("The speaker model is not in the cache or failed verification.")
+    pipe = speaker_load.build_pipeline(blobs).to(torch.device(device))
+    del blobs
     t = time.perf_counter()
     out = pipe({"waveform": torch.from_numpy(audio).unsqueeze(0), "sample_rate": SR})
     ann = getattr(out, "speaker_diarization", out)

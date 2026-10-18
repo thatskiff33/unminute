@@ -108,7 +108,7 @@ FIELDS = {
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),
     "error": _pattern(IDENT),            # an exception or warning type name
-    "type": _pattern(IDENT),
+    "type": _pattern(IDENT),             # a console type name; an incident's cause
     "method": _pattern(IDENT),           # a bridge method's name
     "thread": _pattern(WORD),            # the app's own thread names
     "fatal": _pattern(re.compile(r"[A-Za-z0-9_]{1,64}")),
@@ -282,8 +282,13 @@ class Log:
         frames and fields) is written INCIDENT_REPEATS times a run and then
         keeps its last code, and at most INCIDENTS_MAX are written a run: a
         failure that repeats (a page calling a broken method again and again)
-        cannot push older records, such as a crash, out of the log."""
+        cannot push older records, such as a crash, out of the log. An error
+        raised from another (raise ... from cause) also records the cause's
+        type name as "type", never its text: a fixed-wording error such as the
+        speaker model's ModelLoadError still says what failed underneath."""
         error, found = _type_name(exc), frames(exc.__traceback__)
+        if exc.__cause__ is not None and "type" not in fields:
+            fields["type"] = _type_name(exc.__cause__)
         key = (area, error, json.dumps(found), json.dumps(fields, sort_keys=True, default=str))
         with self._lock:
             code, times = self._incidents.get(key, (None, 0))

@@ -14,9 +14,11 @@ import copy
 import dataclasses
 import enum
 import hashlib
+import importlib.abc
 import importlib.util
 import io
 import json
+import os
 import pickle
 import sys
 import tempfile
@@ -448,6 +450,94 @@ class SpeakerModelLoadTests(unittest.TestCase):
         with self.assertRaises(asr_engines.ModelLoadError):
             self.diarize(model, fake)
         self.assertEqual((fake.loads, fake.pipelines), ([], []))
+
+    def test_a_gpu_library_failing_to_import_still_falls_back(self):
+        # D4: in the GPU worker a CUDA library that fails to load while
+        # pyannote is imported keeps its own words, so speakers._gpu_failure
+        # sees a graphics card failure and the pass reruns on the processor.
+        # It is not reported as a failed safety check.
+        from workspace import speakers
+        from workspace.worker import WorkerError, safe_message
+        model = SyntheticModel(Path(self.tmp.name) / "cache")
+        fake = model.libraries()
+        name = "pyannote.audio.pipelines"
+        del fake.modules[name]
+        fake.modules["pyannote.audio"].__path__ = []        # a package, as the real one is
+        error = OSError("[WinError 126] Error loading cudnn64_9.dll or one of its dependencies.")
+        with mock.patch.object(sys, "meta_path", [FailingImport(name, error), *sys.meta_path]):
+            with self.assertRaises(OSError) as caught:
+                self.diarize(model, fake)
+        exc = caught.exception
+        self.assertNotIsInstance(exc, asr_engines.ModelLoadError)
+        # As the worker reports it to the app (worker.WorkerHandle._request).
+        reported = WorkerError(f"{type(exc).__name__}: {safe_message(exc)}")
+        self.assertTrue(speakers._gpu_failure(reported))
+        self.assertEqual((fake.loads, fake.pipelines), ([], []))    # before any check
+
+    def test_running_out_of_memory_is_not_called_a_safety_failure(self):
+        model = SyntheticModel(Path(self.tmp.name) / "cache")
+        fake = model.libraries()
+        fake.load_error = MemoryError()
+        with self.assertRaises(MemoryError) as caught:
+            self.diarize(model, fake)
+        self.assertNotIsInstance(caught.exception, asr_engines.ModelLoadError)
+
+    def test_the_worker_log_says_which_check_failed(self):
+        # The message is fixed (P3), but the worker's incident record keeps
+        # the cause's type name and the frames down to the failed check.
+        from workspace import diag
+        model = SyntheticModel(Path(self.tmp.name) / "cache")
+        fake = model.libraries()
+        ckpt = fake.checkpoints[model.files[SEG.file]]
+        ckpt["pyannote.audio"]["architecture"] = {"module": "os", "class": "system"}
+        logs = Path(self.tmp.name) / "logs"
+        try:                        # assertRaises would drop the traceback
+            self.diarize(model, fake)
+        except asr_engines.ModelLoadError as exc:
+            diag.Log(logs, "worker").incident("worker", exc, op="diarize")
+        [record] = [json.loads(line) for path in diag.files(logs)
+                    for line in path.read_text(encoding="ascii").splitlines()]
+        self.assertEqual((record["error"], record["type"]), ("ModelLoadError", "Refused"))
+        self.assertEqual(record["frames"][-1][::2],
+                         ["workspace/speaker_load.py", "check_checkpoint"])
+        self.assertNotIn("system", json.dumps(record))
+
+    def test_the_gpu_trial_uses_the_apps_loader(self):
+        # tools/gpu_trial.py is the CPU against GPU agreement check
+        # (docs/RELEASE_CHECKLIST.md): it must load the speaker model as the
+        # app does, or its evidence does not cover the app's path (E1).
+        import numpy as np
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        self.addCleanup(sys.path.remove, sys.path[0])
+        import gpu_trial
+        model = SyntheticModel(Path(self.tmp.name) / "cache")
+        fake = model.libraries()
+        env = {"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
+        with model.pinned(), fake.installed(), mock.patch.dict(os.environ, env):
+            turns, _ = gpu_trial.pyannote(str(model.cache), np.zeros(16000, "<f4"), "cpu")
+            self.assertEqual(os.environ.get("TORCH_FORCE_WEIGHTS_ONLY_LOAD"), "1")
+            self.assertNotIn("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", os.environ)
+        self.assertEqual(turns, [(0.5, 1.5, "SPEAKER_00")])
+        self.assertEqual(fake.from_pretrained, [])
+        self.assertEqual(len(fake.loads), 4)
+        self.assertTrue(all(c["source"] == "BytesIO" and c["weights_only"] is True
+                            for c in fake.loads))
+
+
+class FailingImport(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Importing `name` raises `error`, as a native library failing to load does."""
+
+    def __init__(self, name, error):
+        self.name, self.error = name, error
+
+    def find_spec(self, fullname, path=None, target=None):
+        return importlib.util.spec_from_loader(fullname, self) if fullname == self.name else None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise self.error
 
 
 class PickleCheckTests(unittest.TestCase):
