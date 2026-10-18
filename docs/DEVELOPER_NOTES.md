@@ -35,6 +35,10 @@ real time, and remove it when the cause is fixed.
   add one to the whitelist only with its reason. Remove anything that is really unused.
 - **`time.monotonic()` counts from boot.** Never start a "last run" timer at 0.0, or a check
   is skipped for the first minutes after boot. Start at `float("-inf")`.
+- **PyAV 17 and 8-channel planar audio.** An 8-channel planar frame reports 9 planes, and
+  `to_ndarray()` on one read past them and crashed the process (found in #220; 7 and 16
+  channels were fine). Convert to an interleaved format (`flt`, not `fltp`) before reading
+  samples, as `workspace/decode_child.py` does.
 
 ## Windows, WebView2 and pythonnet
 
