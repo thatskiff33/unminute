@@ -5,8 +5,9 @@
 # model and transcribes the audio it is sent, then returns plain segments.
 #   - One worker, one heavy model at a time. Loading a different model
 #     replaces the previous one in the same process.
-#   - The worker installs the offline network guard and lowers its own
-#     priority (Quiet) before loading anything.
+#   - The worker installs the offline network guard, makes every torch.load
+#     weights-only (WEIGHTS_ONLY) and lowers its own priority (Quiet) before
+#     loading anything.
 #   - Requests are bounded (MAX_REQUEST_SECONDS of audio) and time-limited;
 #     results are text. Error messages never carry stack traces or paths.
 #   - If the worker dies or hangs, the request raises WorkerCrashed; the chunk
@@ -44,6 +45,15 @@ _PATHS = re.compile(r"'(?:[A-Za-z]:[\\/]|\\\\|/)[^']*'"
 
 GPU_TIMEOUT_FLOOR_S = 300
 GPU_TIMEOUT_FACTOR = 1.0
+
+# Every torch.load in a worker unpickles weights only, even where a library
+# passes weights_only=False (#111 B9, #218): a second layer behind
+# workspace/speaker_load.py, which already loads that way, and cover for any
+# torch.load a dependency adds later. Forced, like the telemetry switches; the
+# opposite switch, if inherited, is removed (with both set, torch refuses
+# every load).
+WEIGHTS_ONLY = {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "1"}
+NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
@@ -96,6 +106,8 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         import offline_guard
         offline_guard.disable_telemetry()
         offline_guard.install()
+        os.environ.update(WEIGHTS_ONLY)
+        os.environ.pop(NOT_WEIGHTS_ONLY, None)
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()

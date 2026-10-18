@@ -121,6 +121,13 @@ def load_fails(threads):
     raise RuntimeError("model files failed verification")
 
 
+def weights_only_env(threads):
+    """Reports the worker's torch.load switches (#218)."""
+    seen = {k: os.environ.get(k) for k in ("TORCH_FORCE_WEIGHTS_ONLY_LOAD",
+                                           "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD")}
+    return _Engine(lambda a: [_seg(0.0, 0.1, f"env {seen}")])
+
+
 # -- fake diarizers: diarize_file("test:fake_worker_engines:<name>", ...) --------
 
 def fake_diarizer(audio, hint):

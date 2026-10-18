@@ -201,6 +201,21 @@ class WorkerTests(unittest.TestCase):
         text = self.h.transcribe(np.zeros(10, np.float32))[0][0].text
         self.assertTrue(text.startswith("blocked"), text)
 
+    def test_worker_unpickles_weights_only(self):
+        # #218: every torch.load in the worker is weights-only, whatever the
+        # environment it inherited says.
+        from unittest import mock
+        h = WorkerHandle(self.tmp.name, allow_test_engines=True)
+        try:
+            with mock.patch.dict(os.environ, {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "0",
+                                              "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}):
+                h.load(fake("weights_only_env"), 1)
+            text = h.transcribe(np.zeros(10, np.float32))[0][0].text
+        finally:
+            h.close()
+        self.assertEqual(text, "env {'TORCH_FORCE_WEIGHTS_ONLY_LOAD': '1', "
+                               "'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD': None}")
+
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class RunnerWithWorkerTests(unittest.TestCase):
