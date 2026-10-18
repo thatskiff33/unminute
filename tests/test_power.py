@@ -607,6 +607,17 @@ class RestoreOnlyTests(unittest.TestCase):
         self.assertEqual(set(api.targets), {FakeScheme.SCHEME})
         self.assertEqual(api.applied, [])
 
+    def test_another_spelling_of_the_active_scheme_is_still_re_applied(self):
+        # The app writes the standard form, but uuid.UUID (and so the record
+        # check) also accepts braces and upper case: the values are written,
+        # and the scheme is re-applied so they take effect.
+        self.record(ac=1, dc=2, scheme="{" + FakeScheme.SCHEME.upper() + "}")
+        api = FakeScheme(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api), "restored")
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertEqual(len(api.applied), 1)
+        self.assertFalse(self.path.exists())
+
     def test_no_power_scheme_never_raises(self):
         # Off Windows (or if powrprof will not load): failed, and the record is kept.
         from unittest import mock

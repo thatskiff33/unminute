@@ -1085,6 +1085,7 @@ class UninstallLidRestoreTests(unittest.TestCase):
                              ("path", {"version": "..\\..\\Elsewhere"}),
                              ("absolute", {"version": str(self.root / "Elsewhere")})):
             with self.subTest(name):
+                self.log.unlink(missing_ok=True)
                 install = self.install(f"Apps-{name}", **kwargs)
                 # A version folder that would run, where the path leads.
                 shutil.rmtree(self.root / "Elsewhere", ignore_errors=True)

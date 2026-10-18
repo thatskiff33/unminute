@@ -345,7 +345,9 @@ class LidSwitch:
                 if api.read(scheme, plugged_in) == DO_NOTHING:
                     if api.write(scheme, plugged_in, saved[key]):
                         raise OSError("write refused")
-            if scheme == api.active_scheme():
+            # Compared as GUIDs: a record may spell it another way (braces,
+            # upper case) that uuid.UUID and Windows both accept.
+            if uuid.UUID(scheme) == uuid.UUID(api.active_scheme()):
                 api.apply(scheme)
         except Exception:
             self.problem = "failed"         # kept, so the next try puts it back
