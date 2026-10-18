@@ -62,7 +62,7 @@ Discard, review layout and privacy improvements, and a new README. An installed 
 - **Separate scrolling in the meeting view.** In a wide window the transcript and the steps panel scroll separately, so the title, toolbar and search box stay in view. Narrow or zoomed windows keep one page scroll.
 - **Long meeting titles** now use the available width instead of being cut short.
 - **Clearer microphone disconnection message.** When a microphone is unplugged mid-recording, Windows also reports a brief overrun. That is now part of the disconnection message rather than a separate "could not keep up" gap.
-- **ONNX Runtime telemetry off in the workspace.** The workspace now switches off ONNX Runtime's Windows telemetry events, before any speech model loads.
+- **ONNX Runtime telemetry off in the workspace.** The workspace now switches off ONNX Runtime's Windows telemetry events before any speech model loads.
 - **New README** with current screenshots of a fictional sample meeting.
 
 ## v0.2.2

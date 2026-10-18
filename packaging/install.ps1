@@ -47,9 +47,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# A relative -InstallDir is taken from PowerShell's current folder, once, so every
-# check, copy and removal, and the registered uninstall command, use the same full path.
-$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
@@ -459,10 +456,17 @@ function Invoke-Rollback {
 }
 
 try {
-    # A network, device or long-path (\\?\) form is refused: the checks below
-    # compare paths as text, and the install belongs on this computer's own drive.
-    if ($Options.InstallDir.StartsWith("\\")) {
-        Stop-Install 2 "The install folder must be on this computer's own drive, not a path starting with \\. Choose another -InstallDir."
+    # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
+    # current folder, once, so every check, copy and removal, and the registered
+    # uninstall command, use the same full path.
+    if ([string]::IsNullOrWhiteSpace($Options.InstallDir)) {
+        Stop-Install 2 "No install folder was given. Choose an -InstallDir."
+    }
+    $Options.InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Options.InstallDir)
+    # A network, device or long-path form (\\, //, \\?\) is refused: the checks
+    # below compare paths as text, and the install belongs on this computer's own drive.
+    if ($Options.InstallDir -match '^[\\/]{2}') {
+        Stop-Install 2 "The install folder must be on this computer's own drive, not a network or device path (starting with \\ or //). Choose another -InstallDir."
     }
     $overlap = Get-DataOverlap $Options.InstallDir
     if ($overlap) {

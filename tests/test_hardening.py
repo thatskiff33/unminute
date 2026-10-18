@@ -653,9 +653,14 @@ class DataFolderOverlapTests(unittest.TestCase):
             r = self.run_script(install, "Unminute", local, absent, location=local, cwd=tmp)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
             self.assertIn(self.MESSAGE, r.stderr)
-            r = self.run_script(install, r"\\localhost\C$\Unminute", local, absent, cwd=tmp)
+            for where in (r"\\localhost\C$\Unminute", "//localhost/C$/Unminute"):
+                with self.subTest(where=where):
+                    r = self.run_script(install, where, local, absent, cwd=tmp)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("own drive", r.stderr)
+            r = self.run_script(install, "", local, absent, cwd=tmp)
             self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-            self.assertIn("own drive", r.stderr)
+            self.assertIn("No install folder", r.stderr)
             # The default shape, and a sibling of the data folder: allowed, so the
             # run stops later, at a prerequisite or the missing package.
             for where in (local / "Programs" / "Unminute", local / "Unminute2"):
@@ -675,6 +680,10 @@ class DataFolderOverlapTests(unittest.TestCase):
         programs.mkdir()
         text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
             self.KEY, f'$RegKey = "HKCU:\\Software\\Unminute-UnitTest-absent-{os.getpid()}"')
+        # Nothing else in it may reach this computer's own shortcuts or registry.
+        for reach in ("GetFolderPath", "Start Menu\\", "$env:APPDATA", "HKCU:\\Software\\Microsoft",
+                      "HKLM", "Registry::", "ComObject"):
+            self.assertNotIn(reach.lower(), text.lower(), reach)
         copy = Path(tmp) / "uninstall-copy.ps1"
         copy.write_text(text, encoding="utf-8")
         return copy, programs / "Unminute.lnk"
@@ -697,6 +706,9 @@ class DataFolderOverlapTests(unittest.TestCase):
                     self.assertIn("data folder", r.stderr)      # this check, not a later one
                     self.assertIn("so nothing was removed", r.stderr)
                     self.assertTrue(kept.is_file() and link.is_file())
+            r = self.run_script(copy, "", local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("No install folder", r.stderr)
             # An install folder holding something the installer did not put there
             # is left as it is.
             install = local / "Programs" / "Unminute"

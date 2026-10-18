@@ -51,20 +51,36 @@ class FileToolTests(unittest.TestCase):
                      "C:/Users/someone/AppData/Local/whisper/workspace/media/1/audio.f32",
                      local + r"\whisper\WORKSP~1\workspace.db",     # its 8.3 short name
                      # a damaged workspace renamed aside, as the guide says
-                     local + r"\Unminute\workspace-damaged\workspace.db"):
+                     local + r"\Unminute\workspace-damaged\workspace.db",
+                     # device, long-path and network forms of the same folder
+                     "\\\\?\\" + local + r"\Unminute\workspace\workspace.db",
+                     r"\\localhost\C$\Users\someone\AppData\Local\Unminute\workspace\a.db",
+                     "//localhost/C$/Users/someone/AppData/Local/Unminute/workspace/a.db",
+                     # .. from another folder in local AppData
+                     local + r"\Temp\..\Unminute\workspace\workspace.db"):
             with self.subTest(path=path):
                 self.assertIsNotNone(guard.decide(tool("Read", file_path=path)))
         # Relative to the working folder, or Glob's pattern relative to its path;
         # and the data folder around the workspace, except its models.
         for payload in (tool("Read", cwd=local, file_path=r"Unminute\workspace\settings.json"),
+                        tool("Read", file_path=local + r"\Unminute\models\..\workspace\a.db"),
+                        tool("Read", cwd=local + r"\Unminute\models",
+                             file_path=r"..\workspace\a.db"),
                         tool("Glob", path=local, pattern="Unminute/workspace/**"),
                         tool("Glob", cwd=local, pattern="Unminute/workspace/**/*.json"),
                         tool("Glob", path=local + r"\Unminute", pattern="**/*.json"),
+                        tool("Read", cwd=local + r"\Temp", file_path=r"..\Unminute\workspace\a.db"),
+                        # a wildcard that stands for the data folder
+                        tool("Glob", path=local, pattern="Unmin*/workspace/*"),
+                        tool("Glob", path=local, pattern="*/workspace/*"),
+                        tool("Glob", path=local, pattern="**/*.json"),
                         tool("Grep", pattern="budget", path=local + r"\Unminute")):
             with self.subTest(payload=payload):
                 self.assertIsNotNone(guard.decide(payload))
         self.assertIsNone(guard.decide(tool("Glob", path=local + r"\Unminute\models",
                                             pattern="**/*.json")))
+        self.assertIsNone(guard.decide(tool("Read",
+                                            file_path=local + r"\Unminute\models\a\..\b.json")))
 
     def test_a_redirected_profile_is_recognised(self):
         # LOCALAPPDATA need not end in AppData\Local (a VDI profile on another drive).
@@ -77,6 +93,28 @@ class FileToolTests(unittest.TestCase):
                 self.assertIsNotNone(redirected.decide(tool("Read", file_path=path)))
         self.assertIsNone(redirected.decide(
             tool("Read", file_path=r"D:\Profiles\someone\Local\Unminute\models\a.json")))
+
+    def test_a_search_above_the_data_folder_is_blocked(self):
+        # Grep searches its folder whole, and Glob's ** does too.
+        local = r"C:\Users\someone\AppData\Local"
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": local}):
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+        for payload in (tool("Grep", pattern="budget", path=local),
+                        tool("Grep", pattern="budget", path=local + "\\"),
+                        tool("Grep", pattern="budget", path=r"C:\Users\someone"),
+                        tool("Grep", pattern="budget", cwd=local),
+                        tool("Grep", pattern="budget", cwd=r"C:\Users\someone", path="AppData"),
+                        tool("Glob", path=r"C:\Users\someone", pattern="**/*.db")):
+            with self.subTest(payload=payload):
+                self.assertIsNotNone(fresh.decide(payload))
+        for payload in (tool("Grep", pattern="budget", path=local + r"\Temp\review"),
+                        tool("Grep", pattern="budget", path=local + r"\Unminute\models"),
+                        tool("Grep", pattern="budget", path=r"C:\Users\someone\Local_Repos"),
+                        tool("Grep", pattern="budget", cwd=r"C:\Users\someone\Repos\unminute"),
+                        tool("Glob", path=r"C:\Users\someone", pattern="*.txt")):
+            with self.subTest(payload=payload):
+                self.assertIsNone(fresh.decide(payload))
 
     def test_ordinary_paths_are_allowed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -141,7 +179,34 @@ class ShellTests(unittest.TestCase):
                         # ...or named after changing to local AppData
                         r"Set-Location $env:LOCALAPPDATA; Get-Content Unminute\workspace\a.json",
                         'cd "$LOCALAPPDATA" && cat Unminute/workspace/settings.json',
-                        r"pushd %LOCALAPPDATA% & type Unminute\workspace\settings.json"):
+                        r"pushd %LOCALAPPDATA% & type Unminute\workspace\settings.json",
+                        # ...or reached through models
+                        r"Get-Content $env:LOCALAPPDATA\Unminute\models\..\workspace\a.json",
+                        r"cd $env:LOCALAPPDATA\Unminute\models; Get-Content ..\workspace\a.json",
+                        r"git -C $env:LOCALAPPDATA\Unminute\models diff --no-index ..\workspace\a",
+                        r"Get-Content $env:LOCALAPPDATA\whisper\models\..\workspace\a.json",
+                        # ...or through another folder, or another name for local AppData
+                        r"Get-Content $env:LOCALAPPDATA\Temp\..\Unminute\workspace\a.json",
+                        r"Get-Content $env:TEMP\..\Unminute\workspace\a.json",
+                        r"type %TEMP%\..\Unminute\workspace\a.json",
+                        "cat /tmp/../Unminute/workspace/a.json",
+                        r"Get-Content $env:APPDATA\..\Local\Unminute\workspace\a.json",
+                        "python -c \"print(Path.home() / 'AppData' / 'Local' / 'Unminute' / 'x')\"",
+                        r"Get-Content \\?\C:\Users\someone\AppData\Local\Unminute\workspace\a",
+                        r"Get-Content \\localhost\C$\Users\x\AppData\Local\Unminute\workspace",
+                        # ...or a wildcard standing for the data folder
+                        r"Get-Content $env:LOCALAPPDATA\Unmin*\workspace\a.json",
+                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\U*",
+                        # ...or reached by changing folder, and back
+                        r"cd $env:LOCALAPPDATA\Temp; cd ..; Get-Content Unminute\workspace\a.json",
+                        r"cd $env:LOCALAPPDATA\Unminute\models; cd ..; Get-Content workspace\a",
+                        r"cd $env:LOCALAPPDATA; cd Temp; cd -; Get-Content Unminute\workspace\a",
+                        r"pushd $env:LOCALAPPDATA; pushd Temp; popd; cat Unminute\workspace\a",
+                        r'cmd /c "cd /d %LOCALAPPDATA% && type Unminute\workspace\a.json"',
+                        # ...or by an option that reads a file
+                        r'git commit -F "%LOCALAPPDATA%\Unminute\workspace\a.txt"',
+                        r'gh api repos/o/r/issues -F "body=@%LOCALAPPDATA%\Unminute\workspace\a"',
+                        r"gh api repos/o/r --field body=@$env:LOCALAPPDATA\Unminute\workspace"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))
@@ -152,14 +217,30 @@ class ShellTests(unittest.TestCase):
             payload = tool("PowerShell", cwd=cwd, command=r"Get-Content Unminute\workspace\a.json")
             with self.subTest(cwd=cwd):
                 self.assertIsNotNone(guard.decide(payload))
+        # From models, .. climbs to the workspace.
+        self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\models",
+                                               command=r"Get-Content ..\workspace\a.json")))
+        self.assertIsNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\models",
+                                            command="Get-ChildItem .")))
         # Run from inside the workspace, any command can read it.
         self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\workspace",
                                                command="Get-Content settings.json")))
+        # From another folder in local AppData, .. climbs to it.
+        for command in (r"Get-Content ..\Unminute\workspace\a.json",
+                        r"cd ..; Get-Content Unminute\workspace\a.json"):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Temp",
+                                                       command=command)))
         # Elsewhere, unminute\workspace is a clone of this repository.
         for cwd in (r"C:\Users\x\Local_Repos", local + r"\Temp\review"):
             payload = tool("PowerShell", cwd=cwd, command=r"Get-Content unminute\workspace\app.py")
             with self.subTest(cwd=cwd):
                 self.assertIsNone(guard.decide(payload))
+        for command in (r"cd ..; Get-Content unminute\workspace\app.py",
+                        r"Get-Content ..\unminute\workspace\app.py"):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(tool("PowerShell", cwd=local + r"\Temp\s\other",
+                                                    command=command)))
 
     def test_staging_media_is_blocked(self):
         for command in ("git add meeting.m4a", "git add docs/a.WAV tests/x.py",
@@ -179,9 +260,18 @@ class ShellTests(unittest.TestCase):
                         "ls unminute/workspace",
                         r"Get-Content C:\Users\x\AppData\Local\Temp\unminute\workspace\app.py",
                         r"cd $env:LOCALAPPDATA\Temp; ls unminute\workspace",
+                        r"cd $env:LOCALAPPDATA; cd Temp\review; Get-Content unminute\workspace\a",
+                        r"gh api repos/o/r/issues/1 --raw-field body='%LOCALAPPDATA%\Unminute'",
+                        r"Set-Content -Path notes.md -Value '%LOCALAPPDATA%\Unminute\workspace'",
                         r"Get-ChildItem $env:LOCALAPPDATA\Unminute\models",
                         r"Get-ChildItem $env:LOCALAPPDATA\Programs\Unminute",
                         r"Test-Path $env:LOCALAPPDATA\Unminute2",
+                        r"cd $env:LOCALAPPDATA\Temp\s; git clone x unminute; ls unminute\workspace",
+                        "git -C ../unminute-r7 diff --stat",
+                        r"Get-ChildItem $env:LOCALAPPDATA\*\models",
+                        r"Get-Content $env:APPDATA\Code\settings.json",
+                        "gh api graphql -F query=@q.graphql",
+                        r"gh api repos/o/r -f body='see %LOCALAPPDATA%\Unminute\workspace'",
                         r"python tools/compare_engines.py --cache %LOCALAPPDATA%\Unminute\models",
                         "python -c \"import faster_whisper, workspace\"",
                         "git status --short",
@@ -206,6 +296,27 @@ class ShellTests(unittest.TestCase):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNone(guard.decide(shell(command, name)))
+
+    def test_message_text_the_shell_runs_is_checked(self):
+        # $(...), a bash backtick or an unquoted heredoc runs before the message is
+        # written, so it can read the workspace.
+        for command, name in (
+                ('git commit -m "$(cat ~/AppData/Local/Unminute/workspace/a.txt)"', "Bash"),
+                ('git commit -m "`cat ~/AppData/Local/Unminute/workspace/a.txt`"', "Bash"),
+                ("cat <<EOF > x.md\n$(cat ~/AppData/Local/Unminute/workspace/a)\nEOF", "Bash"),
+                (r'Set-Content x.md -Value "$(Get-Content $env:LOCALAPPDATA\Unminute\workspace\a)"',
+                 "PowerShell")):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(shell(command, name)))
+        # Quoted heredocs, single quotes and a PowerShell backtick are only text.
+        for command, name in (
+                ("git commit -m \"$(cat <<'EOF'\nP2: %LOCALAPPDATA%\\Unminute\\workspace\nEOF\n)\"",
+                 "Bash"),
+                ("git commit -m @'\n$(x) %LOCALAPPDATA%\\Unminute\\workspace\n'@", "PowerShell"),
+                ('gh pr comment 1 --body "Ran `rg`; P2: %LOCALAPPDATA%\\Unminute\\workspace"',
+                 "PowerShell")):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_other_tools_are_allowed(self):
         self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ whisper/workspace")))

@@ -92,7 +92,7 @@ The installer runs as the current user and needs no administrator rights. It:
   - Nothing is installed if any check fails.
 - **Installs side by side** to `%LOCALAPPDATA%\Programs\Unminute\versions\<version>`. It keeps the previous version for rollback and removes older ones.
 - **Refuses to install while the app is running.**
-- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps (registry key `Uninstall\Unminute`). The shortcut carries the taskbar identity `Unlimit.Unminute`, so taskbar pins group with the window. The install folder must not be, hold or sit inside `%LOCALAPPDATA%\Unminute` (the workspace and models), because uninstalling deletes the install folder: the installer and the uninstaller both refuse one that overlaps it, and the installer also refuses a path starting with `\\` (a network, device or long-path form). A relative `-InstallDir` is taken from PowerShell's current folder. The uninstaller removes only what the installer put in the install folder (`versions`, `current.json` and `uninstall.ps1`): if the folder holds anything else, it removes nothing and exits 1.
+- **Creates a Start menu shortcut,** "Unminute", and a per-user uninstall entry in Settings > Apps (registry key `Uninstall\Unminute`). The shortcut carries the taskbar identity `Unlimit.Unminute`, so taskbar pins group with the window. The install folder must not be, hold or sit inside `%LOCALAPPDATA%\Unminute` (the workspace and models), because uninstalling deletes the install folder: the installer and the uninstaller both refuse one that overlaps it, and the installer also refuses an empty path or one starting with `\\` or `//` (a network, device or long-path form). A relative `-InstallDir` is taken from PowerShell's current folder. The uninstaller removes only what the installer put in the install folder (`versions`, `current.json` and `uninstall.ps1`): if the folder holds anything else, it removes nothing and exits 1.
 
 Exit codes:
 
@@ -100,7 +100,7 @@ Exit codes:
 | --- | --- |
 | 0 | Installed |
 | 1 | Failed |
-| 2 | Prerequisites missing, or the install folder is not allowed (it overlaps `%LOCALAPPDATA%\Unminute`, starts with `\\` or is too long) |
+| 2 | Prerequisites missing, or the install folder is not allowed (it overlaps `%LOCALAPPDATA%\Unminute`, starts with `\\` or `//`, is empty or is too long) |
 | 3 | The app is running |
 | 4 | The package failed verification |
 | 5 | The update is waiting for the workspace (see the message) |
@@ -253,4 +253,4 @@ Whichever route is chosen, record it in the release notes. A changed signature o
   - **Window:** the app opened ("Unminute", with its WebView2 child) using an isolated profile.
   - **Uninstall:** removed the program and its uninstall entry, and kept the models.
 - Testing on a clean standard-user Windows profile, and on a managed Intune device, is still to be done before release. It is tracked in #11 and #28.
-- Paths inside the package are kept to 140 characters or fewer. The default install folder has room for user names of up to about 30 characters, and the installer refuses install folders longer than 92 characters. Windows PowerShell 5.1 cannot handle paths over 260 characters.
+- Paths inside the package are kept to 140 characters or fewer. The default install folder has room for user names of up to about 50 characters, and the installer refuses install folders longer than 92 characters. Windows PowerShell 5.1 cannot handle paths over 260 characters.

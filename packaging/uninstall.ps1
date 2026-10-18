@@ -20,9 +20,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# A relative -InstallDir is taken from PowerShell's current folder, once, so the
-# checks and the removals below use the same full path.
-$InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($InstallDir)
 # Parameters, read by the functions below.
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent }
 $AppName = "Unminute"
@@ -52,6 +49,12 @@ function Get-DataOverlap([string]$Dir) {
 }
 
 try {
+    # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
+    # current folder, once, so the checks and the removals below use the same path.
+    if ([string]::IsNullOrWhiteSpace($Options.InstallDir)) {
+        Stop-Uninstall 1 "No install folder was given, so nothing was removed."
+    }
+    $Options.InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Options.InstallDir)
     $overlap = Get-DataOverlap $Options.InstallDir
     if ($overlap) {
         Stop-Uninstall 1 "The install folder is in, or holds, $AppName's data folder ($overlap), so nothing was removed."
