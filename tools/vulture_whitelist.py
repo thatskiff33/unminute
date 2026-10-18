@@ -73,7 +73,3 @@ _.idle_wakeups          # workspace/worker.py
 get_priority            # workspace/resources.py
 resume_pending          # workspace/cleanup.py
 uninstall               # offline_guard.py
-
-# Written but not yet read: surfacing it in diagnostics is a follow-up (#196).
-minimise_failed
-_.minimise_failed

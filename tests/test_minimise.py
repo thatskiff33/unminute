@@ -125,11 +125,33 @@ class MinimiseTests(unittest.TestCase):
         self.state.changed(True)
         self.assertEqual(1, len(self.later.waiting))
 
-    def test_guarded_steps_note_a_failure_and_carry_on(self):
-        shell.minimise_failed = False
-        shell._guarded(lambda: 1 / 0)
-        self.assertTrue(shell.minimise_failed)
-        shell.minimise_failed = False
+    # The fallback (#196): the window's Resize handler and the suspend timer
+    # run each step through shell._guarded, as watch_minimise and _UiTimer do.
+    # A WebView2 failure never reaches WinForms, and the next restore still
+    # shows the window as normal.
+
+    def test_a_failed_hide_carries_on_and_the_window_comes_back(self):
+        self.webview.fail = {"hide"}
+        shell._guarded(self.state.changed, True)               # no exception escapes
+        self.assertEqual([], self.later.waiting)                # never suspended
+        self.webview.fail = set()
+        shell._guarded(self.state.changed, False)
+        self.assertEqual(["hide", "show"], self.webview.calls)
+        self.assertFalse(self.state.minimised)
+
+    def test_a_failed_suspend_carries_on_and_is_undone_on_restore(self):
+        self.webview.fail = {"suspend"}
+        shell._guarded(self.state.changed, True)
+        delayed = self.later.waiting.pop()
+        shell._guarded(delayed.fn)                              # as the timer's Tick runs it
+        self.webview.fail = set()
+        shell._guarded(self.state.changed, False)
+        self.assertEqual(["hide", "suspend", "resume", "show"], self.webview.calls)
+        # Minimising again works as normal: nothing is stuck after the failure.
+        self.webview.calls.clear()
+        shell._guarded(self.state.changed, True)
+        self.later.run()
+        self.assertEqual(["hide", "suspend"], self.webview.calls)
 
 
 if __name__ == "__main__":
