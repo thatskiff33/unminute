@@ -20,6 +20,7 @@
 # backup to let an update proceed.
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -62,21 +63,60 @@ def package_version():
         return "source"
 
 
+# A UNC path (\\server\share, //server/share) or a Windows device or extended
+# path (\\?\..., \\.\...). The gate never reads one: the workspace is never on
+# a network share (D3), and as_uri() would turn \\localhost\C$\x into
+# file://localhost/C%24/x, which SQLite accepts and opens as /C$/x on the
+# current drive, a different file.
+_NOT_LOCAL = ("\\\\", "//")
+
+
+def _local(db_path):
+    """Refuse a path that is not on a local drive, before anything reads it
+    (a UNC path would reach the network). No path in the message (P3)."""
+    p = Path(db_path)
+    if str(p).startswith(_NOT_LOCAL) or str(p.absolute()).startswith(_NOT_LOCAL):
+        raise sqlite3.OperationalError("The workspace path is not on a local drive.")
+
+
 def _connect(db_path):
     # as_uri() percent-encodes the path. Unescaped, a "#" or "?" in a folder
-    # name ends the path and a "%41" is decoded, so the workspace reads as
-    # UNREADABLE and every update waits (#164). A UNC path still fails here
-    # (SQLite refuses the server as a URI authority) and the gate waits, but the
-    # workspace is never on a network share: local_appdata() refuses one (D3).
+    # name ends the path (and "?mode=ro" with it, so the connection could
+    # write) and a "%41" is decoded, so the workspace reads as UNREADABLE and
+    # every update waits (#164).
+    _local(db_path)
     return sqlite3.connect(Path(db_path).absolute().as_uri() + "?mode=ro", uri=True)
+
+
+def _stat(db_path):
+    """os.stat of the database, or None if it does not exist. Raises OSError
+    when that cannot be told (for example, access is denied)."""
+    try:
+        return os.stat(db_path)
+    except (FileNotFoundError, NotADirectoryError):
+        if os.name != "nt":
+            return None
+    # Without long paths enabled (LongPathsEnabled 0), Windows reports a path
+    # longer than MAX_PATH as missing even when it exists. The extended form
+    # has no such limit: ask again, so an existing workspace never reads as a
+    # fresh install. abspath() resolves the path as Windows would.
+    try:
+        return os.stat("\\\\?\\" + os.path.abspath(db_path))
+    except (FileNotFoundError, NotADirectoryError):
+        return None
 
 
 def current_schema(db_path):
     """The workspace schema; None if there is no workspace; UNREADABLE if a
-    database exists but cannot be read (damaged, locked or not ours). The gate
-    fails closed on UNREADABLE: never treat it as a fresh install."""
-    p = Path(db_path)
-    if not p.exists() or p.stat().st_size == 0:
+    database exists but cannot be read (damaged, locked or not ours), if the
+    path is not on a local drive, or if whether it exists cannot be told. The
+    gate fails closed on UNREADABLE: never treat it as a fresh install."""
+    try:
+        _local(db_path)                 # before any file access
+        st = _stat(db_path)
+    except (sqlite3.Error, OSError):
+        return UNREADABLE
+    if st is None or st.st_size == 0:
         return None
     try:
         con = _connect(db_path)
@@ -93,8 +133,12 @@ def current_schema(db_path):
 
 def blockers(db_path):
     """What stops a schema-changing update, in plain language. Counts only."""
-    if not Path(db_path).exists():
-        return []
+    _local(db_path)                     # before any file access
+    try:
+        if _stat(db_path) is None:
+            return []
+    except OSError:
+        pass                            # cannot tell: _connect reads it or raises
     con = _connect(db_path)
     try:
         tables = [r[0] for r in con.execute(
