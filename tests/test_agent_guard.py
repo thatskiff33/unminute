@@ -55,7 +55,8 @@ class FileToolTests(unittest.TestCase):
         for path in (local + r"\Unminute\workspace\workspace.db",
                      "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
                      r"C:\Users\someone\AppData\Local\unminute\WORKSPACE",
-                     "~/AppData/Local/Unminute/workspace/settings.json"):
+                     "~/AppData/Local/Unminute/workspace/settings.json",
+                     r"C:\Users\someone\AppData\Local\Temp\..\Unminute\workspace\workspace.db"):
             for payload in (tool("Read", file_path=path), tool("Edit", file_path=path),
                             tool("Glob", pattern="**/*", path=path),
                             tool("Grep", pattern="anything", path=path)):
@@ -140,6 +141,15 @@ class ShellTests(unittest.TestCase):
                         r"Get-Content ([Environment]::GetFolderPath('LocalApplicationData')"
                         r" + '\Unminute\workspace\settings.json')",
                         "rg -n budget ~/AppData/Local/Unminute/workspace",
+                        # Main's old pattern blocks any folder before whisper\workspace;
+                        # the new one takes any variable or substitution there.
+                        "d=$LOCALAPPDATA; cat $d/Unminute/workspace/settings.json",
+                        "cat \"${d}\"/Unminute/workspace/settings.json",
+                        'cat "$(cygpath -u "$LOCALAPPDATA")/Unminute/workspace/settings.json"',
+                        'cat "`cygpath -u $LOCALAPPDATA`/Unminute/workspace/settings.json"',
+                        "python -c \"print(open(f'{base}/Unminute/workspace/a.json').read())\"",
+                        r"Get-Content LOCALAPPDATA\Unminute\workspace\settings.json",
+                        r"Get-Content $env:TEMP\..\Unminute\workspace\settings.json",
                         "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
@@ -147,8 +157,10 @@ class ShellTests(unittest.TestCase):
 
     def test_commands_in_a_checkout_named_unminute_are_allowed(self):
         for command in ("ls ../unminute/workspace",
-                        r"Get-ChildItem $env:TEMP\unminute\workspace",
+                        r"cd $env:TEMP\unminute; ruff check workspace",
                         "ruff check C:/Users/x/Local_Repos/unminute/workspace",
+                        "ruff check $HOME/Local_Repos/unminute/workspace",
+                        r"cd $env:USERPROFILE\Local_Repos\unminute; ruff check workspace",
                         r"python -m py_compile C:\Users\x\Local_Repos\unminute\workspace\store.py",
                         "cd /c/Users/x/Local_Repos/unminute && git diff -- workspace/store.py",
                         r"git -C C:\Users\x\Local_Repos\unminute log --oneline -- workspace",

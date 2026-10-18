@@ -39,13 +39,17 @@ def unminute_workspace_pattern(local_appdata):
     r"""The live workspace, %LOCALAPPDATA%\Unminute\workspace, however it is written.
 
     The repo is also called unminute and has a workspace/ package, so unminute
-    and workspace inside a longer path (a checkout) are allowed. The pattern
-    matches only after AppData\Local, a LOCALAPPDATA variable or the configured
-    LOCALAPPDATA folder, or as a piece of its own ('Unminute\workspace' given
-    to Join-Path or appended to a folder). A checkout in a folder named Local
-    is blocked too: that errs on the safe side.
+    and workspace straight after another folder's name (a checkout) are
+    allowed. The pattern matches after AppData\Local, the configured
+    LOCALAPPDATA folder, any variable or substitution ($env:LOCALAPPDATA,
+    %LOCALAPPDATA%, ${d}, $(...), a backtick, an f-string's {base}), a climb
+    from a folder ($env:TEMP\..), or as a piece of its own ('Unminute\workspace'
+    given to Join-Path or appended to a folder). A checkout in a folder named
+    Local, named through a variable ($env:TEMP\unminute\workspace) or reached
+    by climbing more than one level is blocked too: that errs on the safe side.
     """
-    prefixes = [r"(?<![\w-])local", r"localappdata"]
+    prefixes = [r"(?<![\w-])local(?:appdata)?", r"\$\{?[\w:]+\}?", r"%\w+%", r"[)}`\"']",
+                r"[\\/]\.\."]
     parts = [re.escape(part) for part in re.split(r"[\\/]+", local_appdata) if part]
     if parts:
         prefixes.append(r"(?<![\w-])" + r"[\\/]+".join(parts))
