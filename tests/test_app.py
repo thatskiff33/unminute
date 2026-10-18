@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import time
+import types
 import unittest
 import wave
 from pathlib import Path
@@ -823,11 +824,12 @@ class WorkspaceTests(unittest.TestCase):
         ws._import_one(self.rec)
         mid = ws.meetings()[0]["id"]
         vid = ws.store.active_version(mid)["id"]
-        with ws.store.tx() as db:            # about 4 hours of short passages
-            db.executemany("INSERT INTO segments (version_id, chunk_idx, start_s, end_s, text) "
-                           "VALUES (?, 0, ?, ?, ?)",
-                           [(vid, i * 3.0, i * 3.0 + 2.5, f"passage {i} with some words")
-                            for i in range(5000)])
+        idx = ws.store.chunks(vid, status="pending")[0]["idx"]
+        # About 4 hours of short passages, written through the store (#111).
+        self.assertTrue(ws.store.commit_chunk(vid, idx, [
+            types.SimpleNamespace(start=i * 3.0, end=i * 3.0 + 2.5,
+                                  text=f"passage {i} with some words", words=())
+            for i in range(5000)]))
         t = time.perf_counter()
         page = ws.transcript(mid, 4000, 1000)
         hits = ws.search(mid, "passage 4999")

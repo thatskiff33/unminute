@@ -78,10 +78,11 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
         _note_error(store, mid, "The meeting audio has changed or is damaged; it was not "
                                 "transcribed. Import the recording again.")
         return RunResult.SOURCE_CHANGED
-    epoch = store.meeting(mid)["content_epoch"]
+    # Plain state only: nothing is opened per chunk (#111).
+    epoch = store.meeting_state(mid)["content_epoch"]
     store.set_phase(mid, "transcribing")
     for chunk in store.chunks(vid, status="pending"):
-        if store.meeting(mid)["paused"]:
+        if store.meeting_state(mid)["paused"]:
             return RunResult.PAUSED
         idx = chunk["idx"]
         if chunk["failures"] >= MAX_ATTEMPTS:
@@ -115,7 +116,8 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
                 # Deliberate stop (pause / Stop now / cleanup): the in-flight
                 # chunk was never committed and this is not a failure.
                 _finish(store, attempt, "stopped", engine)
-                return RunResult.PAUSED if store.meeting(mid)["paused"] else RunResult.STOPPED
+                return (RunResult.PAUSED if store.meeting_state(mid)["paused"]
+                        else RunResult.STOPPED)
             if isinstance(exc, EngineUnavailable):
                 # The model is missing or damaged: not this chunk's fault, so
                 # it must not count towards the chunk's failure limit.

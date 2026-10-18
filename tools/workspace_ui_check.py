@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import wave
 from pathlib import Path
 
@@ -537,17 +538,24 @@ def main():
         mid = ws.meetings()[0]["id"]
         third = ws.transcript(mid)["items"][2]
         ws.edit(mid, third["id"], HOSTILE)
-        # A second meeting with about four hours of short passages (responsiveness).
+        # A second meeting with about four hours of short passages (responsiveness),
+        # written through the store (commit_chunk) into its first pending chunk,
+        # with nothing transcribed by the processing thread first.
         ws._import_one(write_wav(root / "synthetic-long.wav", 10))
         long_mid = next(m["id"] for m in ws.meetings() if m["id"] != mid)
+        ws.pause(long_mid)
+        assert ws.wait_idle(180), "processing did not stop"
         vid = ws.store.active_version(long_mid)["id"]
-        with ws.store.tx() as db:
+        pending = ws.store.chunks(vid, status="pending")
+        assert pending and ws.store.passage_count(vid) == 0, "the long meeting was transcribed"
+        assert ws.store.commit_chunk(vid, pending[0]["idx"], [
+            types.SimpleNamespace(start=i * 3.0, end=i * 3.0 + 2.5,
+                                  text=f"passage {i} about the budget", words=())
+            for i in range(5000)]), "the 5000 passages were not committed"
+        with ws.store.tx() as db:            # the rest of the plan: nothing more to do
             db.execute("UPDATE chunks SET status = 'done' WHERE version_id = ?", (vid,))
-            db.executemany("INSERT INTO segments (version_id, chunk_idx, start_s, end_s, text) "
-                           "VALUES (?, 0, ?, ?, ?)",
-                           [(vid, i * 3.0, i * 3.0 + 2.5, f"passage {i} about the budget")
-                            for i in range(5000)])
         ws.settings.update(speakers=False)
+        ws.store.set_paused(long_mid, False)
         # Setup: fake downloads, and never touch the real Credential Manager.
         import fake_worker_engines
 

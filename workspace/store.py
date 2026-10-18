@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -217,6 +218,12 @@ CONTENT_COLUMNS = {
 
 
 _CONTENT_NAMES = frozenset(c for cols in CONTENT_COLUMNS.values() for c in cols)
+
+# A meeting's plain columns: what state checks need, with nothing to open
+# (meeting_state(), meetings(content=False)).
+MEETING_STATE = ("id", "created_at", "updated_at", "phase", "paused", "content_epoch",
+                 "reviewed_at", "final_saved_at", "audio_removed_at")
+_STATE_COLUMNS = ", ".join(MEETING_STATE)
 _NOT_IN_A_CONDITION = re.compile(r"['\"`\[;*]|--|/\*|\bselect\b|\bin\b(?!\s*\()", re.I)
 
 
@@ -630,19 +637,103 @@ class Store:
         with self.tx() as db:
             if db.execute("SELECT 1 FROM sources WHERE meeting_id = ?", (mid,)).fetchone():
                 raise StoreError("Meeting has content; use cleanup (#17).")
-            db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+            self.delete_meeting_row(db, mid)
+
+    # -- deleting a meeting: only here (tests/test_content_access.py checks that
+    #    no other module deletes rows from a table with content) ----------------
+
+    def delete_meeting_row(self, db, mid):
+        """The meeting's sources and then its row, inside the caller's
+        transaction (db from tx()). Every deletion of a meeting row comes
+        here. Refused (StoreError, so the caller's transaction rolls back)
+        while an active hold covers the meeting: holds block every deletion
+        (#18, invariant C2); callers check first with their own wording."""
+        if db.execute("SELECT 1 FROM holds WHERE meeting_id = ? AND released_at IS NULL",
+                      (mid,)).fetchone():
+            raise StoreError("A retention hold keeps this meeting.")
+        db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
+        db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+
+    def delete_meeting_content(self, db, mid):
+        """Everything left of a meeting, inside the caller's transaction:
+        transcript cleanup (cleanup._remove_transcript), after its hold check
+        in the same transaction. Versions with their chunks, attempts,
+        passages, edits and history, speaker passes with their turns,
+        attributions and corrections; the reviewed snapshot, handoff options,
+        released holds; then the sources and the meeting row."""
+        for (vid,) in db.execute("SELECT id FROM versions WHERE meeting_id = ?",
+                                 (mid,)).fetchall():
+            for (rid,) in db.execute("SELECT id FROM speaker_runs WHERE version_id = ?",
+                                     (vid,)).fetchall():
+                db.execute("DELETE FROM segment_speakers WHERE run_id = ?", (rid,))
+                db.execute("DELETE FROM speaker_corrections WHERE run_id = ?", (rid,))
+                db.execute("DELETE FROM speaker_turns WHERE run_id = ?", (rid,))
+            db.execute("DELETE FROM speaker_runs WHERE version_id = ?", (vid,))
+            db.execute("DELETE FROM edit_history WHERE segment_id IN "
+                       "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
+            db.execute("DELETE FROM edits WHERE segment_id IN "
+                       "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
+            db.execute("DELETE FROM segments WHERE version_id = ?", (vid,))
+            db.execute("DELETE FROM attempts WHERE version_id = ?", (vid,))
+            db.execute("DELETE FROM chunks WHERE version_id = ?", (vid,))
+        db.execute("DELETE FROM versions WHERE meeting_id = ?", (mid,))
+        db.execute("DELETE FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
+        db.execute("DELETE FROM handoff_options WHERE meeting_id = ?", (mid,))
+        db.execute("DELETE FROM holds WHERE meeting_id = ? AND released_at IS NOT NULL", (mid,))
+        self.delete_meeting_row(db, mid)
+
+    def discard_unfinished_import(self, mid, remove_folder):
+        """Remove a meeting whose import never completed (app._discard_import),
+        in one transaction under the store's lock, so no hold can be added
+        between the check and the removal. A meeting that has ever had a hold,
+        active or released, or that has a version, is kept (#193, invariant
+        C2: releasing a hold deletes nothing). remove_folder() removes the
+        app's own copy of the audio inside the transaction: if it raises (a
+        locked file), the rows are rolled back, so the meeting stays listed
+        and the next start tries again; never a folder of decoded audio with
+        no record of it. Returns whether it removed the meeting."""
+        with self._lock, self.tx() as db:
+            if (db.execute("SELECT 1 FROM holds WHERE meeting_id = ?", (mid,)).fetchone()
+                    or db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
+                                  (mid,)).fetchone()):
+                return False
+            self.delete_meeting_row(db, mid)
+            remove_folder()
+        return True
+
+    # -- reading meetings ----------------------------------------------------------
 
     def _meeting(self, row):
         return self._opened("meetings", row, row["id"], row["id"]) if row is not None else None
 
     def meeting(self, mid):
+        """A meeting with its title and note opened, or None. For a state
+        check use meeting_state(), which opens nothing."""
         return self._meeting(self._one("SELECT * FROM meetings WHERE id = ?", (mid,)))
 
-    def meetings(self, where="1", args=()):
+    def meeting_state(self, mid):
+        """A meeting's plain columns (MEETING_STATE) as a dict, or None.
+        Reads and opens no content."""
+        row = self._one(f"SELECT {_STATE_COLUMNS} FROM meetings WHERE id = ?", (mid,))
+        return dict(row) if row is not None else None
+
+    def meetings(self, where="1", args=(), *, content=True):
         """Meetings matching a condition on their plain columns (a fixed SQL
-        expression from the caller, never user text), oldest first."""
+        expression from the caller, never user text), oldest first.
+        content: True for every column, opened; False for the plain columns
+        only (MEETING_STATE), nothing opened; or a tuple of the content
+        columns to read and open as well, for example ("title",)."""
+        if content is True:
+            return [self._meeting(r) for r in self._all(
+                f"SELECT * FROM meetings WHERE {plain_condition(where)} ORDER BY created_at",
+                args)]
+        extra = tuple(content or ())
+        if not set(extra) <= set(CONTENT_COLUMNS["meetings"]):
+            raise ValueError("Only the meeting's content columns can be asked for.")
+        columns = ", ".join(MEETING_STATE + extra)
         return [self._meeting(r) for r in self._all(
-            f"SELECT * FROM meetings WHERE {plain_condition(where)} ORDER BY created_at", args)]
+            f"SELECT {columns} FROM meetings WHERE {plain_condition(where)} "
+            "ORDER BY created_at", args)]
 
     def rename_meeting(self, mid, title):
         with self.tx() as db:
@@ -822,11 +913,35 @@ class Store:
                  "s.words_json, v.meeting_id AS mid FROM segments s "
                  "JOIN versions v ON v.id = s.version_id "
                  "LEFT JOIN edits e ON e.segment_id = s.id ")
+    # The same without the word timings: they are neither read nor opened.
+    _PASSAGES_TEXT = ("SELECT s.id, s.start_s, s.end_s, s.text AS generated, e.text AS edit, "
+                      "NULL AS words_json, v.meeting_id AS mid FROM segments s "
+                      "JOIN versions v ON v.id = s.version_id "
+                      "LEFT JOIN edits e ON e.segment_id = s.id ")
+    _IN_ORDER = "WHERE s.version_id = ? ORDER BY s.start_s, s.id"
 
-    def transcript(self, vid):
-        """Segments in time order, with any human edit applied on top."""
+    def transcript(self, vid, words=True):
+        """Segments in time order, with any human edit applied on top.
+        words=False: words_json is None (search, the reviewed snapshot and the
+        handoff use the text only)."""
+        sql = (self._PASSAGES if words else self._PASSAGES_TEXT) + self._IN_ORDER
+        return [self._passage(r) for r in self._all(sql, (vid,))]
+
+    def passage_count(self, vid):
+        """How many passages a version has."""
+        return self._one("SELECT COUNT(*) FROM segments WHERE version_id = ?", (vid,))[0]
+
+    def transcript_page(self, vid, start, count, words=True):
+        """Passages start to start + count - 1 of transcript(vid), paged in
+        SQL: only these rows are read and opened."""
+        sql = (self._PASSAGES if words else self._PASSAGES_TEXT) + self._IN_ORDER
         return [self._passage(r) for r in self._all(
-            self._PASSAGES + "WHERE s.version_id = ? ORDER BY s.start_s, s.id", (vid,))]
+            sql + " LIMIT ? OFFSET ?", (vid, max(0, int(count)), max(0, int(start))))]
+
+    def passage_ids(self, vid):
+        """A version's passage ids in transcript order. Opens nothing."""
+        return [r[0] for r in self._all(
+            "SELECT s.id FROM segments s " + self._IN_ORDER, (vid,))]
 
     def passage(self, segment_id):
         """One passage (as transcript()), or None."""
@@ -953,9 +1068,17 @@ class Store:
         return self._runs("v.state = 'active'", ())
 
     def current_run(self, vid):
-        """The latest finished speaker run of a version, or None."""
-        done = [r for r in self.speaker_runs(vid) if r["status"] == "done"]
-        return done[-1] if done else None
+        """The latest finished speaker run of a version (the last 'done' run
+        in speaker_runs() order), or None. Opens that run's error only."""
+        r = self._one("SELECT r.*, v.meeting_id AS mid FROM speaker_runs r "
+                      "JOIN versions v ON v.id = r.version_id WHERE r.version_id = ? AND "
+                      "r.status = 'done' ORDER BY r.started_at DESC, r.rowid DESC LIMIT 1",
+                      (vid,))
+        if r is None:
+            return None
+        run = self._opened("speaker_runs", r, r["mid"], r["id"])
+        del run["mid"]
+        return run
 
     # -- speaker corrections (#21) ----------------------------------------------------
 
@@ -986,6 +1109,17 @@ class Store:
                        (cid, rid, kind, str(target),
                         self._seal(row[0], "speaker_corrections", "value", cid, value),
                         time.time()))
+
+    def undo_correction(self, rid):
+        """Remove a run's latest correction (speaker_names.undo). Returns its
+        kind, or None if the run has none."""
+        with self.tx() as db:
+            last = db.execute("SELECT id, kind FROM speaker_corrections WHERE run_id = ? "
+                              "ORDER BY id DESC LIMIT 1", (rid,)).fetchone()
+            if last is None:
+                return None
+            db.execute("DELETE FROM speaker_corrections WHERE id = ?", (last["id"],))
+            return last["kind"]
 
     def current_speakers(self, vid):
         """{segment_id: (label, overlap)} from the latest completed run, or {}.
@@ -1054,11 +1188,26 @@ class Store:
                          "WHERE s.version_id = ? LIMIT 1", (vid,)) is not None
 
     def search(self, vid, query, limit=500):
-        """Positions (0-based, transcript order) of passages containing query,
-        case-insensitive, in the edited text where there is an edit."""
-        needle = query.casefold()
-        return [i for i, r in enumerate(self.transcript(vid))
-                if needle in r["text"].casefold()][:limit]
+        """Ids of the passages containing query, in transcript order, at most
+        limit: case-insensitive, in the edited text where there is an edit.
+        One pass that opens each passage's shown text once (the edit, or the
+        generated text when there is none) and never the word timings."""
+        needle, out = query.casefold(), []
+        if limit <= 0:
+            return out
+        for r in self._all("SELECT s.id, s.text AS generated, e.text AS edit, "
+                           "v.meeting_id AS mid FROM segments s "
+                           "JOIN versions v ON v.id = s.version_id "
+                           "LEFT JOIN edits e ON e.segment_id = s.id " + self._IN_ORDER, (vid,)):
+            if r["edit"] is not None:
+                text = self._unseal(r["mid"], "edits", "text", r["id"], r["edit"])
+            else:
+                text = self._unseal(r["mid"], "segments", "text", r["id"], r["generated"])
+            if needle in text.casefold():
+                out.append(r["id"])
+                if len(out) >= limit:
+                    break
+        return out
 
     def active_version(self, mid):
         return self._one("SELECT * FROM versions WHERE meeting_id = ? AND state = 'active'",
@@ -1139,3 +1288,21 @@ class Store:
         return [self._opened("watched_folders", r, None, r["id"]) for r in self._all(
             f"SELECT * FROM watched_folders WHERE {plain_condition(where)} ORDER BY created_at",
             args)]
+
+    def remove_folder(self, fid):
+        """Stop watching a folder: its row and its suppression rows, in one
+        transaction (intake.remove_folder). Imported meetings stay."""
+        with self.tx() as db:
+            db.execute("DELETE FROM intake_seen WHERE folder_id = ?", (fid,))
+            db.execute("DELETE FROM watched_folders WHERE id = ?", (fid,))
+
+    def intake_salt(self):
+        """The key for intake path hashes (intake._key), as bytes. Made once,
+        in one transaction, the first time it is needed."""
+        row = self._one("SELECT v FROM intake_meta WHERE k = 'salt'")
+        if row is None:
+            with self.tx() as db:
+                db.execute("INSERT OR IGNORE INTO intake_meta (k, v) VALUES ('salt', ?)",
+                           (secrets.token_hex(16),))
+                row = db.execute("SELECT v FROM intake_meta WHERE k = 'salt'").fetchone()
+        return row["v"].encode()

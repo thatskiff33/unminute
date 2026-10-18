@@ -271,7 +271,7 @@ def verdict(r):
 CHILD = r'''
 # Runs inside the packaged runtime. Everything is behind the __main__ guard:
 # the worker is started with multiprocessing "spawn", which re-imports this file.
-import hashlib, json, sqlite3, sys, time
+import hashlib, json, sys, time
 sys.path.insert(0, ".")
 import offline_guard
 offline_guard.disable_telemetry(); offline_guard.install()
@@ -327,40 +327,50 @@ def act(ws, action, marker):
 
 
 def inspect(root, marker):
+    from workspace.store import Store
     wal = root / "workspace.db-wal"          # before opening: closing may checkpoint
     wal_bytes = wal.stat().st_size if wal.exists() else 0
-    db = sqlite3.connect(str(root / "workspace.db"))
-    db.row_factory = sqlite3.Row
-    one = lambda q: db.execute(q).fetchone()[0]
-    out = {"meetings": one("SELECT count(*) FROM meetings"),
-           "phases": [r[0] for r in db.execute("SELECT phase FROM meetings")],
-           "errors": [r[0] for r in db.execute("SELECT last_error FROM meetings "
-                                               "WHERE last_error IS NOT NULL")],
-           "chunks": {r[0]: r[1] for r in db.execute(
-               "SELECT status, count(*) FROM chunks GROUP BY status")},
-           "segments": one("SELECT count(*) FROM segments"),
-           # The same chunk committed twice would show up as duplicates here.
-           "duplicate_segments": one("SELECT count(*) FROM (SELECT version_id, chunk_idx, "
-                                     "start_s, count(*) c FROM segments GROUP BY 1, 2, 3 "
-                                     "HAVING c > 1)"),
-           "attempts": {r[0] or "none": r[1] for r in db.execute(
-               "SELECT result, count(*) FROM attempts GROUP BY result")},
-           "speaker_runs": [r[0] for r in db.execute(
-               "SELECT status FROM speaker_runs ORDER BY started_at")],
-           "speaker_turns": one("SELECT count(*) FROM speaker_turns"),
-           "edits": one("SELECT count(*) FROM edits"),
-           "cleanup_jobs": [dict(r) for r in db.execute(
-               "SELECT phase, state, error FROM cleanup_jobs")],
-           "active_holds": one("SELECT count(*) FROM holds WHERE released_at IS NULL"),
-           "receipts": [r[0] for r in db.execute("SELECT result FROM receipts")],
-           "audio_files": len(list((root / "media").rglob("audio.f32"))),
-           "freelist_pages": one("PRAGMA freelist_count")}
-    text = " ".join(r[0] for r in db.execute(
-        "SELECT text FROM segments ORDER BY version_id, start_s, id"))
-    out["text_sha256"] = hashlib.sha256(text.encode()).hexdigest()
-    out["marker_in_edits"] = bool(one("SELECT count(*) FROM edits WHERE text LIKE '%"
-                                      + marker + "%'"))
-    db.close()
+    # Through the store, which opens content (#111). housekeeping=False: opening
+    # must not mark running attempts interrupted, which this check measures.
+    store = Store(root / "workspace.db", housekeeping=False)
+    try:
+        one = lambda q: store._one(q)[0]
+        rows = store._all
+        out = {"meetings": one("SELECT count(*) FROM meetings"),
+               "phases": [r[0] for r in rows("SELECT phase FROM meetings")],
+               "errors": [m["last_error"] for m in store.meetings()
+                          if m["last_error"] is not None],
+               "chunks": {r[0]: r[1] for r in rows(
+                   "SELECT status, count(*) FROM chunks GROUP BY status")},
+               "segments": one("SELECT count(*) FROM segments"),
+               # The same chunk committed twice would show up as duplicates here.
+               "duplicate_segments": one("SELECT count(*) FROM (SELECT version_id, chunk_idx, "
+                                         "start_s, count(*) c FROM segments GROUP BY 1, 2, 3 "
+                                         "HAVING c > 1)"),
+               "attempts": {r[0] or "none": r[1] for r in rows(
+                   "SELECT result, count(*) FROM attempts GROUP BY result")},
+               "speaker_runs": [r[0] for r in rows(
+                   "SELECT status FROM speaker_runs ORDER BY started_at")],
+               "speaker_turns": one("SELECT count(*) FROM speaker_turns"),
+               "edits": one("SELECT count(*) FROM edits"),
+               "cleanup_jobs": [dict(r) for r in rows(
+                   "SELECT phase, state, error FROM cleanup_jobs")],
+               "active_holds": one("SELECT count(*) FROM holds WHERE released_at IS NULL"),
+               "receipts": [r[0] for r in rows("SELECT result FROM receipts")],
+               "audio_files": len(list((root / "media").rglob("audio.f32"))),
+               "freelist_pages": one("PRAGMA freelist_count")}
+        # The generated text of every version, in version then time order, and
+        # whether any edit holds the marker (case ignored, as SQL LIKE did).
+        texts, marked = [], False
+        for (vid,) in rows("SELECT DISTINCT version_id FROM segments ORDER BY version_id"):
+            for r in store.transcript(vid, words=False):
+                texts.append(r["generated"])
+                marked = marked or (bool(r["edited"])
+                                    and marker.casefold() in r["text"].casefold())
+        out["text_sha256"] = hashlib.sha256(" ".join(texts).encode()).hexdigest()
+        out["marker_in_edits"] = marked
+    finally:
+        store.close()
     out["wal_bytes"] = wal_bytes
     return out
 

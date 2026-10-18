@@ -296,7 +296,7 @@ def set_options(store, mid, omitted, redactions):
     if not isinstance(redactions, list) or not all(isinstance(r, str) for r in redactions):
         raise HandoffError("Expected a list of words to redact.")
     v = store.active_version(mid)
-    mine = {r["id"] for r in store.transcript(v["id"])} if v else set()
+    mine = set(store.passage_ids(v["id"])) if v else set()
     omitted = sorted(set(omitted) & mine)       # only this meeting's own passages
     phrases = []
     for r in redactions:
@@ -411,7 +411,7 @@ def build(store, mid, template, anonymise=False):
     redact = _redactor(opts["redactions"])
     omitted = set(opts["omitted"])
     view = resolve(store, v["id"])
-    rows = store.transcript(v["id"])
+    rows = store.transcript(v["id"], words=False)      # the text only, no word timings
     pseudo = _pseudonyms(view, rows, omitted) if anonymise else {}
     rename = lambda text: text      # noqa: E731
     if anonymise:

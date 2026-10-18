@@ -144,7 +144,7 @@ def render_reviewed(store, vid):
     the user's speaker names and corrections (#21) applied. Called inside the
     confirmation transaction (the store lock is re-entrant)."""
     from workspace.speaker_names import resolve
-    rows = store.transcript(vid)
+    rows = store.transcript(vid, words=False)
     view = resolve(store, vid)
     lines = []
     for r in rows:
@@ -319,29 +319,9 @@ def _remove_transcript(store, mid, media_root):
     with store.tx() as db:
         if _held(db, mid, TRANSCRIPT):
             raise HeldDuringCleanup()
-        versions = [r["id"] for r in db.execute("SELECT id FROM versions WHERE meeting_id = ?",
-                                                (mid,))]
-        for vid in versions:
-            runs = [r["id"] for r in db.execute("SELECT id FROM speaker_runs WHERE "
-                                                "version_id = ?", (vid,))]
-            for rid in runs:
-                db.execute("DELETE FROM segment_speakers WHERE run_id = ?", (rid,))
-                db.execute("DELETE FROM speaker_corrections WHERE run_id = ?", (rid,))
-                db.execute("DELETE FROM speaker_turns WHERE run_id = ?", (rid,))
-            db.execute("DELETE FROM speaker_runs WHERE version_id = ?", (vid,))
-            db.execute("DELETE FROM edit_history WHERE segment_id IN "
-                       "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
-            db.execute("DELETE FROM edits WHERE segment_id IN "
-                       "(SELECT id FROM segments WHERE version_id = ?)", (vid,))
-            db.execute("DELETE FROM segments WHERE version_id = ?", (vid,))
-            db.execute("DELETE FROM attempts WHERE version_id = ?", (vid,))
-            db.execute("DELETE FROM chunks WHERE version_id = ?", (vid,))
-        db.execute("DELETE FROM versions WHERE meeting_id = ?", (mid,))
-        db.execute("DELETE FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
-        db.execute("DELETE FROM handoff_options WHERE meeting_id = ?", (mid,))
-        db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
-        db.execute("DELETE FROM holds WHERE meeting_id = ? AND released_at IS NOT NULL", (mid,))
-        db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
+        # Every row of the meeting, in this same transaction (the store owns
+        # every deletion of content rows, #111).
+        store.delete_meeting_content(db, mid)
     deferred = False
     try:
         compact(store)
