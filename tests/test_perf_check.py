@@ -4,9 +4,11 @@
 # opens a real window and is run by hand at release time.
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -594,6 +596,270 @@ class PolicyReportTests(unittest.TestCase):
         self.assertEqual(["off by policy"], report["recording_consent"])
         self.assertEqual([], report["not_measured_by_policy"])
         self.assertEqual(3.0, report["median"]["recording"]["cpu_percent_of_one_core"])
+
+
+# -- the machine it ran on (#121: no named reference machine) -------------------------
+
+SYNTHETIC_HOST, SYNTHETIC_USER = "SYNTH-HOST-0001", "synthetic.person"
+
+
+def webview2_keys():
+    """The registry keys perf_check reads the WebView2 version from, in order."""
+    return [key for _, key in perf_check.WEBVIEW2_KEYS]
+
+
+class FakeProbe:
+    """Synthetic registry, CIM and system readers for machine_spec. Its CIM
+    rows also carry properties that would identify a machine (the computer's
+    name, a device instance ID): none may reach the specification. Records
+    every registry read."""
+
+    def __init__(self, **change):
+        self.values = {
+            ("HKLM", perf_check.CPU_KEY, "ProcessorNameString"): "  Synthetic CPU  8000X ",
+            ("HKLM", perf_check.WINDOWS_KEY, "CurrentMajorVersionNumber"): 10,
+            ("HKLM", perf_check.WINDOWS_KEY, "CurrentMinorVersionNumber"): 0,
+            ("HKLM", perf_check.WINDOWS_KEY, "CurrentBuild"): "26100",
+            ("HKLM", perf_check.WINDOWS_KEY, "UBR"): 4061,
+            ("HKLM", perf_check.WINDOWS_KEY, "DisplayVersion"): "24H2",
+            ("HKLM", webview2_keys()[0], "pv"): "140.0.1.2",
+        }
+        self.cim_rows = {
+            "Win32_Processor": [{"NumberOfCores": 8, "SystemName": SYNTHETIC_HOST}],
+            "Win32_VideoController": [
+                {"Name": "Synthetic GPU B", "DriverVersion": "31.0.1",
+                 "PNPDeviceID": "PCI\\VEN_0000&DEV_0000\\4&SYNTH&0&0008"},
+                {"Name": "Synthetic GPU A", "DriverVersion": None}],
+        }
+        self.memory, self.status = 16 * 2**30, (1, 0)        # mains, a battery charging
+        self.plan = "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\n"
+        self.logical = 16
+        self.reads = []
+        for name, value in change.items():
+            setattr(self, name, value)
+
+    def registry(self, hive, key, value):
+        self.reads.append((hive, key, value))
+        return self.values.get((hive, key, value))
+
+    def cim(self):
+        return self.cim_rows
+
+    def memory_bytes(self):
+        return self.memory
+
+    def power_status(self):
+        return self.status
+
+    def power_plan(self):
+        return self.plan
+
+    def logical_processors(self):
+        return self.logical
+
+
+class MachineSpecTests(unittest.TestCase):
+    def test_the_specification_is_recorded_from_its_readers(self):
+        spec = perf_check.machine_spec(FakeProbe())
+        self.assertEqual({
+            "cpu": "Synthetic CPU 8000X", "cores": 8, "logical_processors": 16,
+            "memory_gb": 16.0, "windows": "Windows 11 24H2", "os_build": "10.0.26100.4061",
+            "power_plan": "Balanced", "on_mains_power": True, "battery": True,
+            "gpus": [{"name": "Synthetic GPU A", "driver": None},
+                     {"name": "Synthetic GPU B", "driver": "31.0.1"}],
+            "webview2": "140.0.1.2"}, spec)
+        # Exactly what release evidence asks for, and complete.
+        self.assertEqual(list(perf_check.evidence.PERF_MACHINE), list(spec))
+        self.assertEqual([], perf_check.evidence.machine_problems(spec))
+
+    def test_nothing_that_identifies_the_machine_or_its_user_is_recorded(self):
+        probe = FakeProbe()
+        text = json.dumps(perf_check.machine_spec(probe))
+        for marker in (SYNTHETIC_HOST, SYNTHETIC_USER, "PCI", "SYNTH&"):
+            self.assertNotIn(marker, text)
+        # Only the listed registry values are read (not, for example, the
+        # registered owner beside the Windows version).
+        for hive, key, value in probe.reads:
+            self.assertIn(value, perf_check.REGISTRY_READS[(hive, key)])
+        self.assertNotIn("RegisteredOwner", json.dumps(
+            {f"{h} {k}": v for (h, k), v in perf_check.REGISTRY_READS.items()}))
+
+    def test_an_unlisted_registry_read_is_refused(self):
+        with mock.patch.dict(perf_check.REGISTRY_READS,
+                             {("HKLM", perf_check.WINDOWS_KEY): ("CurrentBuild",)}):
+            with self.assertRaises(ValueError):
+                perf_check.machine_spec(FakeProbe())
+
+    def test_cim_keeps_only_the_listed_properties(self):
+        rows = {"Win32_Processor": [{"NumberOfCores": 4, "SystemName": SYNTHETIC_HOST,
+                                     "Name": "Synthetic CPU"}],
+                "Win32_VideoController": [{"Name": "Synthetic GPU", "DriverVersion": "1.2",
+                                           "PNPDeviceID": "PCI\\SYNTH", "SystemName":
+                                           SYNTHETIC_HOST}]}
+        done = subprocess.CompletedProcess([], 0, stdout=json.dumps(rows).encode("utf-8"))
+        with mock.patch.object(perf_check, "_system_program", return_value="powershell.exe"), \
+                mock.patch.object(perf_check.subprocess, "run", return_value=done) as run:
+            got = perf_check.WindowsProbe().cim()
+        self.assertEqual({"Win32_Processor": [{"NumberOfCores": 4}],
+                          "Win32_VideoController": [{"Name": "Synthetic GPU",
+                                                     "DriverVersion": "1.2"}]}, got)
+        command = run.call_args.args[0]
+        self.assertEqual(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"],
+                         command[:4])
+        self.assertIn("Select-Object NumberOfCores)", command[4])
+        self.assertIn("Select-Object Name,DriverVersion)", command[4])
+        for failed in (subprocess.CompletedProcess([], 1, stdout=b""),
+                       subprocess.CompletedProcess([], 0, stdout=b"not json"),
+                       subprocess.CompletedProcess([], 0, stdout=b"[1, 2]")):
+            with self.subTest(failed=failed), \
+                    mock.patch.object(perf_check, "_system_program", return_value="ps.exe"), \
+                    mock.patch.object(perf_check.subprocess, "run", return_value=failed):
+                self.assertIsNone(perf_check.WindowsProbe().cim())
+        with mock.patch.object(perf_check, "_system_program", return_value=None):
+            self.assertIsNone(perf_check.WindowsProbe().cim())
+
+    def test_the_cim_query_only_tries_the_output_encoding(self):
+        # ConstrainedLanguage mode refuses setting a .NET property; with
+        # $ErrorActionPreference = 'Stop' a bare assignment ends the query.
+        script = perf_check.cim_script()
+        self.assertIn("try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}",
+                      script)
+        self.assertEqual(1, script.count("OutputEncoding"))
+
+    @unittest.skipUnless(sys.platform == "win32", "runs Windows PowerShell")
+    def test_the_cim_query_answers_in_constrained_language_mode(self):
+        # As on a laptop with WDAC or AppLocker script enforcement: the session
+        # is switched to ConstrainedLanguage, then runs the probe's own query.
+        import os
+        exe = perf_check._system_program("WindowsPowerShell", "v1.0", "powershell.exe")
+        self.assertIsNotNone(exe)
+        wrapper = ("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; "
+                   "Invoke-Expression $env:UNMINUTE_TEST_CIM_SCRIPT")
+        r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                           capture_output=True, timeout=120,
+                           env={**os.environ, "UNMINUTE_TEST_CIM_SCRIPT": perf_check.cim_script()},
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # Only the exit code and the shape are checked; nothing read is printed.
+        self.assertEqual(0, r.returncode, "the CIM query failed in ConstrainedLanguage mode")
+        data = json.loads(r.stdout.decode("utf-8-sig", errors="replace"))
+        self.assertEqual(set(perf_check.CIM_READS), set(data))
+
+    def test_what_cannot_be_read_is_none_and_named_not_guessed(self):
+        probe = FakeProbe(values={}, cim_rows=None, memory=None, status=None, plan=None,
+                          logical=None)
+        spec = perf_check.machine_spec(probe)
+        self.assertEqual(dict.fromkeys(perf_check.evidence.PERF_MACHINE), spec)
+        self.assertEqual(list(perf_check.evidence.PERF_MACHINE),
+                         perf_check.evidence.machine_problems(spec))
+        # One processor whose cores are not reported: the total is unknown.
+        rows = {"Win32_Processor": [{"NumberOfCores": 8}, {"NumberOfCores": None}],
+                "Win32_VideoController": []}
+        spec = perf_check.machine_spec(FakeProbe(cim_rows=rows))
+        self.assertIsNone(spec["cores"])
+        self.assertEqual([], spec["gpus"])                     # no adapter: known, and empty
+        self.assertEqual(["cores"], perf_check.evidence.machine_problems(spec))
+
+    def test_two_processors_add_their_cores(self):
+        rows = {"Win32_Processor": [{"NumberOfCores": 8}, {"NumberOfCores": 8}],
+                "Win32_VideoController": []}
+        self.assertEqual(16, perf_check.machine_spec(FakeProbe(cim_rows=rows))["cores"])
+
+    def test_power_battery_and_plan(self):
+        cases = [((1, 128), True, False),         # mains, no battery (a desktop)
+                 ((0, 1), False, True),           # on battery
+                 ((255, 255), None, None)]        # not known
+        for status, mains, battery in cases:
+            with self.subTest(status=status):
+                spec = perf_check.machine_spec(FakeProbe(status=status))
+                self.assertEqual((mains, battery), (spec["on_mains_power"], spec["battery"]))
+        for output, plan in (("Power Scheme GUID: 1234  (Ausbalanciert)", "Ausbalanciert"),
+                             ("GUID du mode de gestion : 1234  (Utilisation normale)\r\n",
+                              "Utilisation normale"),
+                             ("", None), ("Access is denied.", None)):
+            with self.subTest(output=output):
+                self.assertEqual(plan, perf_check._power_plan(output))
+
+    def test_windows_10_and_a_webview2_left_by_an_uninstall(self):
+        probe = FakeProbe()
+        probe.values.update({("HKLM", perf_check.WINDOWS_KEY, "CurrentBuild"): "19045",
+                             ("HKLM", perf_check.WINDOWS_KEY, "DisplayVersion"): "22H2",
+                             ("HKLM", webview2_keys()[0], "pv"): "0.0.0.0",
+                             ("HKCU", webview2_keys()[2], "pv"): "139.0.9.9"})
+        spec = perf_check.machine_spec(probe)
+        self.assertEqual(("Windows 10 22H2", "10.0.19045.4061", "139.0.9.9"),
+                         (spec["windows"], spec["os_build"], spec["webview2"]))
+
+    def test_a_windows_server_is_not_called_a_client_release(self):
+        # Server 2025 shares Windows 11's build (26100) and Server 2022's
+        # (20348) is below 22000; InstallationType tells them apart.
+        for build, kind, release, expected in (
+                ("26100", "Server", "24H2", "Windows Server 24H2"),
+                ("20348", "Server Core", "21H2", "Windows Server 21H2"),
+                ("26100", "Client", "24H2", "Windows 11 24H2"),
+                ("19045", None, "22H2", "Windows 10 22H2")):
+            with self.subTest(build=build, kind=kind):
+                probe = FakeProbe()
+                probe.values.update({
+                    ("HKLM", perf_check.WINDOWS_KEY, "CurrentBuild"): build,
+                    ("HKLM", perf_check.WINDOWS_KEY, "DisplayVersion"): release,
+                    ("HKLM", perf_check.WINDOWS_KEY, "InstallationType"): kind})
+                self.assertEqual(expected, perf_check.machine_spec(probe)["windows"])
+
+    @unittest.skipUnless(sys.platform == "win32", "reads this Windows machine")
+    def test_this_machine_gives_only_its_specification(self):
+        import os
+        spec = perf_check.machine_spec(perf_check.WindowsProbe())
+        self.assertEqual(list(perf_check.evidence.PERF_MACHINE), list(spec))
+        text = json.dumps(spec).lower()
+        for name in ("COMPUTERNAME", "USERNAME", "USERPROFILE", "USERDOMAIN"):
+            value = os.environ.get(name, "").lower()
+            if len(value) >= 3:
+                self.assertNotIn(value, text, name)
+
+
+class MachineReportTests(unittest.TestCase):
+    """parent() records the machine at the report's top level, and release
+    evidence (--zip) stops before measuring when it cannot be read in full."""
+
+    FULL = {"cpu": "Synthetic CPU", "cores": 4, "logical_processors": 8, "memory_gb": 7.8,
+            "windows": "Windows 11 24H2", "os_build": "10.0.26100.1", "power_plan": "Balanced",
+            "on_mains_power": True, "battery": True, "gpus": [], "webview2": "140.0.1.2"}
+
+    def run_parent(self, machine, zip_path=None):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "perf.json"
+            args = SimpleNamespace(quick=True, settle=0, window=0, runs=1, leak_minutes=0,
+                                   report=str(report), app=None, zip=zip_path)
+            env = {"python": "3.14.0", "machine": machine}
+            with mock.patch.object(perf_check, "environment", return_value=env), \
+                    mock.patch.object(perf_check, "one_run", return_value={}) as run, \
+                    mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
+                    mock.patch("builtins.print"):
+                rc = perf_check.parent(args)
+            return rc, run, json.loads(report.read_text(encoding="utf-8"))
+
+    def test_the_machine_is_recorded_at_the_top_level(self):
+        rc, run, report = self.run_parent(dict(self.FULL))
+        self.assertEqual((0, 1), (rc, run.call_count))
+        self.assertEqual(self.FULL, report["machine"])
+        self.assertEqual({"python": "3.14.0"}, report["environment"])
+
+    def test_release_evidence_stops_before_measuring_an_unreadable_machine(self):
+        rc, run, report = self.run_parent(dict(self.FULL, cores=None, gpus=None), "p.zip")
+        self.assertEqual(2, rc)
+        run.assert_not_called()
+        self.assertIn("could not be read in full (cores, gpus)", report["error"])
+        # Without --zip (a development run) it is measured and the gap shown.
+        rc, run, report = self.run_parent(dict(self.FULL, cores=None))
+        self.assertEqual((0, 1), (rc, run.call_count))
+        self.assertIsNone(report["machine"]["cores"])
+
+    def test_any_machine_will_do_for_release_evidence(self):
+        # No named reference machine: a 4-core, 8 GB laptop measures as well.
+        rc, run, report = self.run_parent(dict(self.FULL), "p.zip")
+        self.assertEqual((0, 1), (rc, run.call_count))
 
 
 if __name__ == "__main__":
