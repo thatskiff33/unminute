@@ -6,8 +6,9 @@
   Removes the installed program, its Start menu shortcut and its uninstall
   entry. It removes only what the installer put in the install folder
   (versions, current.json and this script); if the folder holds anything
-  else, or is not an install that the uninstall entry names, it removes
-  nothing. It does NOT remove the workspace (meetings, holds, settings) or the
+  else, or is neither an install nor the folder the uninstall entry names, it
+  removes nothing. When the uninstall entry names another folder, the shortcut
+  and the entry are that install's, and are kept. It does NOT remove the workspace (meetings, holds, settings) or the
   downloaded models: meeting content is only removed through the app's own
   confirmed cleanup, which honours retention holds. If meetings remain, this
   says so.
@@ -68,14 +69,19 @@ try {
     # The folder must be an install (current.json or versions), or the one the
     # uninstall entry names (its files already gone). A wrong -InstallDir would
     # otherwise remove the real install's shortcut and uninstall entry, and report
-    # success, while leaving the program itself in place.
+    # success, while leaving the program itself in place. When the entry names
+    # another folder, this one is an older or second install: its own entries go,
+    # and the shortcut and entry stay with the install they belong to.
     $isInstall = (Test-Path -LiteralPath (Join-Path $Options.InstallDir "current.json")) -or
         (Test-Path -LiteralPath (Join-Path $Options.InstallDir "versions"))
     $registered = $false
+    $elsewhere = $false
     if (Test-Path -LiteralPath $RegKey) {
         $location = (Get-ItemProperty -LiteralPath $RegKey -ErrorAction SilentlyContinue).InstallLocation
         $registered = $location -and
             ($location.TrimEnd("\") -ieq $Options.InstallDir.TrimEnd("\"))
+        # The entry names another install: its shortcut and entry are that one's.
+        $elsewhere = $location -and -not $registered
     }
     if (-not ($isInstall -or $registered)) {
         Stop-Uninstall 1 "No $AppName install was found in the install folder, so nothing was removed. Check -InstallDir."
@@ -99,7 +105,7 @@ try {
     }
     $programs = [Environment]::GetFolderPath("Programs")
     $link = Join-Path $programs "$AppName.lnk"
-    if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+    if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove the rest first.
         foreach ($name in "versions", "current.json") {
@@ -109,8 +115,13 @@ try {
         Remove-Item -LiteralPath $Options.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     # Last: while any file remains, the app still shows as installed (Intune detection).
-    if (Test-Path -LiteralPath $RegKey) { Remove-Item -LiteralPath $RegKey -Recurse -Force }
-    Write-Step "$AppName has been removed."
+    if ($elsewhere) {
+        Write-Step ("$AppName has been removed from this folder. The Start menu shortcut and the " +
+            "uninstall entry belong to the install in another folder, so they were kept.")
+    } else {
+        if (Test-Path -LiteralPath $RegKey) { Remove-Item -LiteralPath $RegKey -Recurse -Force }
+        Write-Step "$AppName has been removed."
+    }
     $db = Join-Path $env:LOCALAPPDATA "Unminute\workspace\workspace.db"
     if (Test-Path -LiteralPath $db) {
         Write-Step ("Your workspace was kept ($([IO.Path]::GetDirectoryName($db))). It may still " +

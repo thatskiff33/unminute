@@ -130,10 +130,10 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 
 **From version 0.4.3 or earlier, this is not an update in place.** The new version starts with an empty workspace and does not see your meetings in the earlier one. So, in order:
 
-1. In the earlier version: hand off or copy anything you still need, confirm the cleanup of finished meetings, check any holds with whoever manages them, and remove the Hugging Face token in Setup.
+1. In the earlier version: hand off or copy anything you still need, confirm the cleanup of finished meetings, check any holds with whoever manages them, and remove the Hugging Face token in Setup. Settings, handoff templates and watched folders do not carry over either, so note your settings and watched folders (including which ones may delete originals), and copy the text of any handoff template you edited or wrote.
 2. Uninstall the earlier version in Settings > Apps.
 3. Install the new version.
-4. In the new version's Setup, download the models again and enter the token again.
+4. In the new version's Setup, download the models again and enter the token again. Then set up your settings, handoff templates and watched folders again. When you add a watched folder again, leave "Also import recordings already in it" unticked, so recordings you finished in the earlier version are not imported again. If you used the graphics card, download "Graphics card acceleration" again in Settings > Manage downloads and turn "Use the graphics card" back on.
 
 The earlier version's workspace and models stay on the computer until they are deleted. [PACKAGING.md](PACKAGING.md) ("Updates") says where they are, and what to do if you installed in the other order.
 

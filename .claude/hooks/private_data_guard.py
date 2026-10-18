@@ -9,16 +9,22 @@
 #     names, junctions such as "Local Settings", \\?\ and \\localhost\C$ forms and
 #     trailing dots are resolved first;
 #   - shell commands (Bash, PowerShell, Monitor) may not name either of them as
-#     something to read, list, copy or stage, nor search local AppData whole;
+#     something to read, list, copy or stage, nor search local AppData whole
+#     (also with a wildcard or file name as the last part, or no folder named when
+#     run from local AppData or above);
 #   - git add and git commit may not name a media file.
+# A leading ~ is the home folder, as the Grep and Glob tools read it.
 # Message text (commit messages, PR bodies, quoted heredocs and here-strings not
-# fed to an interpreter) and the patterns given to text searches are ignored, so
-# rules can be quoted and searched for.
+# fed to an interpreter, PowerShell text held in a variable) and the patterns given
+# to text searches are ignored, so rules can be quoted and searched for.
 # It is a guard rail, not a security boundary. Known gaps: a path held in a
-# variable from an earlier tool call; a path the program builds itself (the app's
-# own default_root(), GetFolderPath(28), obfuscation such as backtick escapes);
-# Set-Location -Path:<folder>; and a shell search that names no folder, run from a
-# folder above local AppData.
+# variable from an earlier tool call, or set with Set-Variable or in a scriptblock;
+# a script file written in one step (Write, cat > f <<EOF, Set-Content) and run in
+# another; a path the program builds itself (the app's own default_root(),
+# GetFolderPath(28), obfuscation such as backtick escapes, a wildcard in place of
+# AppData or Local); Set-Location -Path:<folder>; a copy or archive of local AppData
+# whole (Copy-Item -Recurse, robocopy, tar, Compress-Archive); and a link made and
+# used in the same command (a later command through it is resolved).
 # Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -137,10 +143,15 @@ ASSIGNMENT = {
                        r"([A-Za-z_]\w*)=('[^']*'|\"(?:[^\"\\]|\\.)*\"|[^\s;&|]*)"),
 }
 TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
+# PowerShell's ${C:\path}, which reads the file, even inside double quotes.
+PROVIDER_VARIABLE = re.compile(r"\$\{([A-Za-z]:[^}]*)\}")
 # A search's pattern: the value of its pattern option, or else its first quoted argument.
 PATTERN_VALUE = re.compile(r"(?<![\w-])(?:-e|--regexp|-pattern|-simplematch)(?:\s+|=)"
                            r"(\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+)", re.IGNORECASE)
 SEGMENTS = re.compile(r"\|\||&&|[|;&\n]")
+# cmd's own part of cmd /c "program ...", with the opening quote.
+CMD_WRAPPER = re.compile(r"\s*(?:\S*[\\/])?cmd(?:\.exe)?\s+(?:/[^\s/]+\s+)*?/[ckr]\s+[\"']?",
+                         re.IGNORECASE)
 STATEMENTS = re.compile(r"\|\||&&|[;&\n]")         # a pipeline stays together
 # A change of folder at the start of a segment (or inside cmd /c "cd ... && ...").
 CHANGE_FOLDER = re.compile(r"^[\s(\{\"']*(?:cmd(?:\.exe)?\s+/[ck]\s+[\"']?\s*)?"
@@ -164,6 +175,12 @@ VALUE_OPTIONS = {
 }
 VALUE_OPTIONS.update(egrep=VALUE_OPTIONS["grep"], fgrep=VALUE_OPTIONS["grep"],
                      sls=VALUE_OPTIONS["select-string"], ag=VALUE_OPTIONS["rg"])
+# Listings, which with recursion take a last part that is a wildcard or a file name
+# as a filter, and search every folder below the rest (so does findstr /s).
+LISTINGS = ("get-childitem", "gci", "ls", "dir")
+FILTER_LEAF = LISTINGS + ("findstr",)
+VALUE_OPTIONS.update((name, {"-filter", "-include", "-exclude", "-depth", "-attributes"})
+                     for name in LISTINGS)
 # Options after which a search has no pattern argument at all.
 NO_PATTERN = {"--files", "--type-list", "-f", "--file"}
 
@@ -200,14 +217,20 @@ def _remote_drive(path):
         return False
 
 
+def _home(path):
+    """path with a leading ~ (~, ~\\x, ~/x, ~name) as a home folder, as shells and
+    Claude Code's Grep and Glob read it; anything else unchanged."""
+    if isinstance(path, str) and path.startswith("~"):
+        return ntpath.expanduser(path)
+    return path
+
+
 def _canonical(path):
     """path as Windows opens it, lower-cased: \\\\?\\ and \\\\localhost\\C$ forms as the
     drive path, trailing dots and spaces dropped from each name, . and .. resolved, and
     on a local drive, links, junctions and short (8.3) names resolved (metadata only;
     nothing is read). "" when it is not a full path."""
-    path = path.strip().strip("\"'").replace("/", "\\")
-    if path.startswith("~"):
-        path = os.path.expanduser(path)
+    path = _home(path.strip().strip("\"'")).replace("/", "\\")
     path = DEVICE_UNC.sub(r"\\\\", path)
     path = DEVICE_DRIVE.sub("", path)
     path = ADMIN_SHARE.sub(lambda m: m.group(1) + ":", path)
@@ -260,7 +283,9 @@ def _above_data(path):
 
 
 def _brace_alternatives(pattern, limit=64):
-    """A glob pattern's {a,b} lists expanded; an unclosed brace stands for anything."""
+    """A glob pattern's {a,b} lists expanded; an unclosed brace stands for anything.
+    Past the limit, each list left stands for anything too, so a long list cannot
+    hide a data folder's name (R13b round 2 review)."""
     found, out = [pattern], []
     while found and len(out) < limit:
         current = found.pop()
@@ -270,6 +295,11 @@ def _brace_alternatives(pattern, limit=64):
             continue
         found.extend(current[:m.start()] + alt + current[m.end():]
                      for alt in m.group(1).split(","))
+    for current in found:
+        previous = None
+        while previous != current:
+            previous, current = current, re.sub(r"\{[^{}]*\}", "*", current)
+        out.append(current.replace("{", "*").replace("}", "*"))
     return out
 
 
@@ -386,6 +416,9 @@ def _run_parts(text, shell):
         i = j + 1
     if shell == "Bash":
         parts += re.findall(r"`([^`]*)`", text)
+    else:
+        # ${C:\path} is the file's contents (PowerShell's file system provider).
+        parts += [f"Get-Content '{path}'" for path in PROVIDER_VARIABLE.findall(text)]
     return " ; ".join(parts) if parts else " "
 
 
@@ -403,8 +436,11 @@ def _drop_written(command, shell):
     """command with heredocs, here-strings and message text dropped, unless an
     interpreter runs them, keeping the parts the shell runs first."""
     def heredoc(match):
-        if INTERPRETER.search(_consumer(command, match.start(), match.start() + len(
-                match.group(0).split("\n", 1)[0]))):
+        # The rest of the heredoc's first line too: cat <<'EOF' | python -
+        first_line = match.group(0).split("\n", 1)[0]
+        piped = re.split(r"\|\||&&|;", first_line)[0]
+        if INTERPRETER.search(_consumer(command, match.start(), match.start() + len(first_line))
+                              + " " + piped):
             return match.group(0)
         if match.group(1):                       # a quoted delimiter: plain text
             return " "
@@ -428,7 +464,8 @@ def _drop_written(command, shell):
 
 def _substitute(command, shell):
     """command with variables set in it written out where they are used later; a
-    literal value (single quotes, a literal here-string) is left only where used."""
+    literal value (single quotes, a literal here-string), or PowerShell double-quoted
+    text other than what it runs, is left only where used."""
     pattern = ASSIGNMENT.get(shell)
     if not pattern:
         return command
@@ -442,7 +479,14 @@ def _substitute(command, shell):
                          re.IGNORECASE if shell == "PowerShell" else 0)
         after = use.sub(lambda m, text=value: text, command[end:])
         literal = value.startswith("'") or value.startswith("@'")
-        middle = "''" if literal else command[start:end]
+        if literal:
+            middle = "''"
+        elif shell == "PowerShell" and value.startswith('"'):
+            # A PowerShell variable holds text: only what the shell runs in it is
+            # checked here; the whole value is checked where it is used.
+            middle = _run_parts(value, shell)
+        else:
+            middle = command[start:end]
         new = command[:start] + middle + after
         offset += len(new) - len(command)
         command = new
@@ -456,8 +500,15 @@ def _segments(command, shell):
         # Skip assignments and wrappers to reach the program name.
         while words and (words[0] in ("sudo", "env", "time", "&", ".") or "=" in words[0]):
             words = words[1:]
-        if words:
-            yield [w.strip("\"'").lower() for w in words], segment
+        words = [w.strip("\"'").lower() for w in words]
+        program = _unwrap(words)
+        if program is not words:
+            # cmd /c "program ...": the program's own text, without the quote.
+            wrapper = CMD_WRAPPER.match(segment)
+            if wrapper:
+                segment = segment[wrapper.end():]
+        if program:
+            yield program, segment
 
 
 def _program(words):
@@ -465,24 +516,103 @@ def _program(words):
     return name[:-4] if name.endswith(".exe") else name
 
 
-def _drop_pattern(text, program, git):
+def _unwrap(words):
+    """The words of the program that cmd /c (or /k) runs, in place of cmd's own."""
+    while words and _program(words) == "cmd":
+        at = next((i for i, w in enumerate(words[1:], 1) if w in ("/c", "/k", "/r")), None)
+        if at is None or not all(w.startswith("/") for w in words[1:at]):
+            break
+        words = words[at + 1:]
+    return words
+
+
+def _git_sub(words):
+    """git's subcommand, past git's own options (-C <folder>, -c <setting>)."""
+    i = 1
+    while i < len(words) and words[i].startswith("-"):
+        i += 2 if words[i] == "-c" else 1          # -C and -c, lower-cased
+    return words[i] if i < len(words) else ""
+
+
+def _after_program(tokens, program, sub):
+    """The index of the first token after the program (and git's subcommand), or
+    None when the program is not found as a token of its own."""
+    names = [_program([t.strip("\"'").lower()]) if t.strip("\"'") else "" for t in tokens]
+    if program not in names:
+        return None
+    i = names.index(program) + 1
+    if sub:
+        while i < len(tokens) and names[i] != sub:
+            i += 2 if tokens[i] in ("-C", "-c") else 1
+        i += 1
+    return i
+
+
+def _drop_pattern(text, program, sub=None):
     """The segment without its search pattern: the first argument that is neither an
     option nor an option's value. Unchanged when the search takes no pattern."""
     tokens = TOKEN.findall(text)
-    start = 2 if git else 1                    # after "rg", or after "git grep"
+    i = _after_program(tokens, program, sub)
+    if i is None:
+        return text
     takes_value = VALUE_OPTIONS.get(program, set())
-    insensitive = program in ("select-string", "sls")
-    i = start
+    insensitive = program in ("select-string", "sls", "findstr")
+    slash = program == "findstr"
+    if slash:
+        # findstr /c:"text" is the pattern, and /g:file reads them from a file.
+        given = [k for k in range(i, len(tokens)) if tokens[k].lower().startswith("/c:")]
+        if given:
+            return " ".join(t for k, t in enumerate(tokens) if k not in given)
+        if any(t.lower().startswith("/g:") for t in tokens[i:]):
+            return text
     while i < len(tokens):
         token = tokens[i]
         key = token.lower() if insensitive else token
         if key in NO_PATTERN:
             return text
-        if token.startswith("-"):
+        if token.startswith("-") or (slash and token.startswith("/")):
             i += 2 if key in takes_value else 1
             continue
-        return " ".join(tokens[:i] + tokens[i + 1:])
+        # PowerShell's list of patterns: 'a', 'b'
+        end = i + 1
+        while insensitive and end < len(tokens) and (tokens[end - 1].endswith(",")
+                                                     or tokens[end].startswith(",")):
+            end += 1
+        return " ".join(tokens[:i] + tokens[end:])
     return text
+
+
+def _without_pattern(words, text):
+    """text with its search pattern dropped, when the segment is a search."""
+    program = _program(words)
+    sub = _git_sub(words) if program == "git" else ""
+    if program in SEARCHES or sub in GIT_SEARCHES:
+        stripped = PATTERN_VALUE.sub(" ", text)
+        return stripped if stripped != text else _drop_pattern(text, program, sub)
+    return text
+
+
+def _arguments(text, program, sub):
+    """The arguments that are neither options nor option values, after the program
+    (and git's subcommand): the folders and files the command reads."""
+    tokens = TOKEN.findall(text)
+    i = _after_program(tokens, program, sub)
+    if i is None:
+        return []
+    takes_value = VALUE_OPTIONS.get(program, set())
+    insensitive = program in LISTINGS or program in ("select-string", "sls", "findstr")
+    slash = program in ("findstr", "dir", "tree")         # cmd's /s-style options
+    found = []
+    for_value = False
+    for token in tokens[i:]:
+        key = token.lower() if insensitive else token
+        if for_value:
+            for_value = False
+        elif token.startswith("-") or (slash and token.startswith("/")):
+            for_value = key in takes_value
+        else:
+            found.append(token)
+    return found
 
 
 def _first_argument(text):
@@ -497,11 +627,13 @@ def _recursive(program, words):
     """True when the command reads a folder's files all the way down."""
     if program in ("rg", "ag", "tree", "find"):
         return True
+    if program == "git":                       # outside the repository's own files
+        return _git_sub(words) == "grep" and "--no-index" in words
     flags = [w for w in words[1:] if w.startswith(("-", "/"))]
     if program in ("grep", "egrep", "fgrep"):
         return any(w in ("--recursive", "--dereference-recursive")
                    or re.fullmatch(r"-[a-z]*[rR][a-z]*", w) for w in flags)
-    if program in ("get-childitem", "gci", "ls", "dir"):
+    if program in LISTINGS:
         return any(w.startswith("-rec") or w in ("-r", "-depth", "/s") or
                    re.fullmatch(r"-[a-z]*R[a-z]*", w) for w in flags)
     if program == "findstr":
@@ -534,26 +666,44 @@ class _Folder:
             self.previous, self.here = self.here, _resolve(self.here, target)
 
 
+def _searches_above_data(text, program, sub, here):
+    """True when a recursive command searches local AppData or a folder above it
+    without naming it whole: the folder it runs in, when it names no path, and the
+    folder above a last part that is a wildcard (or, for a listing or findstr /s, a
+    file name it looks for in every folder below)."""
+    args = _arguments(text, program, sub)
+    folders = [] if args else [here]
+    for arg in args:
+        head, sep, leaf = arg.strip("\"'").replace("/", "\\").rpartition("\\")
+        if re.search(r"[*?\[]", leaf) or program in FILTER_LEAF:
+            if not sep:
+                folders.append(here)
+            elif head:
+                folders.append(_resolve(here, head + "\\" if head.endswith(":") else head))
+    return any(folder and (BARE_LOCAL.search(folder) or _above_data(_canonical(folder)))
+               for folder in folders)
+
+
 def _check_shell(command, cwd="", shell="Bash"):
     folder = _Folder(cwd)
     if _reaches_data(folder.here):
         return f"A command run in the live Unminute workspace is blocked. {ADVICE}"
     command = _drop_written(_substitute(command, shell), shell)
     blocked = f"A command naming the live Unminute workspace is blocked. {ADVICE}"
-    # Local AppData and a data folder's name in one pipeline build the path.
+    searching = f"Searching a folder that holds the live Unminute workspace is blocked. {ADVICE}"
+    # Local AppData and a data folder's name in one pipeline build the path; a
+    # search's pattern is only text to find, so it adds neither.
     for statement in STATEMENTS.split(command):
-        expanded = _expand(statement)
+        expanded = _expand(" | ".join(_without_pattern(words, text)
+                                      for words, text in _segments(statement, shell)))
         if BARE_LOCAL.search(expanded) and DATA_WORD.search(expanded):
             return blocked
     for words, text in _segments(command, shell):
         program = _program(words)
-        sub = words[1] if len(words) > 1 else ""
+        sub = _git_sub(words) if program == "git" else ""
         recursive = _recursive(program, words)
-        if program in SEARCHES or (program == "git" and sub in GIT_SEARCHES):
-            # A search pattern may name anything; the paths searched may not.
-            stripped = PATTERN_VALUE.sub(" ", text)
-            text = stripped if stripped != text else _drop_pattern(text, program,
-                                                                   program == "git")
+        # A search pattern may name anything; the paths searched may not.
+        text = _without_pattern(words, text)
         expanded = _expand(text)
         tokens = TOKEN.findall(expanded)
         # git -C runs this one command from another folder.
@@ -568,7 +718,9 @@ def _check_shell(command, cwd="", shell="Bash"):
         # A search or listing of local AppData, or a folder above it, reads the data.
         if recursive and (BARE_LOCAL.search(expanded) or any(
                 _above_data(_canonical(path)) for path in paths)):
-            return f"Searching a folder that holds the live Unminute workspace is blocked. {ADVICE}"
+            return searching
+        if recursive and _searches_above_data(expanded, program, sub, here):
+            return searching
         change = CHANGE_FOLDER.search(text)
         if change:
             folder.change(change.group(1), change.group(2))
@@ -594,6 +746,9 @@ def decide(payload):
     cwd = payload.get("cwd") or ""
 
     if tool in FILE_TOOLS:
+        # The tools read a leading ~ as the home folder (R13b round 2 review).
+        tool_input = {key: _home(value) if key in FILE_FIELDS else value
+                      for key, value in tool_input.items()}
         for field in FILE_FIELDS:
             if tool == "Grep" and field == "pattern":
                 continue                        # Grep's pattern is text to find, not a path

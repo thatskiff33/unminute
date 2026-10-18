@@ -157,7 +157,10 @@ class InstallIdentityTests(unittest.TestCase):
                  *(p for p in (ROOT / "workspace").rglob("*")
                    if p.suffix in (".py", ".js", ".html", ".css")),
                  *(ROOT / "packaging").glob("*.ps1"), *(ROOT / "packaging").glob("*.cmd"),
-                 *(ROOT / "changelog.d").glob("*.md")]
+                 *(ROOT / "changelog.d").glob("*.md"),
+                 # and the tests that set the worker's test marker, the one test name
+                 # the scan looks for (R13b round 2 review)
+                 ROOT / "tests" / "fake_worker_engines.py", ROOT / "tests" / "test_workers.py"]
         found = [f"{p.relative_to(ROOT)}:{n}" for p in files
                  for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1)
                  if old.search(line)]

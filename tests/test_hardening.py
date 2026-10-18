@@ -672,6 +672,28 @@ class DataFolderOverlapTests(unittest.TestCase):
                     self.assertNotIn(self.MESSAGE, r.stdout + r.stderr)
             self.assertEqual(list(local.iterdir()), [])          # nothing was written
 
+    @unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
+    def test_the_installer_drops_a_trailing_backslash(self):
+        # The registered uninstall command quotes -InstallDir: a trailing \ there
+        # reads as \", a literal quote, and the uninstall fails (R13b round 2
+        # review). A copy that stops after the folder checks and prints the folder.
+        text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        stop = "    if ($Options.Rollback) { Invoke-Rollback }"
+        self.assertEqual(text.count(stop), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy = Path(tmp) / "install-copy.ps1"
+            report = '    Write-Output "DIR=$($Options.InstallDir)"; exit 0'
+            copy.write_text(text.replace(stop, report), encoding="utf-8")
+            folder = Path(tmp) / "Apps" / "Unminute"
+            for where in (f"{folder}\\", f"{folder}\\\\", f"{folder}/", str(folder)):
+                with self.subTest(where=where):
+                    r = self.run_script(copy, where, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertIn(f"DIR={folder}\n", r.stdout)
+            self.assertFalse(folder.exists())
+
     def uninstaller_copy(self, tmp):
         """uninstall.ps1 with this computer's Start menu folder and uninstall key
         swapped for a temporary folder and a key that does not exist, so a
@@ -762,6 +784,16 @@ class DataFolderOverlapTests(unittest.TestCase):
                 winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(registered))
             r = self.run_script(copy, typo, local, cwd=tmp)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertTrue(link.is_file() and self.key_exists())
+            # An older or second install, while the entry names another folder: its
+            # own files go, but the shortcut and the entry are the other install's
+            # (R13b round 2 review).
+            older = Path(tmp) / "Programs" / "OldInstall"
+            (older / "versions" / "0.4.3").mkdir(parents=True)
+            (older / "current.json").write_text("{}")
+            r = self.run_script(copy, older, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(older.exists())
             self.assertTrue(link.is_file() and self.key_exists())
             # The registered folder, already deleted: the shortcut and entry go.
             r = self.run_script(copy, registered, local, cwd=tmp)

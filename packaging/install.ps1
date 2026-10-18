@@ -472,6 +472,10 @@ try {
     if ($overlap) {
         Stop-Install 2 "The install folder must not be in, or hold, $AppName's data folder ($overlap). Choose another -InstallDir."
     }
+    # A trailing \ would end the registered uninstall command's quoted -InstallDir
+    # with \", which Windows reads as a literal quote. A drive's root keeps its \.
+    $driveRoot = [IO.Path]::GetPathRoot($Options.InstallDir)
+    $Options.InstallDir = $driveRoot + $Options.InstallDir.Substring($driveRoot.Length).TrimEnd("\", "/")
     if ($Options.Rollback) { Invoke-Rollback }
     Test-Prerequisite
     $root = Get-PackageRoot
