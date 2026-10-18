@@ -166,28 +166,44 @@ class GatePathTests(unittest.TestCase):
                 self.assertEqual((result["kind"], result["current_schema"]),
                                  (kind, store.SCHEMA_VERSION))
 
+    def assert_refused_untouched(self, raw):
+        def touched(*args, **kwargs):
+            raise AssertionError("the gate touched a path that is not local")
+        with mock.patch("os.stat", touched), mock.patch("os.path.exists", touched), \
+                mock.patch("sqlite3.connect", touched):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                update._connect(raw)
+            self.assertNotIn("server", str(caught.exception))      # no path (P3)
+            self.assertNotIn("localhost", str(caught.exception))
+            self.assertIs(update.current_schema(raw), update.UNREADABLE)
+            g = update.gate(raw, store.SCHEMA_VERSION)
+            self.assertEqual((g["code"], g["kind"]), (update.WAIT, "unreadable"))
+            with self.assertRaises(sqlite3.OperationalError):
+                update.blockers(raw)
+
     def test_a_path_not_on_a_local_drive_is_refused_untouched(self):
         # as_uri() turns \\localhost\C$\x into file://localhost/C%24/x, which
         # SQLite opens as /C$/x on the current drive: a different file. The
-        # gate refuses UNC and device paths before reading anything (no
-        # network access), and the update waits.
-        def touched(*args, **kwargs):
-            raise AssertionError("the gate touched a path that is not local")
+        # gate refuses UNC, extended, device and NT-namespace paths before
+        # reading anything (no network access), and the update waits.
         paths = ["\\\\localhost\\C$\\x\\workspace.db", "\\\\127.0.0.1\\C$\\x\\workspace.db",
                  "//server/share/x/workspace.db", "\\\\?\\UNC\\server\\share\\x\\workspace.db"]
+        if os.name == "nt":
+            # Windows passes \??\ straight to the NT namespace, so \??\UNC\
+            # reaches the network, though Python reads it as C:\??\... (#164).
+            # On Linux these are ordinary relative names.
+            paths += ["\\??\\UNC\\server\\share\\x\\workspace.db", "\\??\\C:\\x\\workspace.db",
+                      "/??/UNC/server/share/x/workspace.db", "\\\\?\\C:\\x\\workspace.db",
+                      "\\\\.\\pipe\\workspace.db", "C:\\x\\NUL"]
         for raw in paths:
-            with self.subTest(path=raw), \
-                    mock.patch("os.stat", touched), mock.patch("os.path.exists", touched), \
-                    mock.patch("sqlite3.connect", touched):
-                with self.assertRaises(sqlite3.OperationalError) as caught:
-                    update._connect(raw)
-                self.assertNotIn("server", str(caught.exception))      # no path (P3)
-                self.assertNotIn("localhost", str(caught.exception))
-                self.assertIs(update.current_schema(raw), update.UNREADABLE)
-                g = update.gate(raw, store.SCHEMA_VERSION)
-                self.assertEqual((g["code"], g["kind"]), (update.WAIT, "unreadable"))
-                with self.assertRaises(sqlite3.OperationalError):
-                    update.blockers(raw)
+            with self.subTest(path=raw):
+                self.assert_refused_untouched(raw)
+
+    def test_a_relative_path_under_a_unc_current_folder_is_refused_untouched(self):
+        # The path as resolved against the current folder is checked too.
+        unc = "\\\\server\\share\\" if os.name == "nt" else "//server/share/"
+        with mock.patch("os.path.abspath", lambda p: unc + os.fspath(p)):
+            self.assert_refused_untouched("workspace.db")
 
     def test_a_workspace_whose_existence_cannot_be_told_is_unreadable(self):
         # Only "not found" means no workspace; any other error fails closed.
@@ -197,6 +213,24 @@ class GatePathTests(unittest.TestCase):
             self.assertIs(update.current_schema(db), update.UNREADABLE)
             g = update.gate(db, store.SCHEMA_VERSION + 1)
         self.assertEqual((g["code"], g["kind"]), (update.WAIT, "unreadable"))
+
+    def test_blockers_still_reads_a_workspace_whose_existence_cannot_be_told(self):
+        # blockers() must not fail open: when os.stat is refused it reads the
+        # database (or raises), and never reports an empty workspace.
+        db = Path(self.tmp.name) / "w" / "workspace.db"
+        self.workspace(db)
+        real_stat = os.stat
+
+        def stat(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "workspace.db":
+                raise PermissionError(13, "Access is denied")
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch("os.stat", stat):
+            with self.assertRaises(PermissionError):
+                os.stat(db)                             # the refusal holds
+            kinds = {b["kind"] for b in update.blockers(db)}
+        self.assertEqual(kinds, {"holds", "meetings", "cleanup"})
 
 
 EXTENDED = "\\\\?\\"

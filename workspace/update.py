@@ -21,6 +21,7 @@
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 
@@ -63,19 +64,37 @@ def package_version():
         return "source"
 
 
-# A UNC path (\\server\share, //server/share) or a Windows device or extended
-# path (\\?\..., \\.\...). The gate never reads one: the workspace is never on
-# a network share (D3), and as_uri() would turn \\localhost\C$\x into
-# file://localhost/C%24/x, which SQLite accepts and opens as /C$/x on the
-# current drive, a different file.
-_NOT_LOCAL = ("\\\\", "//")
+# The gate reads only a path on a plain drive letter (C:\...). It never reads
+# a UNC path (\\server\share, //server/share), an extended or device path
+# (\\?\..., \\.\..., including \\?\UNC\...), an NT-namespace path (\??\...,
+# which Windows passes straight through, so \??\UNC\server\share reaches the
+# network) or a reserved device name (NUL, CON). The workspace is never on a
+# network share (D3), and as_uri() would turn \\localhost\C$\x into
+# file://localhost/C%24/x, which SQLite opens as /C$/x on the current drive, a
+# different file. A mapped network drive letter (Z:\) passes here: for the
+# installer's --gate, store.local_appdata() refuses it first (through
+# default_root()), so the gate never sees one.
+_DRIVE = re.compile(r"[A-Za-z]:\\")
+_NT_NAMESPACE = "\\??\\"
 
 
 def _local(db_path):
-    """Refuse a path that is not on a local drive, before anything reads it
-    (a UNC path would reach the network). No path in the message (P3)."""
-    p = Path(db_path)
-    if str(p).startswith(_NOT_LOCAL) or str(p.absolute()).startswith(_NOT_LOCAL):
+    """Refuse a path that is not on a plain local drive letter: UNC, extended,
+    device and NT-namespace paths, checked as written and as Windows resolves
+    it against the current folder, before anything reads it. No path in the
+    message (P3)."""
+    raw = os.fspath(db_path)
+    if os.name == "nt":
+        # abspath() is GetFullPathNameW: string work only, no file access. It
+        # turns a reserved name into \\.\NUL and a relative path under a UNC
+        # current folder into \\server\share\..., both refused. It reads
+        # \??\x as rooted on the current drive, so that prefix is refused as
+        # written.
+        local = (not raw.replace("/", "\\").startswith(_NT_NAMESPACE)
+                 and _DRIVE.match(os.path.abspath(raw)) is not None)
+    else:                               # Linux, for the tests
+        local = not any(s.startswith(("//", "\\\\")) for s in (raw, os.path.abspath(raw)))
+    if not local:
         raise sqlite3.OperationalError("The workspace path is not on a local drive.")
 
 
