@@ -74,6 +74,8 @@ Measured through the app's worker on 17 October 2026 (#111 B4; RTX 500 Ada, 4 GB
 
 The component's install through the app's own `gpu.install` and download code took 63 s, and the full file check passed. Peak GPU memory was not measured in this run.
 
+Rechecked on 19 October 2026 after the speaker model moved to weights-only loading from the hash-checked bytes (#111 B9, #218), through the app's workers (`worker.diarize`, CPU worker against GPU worker) on the same laptop, with the component installed by `gpu.install` into a scratch cache (165 s; full file check passed). On the full ES2004a mix and on the first 120 s of ES2004a and 300 s of IS1009a (public AMI, CC BY 4.0), the GPU gave the same turns and exclusive turns as the CPU, and every 10 ms frame agrees (298 turns and 5 speakers on the full mix, as above). Run times are not performance evidence: the machine was shared with other sessions' test runs.
+
 Earlier, with PyTorch 2.13.0 on CPython 3.12 (14 October 2026, synthetic audio):
 
 | Synthetic audio | CPU (14 threads) | GPU | Speed-up | Peak GPU memory (incl. desktop) | Output |
