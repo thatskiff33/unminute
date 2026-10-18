@@ -381,7 +381,8 @@ def _cache_bytecode_under(site):
     """Cache the bytecode of modules loaded from under site, and only those,
     even when sys.dont_write_bytecode (-B) is set. A path hook gives the
     folders under site their own finder, whose source loader writes the cache
-    itself after compiling; every other folder keeps Python's own finder."""
+    itself after compiling the module's own file; every other folder, and any
+    zip or egg under site, keeps Python's own finder."""
     import importlib.machinery as machinery
     import importlib.util
     import marshal
@@ -389,20 +390,39 @@ def _cache_bytecode_under(site):
     root = os.path.normcase(os.path.abspath(site))
 
     class ComponentLoader(machinery.SourceFileLoader):
-        # Python compiles a module only when it found no valid cached bytecode.
+        # Python compiles a module only when it found no valid cached bytecode;
+        # source_to_code notes what get_code compiled, and get_code caches it.
+        _compiled = None
+
         def source_to_code(self, data, path, *, _optimize=-1):
             code = super().source_to_code(data, path, _optimize=_optimize)
-            if sys.dont_write_bytecode:          # otherwise Python caches it itself
-                try:
-                    mtime = int(self.path_stats(path)["mtime"])
-                    # A timestamp .pyc (PEP 552): magic, flags 0, source mtime and size.
-                    pyc = (importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
-                           + (mtime & 0xFFFFFFFF).to_bytes(4, "little")
-                           + (len(data) & 0xFFFFFFFF).to_bytes(4, "little")
-                           + marshal.dumps(code))
-                    self.set_data(importlib.util.cache_from_source(path), pyc)
-                except (OSError, ValueError, NotImplementedError):
-                    pass                         # no cache is slower, never wrong
+            self._compiled = (path, data, code)
+            return code
+
+        def get_code(self, fullname):
+            self._compiled = None
+            code = super().get_code(fullname)
+            compiled, self._compiled = self._compiled, None
+            if compiled is None or not sys.dont_write_bytecode:
+                return code                      # a valid cache, or Python caches it itself
+            path, data, compiled_code = compiled
+            if compiled_code is not code or path != self.path:
+                return code
+            try:
+                # Stat first, then read: the cache is written only when the file
+                # still holds exactly the bytes compiled, so it always comes from
+                # the file, and an edit after the stat leaves it out of date.
+                mtime = int(self.path_stats(path)["mtime"])
+                if self.get_data(path) != data:
+                    return code
+                # A timestamp .pyc (PEP 552): magic, flags 0, source mtime and size.
+                pyc = (importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
+                       + (mtime & 0xFFFFFFFF).to_bytes(4, "little")
+                       + (len(data) & 0xFFFFFFFF).to_bytes(4, "little")
+                       + marshal.dumps(code))
+                self.set_data(importlib.util.cache_from_source(path), pyc)
+            except (OSError, ValueError, NotImplementedError):
+                pass                             # no cache is slower, never wrong
             return code
 
     def under(path):
@@ -412,6 +432,8 @@ def _cache_bytecode_under(site):
     def hook(path):
         if not under(path):
             raise ImportError("not the GPU component")        # Python's own finder
+        if not os.path.isdir(path):
+            raise ImportError("not a folder")                 # a zip or egg: zipimporter
         # Python's own loaders, in its own order, except for source files.
         return machinery.FileFinder(
             path, (machinery.ExtensionFileLoader, machinery.EXTENSION_SUFFIXES),

@@ -27,7 +27,8 @@ real time, and remove it when the cause is fixed.
   `tools/run_tests.py` writes no bytecode, passes that on to every process a test starts
   (`PYTHONDONTWRITEBYTECODE`; a child started with `-I` ignores it, so it needs `-B`), and
   fails when a run left a new or changed `.pyc` in the checkout, naming the files without
-  deleting them (#206). `tools/evidence.py` refuses a checkout holding them.
+  deleting them (#206). `tools/evidence.py --zip` refuses a checkout whose `tools/`, `tests/`
+  or `docs/` hold them.
 - **Dead-code report.** `python -m vulture workspace asr_engines.py offline_guard.py
   tools/vulture_whitelist.py --min-confidence 60` runs what CI's report runs (install vulture
   from `requirements/ci-vulture.txt`). Most hits are .NET or ctypes attributes set by name;
