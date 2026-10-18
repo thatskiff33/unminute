@@ -572,7 +572,7 @@ WEBVIEW2_KEYS = tuple(               # the WebView2 Runtime's version ("pv"), pe
 REGISTRY_READS = {("HKLM", CPU_KEY): ("ProcessorNameString",),
                   ("HKLM", WINDOWS_KEY): ("CurrentMajorVersionNumber",
                                           "CurrentMinorVersionNumber", "CurrentBuild", "UBR",
-                                          "DisplayVersion"),
+                                          "DisplayVersion", "InstallationType"),
                   **{place: ("pv",) for place in WEBVIEW2_KEYS}}
 CIM_READS = {"Win32_Processor": ("NumberOfCores",),
              "Win32_VideoController": ("Name", "DriverVersion")}
@@ -623,7 +623,12 @@ def machine_spec(probe):
     if all((isinstance(part, int) and not isinstance(part, bool) and part >= 0)
            or (isinstance(part, str) and part.isascii() and part.isdigit()) for part in build):
         os_build = ".".join(str(int(part)) for part in build)
-        family = "Windows 11" if int(build[2]) >= 22000 else "Windows 10"
+        # The build tells Windows 11 from 10 (ProductName still says "Windows 10"
+        # on 11); InstallationType ("Client", "Server", "Server Core") tells a
+        # server, whose builds overlap the client's.
+        server = _short(reg("HKLM", WINDOWS_KEY, "InstallationType")) or ""
+        family = ("Windows Server" if server.startswith("Server")
+                  else "Windows 11" if int(build[2]) >= 22000 else "Windows 10")
         release = _short(reg("HKLM", WINDOWS_KEY, "DisplayVersion"))
         windows = f"{family} {release}" if release else family
 
@@ -662,6 +667,20 @@ def _system_program(*parts):
     return path if path and os.path.isfile(path) else None
 
 
+def cim_script():
+    """The fixed PowerShell command WindowsProbe.cim runs. It must work in
+    ConstrainedLanguage mode (WDAC or AppLocker script enforcement on a managed
+    laptop), which allows Get-CimInstance, @{} and ConvertTo-Json but refuses
+    setting a .NET property: so the console's UTF-8 output encoding is only
+    tried. Without it a non-ASCII adapter name may lose a character, since the
+    output is decoded with errors="replace"; the query itself still answers."""
+    query = "; ".join(f"$o['{cls}'] = @(Get-CimInstance {cls} | Select-Object "
+                      f"{','.join(props)})" for cls, props in CIM_READS.items())
+    return ("$ErrorActionPreference = 'Stop'; "
+            "try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}; $o = @{}; "
+            f"{query}; $o | ConvertTo-Json -Depth 3 -Compress")
+
+
 class WindowsProbe:
     """What machine_spec reads, from this Windows machine. Each read gives
     None when it cannot be made, never an exception."""
@@ -681,13 +700,8 @@ class WindowsProbe:
         exe = _system_program("WindowsPowerShell", "v1.0", "powershell.exe")
         if exe is None:
             return None
-        query = "; ".join(f"$o['{cls}'] = @(Get-CimInstance {cls} | Select-Object "
-                          f"{','.join(props)})" for cls, props in CIM_READS.items())
-        script = ("$ErrorActionPreference = 'Stop'; "
-                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $o = @{}; "
-                  f"{query}; $o | ConvertTo-Json -Depth 3 -Compress")
         try:
-            r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+            r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", cim_script()],
                                capture_output=True, timeout=120,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if r.returncode != 0:

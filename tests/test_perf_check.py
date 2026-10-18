@@ -718,6 +718,32 @@ class MachineSpecTests(unittest.TestCase):
         with mock.patch.object(perf_check, "_system_program", return_value=None):
             self.assertIsNone(perf_check.WindowsProbe().cim())
 
+    def test_the_cim_query_only_tries_the_output_encoding(self):
+        # ConstrainedLanguage mode refuses setting a .NET property; with
+        # $ErrorActionPreference = 'Stop' a bare assignment ends the query.
+        script = perf_check.cim_script()
+        self.assertIn("try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch {}",
+                      script)
+        self.assertEqual(1, script.count("OutputEncoding"))
+
+    @unittest.skipUnless(sys.platform == "win32", "runs Windows PowerShell")
+    def test_the_cim_query_answers_in_constrained_language_mode(self):
+        # As on a laptop with WDAC or AppLocker script enforcement: the session
+        # is switched to ConstrainedLanguage, then runs the probe's own query.
+        import os
+        exe = perf_check._system_program("WindowsPowerShell", "v1.0", "powershell.exe")
+        self.assertIsNotNone(exe)
+        wrapper = ("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; "
+                   "Invoke-Expression $env:UNMINUTE_TEST_CIM_SCRIPT")
+        r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                           capture_output=True, timeout=120,
+                           env={**os.environ, "UNMINUTE_TEST_CIM_SCRIPT": perf_check.cim_script()},
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # Only the exit code and the shape are checked; nothing read is printed.
+        self.assertEqual(0, r.returncode, "the CIM query failed in ConstrainedLanguage mode")
+        data = json.loads(r.stdout.decode("utf-8-sig", errors="replace"))
+        self.assertEqual(set(perf_check.CIM_READS), set(data))
+
     def test_what_cannot_be_read_is_none_and_named_not_guessed(self):
         probe = FakeProbe(values={}, cim_rows=None, memory=None, status=None, plan=None,
                           logical=None)
@@ -762,6 +788,22 @@ class MachineSpecTests(unittest.TestCase):
         spec = perf_check.machine_spec(probe)
         self.assertEqual(("Windows 10 22H2", "10.0.19045.4061", "139.0.9.9"),
                          (spec["windows"], spec["os_build"], spec["webview2"]))
+
+    def test_a_windows_server_is_not_called_a_client_release(self):
+        # Server 2025 shares Windows 11's build (26100) and Server 2022's
+        # (20348) is below 22000; InstallationType tells them apart.
+        for build, kind, release, expected in (
+                ("26100", "Server", "24H2", "Windows Server 24H2"),
+                ("20348", "Server Core", "21H2", "Windows Server 21H2"),
+                ("26100", "Client", "24H2", "Windows 11 24H2"),
+                ("19045", None, "22H2", "Windows 10 22H2")):
+            with self.subTest(build=build, kind=kind):
+                probe = FakeProbe()
+                probe.values.update({
+                    ("HKLM", perf_check.WINDOWS_KEY, "CurrentBuild"): build,
+                    ("HKLM", perf_check.WINDOWS_KEY, "DisplayVersion"): release,
+                    ("HKLM", perf_check.WINDOWS_KEY, "InstallationType"): kind})
+                self.assertEqual(expected, perf_check.machine_spec(probe)["windows"])
 
     @unittest.skipUnless(sys.platform == "win32", "reads this Windows machine")
     def test_this_machine_gives_only_its_specification(self):
