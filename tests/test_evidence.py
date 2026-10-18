@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 import zipfile
@@ -723,6 +724,102 @@ class ToolTests(TempDir):
         finally:
             other.kill()
             other.wait(10)
+
+    @unittest.skipUnless(os.name == "nt", "Windows windows")
+    def test_the_ui_check_ticks_a_statement_behind_another_window(self):
+        # The UI check's confirmations are usually behind the user's foreground
+        # window (a process started from a terminal cannot take the foreground).
+        # WinForms' CheckBox acts on a mouse-up only if WindowFromPoint there is
+        # the check box itself, so a posted click on a covered statement is
+        # lost; Tab and Space tick it. A form that is never activated, off
+        # screen under a top-most cover, stands in for the confirmation. It is
+        # in another process, so find_dialog is pointed at it.
+        import contextlib
+        import ctypes
+        import io
+        from ctypes import wintypes
+
+        import workspace_ui_check
+        title = f"Unminute tick test {os.getpid()}"
+        statement = "I have read this synthetic statement."
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -WarningAction SilentlyContinue -ReferencedAssemblies System.Windows.Forms "
+            "-TypeDefinition 'public class QuietForm : System.Windows.Forms.Form { protected "
+            "override bool ShowWithoutActivation { get { return true; } } }'; "
+            "$f = New-Object QuietForm; $f.Text = $env:UNMINUTE_TITLE; "
+            "$f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; "
+            "$f.Location = New-Object Drawing.Point(-32000, -32000); "
+            "$cancel = New-Object Windows.Forms.Button; $cancel.Text = 'Cancel'; "
+            "$check = New-Object Windows.Forms.CheckBox; $check.Text = $env:UNMINUTE_CHECK; "
+            "$check.AutoSize = $true; $check.Top = 40; "
+            "$check.add_CheckedChanged({ [Console]::Out.WriteLine('checked ' + $check.Checked); "
+            "[Console]::Out.Flush() }); "
+            "$f.Controls.Add($cancel); $f.Controls.Add($check); $f.Show(); $cancel.Select(); "
+            "$cover = New-Object QuietForm; $cover.Text = $env:UNMINUTE_TITLE + ' cover'; "
+            "$cover.ShowInTaskbar = $false; $cover.FormBorderStyle = 'None'; "
+            "$cover.TopMost = $true; $cover.StartPosition = 'Manual'; $cover.Bounds = $f.Bounds; "
+            "$cover.Show(); "
+            "[Console]::Out.WriteLine('shown'); [Console]::Out.Flush(); "
+            "for ($i = 0; $i -lt 300 -and $f.Visible; $i++) { "
+            "[Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }; "
+            "[Console]::Out.WriteLine('done'); [Console]::Out.Flush()")
+        form = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                 script], stdout=subprocess.PIPE, text=True,
+                                env=dict(os.environ, UNMINUTE_TITLE=title,
+                                         UNMINUTE_CHECK=statement))
+        try:
+            self.assertEqual("shown", form.stdout.readline().strip())
+            user32 = ctypes.WinDLL("user32")
+            user32.FindWindowW.restype = ctypes.c_void_p
+            user32.WindowFromPoint.restype = ctypes.c_void_p
+            hwnd = user32.FindWindowW(None, title)
+            cover = user32.FindWindowW(None, title + " cover")
+            self.assertTrue(hwnd and cover)
+            check = workspace_ui_check.dialog_button(hwnd, statement)
+            rect = wintypes.RECT()
+            user32.GetWindowRect(ctypes.c_void_p(check), ctypes.byref(rect))
+
+            def on_top():
+                """The window at the check box's centre is the check box."""
+                at = wintypes.POINT((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+                return user32.WindowFromPoint(at) == check
+            with mock.patch.object(workspace_ui_check, "find_dialog", return_value=hwnd):
+                self.assertFalse(on_top())
+                # Covered: a posted click is lost.
+                self.assertTrue(workspace_ui_check.press(["click:" + statement], title))
+                # Tab to it and Space ticks it all the same.
+                self.assertTrue(workspace_ui_check.press(["tab", "space-on:" + statement],
+                                                         title))
+                # Uncovered, the same click acts (it unticks), so the click
+                # itself was sound and only the cover lost it.
+                user32.PostMessageW(ctypes.c_void_p(cover), 0x0010, 0, 0)     # WM_CLOSE
+                for _ in range(100):
+                    if on_top():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(on_top())
+                self.assertTrue(workspace_ui_check.press(["click:" + statement], title))
+                # A step press() does not know is refused, not silently skipped.
+                with contextlib.redirect_stderr(io.StringIO()) as said:
+                    self.assertFalse(workspace_ui_check.press(["space-at:" + statement], title))
+                self.assertIn("unknown step", said.getvalue())
+            user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0)          # WM_CLOSE
+            lines = [line.strip() for line in form.stdout]
+            self.assertEqual(["checked True", "checked False", "done"], lines)
+        finally:
+            form.kill()
+            form.wait(10)
+            form.stdout.close()
+
+    def test_the_ui_check_ticks_its_statements_with_the_keyboard(self):
+        # A posted click cannot tick a statement behind the user's foreground
+        # window (the test above), so the native checks never tick by click.
+        native = self.source("workspace_ui_check.py").split(
+            "\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
+        self.assertNotIn('"click:I have read', native)
+        self.assertIn('"tab", "space-on:" + ticked["check"]', native)
+        self.assertIn('["tab", "space-on:" + keyed["check"]', native)
 
     def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
         source = self.source("workspace_ui_check.py")

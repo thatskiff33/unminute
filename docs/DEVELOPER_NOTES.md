@@ -50,6 +50,21 @@ real time, and remove it when the cause is fixed.
 - **Clicking WinForms buttons in UI automation.** Post `WM_LBUTTONDOWN` and `WM_LBUTTONUP` at the
   control's centre. `BM_CLICK` uses the current pointer position, so a button that checks where
   the mouse was released ignores it, and the check hangs with a dialog open on the user's screen.
+- **A posted click cannot tick a covered WinForms `CheckBox`.** On mouse-up, WinForms' button
+  base class acts only if `WindowFromPoint` at that point on screen is the control itself. A
+  check started from a terminal usually cannot bring its window to the foreground (Windows'
+  foreground lock), so the window the user has in front covers the confirmation and the posted
+  click is lost. That made `tools/workspace_ui_check.py` fail for days on an unchanged `main`
+  ("a confirmation was left open (is the screen locked?)"; 19 Oct 2026). It now ticks the
+  statement as a keyboard user does, with Tab and then Space posted to the check box, which
+  works whatever is in front. The confirmation's action button is not affected: the app
+  answers its mouse-up from the button's own client rectangle (`mouse_up_on_action` in
+  `workspace/shell.py`). The real-window check does not try a mouse tick when the confirmation
+  happens to be uncovered: the result would depend on what is on the user's screen, and
+  forcing the foreground or moving the real pointer would take over the user's desktop.
+  Instead `tests/test_evidence.py` shows, on an off-screen stand-in form, that a posted click
+  acts on the check box when nothing covers it and is lost when a window does, and that Tab
+  and Space tick it while it is covered.
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the

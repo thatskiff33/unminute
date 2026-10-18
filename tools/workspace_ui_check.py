@@ -141,11 +141,34 @@ def dialog_button(hwnd, text):
     return found[0] if found else 0
 
 
+PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "enter-on")
+
+
 def press(script, title, seen=None):
     """Act on the confirmation as a person would, through Windows messages
-    (the page has no way to): "click:<button or statement>", "enter",
-    "wait:1.3", "open?" (notes whether the window is still open)."""
+    (the page has no way to): "click:<button>", "enter", "tab",
+    "enter-on:<button>", "space-on:<statement>", "wait:1.3", "open?" (notes
+    whether the window is still open).
+
+    The statement is ticked with the keyboard (Tab to it, then Space), not a
+    posted click. WinForms' CheckBox acts on a mouse-up only if WindowFromPoint
+    at that point on screen is the check box itself. A check started from a
+    terminal usually cannot take the foreground (Windows' foreground lock), so
+    the window the user has in front covers the confirmation, the tick is lost
+    and the "tick first" confirmation stays open until it is closed as stuck.
+    The action button is not affected: the app answers its mouse-up from the
+    button's own client rectangle (workspace/shell.py, mouse_up_on_action).
+    tests/test_evidence.py shows both on a stand-in form: a posted click
+    ticks the statement when nothing covers it and is lost when something
+    does (docs/DEVELOPER_NOTES.md)."""
     import ctypes
+    # A step not listed here would do nothing, and the confirmation would only
+    # show up later as stuck: refuse the script instead (the caller then closes
+    # the confirmation and the check fails on "pressed").
+    unknown = [s for s in script if s != "open?" and s.partition(":")[0] not in PRESS_STEPS]
+    if unknown:
+        print(f"press: unknown step(s) {unknown}", file=sys.stderr)
+        return False
     user32 = ctypes.WinDLL("user32")
     hwnd = find_dialog(title)
     if not hwnd:
@@ -176,6 +199,11 @@ def press(script, title, seen=None):
         elif kind == "tab":                                               # to the next control
             user32.PostMessageW(hwnd, 0x0100, 0x09, 0)
             user32.PostMessageW(hwnd, 0x0101, 0x09, 0)
+            time.sleep(0.2)
+        elif kind == "space-on":                                          # Space on that control
+            control = dialog_button(hwnd, arg)
+            user32.PostMessageW(control, 0x0100, 0x20, 0)                     # WM_KEYDOWN Space
+            user32.PostMessageW(control, 0x0101, 0x20, 0)
             time.sleep(0.2)
         elif kind == "enter-on":                                          # Enter on that button
             button = dialog_button(hwnd, arg)
@@ -237,21 +265,23 @@ def native_checks(window, ws, mid):
     out["yes_after_delay"], out["pressed_3"] = run_with(
         ["wait:1.3", "click:Confirm"], title, lambda: shell.native_confirm(window, plain))
     # A statement to tick: the action is ignored until it is ticked, and for a
-    # moment after ticking; then it answers.
+    # moment after ticking; then it answers. Ticked with Tab and Space, which
+    # work behind a foreground window (see press()).
     ticked = dict(plain, title="Workspace UI check: tick first",
                   check="I have read this synthetic question.")
     seen = []
     out["tick_first"], out["pressed_4"] = run_with(
-        ["wait:1.3", "click:Confirm", "open?", "click:I have read this synthetic question.",
+        ["wait:1.3", "click:Confirm", "open?", "tab", "space-on:" + ticked["check"],
          "click:Confirm", "open?", "wait:1.3", "click:Confirm"], ticked["title"],
         lambda: shell.native_confirm(window, ticked), seen)
     out["open_until_ticked"] = seen
-    # Keyboard (and Narrator or voice control): tick, wait, move to the action
-    # with Tab; Enter at once is ignored, Enter after holding the focus answers.
+    # Keyboard (and Narrator or voice control): Tab from Cancel to the statement
+    # (the disabled action is skipped), tick it with Space, wait, Tab to the
+    # action; Enter at once is ignored, Enter after holding the focus answers.
     keyed = dict(ticked, title="Workspace UI check: keyboard")
     seen_keys = []
     out["keyboard_after_hold"], out["pressed_5"] = run_with(
-        ["click:I have read this synthetic question.", "wait:1.3", "tab", "tab",
+        ["tab", "space-on:" + keyed["check"], "wait:1.3", "tab", "tab",
          "enter-on:Confirm", "open?", "wait:1.3", "enter-on:Confirm"], keyed["title"],
         lambda: shell.native_confirm(window, keyed), seen_keys)
     out["open_after_quick_enter"] = seen_keys
