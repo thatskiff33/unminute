@@ -434,6 +434,60 @@ class StartUpTests(unittest.TestCase):
         self.assertEqual(r.returncode, 6, r.stderr)
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["kind"], "location")
 
+    RESTORE_LID = ("import json, sys; sys.argv = ['x', '--restore-lid']; "
+                   "import workspace.__main__ as m; "
+                   "m._app_running = lambda name=None: False; "   # an installed copy may be open
+                   "code = m.main(); "
+                   "heavy = ('webview', 'numpy', 'torch', 'av', 'workspace.app', "
+                   "'workspace.api', 'workspace.shell', 'workspace.worker', "
+                   "'workspace.diag'); "
+                   "print(json.dumps([n for n in heavy if n in sys.modules])); "
+                   "sys.exit(code)")
+
+    def test_restore_lid_prints_a_state_only(self):
+        # #191: the uninstaller's switch. No app data folder, then one with no
+        # record: a fixed JSON state and exit code, no window or heavy import,
+        # and nothing created. The power scheme is never read for these.
+        env = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
+        r = self.run_main(self.RESTORE_LID, env)
+        self.assertEqual((r.returncode, r.stdout.splitlines()[0], r.stderr),
+                         (1, '{"lid": "location"}', ""))
+        with tempfile.TemporaryDirectory() as tmp:
+            r = self.run_main(self.RESTORE_LID, dict(os.environ, LOCALAPPDATA=tmp))
+            self.assertEqual((r.returncode, r.stdout.splitlines(), r.stderr),
+                             (0, ['{"lid": "none"}', "[]"], ""))
+            self.assertEqual(list(Path(tmp).iterdir()), [])          # nothing created
+
+    def test_restore_lid_leaves_the_lid_alone_for_a_damaged_record(self):
+        # A record that cannot say what to put back is removed and nothing is
+        # written (a damaged record never reaches the power scheme).
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "Unminute" / "workspace" / "power_restore.json"
+            record.parent.mkdir(parents=True)
+            record.write_text('{"scheme": "not-a-guid", "ac": 1, "dc": 1}', encoding="utf-8")
+            r = self.run_main(self.RESTORE_LID, dict(os.environ, LOCALAPPDATA=tmp))
+            self.assertEqual((r.returncode, r.stdout.splitlines(), r.stderr),
+                             (2, ['{"lid": "damaged"}', "[]"], ""))
+            self.assertFalse(record.exists())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows named mutex")
+    def test_restore_lid_stands_aside_while_the_app_is_open(self):
+        # The app's own mutex, under a unique name: a record waits for the app.
+        name = f"Local\\Unminute.Test.{os.getpid()}"
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / "Unminute" / "workspace" / "power_restore.json"
+            record.parent.mkdir(parents=True)
+            record.write_text("{damaged", encoding="utf-8")
+            code = ("import sys; sys.argv = ['x', '--restore-lid']; "
+                    "import workspace.__main__ as m; "
+                    f"m.MUTEX_NAME = {name!r}; "
+                    f"held = m._single_instance({name!r}); "
+                    "sys.exit(m.main())")
+            r = self.run_main(code, dict(os.environ, LOCALAPPDATA=tmp))
+            self.assertEqual((r.returncode, r.stdout.strip(), r.stderr),
+                             (3, '{"lid": "running"}', ""))
+            self.assertTrue(record.exists())
+
     @unittest.skipUnless(sys.platform == "win32", "Windows named mutex")
     def test_only_one_copy_holds_the_workspace(self):
         # A unique name: an installed, running copy of the app holds the real one.
@@ -870,6 +924,221 @@ class DataFolderOverlapTests(unittest.TestCase):
         self.assertIn("function Get-DataOverlap", check("uninstall.ps1"))
 
 
+STUB_APP = '''\
+# A stand-in for the app: records how the uninstaller started it, then acts as told.
+import json, os, sys, time
+from pathlib import Path
+install = Path(__file__).resolve().parents[4]
+record = Path(os.environ["LOCALAPPDATA"], "Unminute", "workspace", "power_restore.json")
+Path(os.environ["UNMINUTE_TEST_LOG"]).write_text(json.dumps({
+    "argv": sys.argv[1:], "cwd": os.getcwd(), "isolated": sys.flags.isolated,
+    "no_bytecode": sys.dont_write_bytecode, "x": sorted(sys._xoptions),
+    "installed": (install / "current.json").is_file()
+    and (install / "versions" / "9.9.0" / "runtime" / "python.exe").is_file(),
+    "record": record.is_file()}))
+mode = os.environ.get("UNMINUTE_TEST_MODE", "0")
+if mode == "hang":
+    time.sleep(600)
+if mode == "crash":
+    raise RuntimeError("synthetic failure")
+if mode == "noise":
+    print("x" * 200000)
+    sys.stderr.write("y" * 200000)
+sys.exit(int(mode) if mode.isdigit() else 0)
+'''
+
+
+@unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+class UninstallLidRestoreTests(unittest.TestCase):
+    """#191: before removing anything, the uninstaller runs the installed app
+    once with --restore-lid, with a hard time limit, and carries on whatever
+    happens. Throwaway installs in temporary folders, with a temporary
+    LOCALAPPDATA, Start menu folder and uninstall key (DataFolderOverlapTests).
+    The runtime is a copy of this Python's interpreter whose ._pth file gives
+    it the standard library and the install's app folder, as the package's
+    runtime has its own. A stand-in app records how it was started; the real
+    app's switch is run only with records that never reach the power scheme."""
+
+    PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
+                               DataFolderOverlapTests.TEST_KEY)
+    uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
+    WARNING = "Warning: Unminute could not put back what closing the lid does."
+    TIMEOUT = "$LidRestoreSeconds = 60"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.local = self.root / "Local"
+        self.record = self.local / "Unminute" / "workspace" / "power_restore.json"
+        self.record.parent.mkdir(parents=True)
+        self.log = self.root / "started.json"
+        self.copy, _ = self.uninstaller_copy(self.tmp.name)
+
+    def install(self, name, app=None, features=("gate", "restore-lid"), version="9.9.0"):
+        """A throwaway install: current.json, version.json, the runtime and
+        the stand-in app (or app, a folder for the runtime's import path)."""
+        install = self.root / name
+        target = install / "versions" / "9.9.0"
+        (target / "app" / "workspace").mkdir(parents=True)
+        (target / "app" / "workspace" / "__init__.py").write_text("")
+        (target / "app" / "workspace" / "__main__.py").write_text(STUB_APP)
+        (target / "version.json").write_text(json.dumps({"version": "9.9.0",
+                                                          "features": list(features)}))
+        (install / "current.json").write_text(json.dumps({"version": version,
+                                                           "path": str(target)}))
+        shutil.copy(self.copy, install / "uninstall.ps1")
+        base = Path(sys.base_prefix)
+        runtime = target / "runtime"
+        runtime.mkdir()
+        shutil.copy(base / "python.exe", runtime)
+        for dll in list(base.glob("python3*.dll")) + list(base.glob("vcruntime*.dll")):
+            shutil.copy(dll, runtime)
+        versioned = [d for d in base.glob("python3*.dll") if d.stem != "python3"]
+        self.assertEqual(len(versioned), 1, versioned)
+        (runtime / f"{versioned[0].stem}._pth").write_text("\n".join(
+            [str(base / "Lib"), str(base / "DLLs"), str(app or target / "app")]) + "\n")
+        return install
+
+    def uninstall(self, install, mode="0", script=None):
+        env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_LOG=str(self.log),
+                   UNMINUTE_TEST_MODE=mode)
+        call = f"& '{script or self.copy}' -InstallDir '{install}' -Silent"
+        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                               "-Command", f"{call}; exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=180, cwd=self.tmp.name,
+                              env=env)
+
+    def started(self):
+        return json.loads(self.log.read_text()) if self.log.exists() else None
+
+    def test_the_lid_is_put_back_before_anything_is_removed(self):
+        self.record.write_text("{}")                     # its content is the app's business
+        install = self.install("Apps")
+        r = self.uninstall(install)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("Warning", r.stderr)
+        started = self.started()
+        self.assertEqual(started["argv"], ["--restore-lid"])
+        self.assertEqual((started["isolated"], started["no_bytecode"]), (1, True))
+        self.assertIn("disable-remote-debug", started["x"])
+        self.assertEqual(os.path.normcase(started["cwd"]),
+                         os.path.normcase(str(install / "versions" / "9.9.0" / "app")))
+        self.assertTrue(started["installed"] and started["record"])   # before removal
+        self.assertFalse(install.exists())
+        self.assertTrue(self.record.exists())            # the uninstaller never touches it
+
+    def test_nothing_runs_without_a_record(self):
+        install = self.install("Apps")
+        r = self.uninstall(install)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNone(self.started())
+        self.assertEqual(r.stderr, "")
+        self.assertFalse(install.exists())
+
+    def test_any_other_result_still_uninstalls_and_says_to_check(self):
+        self.record.write_text("{}")
+        for mode in ("1", "2", "3", "crash"):
+            with self.subTest(mode=mode):
+                self.log.unlink(missing_ok=True)
+                install = self.install(f"Apps{mode}")
+                r = self.uninstall(install, mode)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIsNotNone(self.started())
+                self.assertIn(self.WARNING, r.stderr)
+                self.assertNotIn("synthetic", r.stdout + r.stderr)   # its output is not shown
+                self.assertFalse(install.exists())
+
+    def test_a_noisy_restore_cannot_block_it(self):
+        # More output than a pipe holds: read, never shown, and no hang.
+        self.record.write_text("{}")
+        install = self.install("Apps")
+        r = self.uninstall(install, "noise")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("xxxx", r.stdout + r.stderr)
+        self.assertNotIn("Warning", r.stderr)
+        self.assertFalse(install.exists())
+
+    def test_a_hung_restore_is_stopped_and_the_uninstall_carries_on(self):
+        import time
+        self.record.write_text("{}")
+        text = self.copy.read_text(encoding="utf-8")
+        self.assertEqual(text.count(self.TIMEOUT), 1)
+        quick = self.root / "uninstall-quick.ps1"
+        quick.write_text(text.replace(self.TIMEOUT, "$LidRestoreSeconds = 3"), encoding="utf-8")
+        install = self.install("Apps")
+        began = time.monotonic()
+        r = self.uninstall(install, "hang", script=quick)
+        self.assertLess(time.monotonic() - began, 120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIsNotNone(self.started())
+        self.assertIn(self.WARNING, r.stderr)
+        self.assertFalse(install.exists())               # stopped, so nothing stayed open
+
+    def test_a_version_that_cannot_restore_is_never_started(self):
+        # Without the feature, an older app would take the switch for an ordinary
+        # start and open its window; a version that is not a plain folder name is
+        # never followed, even where it leads to a version that would run. Either
+        # way the uninstall carries on and says to check.
+        self.record.write_text("{}")
+        for name, kwargs in (("old", {"features": ("gate",)}),
+                             ("path", {"version": "..\\..\\Elsewhere"}),
+                             ("absolute", {"version": str(self.root / "Elsewhere")})):
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                install = self.install(f"Apps-{name}", **kwargs)
+                # A version folder that would run, where the path leads.
+                shutil.rmtree(self.root / "Elsewhere", ignore_errors=True)
+                shutil.copytree(install / "versions" / "9.9.0", self.root / "Elsewhere")
+                r = self.uninstall(install)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertIsNone(self.started())
+                self.assertIn(self.WARNING, r.stderr)
+                self.assertFalse(install.exists())
+
+    def test_the_real_switch_runs_from_the_installed_layout(self):
+        # The app's own code (this checkout) through the same command line, with a
+        # record that cannot say what to put back: it is removed, the power scheme
+        # is never read or written, and the uninstall says to check the setting.
+        # If an installed copy of the app is open on this computer, the switch
+        # stands aside instead and the record stays.
+        self.record.write_text('{"scheme": "not-a-guid", "ac": 1, "dc": 1}', encoding="utf-8")
+        install = self.install("Apps", app=ROOT)
+        open_ = app_is_open()
+        r = self.uninstall(install)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(install.exists())
+        self.assertIn(self.WARNING, r.stderr)
+        self.assertEqual(self.record.exists(), open_)
+
+
+def app_is_open():
+    """Whether an installed copy of the app holds its mutex in this session."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    handle = kernel32.OpenMutexW(0x00100000, False, "Local\\Unminute.Workspace")
+    error = ctypes.get_last_error()
+    if handle:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+    return bool(handle) or error == 5
+
+
+class RestoreLidFeatureTests(unittest.TestCase):
+    def test_the_package_declares_the_switch_the_uninstaller_looks_for(self):
+        build = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
+        uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertIn('"features": ["gate", "restore-lid"]', build)
+        self.assertIn('-notcontains "restore-lid"', uninstall)
+        main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
+        self.assertIn('if "--restore-lid" in sys.argv:', main)
+        # Before anything is removed: the restore comes after the last refusal and
+        # before the first removal.
+        body = uninstall[uninstall.index("try {\n    # An empty -InstallDir"):]
+        self.assertLess(body.index("did not put there"), body.index("    Restore-LidSetting\n"))
+        self.assertLess(body.index("    Restore-LidSetting\n"), body.index("Remove-Item"))
+
+
 class RemoteDebugTests(unittest.TestCase):
     """#111 B4: Python 3.14 lets another process run code in a running Python
     process (PEP 768). Every app process starts with -X disable-remote-debug."""
@@ -881,6 +1150,9 @@ class RemoteDebugTests(unittest.TestCase):
         self.assertNotIn('Arguments = "-m workspace"', install)
         self.assertIn('@("-I", "-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")',
                       install)
+        uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertIn('Arguments = "-I -B -X disable-remote-debug -m workspace --restore-lid"',
+                      uninstall)
         media = (ROOT / "workspace" / "media.py").read_text(encoding="utf-8")
         self.assertIn('"-I", "-B", "-X", "disable-remote-debug", "-c"', media)
 

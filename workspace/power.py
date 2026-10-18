@@ -24,6 +24,9 @@
 #     lid action, it stands aside.
 #   - LidWatch: tells the app when the lid opens or closes while recording,
 #     so it can say how long a recording carried on with the lid closed.
+#   - restore_only: the uninstaller's restore (#191, the user's decision of
+#     18 October 2026): `python -m workspace --restore-lid` runs
+#     LidSwitch.restore() once, with the same rules, before anything is removed.
 # Stdlib only (ctypes, winreg).
 
 import ctypes
@@ -342,7 +345,9 @@ class LidSwitch:
                 if api.read(scheme, plugged_in) == DO_NOTHING:
                     if api.write(scheme, plugged_in, saved[key]):
                         raise OSError("write refused")
-            if scheme == api.active_scheme():
+            # Compared as GUIDs: a record may spell it another way (braces,
+            # upper case) that uuid.UUID and Windows both accept.
+            if uuid.UUID(scheme) == uuid.UUID(api.active_scheme()):
                 api.apply(scheme)
         except Exception:
             self.problem = "failed"         # kept, so the next try puts it back
@@ -370,6 +375,40 @@ class LidSwitch:
             self.problem = "failed"
             return False
         return True
+
+
+# The states of `python -m workspace --restore-lid` (#191) and its exit codes.
+# The uninstaller only tells 0 from anything else (docs/PACKAGING.md).
+RESTORE_CODES = {
+    "none": 0,          # no record waiting: nothing to put back
+    "restored": 0,      # put back (a side the user changed since is left alone)
+    "failed": 1,        # not put back just now: the record is kept for the app's next start
+    "location": 1,      # the app data folder is refused (missing, synced or on a network)
+    "damaged": 2,       # the record cannot say what to put back: the lid is left as it is
+    "running": 3,       # the app is open and owns the lid switch: nothing done
+}
+
+
+def restore_only(restore_path, running, api=None):
+    """The uninstaller's restore (#191): LidSwitch.restore() once, with its
+    rules and nothing else (only a valid record, only sides still at "Do
+    nothing", written to the saved scheme only). running: whether the app is
+    open; it then owns the lid switch and nothing is done. Returns a state in
+    RESTORE_CODES and never raises. api: tests only (a fake power scheme)."""
+    try:
+        switch = LidSwitch(restore_path, api=api)
+        if not switch.path.exists():
+            return "none"
+        if running():
+            return "running"
+        switch.restore()
+        if switch.problem == "lost":
+            return "damaged"
+        if switch.problem or switch.active:
+            return "failed"
+        return "restored"
+    except Exception:
+        return "failed"
 
 
 def _valid_saved(saved):

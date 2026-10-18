@@ -1,0 +1,1 @@
+- **Uninstalling puts the lid setting back.** If Unminute closed unexpectedly while it had set Windows to do nothing when the lid is closed, and did not start again, uninstalling it now puts your own lid setting back before anything is removed. If it cannot, the uninstaller says to check the setting in Windows Settings. The uninstall carries on either way.

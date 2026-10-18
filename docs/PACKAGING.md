@@ -157,6 +157,14 @@ Use `-Rollback` from the current version to go back, rather than running an olde
 
 Use Settings > Apps > Unminute, or `uninstall.ps1` (with `-Silent` for unattended removal).
 
+In order, the uninstaller:
+
+1. Checks the install folder (see "Creates a Start menu shortcut" above) and that the app is not running (exit 3 if it is). A refusal removes nothing.
+2. Puts the Windows lid setting back if the app left it at "Do nothing" (#191). This runs only when `power_restore.json` is in the workspace, which happens only if the app closed unexpectedly during a recording with **Keep recording when the lid is closed** on, and did not start again. It runs the current version's own runtime once, as the installer runs the app (`runtime\python.exe -I -B -X disable-remote-debug -m workspace --restore-lid`, from its `app` folder), with no window and a 60-second limit. The app applies its usual restore rules: only a valid record, only a side still at "Do nothing", and only the scheme's own value, never a policy setting. It runs only when the version's `version.json` lists the `restore-lid` feature and `current.json` names a plain version folder; an older version would take the switch for an ordinary start. The switch prints `{"lid": state}`, which the uninstaller reads but does not show. It exits 0 when the setting was put back or nothing was waiting, 1 when it could not be put back now (the record is kept, and the app puts it back at its next start if it is installed again), 2 when the record was damaged (the setting is left as it is) and 3 when the app is open. Whatever the result, even if the runtime is missing or the limit is reached, the uninstall carries on, and its exit code does not change. Any result other than 0 adds one fixed line ("Warning: Unminute could not put back what closing the lid does...", on standard error with `-Silent`) telling the user to check the setting in Windows Settings > System > Power & battery > Lid & power button controls.
+3. Removes the program, then the shortcut and the uninstall entry.
+
+A rollback needs no restore of its own: every version from the rename on (#136) has the same restore file and rules, so the version rolled back to puts the setting back at its next start (the user's decision of 18 October 2026, #191).
+
 Uninstalling removes the program, the shortcut and the uninstall entry. It does not remove:
 
 - **The workspace** (`%LOCALAPPDATA%\Unminute\workspace`): meetings, holds, settings and receipts. Meeting content is only ever removed through the app's confirmed cleanup steps, which honour retention holds. The uninstaller says when a workspace remains.

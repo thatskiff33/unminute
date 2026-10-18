@@ -469,5 +469,167 @@ class LidWatchReviewTests(unittest.TestCase):
         self.assertFalse(w.stop())
 
 
+class OtherSchemes(FakeScheme):
+    """A computer with one power scheme: any other GUID is not found."""
+
+    def read(self, scheme, plugged_in):
+        if scheme != self.SCHEME:
+            raise OSError(2, "PowerRead")
+        return super().read(scheme, plugged_in)
+
+    def write(self, scheme, plugged_in, value):
+        if scheme != self.SCHEME:
+            self.writes.append((plugged_in, value))
+            return 2
+        return super().write(scheme, plugged_in, value)
+
+
+class RestoreOnlyTests(unittest.TestCase):
+    """#191: the uninstaller's restore (python -m workspace --restore-lid) is
+    LidSwitch.restore() once, with the same rules, on a fake power scheme."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "power_restore.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_restore(self, api, running=lambda: False):
+        return power.restore_only(self.path, running, api=api)
+
+    def record(self, ac=1, dc=2, scheme=FakeScheme.SCHEME):
+        import json
+        self.path.write_text(json.dumps({"scheme": scheme, "ac": ac, "dc": dc}),
+                             encoding="utf-8")
+
+    def test_puts_back_what_a_crash_left(self):
+        api = OtherSchemes(ac=1, dc=2)
+        power.LidSwitch(self.path, api=api, managed=lambda: False).override()  # then a crash
+        self.assertEqual(api.values, {True: 0, False: 0})
+        self.assertEqual(self.run_restore(api), "restored")
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertEqual(api.applied[-1], FakeScheme.SCHEME)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(power.RESTORE_CODES["restored"], 0)
+
+    def test_nothing_waiting_touches_nothing(self):
+        api = OtherSchemes(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api), "none")
+        self.assertEqual((api.writes, api.applied), ([], []))
+        self.assertEqual(power.RESTORE_CODES["none"], 0)
+
+    def test_a_side_the_user_changed_is_left_alone(self):
+        self.record(ac=1, dc=2)
+        api = OtherSchemes(ac=3, dc=0)                   # the user chose "Shut down" plugged in
+        self.assertEqual(self.run_restore(api), "restored")
+        self.assertEqual(api.values, {True: 3, False: 2})
+        self.assertEqual(api.writes, [(False, 2)])
+
+    def test_the_open_app_owns_the_lid_switch(self):
+        self.record()
+        api = OtherSchemes(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api, running=lambda: True), "running")
+        self.assertEqual((api.writes, api.values), ([], {True: 0, False: 0}))
+        self.assertTrue(self.path.exists())
+        self.assertEqual(power.RESTORE_CODES["running"], 3)
+
+    def test_a_failed_restore_keeps_the_record_for_the_next_start(self):
+        self.record()
+        api = OtherSchemes(ac=0, dc=0, write_rc=5)
+        self.assertEqual(self.run_restore(api), "failed")
+        self.assertTrue(self.path.exists())
+        self.assertEqual(power.RESTORE_CODES["failed"], 1)
+
+        def broken():
+            raise OSError("cannot tell")
+        api = OtherSchemes(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api, running=broken), "failed")
+        self.assertEqual(api.writes, [])
+        self.assertTrue(self.path.exists())
+
+    def test_damaged_or_malicious_records_leave_the_setting_alone(self):
+        # Wrong types, values the app never saves, a scheme that is not a GUID,
+        # oversized or deeply nested files and bytes that are not text: nothing
+        # is written, and the record is removed (the user's decision on #188).
+        import json
+
+        def rec(**values):
+            return json.dumps({"scheme": FakeScheme.SCHEME, **values}).encode()
+        cases = {
+            "not json": b"{damaged",
+            "not utf-8": b"\xff\xfe\x00{",
+            "a list": b"[1, 2]",
+            "null": b"null",
+            "no scheme": b'{"ac": 1, "dc": 1}',
+            "scheme a number": b'{"scheme": 7, "ac": 1, "dc": 1}',
+            "scheme a path": b'{"scheme": "..\\\\..\\\\x", "ac": 1, "dc": 1}',
+            "scheme empty": b'{"scheme": "", "ac": 1, "dc": 1}',
+            "value true": rec(ac=True, dc=1),
+            "value 1.0": rec(ac=1.0, dc=1),
+            "value text": rec(ac="1", dc=1),
+            "value null": rec(ac=None, dc=1),
+            "value -1": rec(ac=-1, dc=1),
+            "value 4": rec(ac=1, dc=4),
+            "value huge": rec(ac=2 ** 64, dc=1),
+            "value missing": rec(ac=1),
+            "too large": b" " * (power.MAX_RESTORE_BYTES + 1) + rec(ac=1, dc=1),
+            "too deep": b"[" * 100000 + b"]" * 100000,
+        }
+        for name, raw in cases.items():
+            with self.subTest(name):
+                self.path.write_bytes(raw)
+                api = OtherSchemes(ac=0, dc=0)
+                self.assertEqual(self.run_restore(api), "damaged")
+                self.assertEqual((api.writes, api.applied), ([], []))
+                self.assertEqual(api.values, {True: 0, False: 0})
+                self.assertFalse(self.path.exists())
+        self.assertEqual(power.RESTORE_CODES["damaged"], 2)
+
+    def test_a_scheme_this_computer_does_not_have_changes_nothing(self):
+        # A well-formed GUID that names no scheme here: nothing is written to
+        # the active scheme, and the record is kept, as at the app's own start.
+        self.record(scheme="11111111-2222-3333-4444-555555555555")
+        api = OtherSchemes(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api), "failed")
+        self.assertEqual((api.writes, api.applied), ([], []))
+        self.assertEqual(api.values, {True: 0, False: 0})
+        self.assertTrue(self.path.exists())
+
+    def test_a_record_for_another_existing_scheme_writes_only_that_scheme(self):
+        # The saved scheme is no longer the active one: its "Do nothing" sides
+        # are put back, and the active scheme is neither written nor re-applied.
+        self.record(ac=1, dc=2)
+        api = FakeScheme(ac=0, dc=0)
+        api.active = "11111111-2222-3333-4444-555555555555"
+        self.assertEqual(self.run_restore(api), "restored")
+        self.assertEqual(set(api.targets), {FakeScheme.SCHEME})
+        self.assertEqual(api.applied, [])
+
+    def test_another_spelling_of_the_active_scheme_is_still_re_applied(self):
+        # The app writes the standard form, but uuid.UUID (and so the record
+        # check) also accepts braces and upper case: the values are written,
+        # and the scheme is re-applied so they take effect.
+        self.record(ac=1, dc=2, scheme="{" + FakeScheme.SCHEME.upper() + "}")
+        api = FakeScheme(ac=0, dc=0)
+        self.assertEqual(self.run_restore(api), "restored")
+        self.assertEqual(api.values, {True: 1, False: 2})
+        self.assertEqual(len(api.applied), 1)
+        self.assertFalse(self.path.exists())
+
+    def test_no_power_scheme_never_raises(self):
+        # Off Windows (or if powrprof will not load): failed, and the record is kept.
+        from unittest import mock
+        self.record()
+        with mock.patch.object(power.sys, "platform", "linux"):
+            self.assertEqual(power.restore_only(self.path, lambda: False), "failed")
+        self.assertTrue(self.path.exists())
+
+    def test_every_state_has_a_documented_code(self):
+        self.assertEqual(power.RESTORE_CODES, {"none": 0, "restored": 0, "failed": 1,
+                                               "location": 1, "damaged": 2, "running": 3})
+
+
 if __name__ == "__main__":
     unittest.main()
