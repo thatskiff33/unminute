@@ -10,7 +10,8 @@
 #   - whether the version folder held exactly the zip's files before and after
 #     the run: names compared exactly, nothing missing, changed or added, and no
 #     link or extra folder (install.ps1 copies the package unchanged);
-#   - for performance, the run's shape (a full release run or not).
+#   - for performance, the run's shape (a full release run or not), and the
+#     specification of the machine it ran on (PERF_MACHINE).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -18,6 +19,13 @@
 #   python -I tools/evidence.py check <zip SHA-256> [--commit <sha>] <report.json>...
 #
 # Exit codes for "check": 0 every kind present and passing; 1 otherwise.
+#
+# There is no named reference machine (owner decision, 18 Oct 2026, #121): the
+# performance check runs on whichever Windows machine prepares the release, and
+# that machine's specification goes in evidence-perf.json and in the release
+# notes. "machine" prints it as one line for the notes:
+#
+#   python -I tools/evidence.py machine evidence-perf.json
 
 import argparse
 import hashlib
@@ -40,10 +48,61 @@ KINDS = {
 }
 # A performance run that counts as evidence (docs/RELEASING.md): at least this.
 PERF_RELEASE = {"runs": 3, "settle_s": 60, "window_s": 300, "leak_minutes": 30}
+# The machine a performance report ran on (tools/perf_check.py, "machine"), as
+# a test of each field. Specification only: nothing names a person, the
+# computer or a path (AGENTS.md P3).
+PERF_MACHINE = {
+    "cpu": lambda v: _text(v),                         # processor model
+    "cores": lambda v: _count(v),                      # physical cores, all processors
+    "logical_processors": lambda v: _count(v),
+    "memory_gb": lambda v: _number(v) and v > 0,       # memory Windows can use
+    "windows": lambda v: _text(v),                     # for example "Windows 11 25H2"
+    "os_build": lambda v: _text(v),                    # for example "10.0.26200.6899"
+    "power_plan": lambda v: _text(v),
+    "on_mains_power": lambda v: isinstance(v, bool),
+    "battery": lambda v: isinstance(v, bool),          # whether the machine has one
+    "gpus": lambda v: isinstance(v, list) and all(     # display adapters; [] if none
+        isinstance(g, dict) and set(g) == {"name", "driver"} and _text(g["name"])
+        and (g["driver"] is None or _text(g["driver"])) for g in v),
+    "webview2": lambda v: _text(v),                    # the WebView2 Runtime's version
+}
 APP_MODULES = ("workspace", "asr_engines", "offline_guard")     # the app folder's own
 CHECKER_PATHS = ("tools", "tests", "docs")    # the checks, their helpers and the budgets
 APP_FLAGS = "-I -B -X disable-remote-debug"   # as the Start menu shortcut starts the app
 MAX_LISTED = 20          # differences listed in a report; the count is always given
+
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _text(value):
+    return isinstance(value, str) and value.strip() != ""
+
+
+def machine_problems(machine):
+    """The PERF_MACHINE fields missing or unreadable in a report's machine
+    block (empty when it is complete); ["machine"] when there is no block."""
+    if not isinstance(machine, dict):
+        return ["machine"]
+    return [name for name, ok in PERF_MACHINE.items() if not ok(machine.get(name))]
+
+
+def machine_line(machine):
+    """A complete machine block as one line for the release notes."""
+    m = machine
+    gpus = "; ".join(f"{g['name']} (driver {g['driver'] or 'not reported'})"
+                     for g in m["gpus"]) or "none"
+    return (f"Performance measured on: {m['cpu']}, {m['cores']} cores "
+            f"({m['logical_processors']} logical processors), {m['memory_gb']} GB memory, "
+            f"{m['windows']} ({m['os_build']}), {m['power_plan']} power plan, "
+            f"{'on mains power' if m['on_mains_power'] else 'on battery'}"
+            f"{'' if m['battery'] else ' (no battery)'}, GPU: {gpus}, "
+            f"WebView2 {m['webview2']}.")
 
 
 def sha256(path):
@@ -374,8 +433,17 @@ def check(expected_sha256, paths, commit=None):
         if (ev.get("check_passed") is not True or ev.get("pass") is not True
                 or body.get("pass", True) is not True or body.get("failed")):
             found.append("did not pass")
-        if kind == "perf" and not perf_release_run(ev.get("run")):
-            found.append(f"was not a full release run (at least {PERF_RELEASE}, not --quick)")
+        if kind == "perf":
+            if not perf_release_run(ev.get("run")):
+                found.append(f"was not a full release run (at least {PERF_RELEASE}, "
+                             "not --quick)")
+            missing = machine_problems(body.get("machine"))
+            if missing == ["machine"]:
+                found.append("records no machine specification (made before it was "
+                             "required: run tools/perf_check.py again)")
+            elif missing:
+                found.append(f"records the machine only in part (not read: "
+                             f"{', '.join(missing)})")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():
         if kind not in seen:
@@ -413,7 +481,24 @@ def main(argv=None):
     c.add_argument("sha256", help="the SHA-256 of the zip being released")
     c.add_argument("reports", nargs="*", help="the evidence reports (JSON)")
     c.add_argument("--commit", help="the commit the zip was built from (40 hex digits)")
+    m = sub.add_parser("machine", help="the machine a performance report ran on, as one line "
+                       "for the release notes", allow_abbrev=False)
+    m.add_argument("report", help="evidence-perf.json")
     a = ap.parse_args(argv)
+    if a.command == "machine":
+        try:
+            machine = json.loads(Path(a.report).read_text(encoding="utf-8"),
+                                 object_pairs_hook=_no_duplicate_keys).get("machine")
+        except (OSError, ValueError, AttributeError):
+            print(f"MACHINE PROBLEM: {Path(a.report).name} is not a performance report")
+            return 1
+        missing = machine_problems(machine)
+        if missing:
+            print(f"MACHINE PROBLEM: {Path(a.report).name} does not record "
+                  f"{', '.join(missing)}")
+            return 1
+        print(machine_line(machine))
+        return 0
     if a.command == "names":
         problems = names(a.zip, a.version, a.commit)
         for p in problems:

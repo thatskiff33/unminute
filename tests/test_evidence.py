@@ -121,10 +121,20 @@ def report(kind, sha=SHA, **change):
           "folder_matches_package": True, "folder_matched_before": True,
           "folder_differences": 0, "tools_commit": COMMIT, "tools_clean": True,
           "check_passed": True, "pass": True}
+    body = {"evidence": ev}
     if kind == "perf":
         ev["run"] = dict(evidence.PERF_RELEASE, quick=False)
+        body["machine"] = dict(MACHINE)
     ev.update(change)
-    return {"evidence": ev}
+    return body
+
+
+# A synthetic machine, below the 8-core, 16 GB design aim on purpose: there is
+# no named reference machine, so any specification recorded in full will do.
+MACHINE = {"cpu": "Synthetic CPU 4000", "cores": 4, "logical_processors": 4,
+           "memory_gb": 7.8, "windows": "Windows 11 24H2", "os_build": "10.0.26100.4061",
+           "power_plan": "Balanced", "on_mains_power": True, "battery": True,
+           "gpus": [{"name": "Synthetic GPU", "driver": "31.0.1"}], "webview2": "140.0.1.2"}
 
 
 class TempDir(unittest.TestCase):
@@ -464,6 +474,99 @@ class CheckTests(TempDir):
             self.assertEqual(0, evidence.main(["check", SHA, "--commit", COMMIT,
                                                *map(str, self.complete())]))
             self.assertEqual(1, evidence.main(["check", SHA]))
+
+
+def perf_with(machine=None, drop=()):
+    """A passing perf report whose machine block is changed (None: removed)."""
+    body = report("perf")
+    if machine is None and not drop:
+        del body["machine"]
+    else:
+        body["machine"] = {k: v for k, v in dict(MACHINE, **(machine or {})).items()
+                           if k not in drop}
+    return body
+
+
+class MachineEvidenceTests(TempDir):
+    """Owner decision, 18 Oct 2026 (#121): no named reference machine. The
+    performance report must record the specification of whichever machine
+    measured it, in full; what that machine is does not matter."""
+
+    write, complete = CheckTests.write, CheckTests.complete
+
+    def test_a_report_made_before_the_machine_was_recorded_fails(self):
+        problems = evidence.check(SHA, self.complete(perf=perf_with()))
+        self.assertEqual(["perf.json: perf records no machine specification (made before it "
+                          "was required: run tools/perf_check.py again)"], problems)
+        for bad in ([], "Synthetic CPU", None):
+            with self.subTest(bad=bad):
+                body = report("perf")
+                body["machine"] = bad
+                problems = evidence.check(SHA, self.complete(perf=body))
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("records no machine specification", problems[0])
+
+    def test_every_field_is_needed(self):
+        for name in evidence.PERF_MACHINE:
+            with self.subTest(missing=name):
+                problems = evidence.check(SHA, self.complete(perf=perf_with(drop=(name,))))
+                self.assertEqual([f"perf.json: perf records the machine only in part "
+                                  f"(not read: {name})"], problems)
+
+    def test_unreadable_or_malformed_fields_are_named(self):
+        cases = {"cpu": ["", "   ", None, 4], "cores": [0, "8", True, 8.0, None],
+                 "logical_processors": [None, -1], "memory_gb": [0, "16", True, None],
+                 "windows": [None], "os_build": [None, 10], "power_plan": [None, ""],
+                 "on_mains_power": [None, 1, "yes"], "battery": [None, 0],
+                 "gpus": [None, "none", [{"name": "Synthetic GPU"}],
+                          [{"name": "", "driver": None}], [{"name": "G", "driver": 31}],
+                          [{"name": "G", "driver": None, "serial": "x"}], ["G"]],
+                 "webview2": [None, ""]}
+        for name, values in cases.items():
+            for value in values:
+                with self.subTest(field=name, value=value):
+                    problems = evidence.check(SHA, self.complete(
+                        perf=perf_with({name: value})))
+                    self.assertEqual(1, len(problems), problems)
+                    self.assertIn(f"not read: {name})", problems[0])
+
+    def test_any_machine_recorded_in_full_will_do(self):
+        # Below the recommended 8 cores and 16 GB, no GPU, on battery: still
+        # evidence. The budgets decide whether the figures pass, not the machine.
+        small = perf_with({"cores": 2, "logical_processors": 2, "memory_gb": 4.0, "gpus": [],
+                           "on_mains_power": False, "battery": True,
+                           "power_plan": "Ausbalanciert"})
+        self.assertEqual([], evidence.check(SHA, self.complete(perf=small), commit=COMMIT))
+
+    def test_other_kinds_need_no_machine(self):
+        self.assertNotIn("machine", report("ui"))
+        self.assertEqual([], evidence.check(SHA, self.complete()))
+
+    def test_the_machine_as_one_line_for_the_release_notes(self):
+        path = self.write("evidence-perf.json", report("perf"))
+        with mock.patch("builtins.print") as out:
+            self.assertEqual(0, evidence.main(["machine", str(path)]))
+        self.assertEqual(
+            "Performance measured on: Synthetic CPU 4000, 4 cores (4 logical processors), "
+            "7.8 GB memory, Windows 11 24H2 (10.0.26100.4061), Balanced power plan, on mains "
+            "power, GPU: Synthetic GPU (driver 31.0.1), WebView2 140.0.1.2.",
+            out.call_args.args[0])
+        line = evidence.machine_line(dict(MACHINE, gpus=[], battery=False))
+        self.assertIn("on mains power (no battery), GPU: none,", line)
+        self.assertIn("on battery,", evidence.machine_line(dict(MACHINE,
+                                                                on_mains_power=False)))
+        line = evidence.machine_line(dict(MACHINE, gpus=[{"name": "G", "driver": None}]))
+        self.assertIn("GPU: G (driver not reported)", line)
+
+    def test_the_machine_command_refuses_an_incomplete_or_unreadable_report(self):
+        for name, body in (("old.json", perf_with()), ("part.json", perf_with(drop=("gpus",))),
+                           ("list.json", [1]), ("bad.json", "{")):
+            path = self.write(name, body)
+            with self.subTest(name), mock.patch("builtins.print") as out:
+                self.assertEqual(1, evidence.main(["machine", str(path)]))
+                self.assertTrue(out.call_args.args[0].startswith("MACHINE PROBLEM: "))
+        with mock.patch("builtins.print"):
+            self.assertEqual(1, evidence.main(["machine", str(self.root / "absent.json")]))
 
 
 class PrepareTests(TempDir):

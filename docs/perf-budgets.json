@@ -1,7 +1,7 @@
 {
   "_about": "The only place performance budget numbers live (docs/RELEASE_STANDARD.md, section 2). tools/perf_check.py compares its medians with 'budgets' and exits 1 when a figure is over. After each improvement, lower a budget to the new figure plus 15%. Raise one only with a stated reason in the pull request.",
   "status": "provisional",
-  "reference_machine": "Recommended spec: 8 cores, 16 GB, managed, Defender on. No named laptop yet (#121), so these budgets come from the development laptop and are provisional until the reference laptop is measured.",
+  "machine": "No named reference machine (owner decision, 18 Oct 2026, #121). These budgets were set on the development laptop (baseline.machine) and apply to whichever Windows machine measures: each release is measured on the machine that prepares it, which tools/perf_check.py records in the report ('machine') and the release notes state (tools/evidence.py machine). The recommended 8 cores and 16 GB is a design aim, not a gate. They stay provisional, having come from one quick run, until a release run's medians lower them. A slower machine may fail one; raising a budget still needs a stated reason in the pull request.",
   "baseline": {
     "measured": "2026-10-16",
     "tool": "tools/perf_check.py --quick (1 run, 20 s settle, 60 s windows). startup_s is imports plus window creation until the meeting list has rendered; interpreter start and opening the workspace are not included.",
@@ -16,7 +16,7 @@
     }
   },
   "targets": {
-    "_about": "Where the ratchet is heading (#124). CPU and start-up targets are proposals to confirm on the reference laptop. Private-bytes targets are not set yet. The #124 proposal (350 MB visible, 250 MB minimised) came before any private-bytes measurement; the first baseline is about 760 MB across 8 processes, most of it WebView2, so the targets wait for the reference laptop.",
+    "_about": "Where the ratchet is heading (#124). CPU and start-up targets are proposals to confirm from release runs. Private-bytes targets are not set yet. The #124 proposal (350 MB visible, 250 MB minimised) came before any private-bytes measurement; the first baseline is about 760 MB across 8 processes, most of it WebView2, so the targets wait for a release run's medians.",
     "meetings": {"cpu_percent_of_one_core": 0.3},
     "settings": {"cpu_percent_of_one_core": 0.5},
     "minimised": {"cpu_percent_of_one_core": 0.1},
@@ -33,7 +33,7 @@
     "leak": {"private_growth_mb": 10}
   },
   "_budget_notes": {
-    "minimised": "Not lowered by R8 (#129), on purpose. Single quick runs on this busy development laptop on 16 Oct 2026 put minimised CPU within noise of main (R8 0.208 and 0.338% of one core; main 0.365 and 0.547%), so ratcheting on them would cause false failures. The repeatable gain was working memory: a private working set of about 70 MB minimised against about 203 MB on main. Private bytes did not change (about 755 MB), because suspending trims working memory, not commit. What CPU remains when minimised is likely mostly the Python side's one-second loops (R7, #128); perf_check reports only the whole tree, so this is not yet measured. Re-ratchet from a median of three runs on the reference laptop.",
+    "minimised": "Not lowered by R8 (#129), on purpose. Single quick runs on this busy development laptop on 16 Oct 2026 put minimised CPU within noise of main (R8 0.208 and 0.338% of one core; main 0.365 and 0.547%), so ratcheting on them would cause false failures. The repeatable gain was working memory: a private working set of about 70 MB minimised against about 203 MB on main. Private bytes did not change (about 755 MB), because suspending trims working memory, not commit. What CPU remains when minimised is likely mostly the Python side's one-second loops (R7, #128); perf_check reports only the whole tree, so this is not yet measured. Re-ratchet from a release run's median of three runs.",
     "worker": "A fixed criterion, not a ratchet: the worker's idle unload time (120 s, workspace/worker.py) plus 5 s.",
     "leak": "A fixed criterion from #124: at most 10 MB growth over 30 minutes idle (run with --leak-minutes 30). Not yet measured.",
     "recording": "No budget yet for the recording and recording-minimised states (#124). perf_check measures them with synthetic audio fed at real-time pace in place of the microphone; their targets are #124's proposals. Their budgets come from a release-mode run (median of three), not a development-laptop quick run, and are tracked with the recording CPU defect in #216; until then the report's proposed_budgets_plus_20_percent shows what a run would give. Where managed policy turns microphone recording off, these states are reported as not measured (policy)."

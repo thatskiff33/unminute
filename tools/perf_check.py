@@ -102,10 +102,16 @@ after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
 short-window noise cannot be scaled up.
 
-Output: a JSON report with the machine, the app and WebView2 versions, every
-run's figures, the medians (for the worker's unload, the slowest run: a pass or
-fail, not a noisy figure), anything over budget or not measured, and budgets
-proposed from these figures (plus 20%).
+Output: a JSON report with the machine's specification ("machine": processor,
+cores and logical processors, memory, Windows build, power plan, mains or
+battery, display adapters and drivers, WebView2 version; nothing that names
+the computer or its user), the app version, every run's figures, the medians
+(for the worker's unload, the slowest run: a pass or fail, not a noisy
+figure), anything over budget or not measured, and budgets proposed from these
+figures (plus 20%). There is no named reference machine: the budgets in
+docs/perf-budgets.json apply to whichever machine measures, and release
+evidence (--zip) needs the specification in full, so a machine it cannot read
+stops the run before it starts (exit 2).
 
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
 budget (a worker that did not unload counts as over), or a budgeted figure was
@@ -548,46 +554,198 @@ def measure(job, pid, settle, window):
 
 # -- the parent: runs the child once per run and measures it ---------------------------
 
-def environment(args):
-    import winreg
-    env = {"when": time.strftime("%Y-%m-%d %H:%M"), "python": platform.python_version(),
-           "windows": platform.version(), "logical_processors": os.cpu_count()}
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                            r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
-            env["cpu"] = winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
-    except OSError:
-        pass
-    ctypes, wintypes = _win()
+# -- the machine it ran on (pure apart from WindowsProbe; tested with a fake) ------------
+#
+# No named reference machine (owner decision, 18 Oct 2026, #121): a release is
+# measured on whichever Windows machine prepares it, and the report records
+# that machine's specification (tools/evidence.py, PERF_MACHINE, which a
+# release's evidence must hold in full). Specification only: never the
+# computer's or the user's name, an account, a serial number or a path
+# (AGENTS.md P3). Every registry value and CIM property read is named here.
 
-    class Mem(ctypes.Structure):
-        _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
-                    ("ullTotalPhys", ctypes.c_uint64)] + [(f"x{i}", ctypes.c_uint64)
-                                                          for i in range(6)]
-    m = Mem()
-    m.dwLength = ctypes.sizeof(m)
-    if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
-        env["memory_gb"] = round(m.ullTotalPhys / 2**30, 1)
+CPU_KEY = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+WINDOWS_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+WEBVIEW2_KEYS = tuple(               # the WebView2 Runtime's version ("pv"), per install
+    (hive, rf"{prefix}\Microsoft\EdgeUpdate\Clients\{{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}}")
+    for hive, prefix in (("HKLM", r"SOFTWARE\WOW6432Node"), ("HKLM", "SOFTWARE"),
+                         ("HKCU", "Software")))
+REGISTRY_READS = {("HKLM", CPU_KEY): ("ProcessorNameString",),
+                  ("HKLM", WINDOWS_KEY): ("CurrentMajorVersionNumber",
+                                          "CurrentMinorVersionNumber", "CurrentBuild", "UBR",
+                                          "DisplayVersion"),
+                  **{place: ("pv",) for place in WEBVIEW2_KEYS}}
+CIM_READS = {"Win32_Processor": ("NumberOfCores",),
+             "Win32_VideoController": ("Name", "DriverVersion")}
+NAME_LIMIT = 80                       # a GPU or processor name, as workspace/gpu.py keeps
+BATTERY_NONE, BATTERY_UNKNOWN = 128, 255     # SYSTEM_POWER_STATUS.BatteryFlag
 
-    class Power(ctypes.Structure):
-        _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
-                    ("BatteryLifePercent", ctypes.c_ubyte), ("Reserved", ctypes.c_ubyte),
-                    ("a", wintypes.DWORD), ("b", wintypes.DWORD)]
-    p = Power()
-    if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(p)):
-        env["on_mains_power"] = p.ACLineStatus == 1
-    r = subprocess.run(["powercfg", "/getactivescheme"], capture_output=True, text=True)
-    env["power_plan"] = r.stdout.strip().split("(")[-1].rstrip(")") if r.stdout else None
-    for hive, key in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate"
-                       r"\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
-                      (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\EdgeUpdate"
-                       r"\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")):
+
+def _short(value):
+    """A trimmed name or version, or None for anything that is not text."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return " ".join(value.split())[:NAME_LIMIT]
+
+
+def _power_plan(output):
+    """The active plan's name from "powercfg /getactivescheme", whose last
+    bracketed words name it (in the system's language), or None."""
+    line = (output or "").strip()
+    if not line.endswith(")") or "(" not in line:
+        return None
+    return _short(line[line.rindex("(") + 1:-1])
+
+
+def machine_spec(probe):
+    """The specification of the machine, from a probe that reads the
+    registry, CIM and a few system calls (WindowsProbe; tests pass a fake).
+    A field that could not be read is None (gpus too, when CIM could not be
+    asked), so the report says what is missing instead of guessing."""
+    def reg(hive, key, value):
+        if value not in REGISTRY_READS.get((hive, key), ()):
+            raise ValueError(f"{hive} {key} {value} is not a listed read")
+        return probe.registry(hive, key, value)
+
+    cim = probe.cim()
+    cim = cim if isinstance(cim, dict) else {}
+    processors = [p for p in cim.get("Win32_Processor") or [] if isinstance(p, dict)]
+    cores = [p.get("NumberOfCores") for p in processors]
+    adapters = cim.get("Win32_VideoController")
+    gpus = None
+    if isinstance(adapters, list):
+        gpus = sorted(({"name": _short(a.get("Name")), "driver": _short(a.get("DriverVersion"))}
+                       for a in adapters if isinstance(a, dict) and _short(a.get("Name"))),
+                      key=lambda g: (g["name"], g["driver"] or ""))
+
+    build = [reg("HKLM", WINDOWS_KEY, v) for v in (
+        "CurrentMajorVersionNumber", "CurrentMinorVersionNumber", "CurrentBuild", "UBR")]
+    os_build = windows = None
+    if all((isinstance(part, int) and not isinstance(part, bool) and part >= 0)
+           or (isinstance(part, str) and part.isascii() and part.isdigit()) for part in build):
+        os_build = ".".join(str(int(part)) for part in build)
+        family = "Windows 11" if int(build[2]) >= 22000 else "Windows 10"
+        release = _short(reg("HKLM", WINDOWS_KEY, "DisplayVersion"))
+        windows = f"{family} {release}" if release else family
+
+    memory = probe.memory_bytes()
+    status = probe.power_status()           # (ACLineStatus, BatteryFlag) or None
+    line, flag = status if isinstance(status, tuple) and len(status) == 2 else (None, None)
+    webview2 = None
+    for hive, key in WEBVIEW2_KEYS:
+        webview2 = _short(reg(hive, key, "pv"))
+        if webview2 and webview2 != "0.0.0.0":   # "0.0.0.0" is left by an uninstall
+            break
+        webview2 = None
+    logical = probe.logical_processors()
+    return {
+        "cpu": _short(reg("HKLM", CPU_KEY, "ProcessorNameString")),
+        "cores": sum(cores) if cores and all(evidence._count(c) for c in cores) else None,
+        "logical_processors": logical if evidence._count(logical) else None,
+        "memory_gb": round(memory / 2**30, 1) if evidence._count(memory) else None,
+        "windows": windows,
+        "os_build": os_build,
+        "power_plan": _power_plan(probe.power_plan()),
+        "on_mains_power": {0: False, 1: True}.get(line),
+        "battery": None if flag in (None, BATTERY_UNKNOWN) else flag != BATTERY_NONE,
+        "gpus": gpus,
+        "webview2": webview2,
+    }
+
+
+def _system_program(*parts):
+    """A program in the Windows system folder, by absolute path only (never
+    found through PATH or the current folder), or None."""
+    ctypes, _ = _win()
+    buf = ctypes.create_unicode_buffer(260)
+    n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260)
+    path = os.path.join(buf.value, *parts) if 0 < n < 260 else None
+    return path if path and os.path.isfile(path) else None
+
+
+class WindowsProbe:
+    """What machine_spec reads, from this Windows machine. Each read gives
+    None when it cannot be made, never an exception."""
+
+    def registry(self, hive, key, value):
+        import winreg
+        root = {"HKLM": winreg.HKEY_LOCAL_MACHINE, "HKCU": winreg.HKEY_CURRENT_USER}[hive]
         try:
-            with winreg.OpenKey(hive, key) as k:
-                env["webview2"] = winreg.QueryValueEx(k, "pv")[0]
-                break
+            with winreg.OpenKey(root, key) as k:
+                return winreg.QueryValueEx(k, value)[0]
         except OSError:
-            continue
+            return None
+
+    def cim(self):
+        """{class: [{property: value}]} for CIM_READS, from Windows PowerShell's
+        Get-CimInstance (local WMI; no network), or None."""
+        exe = _system_program("WindowsPowerShell", "v1.0", "powershell.exe")
+        if exe is None:
+            return None
+        query = "; ".join(f"$o['{cls}'] = @(Get-CimInstance {cls} | Select-Object "
+                          f"{','.join(props)})" for cls, props in CIM_READS.items())
+        script = ("$ErrorActionPreference = 'Stop'; "
+                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $o = @{}; "
+                  f"{query}; $o | ConvertTo-Json -Depth 3 -Compress")
+        try:
+            r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, timeout=120,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                return None
+            data = json.loads(r.stdout.decode("utf-8-sig", errors="replace"))
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        # Only the listed properties, whatever else came back.
+        return {cls: [{p: row.get(p) for p in CIM_READS[cls]} for row in data.get(cls) or []
+                      if isinstance(row, dict)] if isinstance(data.get(cls), list) else None
+                for cls in CIM_READS}
+
+    def memory_bytes(self):
+        ctypes, wintypes = _win()
+
+        class Mem(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                        ("ullTotalPhys", ctypes.c_uint64)] + [(f"x{i}", ctypes.c_uint64)
+                                                              for i in range(6)]
+        m = Mem()
+        m.dwLength = ctypes.sizeof(m)
+        return m.ullTotalPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(
+            ctypes.byref(m)) else None
+
+    def power_status(self):
+        ctypes, wintypes = _win()
+
+        class Power(ctypes.Structure):
+            _fields_ = [("ACLineStatus", ctypes.c_ubyte), ("BatteryFlag", ctypes.c_ubyte),
+                        ("BatteryLifePercent", ctypes.c_ubyte), ("Reserved", ctypes.c_ubyte),
+                        ("a", wintypes.DWORD), ("b", wintypes.DWORD)]
+        p = Power()
+        return (p.ACLineStatus, p.BatteryFlag) if ctypes.windll.kernel32.GetSystemPowerStatus(
+            ctypes.byref(p)) else None
+
+    def power_plan(self):
+        exe = _system_program("powercfg.exe")
+        if exe is None:
+            return None
+        try:
+            r = subprocess.run([exe, "/getactivescheme"], capture_output=True, text=True,
+                               timeout=60, creationflags=getattr(subprocess,
+                                                                 "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    def logical_processors(self):
+        return os.cpu_count()
+
+
+def environment(args):
+    """When and with what the run was made. The machine's specification is
+    returned under "machine", which parent() moves to the report's top level."""
+    env = {"when": time.strftime("%Y-%m-%d %H:%M"), "python": platform.python_version(),
+           "machine": machine_spec(WindowsProbe())}
     app = Path(args.app) if args.app else ROOT
     version = app.parent / "version.json"
     if version.exists():
@@ -748,10 +906,18 @@ def parent(args):
         # Inside the guard: a probe that fails (a damaged version.json, a
         # missing system tool) is "not measured", not a traceback.
         try:
-            report["environment"] = environment(args)
+            env = environment(args)
         except Exception as exc:
             raise RuntimeError(
                 f"the environment probe failed ({type(exc).__name__}: {exc})") from exc
+        report["machine"] = env.pop("machine", None)
+        report["environment"] = env
+        # Release evidence needs the machine in full (tools/evidence.py): say
+        # so now, not after two hours of measuring.
+        missing = evidence.machine_problems(report["machine"])
+        if getattr(args, "zip", None) and missing:
+            raise RuntimeError(f"the machine's specification could not be read in full "
+                               f"({', '.join(missing)}), and release evidence records it")
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1

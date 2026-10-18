@@ -41,12 +41,12 @@ Each section gives the principle, the criterion and how it is checked.
 - recording or other foreground activity;
 - background work running.
 
-Each budget covers CPU, memory, start-up time and the peak cost of heavy work. Budgets live in one file, set against the recommended hardware. A run on the minimum hardware is recorded for information.
+Each budget covers CPU, memory, start-up time and the peak cost of heavy work. Budgets live in one file. They apply to whichever machine measures a release, and that machine's specification is recorded with the figures and stated in the release notes. The recommended hardware is a design aim, not a condition of measuring. A run on the minimum hardware is recorded for information.
 
 **Check.** Measure the same way every time:
 - **CPU:** process CPU time (kernel plus user) for the whole process tree, over 300 s after a 60 s settle. Take the median of three runs and express it as a percentage of one logical core.
 - **Memory:** private bytes summed across the process tree, with private working set reported alongside. Never sum working sets, because shared pages are counted once per process.
-- **Conditions:** mains power and the Balanced power plan, with antivirus idle. Record the machine, the app version and the versions of embedded runtimes such as the browser engine.
+- **Conditions:** mains power and the Balanced power plan, with antivirus idle. Record the machine's specification (processor, cores and logical processors, memory, operating system build, power plan, mains or battery, graphics adapters and drivers), the app version and the versions of embedded runtimes such as the browser engine. Record nothing that identifies the machine or its user.
 - **Setting a budget:** start at the measured baseline plus 20%. After each improvement, lower it to the new figure plus 15%.
 
 ### 3. Just-in-time loading
@@ -209,13 +209,14 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 - **Core task:** recording, importing and transcribing a meeting.
 - **Main tasks:** also speaker identification, review, handoff, holds and cleanup.
 
-### Reference machine and budgets
+### Measuring machine and budgets
 
 | Item | Value |
 | --- | --- |
-| Reference machine (budgets) | Recommended spec: 8 cores, 16 GB. A named, managed laptop is still to be chosen (#121). |
+| Measuring machine | No named reference machine (owner decision, 18 October 2026, #121). A release's performance check runs on whichever Windows machine prepares the release. `tools/perf_check.py` records that machine's specification in `evidence-perf.json` (`machine`), `tools/evidence.py check` refuses a report without it in full, and the release notes state it (`tools/evidence.py machine`). |
+| Recommended specification | 8 cores, 16 GB: a design aim and the installer's recommendation, not a gate. |
 | Information-only machine | Installer minimum: 4 cores, 8 GB. |
-| Budget numbers | Release-time measured budgets: `docs/perf-budgets.json`, with the baseline they came from and the targets, provisional until the reference laptop is measured. Deterministic ratchets (package size and file count, imported modules, CSS colours, idle page work): `tests/budgets.json`. |
+| Budget numbers | Release-time measured budgets: `docs/perf-budgets.json`, with the baseline they came from and the targets. They were set on the development laptop and apply to whichever machine measures; provisional until a release run's medians lower them. Deterministic ratchets (package size and file count, imported modules, CSS colours, idle page work): `tests/budgets.json`. |
 | Measurement tool | `tools/perf_check.py`: start-up, idle CPU and private bytes per state, worker unload time and the leak check, measured as section 2 describes. The worker's peak memory and speed need real models and come from `tools/packaged_check.py`, whose idle figures sum working sets and are not comparable. |
 
 ### Gates
@@ -244,9 +245,9 @@ Status is one of:
 | Python background wake-ups and query counts bounded | 3 | Unit tests: the worker's idle thread (`tests/test_workers.py`); the watch and policy threads under a fake clock (`tests/test_idle_wakeups.py`); one transaction per watched folder when nothing is new (`tests/test_intake.py`); the Meetings list in a fixed number of queries once speaker counts are known, and Settings and Setup checks kept between polls (`tests/test_queries.py`); the page still fetches the lists on a change, every 6th poll and when shown again (`tools/ui_idle_check.py`) | In place (R5, R7) |
 | UI idle behaviour: bridge calls per minute, timers, redraws; visible and hidden | 3 | `tools/ui_idle_check.py` in headless Edge with the design fixtures; the "UI idle (headless Edge)" job in `.github/workflows/quality.yml`; ratchets in `tests/budgets.json` | In place, not yet required; ratchets lowered by R6 (#127) |
 | WebView2 hidden, suspended and low-memory when minimised | 2, 3 | `workspace/shell.py` (`Minimise`, unit-tested in `tests/test_minimise.py`); the effect is measured by `tools/perf_check.py`'s minimised state | In place |
-| Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the reference machine; budget logic unit-tested (`tests/test_perf_check.py`) | Manual, provisional budgets; the report names the package (`tools/evidence.py`, B3a) and is required before a release is published (B3b) |
+| Idle CPU, private bytes, start-up, worker unload, leak check | 2, 3 | `tools/perf_check.py` against the release package on the machine that prepares the release; budget logic and the machine's specification unit-tested (`tests/test_perf_check.py`, `tests/test_evidence.py`) | Manual, provisional budgets; the report names the package (`tools/evidence.py`, B3a) and the machine's specification (#121), and is required before a release is published (B3b) |
 | CPU and private bytes while recording, visible and minimised | 2 | `tools/perf_check.py`'s recording states: synthetic audio at real-time pace in place of the microphone, started through the app's own recording question; the stand-in and the order of states unit-tested (`tests/test_perf_check.py`) | Measured; no budget yet (#216: set from a release-mode run) |
-| Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget until the reference laptop is measured |
+| Worker peak memory and speed on real audio | 2 | `tools/packaged_check.py` | Manual; no budget yet (set from release runs, with the measuring machine recorded) |
 | Durable processing; crash and resume give identical results | 4 | Unit tests; `tools/packaged_crash_check.py` | Unit tests in place; packaged check manual, and its report names the package (B3a) and is required before a release is published (B3b) |
 | Integrity check after an unclean shutdown | 4 | `PRAGMA quick_check` at start after an unclean close; damage holds new work until Continue anyway; `--status` and `--health` report it; unit tests (`tests/test_integrity.py`) | In place (R11) |
 | Settings validated on load | 4, 9 | Unit tests (`tests/test_hardening.py`) | In place |

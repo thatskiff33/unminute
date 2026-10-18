@@ -12,7 +12,7 @@ This lists what a workspace release needs, what has been verified, and what stil
 
 ## Verified on the development machine
 
-Most of this evidence was gathered on the 0.2.0 previews (14 October 2026). It has not been re-run in full on later releases. #124 (performance) and #111 slice B3 (release evidence) will make each release produce its own evidence against its own package.
+Most of this evidence was gathered on the 0.2.0 previews (14 October 2026). It has not been re-run in full on later releases. #124 (performance) and #111 slice B3 (release evidence) will make each release produce its own evidence against its own package. Performance evidence is measured on whichever Windows machine prepares the release, with that machine's specification recorded in `evidence-perf.json` and the release notes; there is no named reference machine, and 8 cores and 16 GB is a design aim, not a gate (#121).
 
 Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy transcription app was running, so the timings in PR #47 and #56 are pessimistic.
 
