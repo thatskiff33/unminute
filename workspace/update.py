@@ -63,7 +63,12 @@ def package_version():
 
 
 def _connect(db_path):
-    return sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    # as_uri() percent-encodes the path. Unescaped, a "#" or "?" in a folder
+    # name ends the path and a "%41" is decoded, so the workspace reads as
+    # UNREADABLE and every update waits (#164). A UNC path still fails here
+    # (SQLite refuses the server as a URI authority) and the gate waits, but the
+    # workspace is never on a network share: local_appdata() refuses one (D3).
+    return sqlite3.connect(Path(db_path).absolute().as_uri() + "?mode=ro", uri=True)
 
 
 def current_schema(db_path):

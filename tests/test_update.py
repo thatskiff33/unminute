@@ -3,6 +3,8 @@
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -88,6 +90,65 @@ class GateTests(unittest.TestCase):
         s.close()
         kinds = {b["kind"] for b in update.blockers(self.db)}
         self.assertEqual(kinds, {"meetings"})
+
+
+# Folder names a SQLite URI misreads unless the path is escaped (#164): "#"
+# starts a fragment, "?" a query, and "%41" is decoded to "A". Windows does not
+# allow "?" in a name, so that one runs on Linux only.
+AWKWARD = ["a#b", "c%41d", "e%f"] + ([] if os.name == "nt" else ["g?h"])
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class GatePathTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def workspace(self, db):
+        """A synthetic workspace with a meeting, an active hold and a cleanup job."""
+        db.parent.mkdir(parents=True)
+        s = Store(db)
+        mid = s.create_meeting("Synthetic")
+        holds.add_hold(s, mid, "all", "dispute")
+        with s.tx() as con:
+            con.execute("INSERT INTO cleanup_jobs (id, meeting_id, phase, state, intent_at) "
+                        "VALUES ('j', ?, 'audio', 'failed', 0)", (mid,))
+        s.close()
+
+    def test_awkward_folder_names_are_read_not_refused(self):
+        for name in AWKWARD:
+            with self.subTest(folder=name):
+                db = Path(self.tmp.name) / name / "workspace.db"
+                self.workspace(db)
+                before = db.read_bytes()
+                self.assertEqual(update.current_schema(db), store.SCHEMA_VERSION)
+                kinds = {b["kind"] for b in update.blockers(db)}
+                self.assertEqual(kinds, {"holds", "meetings", "cleanup"})
+                g = update.gate(db, store.SCHEMA_VERSION)
+                self.assertEqual((g["code"], g["kind"]), (update.ALLOWED, "compatible"))
+                g = update.gate(db, store.SCHEMA_VERSION + 1)
+                self.assertEqual((g["code"], g["kind"]), (update.WAIT, "migration"))
+                self.assertEqual(db.read_bytes(), before)        # read-only check
+
+    def test_gate_command_reads_a_workspace_under_an_awkward_path(self):
+        # The installer's check (python -m workspace --gate), in a child process
+        # with LOCALAPPDATA pointing at a synthetic folder, never the real one.
+        appdata = Path(self.tmp.name).joinpath(*AWKWARD)
+        self.workspace(appdata / "whisper" / "workspace" / "workspace.db")
+        env = dict(os.environ, LOCALAPPDATA=str(appdata))
+        root = Path(__file__).resolve().parents[1]
+        for schema, code, kind in ((store.SCHEMA_VERSION, update.ALLOWED, "compatible"),
+                                   (store.SCHEMA_VERSION + 1, update.WAIT, "migration")):
+            with self.subTest(schema=schema):
+                r = subprocess.run([sys.executable, "-m", "workspace", "--gate",
+                                    "--schema", str(schema)], cwd=root, env=env,
+                                   capture_output=True, text=True, timeout=120)
+                self.assertEqual(r.returncode, code, r.stderr)
+                result = json.loads(r.stdout.strip().splitlines()[-1])
+                self.assertEqual((result["kind"], result["current_schema"]),
+                                 (kind, store.SCHEMA_VERSION))
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

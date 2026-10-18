@@ -96,8 +96,9 @@ public static class Dlg {
     [Dlg]::SendMessage([Dlg]::GetDlgItem($hDlg, 1), 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null   # BM_CLICK on Open
 
     # 4. The meeting appears: a read-only count, so the probe changes nothing.
+    # as_uri() escapes the path: a '#' or '%41' in TEMP would break a raw URI (#164).
     $db = Join-Path $profileDir 'whisper\workspace\workspace.db'
-    $probe = "import sqlite3, sys; d = sqlite3.connect('file:' + sys.argv[1] + '?mode=ro', uri=True); print(d.execute('SELECT count(*) FROM meetings').fetchone()[0])"
+    $probe = "import pathlib, sqlite3, sys; d = sqlite3.connect(pathlib.Path(sys.argv[1]).absolute().as_uri() + '?mode=ro', uri=True); print(d.execute('SELECT count(*) FROM meetings').fetchone()[0])"
     $end = (Get-Date).AddSeconds(120)
     do {
         Start-Sleep -Seconds 2

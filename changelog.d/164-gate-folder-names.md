@@ -1,0 +1,1 @@
+- **Updates go ahead when a folder name contains `#`.** If the path to the app data folder (usually through the Windows user name) contained `#`, or `%` followed by two hexadecimal digits such as `%41`, the installer's update check could not read the workspace and every update waited. The check now reads such a workspace like any other (#164).
