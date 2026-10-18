@@ -20,8 +20,7 @@
 #     a cd); also with a wildcard or file name as the last part, or no
 #     folder named when run from local AppData or above (cd, pushd and popd are
 #     followed, also at the start of bash -c (or -lc), pwsh -c and { } blocks and
-#     after then, do or else; to a folder from cygpath, realpath, dirname,
-#     Split-Path or Resolve-Path; and to a $(...) that names local AppData or the
+#     after then, do or else; and to a $(...) that names local AppData or the
 #     home folder, taken as that folder); inside brackets, a loop (bash's for list
 #     is written where its variable is used), a string run by another shell or
 #     after a wrapper such as timeout; or fed local AppData by a pipeline;
@@ -35,26 +34,45 @@
 # 'LocalApplicationData')), TEMP, APPDATA, USERPROFILE, HOME, HOMEDRIVE with HOMEPATH,
 # SystemDrive, USERNAME, PUBLIC, OneDrive, GetFolderPath('UserProfile'), and any
 # other whose value is a full path (windir, ProgramData), so a .. after one is seen
-# for what it reaches. A variable set earlier in the same command (also after then,
-# do, { or declare, typeset, readonly) is substituted where it is used, a $(...) or
-# backtick value whole; a variable straight after local AppData ($LOCALAPPDATA/$d)
-# stands for any name. Each statement is checked, also one that is only an
-# assignment (d=json.load(open(...)) in python -c code).
+# for what it reaches; bash's operators on them (${LOCALAPPDATA:-x}, ${HOME%/}) are
+# read as the variable. The folder a cygpath, realpath, Resolve-Path, dirname or
+# Split-Path gives is written out wherever it is used, up to eight levels deep. A
+# variable set earlier in the same command (also after then, do, { or declare,
+# typeset, readonly) is substituted where it is used, a $(...) or backtick value
+# whole; a value exported (export, declare -x, after set -a) or never used is also
+# checked where it is set. A variable straight after local AppData
+# ($LOCALAPPDATA/$d) stands for any name. Each statement is checked, also one that
+# is only an assignment (d=json.load(open(...)) in python -c code).
 # Message text (gh's -m, -b, -t and -f fields, git's -m for commit, tag, merge,
 # notes and stash, any program's --body, --message or --title, -Value of
 # Set-Content, Add-Content, Out-File, sc or ac, quoted heredocs not fed to an
-# interpreter, xargs or read, here-strings taken only by an assignment or a
-# program that writes or sends text, PowerShell text held in a variable) and the
-# patterns given to text searches are ignored, so rules can be quoted and searched
-# for.
+# interpreter or a program that reads file names from its input (xargs, read,
+# cpio, tar -T, zip -@, --files-from, git --stdin-paths), here-strings taken only
+# by an assignment or a program that writes or sends text (git only as a message:
+# commit -F -), PowerShell text held in a variable) and the patterns given to text
+# searches are ignored, so rules can be quoted and searched for. In bash, a
+# backtick escaped with a backslash in a message is text (a Markdown code span);
+# one that is not is run, and checked.
 # Two layers run on every call (#221). main's earlier check runs first, unchanged in
 # what it blocks: whisper\workspace anywhere, and Unminute\workspace after local
 # AppData, a variable, a substitution, a wildcard folder name or a climb, or as a
 # path of its own (so this hook blocks everything main did, apart from text that
-# is only written: message options, -Value, quoted heredocs and here-strings).
-# The deeper checks described above follow. Commands are read in linear time, so a long one
-# (a 500 KB heredoc, 40,000 backslashes, 3,000 message options) takes milliseconds
-# to a few hundred; resolving paths on disk is the main cost (tests check the time).
+# is only written: message options, -Value, quoted heredocs and here-strings, and
+# such text read back later in the same command, a known gap below).
+# The deeper checks described above follow. Any error while checking blocks the
+# call (exit 2), never only warns. Claude Code lets a call through when a hook runs
+# past its time limit, so time is bounded too (#221 round 1). The common shapes of a
+# long command are read in linear time (a 500 KB heredoc, 40,000 backslashes, 3,000
+# message options, 50,000 closing brackets, 10,000 nested "$(, thousands of blank
+# lines: milliseconds to a few hundred; resolving paths on disk is the main cost,
+# and tests check the time). Not every shape is: each variable set and used later
+# rescans the rest of the command (300 take about 0.15 s), and so do a chain of
+# thousands of cd into ever deeper folders and thousands of heredocs or
+# here-strings that are never closed. So past 2,000 assignments or loops, 20
+# million characters rescanned, or values that grow the command past twice its
+# length (a=x; b=$a$a; c=$b$b ...), a command is blocked as too complex to check;
+# and a command over 20,000 characters is checked in a child process, and blocked
+# if that takes more than 20 seconds.
 # It is a guard rail, not a security boundary: a text heuristic over the command,
 # which cannot be complete. The target (owner, 19 Oct 2026): block the plain and
 # common ways to read, list, search, copy or stage the data, never block ordinary
@@ -62,7 +80,9 @@
 #   - a path held in a variable from an earlier tool call, or set with Set-Variable
 #     or New-Variable and used by name;
 #   - a script file written in one step (Write, cat > f <<EOF, Set-Content) and run
-#     in another;
+#     in another, and text written to a file or the clipboard (-Value, a heredoc or
+#     here-string to Set-Content or Set-Clipboard, gh -f) and read back later in
+#     the same command (Get-Content $f | ForEach-Object { Get-Content $_ });
 #   - a path the program builds itself or deliberately obscured: the app's own
 #     default_root(), GetFolderPath(28), interpreter code that builds it in steps
 #     the patterns do not join (one variable per part, string methods), PowerShell
@@ -87,13 +107,19 @@
 #     pwsh -c or Invoke-Expression, of a { } block, or after then, do or else (for
 #     example after a wrapper: time cd X): the folder is then not followed;
 #   - heredoc lines read by a loop the heredoc ends (while read f; do cat "$f";
-#     done <<'EOF'); one piped to xargs or read is checked;
+#     done <<'EOF'); one fed to xargs, read, cpio, tar -T, zip -@, --files-from or
+#     git --stdin-paths is checked;
+#   - a cygpath, dirname or Split-Path nested more than eight levels deep (its
+#     folder is then unknown);
 #   - less common programs that walk a tree: attrib /s, icacls /t, takeown /r, fd,
 #     Everything's es (copies and archives are checked: cp -r, rsync -a,
 #     Copy-Item -Recurse, robocopy /s, xcopy /s, tar, zip -r, 7z,
 #     Compress-Archive);
 #   - a link made and used in the same command (a later command through it is
 #     resolved), and a link inside a path more than 64 folders deep;
+#   - Claude Code tools the hook's matcher in .claude/settings.json does not name,
+#     such as publishing a local file as an artifact or sending one to the user
+#     (the deny rules cover Read and Edit only);
 #   - Codex does not run the hook (AGENTS.md P2: review for Codex).
 # Known false positives, which fail closed: from main's check, unminute\workspace
 # as a relative path of its own (ls unminute/workspace from the folder above a
@@ -108,8 +134,10 @@
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
 # after it (echo "rg -n x ~/AppData/Local" > notes.txt), which a quoted heredoc
-# or Set-Content writes instead; and any use of local AppData followed by a
-# variable ($LOCALAPPDATA/$d), unless models follows.
+# or Set-Content writes instead; any use of local AppData followed by a variable
+# ($LOCALAPPDATA/$d), unless models follows; an operator on local AppData or a
+# folder above it that changes the value (${HOME:+x}, ${TEMP%/Temp}), read as the
+# folder itself; and a command too complex to check (above).
 # Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -159,14 +187,19 @@ def unminute_workspace_pattern(local_appdata):
     safe side. A single climb at the start (..\unminute\workspace) is a sibling
     checkout here; the deeper checks resolve it against the working folder.
     """
-    # A folder name with a wildcard in it, from the wildcard on (linear: no
-    # wildcard inside the repeated part; #207 round 8).
+    # A closing character, read from the start of a run of them only, so a long
+    # run is read once, not once per character (#221 round 1: quadratic on main
+    # too). The first closing character of a run follows any % at its start.
     prefixes = [r"(?<![\w-])local(?:appdata)?", r"\$\{?[\w:]+\}?", r"%\w+(?::[^%\s]*)?%",
-                r"[)}`\"']", r"[\\/]\.\.", r"[*?\[][^\s\\/*?\[]*"]
+                r"(?<![%})\"'`])%*[)}`\"']", r"[\\/]\.\."]
     parts = [re.escape(part) for part in re.split(r"[\\/]+", local_appdata) if part]
     if parts:
         prefixes.append(r"(?<![\w-])" + r"[\\/]+".join(parts))
-    after_local = r"(?:" + "|".join(prefixes) + r")[%})\"'`]*[\\/]+"
+    # A folder name with a wildcard in it, from the wildcard on (linear: no wildcard
+    # inside the repeated part; #207 round 8). Its tail already takes the closing
+    # characters, so they are not read again after it (#221 round 1).
+    wildcard = r"[*?\[][^\s\\/*?\[]*"
+    after_local = r"(?:(?:" + "|".join(prefixes) + r")[%})\"'`]*|" + wildcard + r")[\\/]+"
     # Anywhere but straight after a folder's name, a dot or another separator,
     # with or without a leading separator (#207 round 8: a deny-list, so a
     # variable that keeps its trailing separator, ${d}Unminute, is matched).
@@ -303,6 +336,13 @@ HOME_FOLDER = re.compile(VARIABLE + r"(?:USERPROFILE|HOME)(?!\w)[}%]?"
                          + VARIABLE + r"HOMEPATH(?!\w)[}%]?"
                          r"|\[(?:System\.)?Environment\]::GetFolderPath\(\s*['\"]?UserProfile"
                          r"['\"]?\s*\)", re.IGNORECASE)
+# bash's operators on the variables above (${LOCALAPPDATA:-x}, ${TEMP%/}, ${HOME#x}),
+# read as the variable, which on Windows is always set: an operator that changes
+# the value only makes the check stricter. Bounded, so a brace never closed is linear.
+PARAMETER_OPERATOR = re.compile(
+    r"\$\{(LOCALAPPDATA|TEMP|TMP|APPDATA|USERPROFILE|HOME|HOMEDRIVE|HOMEPATH|SystemDrive"
+    r"|USERNAME|PUBLIC|OneDrive(?:Commercial|Consumer)?)"
+    r"(?::?[-=+?]|##?|%%?|//?|\^\^?|,,?|:\s*-?\d)[^}\n]{0,256}\}", re.IGNORECASE)
 # Any other variable, written out when it holds a full path.
 ENV_VARIABLE = re.compile(VARIABLE + r"([A-Za-z_]\w*)(?!\w)[}%]?")
 FULL_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)[^;\n]*$")
@@ -363,20 +403,43 @@ TEXT_WRITERS = {"set-content", "add-content", "out-file", "sc", "ac"}
 TEXT_TAKERS = TEXT_WRITERS | {"gh", "git", "write-output", "write-host", "echo", "clip",
                               "set-clipboard", "out-string", "tee-object", "out-null"}
 ASSIGNED = re.compile(r"\s*\$[\w:]+\s*=\s*")
-READS_INPUT = re.compile(r"(?<![\w.-])(?:xargs|read|mapfile|readarray|parallel)(?![\w.-])")
+READS_INPUT = re.compile(r"(?<![\w.-])(?:xargs|read|mapfile|readarray|parallel|cpio)(?![\w.-])")
+# git's options that read a message from standard input (commit -F -, --file=-).
+GIT_STDIN_MESSAGE = re.compile(r"(?<!\S)(?:-F\s*-|--file(?:=|\s+)-)(?!\S)")
 # Variables set in the command itself, substituted into what follows. PowerShell
 # ($name = value) and bash (NAME=value, export NAME=value); the value's end is found
 # by _value_end, so $(...), backticks and nested quotes stay whole.
 ASSIGNMENT = {
-    "PowerShell": re.compile(r"(?:^|(?<=[;&|{(\n]))\s*\$(\w+)\s*=(?!=)\s*"
+    # A line break is a separator itself, so only spaces and tabs are skipped after
+    # one: skipping any whitespace read a run of blank lines again from each line
+    # (#221 round 1: quadratic).
+    "PowerShell": re.compile(r"(?:^|(?<=[;&|{(\n]))[ \t]*\$(\w+)\s*=(?!=)\s*"
                              r"(@'.*?'@|@\".*?\"@|'[^']*'|\"(?:[^\"`]|`.)*\"|[^;\n|&]+)",
                              re.DOTALL),
     # Also after then, do, else or {, and after declare, typeset or readonly with
     # their flags (R13b round 5 review).
-    "Bash": re.compile(r"(?:^|(?<=[;&|\n(]))\s*(?:(?:then|do|else|\{)\s+)?"
+    "Bash": re.compile(r"(?:^|(?<=[;&|\n(]))[ \t]*(?:(?:then|do|else|\{)\s+)?"
                        r"(?:(?:export|local|declare|typeset|readonly)(?:\s+[-+]\w+)*\s+)?"
                        r"([A-Za-z_]\w*)=()"),
 }
+# bash: a value exported to child processes (export, declare -x, typeset -x), and
+# set -a (or set -o allexport), after which every value set is exported.
+EXPORTED = re.compile(r"(?<![\w-])export\s|(?<![\w-])(?:declare|typeset|local|readonly)\s+"
+                      r"(?:[-+]\w+\s+)*?-\w*x\w*\s")
+EXPORT_ALL = re.compile(r"(?<![\w-])set\s+(?:[-+]\w+\s+)*?(?:-\w*a\w*|-o\s+allexport)(?![\w-])")
+# Bounds on the work of writing variables out (#221 round 1): more assignments or
+# loops than any real command holds, characters rescanned for used variables, and
+# growth past twice the command plus an allowance. Past any of them the command is
+# blocked as too complex for the guard, never let through unchecked.
+MAX_ASSIGNMENTS = 2000
+MAX_WORK = 20_000_000
+GROWTH_ALLOWANCE = 1_000_000
+
+
+class TooComplex(Exception):
+    """The command is too complex for the guard to check in time: it is blocked."""
+
+
 TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
 # Backslashes before a double quote, which PowerShell does not read as an escape.
 # From the first backslash of a run only, so a long run is linear (#221).
@@ -483,6 +546,10 @@ SHELL_TOOLS = {"Bash": ("Bash",), "PowerShell": ("PowerShell",),
 
 ADVICE = ("It may hold real meeting content (AGENTS.md, invariant P2). Use --status for counts, "
           "or synthetic files in a temporary folder.")
+SIMPLER = ("Split it into simpler commands, or write long text to a file with the Write tool "
+           "first (AGENTS.md, invariant P2).")
+COMPLEX = ("This command is too complex for the private data guard to check (thousands of "
+           f"variables, or values that grow at each step), so it is blocked. {SIMPLER}")
 
 
 # -- paths as Windows opens them ------------------------------------------------------
@@ -671,7 +738,12 @@ def _variable_path(match):
 def _expand(text):
     """text with local AppData's variables (and TEMP, APPDATA, the home folder) written
     as the folders they are, trailing dots and string prefixes dropped, and each folder
-    followed by .. removed."""
+    followed by .. removed. A folder from cygpath, dirname, Split-Path and the like is
+    written as the folder (dirname X is X\\..), and bash's ${NAME:-x}, ${NAME%/} and
+    other operators on these variables as the variable (#221 round 1: they were
+    followed only after a cd)."""
+    text = _folder_of(text)
+    text = PARAMETER_OPERATOR.sub(lambda m: "${" + m.group(1) + "}", text)
     text = LOCAL_VARIABLE.sub(lambda m: "~\\AppData\\Local", text)
     text = TEMP_FOLDER.sub(lambda m: "~\\AppData\\Local\\Temp", text)
     text = ROAMING_FOLDER.sub(lambda m: "~\\AppData\\Roaming", text)
@@ -723,6 +795,11 @@ def _repo_extracted(path, cwd):
     return False
 
 
+# A bash backtick that is not escaped: after no backslash or an even number of them.
+# From the first backslash of a run only, so a long run is linear.
+BASH_BACKTICK = re.compile(r"(?<!\\)(?:\\\\)*`")
+
+
 def _run_parts(text, shell):
     """The parts of double-quoted or unquoted text that the shell runs first: each
     $(...), and in bash each `...`."""
@@ -740,7 +817,11 @@ def _run_parts(text, shell):
         parts.append(text[start + 2:j])
         i = j + 1
     if shell == "Bash":
-        parts += re.findall(r"`([^`]*)`", text)
+        # A backtick after an odd number of backslashes is literal text, which
+        # bash prints (a Markdown code span in a message, #221 round 1).
+        ticks = [m.end() - 1 for m in BASH_BACKTICK.finditer(text)]
+        # An unclosed last backtick is bash's syntax error: nothing runs.
+        parts += [text[ticks[k] + 1:ticks[k + 1]] for k in range(0, len(ticks) - 1, 2)]
     else:
         # ${C:\path} is the file's contents (PowerShell's file system provider).
         parts += [f"Get-Content '{path}'" for path in PROVIDER_VARIABLE.findall(text)]
@@ -766,8 +847,9 @@ def _drop_written(command, shell):
         piped = re.split(r"\|\||&&|;", first_line)[0]
         consumer = (_consumer(command, match.start(), match.start() + len(first_line))
                     + " " + piped)
-        # Kept too when xargs or read turns its lines into names to read (#221).
-        if INTERPRETER.search(consumer) or READS_INPUT.search(consumer):
+        # Kept too when xargs, read, tar -T and the like read its lines as names of
+        # files to read (#221).
+        if INTERPRETER.search(consumer) or _reads_names(consumer):
             return match.group(0)
         if match.group(1):                       # a quoted delimiter: plain text
             return " "
@@ -814,7 +896,32 @@ def _takes_text(consumer):
         words = _lead_words(part.lstrip(" \t({$\"'"))
         if not words or _program(words) not in TEXT_TAKERS:
             return False
+        # git takes text from its input only as a message (commit -F -); other
+        # subcommands read the files it names (hash-object --stdin-paths,
+        # #221 round 1).
+        if _program(words) == "git" and not (_git_sub(words) in GIT_MESSAGE
+                                             and GIT_STDIN_MESSAGE.search(part)):
+            return False
     return True
+
+
+def _reads_names(consumer):
+    """True when what takes a heredoc reads its lines as names of files to read:
+    xargs, read and the like, cpio, tar -T, zip -@, rsync or tar --files-from, git
+    --stdin-paths or --pathspec-from-file (#221 round 1). Word by word, so linear."""
+    if READS_INPUT.search(consumer):
+        return True
+    for part in consumer.split("|"):
+        words = [w.strip("\"'") for w in part.split()]
+        programs = {_program([w.lower()]) for w in words if w}
+        for word in words:
+            if word.startswith(("--files-from", "--stdin-paths", "--pathspec-from-file")):
+                return True
+            if programs & {"tar", "bsdtar"} and re.fullmatch(r"-[A-Za-z]*T.*", word):
+                return True
+            if "zip" in programs and re.fullmatch(r"-\w*@", word):
+                return True
+    return False
 
 
 def _substitute(command, shell):
@@ -827,8 +934,16 @@ def _substitute(command, shell):
     pattern = ASSIGNMENT.get(shell)
     if not pattern:
         return command
+    # Bounds on the work, past which the command is blocked as too complex rather
+    # than checked slowly (a hook that runs past its time limit lets the call
+    # through): values that double at each step (a=x; b=$a$a; c=$b$b ...) grow
+    # the command exponentially, and each used variable rescans the rest of it.
+    limit = 2 * len(command) + GROWTH_ALLOWANCE
+    work, count = 0, 0
     if shell == "Bash":
-        command = _for_lists(command)
+        command = _for_lists(command, limit)
+    # bash's set -a (or set -o allexport) exports every variable set after it.
+    exports_all = EXPORT_ALL.search(command)
     flags = re.IGNORECASE if shell == "PowerShell" else 0
     scope = r"(?:(?:script|global|local|private):)?" if shell == "PowerShell" else ""
     position = 0
@@ -836,12 +951,20 @@ def _substitute(command, shell):
         match = pattern.search(command, position)
         if not match:
             break
+        count += 1
+        if count > MAX_ASSIGNMENTS or work > MAX_WORK or len(command) > limit:
+            raise TooComplex
         start = match.start(2)
         end = _value_end(command, start, shell, match.end(2))
         position = max(end, match.end())
         name, value = match.group(1), command[start:end].strip()
         if not value:
             continue
+        # A value passed to child processes is used without its name being written
+        # (export D=...; python x.py): it is never hidden (#221 round 1).
+        exported = shell == "Bash" and (
+            EXPORTED.search(match.group(0)) is not None
+            or (exports_all is not None and exports_all.start() < match.start()))
         use = re.compile(r"\$\{?" + scope + re.escape(name) + r"(?!\w)\}?", flags)
         # Any mention of the name: $name, $any:name, the bare word (Get-Variable), or
         # the variable: drive (Get-Content variable:p, R13b round 4 review).
@@ -849,14 +972,19 @@ def _substitute(command, shell):
                              r"|(?<![\w$:-])" + re.escape(name) + r"(?![\w-])"
                              r"|variable:[\\/]?" + re.escape(name) + r"(?!\w)", flags)
         rest = command[end:]
-        whole = re.match(r"[ \t]*(?:[;\n|&]|$)", rest) is not None
+        whole = re.match(r"[ \t]*(?:[;\n|&]|$)", rest) is not None and not exported
         # A name not in the rest at all is neither used nor mentioned: no pattern
-        # need scan the rest (#221: many assignments stay fast).
+        # need scan the rest (#221: many assignments stay fast). Its value is then
+        # kept where it is set, so main's check still sees it (#221 round 1).
         if (name.lower() not in rest.lower()) if flags else (name not in rest):
-            after, hidden = rest, whole
+            after, hidden = rest, False
         else:
+            work += len(rest)
+            uses = len(use.findall(rest))
+            if len(command) + uses * len(value) > limit:
+                raise TooComplex
             after = use.sub(lambda m, text=value: text, rest)
-            hidden = whole and len(mention.findall(rest)) == len(use.findall(rest))
+            hidden = whole and uses > 0 and len(mention.findall(rest)) == uses
         literal = value.startswith("'") or value.startswith("@'")
         if literal and hidden:
             middle = "''"
@@ -872,68 +1000,91 @@ def _substitute(command, shell):
     return command
 
 
-FOR_LIST = re.compile(r"(?:^|(?<=[;&|\n(]))\s*for\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*?)"
-                      r"\s*(?:;|\n|\s+do(?!\w))")
+# The list ends at ;, a line break or the word do (linear: no whitespace run is read
+# again at each step of the list; #221 round 1).
+FOR_LIST = re.compile(r"(?:^|(?<=[;&|\n(]))[ \t]*for\s+([A-Za-z_]\w*)\s+in(?=\s)([^;\n]*?)"
+                      r"(?:;|\n|(?<=\s)do(?!\w))")
 
 
-def _for_lists(command):
+def _for_lists(command, limit):
     """command with each $NAME after bash's for NAME in LIST written as the list, so
     a loop over local AppData named whole is seen for what it searches (R13b
-    round 5 review)."""
-    for match in reversed(list(FOR_LIST.finditer(command))):
-        name, values = match.group(1), match.group(2)
+    round 5 review). TooComplex past MAX_ASSIGNMENTS loops or the limit's length."""
+    loops = list(FOR_LIST.finditer(command))
+    if len(loops) > MAX_ASSIGNMENTS:
+        raise TooComplex
+    for match in reversed(loops):
+        name, values = match.group(1), match.group(2).strip()
         use = re.compile(r"\$\{?" + re.escape(name) + r"(?!\w)\}?")
-        rest = use.sub(lambda m, text=values: text, command[match.end():])
-        command = command[:match.end()] + rest
+        rest = command[match.end():]
+        if len(command) + len(use.findall(rest)) * len(values) > limit:
+            raise TooComplex
+        command = command[:match.end()] + use.sub(lambda m, text=values: text, rest)
     return command
 
 
 def _quoted_end(text, i, escape):
     """The end of the double-quoted text that opens at i, past any $(...) or bash
     backtick inside it; the end of text when it is not closed."""
-    j = i + 1
-    while j < len(text):
-        char = text[j]
-        if char == escape:
-            j += 2
-            continue
-        if char == '"':
-            return j + 1
-        if text.startswith("$(", j):
-            j = _bracket_end(text, j + 1, escape)
-            continue
-        if char == "`" and escape == "\\":
-            close = text.find("`", j + 1)
-            j = len(text) if close < 0 else close + 1
-            continue
-        j += 1
-    return len(text)
+    return _closing_end(text, i, escape, quoted=True)
 
 
 def _bracket_end(text, i, escape):
     """The end of the bracketed text that opens at i ("(" or "{"), with quotes and
     nested brackets inside it; the end of text when it is not closed."""
-    depth, j = 0, i
-    while j < len(text):
+    return _closing_end(text, i, escape, quoted=False)
+
+
+def _closing_end(text, i, escape, quoted):
+    """Where double-quoted text (quoted) or bracketed text opening at i ends, with
+    any nesting of the two inside it. One pass with a stack of its own, not
+    recursion: thousands of nested "$( once raised RecursionError, which let the
+    command through (#221 round 1)."""
+    # Each frame is None for double-quoted text, or a bracket's depth.
+    stack = [None] if quoted else [0]
+    j, end = (i + 1 if quoted else i), len(text)
+    while j < end:
         char = text[j]
         if char == escape:
             j += 2
             continue
-        if char == "'":
+        if stack[-1] is None:                     # inside double quotes
+            if char == '"':
+                stack.pop()
+                j += 1
+                if not stack:
+                    return j
+                continue
+            if text.startswith("$(", j):
+                stack.append(0)                   # the bracket frame reads its "("
+                j += 1
+                continue
+            if char == "`" and escape == "\\":
+                close = text.find("`", j + 1)
+                j = end if close < 0 else close + 1
+                continue
+            j += 1
+            continue
+        if char == "'":                           # inside brackets
             close = text.find("'", j + 1)
-            j = len(text) if close < 0 else close + 1
+            j = end if close < 0 else close + 1
             continue
         if char == '"':
-            j = _quoted_end(text, j, escape)
+            stack.append(None)
+            j += 1
             continue
         if char in "({":
-            depth += 1
+            stack[-1] += 1
         elif char in ")}":
-            depth -= 1
-            if depth == 0:
-                return j + 1
+            stack[-1] -= 1
+            if stack[-1] == 0:
+                stack.pop()
+                j += 1
+                if not stack:
+                    return j
+                continue
         j += 1
-    return len(text)
+    return end
 
 
 def _value_end(command, start, shell, matched_end=None, word=False):
@@ -1235,6 +1386,21 @@ FOLDER_OF = re.compile(
     re.IGNORECASE)
 # What the shell runs or substitutes, left in a cd's argument after that.
 UNRESOLVED = re.compile(r"[$`%]|^\(")
+# How many levels of FOLDER_OF nesting are written out ($(dirname "$(dirname X)")):
+# deeper ones stay as written, so a long chain cannot make the work quadratic.
+FOLDER_OF_DEPTH = 8
+
+
+def _folder_of(text):
+    """text with each cygpath X, realpath X or Resolve-Path X written as X, and
+    dirname X or Split-Path X as X\\.., innermost first."""
+    for _ in range(FOLDER_OF_DEPTH):
+        previous = text
+        text = FOLDER_OF.sub(lambda m: m.group(2).strip("\"'") + ("\\.." if m.group(1) else ""),
+                             text)
+        if text == previous:
+            break
+    return text
 
 
 def _cd_word(rest, shell):
@@ -1265,12 +1431,7 @@ def _cd_folder(here, word):
     has to run or substitute part of it, the folder is unknown (""), unless that
     part names local AppData, the home folder or a folder at or above them: then
     it is that folder, which a search from there must not reach."""
-    previous = None
-    while previous != word:
-        previous = word
-        word = FOLDER_OF.sub(lambda m: m.group(2).strip("\"'") + ("\\.." if m.group(1) else ""),
-                             word)
-    expanded = _expand(word.replace('"', "").replace("'", ""))
+    expanded = _expand(_folder_of(word).replace('"', "").replace("'", ""))
     if not UNRESOLVED.search(expanded):
         return _resolve(here, expanded)
     for part in re.split(r"[\s$`()]+", expanded):
@@ -1557,29 +1718,99 @@ def decide(payload):
         if not isinstance(command, str):
             return None
         for shell in SHELL_TOOLS[tool]:
-            reason = _check_shell(command, cwd, shell)
+            try:
+                reason = _check_shell(command, cwd, shell)
+            except TooComplex:
+                return COMPLEX
             if reason:
                 return reason
     return None
 
 
+# A long call is checked in a child process under a time limit (#221 round 1):
+# Claude Code lets a call through when its hook runs past the hook's own time
+# limit, and a text heuristic cannot promise linear time for every shape of a long
+# command. A short call cannot take long, so it is checked here, in one process.
+CHILD_OVER = 20_000                 # characters of hook input
+TIME_LIMIT = 20.0                   # seconds
+# The variable may lower the limit (the tests do), never raise it.
+TIME_LIMIT_VARIABLE = "PRIVATE_DATA_GUARD_TIME_LIMIT"
+CHILD_FLAG = "--child"
+TOO_SLOW = ("This command took too long for the private data guard to check, so it is "
+            f"blocked. {SIMPLER}")
+
+
+def _verdict(payload):
+    """(exit code, reason) for the hook input. Any error while checking blocks the
+    call: exit 1 would only warn, and let through a command the guard never finished
+    reading (#221 round 1: a RecursionError did). The reason names the error's type
+    only, no content."""
+    try:
+        reason = decide(payload)
+    except Exception as error:                   # RecursionError and MemoryError too
+        reason = (f"private_data_guard could not check this call ({type(error).__name__}), "
+                  f"so it is blocked. {SIMPLER}")
+    return (2, reason) if reason else (0, "")
+
+
+def _time_limit():
+    try:
+        return max(0.0, min(TIME_LIMIT, float(os.environ.get(TIME_LIMIT_VARIABLE, TIME_LIMIT))))
+    except ValueError:
+        return TIME_LIMIT
+
+
+def _checked_in_child(text):
+    """(exit code, reason) from a child process that checks the hook input text,
+    blocked when it runs past the time limit or fails; None when no child process
+    can be started (the call is then checked in this one)."""
+    import subprocess                            # only for long calls
+    try:
+        child = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), CHILD_FLAG],
+                               input=text.encode("utf-8"), capture_output=True,
+                               timeout=_time_limit(),
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except subprocess.TimeoutExpired:
+        return 2, TOO_SLOW
+    except OSError:
+        return None
+    if child.returncode == 0:
+        return 0, ""
+    reason = child.stderr.decode("utf-8", "replace").strip()
+    if child.returncode != 2 or not reason:
+        reason = (f"private_data_guard could not check this call (exit {child.returncode}), "
+                  f"so it is blocked. {SIMPLER}")
+    return 2, reason
+
+
 def main():
+    child = sys.argv[1:] == [CHILD_FLAG]
     # Unreadable input means the hook is wired wrongly: say so with exit 1, which
     # Claude Code shows without blocking, rather than allowing silently or
     # blocking every tool call in every session.
     try:
-        payload = json.load(sys.stdin)
+        text = sys.stdin.buffer.read().decode("utf-8", "replace") if child else sys.stdin.read()
+        payload = json.loads(text)
     except (ValueError, OSError):
         payload = None
     if not isinstance(payload, dict):
         print("private_data_guard: no readable hook input, so the guard is not active; "
               "check the hook command in .claude/settings.json", file=sys.stderr)
         return 1
-    reason = decide(payload)
-    if reason:
+    # Only a shell command's checks can take long; a file tool's path is short work
+    # however long the text it writes.
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    result = None
+    if not child and payload.get("tool_name") in SHELL_TOOLS and isinstance(command, str) \
+            and len(command) > CHILD_OVER:
+        result = _checked_in_child(text)
+    code, reason = result or _verdict(payload)
+    if reason and child:
+        sys.stderr.buffer.write(reason.encode("utf-8"))
+    elif reason:
         print(reason, file=sys.stderr)
-        return 2
-    return 0
+    return code
 
 
 if __name__ == "__main__":

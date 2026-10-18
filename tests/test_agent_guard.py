@@ -7,6 +7,7 @@
 import ast
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -1469,12 +1470,142 @@ class HardeningTests(unittest.TestCase):
                     ("ls " + "?" * 50000, "Bash"),
                     ("echo " + "$(" * 10000, "Bash"),
                     ('echo "' + "a'b\"c" * 10000, "PowerShell"),
-                    ("cat " + "x/../" * 10000 + "a", "Bash"))
+                    ("cat " + "x/../" * 10000 + "a", "Bash"),
+                    # Round 1 (#221): runs of closing characters were read once per
+                    # character by main's check too (50,000: about 11 s), deep nesting
+                    # raised RecursionError, and set-and-used variables rescan the rest.
+                    ('echo "' + ")" * 50000, "Bash"),
+                    ("echo " + ')"' * 25000, "PowerShell"),
+                    ("ls *" + ")" * 50000, "Bash"),
+                    ("d=" + '"$(echo ' * 10000 + "x" + ')"' * 10000, "Bash"),
+                    ("echo x" + "\n" * 20000, "Bash"),
+                    ("echo x" + "\n" * 20000, "PowerShell"),
+                    ("for x in" + " " * 20000, "Bash"),
+                    ("".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(300)),
+                     "PowerShell"))
         for command, name in commands:
             with self.subTest(start=command[:24], length=len(command), tool=name):
                 start = time.perf_counter()
                 guard.decide(shell(command, name))
                 self.assertLess(time.perf_counter() - start, 2.0)
+
+    # Round 1 review of f45268c (#221). Bash spells the data path with Git Bash's drive.
+    BASH_DATA = "/c/Users/someone/AppData/Local/Unminute/workspace"
+
+    def test_deeply_nested_substitutions_are_checked_not_crashed(self):
+        # Thousands of nested "$( once raised RecursionError, so the hook exited 1
+        # (a warning only) and the command ran; main blocks these.
+        deep = '"$(' * 1000
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ("x=$(cat <<'EOF'\n" + deep + "\nEOF\n)\ncat " + self.BASH_DATA + "/a.json",
+                 "Bash"),
+                ("d=" + '"$(echo ' * 1000 + "x" + ')"' * 1000 + "; cat " + self.BASH_DATA
+                 + "/settings.json", "Bash"),
+                ("$d = (" + deep + "); Get-Content " + self.DATA + r"\a.json", "PowerShell")))
+
+    def test_commands_too_complex_to_check_are_blocked_quickly(self):
+        # Values that double at each step grew the command exponentially (the hook
+        # ran past its time limit, which lets the call through), and thousands of
+        # used variables rescanned the command each time. Blocked as too complex,
+        # within the budget; a few hundred variables are still checked as usual.
+        doubling = "a=x; b0=$a$a; " + "".join(f"b{i + 1}=$b{i}$b{i}; " for i in range(40))
+        loops = "for a0 in x x; do :; done; " + "".join(
+            f"for a{i + 1} in $a{i} $a{i}; do :; done; " for i in range(30))
+        many = "".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(3000))
+        with profile_guard() as fresh:
+            for command, name in ((doubling + "echo $b40", "Bash"), (loops, "Bash"),
+                                  (many, "PowerShell")):
+                with self.subTest(start=command[:20], tool=name):
+                    start = time.perf_counter()
+                    self.assertEqual(fresh.COMPLEX, fresh.decide(shell(command, name)))
+                    self.assertLess(time.perf_counter() - start, 2.0)
+            self.check(fresh, allowed=(
+                ("".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(200)),
+                 "PowerShell"),))
+
+    def test_an_exported_value_is_never_hidden(self):
+        # A child process reads an exported value without its name being written,
+        # so it is checked where it is set; so is a value set and never used.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ("export UNMINUTE_DIR='" + self.BASH_DATA + "'; python tools/dump.py", "Bash"),
+                ("declare -x D='" + self.BASH_DATA + "'; python x.py", "Bash"),
+                ("set -a; D='" + self.BASH_DATA + "'; python x.py", "Bash"),
+                ("D='" + self.BASH_DATA + "'; python x.py", "Bash"),
+                ("$d = '" + self.DATA + "'; python x.py", "PowerShell")),
+                allowed=(
+                (r"$b = 'P2 covers %LOCALAPPDATA%\Unminute\workspace'; gh pr comment 1 --body $b",
+                 "PowerShell"),
+                ("b='P2 covers ~/AppData/Local/Unminute/workspace'; gh pr comment 1 --body \"$b\"",
+                 "Bash"),
+                ("export PYTHONDONTWRITEBYTECODE=1; python tools/run_tests.py", "Bash")))
+
+    def test_escaped_backticks_in_a_bash_message_are_text(self):
+        # bash prints \` as a backtick (a Markdown code span), and runs `...`.
+        tick = "\\`"
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('gh pr comment 228 --body "Now blocks `cat ' + self.BASH_DATA + '/a.json`."',
+                 "Bash"),
+                ('git commit -m "Blocks `rg -n x ~/AppData/Local`"', "Bash"),
+                ('git commit -m "Blocks \\\\`rg -n x ~/AppData/Local\\\\`"', "Bash")),
+                allowed=(
+                ('gh pr comment 228 --body "Now blocks ' + tick
+                 + r"Get-Content %LOCALAPPDATA%\Unminute\workspace\a.json" + tick + '."', "Bash"),
+                ('git commit -m "Blocks ' + tick + "rg -n x ~/AppData/Local" + tick + '"', "Bash"),
+                ('gh pr create --title x --body "' + tick + "rg -n x ~/AppData/Local" + tick
+                 + '"', "Bash")))
+
+    def test_text_piped_to_git_is_text_only_as_a_message(self):
+        # git hash-object --stdin-paths reads every file a here-string names into
+        # the object store; git commit -F - takes it as the message.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ("@'\n" + self.DATA + "\\a.json\n'@ | git hash-object -w --stdin-paths",
+                 "PowerShell"),
+                ("@'\n" + self.DATA + "\\a.json\n'@ | git update-index --add --stdin",
+                 "PowerShell")),
+                allowed=(
+                ("@'\nBlocks " + self.DATA + "\\a.json\n'@ | git commit -F -", "PowerShell"),
+                ("@'\nBlocks " + self.DATA + "\n'@ | git tag -a v1 --file=-", "PowerShell")))
+
+    def test_a_heredoc_of_file_names_is_checked(self):
+        # Programs that read file names from their input (tar -T, zip -@, rsync
+        # --files-from, cpio, git --stdin-paths) read the files a heredoc names.
+        names = "\n" + self.BASH_DATA + "/a.json\nEOF"
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ("tar czf /tmp/x.tgz -T - <<'EOF'" + names, "Bash"),
+                ("tar --files-from=- -czf /tmp/x.tgz <<'EOF'" + names, "Bash"),
+                ("zip -@ x.zip <<'EOF'" + names, "Bash"),
+                ("rsync -a --files-from=- / /tmp/x <<'EOF'" + names, "Bash"),
+                ("cpio -o > /tmp/x.cpio <<'EOF'" + names, "Bash"),
+                ("git hash-object -w --stdin-paths <<'EOF'" + names, "Bash"),
+                ("git add --pathspec-from-file=- <<'EOF'" + names, "Bash")),
+                allowed=(
+                ("tar czf /tmp/x.tgz -T - <<'EOF'\nworkspace\ntests\nEOF", "Bash"),
+                ("tar czf /tmp/x.tgz dist <<'EOF'" + names, "Bash"),
+                ("cat <<'EOF' > notes.md" + names, "Bash")))
+
+    def test_folders_from_dirname_and_parameter_operators_are_seen(self):
+        # dirname, Split-Path and bash's ${NAME:-x} were followed only after a cd.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('grep -r decision "$(dirname "$TEMP")"', "Bash"),
+                ("ls -R $(dirname $LOCALAPPDATA/x)", "Bash"),
+                ("rg -n x `dirname $TEMP`", "Bash"),
+                ("gci -r (Split-Path -Parent $env:TEMP)", "PowerShell"),
+                ("Get-ChildItem -Recurse (Split-Path $env:TEMP) -Filter *.json", "PowerShell"),
+                ('ls -R "${LOCALAPPDATA:-x}"', "Bash"),
+                ('cat "${LOCALAPPDATA:-}/Unminute/settings.json"', "Bash"),
+                ('rg -n x "${HOME%/}"', "Bash"),
+                ("ls ${LOCALAPPDATA%/}/Unminute/workspace", "Bash")),
+                allowed=(
+                ('cd "$(dirname "$0")" && ls', "Bash"),
+                ("Get-ChildItem (Split-Path $env:TEMP) -Directory", "PowerShell"),
+                ('echo "${TEMP%/}"; ls "${HOME}/Local_Repos"', "Bash"),
+                ('rg -n x "$(dirname "$TEMP")/Temp/review"', "Bash")))
 
     # A corpus of the plain and common ways to read, list, search or copy the data,
     # and of ordinary work, so that no later change regresses either silently.
@@ -1522,6 +1653,11 @@ class HardeningTests(unittest.TestCase):
         ("git diff --no-index ~/AppData/Local/Unminute/workspace/a.json b.json", "Bash"),
         ("python -c \"print(open(r'C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace"
          "\\a.json').read())\"", "Bash"),
+        # bash runs an unescaped backtick inside a double-quoted message (#221 round 1).
+        ('gh pr comment 1 --body "See `cat ~/AppData/Local/Unminute/workspace/a.json`"', "Bash"),
+        ("export D=~/AppData/Local/Unminute/workspace; python tools/dump.py", "Bash"),
+        ("tar czf /tmp/x.tgz -T - <<'EOF'\n/c/Users/someone/AppData/Local/Unminute\nEOF", "Bash"),
+        ('rg -n x "$(dirname "$TEMP")"', "Bash"),
     )
     COMMON_ALLOWED = (
         ("python tools/run_tests.py --strict-skips", "Bash"),
@@ -1548,6 +1684,12 @@ class HardeningTests(unittest.TestCase):
         ("python tools/changelog.py --check", "Bash"),
         ("git worktree add -b x ../unminute-x origin/main", "Bash"),
         ("$env:PYTHONDONTWRITEBYTECODE=1; python -m unittest tests.test_store", "PowerShell"),
+        # An escaped backtick is a Markdown code span bash prints (#221 round 1).
+        ('gh pr comment 1 --body "Blocks \\`cat %LOCALAPPDATA%\\Unminute\\workspace\\a.json\\`"',
+         "Bash"),
+        ('git commit -m "Guard: block \\`rg -n x ~/AppData/Local\\`"', "Bash"),
+        ("@'\nGuard: block %LOCALAPPDATA%\\Unminute\\workspace\n'@ | git commit -F -",
+         "PowerShell"),
     )
 
     def test_common_phrasings_corpus(self):
@@ -1586,6 +1728,54 @@ class HookProcessTests(unittest.TestCase):
                         shell(r"cd $env:LOCALAPPDATA; popd; rg -n budget", "PowerShell")):
             with self.subTest(payload=payload):
                 self.assertEqual(2, self.run_hook(payload).returncode)
+
+    def test_deep_nesting_exits_2_not_1(self):
+        # #221 round 1: a RecursionError made the hook exit 1, which only warns, so
+        # the command ran. The data path is a synthetic profile's; main blocks it.
+        command = ("x=$(cat <<'EOF'\n" + '"$(' * 1000 + "\nEOF\n)\n"
+                   "cat /c/Users/someone/AppData/Local/Unminute/workspace/a.json")
+        result = self.run_hook(shell(command))
+        self.assertEqual(2, result.returncode, result.stderr[-300:])
+
+    def test_an_error_while_checking_blocks_without_content(self):
+        # Any error in the checks blocks the call (exit 2) and names only its type.
+        command = "cat /c/Users/someone/private-name.json"
+        stdin = io.StringIO(json.dumps(shell(command)))
+        stderr = io.StringIO()
+        for error in (RecursionError, MemoryError, ValueError):
+            with self.subTest(error=error.__name__), \
+                    mock.patch.object(guard, "decide", side_effect=error("private-name")), \
+                    mock.patch.object(sys, "stdin", stdin), \
+                    contextlib.redirect_stderr(stderr):
+                stdin.seek(0)
+                self.assertEqual(2, guard.main())
+                self.assertIn(error.__name__, stderr.getvalue())
+                self.assertNotIn("private-name", stderr.getvalue())
+
+    def test_a_long_command_is_checked_in_a_child_under_a_time_limit(self):
+        # #221 round 1: Claude Code lets a call through when the hook runs past its
+        # time limit, so a long command is checked in a child process and blocked
+        # when that takes too long. The limit can be lowered (here, to nothing).
+        filler = " ".join(f"-m 'para {i}'" for i in range(3000))      # about 40 KB
+        ordinary = shell("git commit " + filler)
+        private = shell("git commit " + filler + "; cat extracted/notes.md")
+        self.assertGreater(len(ordinary["tool_input"]["command"]), guard.CHILD_OVER)
+        result = self.run_hook(ordinary)
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        result = self.run_hook(private)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("extracted/", result.stderr)
+        env = {**os.environ, guard.TIME_LIMIT_VARIABLE: "0"}
+        result = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(ordinary),
+                                capture_output=True, text=True, timeout=30, env=env)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("took too long", result.stderr)
+        # The variable may only lower the limit.
+        for value, expected in (("0.5", 0.5), ("1000", guard.TIME_LIMIT), ("x", guard.TIME_LIMIT),
+                                ("-3", 0.0)):
+            with self.subTest(value=value), mock.patch.dict(
+                    os.environ, {guard.TIME_LIMIT_VARIABLE: value}):
+                self.assertEqual(expected, guard._time_limit())
 
     def test_unreadable_input_warns_without_blocking(self):
         # Exit 1 is shown to the user but does not block; 2 would block everything.
