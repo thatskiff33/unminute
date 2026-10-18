@@ -22,6 +22,19 @@
   const realSetTimeout = window.setTimeout.bind(window);
   let pageHidden = false;
   let afterNextList = null;      // perf: run once the page next fetches the meeting list
+  // -- early-error mode (tools/ui_idle_check.py, #171) ------------------------------
+  // index.html?early=1 throws twice before the bridge is ready, then makes it
+  // ready. The page must keep the first error and report it once the bridge is
+  // ready, as its kind, line and column only. This listener is added before
+  // app.js's, so it sees each error first.
+  const early = query.get("early") === "1";
+  const earlyLog = { thrown: [], thrown_after_ready: 0, reports: [], ready: false };
+  if (early) {
+    window.addEventListener("error", (e) => {
+      if (earlyLog.ready) earlyLog.thrown_after_ready++;
+      else earlyLog.thrown.push([e.lineno, e.colno]);
+    });
+  }
   if (perfMode) {
     const realSetInterval = window.setInterval.bind(window);
     const realClearInterval = window.clearInterval.bind(window);
@@ -460,7 +473,10 @@
       }
       return items;
     },
-    report_ui_error: () => null,
+    report_ui_error: (...args) => {
+      if (early) earlyLog.reports.push({ args, before_ready: !earlyLog.ready });
+      return null;
+    },
     continue_despite_damage: () => null,
     copy_diagnostics: () => ({ chars: 1200 }),
     recording_status: () => {
@@ -501,6 +517,23 @@
 
   // Tell app.js the bridge is ready, then run the scenario's steps in order.
   window.addEventListener("load", () => {
+    if (early) {
+      // Each thrown in its own task, so each reaches the page's error listener,
+      // and from its own line: the check tells the first from the second by place.
+      realSetTimeout(() => { throw new Error("first early error"); }, 0);
+      realSetTimeout(() => { throw new Error("second early error"); }, 20);
+      realSetTimeout(() => {
+        earlyLog.ready = true;
+        window.dispatchEvent(new Event("pywebviewready"));
+      }, 40);
+      realSetTimeout(() => {
+        const out = document.createElement("pre");
+        out.id = "early-result";
+        out.textContent = JSON.stringify(earlyLog);
+        document.body.append(out);
+      }, 1500);
+      return;
+    }
     window.dispatchEvent(new Event("pywebviewready"));
     let chain = new Promise((r) => setTimeout(r, 600));
     for (const step of scenario.steps) chain = chain.then(step).then(() => new Promise((r) => setTimeout(r, 300)));
