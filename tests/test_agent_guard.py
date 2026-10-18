@@ -165,13 +165,25 @@ class ShellTests(unittest.TestCase):
                         "cd ~/AppData/Local && cat ./Unminute/workspace/a.json",
                         "cat ~/AppData/Local/./Unminute/workspace/a",
                         r"Get-ChildItem -Path $env:LOCALAPPDATA -Recurse"
-                        r" | ? FullName -like '*Unminute\workspace*'"):
+                        r" | ? FullName -like '*Unminute\workspace*'",
+                        # A bound parameter (-Path:), a redirect, a ? wildcard, a
+                        # drive-relative path or a cmd substring expansion before it:
+                        # main blocks these forms for the old folder too.
+                        r"cd $env:LOCALAPPDATA; Get-Content -Path:.\Unminute\workspace\a.json",
+                        r"cd $env:LOCALAPPDATA; gci -LiteralPath:Unminute\workspace -Recurse",
+                        r"Join-Path -Path $env:LOCALAPPDATA -ChildPath:Unminute\workspace",
+                        r"cd $env:LOCALAPPDATA; type C:Unminute\workspace\a",
+                        "cd ~/AppData/Local && wc -l <Unminute/workspace/a",
+                        "ls ~/AppData/Loca?/Unminute/workspace",
+                        r"type %LOCALAPPDATA:~0%\Unminute\workspace\a"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))
 
     def test_commands_in_a_checkout_named_unminute_are_allowed(self):
         for command in ("ls ../unminute/workspace",
+                        r"Get-Content -Path:C:\Users\x\Local_Repos\unminute\workspace\api.py",
+                        "git show HEAD:workspace/api.py",
                         r"cd $env:TEMP\unminute; ruff check workspace",
                         "ruff check C:/Users/x/Local_Repos/unminute/workspace",
                         "ruff check $HOME/Local_Repos/unminute/workspace",
