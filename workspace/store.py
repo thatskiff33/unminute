@@ -633,10 +633,17 @@ class Store:
         return mid
 
     def delete_new_meeting(self, mid):
-        """Remove a meeting that never got a source (e.g. a failed import)."""
+        """Remove a meeting that never got a source (e.g. a failed import).
+        Like discard_unfinished_import, a meeting that has ever had a hold,
+        active or released, is kept (StoreError; #193, invariant C2:
+        releasing a hold deletes nothing, and a released hold's row is never
+        left without its meeting). It stays listed as an import that did not
+        finish, and only the user's Discard removes it."""
         with self.tx() as db:
             if db.execute("SELECT 1 FROM sources WHERE meeting_id = ?", (mid,)).fetchone():
                 raise StoreError("Meeting has content; use cleanup (#17).")
+            if db.execute("SELECT 1 FROM holds WHERE meeting_id = ?", (mid,)).fetchone():
+                raise StoreError("A retention hold keeps this meeting.")
             self.delete_meeting_row(db, mid)
 
     # -- deleting a meeting: only here (tests/test_content_access.py checks that

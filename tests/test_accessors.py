@@ -7,7 +7,9 @@
 #     search returns the same passages as before, by id.
 #   - Every deletion of a meeting's rows goes through the store: an active hold
 #     refuses it, and a failed import leaves nothing behind.
-#   - tools/packaged_crash_check.py's inspect step reads through the store.
+#   - tools/packaged_crash_check.py's inspect step reads through the store, and
+#     tools/workspace_ui_check.py's long meeting is never transcribed by the
+#     processing loop before its passages are committed through the store.
 # Synthetic text only.
 #   python tools/run_tests.py
 
@@ -383,6 +385,23 @@ class DeletionTests(unittest.TestCase):
             self.store.delete_new_meeting(new)
         self.assertIsNotNone(self.store.meeting_state(new))
 
+    def test_a_failed_import_with_a_released_hold_is_kept(self):
+        # #193, invariant C2: releasing a hold deletes nothing. A failed
+        # import (media.import_recording -> delete_new_meeting) keeps a
+        # meeting that has ever had a hold, as discard_unfinished_import does,
+        # so its released hold row is never left without a meeting.
+        mid = self.store.create_meeting("synthetic new, hold released")
+        holds.release_hold(self.store, holds.add_hold(self.store, mid, "all", "reason"))
+        with self.assertRaises(StoreError):
+            self.store.delete_new_meeting(mid)
+        self.assertIsNotNone(self.store.meeting_state(mid))
+        self.assertEqual(1, self.store._one(
+            "SELECT COUNT(*) FROM holds WHERE meeting_id = ?", (mid,))[0])
+        # A brand-new meeting that never had a hold is still removed.
+        plain = self.store.create_meeting("synthetic new, never held")
+        self.store.delete_new_meeting(plain)
+        self.assertIsNone(self.store.meeting_state(plain))
+
     def test_an_unfinished_import_is_removed_in_one_transaction(self):
         mid = self.store.create_meeting("synthetic unfinished")
         self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
@@ -440,6 +459,49 @@ class FailedImportTests(unittest.TestCase):
                 self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM meetings")[0])
                 self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM sources")[0])
                 self.assertEqual([], list(ws.media.iterdir()) if ws.media.exists() else [])
+            finally:
+                ws.close()
+
+
+def ui_check_long_meeting():
+    """tools/workspace_ui_check.py's add_long_meeting(), taken by ast without
+    importing the tool (which opens windows), with this file's write_wav."""
+    tool = ast.parse((ROOT / "tools" / "workspace_ui_check.py").read_text(encoding="utf-8"))
+    fn = next(n for n in tool.body
+              if isinstance(n, ast.FunctionDef) and n.name == "add_long_meeting")
+    space = {"types": types, "write_wav": write_wav}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "workspace_ui_check", "exec"), space)
+    return space["add_long_meeting"]
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class UiCheckSetupTests(unittest.TestCase):
+
+    def test_the_long_meeting_is_never_offered_for_transcription(self):
+        # The UI check commits its long meeting's passages itself and asserts
+        # nothing was transcribed. The meeting is paused before its plan
+        # exists, so the processing loop never sees it as work, even if it
+        # wakes (its 30 s timeout) straight after the plan is written.
+        from workspace.app import Workspace
+        add_long_meeting = ui_check_long_meeting()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                           allow_test_engines=True)
+            try:
+                offered, plan = [], ws._plan_version
+
+                def planned(mid, sid):
+                    out = plan(mid, sid)
+                    offered.append(ws._next_work())     # what a waking loop would take
+                    return out
+                with mock.patch.object(ws, "_plan_version", side_effect=planned):
+                    mid = add_long_meeting(ws, root, passages=50)
+                self.assertEqual([None], offered)
+                self.assertTrue(ws.store.meeting_state(mid)["paused"])
+                vid = ws.store.active_version(mid)["id"]
+                self.assertEqual(50, ws.store.passage_count(vid))
+                self.assertEqual([], ws.store.chunks(vid, status="pending"))
             finally:
                 ws.close()
 

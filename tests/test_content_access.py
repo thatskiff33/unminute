@@ -66,9 +66,16 @@ HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 # backstop is C2b, planned to rename the sealed columns (#111), so a raw read
 # missed here will fail loudly.
 #   - Deletion (#111 C2b-1): no SQL in workspace/ outside store.py, or in
-#     tools/, deletes from a table that has content, or from a table named at
-#     run time (DELETE_FROM_CONTENT): every deletion of a meeting's rows goes
-#     through the store, so C2b can delete its keys in the same place.
+#     tools/, removes rows from a table that has content, or from a table
+#     named at run time (DELETE_FROM_CONTENT): DELETE FROM, a replacing
+#     conflict resolution (INSERT OR REPLACE INTO, REPLACE INTO, UPDATE OR
+#     REPLACE) or DROP TABLE, with comments allowed between the words. Every
+#     deletion of a meeting's rows goes through the store, so C2b can delete
+#     its keys in the same place. It does not see rows removed by a table's
+#     own ON CONFLICT REPLACE constraint (none has one; a plain INSERT would
+#     then replace rows) or by a trigger (there are none), and it shares the
+#     limits above (a table after "(" or a comma, SQL passed between
+#     functions, and so on).
 
 HOLE = " \x00 "
 LOOKS_LIKE_SQL = re.compile(
@@ -93,9 +100,16 @@ LIST_SLOT = re.compile(r"\bin\s*\(\s*\x00\s*\)")
 POSITIONAL = (r"\b(?:insert|replace)\s+(?:or\s+\w+\s+)?into\s+{}\s*(?:as\s+\w+\s*)?"
               r"(?:values|select|default)\b")
 RUN_TIME = "<run-time table>"
-# DELETE FROM a table with content, or a table named at run time (a slot).
+# A statement that removes rows from a table with content, or from a table
+# named at run time (a slot): DELETE FROM; a conflict resolution that replaces
+# rows (INSERT OR REPLACE INTO, REPLACE INTO, UPDATE OR REPLACE); DROP TABLE.
+# Comments may stand between the words and before the table.
+_SQL_GAP = r"(?:\s|/\*[\s\S]*?\*/|--[^\n]*(?:\n|$))+"
 DELETE_FROM_CONTENT = re.compile(
-    r"\bdelete\s+from\s+(?:(?:" + "|".join(store.CONTENT_COLUMNS) + r")\b|\x00)")
+    r"\b(?:delete" + _SQL_GAP + r"from|replace" + _SQL_GAP + r"into"
+    r"|update" + _SQL_GAP + r"or" + _SQL_GAP + r"replace"
+    r"|drop" + _SQL_GAP + r"table(?:" + _SQL_GAP + r"if" + _SQL_GAP + r"exists)?)"
+    + _SQL_GAP + r"(?:(?:" + "|".join(store.CONTENT_COLUMNS) + r")\b|\x00)")
 
 
 def _fold(node, env=None):
@@ -241,8 +255,11 @@ def sql_in_source(source, prefix=""):
 
 
 def _is_sql(text):
-    """Whether a text has a statement's shape or names a content table."""
-    return bool(LOOKS_LIKE_SQL.search(text) or NAMES_CONTENT_TABLE.search(_normal(text)))
+    """Whether a text has a statement's shape, names a content table or
+    removes rows from one (DELETE_FROM_CONTENT, such as "drop table meetings")."""
+    normal = _normal(text)
+    return bool(LOOKS_LIKE_SQL.search(text) or NAMES_CONTENT_TABLE.search(normal)
+                or DELETE_FROM_CONTENT.search(normal))
 
 
 def _normal(text):
@@ -354,7 +371,19 @@ class StaticTests(unittest.TestCase):
                   "DELETE FROM segments WHERE version_id = ?",
                   "DELETE FROM speaker_corrections WHERE id = ?",
                   "DELETE FROM watched_folders WHERE id = ?",
-                  "DELETE FROM {} WHERE id = ?", 'DELETE FROM "%s"']
+                  "DELETE FROM {} WHERE id = ?", 'DELETE FROM "%s"',
+                  # Comments between the words or before the table.
+                  "DELETE FROM /* again */ meetings WHERE id = ?",
+                  "delete /* a */ from -- b\n meetings", "DELETE FROM /**/ {}",
+                  # Conflict resolutions that replace (delete) rows.
+                  "INSERT OR REPLACE INTO holds (id, meeting_id, scope, created_at) "
+                  "VALUES (?, ?, ?, ?)",
+                  "REPLACE INTO sources (id, meeting_id) VALUES (?, ?)",
+                  "insert or replace into {} (id) values (?)",
+                  "UPDATE OR REPLACE meetings SET phase = ? WHERE id = ?",
+                  # Dropping a table.
+                  "DROP TABLE meetings", "drop table if exists main.segments",
+                  'DROP TABLE IF EXISTS "{t}"']
         for text in caught:
             with self.subTest(text=text):
                 self.assertTrue(DELETE_FROM_CONTENT.search(_normal(text)), text)
@@ -362,14 +391,29 @@ class StaticTests(unittest.TestCase):
                 "f-string table": 'def f(db, t):\n'
                                   '    db.execute(f"DELETE FROM {t} WHERE id = ?")\n',
                 "name": 'def f(db):\n    q = "DELETE FROM meetings"\n'
-                        '    db.execute(q + " WHERE id = ?")\n'}.items():
+                        '    db.execute(q + " WHERE id = ?")\n',
+                "comment": 'def f(db, mid):\n'
+                           '    db.execute("DELETE FROM /* again */ meetings WHERE id = ?",'
+                           ' (mid,))\n',
+                "drop, lower case": 'def f(db):\n    db.execute("drop table meetings")\n',
+                "replace": 'def f(db):\n'
+                           '    db.execute("REPLACE INTO sources (id) VALUES (?)", (1,))\n',
+                }.items():
             with self.subTest(shape=shape):
                 self.assertTrue([t for _l, _s, t in sql_in_source(source)
                                  if DELETE_FROM_CONTENT.search(_normal(t))], shape)
         for text in ("DELETE FROM cleanup_jobs WHERE id = ?", "DELETE FROM receipts",
                      "DELETE FROM intake_seen WHERE folder_id = ?",
                      "DELETE FROM intake_content WHERE imported_at < ?",
-                     "DELETE FROM meetings_old", "SELECT id FROM meetings"):
+                     "DELETE FROM meetings_old", "SELECT id FROM meetings",
+                     "INSERT OR REPLACE INTO intake_content VALUES (?, ?)",
+                     "INSERT OR IGNORE INTO holds (id) VALUES (?)",
+                     "UPDATE meetings SET phase = ? WHERE id = ?",
+                     "UPDATE OR IGNORE meetings SET phase = ?",
+                     "INSERT INTO meetings (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET "
+                     "phase = excluded.phase",
+                     "DROP TABLE intake_seen", "DROP INDEX meetings_phase",
+                     "DELETE FROM /* meetings */ receipts"):
             with self.subTest(text=text):
                 self.assertIsNone(DELETE_FROM_CONTENT.search(_normal(text)), text)
 
