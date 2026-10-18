@@ -13,10 +13,12 @@
 #     above it whole (rg, grep -r, find, tree, ls -R, Get-ChildItem -Recurse, dir /s,
 #     findstr /s, du, forfiles /s, where /r, git grep --no-index, .NET's
 #     AllDirectories, or interpreter code that walks it: os.walk, rglob, a
-#     recursive readdir); also with a wildcard or file name as the last part, or no
+#     recursive readdir, from local AppData or the home folder named whole or read
+#     from the environment, or from a quoted folder above local AppData, also after
+#     a cd); also with a wildcard or file name as the last part, or no
 #     folder named when run from local AppData or above (cd, pushd and popd are
-#     followed, also at the start of bash -c, pwsh -c and { } blocks and after
-#     then, do or else); inside
+#     followed, also at the start of bash -c (or -lc), pwsh -c and { } blocks and
+#     after then, do or else); inside
 #     brackets, a loop, a string run by another shell or after a wrapper such as
 #     timeout; or fed local AppData by a pipeline;
 #   - git add and git commit may not name a media file.
@@ -35,16 +37,19 @@
 # It is a guard rail, not a security boundary: a text heuristic over the command,
 # which cannot be complete. Known gaps (R13b round 4):
 #   - a path held in a variable from an earlier tool call, or set with Set-Variable
-#     or New-Variable;
+#     or New-Variable and used by name;
 #   - a script file written in one step (Write, cat > f <<EOF, Set-Content) and run
 #     in another;
 #   - a path the program builds itself or deliberately obscured: the app's own
 #     default_root(), GetFolderPath(28) or a SpecialFolder enum, interpreter code
-#     reading a variable directly (os.environ['USERPROFILE'], process.env.HOME),
-#     backtick escapes, a format string ("{0}\Unminute" -f ...), string reversal or
-#     encoding, a wildcard in place of AppData or Local, an interpreter nested in
-#     another (python -c "subprocess.run(['rg', ...])"), and home-folder names not
-#     listed above;
+#     that builds it in steps the patterns do not join (one variable per part,
+#     string methods), backtick escapes, a format string ("{0}\Unminute" -f ...),
+#     string reversal or encoding, a wildcard in place of AppData or Local, an
+#     interpreter nested in another (python -c "subprocess.run(['rg', ...])"), and
+#     home-folder names not listed above (HOMESHARE, GetEnvironmentVariable(
+#     'USERPROFILE'), a subst or mapped drive);
+#   - interpreter code that walks a tree another way (its own os.scandir or
+#     os.listdir recursion, shutil.copytree), or from a folder held in a variable;
 #   - a search program named by a variable or a full path (& $rg, /usr/bin/grep)
 #     inside another command;
 #   - a cd that is not at the start of a segment (after ;, &&, || or |), of bash -c,
@@ -55,6 +60,9 @@
 #     Compress-Archive), attrib /s, icacls /t, takeown /r, fd, Everything's es;
 #   - a link made and used in the same command (a later command through it is
 #     resolved).
+# Known false positive, which fails closed: a search pattern holding ;, &, | or a
+# line break is split there like a command (grep -rn 'cd X; rg' tests reads X as a
+# folder searched); search for part of the text, or use the Grep tool.
 # Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -223,17 +231,18 @@ NESTED = re.compile(r"(?<![\w.$:\\/-])(?:rg|ag|tree|find|grep|egrep|fgrep|get-ch
 NESTED_CMD = re.compile(r"cmd(?:\.exe)?\s+(?:/\S+\s+)*?/[ckr]\s*[\"']?\s*$", re.IGNORECASE)
 NESTED_POWERSHELL = re.compile(r"(?:pwsh|powershell)(?:\.exe)?\s.*?-c\w*\s+[\"']?\s*$"
                                r"|(?:iex|invoke-expression)\s+[\"']?\s*$", re.IGNORECASE)
-NESTED_BASH = re.compile(r"(?:bash|sh|zsh)(?:\.exe)?\s.*?-c\s+[\"']?\s*$", re.IGNORECASE)
+NESTED_BASH = re.compile(r"(?:bash|sh|zsh)(?:\.exe)?\s.*?-[a-z]*c\s+[\"']?\s*$", re.IGNORECASE)
 # cmd's own part of cmd /c "program ...", with the opening quote.
 CMD_WRAPPER = re.compile(r"\s*(?:\S*[\\/])?cmd(?:\.exe)?\s+(?:/[^\s/]+\s+)*?/[ckr]\s+[\"']?",
                          re.IGNORECASE)
 STATEMENTS = re.compile(r"\|\||&&|[;&\n]")         # a pipeline stays together
 # A change of folder at the start of a segment, of a $(...) or of a string another
 # shell runs: cmd /c "cd ... && ...", bash -c, pwsh -c, Invoke-Expression, or after
-# bash's then, do or else (R13b round 4 review).
+# bash's then, do or else (R13b round 4 review). bash's -c may be joined with other
+# flags (bash -lc, sh -ec).
 CHANGE_FOLDER = re.compile(r"^[\s(\{\"'$]*(?:(?:cmd(?:\.exe)?\s+/[ck]\s+"
                            r"|(?:\S*[\\/])?(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+"
-                           r"(?:-\S+\s+)*?-c\w*\s+"
+                           r"(?:-\S+\s+)*?-[a-z]*c\w*\s+"
                            r"|(?:iex|invoke-expression)\s+)[\"'{]?\s*)?"
                            r"(?:(?:then|do|else)\s+)?"
                            r"(cd|chdir|pushd|popd|sl|set-location|push-location|pop-location)"
@@ -279,7 +288,13 @@ WALKER = re.compile(r"os\.walk\b|\.rglob\(|\bwalk(?:Sync)?\(|recursive\s*[=:]\s*
 ALL_DIRECTORIES = re.compile(r"AllDirectories", re.IGNORECASE)   # .NET's recursive listing
 BARE_HOME = re.compile(r"(?<![\w.~\\/:-])~[\\/]?(?=[\s'\"),;|}`]|$)")
 HOME_CODE = re.compile(r"Path\.home\(\)(?!\s*(?:/|\.joinpath))"
-                       r"|expanduser\(\s*r?['\"]~[\\/]?['\"]\s*\)(?!\s*,)")
+                       r"|expanduser\(\s*r?['\"]~[\\/]?['\"]\s*\)(?!\s*,)"
+                       # the home folder read from the environment, which fails
+                       # closed even when a subfolder is joined to it (R13b round 4)
+                       r"|(?:environ(?:\.get)?\s*[\[(]\s*|getenv\(\s*|process\.env\.|ENV\[\s*)"
+                       r"['\"]?(?:USERPROFILE|HOME|HOMEPATH)(?!\w)")
+# A quoted string in code, which a walk may start from.
+CODE_STRING = re.compile(r"(['\"])([^'\"\n]+)\1")
 
 FILE_FIELDS = ("file_path", "notebook_path", "path", "pattern")
 FILE_TOOLS = {"Read", "Edit", "Write", "MultiEdit", "NotebookEdit", "Glob", "Grep"}
@@ -988,6 +1003,23 @@ def _searches_above_data(text, program, sub, here, dialect="PowerShell"):
                for folder in folders)
 
 
+def _walk_starts_above_data(code, here):
+    """True when a quoted string in interpreter code names local AppData or a folder
+    above it (C:\\Users, the profile, '.' run from there), up to its first wildcard
+    part: a walk from it reads every folder below (R13b round 4)."""
+    for match in CODE_STRING.finditer(code):
+        parts = re.split(r"[\\/]", match.group(2))
+        cut = next((i for i, p in enumerate(parts) if re.search(r"[*?\[]", p)), len(parts))
+        # A pattern that starts with a wildcard ('**/*.db') walks from here.
+        literal = "\\".join(parts[:cut]) or "."
+        if literal.endswith(":"):
+            literal += "\\"
+        full = _canonical(_resolve(here, literal))
+        if _above_data(full) or _in_data(full):
+            return True
+    return False
+
+
 def _searches(words, text, here, dialect):
     """True when the command is a recursive search or listing that reaches the data:
     of local AppData named whole, of a folder above it, or from one."""
@@ -1063,9 +1095,11 @@ def _check_shell(command, cwd="", shell="Bash"):
                       _segments(command, shell))
     expanded = _expand(code)
     whole = BARE_LOCAL.search(expanded) or BARE_HOME.search(expanded) or HOME_CODE.search(code)
-    if whole and ((INTERPRETER.search(code) and WALKER.search(code))
-                  or ALL_DIRECTORIES.search(code)):
+    walks = (INTERPRETER.search(code) and WALKER.search(code)) or ALL_DIRECTORIES.search(code)
+    if walks and (whole or _walk_starts_above_data(expanded, folder.here)):
         return searching
+    # Each folder the command moves to, for a walk that starts from a relative path.
+    visited = [folder.here]
     for words, text, dialect in _segments(command, shell):
         program = _program(words)
         sub = _git_sub(words) if program == "git" else ""
@@ -1094,6 +1128,7 @@ def _check_shell(command, cwd="", shell="Bash"):
             folder.change(change.group(1), change.group(2))
             if _reaches_data(folder.here):
                 return blocked
+            visited.append(folder.here)
         # Most git subcommands cannot read an ignored folder's files (check-ignore,
         # status); staging and --no-index diffs can.
         git_reads = sub in ("add", "stage", "mv") or "--no-index" in words
@@ -1104,6 +1139,10 @@ def _check_shell(command, cwd="", shell="Bash"):
             if media:
                 return (f"Staging or committing {media.group(0)} is blocked: recordings stay out "
                         "of the repo (AGENTS.md, invariant P1).")
+    # Interpreter code walking a relative path, run after a cd to a folder above
+    # local AppData (cd /c/Users && python -c "...os.walk('.')", R13b round 4).
+    if walks and any(_walk_starts_above_data(expanded, here) for here in visited[1:]):
+        return searching
     return None
 
 

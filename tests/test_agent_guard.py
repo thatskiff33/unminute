@@ -846,10 +846,15 @@ class ShellTests(unittest.TestCase):
                                'Get-ChildItem -Recurse -Filter *.json"', "PowerShell"),
                               (r"& { cd $env:LOCALAPPDATA; rg -n budget }", "PowerShell"),
                               ('if true; then cd "$LOCALAPPDATA"; fi; rg -n budget', "Bash"),
-                              ('for d in a; do cd "$LOCALAPPDATA"; done; rg -n budget', "Bash")):
+                              ('for d in a; do cd "$LOCALAPPDATA"; done; rg -n budget', "Bash"),
+                              # -c joined with other flags (bash -lc, sh -ec)
+                              ('bash -lc "cd $LOCALAPPDATA && rg -n budget"', "Bash"),
+                              ("sh -ec 'cd ~/AppData/Local; grep -rn budget .'", "Bash")):
             with self.subTest(command=command):
                 self.assertIsNotNone(guard.decide(shell(command, name)))
-        self.assertIsNone(guard.decide(shell('bash -c "cd workspace && rg -n x"')))
+        for command in ('bash -c "cd workspace && rg -n x"', 'bash -lc "cd workspace && rg -n x"'):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command)))
 
     def test_other_recursive_programs_and_interpreter_walks_are_checked(self):
         # du, forfiles /s and where /r walk a folder's tree; so does code that walks
@@ -868,7 +873,29 @@ class ShellTests(unittest.TestCase):
                 ("python -c \"from pathlib import Path; print(list(Path.home().rglob('*.db')))\"",
                  "PowerShell"),
                 ("python -c \"import os; print(list(os.walk(os.path.expanduser('~'))))\"",
-                 "Bash")):
+                 "Bash"),
+                # a folder above local AppData written out, or the home folder read
+                # from the environment, in code that walks it
+                ("python -c \"import os; print(list(os.walk(r'C:\\Users')))\"", "Bash"),
+                ("python -c \"import os; print(list(os.walk('C:/Users/someone/AppData')))\"",
+                 "Bash"),
+                ("python -c \"import pathlib; print(list(pathlib.Path(r'C:\\Users')"
+                 ".rglob('*.db')))\"", "PowerShell"),
+                ("python -c \"import glob; print(glob.glob('C:/Users/**/*.db', recursive=True))\"",
+                 "Bash"),
+                ("python -c \"import os; print(list(os.walk(os.environ['USERPROFILE'])))\"",
+                 "Bash"),
+                ("python -c \"import os; print(list(os.walk(os.getenv('HOME'))))\"", "Bash"),
+                ("node -e \"require('fs').readdirSync(process.env.USERPROFILE, "
+                 "{recursive: true})\"", "Bash"),
+                # a relative start, run after a cd to a folder above local AppData
+                ("cd ~ && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
+                 "Bash"),
+                ("cd /c/Users && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
+                 "Bash"),
+                ("cd ~/.. && python -c \"import os; print(list(os.walk('.')))\"", "Bash"),
+                ("Set-Location C:\\Users; python -c \"import glob; print(glob.glob('**/*.db', "
+                 "recursive=True))\"", "PowerShell")):
             with self.subTest(command=command):
                 self.assertIsNotNone(guard.decide(shell(command, name)))
         for command, name in (
@@ -879,7 +906,12 @@ class ShellTests(unittest.TestCase):
                  "recursive=True))\"", "Bash"),
                 ("python -c \"import os; print(os.listdir(os.environ['LOCALAPPDATA']))\"", "Bash"),
                 ("python -c \"from pathlib import Path; print(list((Path.home() / "
-                 "'Local_Repos').rglob('*.md')))\"", "Bash")):
+                 "'Local_Repos').rglob('*.md')))\"", "Bash"),
+                ("python -c \"import os; print([r for r, d, f in os.walk('.')])\"", "Bash"),
+                ("python -c \"import os; print(list(os.walk('workspace')))\"", "PowerShell"),
+                ("python -c \"import pathlib; print(list(pathlib.Path('tests').rglob('*.py')))\"",
+                 "Bash"),
+                ("cd workspace && python -c \"import os; print(list(os.walk('.')))\"", "Bash")):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command, name)))
 
