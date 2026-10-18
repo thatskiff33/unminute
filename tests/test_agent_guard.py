@@ -84,6 +84,8 @@ class FileToolTests(unittest.TestCase):
                                                "/workspace/store.py"),
                         tool("Read", file_path=r"C:\Users\x\source\repos\Unminute"
                                                r"\workspace\ui\app.js"),
+                        tool("Read", file_path=r"C:\Users\x\AppData\Local\Temp\unminute"
+                                               r"\workspace\app.py"),
                         tool("Glob", pattern="workspace/**/*.py",
                              path=r"C:\Users\x\Local_Repos\unminute"),
                         tool("Grep", pattern="Unminute/workspace", path="."),
@@ -145,6 +147,7 @@ class ShellTests(unittest.TestCase):
 
     def test_commands_in_a_checkout_named_unminute_are_allowed(self):
         for command in ("ls ../unminute/workspace",
+                        r"Get-ChildItem $env:TEMP\unminute\workspace",
                         "ruff check C:/Users/x/Local_Repos/unminute/workspace",
                         r"python -m py_compile C:\Users\x\Local_Repos\unminute\workspace\store.py",
                         "cd /c/Users/x/Local_Repos/unminute && git diff -- workspace/store.py",
