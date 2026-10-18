@@ -189,7 +189,7 @@ These configurations have been tested:
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
-**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 1.92 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
+**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
 
 - **When it is used:** only in Faster mode. Transcription always runs on the processor.
 - **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.

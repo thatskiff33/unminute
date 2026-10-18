@@ -344,7 +344,7 @@
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
-    model: "parakeet-tdt-0.6b-v2", onboarded: true,
+    model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true },
               { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false },
               { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false }],

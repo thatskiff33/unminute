@@ -8,7 +8,7 @@ Unminute turns meeting recordings into reviewed transcripts on your own Windows 
 
 It was built for a professional-services office where recordings are confidential, laptops are locked down (no administrator rights, Intune managed) and nobody wants to learn a command line. It installs per user, without administrator rights.
 
-The screenshots show a fictional sample meeting, spoken by the Windows built-in text-to-speech voices. No real people or recordings appear in them.
+The screenshots show a fictional sample meeting: they are the app's own screens, filled with built-in sample data by `tools/design_check.py`. No real people, meetings or recordings appear in them.
 
 ## What it does
 
@@ -18,6 +18,7 @@ The screenshots show a fictional sample meeting, spoken by the Windows built-in 
 - **Hands off safely.** Copies a prompt and the reviewed transcript for your AI assistant, or saves Markdown. For the hand off only, you can replace names with Speaker 1, Speaker 2, leave out passages or redact words.
 - **Cleans up in two confirmed steps.** The audio goes once you confirm the transcript is reviewed. The transcript goes once you confirm the final document is saved elsewhere. Holds stop cleanup for as long as you need.
 - **Fits around your work.** Recordings come from Import, drag and drop, watched folders or the microphone. Quiet mode leaves most of the computer free. Pause and resume are safe, and nothing already transcribed is lost after a crash.
+- **Asks before it records.** Each recording starts only after you confirm that everyone present has been told (unless your organisation turns that question off), and the window title and taskbar button show while it is recording.
 - **Stays offline.** Models are downloaded once, when you choose, and checked against published checksums. No usage statistics are ever sent.
 
 ![A meeting in review: the steps across the top, the transcript on the left and the speakers on the right](docs/screenshots/workspace-meeting.png)
@@ -34,7 +35,7 @@ You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own
 
 ## Install
 
-1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [latest release](https://github.com/thatskiff33/unminute/releases/latest).
+1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [Releases page](https://github.com/thatskiff33/unminute/releases). The [latest release](https://github.com/thatskiff33/unminute/releases/latest) is the current full release. Previews, such as 0.5.0-preview.1, are marked Pre-release: they are for testing and never become the latest release.
 2. Extract the zip.
 3. Double-click `install.cmd`.
 
@@ -47,7 +48,22 @@ Before extracting, you can check the zip against its `.sha256` file. In PowerShe
 Get-Content Unminute-<version>.zip.sha256
 ```
 
+That detects a damaged download, not a replaced one. From 0.5.0 (including its previews), each release is built by GitHub Actions from its tagged commit, with signed build provenance and a signed software bill of materials, and is published only after the project owner approves it. The zip itself is still not code-signed. To check that a download was built that way, IT can run `tools\intune\Get-VerifiedRelease.ps1` (add `-AllowPrerelease` for a preview); see "Verifying a release before packaging" in [docs/PACKAGING.md](docs/PACKAGING.md).
+
 Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md).
+
+### Coming from 0.4.3 or earlier
+
+This is not an update in place, and nothing carries over. The app's folders, install folder and saved-token name changed with the rename to Unminute, so this version starts with an empty workspace and cannot see your meetings, settings, handoff templates, watched folders or remembered token in the earlier version. In order:
+
+1. **Finish with the earlier version.** Hand off or copy anything you still need, confirm the cleanup of finished meetings, and check any holds with whoever manages them.
+2. **Remove the Hugging Face token** there, because no later version can reach it: in 0.4, Settings > Manage downloads > Remove the remembered token; in 0.2 or 0.3, Setup > Remove the remembered token.
+3. **Note what you set up.** Write down your settings and watched folders (including which ones may delete originals), and copy the text of any handoff template you edited or wrote.
+4. **Uninstall the earlier version** in Settings > Apps.
+5. **Install this version.** If IT manages your updates, they pass `-Managed` again on this first install.
+6. **Set up again.** In Setup, download the models again and enter the token again. Then set up your settings, handoff templates and watched folders again. When you add a watched folder again, leave "Also import recordings already in it" unticked, so recordings you finished are not imported twice. If you used the graphics card, download "Graphics card acceleration" again in Settings > Manage downloads and turn "Use the graphics card" back on.
+
+The earlier version's workspace and models stay on the computer until you delete them. Where they are, how to remove a token left behind, what happens if you install in the other order, and the steps for Intune are under "Updates" in [docs/PACKAGING.md](docs/PACKAGING.md).
 
 ### First start: Setup
 
@@ -59,7 +75,7 @@ The first start opens Setup, five short steps. Each model is a one-off download 
 4. **Microphone (optional):** turn on recording and test the microphone.
 5. **Ready:** a summary of what is set up.
 
-You can skip the optional steps and turn them on later in Settings. **Graphics card acceleration** is offered only on computers with an NVIDIA card. It is a 1.92 GB download of the CUDA build of PyTorch, used for speaker identification only, and is in Settings > Manage downloads. That page also checks, repairs and removes downloaded models.
+You can skip the optional steps and turn them on later in Settings. **Graphics card acceleration** is offered only on computers with an NVIDIA card. It is a 2 GB download of the CUDA build of PyTorch, used for speaker identification only, and is in Settings > Manage downloads. That page also checks, repairs and removes downloaded models.
 
 ![Setup, step 2: downloading the recommended speech model](docs/screenshots/workspace-setup.png)
 
@@ -68,12 +84,17 @@ You can skip the optional steps and turn them on later in Settings. **Graphics c
 ### Bring in a recording
 
 - **Import a recording** on the Meetings page, or drop audio or video files anywhere on the window. Recordings must be on this computer: files on mapped network drives, or reached through a symbolic link, are refused (copy them across first), unless your organisation allows them. Synced folders such as OneDrive are fine.
-- **Watched folders** (Settings) pick up new recordings automatically. See [docs/INTAKE.md](docs/INTAKE.md) for synced and cloud folders.
-- **Record a meeting** appears once microphone recording is on (Setup, or Settings > Recording and speakers). Tell everyone present that the meeting is being recorded. Only the microphone is recorded, not sound playing on the computer.
+- **Watched folders** (Settings) pick up new recordings automatically. Pausing a folder stops its imports at once; what it had already found waits until you resume it. See [docs/INTAKE.md](docs/INTAKE.md) for synced and cloud folders.
+- **Each recording is opened in a separate, restricted process** that can only send back plain audio. Only the supported formats are accepted, whatever a file claims to be. Decoding stops at 12 hours of audio and always leaves 1 GB of disk space free. A file with several channels (for example one track per person) is mixed with every channel at equal weight, so no track is lost.
+- **Record a meeting** appears once microphone recording is on (Setup, or Settings > Recording and speakers). Only the microphone is recorded, not sound playing on the computer.
+  - **Before each recording**, Unminute asks you to tick that everyone present has been told the meeting is being recorded, and why. The question is drawn by the app outside its page. Your organisation can turn it off.
+  - **While recording**, the window title starts with **● Recording** and the taskbar button shows a red dot, also when the window is minimised.
+  - **The computer stays awake** while a recording is open, unless your organisation's power settings prevent it. If it sleeps anyway, for example when the lid is closed, the recording stops, keeps what was recorded and says the computer went to sleep.
+  - **To keep recording with the lid closed**, turn on **Keep recording when the lid is closed** in Settings > Recording and speakers. Unminute then sets Windows to do nothing when the lid is closed while a recording is open, and puts your own setting back when the recording ends. If the app closes unexpectedly, it puts the setting back at its next start, or when you uninstall it. When you open the lid, the recording card says how long it carried on with the lid closed. Where your organisation sets what the lid does, Unminute leaves it alone. The lid and sleep behaviour has not yet been tested on a real laptop.
 
 Transcription runs in the background, one meeting at a time. The Meetings page groups meetings by what they need next: **Needs attention**, **Ready for you**, **Transcribing** and **Cleaning up**. Transcribing meetings show progress, with **Pause** and **Stop now**.
 
-![Recording a meeting, with the level meter and timer](docs/screenshots/workspace-recording.png)
+![Recording a meeting, with the live sound curve and the timer](docs/screenshots/workspace-recording.png)
 
 ### Review and name speakers
 
@@ -83,6 +104,7 @@ Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) 
 - Select text, or press Enter, to correct it. Ctrl+Z undoes the last edit.
 - Search with Ctrl+F. In a wide window the transcript and the side panel scroll separately.
 - **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
+- **Skip speakers** (on the meeting's row) or **Skip speaker identification** (in its speaker panel) is for a recording of one or two people: the meeting goes straight to review and hand off without speaker labels. While the audio is kept, **Identify again…** still works later.
 - The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**.
 - **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? (outside a text field) to open it.
 
@@ -94,6 +116,9 @@ Each meeting shows its steps:
 
 1. **Transcript reviewed…** saves the reviewed text and removes the app's copy of the audio. If you allowed it for the watched folder a recording came from, the original there is removed too (unless your organisation has turned that off, which keeps originals). Playback and editing end here.
 2. **Hand off…** opens a page that shows exactly what will be copied. Choose a template, then remove details for this hand off only: replace names with Speaker 1, Speaker 2, redact words, or leave out passages, and select **Apply**. Then **Copy prompt and transcript**, **Copy prompt only** or **Save Markdown…**.
+   - **Templates:** Minutes and actions, Short summary, Action list, Board or directors' minutes, Client meeting file note, Follow-up email, and Team or WIP notes. You can edit them or add your own. The built-in ones ask the assistant to write as a minute-taker would, with no timestamps, using what its connected tools can read about the meeting, and to list the points you should check.
+   - **Every hand off**, including your own templates, asks the assistant to use its tools only to read, to change nothing unless you ask, and to treat the transcript and what its tools return as information, not instructions. These are requests to the assistant, not guarantees. With names replaced, it also asks the assistant not to work out who the speakers are.
+   - **A saved file** is named by the date and time the meeting was imported (`Meeting transcript YYYY-MM-DD HH-MM.md`), not by its title unless your organisation allows that, and marks the transcript as data in the same way as the copied text.
 3. **Create the final document** in your assistant, review it yourself, and file it where your organisation keeps such documents.
 4. **Final document saved…** removes the meeting's transcript, edits and speaker names. A minimal receipt (a random number, times and the result) is kept for 30 days.
 
@@ -110,17 +135,26 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 
 - **Processing:** Quiet (the default) leaves most of the computer free. Faster uses more of it. On battery, automatic work waits unless you allow it.
 - **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card component.
-- **Recording and speakers:** microphone recording, naming speakers after transcription, and the graphics card for it (Faster mode only).
+- **Recording and speakers:** microphone recording, naming speakers after transcription, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification (Faster mode only) and **Keep recording when the lid is closed**.
 - **Watched folders, Updates, Cleanup receipts.**
+
+On a managed computer, IT can set some of these by policy. Settings then says that some settings are managed by your organisation, and those controls cannot be changed.
 
 ![Settings](docs/screenshots/workspace-settings.png)
 
+The window follows Windows' light or dark mode.
+
+![The Meetings page in dark mode](docs/screenshots/workspace-meetings-dark.png)
+
 ## Privacy and network behaviour
 
-- **Transcription and speaker identification never use the network.** While processing, the app refuses its own Python network connections and DNS lookups to anything outside the computer. This guard is not a firewall: native code opening its own sockets would not be caught. For managed devices, an outbound firewall rule is the stronger control.
+- **Transcription and speaker identification never use the network.** While processing, the app refuses its own Python network connections, DNS lookups and UDP traffic to anything outside the computer, including connections made through Windows' asyncio route. `--self-test` checks all three. This guard is not a firewall: native code opening its own sockets would not be caught. For managed devices, an outbound firewall rule is the stronger control.
+- **Recordings are decoded in a restricted process.** It runs at Windows' Low integrity level inside a Windows job, cannot write your files or start programs directly, and is limited to 2 GB of memory. It can still read files you can read, so a decoder flaw would mainly be a privacy risk.
+- **The page inside the window is held in.** It cannot show its own message boxes, ask for the microphone, camera or screen, or call anything in the app except a fixed list of checked actions. Recording starts only through the app's own confirmation. Python's remote debugging, which would let another program run code inside the app's Python processes, is switched off.
 - **No usage statistics are sent.** Before its libraries load, the app forces their telemetry switches off: Hugging Face, pyannote's usage metrics and OpenTelemetry. A setting in your environment cannot turn them back on. It also switches off ONNX Runtime's Windows telemetry events in the processes that use it.
 - **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face (huggingface.co and its download hosts under huggingface.co and hf.co) and the optional graphics card component from download-r2.pytorch.org. The download process can reach only those hosts and any proxy configured for you: every request and every redirect is checked, also through a proxy. Certificates are checked against the Windows certificate store, so downloads work behind a firm's TLS-inspecting proxy. A fixed proxy (set in Windows or with HTTPS_PROXY) is used; a proxy given only by an automatic configuration script (PAC or WPAD) is not, so IT may need to set a fixed one or pre-stage the models. Each file is checked against a published checksum.
-- **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment.
+- **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment. A token set in your Windows environment is not used or passed on: paste it in Setup instead.
+- **A small local diagnostics log, with no content.** The app keeps content-free logs in the workspace's `logs` folder (about 1.5 MB for each of its processes): error types, where in the code they happened, timings and version numbers, never meeting text, titles, names or folders. Nothing is sent anywhere. An unexpected error shows a code, for example "Something went wrong (code U-1A2B3C)".
 - **Outside the app's control:** recordings in synced folders such as OneDrive are already in that service, and anything you paste or upload to an AI assistant is handled by its provider under your organisation's account and policies.
 
 The threat model, the controls in place and the remaining risks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md). To report a vulnerability, see [SECURITY.md](SECURITY.md).
@@ -132,16 +166,18 @@ The threat model, the controls in place and the remaining risks are in [docs/SEC
 | Program | `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` |
 | Workspace (meetings, edits, holds, settings) | `%LOCALAPPDATA%\Unminute\workspace` |
 | Models, and the optional graphics card component | `%LOCALAPPDATA%\Unminute\models` |
+| Diagnostics logs (no meeting content) | `%LOCALAPPDATA%\Unminute\workspace\logs` |
 | Hugging Face token (if remembered) | Windows Credential Manager |
 | Start menu shortcut | Unminute |
+| Version 0.4.3 or earlier, if it was installed | Its own folders, kept until you delete them (see "Updates" in [docs/PACKAGING.md](docs/PACKAGING.md)) |
 
 `%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it.
 
 ## Updates, rollback and uninstall
 
-- **Update:** run the new package's `install.cmd` with the app closed. An update that keeps the storage format keeps everything. One that changes it waits until the workspace is empty (no meetings in the workspace, active holds, unfinished cleanup or unimported microphone recordings), and says what it is waiting for. No update expires a hold, deletes your work or makes a backup copy of it. From 0.4.3 or earlier this is not an update in place: this version starts with an empty workspace, so finish with the earlier version and uninstall it first (the steps are under Updates in [docs/PACKAGING.md](docs/PACKAGING.md)).
-- **Rollback:** the previous version is kept. To return to it, run `install.ps1 -Rollback` from the current version's folder (`versions\<version>`). Rollback is refused if the previous version cannot open your workspace, for example after a storage-format change.
-- **Uninstall:** Settings > Apps > Unminute. The workspace and downloaded models are kept, because meeting content is only removed through the app's confirmed cleanup steps.
+- **Update:** run the new package's `install.cmd` with the app closed. An update that keeps the storage format keeps everything. One that changes it waits until the workspace is empty (no meetings in the workspace, active holds, unfinished cleanup or unimported microphone recordings), and says what it is waiting for. No update expires a hold, deletes your work or makes a backup copy of it. A workspace the update check cannot read, for example a damaged one, makes the update wait; it is never treated as a fresh install. From 0.4.3 or earlier this is not an update in place: see [Coming from 0.4.3 or earlier](#coming-from-043-or-earlier).
+- **Rollback:** the previous version is kept. To return to it, run `install.ps1 -Rollback` from the current version's folder (`versions\<version>`). Rollback is refused if the previous version cannot open your workspace, for example after a storage-format change. The first version after the rename has no earlier version in its install folder to roll back to: to go back to 0.4.3, uninstall this version and install 0.4.3 again, which opens its own workspace.
+- **Uninstall:** Settings > Apps > Unminute. The workspace and downloaded models are kept, because meeting content is only removed through the app's confirmed cleanup steps. If Unminute closed unexpectedly while it had set Windows to do nothing when the lid is closed, and did not start again, the uninstaller first puts your own lid setting back; if it cannot, it says to check the setting in Windows Settings.
 
 Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 
@@ -155,8 +191,10 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |
 | The installer says the app is running | Close Unminute and run it again. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
+| "Something went wrong (code U-…)", or the app closed by itself | Open **Help and shortcuts**, select **Copy diagnostics** and paste them into your support request with the code. They hold versions, settings, counts and error locations, never meeting content, names or folders. |
+| A message says Unminute found damage in its workspace database | After an unexpected close, Unminute checks its database at the next start and holds processing, imports and cleanup if it finds damage. Follow [If Unminute finds damage](docs/WORKSPACE_GUIDE.md#if-unminute-finds-damage) in the user guide. |
 
-For IT support, `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder checks that the main dependencies load, that the network block works and that the speaker model loader refuses a model file that would run code. `--status` prints counts only, never content.
+For IT support, `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder checks that the main dependencies load, that the network block works and that the speaker model loader refuses a model file that would run code. `--status` prints counts only, never content. `--health` prints a one-line health report for device management and exits 1 when the app needs attention (see [docs/PACKAGING.md](docs/PACKAGING.md)).
 
 ## Measured performance
 
@@ -173,12 +211,18 @@ On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error 
 
 ## Known limitations
 
-- Not yet tested on a clean standard-user Windows profile, through Intune on a managed device, or on Windows 10 (#10, #11).
-- The installer scripts are not code-signed. Integrity rests on the published `.sha256` and the installer's per-file check.
-- Transcription quality has been measured on public and synthetic audio only, not on representative business recordings (#12, #25).
-- Not yet tested with a screen reader, Windows contrast themes or pilot users (#27).
-- Tested on one laptop only. The minimum and recommended hardware levels are untested (#28).
+Checks that need people, hardware or IT are tracked together in #189.
+
+- Not yet tested on a clean standard-user Windows profile, through Intune on a managed device, or on Windows 10.
+- The zip and the installer scripts are not code-signed. From 0.5.0, releases carry signed build provenance and a signed software bill of materials instead (see [Install](#install)); earlier releases rest on the published `.sha256` and the installer's per-file check.
+- Transcription quality has been measured on public and synthetic audio only, not on representative business recordings.
+- Not yet tested with a screen reader, Windows contrast themes or pilot users.
+- Tested on one laptop only. The minimum and recommended hardware levels are untested.
 - Graphics card acceleration has been tested on one NVIDIA laptop GPU with synthetic audio. AMD and Intel graphics are not supported.
+- Keeping the computer awake, and recording with the lid closed, follow Windows' documentation and have not yet been tested on a real laptop.
+- Recording with the window visible uses about 22% of one processor core; the target is 5% (#216).
+- The package does not yet include the licence texts of some bundled native libraries, or of the packages that ship none (#176).
+- Version 0.5.0 and its previews are not an update in place from 0.4.3 or earlier ([Coming from 0.4.3 or earlier](#coming-from-043-or-earlier)).
 
 What a release must meet is in [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md). The evidence recorded so far is in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
@@ -195,7 +239,8 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.14 runtime |
 | `tools/make_icon.py` | Draws the app icon with Pillow: `python tools/make_icon.py unminute.ico preview.png` |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |
-| `tests/` | Unit tests: `python -m unittest discover -s tests -v` |
+| `tests/` | Unit tests: run them with `python tools/run_tests.py` (see [AGENTS.md](AGENTS.md), "Checks") |
+| `.github/workflows/` | The checks on every pull request, and the Release workflow, which builds a tagged release on GitHub, attests it and publishes it after the owner approves |
 | `CHANGELOG.md` | Release notes, one section per version. The Release workflow reads it. |
 | `changelog.d/` | Unreleased changes, one fragment per pull request; `tools/changelog.py` moves them into `CHANGELOG.md` at release. |
 
@@ -231,9 +276,11 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | istupakov/silero-vad-onnx | MIT | Silero voice-activity detection. Verified 13 October 2026. |
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
-| PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Setup from download-r2.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
+| PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Settings > Manage downloads from download-r2.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
 | sounddevice | MIT | Optional microphone recording in Unminute. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Ready for encryption at rest; nothing uses it yet. |
+| OpenSSL | To confirm | Version 4.0.3, built into cryptography's Windows wheel. The wheel's own bill of materials names it but gives no licence. |
 
 Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.
 
