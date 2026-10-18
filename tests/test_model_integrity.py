@@ -575,6 +575,37 @@ class PickleCheckTests(unittest.TestCase):
             with self.subTest(label), self.assertRaises(Refused):
                 speaker_load.check_pickle(data)
 
+    def test_entry_names_torch_could_resolve_differently_are_refused(self):
+        # torch finds "<root>/data.pkl" case-insensitively under the first
+        # entry's root, and Python's ZipInfo.filename cuts a name at a NUL and
+        # turns a backslash into "/". Each archive below holds an allowed
+        # pickle where Python looks and a code-running one torch could read.
+        def renamed(placeholder, raw):
+            # Entry names are not covered by the CRC, so the raw bytes of a
+            # same-length placeholder can be swapped in both headers.
+            data = archive(plain_pickle("decoy"), [(placeholder, CODE_RUNNING)])
+            self.assertEqual(data.count(placeholder.encode()), 2)
+            return data.replace(placeholder.encode(), raw)
+
+        cases = {
+            "upper-case duplicate": archive(plain_pickle("decoy"),
+                                            [("archive/DATA.PKL", CODE_RUNNING)]),
+            "duplicate name": renamed("archive/data.pkX", b"archive/data.pkl"),
+            "NUL in a name": renamed("archive/data.pkl_x", b"archive/data.pkl\x00x"),
+            "backslash in a name": renamed("archive/zz.pkl", b"archive\\zz.pkl"),
+            "non-ASCII name": renamed("archive/zz.pkl", b"archive/\xc3\xa9.pkl"),
+            "two roots": archive(plain_pickle("decoy"), [("other/version", "3\n")]),
+            "entry outside any root": archive(plain_pickle("decoy"), [("data.pkl", CODE_RUNNING)]),
+        }
+        for label, data in cases.items():
+            with self.subTest(label), self.assertRaises(Refused):
+                speaker_load.check_pickle(data)
+        # The torch layout itself passes.
+        speaker_load.check_pickle(archive(plain_pickle("x"), [
+            ("archive/byteorder", "little"), ("archive/data/0", b"\0" * 8),
+            ("archive/.format_version", "1"), ("archive/.storage_alignment", "64"),
+            ("archive/.data/serialization_id", "0123456789")]))
+
 
 class ConfigCheckTests(unittest.TestCase):
     def changed(self, change):

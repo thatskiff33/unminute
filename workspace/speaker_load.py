@@ -8,7 +8,8 @@
 #   - the bytes come from asr_engines.read_verified, which read each pinned
 #     file once and hashed exactly those bytes: no file is opened again;
 #   - each checkpoint is checked before torch sees it: one pickle inside a
-#     torch zip archive, importing only ALLOWED_GLOBALS, by no other route;
+#     torch zip archive, importing only ALLOWED_GLOBALS, by no other route,
+#     with entry names torch's reader cannot resolve to another entry;
 #   - torch.load runs with weights_only=True and a scoped allowlist of three
 #     pyannote classes (torch.serialization.safe_globals, never the
 #     process-wide add_safe_globals);
@@ -158,6 +159,7 @@ def pickle_globals(data):
         entries = archive.infolist()
     except (zipfile.BadZipFile, OSError, ValueError, EOFError):
         raise Refused("not a zip checkpoint") from None
+    check_entry_names(entries)
     pickles = [e for e in entries if e.filename.endswith("/data.pkl")]
     if len(pickles) != 1 or pickles[0].filename.count("/") != 1:
         raise Refused("not exactly one pickle in the checkpoint")
@@ -176,6 +178,27 @@ def pickle_globals(data):
     except Exception:          # truncated, malformed or a bad archive member
         raise Refused("checkpoint pickle is malformed") from None
     return found
+
+
+def check_entry_names(entries):
+    """Refuse entry names that Python's zip reader and torch's could resolve
+    to different entries, so torch reads the pickle checked here. torch takes
+    the archive's root from its first entry and finds "<root>/data.pkl" by a
+    case-insensitive lookup on the raw name; Python's ZipInfo.filename cuts a
+    name at a NUL and turns a backslash into "/". So every raw name must be
+    printable ASCII with no backslash, sit under one root, and differ from
+    every other name in more than letter case."""
+    names = []
+    for entry in entries:
+        raw = entry.orig_filename
+        if (raw != entry.filename or not raw.isascii() or not raw.isprintable()
+                or "\\" in raw or "/" not in raw):
+            raise Refused("checkpoint entry name is ambiguous")
+        names.append(raw)
+    if len({name.split("/", 1)[0] for name in names}) != 1:
+        raise Refused("checkpoint entries are not under one root")
+    if len({name.lower() for name in names}) != len(names):
+        raise Refused("checkpoint entry names differ only in letter case")
 
 
 def check_pickle(data):
@@ -319,7 +342,10 @@ def import_libraries():
     wrapped: a broken install or, in the GPU worker, a missing CUDA, cuDNN or
     cuBLAS library keeps its own type and text, so the GPU worker's failure
     still falls back to the processor (D4, speakers._gpu_failure) and the
-    worker log names it. The build's own imports then find these loaded."""
+    worker log names it. The build's own imports then find these loaded.
+    A library that the model build or load_from_checkpoint imports lazily is
+    still inside the wrapper: if pyannote or Lightning starts doing that,
+    add it here."""
     import importlib
     for name in ("yaml", "numpy", "torch", "pyannote.audio.core.task",
                  "pyannote.audio.core.plda", "pyannote.audio.pipelines",
