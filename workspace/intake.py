@@ -31,7 +31,6 @@
 
 import hmac
 import os
-import secrets
 import time
 from pathlib import Path
 
@@ -52,13 +51,7 @@ class IntakeError(ValueError):
 
 
 def _salt(store):
-    row = store._one("SELECT v FROM intake_meta WHERE k = 'salt'")
-    if row:
-        return row["v"].encode()
-    salt = secrets.token_hex(16)
-    with store.tx() as db:
-        db.execute("INSERT OR IGNORE INTO intake_meta VALUES ('salt', ?)", (salt,))
-    return _salt(store)
+    return store.intake_salt()
 
 
 def _key(salt, path):
@@ -146,9 +139,7 @@ def authority_for(store, fid):
 
 def remove_folder(store, fid):
     """Stop watching. Imported meetings stay; this folder's suppression rows go."""
-    with store.tx() as db:
-        db.execute("DELETE FROM intake_seen WHERE folder_id = ?", (fid,))
-        db.execute("DELETE FROM watched_folders WHERE id = ?", (fid,))
+    store.remove_folder(fid)
 
 
 def _walk(root, extensions, stop=None):

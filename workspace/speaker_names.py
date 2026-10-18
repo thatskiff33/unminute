@@ -139,13 +139,7 @@ def undo(store, vid):
     run = current_run(store, vid)
     if run is None:
         return None
-    with store.tx() as db:
-        last = db.execute("SELECT id, kind FROM speaker_corrections WHERE run_id = ? "
-                          "ORDER BY id DESC LIMIT 1", (run["id"],)).fetchone()
-        if last is None:
-            return None
-        db.execute("DELETE FROM speaker_corrections WHERE id = ?", (last["id"],))
-        return last["kind"]
+    return store.undo_correction(run["id"])
 
 
 def _rows(store, vid):

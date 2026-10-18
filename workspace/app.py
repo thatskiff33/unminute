@@ -473,7 +473,7 @@ class Workspace:
 
     def meeting_for_discard(self, mid):
         """Title and import time, for the Windows question."""
-        m = self._meeting(mid)
+        m = self._meeting(mid, content=True)
         return m["title"], m["created_at"]
 
     def consent_required(self):
@@ -1019,33 +1019,23 @@ class Workspace:
         A meeting that has ever had a hold, active or released, is kept
         (#193, invariant C2: releasing a hold deletes nothing): it stays listed
         as an import that did not finish, and only the user's Discard removes
-        it. The check, the row deletion and the folder removal happen under
-        the store's lock, so no hold can be added in between. Returns whether
-        it was removed."""
+        it. The check, the row deletion and the folder removal happen in one
+        transaction under the store's lock (store.discard_unfinished_import),
+        so no hold can be added in between, and a folder that cannot be
+        removed rolls the rows back. Returns whether it was removed."""
         import shutil
         try:
             folder = media.meeting_folder(self.media, mid)
         except media.BadMeetingId:
             return False                      # not the app's own id: never touched
+
+        def remove_folder():
+            if folder.exists():
+                shutil.rmtree(folder)
         try:
-            with self.store._lock:            # re-entrant; add_hold takes it too
-                with self.store.tx() as db:
-                    if (db.execute("SELECT 1 FROM holds WHERE meeting_id = ?",
-                                   (mid,)).fetchone()
-                            or db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
-                                          (mid,)).fetchone()):
-                        return False
-                    db.execute("DELETE FROM sources WHERE meeting_id = ?", (mid,))
-                    db.execute("DELETE FROM meetings WHERE id = ?", (mid,))
-                    # Inside the transaction: a folder that cannot be removed
-                    # (a locked file) rolls the rows back, so the meeting stays
-                    # listed and the next start tries again; never an orphaned
-                    # folder holding decoded audio with no record of it.
-                    if folder.exists():
-                        shutil.rmtree(folder)
+            return self.store.discard_unfinished_import(mid, remove_folder)
         except (StoreError, OSError):
             return False                      # unreadable or locked: kept for next time
-        return True
 
     def _reconcile_imports(self, discard=True):
         """At startup: finish or remove imports cut short by a crash or close
@@ -1184,7 +1174,7 @@ class Workspace:
             return None                      # heavy processing waits for the recording
         with self._lock:
             for mid, count in list(self._reruns.items()):
-                m = self.store.meeting(mid)
+                m = self.store.meeting_state(mid)
                 v = self.store.active_version(mid)
                 if m is None or v is None or m["reviewed_at"] or not self._audio_available(m):
                     del self._reruns[mid]           # no longer possible
@@ -1193,7 +1183,7 @@ class Workspace:
                     continue                        # kept for Resume
                 return ("rerun", mid, (v["id"], count, self.store.skip_count(v["id"])))
         for m in self.store.meetings("paused = 0 AND phase != ? AND reviewed_at IS NULL "
-                                     "AND audio_removed_at IS NULL", ("error",)):
+                                     "AND audio_removed_at IS NULL", ("error",), content=False):
             v = self.store.active_version(m["id"])
             if v is None:
                 continue
@@ -1283,7 +1273,7 @@ class Workspace:
             return
         if self._closing.is_set():
             return                          # never start a worker during shutdown
-        m = self.store.meeting(mid)
+        m = self.store.meeting_state(mid)
         if m is None or m["reviewed_at"]:
             return                          # reviewed meanwhile: nothing more to process
         if not self._audio_available(m):
@@ -1307,7 +1297,7 @@ class Workspace:
                                                threads=threads, hint=count,
                                                model=self.speaker_model, device=device,
                                                gpu_site=site, skips_seen=skips)
-                m = self.store.meeting(mid)
+                m = self.store.meeting_state(mid)
                 if result == speakers.SpeakerResult.STOPPED and m and m["paused"]:
                     with self._lock:          # paused mid-pass: kept, with its count,
                         if self.store.skip_count(vid) == skips:    # unless skipped since
@@ -1373,12 +1363,15 @@ class Workspace:
 
     # -- controls -------------------------------------------------------------------------
 
-    def _meeting(self, mid):
+    def _meeting(self, mid, content=False):
+        """The meeting's plain state (store.meeting_state: nothing opened), or
+        with content=True also its title and note (store.meeting). Raises
+        WorkspaceError for an id that is not the app's own or not found."""
         try:
             media.meeting_folder(self.media, mid)   # the app's own id format only (#194)
         except media.BadMeetingId:
             raise WorkspaceError("Meeting not found.") from None
-        m = self.store.meeting(mid)
+        m = self.store.meeting(mid) if content else self.store.meeting_state(mid)
         if m is None:
             raise WorkspaceError("Meeting not found.")
         return m
@@ -1575,10 +1568,13 @@ class Workspace:
         v = self._version(mid, version)
         if v is None:
             return {"total": 0, "start": 0, "items": []}
-        rows = self.store.transcript(v["id"])
+        # Paged in SQL: only this page's passages are read and opened (#111).
+        # Under the store's lock, so the total and the page agree.
+        with self.store._lock:
+            total = self.store.passage_count(v["id"])
+            page = self.store.transcript_page(v["id"], start, count, words=False)
         view = speaker_names.resolve(self.store, v["id"])
-        page = rows[start:start + count]
-        return {"total": len(rows), "start": start, "items": [
+        return {"total": total, "start": start, "items": [
             {"id": r["id"], "t": r["start_s"], "end": r["end_s"], "text": r["text"],
              "edited": bool(r["edited"]), "label": view["labels"].get(r["id"]),
              "who": view["names"].get(view["labels"].get(r["id"])),
@@ -1658,8 +1654,7 @@ class Workspace:
         v = self._version(mid, version)
         if not query or v is None:
             return []
-        rows = self.store.transcript(v["id"])
-        return [rows[i]["id"] for i in self.store.search(v["id"], query)]
+        return self.store.search(v["id"], query)
 
     def edit(self, mid, segment_id, text):
         """Autosaved edit of one passage, kept separate from the generated text."""
@@ -1723,7 +1718,9 @@ class Workspace:
             rows = holds.unfinished_work(self.store)
             if not rows:
                 return []
-            meetings = {m["id"]: m for m in self.store.meetings()}
+            # Plain state and the error note: the titles come once, from
+            # unfinished_work above.
+            meetings = {m["id"]: m for m in self.store.meetings(content=("last_error",))}
             versions = {v["meeting_id"]: v for v in q(
                 "SELECT * FROM versions WHERE state = 'active'")}
             chunks = {c["version_id"]: c for c in q(
@@ -1836,7 +1833,7 @@ class Workspace:
         return "review"
 
     def detail(self, mid):
-        m = self._meeting(mid)
+        m = self._meeting(mid, content=True)
         v = self.store.active_version(mid)
         runs = self.store.speaker_runs(v["id"]) if v else []
         older = [x for x in self.store.versions(mid) if v is None or x["id"] != v["id"]]
@@ -1878,7 +1875,7 @@ class Workspace:
     def reminders(self):
         """Shown while the app is open: holds due for review and cleanup that
         waits for a confirmation. Nothing is scheduled outside the app."""
-        titles = {m["id"]: m["title"] for m in self.store.meetings()}
+        titles = {m["id"]: m["title"] for m in self.store.meetings(content=("title",))}
         return {
             "holds_due": [{"id": h["id"], "meeting": h["meeting_id"],
                            "title": titles.get(h["meeting_id"], ""), "reason": h["reason"]}

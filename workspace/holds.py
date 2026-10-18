@@ -41,7 +41,7 @@ def add_hold(store, mid, scope, reason, now=None):
         raise HoldError("Choose what to keep: the audio, the transcript or everything.")
     if not reason:
         raise HoldError("Give a reason for keeping this material.")
-    if store.meeting(mid) is None:
+    if store.meeting_state(mid) is None:
         raise HoldError("Meeting not found.")
     hid, now = new_id(), now or time.time()
     store.add_hold(hid, mid, scope, reason[:500], now)
@@ -132,7 +132,7 @@ def unfinished_work(store, now=None):
     out = []
     held = {r["meeting_id"] for r in store._all(
         "SELECT meeting_id FROM holds WHERE released_at IS NULL")}
-    for m in store.meetings():
+    for m in store.meetings(content=("title",)):
         if m["final_saved_at"]:
             action = "Cleanup pending"
         elif m["reviewed_at"]:
