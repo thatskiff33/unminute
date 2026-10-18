@@ -4,6 +4,7 @@
 #   python -m unittest discover -s tests -v
 
 import base64
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -45,16 +46,116 @@ def make_wheel(name, version, files):
 
 
 class ActivateTests(unittest.TestCase):
-    def test_the_component_caches_its_bytecode_although_the_app_runs_with_b(self):
+    def test_only_the_component_caches_its_bytecode_although_the_app_runs_with_b(self):
         # The app starts with -B and ships precompiled; the component is unpacked
         # from wheels without .pyc, so torch would be compiled at every start.
-        from workspace import gpu
-        with tempfile.TemporaryDirectory() as site, \
+        # Every other module keeps -B: the GPU worker once cached the app's own
+        # modules, and in a checkout left bytecode behind after the tests (#206).
+        from importlib.machinery import SourceFileLoader
+        with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(sys, "dont_write_bytecode", True), \
-                mock.patch.object(sys, "path", list(sys.path)):
-            gpu.activate(site)
-            self.assertFalse(sys.dont_write_bytecode)
-            self.assertEqual(sys.path[0], site)
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch.object(sys, "path_hooks", list(sys.path_hooks)), \
+                mock.patch.dict(sys.path_importer_cache), \
+                mock.patch.dict(sys.modules):
+            site, app = Path(tmp, "gpu-site"), Path(tmp, "app")
+            (site / "zqcomponent").mkdir(parents=True)
+            app.mkdir()
+            (site / "zqcomponent" / "__init__.py").write_text("from . import part\n")
+            (site / "zqcomponent" / "part.py").write_text("VALUE = 2\n")
+            (app / "zqapp.py").write_text("VALUE = 1\n")
+            gpu.activate(str(site))
+            sys.path.insert(1, str(app))
+            self.assertEqual(sys.path[0], str(site))
+            import zqapp  # noqa: F401
+            import zqcomponent
+            self.assertEqual(zqcomponent.part.VALUE, 2)
+            self.assertTrue(sys.dont_write_bytecode)
+            self.assertFalse((app / "__pycache__").exists())
+            for source in (site / "zqcomponent" / "__init__.py",
+                           site / "zqcomponent" / "part.py"):
+                pyc = Path(importlib.util.cache_from_source(str(source)))
+                self.assertTrue(pyc.is_file(), pyc.name)
+                # Python's own loader takes the cache as valid, without compiling.
+                loader = SourceFileLoader("zqcheck", str(source))
+                with mock.patch.object(loader, "source_to_code",
+                                       side_effect=AssertionError("compiled again")):
+                    self.assertIsNotNone(loader.get_code("zqcheck"))
+
+    def isolated_imports(self):
+        # The import state activate() changes, restored after the test.
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        for name, value in (("dont_write_bytecode", True), ("path", list(sys.path)),
+                            ("path_hooks", list(sys.path_hooks))):
+            stack.enter_context(mock.patch.object(sys, name, value))
+        stack.enter_context(mock.patch.dict(sys.path_importer_cache))
+        stack.enter_context(mock.patch.dict(sys.modules))
+        tmp = stack.enter_context(tempfile.TemporaryDirectory())
+        site = Path(tmp, "gpu-site")
+        site.mkdir()
+        return site
+
+    def test_a_cache_that_cannot_be_written_is_no_error(self):
+        # Each failure is raised inside the cache write itself (finding on fd22ec6:
+        # a __pycache__ file was swallowed by Python's own set_data instead).
+        site = self.isolated_imports()
+        failures = (OSError("no cache"), NotImplementedError("no cache tag"),
+                    ValueError("bad path"))
+        for n in range(len(failures)):
+            (site / f"zqnocache{n}.py").write_text(f"VALUE = {n}\n")
+        gpu.activate(str(site))
+        for n, failure in enumerate(failures):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(importlib.util, "cache_from_source",
+                                      side_effect=failure) as cache_path:
+                module = importlib.import_module(f"zqnocache{n}")
+                self.assertEqual(module.VALUE, n)
+                cache_path.assert_called_once()
+        self.assertFalse((site / "__pycache__").exists())
+
+    def test_the_cache_holds_only_code_compiled_from_the_file(self):
+        # Bytes handed to the loader that are not the file's own are never cached,
+        # even with the file's size; nor is the code when the file changed while
+        # it was compiled (finding on fd22ec6).
+        site = self.isolated_imports()
+        source = site / "zqsame.py"
+        source.write_text("VALUE = 2\n")
+        changed = site / "zqchanged.py"
+        changed.write_text("VALUE = 3\n")
+        gpu.activate(str(site))
+        finder = sys.path_hooks[0](str(site))
+        spec = finder.find_spec("zqsame")
+        spec.loader.source_to_code(b"VALUE = 9\n", str(source))
+        self.assertFalse(Path(importlib.util.cache_from_source(str(source))).exists())
+        loader = finder.find_spec("zqchanged").loader
+        real_get_data, reads = loader.get_data, []
+
+        def get_data(path):
+            if path.endswith(".py"):
+                reads.append(path)
+                if len(reads) > 1:               # an edit after the compile
+                    return b"VALUE = 4\n"
+            return real_get_data(path)
+        with mock.patch.object(loader, "get_data", side_effect=get_data):
+            self.assertIsNotNone(loader.get_code("zqchanged"))
+        self.assertEqual(len(reads), 2)
+        self.assertFalse(Path(importlib.util.cache_from_source(str(changed))).exists())
+        import zqsame
+        self.assertEqual(zqsame.VALUE, 2)
+        self.assertTrue(Path(importlib.util.cache_from_source(str(source))).is_file())
+
+    def test_a_zip_under_the_component_keeps_pythons_own_importer(self):
+        site = self.isolated_imports()
+        archive = site / "zqextra.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("zqzipped.py", "VALUE = 5\n")
+        gpu.activate(str(site))
+        with self.assertRaises(ImportError):
+            sys.path_hooks[0](str(archive))
+        sys.path.append(str(archive))
+        import zqzipped
+        self.assertEqual(zqzipped.VALUE, 5)
 
 
 class DetectTests(unittest.TestCase):
