@@ -40,11 +40,17 @@ sys.path.append(str(ROOT / "tools"))     # evidence.py, also under -I; after the
 import evidence  # noqa: E402
 
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
-# The recording states come last: each earlier state is measured before any
-# recording has started, and the recording is discarded before anything after
-# them (the leak check, quitting).
+# The recording states come last, after the leak check too (plan()): every
+# other figure is measured before any recording has started. One recording
+# runs through both recording states and is discarded before quitting.
 STATES = ("meetings", "settings", "minimised", "recording", "recording-minimised")
 RECORDING_STATES = ("recording", "recording-minimised")
+IDLE_STATES = tuple(s for s in STATES if s not in RECORDING_STATES)
+# Through a measuring window the recording must keep recording and its length
+# grow by at least this share of the time that passed (the synthetic input is
+# paced in real time; a hold-up over PACE_MAX_LATE_S is skipped, not caught up).
+RECORDING_HELD_SHARE = 0.5
+POLICY_SKIPPED = "not measured (policy)"
 MEETINGS = 3                      # synthetic meetings in the measured workspace
 # The synthetic microphone: a common Windows input rate, the recorder's block.
 SYNTHETIC_RATE = 48000
@@ -57,6 +63,10 @@ PREFIX = "PERF "                  # protocol lines between parent and child
 WORKER_WAIT_S = 240               # the worker unloads after 120 s idle (worker.py)
 READY_TIMEOUT_S = 600             # seeding (up to 300 s) plus the page starting
 STEP_TIMEOUT_S = 90               # the window reaching a state
+# The child's own limits while starting a recording (record()): the Record
+# button ready, the recording card shown, the first second of audio. A state
+# that starts a recording gets these on top of STEP_TIMEOUT_S (step_timeout()).
+RECORD_WAITS_S = {"button": 30, "started": 30, "audio": 30}
 LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
 # A release run's shape; release evidence needs at least this (tools/evidence.py).
 RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
@@ -70,17 +80,27 @@ recording). The recording states record synthetic audio fed in at real-time
 pace in place of the microphone (48 kHz, 0.1 s blocks); no microphone or
 audio device is opened. The tool turns microphone recording on in the
 throwaway workspace, presses Record and answers the app's recording question
-itself; the recording then runs through the app's own code and is discarded
-before the next step. Its figures include the stand-in's own feeding thread
-(small) and leave out the Windows audio service, which a real microphone
-would also use. Where policy turns microphone recording off, the recording
-states cannot be measured (exit 2). Before the first state it times start-up to
-interactive (imports, then window creation until the meeting list has
-rendered; interpreter start and opening the workspace are left out) and waits
-for the worker to unload. With --leak-minutes it then holds the Meetings view
-that long, once, in the last run, and reports the growth. The leak budget is
-for 30 minutes, so a shorter hold is reported but not compared: short-window
-noise cannot be scaled up.
+itself. That one recording runs through the app's own code for both recording
+states, is checked after each window to be still recording (one that stopped
+or stalled means the run could not be measured, exit 2), and is discarded
+after them, never saved or imported. Its figures include the stand-in's own
+feeding thread (small) and leave out the Windows audio service, which a real
+microphone would also use.
+
+Managed policy: where policy turns microphone recording off, the recording
+states are "not measured (policy)": the other figures are still measured and
+the exit code follows the budgets (a budget set for a recording state then
+counts as not measured, exit 1). Where policy turns the recording confirmation
+off, the app asks nothing and makes no consent record; the tool accepts that
+and the report says so ("recording_consent").
+
+Before the first state it times start-up to interactive (imports, then window
+creation until the meeting list has rendered; interpreter start and opening
+the workspace are left out) and waits for the worker to unload. With
+--leak-minutes it holds the Meetings view that long, once, in the last run,
+after the idle states and before any recording, and reports the growth. The
+leak budget is for 30 minutes, so a shorter hold is reported but not compared:
+short-window noise cannot be scaled up.
 
 Output: a JSON report with the machine, the app and WebView2 versions, every
 run's figures, the medians (for the worker's unload, the slowest run: a pass or
@@ -90,11 +110,12 @@ proposed from these figures (plus 20%).
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
 budget (a worker that did not unload counts as over), or a budgeted figure was
 not measured; 2 the window could not be measured (it did not start, did not
-respond, or left processes outside the measuring job).
+respond, lost its recording, or left processes outside the measuring job).
 
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
---leak-minutes 30, about 90 minutes. --quick is 1 run, 20 s settle and 60 s
-windows, for before-and-after checks during development.
+--leak-minutes 30, about two and a quarter hours. --quick is 1 run, 20 s
+settle and 60 s windows (about 10 minutes), for before-and-after checks during
+development.
 """
 
 
@@ -270,18 +291,78 @@ def consent_answerer(recording_title):
     return confirm, asked
 
 
+def consent_outcome(required, record, asked, recording_title, valid):
+    """How the recording was confirmed, checked against managed policy:
+    "asked and recorded" when the confirmation is required (only the
+    recording question was asked and the record is valid), "off by policy"
+    when policy turns it off (nothing asked, no record). Raises otherwise."""
+    if required:
+        if not valid(record):
+            raise RuntimeError("the recording has no valid consent record")
+        if asked != [recording_title]:
+            raise RuntimeError(f"unexpected questions: {asked}")
+        return "asked and recorded"
+    if record is not None or asked:
+        raise RuntimeError(f"the confirmation is off by policy, yet asked: {asked}")
+    return "off by policy"
+
+
+def plan(leak_minutes, recording_allowed):
+    """What the parent measures, in order, in one run: the idle states, the
+    leak check (if asked for) before any recording, then the recording states
+    unless managed policy turns microphone recording off."""
+    out = list(IDLE_STATES)
+    if leak_minutes:
+        out.append("leak")
+    if recording_allowed:
+        out += RECORDING_STATES
+    return out
+
+
+def step_timeout(state):
+    """How long the parent waits for the child to reach `state`: a state that
+    may start a recording also gets the child's own waits for that."""
+    if state in RECORDING_STATES:
+        return STEP_TIMEOUT_S + sum(RECORD_WAITS_S.values())
+    return STEP_TIMEOUT_S
+
+
+def check_held(state, before, after, elapsed):
+    """Raise Unmeasurable unless the recording open when `state` was reached
+    (before: the child's {"state", "seconds"}) was still recording after its
+    window, with its length grown by at least RECORDING_HELD_SHARE of the
+    elapsed seconds. Returns the seconds recorded during the window."""
+    if not before:
+        raise Unmeasurable(f"no recording was open in {state}")
+    if not after:
+        raise Unmeasurable(f"the recording ended during {state}")
+    if after.get("state") != "recording":
+        raise Unmeasurable(f"the recording was {after.get('state')!r} after {state}")
+    grown = after["seconds"] - before["seconds"]
+    if grown < elapsed * RECORDING_HELD_SHARE:
+        raise Unmeasurable(f"the recording grew {grown:.1f} s in {elapsed:.0f} s of {state}")
+    return round(grown, 1)
+
+
+class LostRecording(RuntimeError):
+    """A recording state reached with no recording open: starting a second one
+    would put its start (and the first one's saving) in the figures."""
+
+
 def steps(state, recording):
     """What the child does, in order, to put the window in `state` ("quit" to
     end), given whether a recording is open. A recording is started only for
-    the recording states, before minimising (the window then keeps the page
-    running instead of suspending it), and is discarded before any other
+    the first recording state, before minimising (the window then keeps the
+    page running instead of suspending it), and is discarded before any other
     state and before quitting, so no other figure includes it and nothing is
-    imported."""
+    imported. A later recording state with nothing recording is refused."""
     if state == "quit":
         return ["discard"] if recording else []
     if state not in STATES:
         raise ValueError(f"unknown state {state!r}")
     wanted = state in RECORDING_STATES
+    if wanted and not recording and state != RECORDING_STATES[0]:
+        raise LostRecording(f"nothing was recording when {state} began")
     out = ["restore"]
     if recording and not wanted:
         out.append("discard")
@@ -570,6 +651,22 @@ def one_run(args, settle, window, leak_minutes=0):
         proc.stdin.write(command + "\n")
         proc.stdin.flush()
 
+    def leak():                      # in the Meetings view, before any recording (plan())
+        say("meetings")
+        read(STEP_TIMEOUT_S)
+        print(f"  holding the Meetings view for {leak_minutes} minutes (leak check)",
+              flush=True)
+        time.sleep(settle)
+        _, first = snapshot(proc.pid)
+        time.sleep(leak_minutes * 60)
+        _, last = snapshot(proc.pid)
+        growth = (sum(s["private"] or 0 for s in last.values())
+                  - sum(s["private"] or 0 for s in first.values())) / 2**20
+        out = {"minutes": leak_minutes, "private_growth_mb_raw": round(growth, 1)}
+        if leak_minutes >= LEAK_BUDGET_MINUTES:          # the budget is per 30 minutes
+            out["private_growth_mb"] = round(growth, 1)
+        return out
+
     result = {}
     try:
         try:
@@ -593,27 +690,30 @@ def one_run(args, settle, window, leak_minutes=0):
             gone = not any(p == worker for p, _ in tree(proc.pid))
             result["worker"] = {"exited": gone, "exit_after_last_use_s": round(
                 time.time() - ready["worker_last_used"], 1) if gone else WORKER_WAIT_S}
-        for state in STATES:
+        allowed = ready.get("recording_allowed") is True
+        if not allowed:                  # managed policy: microphone recording off
+            result["not_measured_by_policy"] = list(RECORDING_STATES)
+            print(f"  {', '.join(RECORDING_STATES)}: {POLICY_SKIPPED}", flush=True)
+        for state in plan(leak_minutes, allowed):
+            if state == "leak":
+                result["leak"] = leak()
+                continue
             say(state)
-            if read(STEP_TIMEOUT_S).get("state") != state:
+            reached = read(step_timeout(state))
+            if reached.get("state") != state:
                 raise Unmeasurable(f"the window did not reach {state}")
+            t0 = time.monotonic()
             result[state] = measure(job, proc.pid, settle, window)
+            if state in RECORDING_STATES:    # still the same recording, still recording
+                say("check")
+                held = read(STEP_TIMEOUT_S)
+                result[state]["recorded_s"] = check_held(
+                    state, reached.get("recording"), held.get("recording"),
+                    time.monotonic() - t0)
+                if reached.get("consent"):   # sent by the state that started it
+                    result["recording_consent"] = reached["consent"]
             print(f"  {state}: {result[state]['cpu_percent_of_one_core']}% of one core, "
                   f"{result[state]['private_mb']} MB private", flush=True)
-        if leak_minutes:
-            say("meetings")
-            read(STEP_TIMEOUT_S)
-            print(f"  holding the Meetings view for {leak_minutes} minutes (leak check)",
-                  flush=True)
-            time.sleep(settle)
-            _, first = snapshot(proc.pid)
-            time.sleep(leak_minutes * 60)
-            _, last = snapshot(proc.pid)
-            growth = (sum(s["private"] or 0 for s in last.values())
-                      - sum(s["private"] or 0 for s in first.values())) / 2**20
-            result["leak"] = {"minutes": leak_minutes, "private_growth_mb_raw": round(growth, 1)}
-            if leak_minutes >= LEAK_BUDGET_MINUTES:      # the budget is per 30 minutes
-                result["leak"]["private_growth_mb"] = round(growth, 1)
         say("quit")
         try:
             proc.wait(60)
@@ -662,6 +762,14 @@ def parent(args):
         print(f"COULD NOT MEASURE: {exc}")
         return 2
     report["each_run"] = results
+    # Managed policy: recording states it turned off (in any run), and how the
+    # recordings were confirmed. Neither is a figure, so neither has a median.
+    policy_off = list(dict.fromkeys(s for r in results for s in r.pop(
+        "not_measured_by_policy", [])))
+    consents = list(dict.fromkeys(r.pop("recording_consent") for r in results
+                                  if "recording_consent" in r))
+    report["not_measured_by_policy"] = policy_off
+    report["recording_consent"] = consents
     figures = median_report(results)
     worst = worst_worker(results)       # pass or fail, not a noisy figure: the worst run counts
     if worst is not None:
@@ -681,6 +789,10 @@ def parent(args):
         print(f"OVER BUDGET: {s} {m} {v} > {b}")
     for s, m in missing:
         print(f"NOT MEASURED: {s} {m}")
+    for s in policy_off:
+        print(f"{s}: {POLICY_SKIPPED}; managed policy turns microphone recording off")
+    if "off by policy" in consents:
+        print("The recording confirmation is off by policy: no consent record was made.")
     if skip:
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
     if not budgets:
@@ -783,9 +895,15 @@ def child(args):
                 interactive = time.perf_counter() - holder["t1"]
                 log("meetings shown")
                 send(imports_s=round(imports_s, 2), window_to_interactive_s=round(interactive, 2),
-                     startup_s=round(imports_s + interactive, 2), **worker)
+                     startup_s=round(imports_s + interactive, 2),
+                     recording_allowed=ws.managed()["allow"]["AllowMicrophoneRecording"],
+                     **worker)
                 for line in sys.stdin:
                     state = line.strip()
+                    if state == "check":                 # after a recording state's window
+                        send(recording=recording_now())
+                        continue
+                    started = {}
                     for step in steps(state, ws.recording_active()):
                         if step == "restore":
                             window.restore()
@@ -794,12 +912,15 @@ def child(args):
                         elif step.startswith("show:"):
                             window.evaluate_js(f"window.workspace.show('{step[5:]}')")
                         elif step == "record":
-                            record(window)
+                            started["consent"] = record(window)
                         elif step == "minimise":
                             window.minimize()
                     if state == "quit":
                         break
-                    send(state=state)
+                    if state in RECORDING_STATES:
+                        send(state=state, recording=recording_now(), **started)
+                    else:
+                        send(state=state)
             except Exception as exc:          # report, then let the window close
                 send(error=f"{type(exc).__name__}: {exc}")
             finally:
@@ -814,30 +935,40 @@ def child(args):
             """Start a recording as a person does: microphone recording on in
             Settings, then Record. The bridge asks the app's own recording
             question; consent_answerer says yes, and the bridge makes the
-            consent record that start_recording requires and keeps."""
+            consent record that start_recording requires and keeps. Where
+            policy turns the confirmation off, nothing is asked and no record
+            is made (consent_outcome). Returns that outcome for the report."""
+            waits = RECORD_WAITS_S                # the parent allows for these (step_timeout)
             if not ws.settings["microphone"]:
                 ws.set_settings({"microphone": True})
                 window.evaluate_js("window.workspace.show('meetings')")
             wait_for(window, "(() => { const b = document.getElementById('rec-start');"
                              " return !!b && !b.hidden && !b.disabled; })()", bool,
-                     "the Record button was not ready")
+                     "the Record button was not ready", waits["button"])
+            required = ws.consent_required()      # as the bridge reads it on the click
             window.evaluate_js("document.getElementById('rec-start').click()")
             wait_for(window, "!document.getElementById('rec-card').hidden", bool,
-                     "the recording did not start")
+                     "the recording did not start", waits["started"])
             rec = getattr(ws, "_recording", None)
-            if rec is None or not consent.valid_recording_record(rec.journal.get("consent")):
-                raise RuntimeError("the recording has no valid consent record")
-            if asked != [consent.RECORDING_TITLE]:
-                raise RuntimeError(f"unexpected questions: {asked}")
+            if rec is None:
+                raise RuntimeError("the recording did not open")
+            outcome = consent_outcome(required, rec.journal.get("consent"), list(asked),
+                                      consent.RECORDING_TITLE, consent.valid_recording_record)
             asked.clear()
-            end = time.monotonic() + 30
-            while (ws.recording_status().get("recording") or {}).get("seconds", 0) < 1:
+            end = time.monotonic() + waits["audio"]
+            while (recording_now() or {}).get("seconds", 0) < 1:
                 if time.monotonic() > end:
                     raise TimeoutError("no synthetic audio reached the recording")
                 time.sleep(0.1)
             if "sounddevice" in sys.modules:
                 raise RuntimeError("an audio device library was loaded")
-            log("recording synthetic audio")
+            log(f"recording synthetic audio (confirmation {outcome})")
+            return outcome
+
+        def recording_now():
+            """The open recording's state and length for the parent, or None."""
+            rec = ws.recording_status().get("recording")
+            return {"state": rec["state"], "seconds": rec["seconds"]} if rec else None
 
         # make_api's confirm seam (for tests and this tool; the app passes none):
         # the recording question is answered here, never shown on screen.
