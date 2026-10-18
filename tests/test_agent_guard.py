@@ -170,6 +170,7 @@ class FileToolTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 self.assertIsNone(fresh.decide(payload))
 
+    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
     def test_a_junction_or_short_name_is_resolved(self):
         # A synthetic profile in a temporary folder, with a "Local Settings" junction
         # to its local AppData as Windows makes one, and its 8.3 short name.
