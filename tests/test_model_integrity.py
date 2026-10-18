@@ -20,6 +20,7 @@ import io
 import json
 import os
 import pickle
+import struct
 import sys
 import tempfile
 import types
@@ -64,15 +65,38 @@ def recording_opens():
 
 # --- Synthetic checkpoints (never unpickled here) -----------------------------
 
-def archive(pickle_bytes, extra=()):
-    """A torch-style zip checkpoint holding one pickle."""
+def archive(pickle_bytes, extra=(), zip64=True):
+    """A torch-style zip checkpoint holding one pickle. Like torch.save, it
+    ends with zip64 end records even though it is small (zip64=False keeps
+    the plain layout Python's zipfile writes)."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("archive/data.pkl", pickle_bytes)
         z.writestr("archive/version", "3\n")
         for name, data in extra:
             z.writestr(name, data)
-    return buf.getvalue()
+    return with_zip64_records(buf.getvalue()) if zip64 else buf.getvalue()
+
+
+END = struct.Struct("<4sHHHHIIH")
+ZIP64_LOCATOR = struct.Struct("<4sIQI")
+ZIP64_END = struct.Struct("<4sQHHIIQQQQ")
+
+
+def with_zip64_records(data):
+    """Insert a zip64 end record and its locator before the end record, as
+    torch.save writes them (the central directory does not move)."""
+    *_, total, cd_size, cd_offset, _ = END.unpack_from(data, len(data) - END.size)
+    record = ZIP64_END.pack(b"PK\x06\x06", ZIP64_END.size - 12, 45, 45, 0, 0,
+                            total, total, cd_size, cd_offset)
+    locator = ZIP64_LOCATOR.pack(b"PK\x06\x07", 0, len(data) - END.size, 1)
+    return data[:-END.size] + record + locator + data[-END.size:]
+
+
+def patched(data, at, fmt, value):
+    """data with the field at offset at (negative: from the end) replaced."""
+    at %= len(data)
+    return data[:at] + struct.pack(fmt, value) + data[at + struct.calcsize(fmt):]
 
 
 def plain_pickle(tag):
@@ -605,6 +629,43 @@ class PickleCheckTests(unittest.TestCase):
             ("archive/byteorder", "little"), ("archive/data/0", b"\0" * 8),
             ("archive/.format_version", "1"), ("archive/.storage_alignment", "64"),
             ("archive/.data/serialization_id", "0123456789")]))
+
+
+    def test_an_archive_python_and_torch_could_read_differently_is_refused(self):
+        # Python's zip reader adjusts every offset for data placed before the
+        # archive; torch's reader uses the offsets as written. So of a code-
+        # running archive followed by an allowed one, Python reads the allowed
+        # one and torch the other. In each case Python finds an allowed pickle.
+        decoy = archive(plain_pickle("decoy"))
+        record = -END.size - ZIP64_LOCATOR.size - ZIP64_END.size
+        locator = -END.size - ZIP64_LOCATOR.size
+        with_comment = io.BytesIO()
+        with zipfile.ZipFile(with_comment, "w") as z:
+            z.writestr("archive/data.pkl", plain_pickle("decoy"))
+            z.comment = b"x"
+        cases = {
+            "an archive prepended": archive(CODE_RUNNING) + decoy,
+            "an archive prepended, plain layout": (
+                archive(CODE_RUNNING, zip64=False)
+                + archive(plain_pickle("decoy"), zip64=False)),
+            "data before the archive": b"\0" * 64 + decoy,
+            "data after the end record": decoy + b"\0" * 64,
+            "an archive comment": with_comment.getvalue(),
+            "zip64 locator points elsewhere": patched(decoy, locator + 8, "<Q", 0),
+            "zip64 record disagrees with the end record":
+                patched(decoy, record + 48, "<Q", 0),
+            "zip64 record claims extra data": patched(decoy, record + 4, "<Q", 52),
+            "end record disagrees with the zip64 record":
+                patched(decoy, -END.size + 16, "<I", 0),
+            "an entry the end records do not count":
+                patched(patched(decoy, -END.size + 10, "<H", 1), record + 32, "<Q", 1),
+        }
+        for label, data in cases.items():
+            with self.subTest(label), self.assertRaises(Refused):
+                speaker_load.check_pickle(data)
+        # Both layouts pass with nothing outside the archive.
+        speaker_load.check_pickle(decoy)
+        speaker_load.check_pickle(archive(plain_pickle("x"), zip64=False))
 
 
 class ConfigCheckTests(unittest.TestCase):

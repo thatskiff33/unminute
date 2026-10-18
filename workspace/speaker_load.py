@@ -8,8 +8,14 @@
 #   - the bytes come from asr_engines.read_verified, which read each pinned
 #     file once and hashed exactly those bytes: no file is opened again;
 #   - each checkpoint is checked before torch sees it: one pickle inside a
-#     torch zip archive, importing only ALLOWED_GLOBALS, by no other route,
-#     with entry names torch's reader cannot resolve to another entry;
+#     torch zip archive, importing only ALLOWED_GLOBALS, by no other route.
+#     The check reads the archive with Python's zip reader, not torch's, so
+#     the archive must have one reading for both: nothing before its first
+#     entry or after its end record, one consistent set of end records, and
+#     entry names torch's reader cannot resolve to another entry. Other
+#     differences between the two readers are not ruled out; torch's
+#     weights-only unpickler and the exact checks below still apply to what
+#     torch reads;
 #   - torch.load runs with weights_only=True and a scoped allowlist of three
 #     pyannote classes (torch.serialization.safe_globals, never the
 #     process-wide add_safe_globals);
@@ -37,6 +43,7 @@ import copy
 import io
 import pickle
 import pickletools
+import struct
 import zipfile
 from dataclasses import dataclass
 
@@ -131,6 +138,16 @@ EXPECTED_PLDA = (
 )
 
 
+# Zip end records (APPNOTE 4.3.14 to 4.3.16): the end of central directory
+# record, and the zip64 end record and its locator, which torch.save writes
+# before it even for a small archive.
+_END = struct.Struct("<4sHHHHIIH")
+_ZIP64_LOCATOR = struct.Struct("<4sIQI")
+_ZIP64_END = struct.Struct("<4sQHHIIQQQQ")
+_LOCAL_SIG, _END_SIG = b"PK\x03\x04", b"PK\x05\x06"
+_ZIP64_LOCATOR_SIG, _ZIP64_END_SIG = b"PK\x06\x07", b"PK\x06\x06"
+
+
 class Refused(ValueError):
     """A check failed. Its text is a fixed reason (never content or a path);
     callers turn it into ModelLoadError(LOAD_FAILED)."""
@@ -159,6 +176,7 @@ def pickle_globals(data):
         entries = archive.infolist()
     except (zipfile.BadZipFile, OSError, ValueError, EOFError):
         raise Refused("not a zip checkpoint") from None
+    check_layout(data, entries)
     check_entry_names(entries)
     pickles = [e for e in entries if e.filename.endswith("/data.pkl")]
     if len(pickles) != 1 or pickles[0].filename.count("/") != 1:
@@ -178,6 +196,42 @@ def pickle_globals(data):
     except Exception:          # truncated, malformed or a bad archive member
         raise Refused("checkpoint pickle is malformed") from None
     return found
+
+
+def check_layout(data, entries):
+    """Refuse an archive that Python's zip reader and torch's could read as
+    different archives. Python adjusts every offset for data placed before
+    the archive, and torch's reader uses the offsets as written, so a zip
+    prepended to another reads as two archives. So the archive must start
+    with its first entry, end with one end record (no comment), have a zip64
+    end record and locator only directly before it, pointing at each other
+    and agreeing with it, and its central directory must end where those
+    records begin and list every entry."""
+    size = len(data)
+    if size < _END.size or data[:4] != _LOCAL_SIG:
+        raise Refused("checkpoint does not start with its first entry")
+    (sig, disk, cd_disk, disk_entries, total, cd_size, cd_offset,
+     comment) = _END.unpack_from(data, size - _END.size)
+    if sig != _END_SIG or disk or cd_disk or comment or disk_entries != total:
+        raise Refused("checkpoint does not end with one end record")
+    end = size - _END.size
+    locator = end - _ZIP64_LOCATOR.size
+    if locator >= 0 and data[locator:locator + 4] == _ZIP64_LOCATOR_SIG:
+        record = locator - _ZIP64_END.size
+        if record < 0:
+            raise Refused("checkpoint zip64 records are inconsistent")
+        _, record_disk, record_offset, disks = _ZIP64_LOCATOR.unpack_from(data, locator)
+        (sig64, record_size, _, _, disk64, cd_disk64, disk_entries64, total64,
+         cd_size64, cd_offset64) = _ZIP64_END.unpack_from(data, record)
+        if (record_disk or disks != 1 or record_offset != record
+                or sig64 != _ZIP64_END_SIG or record_size != _ZIP64_END.size - 12
+                or disk64 or cd_disk64 or disk_entries64 != total64
+                or (total64, cd_size64, cd_offset64) != (total, cd_size, cd_offset)):
+            raise Refused("checkpoint zip64 records are inconsistent")
+        end = record
+    if (not entries or cd_offset + cd_size != end or total != len(entries)
+            or min(entry.header_offset for entry in entries) != 0):
+        raise Refused("checkpoint has data outside its archive")
 
 
 def check_entry_names(entries):
