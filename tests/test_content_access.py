@@ -46,15 +46,21 @@ HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 # name still counts). A string that is itself Python (a script for a child
 # process) is parsed and checked as code. Matching ignores case, quoted and
 # schema-qualified names ("meetings", [meetings], main.meetings, "{t}") are
-# unquoted, and a table counts as used wherever its name appears (comma joins
-# and subqueries included). Names are followed in line order within one
-# function, so of a name assigned on two branches the later text counts; the
-# expression is also checked with each name as a piece known only at run time
-# (so the earlier text is not lost, at the cost of flagging a run-time build
-# around a content table even where the name's text is plain).
-# It cannot see SQL passed between functions, held in attributes, read from
-# data or joined with str.join: the authorizer below covers the paths the
-# scrambling tests run.
+# unquoted, and a table written into the text counts as used wherever its name
+# appears (comma joins and subqueries included). A table named at run time is
+# seen only as a slot straight after FROM, JOIN, INTO, UPDATE or TABLE.
+# Names are followed in line order within one function, so of a name assigned
+# on two branches the later text counts. An expression with a literal piece is
+# also checked with each name as a piece known only at run time, so with a
+# content table written in it, a name outside an "IN (...)" slot is flagged
+# as a run-time build whatever text it held.
+# It does not see: a run-time table after a comma, "(" or a comment; a name
+# assigned by tuple unpacking; the earlier text of a name assigned on two
+# branches, where the expression is made only of names; SQL passed between
+# functions, held in attributes or containers, read from data or joined with
+# str.join. The authorizer below covers only the paths the scrambling tests
+# run. The backstop is C2b, planned to rename the sealed columns (#111), so a
+# raw read missed here will fail loudly.
 
 HOLE = " \x00 "
 LOOKS_LIKE_SQL = re.compile(
@@ -67,7 +73,12 @@ QUOTED = re.compile(r'"(\w+)"|\[(\w+)\]|`(\w+)`')
 QUOTED_HOLE = re.compile(r"[\"'`\[]\s*\x00\s*[\"'`\]]")
 QUOTED_TABLE = re.compile(r"\b(from|join|into|update|table)\s+'(\w+)'")
 SCHEMA_NAME = re.compile(r"\b(?:main|temp)\s*\.\s*")
-FORMAT_SLOT = re.compile(r"%\(\w+\)s|%s|\{\w*\}")
+# A %-conversion (with a mapping key, flags, width or precision) or a
+# str.format field (with an index, attribute, conversion or spec). It errs on
+# the strict side: a LIKE pattern such as '%d%', or an escaped "%%s" or
+# "{{x}}", counts as a slot too.
+FORMAT_SLOT = re.compile(r"%(?:\(\w+\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d+))?[hlL]?"
+                         r"[diouxXeEfFgGcrsa]|\{[\w.\[\]]*(?:![rsa])?(?::[^{}]*)?\}")
 TABLE_SLOT = re.compile(r"\b(?:from|join|into|update|table)\s+\x00")
 STAR = re.compile(r"(?:\bselect\s+(?:distinct\s+|all\s+)?|,\s*|\.\s*|\breturning\s+)\*")
 LIST_SLOT = re.compile(r"\bin\s*\(\s*\x00\s*\)")
@@ -224,8 +235,8 @@ def _is_sql(text):
 
 
 def _normal(text):
-    """Lower case; names unquoted (a quoted slot as HOLE) and unqualified; %s
-    and {} slots as HOLE."""
+    """Lower case; names unquoted (a quoted slot as HOLE) and unqualified;
+    format slots (FORMAT_SLOT) as HOLE."""
     text = FORMAT_SLOT.sub(HOLE, text).lower()
     text = QUOTED_HOLE.sub(HOLE, text)
     text = QUOTED.sub(lambda m: m.group(m.lastindex), text)
@@ -237,7 +248,8 @@ def content_problems(text):
     """What a SQL text does with content: names a content column of a table it
     uses, selects or returns * with one, inserts into one without naming the
     columns, or is built at run time around one (a slot other than "IN (?)").
-    A table named only at run time is taken to be any table with content."""
+    A table named only at run time (a slot straight after FROM, JOIN, INTO,
+    UPDATE or TABLE) is taken to be any table with content."""
     t = _normal(text)
     tables = [name for name in store.CONTENT_COLUMNS if re.search(rf"\b{name}\b", t)]
     dynamic = bool(TABLE_SLOT.search(t))
@@ -369,6 +381,8 @@ class StaticTests(unittest.TestCase):
             # format slots: a column chosen at run time
             "SELECT %s FROM meetings": "built at run time with meetings",
             "SELECT {} FROM holds": "built at run time with holds",
+            "SELECT %.5s FROM meetings": "built at run time with meetings",
+            "SELECT {c!s:>9} FROM holds": "built at run time with holds",
             # a table named at run time, quoted or not, with another slot or
             # a positional insert
             'SELECT title FROM "{}"': "<run-time table>.title",
@@ -471,7 +485,11 @@ class StaticTests(unittest.TestCase):
                       "id IN (SELECT meeting_id FROM holds WHERE reason = ?)", "[path] = ?",
                       "`reason` = ?", "(?, ?, ?, ?, ?, ?, ?) IN (SELECT * FROM holds)",
                       "id IN (SELECT meeting_id FROM versions)",
-                      "id IN (select meeting_id from versions)", None):
+                      "id IN (select meeting_id from versions)",
+                      # IN with a table or table-valued function, not a list
+                      "(?, ?, ?, ?, ?, ?, ?) IN holds", "id IN json_each(?)",
+                      # * on its own, with no subquery
+                      "COUNT(*) > 0", None):
             with self.subTest(where=where), self.assertRaises(ValueError):
                 store.plain_condition(where)
         with tempfile.TemporaryDirectory() as tmp:
@@ -483,6 +501,7 @@ class StaticTests(unittest.TestCase):
                     with self.subTest(call=call.__name__), self.assertRaises(ValueError):
                         call(where, ("x",))
                 self.assertEqual(1, len(s.meetings("phase != ?", ("error",))))
+                self.assertEqual(1, len(s.meetings("phase NOT IN (?, ?)", ("error", "x"))))
             finally:
                 s.close()
 
