@@ -182,7 +182,6 @@ def set_zoom(window, direction):
 
 
 SUSPEND_DELAY_S = 3.0      # long enough for the page's 800 ms autosave to finish
-minimise_failed = False    # set if a WebView2 call failed (content-free; for diagnostics)
 
 
 class Minimise:
@@ -304,13 +303,13 @@ class _UiTimer:
 
 
 def _guarded(fn, *args):
-    """Run a window-quietening step; a WebView2 failure never stops the app,
-    and is noted in minimise_failed so it can be seen in diagnostics."""
-    global minimise_failed
+    """Run a window-quietening step. A WebView2 failure never stops the app:
+    the window stays as it is (shown, or hidden but not suspended) and the
+    next minimise or restore tries again (#196)."""
     try:
         fn(*args)
     except Exception:
-        minimise_failed = True
+        pass
 
 
 def watch_minimise(window, recording):

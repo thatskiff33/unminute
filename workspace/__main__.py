@@ -427,7 +427,7 @@ def main():
         try:
             shell.watch_minimise(window, ws._capturing)
         except Exception:
-            shell.minimise_failed = True   # still works, just not as quietly
+            pass                           # still works, just not as quietly
     window.events.shown += quiet_when_minimised
     try:
         # The WebView2 profile lives inside the workspace (and is wiped at the
