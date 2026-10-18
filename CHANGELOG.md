@@ -160,7 +160,6 @@ Not yet verified (see docs/RELEASE_CHECKLIST.md):
 - resource use on the lowest-supported laptop (#28);
 - the final fetch step for OneDrive online-only files (#24).
 
-
 - Docs: a business-user guide (docs/WORKSPACE_GUIDE.md) and a release checklist with tested compatibility (docs/RELEASE_CHECKLIST.md). The privacy wording now separates local processing from synced storage and from deliberate sharing with an AI assistant (#29, #8).
 - Workspace updates: one gate for self-service and IT-managed installs. An update that changes how the workspace is stored waits, and explains why, until there are no meetings, retention holds or unfinished cleanup. Holds are never expired and no content backups are made. Compatible updates keep everything, and rollback to the previous version is supported (#26).
 - Speech models: Whisper and Parakeet files are pinned to exact revisions and SHA-256 checksums, and a model folder that merely exists is not treated as installed.

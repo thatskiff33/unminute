@@ -624,6 +624,8 @@ class DataFolderOverlapTests(unittest.TestCase):
     MESSAGE = "must not be in, or hold"
     PROGRAMS = '[Environment]::GetFolderPath("Programs")'
     KEY = r'$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"'
+    # The copy's uninstall key: absent unless a test creates it, and removed after.
+    TEST_KEY = rf"Software\Unminute-UnitTest-uninstall-{os.getpid()}"
 
     def run_script(self, script, install_dir, local, extra="", location=None, cwd=None):
         call = f"& '{script}' -InstallDir '{install_dir}' -Silent {extra}"
@@ -679,7 +681,7 @@ class DataFolderOverlapTests(unittest.TestCase):
         programs = Path(tmp) / "programs"
         programs.mkdir()
         text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
-            self.KEY, f'$RegKey = "HKCU:\\Software\\Unminute-UnitTest-absent-{os.getpid()}"')
+            self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"')
         # Nothing else in it may reach this computer's own shortcuts or registry.
         for reach in ("GetFolderPath", "Start Menu\\", "$env:APPDATA", "HKCU:\\Software\\Microsoft",
                       "HKLM", "Registry::", "ComObject"):
@@ -727,6 +729,60 @@ class DataFolderOverlapTests(unittest.TestCase):
             self.assertFalse(install.exists())
             self.assertFalse(link.exists())
             self.assertTrue(kept.is_file())
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_needs_an_install_or_the_registered_folder(self):
+        # A wrong -InstallDir (missing, empty, or a network or device form) must not
+        # remove the real install's shortcut and uninstall entry and report success
+        # (R13b review). The registered folder, with its files already gone, may.
+        import winreg
+        self.addCleanup(self.delete_test_key)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            link.write_text("shortcut")
+            empty = Path(tmp) / "empty"
+            empty.mkdir()
+            typo = Path(tmp) / "typo"
+            for where, says in ((typo, "No Unminute install"),
+                                (empty, "No Unminute install"),
+                                (r"\\localhost\C$\Programs\Unminute", "own drive"),
+                                ("//localhost/C$/Programs/Unminute", "own drive"),
+                                ("\\\\?\\" + str(typo), "own drive")):
+                with self.subTest(where=str(where)):
+                    r = self.run_script(copy, where, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn(says, r.stderr)
+                    self.assertIn("so nothing was removed", r.stderr)
+                    self.assertTrue(link.is_file() and empty.is_dir())
+            # An uninstall entry for another folder does not make this one an install.
+            registered = Path(tmp) / "Programs" / "Unminute"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(registered))
+            r = self.run_script(copy, typo, local, cwd=tmp)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertTrue(link.is_file() and self.key_exists())
+            # The registered folder, already deleted: the shortcut and entry go.
+            r = self.run_script(copy, registered, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(link.exists())
+            self.assertFalse(self.key_exists())
+
+    def key_exists(self):
+        import winreg
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY))
+            return True
+        except FileNotFoundError:
+            return False
+
+    def delete_test_key(self):
+        import winreg
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY)
+        except FileNotFoundError:
+            pass
 
     def test_both_scripts_have_the_same_overlap_check(self):
         # The installer's copy is the one run for every case above.

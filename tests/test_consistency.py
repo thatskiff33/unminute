@@ -148,7 +148,8 @@ class InstallIdentityTests(unittest.TestCase):
         old = re.compile(r"WhisperWorkspace|WhisperTranscriber|MeetingWorkspace|Meeting Workspace"
                          r"|whisper\.ico|whisper-models|whisper[\\/]+workspace"
                          r"""|["']whisper["']\s*[/,]\s*["']workspace["']"""
-                         r"|earlier app|Whisper Transcriber", re.IGNORECASE)
+                         r"|earlier app|Whisper Transcriber"
+                         r"|whisper-(?:gpu-)?worker|WHISPER_TEST_MARKER", re.IGNORECASE)
         # Everything the package ships (APP_FILES, the app, the installer), and the
         # changelog fragments that become its CHANGELOG.md.
         files = [ROOT / "asr_engines.py", ROOT / "offline_guard.py", ROOT / "README.md",

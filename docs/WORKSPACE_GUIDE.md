@@ -128,6 +128,15 @@ Self-service updates and IT-managed updates follow the same rule: an update that
 
 The installer explains what it is waiting for, and so does Settings > Updates in the app. No update expires a hold, deletes your work or makes a backup copy of it. Updates that keep the same storage format keep everything.
 
+**From version 0.4.3 or earlier, this is not an update in place.** The new version starts with an empty workspace and does not see your meetings in the earlier one. So, in order:
+
+1. In the earlier version: hand off or copy anything you still need, confirm the cleanup of finished meetings, check any holds with whoever manages them, and remove the Hugging Face token in Setup.
+2. Uninstall the earlier version in Settings > Apps.
+3. Install the new version.
+4. In the new version's Setup, download the models again and enter the token again.
+
+The earlier version's workspace and models stay on the computer until they are deleted. [PACKAGING.md](PACKAGING.md) ("Updates") says where they are, and what to do if you installed in the other order.
+
 ## Troubleshooting and support
 
 | Problem | What to do |

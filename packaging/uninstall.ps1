@@ -6,7 +6,8 @@
   Removes the installed program, its Start menu shortcut and its uninstall
   entry. It removes only what the installer put in the install folder
   (versions, current.json and this script); if the folder holds anything
-  else, it removes nothing. It does NOT remove the workspace (meetings, holds, settings) or the
+  else, or is not an install that the uninstall entry names, it removes
+  nothing. It does NOT remove the workspace (meetings, holds, settings) or the
   downloaded models: meeting content is only removed through the app's own
   confirmed cleanup, which honours retention holds. If meetings remain, this
   says so.
@@ -55,9 +56,29 @@ try {
         Stop-Uninstall 1 "No install folder was given, so nothing was removed."
     }
     $Options.InstallDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Options.InstallDir)
+    # A network, device or long-path form (\\, //, \\?\) is refused, as the installer
+    # refuses it: the overlap check below compares paths as text.
+    if ($Options.InstallDir -match '^[\\/]{2}') {
+        Stop-Uninstall 1 "The install folder must be on this computer's own drive, not a network or device path (starting with \\ or //), so nothing was removed."
+    }
     $overlap = Get-DataOverlap $Options.InstallDir
     if ($overlap) {
         Stop-Uninstall 1 "The install folder is in, or holds, $AppName's data folder ($overlap), so nothing was removed."
+    }
+    # The folder must be an install (current.json or versions), or the one the
+    # uninstall entry names (its files already gone). A wrong -InstallDir would
+    # otherwise remove the real install's shortcut and uninstall entry, and report
+    # success, while leaving the program itself in place.
+    $isInstall = (Test-Path -LiteralPath (Join-Path $Options.InstallDir "current.json")) -or
+        (Test-Path -LiteralPath (Join-Path $Options.InstallDir "versions"))
+    $registered = $false
+    if (Test-Path -LiteralPath $RegKey) {
+        $location = (Get-ItemProperty -LiteralPath $RegKey -ErrorAction SilentlyContinue).InstallLocation
+        $registered = $location -and
+            ($location.TrimEnd("\") -ieq $Options.InstallDir.TrimEnd("\"))
+    }
+    if (-not ($isInstall -or $registered)) {
+        Stop-Uninstall 1 "No $AppName install was found in the install folder, so nothing was removed. Check -InstallDir."
     }
     $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
         try { $_.Path -and $_.Path.StartsWith($Options.InstallDir.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase) } catch { $false }
