@@ -710,6 +710,177 @@ class ShellTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command, name)))
 
+    def test_short_message_options_are_text_only_for_git_and_gh(self):
+        # -m, -b and -t are message text for git and gh only, and -Value for the
+        # cmdlets that write text; another program's value is a path (R13b round 4).
+        data = r"C:\Users\someone\AppData\Local\Unminute\workspace"
+        for command, name in (
+                ('ls -t "C:/Users/someone/AppData/Local/Unminute/workspace"', "Bash"),
+                ('cat -b "C:/Users/someone/AppData/Local/Unminute/workspace/a.json"', "Bash"),
+                ("sort -m 'C:/Users/someone/AppData/Local/whisper/workspace/a.txt'", "Bash"),
+                (f'Get-Item -t "{data}\\a.json"', "PowerShell"),
+                (f'Set-ItemProperty -Path HKCU:\\x -Name y -Value "{data}"', "PowerShell"),
+                (f"gh-tool -f 'k={data}\\a.json'", "Bash")):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(shell(command, name)))
+        for command, name in (
+                (f'gh pr create -t "P2" -b "P2: {data}"', "Bash"),
+                (f'git commit -m "P2: {data}"', "PowerShell"),
+                (f'git commit -m "Fix a | b; c" -m "P2: {data}"', "Bash"),
+                (f'git -C ../unminute-r7 commit -m "P2: {data}"', "Bash"),
+                (f'& git commit -m "P2: {data}"', "PowerShell"),
+                (f'git add AGENTS.md && git commit -m "P2: {data}"', "Bash"),
+                (f"gh api repos/o/r/issues -f 'body=P2: {data}'", "Bash"),
+                (f"Set-Content -Path notes.md -Value '{data}'", "PowerShell"),
+                (f"Add-Content notes.md -Value 'P2: {data}'", "PowerShell"),
+                ("ls -t workspace", "Bash")):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command, name)))
+
+    def test_an_assigned_command_substitution_is_kept_whole(self):
+        # A bash value from $(...) or backticks, with quotes inside, is substituted
+        # whole where it is used (R13b round 4 review).
+        for command in ('L=$(cygpath "$LOCALAPPDATA"); rg -n budget "$L"',
+                        'L="$(cygpath -u "$LOCALAPPDATA")"; grep -rn budget "$L"',
+                        'L=`cygpath "$LOCALAPPDATA"`; rg -n budget "$L"',
+                        'export L=$(cygpath "$LOCALAPPDATA"); find "$L" -name "*.json"'):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(shell(command)))
+        for command in ('H=$(git rev-parse --short HEAD); echo "$H"',
+                        'V="$(python -c "print(1)")"; echo "$V"',
+                        'R=$(git rev-parse --show-toplevel); rg -n budget "$R/workspace"'):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command)))
+
+    def test_home_folder_climbs_and_other_names_are_expanded(self):
+        # ~\.. keeps the folder it climbs from; a bare cd is the home folder, and an
+        # empty popd stays; the home folder's other names (R13b round 4 review).
+        home = r"C:\Users\someone"
+        env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home,
+               "SystemDrive": "C:", "PUBLIC": r"C:\Users\Public", "USERNAME": "someone",
+               "HOMEDRIVE": "C:", "HOMEPATH": r"\Users\someone", "OneDrive": home + r"\OneDrive",
+               "windir": r"C:\Windows", "ProgramData": r"C:\ProgramData"}
+        with mock.patch.dict(os.environ, env):
+            fresh = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(fresh)
+            for command, name in (
+                    (r"rg -n budget ~\..", "Bash"),
+                    ("rg -n budget ~/..", "Bash"),
+                    (r"rg -n budget ~\..", "PowerShell"),
+                    ("grep -rn budget $HOME/..", "Bash"),
+                    (r"Get-ChildItem -Recurse $env:USERPROFILE\.. -Filter *.json", "PowerShell"),
+                    ("cd ~/..; rg -n budget", "Bash"),
+                    (r"cd $env:LOCALAPPDATA; popd; rg -n budget", "PowerShell"),
+                    (r"Set-Location $env:LOCALAPPDATA; Pop-Location; "
+                     "Get-ChildItem -Recurse -Filter *.json", "PowerShell"),
+                    ('rg -n budget "$HOMEDRIVE$HOMEPATH"', "Bash"),
+                    (r'Get-ChildItem -Recurse "$env:HOMEDRIVE$env:HOMEPATH" -Filter *.json',
+                     "PowerShell"),
+                    ("rg -n budget %HOMEDRIVE%%HOMEPATH%", "PowerShell"),
+                    (r"rg -n budget $env:SystemDrive\Users", "PowerShell"),
+                    (r"grep -rn budget %SystemDrive%\Users", "Bash"),
+                    (r"rg -n budget C:\Users\$env:USERNAME", "PowerShell"),
+                    (r"rg -n budget $env:PUBLIC\..", "PowerShell"),
+                    (r"rg -n budget $env:OneDrive\..", "PowerShell"),
+                    ("rg -n budget ([Environment]::GetFolderPath('UserProfile'))", "PowerShell"),
+                    # any variable holding a full path, an option's joined value, a
+                    # cd at the start of a block, and .NET's AllDirectories
+                    (r"rg -n budget $env:windir\..\Users", "PowerShell"),
+                    (r"rg -n budget %ProgramData%\..\Users", "PowerShell"),
+                    (r"Get-ChildItem -Recurse -Path:$env:USERPROFILE -Filter *.json",
+                     "PowerShell"),
+                    (r"Set-Location -Path:$env:LOCALAPPDATA; rg -n budget", "PowerShell"),
+                    (r"if ($true) { cd $env:LOCALAPPDATA }; rg -n budget", "PowerShell"),
+                    (r"[IO.Directory]::GetFiles($env:LOCALAPPDATA, '*.json', 'AllDirectories')",
+                     "PowerShell"),
+                    (r"[IO.Directory]::EnumerateFiles($env:USERPROFILE, '*', 'AllDirectories')",
+                     "PowerShell")):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNotNone(fresh.decide(shell(command, name)))
+            for command, name in (
+                    (r"rg -n budget $env:USERPROFILE\Local_Repos\unminute", "PowerShell"),
+                    (r"rg -n budget ~\Local_Repos\unminute\..\unminute-r7", "PowerShell"),
+                    ("cd ~/Local_Repos/unminute/..; rg -n x unminute", "Bash"),
+                    (r"rg -n budget $env:OneDrive\Documents", "PowerShell"),
+                    (r"Get-ChildItem $env:SystemDrive\Users", "PowerShell"),
+                    (r"Get-ChildItem $env:windir\Fonts", "PowerShell"),
+                    (r"Get-ChildItem -Recurse -Path:$env:USERPROFILE\.claude -Filter *.md",
+                     "PowerShell"),
+                    (r"[IO.Directory]::GetFiles(" + '"$env:USERPROFILE\\Local_Repos"'
+                     + ", '*.md', 'AllDirectories')", "PowerShell")):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNone(fresh.decide(shell(command, name)))
+            folder = fresh._Folder(home + r"\Local_Repos")
+            folder.change("popd", "")
+            self.assertEqual(home + r"\Local_Repos", folder.here)
+            folder.change("cd", "")
+            self.assertEqual(home, folder.here)
+
+    def test_a_search_pattern_is_not_read_as_a_nested_command(self):
+        # A pattern that quotes a search is text; -E and -SimpleMatch are switches
+        # that take no value (R13b round 4 review).
+        for command, name in (
+                ('rg -n "rg -n budget $env:LOCALAPPDATA" docs', "Bash"),
+                ('rg -n "rg -n budget $env:LOCALAPPDATA" docs', "PowerShell"),
+                ("grep -rn 'find ~/AppData/Local' docs", "Bash"),
+                (r"Select-String -Path docs\*.md -Pattern 'Get-ChildItem -Recurse "
+                 r"$env:LOCALAPPDATA'", "PowerShell"),
+                ("grep -E 'a|b' -rn workspace", "Bash")):
+            with self.subTest(command=command, tool=name):
+                self.assertIsNone(guard.decide(shell(command, name)))
+        for command, name in (
+                ("grep budget -E ~/AppData/Local/Unminute/workspace/a.json", "Bash"),
+                (r"Select-String budget -SimpleMatch C:\Users\someone\AppData\Local\Unminute"
+                 r"\workspace\a.json", "PowerShell")):
+            with self.subTest(command=command, tool=name):
+                self.assertIsNotNone(guard.decide(shell(command, name)))
+
+    def test_cd_in_a_string_another_shell_runs_is_followed(self):
+        # cd at the start of bash -c, pwsh -c or a scriptblock moves the folder the
+        # rest runs in (R13b round 4 review).
+        for command, name in (('bash -c "cd $LOCALAPPDATA && rg -n budget"', "Bash"),
+                              ("sh -c 'cd ~/AppData/Local; grep -rn budget .'", "Bash"),
+                              ('pwsh -c "Set-Location $env:LOCALAPPDATA; rg -n budget"',
+                               "PowerShell"),
+                              ('powershell -NoProfile -Command "cd $env:LOCALAPPDATA; '
+                               'Get-ChildItem -Recurse -Filter *.json"', "PowerShell"),
+                              (r"& { cd $env:LOCALAPPDATA; rg -n budget }", "PowerShell")):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(shell(command, name)))
+        self.assertIsNone(guard.decide(shell('bash -c "cd workspace && rg -n x"')))
+
+    def test_other_recursive_programs_and_interpreter_walks_are_checked(self):
+        # du, forfiles /s and where /r walk a folder's tree; so does code that walks
+        # local AppData or the home folder named whole (R13b round 4 review).
+        for command, name in (
+                (r"forfiles /p %LOCALAPPDATA% /s /m *.json", "PowerShell"),
+                (r"where /r %LOCALAPPDATA% *.json", "Bash"),
+                ("du -a ~/AppData/Local", "Bash"),
+                (r"cd $env:LOCALAPPDATA; du -a", "PowerShell"),
+                ("python -c \"import os; [print(f) for r, d, f in "
+                 "os.walk(os.environ['LOCALAPPDATA'])]\"", "Bash"),
+                ("python - <<'EOF'\nimport os, pathlib\nfor p in pathlib.Path("
+                 "os.environ['LOCALAPPDATA']).rglob('*.json'): print(p)\nEOF", "Bash"),
+                ("node -e \"console.log(require('fs').readdirSync(process.env.LOCALAPPDATA, "
+                 "{recursive: true}))\"", "Bash"),
+                ("python -c \"from pathlib import Path; print(list(Path.home().rglob('*.db')))\"",
+                 "PowerShell"),
+                ("python -c \"import os; print(list(os.walk(os.path.expanduser('~'))))\"",
+                 "Bash")):
+            with self.subTest(command=command):
+                self.assertIsNotNone(guard.decide(shell(command, name)))
+        for command, name in (
+                ("du -sh workspace", "Bash"),
+                ("where python", "PowerShell"),
+                ("forfiles /p workspace /m *.py", "PowerShell"),
+                ("python -c \"import glob; print(glob.glob('workspace/**/*.py', "
+                 "recursive=True))\"", "Bash"),
+                ("python -c \"import os; print(os.listdir(os.environ['LOCALAPPDATA']))\"", "Bash"),
+                ("python -c \"from pathlib import Path; print(list((Path.home() / "
+                 "'Local_Repos').rglob('*.md')))\"", "Bash")):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command, name)))
+
     def test_monitor_commands_are_checked(self):
         # Monitor runs a shell command too.
         self.assertIsNotNone(guard.decide(tool(
@@ -767,7 +938,11 @@ class HookProcessTests(unittest.TestCase):
                         shell('timeout 60 rg -n budget "$LOCALAPPDATA"'),
                         shell('pwsh -c "rg -n budget $env:LOCALAPPDATA"', "PowerShell"),
                         shell('$p = "$env:LOCALAPPDATA" + "\\Unminute\\workspace\\settings.json";'
-                              " Get-Content $p", "PowerShell")):
+                              " Get-Content $p", "PowerShell"),
+                        # round 4: ~\.., a whole $(...) value, an empty popd
+                        shell(r"rg -n budget ~\..", "PowerShell"),
+                        shell('L=$(cygpath "$LOCALAPPDATA"); rg -n budget "$L"'),
+                        shell(r"cd $env:LOCALAPPDATA; popd; rg -n budget", "PowerShell")):
             with self.subTest(payload=payload):
                 self.assertEqual(2, self.run_hook(payload).returncode)
 
