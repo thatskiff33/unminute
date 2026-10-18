@@ -29,8 +29,9 @@ Privacy
   which keeps real content until the user deletes it) or real recordings. Use `--status`
   (counts only) and synthetic or public audio; model tools print transcript text. Guard: the
   deny rules and hook in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail
-  rather than a security boundary (it catches the paths as usually written; hardening it is
-  #221); review for Codex.
+  rather than a security boundary: it blocks the common ways to read, list, search or copy
+  the data, and its known gaps are in the hook's header and `docs/SECURITY_MODEL.md` T34;
+  review for Codex.
 - **P3** Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths
   or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`.
 
