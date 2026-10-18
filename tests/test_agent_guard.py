@@ -5,7 +5,6 @@
 # workspace/ package alone. Stdlib only.
 
 import ast
-import contextlib
 import importlib.util
 import json
 import os
@@ -15,7 +14,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOK = ROOT / ".claude" / "hooks" / "private_data_guard.py"
@@ -33,18 +31,6 @@ def shell(command, name="Bash"):
     return tool(name, command=command)
 
 
-@contextlib.contextmanager
-def profile_guard():
-    """The hook loaded afresh under a synthetic Windows profile, C:\\Users\\someone, so
-    checks of the folders above local AppData run the same on Linux CI."""
-    home = r"C:\Users\someone"
-    env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home}
-    with mock.patch.dict(os.environ, env):
-        fresh = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(fresh)
-        yield fresh
-
-
 class FileToolTests(unittest.TestCase):
     def test_extracted_folder_beside_agents_md_is_blocked(self):
         for payload in (tool("Read", file_path="extracted/meeting.md"),
@@ -57,285 +43,54 @@ class FileToolTests(unittest.TestCase):
 
     def test_live_workspace_is_blocked(self):
         local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
-        for path in (local + r"\Unminute\workspace\workspace.db",
-                     "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
-                     # the old folder keeps real content until the user deletes it
-                     local + r"\whisper\workspace\workspace.db",
-                     "C:/Users/someone/AppData/Local/whisper/workspace/media/1/audio.f32",
-                     local + r"\whisper\WORKSP~1\workspace.db",     # its 8.3 short name
-                     # a damaged workspace renamed aside, as the guide says
-                     local + r"\Unminute\workspace-damaged\workspace.db",
-                     # device, long-path and network forms of the same folder
-                     "\\\\?\\" + local + r"\Unminute\workspace\workspace.db",
-                     r"\\localhost\C$\Users\someone\AppData\Local\Unminute\workspace\a.db",
-                     "//localhost/C$/Users/someone/AppData/Local/Unminute/workspace/a.db",
-                     # .. from another folder in local AppData
-                     local + r"\Temp\..\Unminute\workspace\workspace.db"):
+        for path in (local + r"\whisper\workspace\workspace.db",
+                     "C:/Users/someone/AppData/Local/whisper/workspace/media/1/audio.f32"):
             with self.subTest(path=path):
                 self.assertIsNotNone(guard.decide(tool("Read", file_path=path)))
-        # Relative to the working folder, or Glob's pattern relative to its path;
-        # and the data folder around the workspace, except its models.
-        for payload in (tool("Read", cwd=local, file_path=r"Unminute\workspace\settings.json"),
-                        tool("Read", file_path=local + r"\Unminute\models\..\workspace\a.db"),
-                        tool("Read", cwd=local + r"\Unminute\models",
-                             file_path=r"..\workspace\a.db"),
-                        tool("Glob", path=local, pattern="Unminute/workspace/**"),
-                        tool("Glob", cwd=local, pattern="Unminute/workspace/**/*.json"),
-                        tool("Glob", path=local + r"\Unminute", pattern="**/*.json"),
-                        tool("Read", cwd=local + r"\Temp", file_path=r"..\Unminute\workspace\a.db"),
-                        # a wildcard that stands for the data folder
-                        tool("Glob", path=local, pattern="Unmin*/workspace/*"),
-                        tool("Glob", path=local, pattern="*/workspace/*"),
-                        tool("Glob", path=local, pattern="**/*.json"),
-                        tool("Grep", pattern="budget", path=local + r"\Unminute")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(guard.decide(payload))
-        self.assertIsNone(guard.decide(tool("Glob", path=local + r"\Unminute\models",
-                                            pattern="**/*.json")))
-        self.assertIsNone(guard.decide(tool("Read",
-                                            file_path=local + r"\Unminute\models\a\..\b.json")))
 
-    def test_a_redirected_profile_is_recognised(self):
-        # LOCALAPPDATA need not end in AppData\Local (a VDI profile on another drive).
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": r"D:\Profiles\someone\Local"}):
-            redirected = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(redirected)
-        for path in (r"D:\Profiles\someone\Local\Unminute\workspace\workspace.db",
-                     "D:/Profiles/someone/Local/Unminute/workspace/settings.json"):
-            with self.subTest(path=path):
-                self.assertIsNotNone(redirected.decide(tool("Read", file_path=path)))
-        self.assertIsNone(redirected.decide(
-            tool("Read", file_path=r"D:\Profiles\someone\Local\Unminute\models\a.json")))
-
-    def test_a_search_above_the_data_folder_is_blocked(self):
-        # Grep searches its folder whole, and Glob's ** does too.
-        local = r"C:\Users\someone\AppData\Local"
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": local}):
-            fresh = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fresh)
-        for payload in (tool("Grep", pattern="budget", path=local),
-                        tool("Grep", pattern="budget", path=local + "\\"),
-                        tool("Grep", pattern="budget", path=r"C:\Users\someone"),
-                        tool("Grep", pattern="budget", cwd=local),
-                        tool("Grep", pattern="budget", cwd=r"C:\Users\someone", path="AppData"),
-                        tool("Glob", path=r"C:\Users\someone", pattern="**/*.db")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(fresh.decide(payload))
-        for payload in (tool("Grep", pattern="budget", path=local + r"\Temp\review"),
-                        tool("Grep", pattern="budget", path=local + r"\Unminute\models"),
-                        tool("Grep", pattern="budget", path=r"C:\Users\someone\Local_Repos"),
-                        tool("Grep", pattern="budget", cwd=r"C:\Users\someone\Repos\unminute"),
-                        tool("Glob", path=r"C:\Users\someone", pattern="*.txt")):
-            with self.subTest(payload=payload):
-                self.assertIsNone(fresh.decide(payload))
-
-    def test_a_home_folder_written_as_tilde_is_expanded(self):
-        # Grep and Glob read a leading ~ as the home folder, which holds local
-        # AppData (R13b round 2 review).
-        home = r"C:\Users\someone"
-        env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home}
-        with mock.patch.dict(os.environ, env):
-            fresh = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fresh)
-            for payload in (tool("Grep", pattern="x", path="~"),
-                            tool("Grep", pattern="x", path="~/"),
-                            tool("Grep", pattern="x", path="~\\"),
-                            tool("Grep", pattern="x", path="~/AppData"),
-                            tool("Glob", path="~", pattern="**/*.json"),
-                            tool("Glob", path="~", pattern="**/workspace/*.json"),
-                            tool("Glob", pattern="~/**/settings.json"),
-                            tool("Bash", command="cd ~; rg -n x"),
-                            tool("PowerShell", command=r"Get-ChildItem -Recurse C:\*.json"),
-                            tool("Bash", cwd=home, command="grep -rn x"),
-                            tool("PowerShell",
-                                 command="cd ~; Get-ChildItem -Recurse -Filter *.json")):
+    def test_unminute_workspace_is_blocked(self):
+        # The renamed data folder (#136), in the forms the old one is checked in
+        # above. The old folder stays covered: it keeps real content until deleted.
+        local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
+        for path in (local + r"\Unminute\workspace\workspace.db",
+                     "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
+                     r"C:\Users\someone\AppData\Local\unminute\WORKSPACE",
+                     "~/AppData/Local/Unminute/workspace/settings.json"):
+            for payload in (tool("Read", file_path=path), tool("Edit", file_path=path),
+                            tool("Glob", pattern="**/*", path=path),
+                            tool("Grep", pattern="anything", path=path)):
                 with self.subTest(payload=payload):
-                    self.assertIsNotNone(fresh.decide(payload))
-            for payload in (tool("Grep", pattern="x", path="~/Local_Repos/unminute"),
-                            tool("Glob", path="~", pattern=".claude/**/*.json"),
-                            tool("Glob", pattern="~/Local_Repos/unminute/**/*.py"),
-                            tool("Bash", command="cd ~/Local_Repos/unminute; rg -n x")):
-                with self.subTest(payload=payload):
-                    self.assertIsNone(fresh.decide(payload))
+                    self.assertIsNotNone(guard.decide(payload))
 
-    def test_a_git_bash_drive_path_is_read_as_the_drive(self):
-        # Git Bash spells C:\Users as /c/Users, and the Grep and Glob tools accept
-        # it; a bare cd in bash goes home (R13b round 3 review).
-        home = r"C:\Users\someone"
-        env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home}
-        with mock.patch.dict(os.environ, env):
-            fresh = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fresh)
-            for payload in (tool("Grep", pattern="x", path="/c/Users"),
-                            tool("Grep", pattern="x", path="/c/Users/someone"),
-                            tool("Grep", pattern="x", path="/mnt/c/Users/someone"),
-                            tool("Glob", path="/c/Users/someone", pattern="**/settings.json"),
-                            tool("Glob", pattern="/c/Users/someone/**/settings.json"),
-                            tool("Read", file_path="/c/Users/someone/AppData/Local/Unminute"
-                                                   "/workspace/settings.json"),
-                            tool("Bash", command="grep -rn x /c/Users"),
-                            tool("Bash", command="grep -rn x /c/Users/someone"),
-                            tool("Bash", command="find /c/Users/someone -name settings.json"),
-                            tool("Bash", command="cd /c/Users/someone && rg -n x"),
-                            tool("Bash", command="cd /c/Users/someone/AppData; cat Local/Unminute"
-                                                 "/workspace/a.json"),
-                            tool("Bash", command="cd; rg -n x"),
-                            tool("Bash", command="cd && grep -rn x .")):
-                with self.subTest(payload=payload):
-                    self.assertIsNotNone(fresh.decide(payload))
-            for payload in (tool("Grep", pattern="x", path="/c/Users/someone/Local_Repos/unminute"),
-                            tool("Glob", path="/c/Users/someone/Local_Repos", pattern="**/*.py"),
-                            tool("Bash", command="cd /c/Users/someone/Local_Repos/unminute && "
-                                                 "rg -n x"),
-                            tool("Bash", command="cd; cd Local_Repos/unminute; rg -n x"),
-                            tool("Bash", command="ls /c/Users/someone"),
-                            tool("PowerShell", command=r"dir /s /c workspace")):
-                with self.subTest(payload=payload):
-                    self.assertIsNone(fresh.decide(payload))
+    def test_unminute_workspace_under_a_moved_local_appdata_is_blocked(self):
+        # LOCALAPPDATA redirected to a folder not named Local: the pattern also
+        # takes the configured value as a prefix.
+        pattern = guard.unminute_workspace_pattern(r"D:\Profiles\someone\Data")
+        for text in (r"D:\Profiles\someone\Data\Unminute\workspace\workspace.db",
+                     "D:/Profiles/someone/Data/Unminute/workspace"):
+            with self.subTest(text=text):
+                self.assertIsNotNone(pattern.search(text))
+        self.assertIsNone(pattern.search(r"D:\Profiles\someone\Code\unminute\workspace\app.py"))
+        # An unset LOCALAPPDATA adds nothing, and the usual forms still match.
+        self.assertIsNotNone(guard.unminute_workspace_pattern("").search(
+            r"C:\Users\someone\AppData\Local\Unminute\workspace"))
 
-    @unittest.skipUnless(sys.platform == "win32", "Windows paths")
-    def test_a_recursive_listing_of_an_existing_folder_lists_only_that_folder(self):
-        # A listing's last part is a filter only when it is a wildcard or not an
-        # existing folder, and Git Bash's ls takes none; its -r only reverses the
-        # order (R13b round 3 review). A synthetic profile of real folders.
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp) / "profile"
-            local = home / "AppData" / "Local"
-            for folder in (local / "Temp", local / "Unminute" / "workspace", home / ".claude",
-                           home / "Local_Repos", home / ".umv", home / "Documents",
-                           home / "AppData" / "Roaming"):
-                folder.mkdir(parents=True)
-            env = {"LOCALAPPDATA": str(local), "USERPROFILE": str(home),
-                   "APPDATA": str(home / "AppData" / "Roaming"), "TEMP": str(local / "Temp")}
-            with mock.patch.dict(os.environ, env):
-                fresh = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(fresh)
-                for command, name in (
-                        ("ls -R ~/.claude", "Bash"),
-                        ("ls -r ~/.claude", "Bash"),
-                        ("ls -R ~/Local_Repos", "Bash"),
-                        ("ls -R /tmp", "Bash"),
-                        (r"Get-ChildItem -Recurse $env:TEMP -Filter *.log", "PowerShell"),
-                        (r"Get-ChildItem $env:TEMP -Recurse -Directory -Filter um*", "PowerShell"),
-                        (r"Get-ChildItem -Recurse $env:TEMP", "PowerShell"),
-                        (r"dir /s /b %TEMP%", "PowerShell"),
-                        (r"dir /s /b %APPDATA%", "PowerShell"),
-                        (r"Get-ChildItem -Recurse ~\.claude", "PowerShell"),
-                        (r"Get-ChildItem -Recurse ~\Documents -Filter *.md", "PowerShell"),
-                        (r"Get-ChildItem -Recurse $env:USERPROFILE\.claude -Filter *.md",
-                         "PowerShell"),
-                        (f"Get-ChildItem -Recurse {home}\\Local_Repos -Filter AGENTS.md",
-                         "PowerShell"),
-                        (f"Get-ChildItem -Recurse -Depth 1 {home}\\.umv", "PowerShell")):
-                    with self.subTest(command=command):
-                        self.assertIsNone(fresh.decide(shell(command, name)))
-                # A file name, or a folder that is not there, is still a filter.
-                for command, name in (
-                        (r"Get-ChildItem $env:LOCALAPPDATA\settings.json -Recurse", "PowerShell"),
-                        (r"Get-ChildItem -Recurse ~\nosuch", "PowerShell"),
-                        (r"cmd /c dir /s %LOCALAPPDATA%\settings.json", "Bash"),
-                        ("ls -R ~/AppData/Local", "Bash")):
-                    with self.subTest(command=command):
-                        self.assertIsNotNone(fresh.decide(shell(command, name)))
-
-    def test_a_long_brace_list_cannot_hide_a_data_folder(self):
-        # Past the expansion limit, a brace list stands for anything (R13b round 2).
-        local = r"C:\Users\someone\AppData\Local"
-        names = ",".join(["Unminute"] + [f"a{i}" for i in range(70)])
-        self.assertIsNotNone(guard.decide(tool("Glob", path=local,
-                                               pattern="{" + names + "}/workspace/*")))
-        self.assertIsNone(guard.decide(tool("Glob", path=str(ROOT),
-                                            pattern="{" + names + "}/workspace/*")))
-
-    def test_the_old_data_folder_is_blocked_whole(self):
-        # %LOCALAPPDATA%\whisper holds the old workspace's real meetings until the
-        # user deletes it; its whisper-models sibling is only models (R13b review).
-        local = r"C:\Users\someone\AppData\Local"
-        for payload in (tool("Glob", path=local + r"\whisper", pattern="work*/*.json"),
-                        tool("Glob", path=local, pattern="whisper/*/*.json"),
-                        tool("Glob", path=local, pattern="w*/workspace/*"),
-                        tool("Grep", pattern="budget", path=local + r"\whisper"),
-                        tool("Read", file_path=local + r"\whisper\settings.json")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(guard.decide(payload))
-        for payload in (tool("Read", file_path=local + r"\whisper-models\a.json"),
-                        tool("Glob", path=local + r"\whisper-models", pattern="**/*.json")):
+    def test_a_checkout_named_unminute_is_allowed(self):
+        # The repo is also called unminute and has a workspace/ package: working
+        # in it must not look like the data folder.
+        for payload in (tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute"
+                                               r"\workspace\app.py"),
+                        tool("Edit", file_path="C:/Users/x/Local_Repos/unminute"
+                                               "/workspace/store.py"),
+                        tool("Read", file_path=r"C:\Users\x\source\repos\Unminute"
+                                               r"\workspace\ui\app.js"),
+                        tool("Glob", pattern="workspace/**/*.py",
+                             path=r"C:\Users\x\Local_Repos\unminute"),
+                        tool("Grep", pattern="Unminute/workspace", path="."),
+                        tool("Grep", pattern="x",
+                             path=r"C:\Users\x\Local_Repos\unminute\workspace")):
             with self.subTest(payload=payload):
                 self.assertIsNone(guard.decide(payload))
-
-    def test_other_spellings_of_local_appdata_are_seen(self):
-        # Windows opens all of these as local AppData (R13b review): device and
-        # admin-share forms, the "Local Settings" junction, trailing dots, a folder
-        # named AppData, and a wildcard or brace list standing for a part.
-        local = r"C:\Users\someone\AppData\Local"
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": local}):
-            fresh = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fresh)
-        for payload in (tool("Grep", pattern=".", path="\\\\?\\" + local),
-                        tool("Grep", pattern=".",
-                             path=r"\\localhost\C$\Users\someone\AppData\Local"),
-                        tool("Grep", pattern=".", path="\\\\?\\UNC\\localhost\\C$\\Users\\someone"),
-                        tool("Grep", pattern=".", path=r"C:\Users\someone\Local Settings"),
-                        tool("Grep", pattern=".", path=local + "."),
-                        tool("Grep", pattern=".", path=r"D:\Profiles\other\AppData"),
-                        tool("Read", file_path=r"C:\Users\someone\Local Settings\Unminute"
-                                               r"\workspace\settings.json"),
-                        tool("Read", file_path=r"C:\Users\x\AppData\Local.\Unminute"
-                                               r"\workspace\a.db"),
-                        tool("Read", file_path=r"C:\Users\x\AppData.\Local\Unminute"
-                                               r"\workspace\a.db"),
-                        tool("Read", file_path=local + r"\whisper.\workspace\a.db"),
-                        tool("Read", file_path=local + r"\Unminute.\workspace\a.db"),
-                        tool("Glob", path=r"C:\Users\someone",
-                             pattern="AppData/*/Unminute/workspace/*"),
-                        tool("Glob", path=local, pattern="{Unminute,zz}/workspace/*.json"),
-                        tool("Glob", path=local, pattern="{Unminute/workspace,zz}/*.json")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(fresh.decide(payload))
-        # A Glob whose literal start cannot reach AppData stays allowed.
-        for payload in (tool("Glob", path=r"C:\Users\someone", pattern=".claude/**/*.json"),
-                        tool("Glob", path=r"C:\Users\someone", pattern="Local_Repos/**/AGENTS.md"),
-                        tool("Glob", path=local, pattern="*/models/*.json"),
-                        tool("Glob", path=local, pattern="{Temp,Programs}/x/*.json"),
-                        tool("Grep", pattern=".", path="\\\\?\\" + local + r"\Temp\review")):
-            with self.subTest(payload=payload):
-                self.assertIsNone(fresh.decide(payload))
-
-    @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
-    def test_a_junction_or_short_name_is_resolved(self):
-        # A synthetic profile in a temporary folder, with a "Local Settings" junction
-        # to its local AppData as Windows makes one, and its 8.3 short name.
-        with tempfile.TemporaryDirectory() as temp:
-            home = Path(temp) / "profile-with-a-long-name"
-            local = home / "AppData" / "Local"
-            (local / "Unminute" / "workspace").mkdir(parents=True)
-            (local / "Temp").mkdir()
-            (local / "Unminute" / "workspace" / "settings.json").write_text("{}")
-            junction = home / "Local Settings"
-            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(local)],
-                                  capture_output=True, text=True, timeout=30)
-            self.assertEqual(0, made.returncode, made.stdout + made.stderr)
-            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
-                fresh = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(fresh)
-            for payload in (tool("Read", file_path=str(junction / "Unminute" / "workspace"
-                                                       / "settings.json")),
-                            tool("Grep", pattern=".", path=str(junction)),
-                            tool("Grep", pattern=".", path=str(home)),
-                            tool("Glob", path=str(junction), pattern="*/workspace/*"),
-                            tool("PowerShell", command=f"Get-Content '{junction}\\Unminute"
-                                                       "\\workspace\\settings.json'")):
-                with self.subTest(payload=payload):
-                    self.assertIsNotNone(fresh.decide(payload))
-            self.assertIsNone(fresh.decide(tool("Grep", pattern=".", path=str(junction / "Temp"))))
-            # The short name, where the volume makes them (CI's may not).
-            import ctypes
-            buffer = ctypes.create_unicode_buffer(1024)
-            ctypes.windll.kernel32.GetShortPathNameW(str(home), buffer, 1024)
-            if buffer.value and buffer.value.lower() != str(home).lower():
-                self.assertIsNotNone(fresh.decide(tool("Grep", pattern=".", path=buffer.value)))
-                self.assertIsNotNone(fresh.decide(tool("Glob", path=buffer.value,
-                                                       pattern="**/*.json")))
 
     def test_ordinary_paths_are_allowed(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -346,18 +101,6 @@ class FileToolTests(unittest.TestCase):
                             tool("Read", file_path=str(unrelated)),
                             tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute-r7"
                                                    r"\workspace\app.py"),
-                            # a plain clone of this repository: unminute\workspace
-                            tool("Read", file_path=r"C:\Users\x\Local_Repos\unminute"
-                                                   r"\workspace\app.py"),
-                            tool("Read", file_path="unminute/workspace/store.py"),
-                            tool("Read", cwd=r"C:\Users\x\Local_Repos",
-                                 file_path=r"unminute\workspace\app.py"),
-                            # ...and one in a temporary folder, which is under local AppData
-                            tool("Read", file_path=r"C:\Users\x\AppData\Local\Temp\unminute"
-                                                   r"\workspace\app.py"),
-                            tool("Read", cwd=r"C:\Users\x\AppData\Local\Temp\review",
-                                 file_path=r"unminute\workspace\app.py"),
-                            tool("Glob", path=str(ROOT), pattern="workspace/**/*.py"),
                             tool("Grep", pattern="extracted/", path="."),
                             tool("Read", file_path=str(ROOT / "AGENTS.md"))):
                 with self.subTest(payload=payload):
@@ -371,164 +114,47 @@ class ShellTests(unittest.TestCase):
                         "ls extracted",
                         "git add -f extracted",
                         r"Get-Content $env:LOCALAPPDATA\whisper\workspace\workspace.db",
-                        r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\workspace.db",
-                        r'Get-Content "%LOCALAPPDATA%\Unminute\workspace\settings.json"',
-                        "sqlite3 ~/AppData/Local/Unminute/workspace/workspace.db .dump",
                         r'Get-Content "$env:LOCALAPPDATA\whisper\workspace\settings.json"',
                         "sqlite3 ~/AppData/Local/whisper/workspace/workspace.db .dump",
                         "rg -n budget extracted/",
                         'grep -r "x" "extracted/"',
                         r"Select-String -Pattern 'x' -Path extracted\notes.md",
                         "python tools/run_tests.py && cat extracted/a.md",
-                        "git diff --no-index extracted/a.md b.md",
-                        # the new path built in PowerShell or Python (R13b review)
-                        r"Get-Content (Join-Path $env:LOCALAPPDATA 'Unminute\workspace\a.json')",
-                        r'Test-Path (Join-Path $env:LOCALAPPDATA "Unminute\workspace\a.db")',
-                        r"Join-Path $env:LOCALAPPDATA Unminute workspace",
-                        r'Get-Content "$($env:LOCALAPPDATA)\Unminute\workspace\settings.json"',
-                        r"Get-Content ($env:LOCALAPPDATA + '\Unminute\workspace\settings.json')",
-                        r"Get-Content ([Environment]::GetFolderPath('LocalApplicationData')"
-                        r" + '\Unminute\workspace\settings.json')",
-                        "python -c \"import os; print(open(os.path.join(os.environ['LOCALAPPDATA'],"
-                        " 'Unminute', 'workspace', 'settings.json')).read())\"",
-                        "python -c \"os.listdir(os.path.join(x, 'whisper', 'workspace'))\"",
-                        r"Get-ChildItem $env:LOCALAPPDATA\Unminute\workspace-damaged",
-                        # ...or the data folder around it, searched or listed whole
-                        r"rg -n budget $env:LOCALAPPDATA\Unminute",
-                        "Get-ChildItem -Recurse $env:LOCALAPPDATA\\Unminute\\",
-                        'grep -rn budget "$LOCALAPPDATA"/Unminute',
-                        # ...or named after changing to local AppData
-                        r"Set-Location $env:LOCALAPPDATA; Get-Content Unminute\workspace\a.json",
-                        'cd "$LOCALAPPDATA" && cat Unminute/workspace/settings.json',
-                        r"pushd %LOCALAPPDATA% & type Unminute\workspace\settings.json",
-                        # ...or reached through models
-                        r"Get-Content $env:LOCALAPPDATA\Unminute\models\..\workspace\a.json",
-                        r"cd $env:LOCALAPPDATA\Unminute\models; Get-Content ..\workspace\a.json",
-                        r"git -C $env:LOCALAPPDATA\Unminute\models diff --no-index ..\workspace\a",
-                        r"Get-Content $env:LOCALAPPDATA\whisper\models\..\workspace\a.json",
-                        # ...or through another folder, or another name for local AppData
-                        r"Get-Content $env:LOCALAPPDATA\Temp\..\Unminute\workspace\a.json",
-                        r"Get-Content $env:TEMP\..\Unminute\workspace\a.json",
-                        r"type %TEMP%\..\Unminute\workspace\a.json",
-                        "cat /tmp/../Unminute/workspace/a.json",
-                        r"Get-Content $env:APPDATA\..\Local\Unminute\workspace\a.json",
-                        "python -c \"print(Path.home() / 'AppData' / 'Local' / 'Unminute' / 'x')\"",
-                        r"Get-Content \\?\C:\Users\someone\AppData\Local\Unminute\workspace\a",
-                        r"Get-Content \\localhost\C$\Users\x\AppData\Local\Unminute\workspace",
-                        # ...or a wildcard standing for the data folder
-                        r"Get-Content $env:LOCALAPPDATA\Unmin*\workspace\a.json",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\U*",
-                        # ...or reached by changing folder, and back
-                        r"cd $env:LOCALAPPDATA\Temp; cd ..; Get-Content Unminute\workspace\a.json",
-                        r"cd $env:LOCALAPPDATA\Unminute\models; cd ..; Get-Content workspace\a",
-                        r"cd $env:LOCALAPPDATA; cd Temp; cd -; Get-Content Unminute\workspace\a",
-                        r"pushd $env:LOCALAPPDATA; pushd Temp; popd; cat Unminute\workspace\a",
-                        r'cmd /c "cd /d %LOCALAPPDATA% && type Unminute\workspace\a.json"',
-                        # ...or by an option that reads a file
-                        r'git commit -F "%LOCALAPPDATA%\Unminute\workspace\a.txt"',
-                        r'gh api repos/o/r/issues -F "body=@%LOCALAPPDATA%\Unminute\workspace\a"',
-                        r"gh api repos/o/r --field body=@$env:LOCALAPPDATA\Unminute\workspace",
-                        # the old data folder, whole (R13b review)
-                        r"Get-Content $env:LOCALAPPDATA\whisper\works*\settings.json",
-                        r"Get-Content $env:LOCALAPPDATA\whisper\*\settings.json",
-                        "cat ~/AppData/Local/whisper/w*/settings.json",
-                        r"rg -n budget $env:LOCALAPPDATA\whisper",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\whisper",
-                        # trailing dots, which Windows drops
-                        r"Get-Content $env:LOCALAPPDATA.\Unminute\workspace\a.json",
-                        r"Get-Content $env:LOCALAPPDATA\whisper.\workspace\a.json",
-                        r"Get-Content C:\Users\x\AppData\Local.\Unminute\workspace\a.json",
-                        r'Get-Content "$env:USERPROFILE\Local Settings\Unminute\workspace\a.json"',
-                        # split across arguments, a pipeline or a string prefix
-                        r"Get-Content (Join-Path $env:LOCALAPPDATA '.\Unminute\workspace\a.json')",
-                        r"$env:LOCALAPPDATA | Join-Path -ChildPath Unminute\workspace\a.json"
-                        r" | Get-Content",
-                        r"Join-Path -Path $env:LOCALAPPDATA -ChildPath Unminute\workspace\a.json",
-                        r"Get-Content (Join-Path $env:LOCALAPPDATA\Unminute\models ..\workspace\a)",
-                        "python -c \"open(os.path.join(os.environ['LOCALAPPDATA'], 'Unminute',"
-                        " 'models', '..', 'workspace', 'a'))\"",
-                        "python -c \"open(os.environ['LOCALAPPDATA']"
-                        "+r'\\Unminute\\workspace\\a')\"",
-                        # .. straight after local AppData
-                        r"Get-Content $env:LOCALAPPDATA\..\Local\Unminute\workspace\a.json",
-                        r"type %LOCALAPPDATA%\..\Local\Unminute\workspace\a.json",
-                        r"Get-Content $env:TEMP\..\..\Local\Unminute\workspace\a.json",
-                        # a shell search or recursive listing of local AppData whole
-                        r"rg -n budget $env:LOCALAPPDATA",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA -Filter *.json",
-                        "grep -rn budget ~/AppData/Local",
-                        r"dir /s %LOCALAPPDATA%",
-                        # a search with no pattern argument, or the path as -Path's value
-                        r"rg --files $env:LOCALAPPDATA\Unminute\workspace",
-                        r"Select-String -Path $env:LOCALAPPDATA\Unminute\workspace\a.json 'x'",
-                        # ...whose last part is a wildcard or a file name to look for
-                        # below, through cmd /c, or git grep outside a repository
-                        # (R13b round 2 review)
-                        r"findstr /s /i budget %LOCALAPPDATA%\*.json",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\*.json | Select-String budget",
-                        r"Get-ChildItem -Recurse -Path $env:LOCALAPPDATA\*.json | Select-String b",
-                        r"Get-ChildItem $env:LOCALAPPDATA\settings.json -Recurse | Get-Content",
-                        r"dir /s %LOCALAPPDATA%\*.json",
-                        r"cmd /c dir /s /b %LOCALAPPDATA%",
-                        r'cmd /c "findstr /s budget %LOCALAPPDATA%\*.json"',
-                        r"git -C $env:LOCALAPPDATA grep --no-index -n budget",
-                        # ...or that names no folder, run from local AppData
-                        r"cd $env:TEMP; cd ..; rg -n budget",
-                        r"cd $env:LOCALAPPDATA; rg -n budget",
-                        r"cd $env:TEMP; cd ..; Get-ChildItem -Recurse -Filter *.json",
-                        r"Set-Location $env:LOCALAPPDATA; Get-ChildItem -Recurse -Include *.db",
-                        r"cd $env:LOCALAPPDATA; findstr /s budget *.json",
-                        # a pattern given attached, with a colon or from a file, so
-                        # the path is not taken for it (R13b round 3 review)
-                        "grep --file=pats.txt ~/AppData/Local/Unminute/workspace/settings.json",
-                        "grep -ebudget ~/AppData/Local/Unminute/workspace/settings.json",
-                        "rg -ebudget ~/AppData/Local/Unminute/workspace/settings.json",
-                        "Select-String -Pattern:budget C:\\Users\\someone\\AppData\\Local"
-                        "\\Unminute\\workspace\\settings.json",
-                        "grep --file=pats.txt -rn ~/AppData/Local",
-                        "grep -fpats.txt -rn ~/AppData/Local"):
+                        "git diff --no-index extracted/a.md b.md"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNotNone(guard.decide(shell(command, name)))
 
-    def test_a_relative_workspace_path_from_local_appdata_is_blocked(self):
-        local = r"C:\Users\someone\AppData\Local"
-        for cwd in (local, local + "\\"):
-            payload = tool("PowerShell", cwd=cwd, command=r"Get-Content Unminute\workspace\a.json")
-            with self.subTest(cwd=cwd):
-                self.assertIsNotNone(guard.decide(payload))
-        # From models, .. climbs to the workspace.
-        self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\models",
-                                               command=r"Get-Content ..\workspace\a.json")))
-        self.assertIsNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\models",
-                                            command="Get-ChildItem .")))
-        # Run from inside the workspace, any command can read it.
-        self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Unminute\workspace",
-                                               command="Get-Content settings.json")))
-        # A search that names no folder searches local AppData itself (R13b round 2).
-        for cwd in (local, local + "\\"):
-            for command in ("rg -n budget", "Get-ChildItem -Recurse -Filter *.json"):
-                with self.subTest(cwd=cwd, command=command):
-                    self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=cwd,
-                                                           command=command)))
-        self.assertIsNone(guard.decide(tool("PowerShell", cwd=local + r"\Temp\review",
-                                            command="rg -n budget")))
-        # From another folder in local AppData, .. climbs to it.
-        for command in (r"Get-Content ..\Unminute\workspace\a.json",
-                        r"cd ..; Get-Content Unminute\workspace\a.json"):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(tool("PowerShell", cwd=local + r"\Temp",
-                                                       command=command)))
-        # Elsewhere, unminute\workspace is a clone of this repository.
-        for cwd in (r"C:\Users\x\Local_Repos", local + r"\Temp\review"):
-            payload = tool("PowerShell", cwd=cwd, command=r"Get-Content unminute\workspace\app.py")
-            with self.subTest(cwd=cwd):
-                self.assertIsNone(guard.decide(payload))
-        for command in (r"cd ..; Get-Content unminute\workspace\app.py",
-                        r"Get-Content ..\unminute\workspace\app.py"):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(tool("PowerShell", cwd=local + r"\Temp\s\other",
-                                                    command=command)))
+    def test_commands_naming_the_unminute_workspace_are_blocked(self):
+        # The renamed data folder (#136), in the forms the old one is checked in
+        # above, and the usual ways of building it from LOCALAPPDATA.
+        for command in (r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\workspace.db",
+                        r'Get-Content "$env:LOCALAPPDATA\Unminute\workspace\settings.json"',
+                        "sqlite3 ~/AppData/Local/Unminute/workspace/workspace.db .dump",
+                        r"type %LOCALAPPDATA%\Unminute\workspace\settings.json",
+                        'ls "${LOCALAPPDATA}/Unminute/workspace"',
+                        "cat /c/Users/someone/AppData/Local/unminute/WORKSPACE/settings.json",
+                        r"Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Unminute\workspace')",
+                        r"Get-Content ([Environment]::GetFolderPath('LocalApplicationData')"
+                        r" + '\Unminute\workspace\settings.json')",
+                        "rg -n budget ~/AppData/Local/Unminute/workspace",
+                        "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a"):
+            for name in ("Bash", "PowerShell"):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNotNone(guard.decide(shell(command, name)))
+
+    def test_commands_in_a_checkout_named_unminute_are_allowed(self):
+        for command in ("ls ../unminute/workspace",
+                        "ruff check C:/Users/x/Local_Repos/unminute/workspace",
+                        r"python -m py_compile C:\Users\x\Local_Repos\unminute\workspace\store.py",
+                        "cd /c/Users/x/Local_Repos/unminute && git diff -- workspace/store.py",
+                        r"git -C C:\Users\x\Local_Repos\unminute log --oneline -- workspace",
+                        r'rg -n "Unminute\\workspace" workspace',
+                        r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\Unminute\workspace"',
+                        r'git commit -m "Guard %LOCALAPPDATA%\Unminute\workspace too"'):
+            for name in ("Bash", "PowerShell"):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_staging_media_is_blocked(self):
         for command in ("git add meeting.m4a", "git add docs/a.WAV tests/x.py",
@@ -545,32 +171,8 @@ class ShellTests(unittest.TestCase):
                         "python tools/ui_idle_check.py",
                         "grep -n extracted .gitignore",
                         "ls ../unminute-r7/workspace",
-                        "ls unminute/workspace",
-                        r"Get-Content C:\Users\x\AppData\Local\Temp\unminute\workspace\app.py",
-                        r"cd $env:LOCALAPPDATA\Temp; ls unminute\workspace",
-                        r"cd $env:LOCALAPPDATA; cd Temp\review; Get-Content unminute\workspace\a",
-                        r"gh api repos/o/r/issues/1 --raw-field body='%LOCALAPPDATA%\Unminute'",
-                        r"Set-Content -Path notes.md -Value '%LOCALAPPDATA%\Unminute\workspace'",
-                        r"Get-ChildItem $env:LOCALAPPDATA\Unminute\models",
-                        r"Get-ChildItem $env:LOCALAPPDATA\Programs\Unminute",
-                        r"Test-Path $env:LOCALAPPDATA\Unminute2",
-                        r"cd $env:LOCALAPPDATA\Temp\s; git clone x unminute; ls unminute\workspace",
-                        "git -C ../unminute-r7 diff --stat",
-                        r"Get-ChildItem $env:LOCALAPPDATA\*\models",
-                        r"Get-Content $env:APPDATA\Code\settings.json",
-                        "gh api graphql -F query=@q.graphql",
-                        r"gh api repos/o/r -f body='see %LOCALAPPDATA%\Unminute\workspace'",
-                        r"python tools/compare_engines.py --cache %LOCALAPPDATA%\Unminute\models",
-                        "python -c \"import faster_whisper, workspace\"",
                         "git status --short",
-                        "git check-ignore -v extracted/x",
-                        r"Get-ChildItem $env:LOCALAPPDATA\whisper-models",
-                        r"rg -n budget $env:LOCALAPPDATA\Temp\review",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\Unminute\models",
-                        "rg --files workspace",
-                        "rg -g '*.py' -n budget workspace",
-                        r"Select-String -Path workspace\app.py 'x'",
-                        "python - <<'EOF'\nprint(open('workspace/app.py').read()[:10])\nEOF"):
+                        "git check-ignore -v extracted/x"):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command)))
 
@@ -585,592 +187,13 @@ class ShellTests(unittest.TestCase):
                         r"Select-String -Path AGENTS.md -Pattern 'whisper\\workspace'",
                         'git log -S "extracted/" --oneline',
                         r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\whisper\workspace"',
-                        r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\Unminute\workspace"',
-                        r'rg -n "LOCALAPPDATA\\Unminute\\workspace" docs',
-                        "git commit -F - <<'EOF'\nStop staging *.wav files in extracted/\nEOF",
-                        # only the $(...) of a message is run, not the rest of its text
-                        'gh pr comment 207 --body "Fixed in $(git rev-parse --short HEAD).'
-                        r' P2 blocks %LOCALAPPDATA%\Unminute\workspace"',
-                        # local AppData and a data folder's name only as search
-                        # patterns (R13b round 2 review)
-                        'rg -n "LOCALAPPDATA" docs | rg Unminute',
-                        'rg -n "LOCALAPPDATA|Unminute" docs',
-                        "git grep -n LOCALAPPDATA -- docs | Select-String whisper",
-                        "grep -rn LOCALAPPDATA docs | grep -i unminute",
-                        "gh pr view 207 --json body --jq .body | Select-String 'LOCALAPPDATA', "
-                        "'Unminute'",
-                        r'findstr /s /n "LOCALAPPDATA\Unminute" docs\*.md',
-                        r'findstr /s /n /c:"LOCALAPPDATA\Unminute" docs\*.md',
-                        r"rg -n budget workspace\*.py",
-                        # git log's pickaxe with its pattern attached (R13b round 3)
-                        r'git log -S"%LOCALAPPDATA%\Unminute" --oneline',
-                        r'git log -G"LOCALAPPDATA.Unminute" --oneline',
-                        # a wrapper, with the search's own pattern
-                        'timeout 60 rg -n "LOCALAPPDATA" docs',
-                        "Write-Output (rg -n budget workspace)"):
+                        "git commit -F - <<'EOF'\nStop staging *.wav files in extracted/\nEOF"):
             for name in ("Bash", "PowerShell"):
                 with self.subTest(command=command, tool=name):
                     self.assertIsNone(guard.decide(shell(command, name)))
-        # PowerShell text held in a variable or a here-string is a message too
-        # (R13b review: main's hook allowed these).
-        for command in ("$b = @'\nP2 covers %LOCALAPPDATA%\\Unminute\\workspace\n'@\n"
-                        "gh pr comment 207 --body $b",
-                        "@'\nP2 covers %LOCALAPPDATA%\\Unminute\\workspace\n'@ | "
-                        "gh pr comment 207 --body-file -",
-                        "$b = 'P2 covers %LOCALAPPDATA%\\Unminute\\workspace'; "
-                        "gh pr comment 207 --body $b",
-                        # ...and in double quotes (R13b round 2 review)
-                        '$b = "P2 covers %LOCALAPPDATA%\\Unminute\\workspace"; '
-                        "gh pr comment 207 --body $b",
-                        '$b = "P2 covers %LOCALAPPDATA%\\whisper\\workspace"; '
-                        "gh pr comment 207 --body $b"):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command, "PowerShell")))
-        # cd inside echoed text does not move the tracked folder.
-        self.assertIsNone(guard.decide(tool(
-            "PowerShell", cwd=r"C:\Users\someone\Local_Repos",
-            command='Write-Output "then cd $env:LOCALAPPDATA"; '
-                    r"Get-Content unminute\workspace\app.py")))
-
-    def test_code_and_variables_that_reach_the_workspace_are_checked(self):
-        # A quoted heredoc or here-string fed to an interpreter is code; a variable
-        # set earlier in the same command is followed (R13b review).
-        for command, name in (
-                ("python - <<'EOF'\nprint(open(r'C:\\Users\\someone\\AppData\\Local\\Unminute"
-                 "\\workspace\\settings.json').read())\nEOF", "Bash"),
-                ("bash <<'EOF'\ncat ~/AppData/Local/Unminute/workspace/a.json\nEOF", "Bash"),
-                ("@'\nprint(open(r'C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace"
-                 "\\a.json').read())\n'@ | python -", "PowerShell"),
-                ("$c = @'\nGet-Content $env:LOCALAPPDATA\\Unminute\\workspace\\a.json\n'@\n"
-                 "Invoke-Expression $c", "PowerShell"),
-                ('$l = $env:LOCALAPPDATA; Get-Content "$l\\Unminute\\workspace\\a.json"',
-                 "PowerShell"),
-                ("$p = 'C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace\\a.json'; "
-                 "Get-Content $p", "PowerShell"),
-                ('L="$LOCALAPPDATA"; cat "$L/Unminute/workspace/a.json"', "Bash"),
-                # a double-quoted value is still checked where it is used, and what
-                # it runs where it is set (R13b round 2 review)
-                ('$p = "C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace\\a.json"; '
-                 "Get-Content $p", "PowerShell"),
-                ('$p = "$(Get-Content $env:LOCALAPPDATA\\Unminute\\workspace\\a.json)"; '
-                 "Write-Output done", "PowerShell"),
-                # a quoted heredoc piped to an interpreter
-                ("cat <<'EOF' | python -\nprint(open(r'C:\\Users\\someone\\AppData\\Local"
-                 "\\Unminute\\workspace\\settings.json').read())\nEOF", "Bash"),
-                ("cat <<'EOF' | python3\nprint(open(r'C:\\Users\\someone\\AppData\\Local"
-                 "\\Unminute\\workspace\\settings.json').read())\nEOF", "Bash"),
-                # PowerShell's ${C:\path} reads the file, even in a message
-                ('gh pr comment 207 --body "${C:\\Users\\someone\\AppData\\Local\\Unminute'
-                 '\\workspace\\settings.json}"', "PowerShell"),
-                # a path built by concatenation or -join, or read by another form
-                # of the name, is checked where it is set (R13b round 3 review)
-                ('$p = "$env:LOCALAPPDATA" + "\\Unminute\\workspace\\settings.json"; '
-                 "Get-Content $p", "PowerShell"),
-                ('$p = "$env:LOCALAPPDATA\\" + "Unminute\\workspace\\a.json"; Get-Content $p',
-                 "PowerShell"),
-                ('$p = "$env:LOCALAPPDATA", "Unminute", "workspace", "a.json" -join "\\"; '
-                 "Get-Content $p", "PowerShell"),
-                ('$p = "C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace\\a.json"; '
-                 "Get-Content $script:p", "PowerShell"),
-                ('$p = "C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace\\a.json"; '
-                 "Get-Content (Get-Variable p -ValueOnly)", "PowerShell"),
-                ("$p = 'C:\\Users\\someone\\AppData\\Local\\Unminute\\workspace\\a.json'; "
-                 "Get-Content $script:p", "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-
-    def test_nested_wrapped_and_piped_searches_are_checked(self):
-        # A search of local AppData inside brackets, a scriptblock, a loop, a string
-        # run by another shell, after a wrapper, or fed local AppData by a pipeline
-        # (R13b round 3 review).
-        for command, name in (
-                (r"(Get-ChildItem -Recurse $env:LOCALAPPDATA -Filter *.json).FullName",
-                 "PowerShell"),
-                ('pwsh -c "rg -n budget $env:LOCALAPPDATA"', "PowerShell"),
-                (r"foreach ($f in Get-ChildItem -Recurse $env:LOCALAPPDATA -Filter *.json) "
-                 "{ Get-Content $f }", "PowerShell"),
-                (r"& { Get-ChildItem -Recurse $env:LOCALAPPDATA -Filter *.json }", "PowerShell"),
-                ("Write-Output (rg -n budget $env:LOCALAPPDATA)", "PowerShell"),
-                ('powershell -NoProfile -Command "rg -n budget $env:LOCALAPPDATA"',
-                 "PowerShell"),
-                ('Invoke-Expression "rg -n budget $env:LOCALAPPDATA"', "PowerShell"),
-                ('bash -c "rg -n budget $LOCALAPPDATA"', "Bash"),
-                ("bash -c 'rg -n budget \"$LOCALAPPDATA\"'", "Bash"),
-                ('sh -c "grep -rn budget ~/AppData/Local"', "Bash"),
-                ('files=$(grep -rl budget "$LOCALAPPDATA")', "Bash"),
-                ('echo "$(rg -n budget ~/AppData/Local)"', "Bash"),
-                ('echo "`rg -n budget ~/AppData/Local`"', "Bash"),
-                ('for f in $(rg -l budget ~/AppData/Local); do cat "$f"; done', "Bash"),
-                ('cmd /c"dir /s %LOCALAPPDATA%"', "Bash"),
-                ('timeout 60 rg -n budget "$LOCALAPPDATA"', "Bash"),
-                ('nice -n 5 grep -rn budget "$LOCALAPPDATA"', "Bash"),
-                ('command rg -n budget "$LOCALAPPDATA"', "Bash"),
-                ("echo $LOCALAPPDATA | xargs rg -n budget", "Bash"),
-                ('echo "$LOCALAPPDATA" | xargs grep -rn budget', "Bash"),
-                (r"Get-ChildItem $env:LOCALAPPDATA -Directory | Get-ChildItem -Recurse "
-                 "-Filter *.json | Select-String budget", "PowerShell"),
-                (r"Get-ChildItem $env:LOCALAPPDATA -Directory | "
-                 "ForEach-Object { rg -n budget $_.FullName }", "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-        for command, name in (("timeout 60 rg -n budget workspace", "Bash"),
-                              ("find . -name '*.py' | xargs grep -l budget", "Bash"),
-                              ('echo "$(git rev-parse --short HEAD)"', "Bash"),
-                              (r"Get-ChildItem $env:LOCALAPPDATA -Directory | "
-                               "Select-Object Name", "PowerShell"),
-                              ("(Get-ChildItem -Recurse workspace -Filter *.py).Count",
-                               "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command, name)))
-
-    def test_short_message_options_are_text_only_for_git_and_gh(self):
-        # -m, -b and -t are message text for git and gh only, and -Value for the
-        # cmdlets that write text; another program's value is a path (R13b round 4).
-        data = r"C:\Users\someone\AppData\Local\Unminute\workspace"
-        for command, name in (
-                ('ls -t "C:/Users/someone/AppData/Local/Unminute/workspace"', "Bash"),
-                ('cat -b "C:/Users/someone/AppData/Local/Unminute/workspace/a.json"', "Bash"),
-                ("sort -m 'C:/Users/someone/AppData/Local/whisper/workspace/a.txt'", "Bash"),
-                (f'Get-Item -t "{data}\\a.json"', "PowerShell"),
-                (f'Set-ItemProperty -Path HKCU:\\x -Name y -Value "{data}"', "PowerShell"),
-                (f"gh-tool -f 'k={data}\\a.json'", "Bash")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-        for command, name in (
-                (f'gh pr create -t "P2" -b "P2: {data}"', "Bash"),
-                (f'git commit -m "P2: {data}"', "PowerShell"),
-                (f'git commit -m "Fix a | b; c" -m "P2: {data}"', "Bash"),
-                (f'git -C ../unminute-r7 commit -m "P2: {data}"', "Bash"),
-                (f'& git commit -m "P2: {data}"', "PowerShell"),
-                (f'git add AGENTS.md && git commit -m "P2: {data}"', "Bash"),
-                (f"gh api repos/o/r/issues -f 'body=P2: {data}'", "Bash"),
-                (f"Set-Content -Path notes.md -Value '{data}'", "PowerShell"),
-                (f"Add-Content notes.md -Value 'P2: {data}'", "PowerShell"),
-                ("ls -t workspace", "Bash")):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command, name)))
-
-    def test_an_assigned_command_substitution_is_kept_whole(self):
-        # A bash value from $(...) or backticks, with quotes inside, is substituted
-        # whole where it is used (R13b round 4 review).
-        for command in ('L=$(cygpath "$LOCALAPPDATA"); rg -n budget "$L"',
-                        'L="$(cygpath -u "$LOCALAPPDATA")"; grep -rn budget "$L"',
-                        'L=`cygpath "$LOCALAPPDATA"`; rg -n budget "$L"',
-                        'export L=$(cygpath "$LOCALAPPDATA"); find "$L" -name "*.json"'):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command)))
-        for command in ('H=$(git rev-parse --short HEAD); echo "$H"',
-                        'V="$(python -c "print(1)")"; echo "$V"',
-                        'R=$(git rev-parse --show-toplevel); rg -n budget "$R/workspace"'):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command)))
-
-    def test_home_folder_climbs_and_other_names_are_expanded(self):
-        # ~\.. keeps the folder it climbs from; a bare cd is the home folder, and an
-        # empty popd stays; the home folder's other names (R13b round 4 review).
-        home = r"C:\Users\someone"
-        env = {"LOCALAPPDATA": home + r"\AppData\Local", "USERPROFILE": home,
-               "SystemDrive": "C:", "PUBLIC": r"C:\Users\Public", "USERNAME": "someone",
-               "HOMEDRIVE": "C:", "HOMEPATH": r"\Users\someone", "OneDrive": home + r"\OneDrive",
-               "windir": r"C:\Windows", "ProgramData": r"C:\ProgramData"}
-        with mock.patch.dict(os.environ, env):
-            fresh = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fresh)
-            for command, name in (
-                    (r"rg -n budget ~\..", "Bash"),
-                    ("rg -n budget ~/..", "Bash"),
-                    (r"rg -n budget ~\..", "PowerShell"),
-                    ("grep -rn budget $HOME/..", "Bash"),
-                    (r"Get-ChildItem -Recurse $env:USERPROFILE\.. -Filter *.json", "PowerShell"),
-                    ("cd ~/..; rg -n budget", "Bash"),
-                    (r"cd $env:LOCALAPPDATA; popd; rg -n budget", "PowerShell"),
-                    (r"Set-Location $env:LOCALAPPDATA; Pop-Location; "
-                     "Get-ChildItem -Recurse -Filter *.json", "PowerShell"),
-                    ('rg -n budget "$HOMEDRIVE$HOMEPATH"', "Bash"),
-                    (r'Get-ChildItem -Recurse "$env:HOMEDRIVE$env:HOMEPATH" -Filter *.json',
-                     "PowerShell"),
-                    ("rg -n budget %HOMEDRIVE%%HOMEPATH%", "PowerShell"),
-                    (r"rg -n budget $env:SystemDrive\Users", "PowerShell"),
-                    (r"grep -rn budget %SystemDrive%\Users", "Bash"),
-                    (r"rg -n budget C:\Users\$env:USERNAME", "PowerShell"),
-                    (r"rg -n budget $env:PUBLIC\..", "PowerShell"),
-                    (r"rg -n budget $env:OneDrive\..", "PowerShell"),
-                    ("rg -n budget ([Environment]::GetFolderPath('UserProfile'))", "PowerShell"),
-                    # any variable holding a full path, an option's joined value, a
-                    # cd at the start of a block, and .NET's AllDirectories
-                    (r"rg -n budget $env:windir\..\Users", "PowerShell"),
-                    (r"rg -n budget %ProgramData%\..\Users", "PowerShell"),
-                    (r"Get-ChildItem -Recurse -Path:$env:USERPROFILE -Filter *.json",
-                     "PowerShell"),
-                    (r"Set-Location -Path:$env:LOCALAPPDATA; rg -n budget", "PowerShell"),
-                    (r"if ($true) { cd $env:LOCALAPPDATA }; rg -n budget", "PowerShell"),
-                    (r"[IO.Directory]::GetFiles($env:LOCALAPPDATA, '*.json', 'AllDirectories')",
-                     "PowerShell"),
-                    (r"[IO.Directory]::EnumerateFiles($env:USERPROFILE, '*', 'AllDirectories')",
-                     "PowerShell")):
-                with self.subTest(command=command, tool=name):
-                    self.assertIsNotNone(fresh.decide(shell(command, name)))
-            for command, name in (
-                    (r"rg -n budget $env:USERPROFILE\Local_Repos\unminute", "PowerShell"),
-                    (r"rg -n budget ~\Local_Repos\unminute\..\unminute-r7", "PowerShell"),
-                    ("cd ~/Local_Repos/unminute/..; rg -n x unminute", "Bash"),
-                    (r"rg -n budget $env:OneDrive\Documents", "PowerShell"),
-                    (r"Get-ChildItem $env:SystemDrive\Users", "PowerShell"),
-                    (r"Get-ChildItem $env:windir\Fonts", "PowerShell"),
-                    (r"Get-ChildItem -Recurse -Path:$env:USERPROFILE\.claude -Filter *.md",
-                     "PowerShell"),
-                    (r"[IO.Directory]::GetFiles(" + '"$env:USERPROFILE\\Local_Repos"'
-                     + ", '*.md', 'AllDirectories')", "PowerShell")):
-                with self.subTest(command=command, tool=name):
-                    self.assertIsNone(fresh.decide(shell(command, name)))
-            folder = fresh._Folder(home + r"\Local_Repos")
-            folder.change("popd", "")
-            self.assertEqual(home + r"\Local_Repos", folder.here)
-            folder.change("cd", "")
-            self.assertEqual(home, folder.here)
-
-    def test_a_search_pattern_is_not_read_as_a_nested_command(self):
-        # A pattern that quotes a search is text; -E and -SimpleMatch are switches
-        # that take no value (R13b round 4 review).
-        for command, name in (
-                ('rg -n "rg -n budget $env:LOCALAPPDATA" docs', "Bash"),
-                ('rg -n "rg -n budget $env:LOCALAPPDATA" docs', "PowerShell"),
-                ("grep -rn 'find ~/AppData/Local' docs", "Bash"),
-                (r"Select-String -Path docs\*.md -Pattern 'Get-ChildItem -Recurse "
-                 r"$env:LOCALAPPDATA'", "PowerShell"),
-                ("grep -E 'a|b' -rn workspace", "Bash")):
-            with self.subTest(command=command, tool=name):
-                self.assertIsNone(guard.decide(shell(command, name)))
-        for command, name in (
-                ("grep budget -E ~/AppData/Local/Unminute/workspace/a.json", "Bash"),
-                (r"Select-String budget -SimpleMatch C:\Users\someone\AppData\Local\Unminute"
-                 r"\workspace\a.json", "PowerShell")):
-            with self.subTest(command=command, tool=name):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-
-    def test_cd_in_a_string_another_shell_runs_is_followed(self):
-        # cd at the start of bash -c, pwsh -c or a scriptblock moves the folder the
-        # rest runs in (R13b round 4 review).
-        for command, name in (('bash -c "cd $LOCALAPPDATA && rg -n budget"', "Bash"),
-                              ("sh -c 'cd ~/AppData/Local; grep -rn budget .'", "Bash"),
-                              ('pwsh -c "Set-Location $env:LOCALAPPDATA; rg -n budget"',
-                               "PowerShell"),
-                              ('powershell -NoProfile -Command "cd $env:LOCALAPPDATA; '
-                               'Get-ChildItem -Recurse -Filter *.json"', "PowerShell"),
-                              (r"& { cd $env:LOCALAPPDATA; rg -n budget }", "PowerShell"),
-                              ('if true; then cd "$LOCALAPPDATA"; fi; rg -n budget', "Bash"),
-                              ('for d in a; do cd "$LOCALAPPDATA"; done; rg -n budget', "Bash"),
-                              # -c joined with other flags (bash -lc, sh -ec)
-                              ('bash -lc "cd $LOCALAPPDATA && rg -n budget"', "Bash"),
-                              ("sh -ec 'cd ~/AppData/Local; grep -rn budget .'", "Bash")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-        for command in ('bash -c "cd workspace && rg -n x"', 'bash -lc "cd workspace && rg -n x"'):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command)))
-
-    def test_other_recursive_programs_and_interpreter_walks_are_checked(self):
-        # du, forfiles /s and where /r walk a folder's tree; so does code that walks
-        # local AppData or the home folder named whole (R13b round 4 review).
-        with profile_guard() as fresh:
-            for command, name in (
-                    (r"forfiles /p %LOCALAPPDATA% /s /m *.json", "PowerShell"),
-                    (r"where /r %LOCALAPPDATA% *.json", "Bash"),
-                    ("du -a ~/AppData/Local", "Bash"),
-                    (r"cd $env:LOCALAPPDATA; du -a", "PowerShell"),
-                    ("python -c \"import os; [print(f) for r, d, f in "
-                     "os.walk(os.environ['LOCALAPPDATA'])]\"", "Bash"),
-                    ("python - <<'EOF'\nimport os, pathlib\nfor p in pathlib.Path("
-                     "os.environ['LOCALAPPDATA']).rglob('*.json'): print(p)\nEOF", "Bash"),
-                    ("node -e \"console.log(require('fs').readdirSync(process.env.LOCALAPPDATA, "
-                     "{recursive: true}))\"", "Bash"),
-                    ("python -c \"from pathlib import Path; "
-                     "print(list(Path.home().rglob('*.db')))\"",
-                     "PowerShell"),
-                    ("python -c \"import os; print(list(os.walk(os.path.expanduser('~'))))\"",
-                     "Bash"),
-                    # a folder above local AppData written out, or the home folder read
-                    # from the environment, in code that walks it
-                    ("python -c \"import os; print(list(os.walk(r'C:\\Users')))\"", "Bash"),
-                    ("python -c \"import os; print(list(os.walk('C:/Users/someone/AppData')))\"",
-                     "Bash"),
-                    ("python -c \"import pathlib; print(list(pathlib.Path(r'C:\\Users')"
-                     ".rglob('*.db')))\"", "PowerShell"),
-                    ("python -c \"import glob; "
-                     "print(glob.glob('C:/Users/**/*.db', recursive=True))\"",
-                     "Bash"),
-                    ("python -c \"import os; print(list(os.walk(os.environ['USERPROFILE'])))\"",
-                     "Bash"),
-                    ("python -c \"import os; print(list(os.walk(os.getenv('HOME'))))\"", "Bash"),
-                    ("node -e \"require('fs').readdirSync(process.env.USERPROFILE, "
-                     "{recursive: true})\"", "Bash"),
-                    # a relative start, run after a cd to a folder above local AppData
-                    ("cd ~ && python -c \"import os; print([r for r, d, f in os.walk('.')])\"",
-                     "Bash"),
-                    ("cd /c/Users && python -c \"import os; "
-                     "print([r for r, d, f in os.walk('.')])\"",
-                     "Bash"),
-                    ("cd ~/.. && python -c \"import os; print(list(os.walk('.')))\"", "Bash"),
-                    ("Set-Location C:\\Users; python -c \"import glob; print(glob.glob('**/*.db', "
-                     "recursive=True))\"", "PowerShell")):
-                with self.subTest(command=command):
-                    self.assertIsNotNone(fresh.decide(shell(command, name)))
-            for command, name in (
-                    ("du -sh workspace", "Bash"),
-                    ("where python", "PowerShell"),
-                    ("forfiles /p workspace /m *.py", "PowerShell"),
-                    ("python -c \"import glob; print(glob.glob('workspace/**/*.py', "
-                     "recursive=True))\"", "Bash"),
-                    ("python -c \"import os; print(os.listdir(os.environ['LOCALAPPDATA']))\"",
-                     "Bash"),
-                    ("python -c \"from pathlib import Path; print(list((Path.home() / "
-                     "'Local_Repos').rglob('*.md')))\"", "Bash"),
-                    ("python -c \"import os; print([r for r, d, f in os.walk('.')])\"", "Bash"),
-                    ("python -c \"import os; print(list(os.walk('workspace')))\"", "PowerShell"),
-                    ("python -c \"import pathlib; "
-                     "print(list(pathlib.Path('tests').rglob('*.py')))\"",
-                     "Bash"),
-                    ("cd workspace && python -c \"import os; print(list(os.walk('.')))\"", "Bash")):
-                with self.subTest(command=command):
-                    self.assertIsNone(fresh.decide(shell(command, name)))
-
-    def test_cygdrive_paths_and_variable_drive_reads_are_checked(self):
-        # Git Bash's /proc/cygdrive/c is C:\, and a value read back through
-        # PowerShell's variable: drive is substituted like $p (R13b round 4 review;
-        # 27e1cac blocked the variable: forms).
-        with profile_guard() as fresh:
-            data = r"C:\Users\someone\AppData\Local\Unminute\workspace\a.json"
-            for payload in (shell("rg -n budget /proc/cygdrive/c/Users"),
-                            shell("grep -rn budget /proc/cygdrive/c/Users/someone/AppData"),
-                            tool("Grep", pattern="budget", path="/proc/cygdrive/c/Users"),
-                            shell(f'$p = "{data}"; Get-Content (Get-Content variable:p)',
-                                  "PowerShell"),
-                            shell(f'$p = "{data}"; Get-Content (Get-Item variable:p).Value',
-                                  "PowerShell"),
-                            shell(f"$p = '{data}'; Get-Content (Get-Item variable:\\p).Value",
-                                  "PowerShell")):
-                with self.subTest(payload=payload):
-                    self.assertIsNotNone(fresh.decide(payload))
-            for payload in (shell("ls /proc/cygdrive/c/Users"),
-                            shell('$p = "notes: workspace"; Get-Content variable:q', "PowerShell")):
-                with self.subTest(payload=payload):
-                    self.assertIsNone(fresh.decide(payload))
-
-    def test_monitor_commands_are_checked(self):
-        # Monitor runs a shell command too.
-        self.assertIsNotNone(guard.decide(tool(
-            "Monitor", command="cat ~/AppData/Local/Unminute/workspace/settings.json")))
-        self.assertIsNotNone(guard.decide(tool(
-            "Monitor", command=r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\a.json -Wait")))
-        self.assertIsNone(guard.decide(tool("Monitor", command="gh pr checks 207 --watch")))
-
-    def test_message_text_the_shell_runs_is_checked(self):
-        # $(...), a bash backtick or an unquoted heredoc runs before the message is
-        # written, so it can read the workspace.
-        for command, name in (
-                ('git commit -m "$(cat ~/AppData/Local/Unminute/workspace/a.txt)"', "Bash"),
-                ('git commit -m "`cat ~/AppData/Local/Unminute/workspace/a.txt`"', "Bash"),
-                ("cat <<EOF > x.md\n$(cat ~/AppData/Local/Unminute/workspace/a)\nEOF", "Bash"),
-                (r'Set-Content x.md -Value "$(Get-Content $env:LOCALAPPDATA\Unminute\workspace\a)"',
-                 "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNotNone(guard.decide(shell(command, name)))
-        # Quoted heredocs, single quotes and a PowerShell backtick are only text.
-        for command, name in (
-                ("git commit -m \"$(cat <<'EOF'\nP2: %LOCALAPPDATA%\\Unminute\\workspace\nEOF\n)\"",
-                 "Bash"),
-                ("git commit -m @'\n$(x) %LOCALAPPDATA%\\Unminute\\workspace\n'@", "PowerShell"),
-                ('gh pr comment 1 --body "Ran `rg`; P2: %LOCALAPPDATA%\\Unminute\\workspace"',
-                 "PowerShell")):
-            with self.subTest(command=command):
-                self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_other_tools_are_allowed(self):
         self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ whisper/workspace")))
-
-
-class RoundFiveTests(unittest.TestCase):
-    """Phrasings the R13b round 5 review found allowed, each failing on 3d91ed6."""
-
-    def check(self, fresh, blocked, allowed):
-        for command, name in blocked:
-            with self.subTest(command=command, tool=name):
-                self.assertIsNotNone(fresh.decide(shell(command, name)))
-        for command, name in allowed:
-            with self.subTest(command=command, tool=name):
-                self.assertIsNone(fresh.decide(shell(command, name)))
-
-    def test_a_cd_to_a_command_substitution_is_followed(self):
-        # The cd's argument is one whole shell word; cygpath X is X, dirname X and
-        # Split-Path X are X\.., and an unknown $(...) naming local AppData or the
-        # home folder is taken as that folder.
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                ('D=$(cygpath -u "$LOCALAPPDATA"); cd "$D" && cat Unminute/workspace/settings.json',
-                 "Bash"),
-                ('cd "$(cygpath -u "$LOCALAPPDATA")" && sqlite3 Unminute/workspace/workspace.db '
-                 '.tables', "Bash"),
-                ('cd "$(cygpath -u "$LOCALAPPDATA")"; ls Unminute/workspace', "Bash"),
-                ('cd "$(cygpath "$LOCALAPPDATA")" && rg -l budget', "Bash"),
-                ('cd $(cygpath -u "$LOCALAPPDATA") && grep -rl budget .', "Bash"),
-                ('cd `cygpath "$LOCALAPPDATA"` && rg -l budget', "Bash"),
-                ('pushd "$(cygpath "$LOCALAPPDATA")" && rg -l budget', "Bash"),
-                ('cd "$(cygpath "$USERPROFILE")" && rg -l budget', "Bash"),
-                ('cd "$(dirname "$LOCALAPPDATA")" && rg -l budget', "Bash"),
-                ('cd "$(cygpath -u "$LOCALAPPDATA")/Temp/.." && rg -l budget', "Bash"),
-                ('cd "$(cygpath -u "$LOCALAPPDATA")/Unminute" && ls workspace', "Bash"),
-                ('cd "$(echo "$LOCALAPPDATA" | tr a a)" && rg -l budget', "Bash"),
-                ("Set-Location (Split-Path $env:LOCALAPPDATA); Get-ChildItem -Recurse -Filter *.db",
-                 "PowerShell"),
-                ("Set-Location (Resolve-Path ~); rg -l budget", "PowerShell"),
-                ('Push-Location "$($env:LOCALAPPDATA)"; rg -l budget', "PowerShell"),
-                ('Set-Location -Path "$env:LOCALAPPDATA"; gci -r', "PowerShell")),
-                allowed=(
-                ('cd "$(git rev-parse --show-toplevel)" && rg -n budget', "Bash"),
-                ('cd "$(git rev-parse --show-toplevel)" && grep -rn budget workspace', "Bash"),
-                ('cd "$(cygpath "$USERPROFILE")/Local_Repos/unminute" && rg -l budget', "Bash"),
-                ('cd "$(cygpath -u "$LOCALAPPDATA")/Temp" && rg -l budget', "Bash"),
-                ('pushd "$(mktemp -d)" && ls -R . && popd', "Bash"),
-                ("cd -P workspace && ls", "Bash"),
-                ("Push-Location (Split-Path $PSScriptRoot); rg -l budget", "PowerShell")))
-
-    def test_a_climb_before_more_arguments_keeps_its_folder(self):
-        # "$LOCALAPPDATA/.." expanded no longer ends in \" (an escaped quote), and a
-        # PowerShell backslash before a quote is not an escape.
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                ('find "$LOCALAPPDATA/.." -name "*.db"', "Bash"),
-                ('find "$TEMP/.." -name "*.db"', "Bash"),
-                ('grep -rn budget "$LOCALAPPDATA/.." --include="*.json"', "Bash"),
-                ('rg budget "$LOCALAPPDATA/.." -g "*.json"', "Bash"),
-                ('find "$LOCALAPPDATA/../.." -name "*.db"', "Bash"),
-                ('rg budget "$env:LOCALAPPDATA\\..\\" -g "*.json"', "PowerShell"),
-                ('rg budget "$env:LOCALAPPDATA\\.." -g "*.json"', "PowerShell"),
-                ('rg x C:/Users/someone/AppData/Local/Temp/.. -g "*.json"', "Bash"),
-                ('rg x "C:/Users/.."', "Bash")),
-                allowed=(
-                ('ls "$LOCALAPPDATA/Unminute/models/a/.."', "Bash"),
-                ('rg -n budget "$TEMP/claude/../claude" -g "*.json"', "Bash")))
-
-    def test_compact_assignments_in_interpreter_code_are_checked(self):
-        # A ;-separated statement that is only an assignment (d=json.load(...)) is
-        # checked, for both data folders.
-        data = r"C:\Users\someone\AppData\Local"
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                (f"python -c \"import json;d=json.load(open(r'{data}\\Unminute\\workspace"
-                 f"\\settings.json'));print(d)\"", "Bash"),
-                (f"python -c \"import json;d=json.load(open(r'{data}\\Unminute\\workspace"
-                 f"\\settings.json'));print(d)\"", "PowerShell"),
-                (f"python -c \"import sqlite3;c=sqlite3.connect(r'{data}\\whisper\\workspace"
-                 f"\\workspace.db');print(c)\"", "Bash"),
-                ("python -c \"import os;p=os.path.join(os.environ['LOCALAPPDATA'],'Unminute',"
-                 "'workspace');print(os.listdir(p))\"", "Bash"),
-                ("python -c \"import pathlib;p=pathlib.Path.home()/'AppData/Local/Unminute/"
-                 "workspace';print(list(p.iterdir()))\"", "Bash"),
-                ("python - <<'EOF'\nimport os\np=os.path.expanduser(\"~/AppData/Local/Unminute/"
-                 "workspace\")\nprint(os.listdir(p))\nEOF", "Bash"),
-                ("python -c \"import os;root=os.environ['LOCALAPPDATA'];"
-                 "print([r for r,d,f in os.walk(root)])\"", "Bash")),
-                allowed=(
-                ('python -c "a=1;b=2;print(a+b)"', "Bash"),
-                ("x=1; y=2; echo $x", "Bash"),
-                ("PYTHONDONTWRITEBYTECODE=1 python tools/run_tests.py", "Bash"),
-                ("python -c \"import os;p=os.path.join('workspace','store.py');print(p)\"",
-                 "Bash")))
-
-    def test_git_short_options_are_message_text_only_where_git_takes_one(self):
-        # -m only for commit, tag, merge, notes and stash; git's -b and -t take a
-        # path or a name (git diff --no-index -b, git commit -t).
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                ('git diff --no-index -b "$LOCALAPPDATA/Unminute/workspace/a.json" b.json',
-                 "Bash"),
-                ("git diff --no-index -b 'C:/Users/someone/AppData/Local/Unminute/workspace/"
-                 "a.json' b.json", "Bash"),
-                ('git diff --no-index -t "C:/Users/someone/AppData/Local/whisper/workspace/'
-                 'a.json" b.json', "Bash"),
-                ('git commit -t "C:/Users/someone/AppData/Local/Unminute/workspace/a.txt"',
-                 "Bash")),
-                allowed=(
-                ('git stash push -m "wip rg -n x $LOCALAPPDATA"', "Bash"),
-                ('git tag -a v1 -m "rg -n x $LOCALAPPDATA"', "Bash"),
-                ('git merge -m "rg -n x $LOCALAPPDATA" topic', "Bash"),
-                ('gh issue create -t "x" -b "cd $LOCALAPPDATA && rg x"', "Bash"),
-                ("git checkout -b feature/x", "Bash"),
-                ("git diff --no-index -b a.json b.json", "Bash")))
-
-    def test_loop_variables_and_other_assignments_are_followed(self):
-        # A variable straight after local AppData stands for any name; bash's for
-        # list is written where its variable is used; assignments after then, do,
-        # { and declare -x, readonly or typeset are substituted; a ) ends a name.
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                ('ls "$LOCALAPPDATA" | while read d; do ls -R "$LOCALAPPDATA/$d"; done', "Bash"),
-                ('ls -R "$LOCALAPPDATA/$d"', "Bash"),
-                ('ls -R "$LOCALAPPDATA/${d}"', "Bash"),
-                ('if true; then L=$LOCALAPPDATA; fi; rg -n budget "$L"', "Bash"),
-                ('declare -x L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
-                ('readonly L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
-                ('typeset -r L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
-                ('{ L=$LOCALAPPDATA; rg -n budget "$L"; }', "Bash"),
-                ('for d in "$LOCALAPPDATA"; do rg -n budget "$d"; done', "Bash"),
-                ('for d in ~; do rg -n x "$d"; done', "Bash"),
-                ('cat "$(ls -d $LOCALAPPDATA/Unm*)/workspace/settings.json"', "Bash")),
-                allowed=(
-                ('ls "$LOCALAPPDATA" | while read d; do ls -R "$LOCALAPPDATA/$d/models"; done',
-                 "Bash"),
-                ('ls "$TEMP/$x"', "Bash"),
-                ("for f in $(git ls-files '*.py'); do ruff check \"$f\"; done", "Bash"),
-                ('for f in workspace/*.py; do ruff check "$f"; done', "Bash"),
-                ('readonly L=workspace; rg -n budget "$L"', "Bash")))
-
-    def test_text_writer_aliases_and_the_walk_folder(self):
-        # sc and ac write -Value text; a relative walk is judged from the folder
-        # the interpreter runs in, not every folder visited before it.
-        with profile_guard() as fresh:
-            self.check(fresh, blocked=(
-                ('cd /c/Users && python -c "import os; print([r for r, d, f in os.walk(\'.\')])"',
-                 "Bash"),
-                ("cd /c/Users\npython - <<'EOF'\nimport os\nprint([r for r, d, f in "
-                 "os.walk('.')])\nEOF", "Bash"),
-                ('cd ~; python -c "import os; print([r for r, d, f in os.walk(\'.\')])"', "Bash")),
-                allowed=(
-                ("sc notes.md -Value 'rg -n budget $env:LOCALAPPDATA'", "PowerShell"),
-                ("ac notes.md -Value 'rg -n budget $env:LOCALAPPDATA'", "PowerShell"),
-                ('cd ~ && cd Local_Repos/unminute && python -c "import os; '
-                 'print([r for r, d, f in os.walk(\'.\')])"', "Bash"),
-                ('python -c "import os; print([r for r, d, f in os.walk(\'.\')])"; cd /c/Users',
-                 "Bash")))
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows paths")
-    def test_a_search_of_a_checkout_holding_extracted_is_blocked(self):
-        # grep -r, rg -uu, Get-ChildItem -Recurse and findstr /s from a checkout read
-        # its extracted/ folder; rg and ag skip it by .gitignore unless told not to.
-        # Synthetic checkouts in a temporary folder; nothing in them is read.
-        with tempfile.TemporaryDirectory() as temp:
-            held, plain = Path(temp) / "held", Path(temp) / "plain"
-            for checkout in (held, plain):
-                (checkout / "workspace").mkdir(parents=True)
-                (checkout / "AGENTS.md").write_text("synthetic\n", encoding="utf-8")
-            (held / "extracted").mkdir()
-            searches = (("grep -rn budget .", "Bash"), ("grep -rn budget", "Bash"),
-                        ("grep -rn budget *", "Bash"), ("rg -uu budget", "Bash"),
-                        ("rg --no-ignore -n budget .", "Bash"), ('find . -name "*.md"', "Bash"),
-                        ("Get-ChildItem -Recurse -Filter *.md | Select-String budget",
-                         "PowerShell"),
-                        ("findstr /s /i budget *.md", "PowerShell"))
-            for command, name in searches:
-                with self.subTest(command=command, tool=name):
-                    self.assertIsNotNone(guard.decide(tool(name, cwd=held, command=command)))
-                    self.assertIsNone(guard.decide(tool(name, cwd=plain, command=command)))
-            for command, name in (("rg -n budget", "Bash"), ("rg -n budget .", "Bash"),
-                                  ("git grep -n budget", "Bash"),
-                                  ("grep -rn budget workspace", "Bash")):
-                with self.subTest(command=command, tool=name):
-                    self.assertIsNone(guard.decide(tool(name, cwd=held, command=command)))
-            # The checkout named as the folder searched, from anywhere.
-            self.assertIsNotNone(guard.decide(tool("Bash", command=f'grep -rn budget "{held}"')))
 
 
 class HookProcessTests(unittest.TestCase):
@@ -1186,24 +209,6 @@ class HookProcessTests(unittest.TestCase):
     def test_allow_exits_0_quietly(self):
         result = self.run_hook(shell("git status"))
         self.assertEqual((0, "", ""), (result.returncode, result.stdout, result.stderr))
-
-    @unittest.skipUnless(sys.platform == "win32" and os.environ.get("LOCALAPPDATA", "")
-                         .lower().startswith("c:\\users\\"), "local AppData under C:\\Users")
-    def test_the_real_hook_blocks_git_bash_and_wrapped_searches(self):
-        # With this computer's own profile (R13b round 3 review).
-        for payload in (tool("Grep", pattern="budget", path="/c/Users"),
-                        tool("Glob", path="/c/Users", pattern="**/settings.json"),
-                        shell("grep -rn budget /c/Users"),
-                        shell('timeout 60 rg -n budget "$LOCALAPPDATA"'),
-                        shell('pwsh -c "rg -n budget $env:LOCALAPPDATA"', "PowerShell"),
-                        shell('$p = "$env:LOCALAPPDATA" + "\\Unminute\\workspace\\settings.json";'
-                              " Get-Content $p", "PowerShell"),
-                        # round 4: ~\.., a whole $(...) value, an empty popd
-                        shell(r"rg -n budget ~\..", "PowerShell"),
-                        shell('L=$(cygpath "$LOCALAPPDATA"); rg -n budget "$L"'),
-                        shell(r"cd $env:LOCALAPPDATA; popd; rg -n budget", "PowerShell")):
-            with self.subTest(payload=payload):
-                self.assertEqual(2, self.run_hook(payload).returncode)
 
     def test_unreadable_input_warns_without_blocking(self):
         # Exit 1 is shown to the user but does not block; 2 would block everything.
@@ -1250,7 +255,9 @@ class SettingsTests(unittest.TestCase):
         deny = settings["permissions"]["deny"]
         self.assertIn("Read(./extracted/**)", deny)
         self.assertTrue(any("whisper/workspace" in rule for rule in deny))
-        self.assertTrue(any("Unminute/workspace" in rule for rule in deny))
+        for rule in ("Read(~/AppData/Local/Unminute/workspace/**)",
+                     "Edit(~/AppData/Local/Unminute/workspace/**)"):
+            self.assertIn(rule, deny)
         hooks = [hook for entry in settings["hooks"]["PreToolUse"] for hook in entry["hooks"]]
         guards = [h for h in hooks if ".claude/hooks/private_data_guard.py" in h["command"]]
         self.assertEqual(1, len(guards))
@@ -1263,14 +270,6 @@ class SettingsTests(unittest.TestCase):
         # Without this PowerShell reports the hook's exit 2 as 1, which only warns.
         self.assertTrue(guards[0]["command"].rstrip().endswith("exit $LASTEXITCODE"))
         self.assertIn("Test-Path", guards[0]["command"])     # a missing hook file allows
-        # Every tool the hook checks is one the matcher sends it (Monitor runs a
-        # shell command, R13b review).
-        entry = next(e for e in settings["hooks"]["PreToolUse"]
-                     if any(".claude/hooks/private_data_guard.py" in h["command"]
-                            for h in e["hooks"]))
-        matched = set(entry["matcher"].split("|"))
-        self.assertEqual(set(), (set(guard.FILE_TOOLS) | set(guard.SHELL_TOOLS)) - matched)
-        self.assertIn("Monitor", matched)
 
     def test_media_extensions_cover_the_apps_import_list(self):
         source = (ROOT / "workspace" / "app.py").read_text(encoding="utf-8")

@@ -6,14 +6,13 @@
       "Read(~/AppData/Local/whisper/workspace/**)",
       "Edit(~/AppData/Local/whisper/workspace/**)",
       "Read(~/AppData/Local/Unminute/workspace/**)",
-      "Edit(~/AppData/Local/Unminute/workspace/**)",
-      "Edit(~/AppData/Local/Unminute/models/**)"
+      "Edit(~/AppData/Local/Unminute/workspace/**)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|Bash|PowerShell|Monitor",
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Glob|Grep|Bash|PowerShell",
         "hooks": [
           {
             "type": "command",
