@@ -10,7 +10,7 @@ Technical design for Unminute's durable core. It defines state ownership, chunk 
 
 ## Source identity
 
-On import, the original file is hashed (SHA-256) and decoded once to 16 kHz mono float32, stored as `audio.f32` (raw little-endian). Engines read slices through a memory map, so memory stays bounded however long the meeting is.
+On import, the original file is hashed (SHA-256) and decoded once to 16 kHz mono float32, stored as `audio.f32` (raw little-endian). A file with several channels is mixed to mono with equal weights, the mean of all channels (#220), whatever layout it declares: FFmpeg's surround matrix would treat the channels as speaker positions, drop one it took for a low-frequency channel and let a mix of similar channels exceed full scale. On a recorder that gives each person a track, that could lose a person. Engines read slices through a memory map, so memory stays bounded however long the meeting is.
 
 Each source row records:
 

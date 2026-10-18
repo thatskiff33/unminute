@@ -39,6 +39,7 @@ OPEN_OPTIONS = {"protocol_whitelist": "file", "format_whitelist": DEMUXERS}
 SAMPLE_RATE = 16000
 MAX_DECODED_S = 12 * 3600
 FRAME_SAMPLES = 1 << 16                  # about 4 s of audio per frame
+MIX_SAMPLES = 1 << 14                    # samples per channel mixed at a time
 LOW_INTEGRITY = 0x1000
 
 E_SETUP, E_NO_AUDIO, E_TOO_LONG, E_UNREADABLE, E_MEMORY = 1, 2, 3, 4, 5
@@ -131,7 +132,19 @@ def lower_integrity():
 
 def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
     """Decode `src` to 16 kHz mono float32 and pass the bytes to send() in
-    frames. Raises DecodeFailed with an E_ code."""
+    frames. Raises DecodeFailed with an E_ code.
+
+    Channels are mixed with equal weights (the arithmetic mean, #220), not
+    by FFmpeg's surround matrix. That matrix treats channels as speaker
+    positions, guessing a layout when a file declares none: it drops a
+    low-frequency channel and halves or boosts others, so a recorder that
+    puts one person on each track could lose a person, and a mix of similar
+    channels could exceed full scale. A mean keeps every track and adds no
+    gain: before resampling it never exceeds the loudest channel. The 16 kHz
+    resampler that follows can still overshoot full scale slightly on
+    full-scale input, exactly as it does for a mono file."""
+    from fractions import Fraction
+
     import av
     import numpy as np
     pending, total = bytearray(), 0
@@ -141,7 +154,36 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
             raise DecodeFailed(E_NO_AUDIO)
         if container.duration and container.duration / 1e6 > MAX_DECODED_S + 60:
             raise DecodeFailed(E_TOO_LONG)
-        resampler = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+        # A mono frame goes straight to the 16 kHz resampler, as before. Any
+        # other is first converted to interleaved float at its own layout and
+        # rate, in blocks of MIX_SAMPLES (no channel mixing), and its mean is
+        # resampled. Interleaved, not planar: PyAV 17 miscounts the planes of
+        # an 8-channel planar frame and reads past them (found in #220). Each
+        # resampler takes its input settings from the first frame it gets and
+        # refuses a frame that differs, as the single resampler did before.
+        interleaved = av.AudioResampler(format="flt", frame_size=MIX_SAMPLES)
+        to_rate = av.AudioResampler(format="flt", layout="mono", rate=SAMPLE_RATE)
+        mixed = 0                                   # samples mixed so far, for timestamps
+
+        def mix(frames):
+            nonlocal mixed
+            out = []
+            for fr in frames:
+                block = fr.to_ndarray().reshape(-1, len(fr.layout.channels))
+                # Summed in float64 and divided once, so N identical channels
+                # give back exactly that channel.
+                acc = block[:, 0].astype(np.float64)
+                for c in range(1, block.shape[1]):
+                    acc += block[:, c]
+                mean = (acc / block.shape[1]).astype(np.float32)
+                mono = av.AudioFrame.from_ndarray(mean.reshape(1, -1), format="flt",
+                                                  layout="mono")
+                mono.sample_rate = fr.sample_rate
+                mono.time_base = Fraction(1, fr.sample_rate)
+                mono.pts = mixed
+                mixed += mean.shape[0]
+                out += to_rate.resample(mono)
+            return out
 
         def take(frames):
             nonlocal total
@@ -156,8 +198,12 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
                     del pending[:FRAME_SAMPLES * 4]
 
         for frame in container.decode(stream):
-            take(resampler.resample(frame))
-        take(resampler.resample(None))
+            if len(frame.layout.channels) == 1:
+                take(to_rate.resample(frame))
+            else:
+                take(mix(interleaved.resample(frame)))
+        take(mix(interleaved.resample(None)))
+        take(to_rate.resample(None))
     if pending:
         send(b"A", bytes(pending))
 

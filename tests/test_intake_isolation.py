@@ -141,6 +141,188 @@ class DecoderTests(unittest.TestCase):
             self.assertNotIn(risky, allowed)
 
 
+def multichannel_wav(path, data, rate, mask=None):
+    """A 16-bit WAV of `data` (channels x samples, floats in -1..1). With
+    mask=None it has a plain PCM header, which declares no channel layout;
+    otherwise a WAVE_FORMAT_EXTENSIBLE header with that channel mask (0 means
+    none given; 0x3F is 5.1: FL FR FC LFE BL BR)."""
+    import numpy as np
+    channels = data.shape[0]
+    pcm = np.clip(np.round(data.T * 32767), -32768, 32767).astype("<i2").tobytes()
+    if mask is None:
+        fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * channels * 2, channels * 2, 16)
+    else:
+        pcm_guid = struct.pack("<IHH", 1, 0, 0x10) + bytes([0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71])
+        fmt = struct.pack("<HHIIHHHHI", 0xFFFE, channels, rate, rate * channels * 2,
+                          channels * 2, 16, 22, 16, mask) + pcm_guid
+    body = (b"WAVE" + b"fmt " + struct.pack("<I", len(fmt)) + fmt
+            + b"data" + struct.pack("<I", len(pcm)) + pcm)
+    Path(path).write_bytes(b"RIFF" + struct.pack("<I", len(body)) + body)
+    return path
+
+
+def speech_like(seconds, rate, seed):
+    """Synthetic voiced sound: a gliding pitch (90 to 240 Hz) with harmonics
+    shaped by two formants, in 4 Hz syllables, plus a little breath noise."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(seconds * rate)) / rate
+    f0 = 165 + 75 * np.sin(2 * np.pi * 0.7 * t + seed)
+    phase = 2 * np.pi * np.cumsum(f0) / rate
+    voice = np.zeros_like(t)
+    for h in range(1, 30):
+        if h * 240 >= rate / 2:
+            break
+        formants = (np.exp(-((h * 165 - 700) / 300) ** 2)
+                    + 0.5 * np.exp(-((h * 165 - 1800) / 500) ** 2))
+        voice += (0.3 / h + formants) * np.sin(h * phase)
+    syllables = np.clip(np.sin(2 * np.pi * 4 * t + seed), 0, None) ** 2
+    signal = voice * syllables + 0.02 * rng.standard_normal(t.size)
+    return signal / np.abs(signal).max()
+
+
+def surround_matrix_decode(path):
+    """The decoder before #220, in-process for comparison: one PyAV resampler
+    straight to 16 kHz mono, which mixes channels by FFmpeg's surround matrix."""
+    import av
+    import numpy as np
+    out = []
+    with av.open(str(path)) as container:
+        resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+        for frame in container.decode(container.streams.audio[0]):
+            out += [f.to_ndarray().reshape(-1) for f in resampler.resample(frame)]
+        out += [f.to_ndarray().reshape(-1) for f in resampler.resample(None)]
+    return np.concatenate(out)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class EqualDownmixTests(unittest.TestCase):
+    """Every channel counts equally (#220): FFmpeg's surround matrix dropped a
+    track it took for a low-frequency channel, halved or boosted others, and
+    let a mix of similar channels exceed full scale."""
+
+    SEGMENT = 8000                     # half a second at 16 kHz per active channel
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def decoded(self, src):
+        """Decode in the contained process, as an import does."""
+        import numpy as np
+        from workspace import media
+        dest = self.root / f"{Path(src).name}.f32"
+        samples, _ = media.decode_to_file(src, dest)
+        audio = np.fromfile(dest, dtype="<f4")
+        self.assertEqual(len(audio), samples)
+        return audio
+
+    def one_track_at_a_time(self, channels, rate):
+        """Channel k alone carries a 440 Hz tone in the k-th half second."""
+        import numpy as np
+        seg = rate // 2
+        tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(seg) / rate)
+        data = np.zeros((channels, seg * channels))
+        for k in range(channels):
+            data[k, k * seg:(k + 1) * seg] = tone
+        return data
+
+    def weights(self, audio, channels):
+        """Each segment's level over the tone's own level, away from the edges."""
+        import numpy as np
+        ref = 0.5 / np.sqrt(2)
+        seg = self.SEGMENT
+        return [float(np.sqrt(np.mean(audio[k * seg + seg // 4:k * seg + 3 * seg // 4]
+                                      .astype(np.float64) ** 2)) / ref)
+                for k in range(channels)]
+
+    def test_each_channel_counts_equally_whatever_the_header_declares(self):
+        # A plain header and a mask of 0 declare no layout: FFmpeg guessed one
+        # (2.1, 4.0, 5.1 ...) and dropped track 3 of 3 and track 4 of 6. A full
+        # mask declares speaker positions (3.0, 3.1, 5.1 for 6 ...).
+        for channels in range(2, 9):
+            for mask in (None, 0, (1 << channels) - 1):
+                with self.subTest(channels=channels, mask=mask):
+                    src = multichannel_wav(self.root / f"c{channels}-{mask}.wav",
+                                           self.one_track_at_a_time(channels, 16000),
+                                           16000, mask)
+                    for k, w in enumerate(self.weights(self.decoded(src), channels)):
+                        self.assertAlmostEqual(w, 1 / channels, delta=1e-3, msg=f"track {k + 1}")
+
+    def test_weights_hold_after_resampling(self):
+        for channels, mask in ((3, None), (6, 0x3F), (8, 0)):
+            with self.subTest(channels=channels, mask=mask):
+                src = multichannel_wav(self.root / f"r{channels}.wav",
+                                       self.one_track_at_a_time(channels, 48000), 48000, mask)
+                for k, w in enumerate(self.weights(self.decoded(src), channels)):
+                    self.assertAlmostEqual(w, 1 / channels, delta=5e-3, msg=f"track {k + 1}")
+
+    def test_a_file_declared_5_1_keeps_every_track(self):
+        # Declared by the container, not guessed: lossless FLAC, 5.1 layout.
+        import av
+        import numpy as np
+        data = self.one_track_at_a_time(6, 16000).astype(np.float32)
+        src = self.root / "surround.flac"
+        with av.open(str(src), "w", format="flac") as out:
+            stream = out.add_stream("flac", rate=16000)
+            stream.layout = "5.1"
+            resampler = av.AudioResampler(format=stream.codec_context.format.name,
+                                          layout="5.1", rate=16000)
+            frame = av.AudioFrame.from_ndarray(np.ascontiguousarray(data.T).reshape(1, -1),
+                                               format="flt", layout="5.1")
+            frame.sample_rate, frame.pts, frame.time_base = 16000, 0, Fraction(1, 16000)
+            for f in resampler.resample(frame) + resampler.resample(None):
+                for p in stream.encode(f):
+                    out.mux(p)
+            for p in stream.encode(None):
+                out.mux(p)
+        with av.open(str(src)) as check:
+            self.assertEqual(check.streams.audio[0].layout.name, "5.1")
+        for k, w in enumerate(self.weights(self.decoded(src), 6)):
+            self.assertAlmostEqual(w, 1 / 6, delta=1e-3, msg=f"track {k + 1}")      # LFE is 4
+
+    def test_identical_channels_never_exceed_the_input_peak(self):
+        # The same near-full-scale signal on every channel decodes to exactly
+        # what the mono file decodes to: no gain, so nothing above full scale.
+        import numpy as np
+        for rate in (16000, 44100):
+            voice = 0.99 * speech_like(2, rate, seed=1)
+            mono = self.decoded(multichannel_wav(self.root / f"m{rate}.wav",
+                                                 voice[None, :], rate))
+            peak = np.abs(mono).max()
+            if rate == 16000:
+                self.assertAlmostEqual(peak, 0.99, delta=1e-4)
+            for channels in range(2, 9):
+                with self.subTest(rate=rate, channels=channels):
+                    src = multichannel_wav(self.root / f"d{rate}-{channels}.wav",
+                                           np.tile(voice, (channels, 1)), rate)
+                    audio = self.decoded(src)
+                    self.assertLessEqual(np.abs(audio).max(), peak)
+                    self.assertLess(np.abs(audio - mono).max(), 1e-6)
+
+    def test_mono_and_stereo_speech_match_the_previous_decoder(self):
+        # Mono is unchanged. Stereo has the same waveform as before, 3 dB
+        # quieter: FFmpeg added L and R at 0.707 each, the mean takes 0.5 each.
+        import numpy as np
+        for rate in (16000, 44100, 48000):
+            with self.subTest(rate=rate, channels=1):
+                src = multichannel_wav(self.root / f"mono{rate}.wav",
+                                       0.8 * speech_like(3, rate, seed=2)[None, :], rate)
+                before, after = surround_matrix_decode(src), self.decoded(src)
+                self.assertEqual(len(after), len(before))
+                self.assertLess(np.abs(after - before).max(), 1e-6)
+            with self.subTest(rate=rate, channels=2):
+                pair = np.stack([0.6 * speech_like(3, rate, seed=3),
+                                 0.6 * speech_like(3, rate, seed=4)])
+                src = multichannel_wav(self.root / f"stereo{rate}.wav", pair, rate)
+                before, after = surround_matrix_decode(src), self.decoded(src)
+                self.assertEqual(len(after), len(before))
+                self.assertLess(np.abs(after - before / np.sqrt(2)).max(), 1e-6)
+
+
 def frames(*items):
     data = b""
     for kind, payload in items:
