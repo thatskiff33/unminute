@@ -99,6 +99,15 @@ def patched(data, at, fmt, value):
     return data[:at] + struct.pack(fmt, value) + data[at + struct.calcsize(fmt):]
 
 
+def count_one(data, record):
+    """data with every entry count in its end records (this disk's and the
+    total, in the end record and the zip64 one at record) set to 1."""
+    for at, fmt in ((-END.size + 8, "<H"), (-END.size + 10, "<H"),
+                    (record + 24, "<Q"), (record + 32, "<Q")):
+        data = patched(data, at, fmt, 1)
+    return data
+
+
 def plain_pickle(tag):
     """Names only an allowed global (collections OrderedDict)."""
     import collections
@@ -697,8 +706,9 @@ class PickleCheckTests(unittest.TestCase):
             "zip64 record claims extra data": patched(decoy, record + 4, "<Q", 52),
             "end record disagrees with the zip64 record":
                 patched(decoy, -END.size + 16, "<I", 0),
-            "an entry the end records do not count":
-                patched(patched(decoy, -END.size + 10, "<H", 1), record + 32, "<Q", 1),
+            # Every count says one entry (so the records agree with each
+            # other); only the central directory, which lists two, disagrees.
+            "an entry the end records do not count": count_one(decoy, record),
         }
         for label, data in cases.items():
             with self.subTest(label), self.assertRaises(Refused):
