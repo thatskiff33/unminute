@@ -41,6 +41,11 @@ real time, and remove it when the cause is fixed.
 - **Clicking WinForms buttons in UI automation.** Post `WM_LBUTTONDOWN` and `WM_LBUTTONUP` at the
   control's centre. `BM_CLICK` uses the current pointer position, so a button that checks where
   the mouse was released ignores it, and the check hangs with a dialog open on the user's screen.
+- **A script added with `AddScriptToExecuteOnDocumentCreatedAsync` before the first load runs
+  in that first page** (no need to wait for the task) **and in every frame the page makes**:
+  `createElement`, `innerHTML`, `document.write`, `srcdoc` and `<object>` frames, before they
+  can be used (WebView2 155, #175). `document.execCommand("print")` starts printing just as
+  `window.print()` does; a `beforeprint` listener shows whether printing started.
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the

@@ -353,8 +353,30 @@ def checks(window, ws, mid, long_mid, report):
                 () => navigator.mediaDevices.getDisplayMedia({video: true, audio: true}));
             const notifications = await Notification.requestPermission();
             const permission_ms = Math.round(performance.now() - t2);
+            // Nor start printing (print preview offers Save as PDF) or open a
+            // file picker, from the page or a frame of its own (#175). Print
+            // is called only once it is known not to be the browser's, so a
+            // failure cannot leave a print preview open.
+            const pframe = document.createElement('iframe');
+            document.body.appendChild(pframe);
+            const wins = [window, pframe.contentWindow];
+            const native = (f) => typeof f === 'function' && String(f).includes('[native code]');
+            const print_native = wins.some((w) => native(w.print));
+            const exec_native = wins.some((w) => native(w.Document.prototype.execCommand));
+            const pickers = wins.flatMap((w) => ['showOpenFilePicker', 'showSaveFilePicker',
+                                                 'showDirectoryPicker'].map((n) => typeof w[n]));
+            let printed = 0, exec_print = null;
+            const counted = () => { printed++; };
+            wins.forEach((w) => w.addEventListener('beforeprint', counted));
+            if (!print_native && !exec_native) {
+                wins.forEach((w) => w.print());
+                exec_print = wins.map((w) => w.document.execCommand('print'));
+                await new Promise((r) => setTimeout(r, 500));
+            }
+            pframe.remove();
             return {confirm: answer, confirm_ms, prompt: prompted, native_ms,
-                    microphone, frame_microphone, screen, notifications, permission_ms};""")
+                    microphone, frame_microphone, screen, notifications, permission_ms,
+                    print_native, exec_native, pickers, printed, exec_print};""")
         time.sleep(1.0)
         report["page_dialogs"]["new_windows"] = sorted(page_dialogs() - before)
         report["page_dialogs"]["alert_blocked"] = "_pywebviewAlert" in shell.blocked_calls
@@ -592,6 +614,10 @@ def main():
             and pd.get("permission_ms", 9999) < 2000
             and pd.get("new_windows") == [] and pd.get("alert_blocked")):
         bad.append("page dialogs")
+    if not (pd.get("print_native") is False and pd.get("exec_native") is False
+            and pd.get("pickers") == ["undefined"] * 6 and pd.get("printed") == 0
+            and pd.get("exec_print") == [False, False]):
+        bad.append("page print and file pickers")
     if report.get("edit_in_db") != "Edited in the page":
         bad.append("autosave")
     if report.get("undo", "").startswith("Edited"):

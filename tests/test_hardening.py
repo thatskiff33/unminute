@@ -229,6 +229,9 @@ class AlertGuardTests(unittest.TestCase):
                 self.PermissionRequested = Event()
                 self.ScreenCaptureStarting = Event()
 
+            def AddScriptToExecuteOnDocumentCreatedAsync(self, script):
+                seen.append(("document script", script))
+
         class Control:
             def __init__(self):
                 self.CoreWebView2 = Core()
@@ -240,8 +243,12 @@ class AlertGuardTests(unittest.TestCase):
             view.sender = control
             view.on_webview_ready(control, None)
         # pywebview turned them on, but the page loaded with them off, and
-        # any dialog, permission or screen capture asked for is refused.
+        # any dialog, permission or screen capture asked for is refused. The
+        # page guard is added once, before the first load (#175).
         self.assertEqual(seen[-1], ("load", "file:///index.html", False))
+        self.assertEqual([s for s in seen if s[0] == "document script"],
+                         [("document script", shell.PAGE_GUARD)])
+        self.assertEqual(seen[-2], ("document script", shell.PAGE_GUARD))
         core = control.CoreWebView2
         self.assertFalse(core.Settings.AreDefaultScriptDialogsEnabled)
         self.assertEqual(core.ScriptDialogOpening.handlers, [shell._refuse_script_dialog])
@@ -265,10 +272,25 @@ class AlertGuardTests(unittest.TestCase):
         self.assertNotIn("load_url", view.__dict__)              # the instance is left as it was
         self.assertTrue(module.EdgeChrome.on_webview_ready.unminute_guard)
 
+    def test_print_and_the_file_pickers_are_kept_from_the_page(self):
+        # #175: the switch removes the pickers; the page guard replaces print,
+        # execCommand("print") and any picker a WebView2 Runtime still has.
+        self.assertIn("--disable-blink-features=FileSystemAccessLocal",
+                      shell.WEBVIEW2_ARGS.split())
+        for name in ("print", "showOpenFilePicker", "showSaveFilePicker", "showDirectoryPicker",
+                     "execCommand"):
+            self.assertIn(f'"{name}"', shell.PAGE_GUARD)
+        self.assertIn('configurable: false', shell.PAGE_GUARD)
+
     def test_no_page_loads_when_the_guard_cannot_attach(self):
-        # An older WebView2 Runtime without the screen-capture event: the
-        # page never loads and the window closes, with no error escaping into
-        # WebView2's start-up.
+        # An older WebView2 Runtime without the screen-capture event, or one
+        # that cannot add the page guard: the page never loads and the window
+        # closes, with no error escaping into WebView2's start-up.
+        for missing in ("ScreenCaptureStarting", "AddScriptToExecuteOnDocumentCreatedAsync"):
+            with self.subTest(missing=missing):
+                self.check_guard_fails_closed(missing)
+
+    def check_guard_fails_closed(self, missing):
         module, seen = self.fake_backend()
 
         class Settings:
@@ -283,6 +305,13 @@ class AlertGuardTests(unittest.TestCase):
                 self.Settings = Settings()
                 self.ScriptDialogOpening = Event()
                 self.PermissionRequested = Event()
+                if missing != "ScreenCaptureStarting":
+                    self.ScreenCaptureStarting = Event()
+
+            def __getattr__(self, name):
+                if name == "AddScriptToExecuteOnDocumentCreatedAsync" and name != missing:
+                    return lambda script: None
+                raise AttributeError(name)
 
         class Control:
             def __init__(self):

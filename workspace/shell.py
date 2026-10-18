@@ -19,8 +19,10 @@ ICON = Path(__file__).resolve().parents[1] / "whisper.ico"
 
 
 # Chromium switches for WebView2: resolve no host names (the page has nothing
-# to fetch), and turn off background services that would otherwise contact
-# Microsoft (SmartScreen, component updates, spell-check downloads, metrics).
+# to fetch), turn off background services that would otherwise contact
+# Microsoft (SmartScreen, component updates, spell-check downloads, metrics),
+# and remove the File System Access file pickers, which would let page script
+# open a Windows file dialog showing a file name and description it chose (#175).
 WEBVIEW2_ARGS = " ".join([
     '--host-resolver-rules="MAP * ~NOTFOUND"',
     "--disable-features=msSmartScreenProtection,msEdgeEnhancedSecurityMode,"
@@ -32,7 +34,31 @@ WEBVIEW2_ARGS = " ".join([
     "--disable-sync",
     "--metrics-recording-only",
     "--disable-breakpad",
+    "--disable-blink-features=FileSystemAccessLocal",
 ])
+
+# Run in every document and frame, before its own scripts (#175): page script
+# can neither start printing (print preview offers Save as PDF of what the page
+# shows) nor open a file picker, whichever frame it calls from. The page uses
+# none of these. Each is replaced with a function that does nothing, fixed so
+# it cannot be put back; the pickers are also removed by the switch above, so
+# they are replaced only if a WebView2 Runtime still has them.
+PAGE_GUARD = """(() => {
+  "use strict";
+  const refused = function () {};
+  for (const name of ["print", "showOpenFilePicker", "showSaveFilePicker", "showDirectoryPicker"]) {
+    if (name in window) {
+      Object.defineProperty(window, name, { value: refused, writable: false, configurable: false });
+    }
+  }
+  const exec = Document.prototype.execCommand;
+  Object.defineProperty(Document.prototype, "execCommand", {
+    writable: false, configurable: false,
+    value: function execCommand(command, ...rest) {
+      return String(command).toLowerCase() === "print" ? false : exec.call(this, command, ...rest);
+    },
+  });
+})();"""
 
 
 def harden_webview2():
@@ -360,9 +386,9 @@ def _page_alert(message):
 def install_alert_guard():
     """In the WebView2 backend: drop pywebview's alert message; before the
     first page loads, turn off WebView2's own alert, confirm and prompt
-    dialogs and refuse every permission request and screen capture. Both
-    handlers are bound when each window is created, so this runs before any
-    window (check_backend calls it)."""
+    dialogs, refuse every permission request and screen capture, and add
+    PAGE_GUARD to every document. Both handlers are bound when each window is
+    created, so this runs before any window (check_backend calls it)."""
     import importlib
     view = importlib.import_module("webview.platforms.edgechromium").EdgeChrome
     notify = getattr(view.on_script_notify, "__wrapped__", view.on_script_notify)
@@ -396,11 +422,14 @@ def install_alert_guard():
                     core.ScriptDialogOpening += _refuse_script_dialog
                     core.PermissionRequested += _permission_refuser()
                     core.ScreenCaptureStarting += _refuse_screen_capture
+                    # Added before the load that follows, so it is in place
+                    # for the first page and every frame it makes.
+                    core.AddScriptToExecuteOnDocumentCreatedAsync(PAGE_GUARD)
                     guard["on"] = True
             except Exception:
-                # Never a page that could ask for the microphone or the screen
-                # (an older WebView2 Runtime has no screen-capture event):
-                # nothing loads, and the window closes with a message.
+                # Never a page that could ask for the microphone or the screen,
+                # or print (an older WebView2 Runtime has no screen-capture
+                # event): nothing loads, and the window closes with a message.
                 guard["failed"] = True
                 _guard_failed(self.pywebview_window)
                 return False
