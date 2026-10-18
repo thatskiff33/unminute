@@ -18,9 +18,14 @@
 #     a cd); also with a wildcard or file name as the last part, or no
 #     folder named when run from local AppData or above (cd, pushd and popd are
 #     followed, also at the start of bash -c (or -lc), pwsh -c and { } blocks and
-#     after then, do or else); inside
-#     brackets, a loop, a string run by another shell or after a wrapper such as
-#     timeout; or fed local AppData by a pipeline;
+#     after then, do or else; to a folder from cygpath, realpath, dirname,
+#     Split-Path or Resolve-Path; and to a $(...) that names local AppData or the
+#     home folder, taken as that folder); inside brackets, a loop (bash's for list
+#     is written where its variable is used), a string run by another shell or
+#     after a wrapper such as timeout; or fed local AppData by a pipeline;
+#   - shell commands may not search or list a source checkout that holds an
+#     extracted/ folder recursively, except with rg or ag (which skip what
+#     .gitignore names unless told not to);
 #   - git add and git commit may not name a media file.
 # A leading ~ is the home folder, as the Grep and Glob tools read it, and /c/x (or
 # /mnt/c/x, /proc/cygdrive/c/x) is C:\x, as Git Bash reads it. Variables are
@@ -28,15 +33,18 @@
 # HOME, HOMEDRIVE with HOMEPATH,
 # SystemDrive, USERNAME, PUBLIC, OneDrive, GetFolderPath('UserProfile'), and any
 # other whose value is a full path (windir, ProgramData), so a .. after one is seen
-# for what it reaches. A variable set earlier in the same command is substituted
-# where it is used, a $(...) or backtick value whole.
-# Message text (git's and gh's -m, -b, -t and gh's -f fields, any program's --body,
-# --message or --title, -Value of Set-Content, Add-Content or Out-File, quoted
-# heredocs and here-strings not fed to an interpreter, PowerShell text held in a
-# variable) and the patterns given to text searches are ignored, so rules can be
-# quoted and searched for.
+# for what it reaches. A variable set earlier in the same command (also after then,
+# do, { or declare, typeset, readonly) is substituted where it is used, a $(...) or
+# backtick value whole; a variable straight after local AppData ($LOCALAPPDATA/$d)
+# stands for any name. Each statement is checked, also one that is only an
+# assignment (d=json.load(open(...)) in python -c code).
+# Message text (gh's -m, -b, -t and -f fields, git's -m for commit, tag, merge,
+# notes and stash, any program's --body, --message or --title, -Value of
+# Set-Content, Add-Content, Out-File, sc or ac, quoted heredocs and here-strings
+# not fed to an interpreter, PowerShell text held in a variable) and the patterns
+# given to text searches are ignored, so rules can be quoted and searched for.
 # It is a guard rail, not a security boundary: a text heuristic over the command,
-# which cannot be complete. Known gaps (R13b round 4):
+# which cannot be complete. Known gaps (R13b round 5):
 #   - a path held in a variable from an earlier tool call, or set with Set-Variable
 #     or New-Variable and used by name;
 #   - a script file written in one step (Write, cat > f <<EOF, Set-Content) and run
@@ -50,7 +58,14 @@
 #     home-folder names not listed above (HOMESHARE, GetEnvironmentVariable(
 #     'USERPROFILE'), a subst or mapped drive);
 #   - interpreter code that walks a tree another way (its own os.scandir or
-#     os.listdir recursion, shutil.copytree), or from a folder held in a variable;
+#     os.listdir recursion, shutil.copytree), or from a folder held in a variable
+#     or os.getcwd();
+#   - a cd to a command's output that names no folder at or above local AppData
+#     or the home folder ($(git rev-parse --show-toplevel), $(pwd), a variable
+#     from an earlier call): the folder is then unknown, and later relative paths
+#     are judged as written;
+#   - a checkout's extracted/ folder reached from a folder above the checkout
+#     (grep -r x ~/Local_Repos), or by interpreter code walking the checkout;
 #   - a search program named by a variable or a full path (& $rg, /usr/bin/grep)
 #     inside another command;
 #   - a cd that is not at the start of a segment (after ;, &&, || or |), of bash -c,
@@ -63,9 +78,13 @@
 #     resolved).
 # Known false positives, which fail closed: a search pattern holding ;, &, | or a
 # line break is split there like a command (grep -rn 'cd X; rg' tests reads X as a
-# folder searched), so search for part of the text or use the Grep tool; and local
+# folder searched), so search for part of the text or use the Grep tool; local
 # AppData named whole and piped into rg, ag or grep that reads the pipe (echo
-# "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it.
+# "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
+# search program's name in quoted text that is not a search, with local AppData
+# after it (echo "rg -n x ~/AppData/Local" > notes.txt), which a quoted heredoc
+# or Set-Content writes instead; and any use of local AppData followed by a
+# variable ($LOCALAPPDATA/$d), unless models follows.
 # Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -123,9 +142,13 @@ LIVE_WORKSPACE = re.compile(
     re.IGNORECASE)
 DATA_NAMES = ("unminute", "whisper")
 # A wildcard (or a {a,b} brace list) straight after local AppData (Unmin*, *, w*)
-# that could stand for a data folder, unless what follows it is models.
-WILDCARD_CHILD = re.compile(LOCAL_APPDATA + r"[%}\)'\"]*[\\/]+([^\\/\s'\"]*[*?\[{][^\\/\s'\"]*)"
-                            r"(?:[\\/]+([^\\/\s'\"]*))?", re.IGNORECASE)
+# that could stand for a data folder, unless what follows it is models. A variable
+# there ($d, ${d}, %d%, a loop's) stands for any name too, and a ) or backtick
+# ends the name ($(ls -d .../Unm*)/workspace) (R13b round 5 review).
+WILDCARD_CHILD = re.compile(LOCAL_APPDATA + r"[%}\)'\"]*[\\/]+"
+                            r"([^\\/\s'\")`]*[*?\[{$%][^\\/\s'\")`]*)"
+                            r"(?:[\\/]+([^\\/\s'\")`]*))?", re.IGNORECASE)
+UNKNOWN_NAME = re.compile(r"\$\{[^}]*\}?|\$\(.*|\$(?:env:)?\w+|%\w+%?", re.IGNORECASE)
 # Local AppData named as a folder of its own (not one inside it), and a data folder's
 # name as a path of its own: together in one command (a pipeline, Join-Path
 # -ChildPath, split arguments) they build the data folder.
@@ -161,7 +184,11 @@ ONEDRIVE_FOLDER = re.compile(VARIABLE + r"OneDrive(?:Commercial|Consumer)?(?!\w)
                              re.IGNORECASE)
 # A folder followed by .. (but not a drive, a variable or .. itself), removed until
 # none is left: $env:LOCALAPPDATA\Temp\..\Unminute is $env:LOCALAPPDATA\Unminute.
-UP_STEP = re.compile(r"(?<=[\\/])(?!\.\.?[\\/])[^\\/\s'\"]+[\\/]+\.\.(?=[\\/'\"\s]|$)")
+# The separator before the folder goes with it, so "X\Local/.." becomes "X", not
+# "X\", whose \" would read as an escaped quote (R13b round 5 review); after a
+# drive or at the start of a word, the separator stays (C:\x\.. is C:\).
+UP_STEP = re.compile(r"(?<=[^\\/\s'\":])[\\/]+(?!\.\.?[\\/])[^\\/\s'\"]+[\\/]+\.\.(?=[\\/'\"\s]|$)")
+ROOT_UP_STEP = re.compile(r"(?<=[\\/])(?!\.\.?[\\/])[^\\/\s'\"]+[\\/]+\.\.(?=[\\/'\"\s]|$)")
 # Windows drops trailing dots from a folder name (Local.\Unminute is Local\Unminute).
 TRAILING_DOTS = re.compile(r"(?<=[^\\/.\s'\"])\.+(?=[\\/])")
 # A Python string prefix (r'...', f"..."), which would otherwise separate the parts.
@@ -185,8 +212,9 @@ INTERPRETER = re.compile(r"(?<![\w.-])(?:python[\d.]*|pythonw|py|node|deno|bash|
 DOUBLE = r"\"(?:[^\"\\]|\\.)*\""
 FIELD_KEY = r"[\w.\[\]-]+=(?!@)"
 # Which program a message option belongs to matters: -m, -b and -t are message text
-# only for git and gh (ls -t and cat -b take a path), gh's -f/-F fields only for gh,
-# and -Value only for the cmdlets that write text (R13b round 4 review). The long
+# only for gh, and -m for the git subcommands that take a message (ls -t, cat -b,
+# git diff -b and git commit -t take a path; R13b rounds 4 and 5), gh's -f/-F
+# fields only for gh, and -Value only for the cmdlets that write text. The long
 # forms are message text for any program.
 MESSAGE_VALUE = re.compile(
     r"(?<![\w-])(?P<option>-m|-b|-t|--message|--body|--title|--notes|--subject|--description"
@@ -197,8 +225,8 @@ MESSAGE_VALUE = re.compile(
     r"|\"" + FIELD_KEY + r"(?:[^\"\\]|\\.)*\"|'" + FIELD_KEY + r"[^']*')",
     re.DOTALL)
 SHORT_MESSAGE = {"-m", "-b", "-t"}
-MESSAGE_PROGRAMS = {"git", "gh"}
-TEXT_WRITERS = {"set-content", "add-content", "out-file"}
+GIT_MESSAGE = {"commit", "tag", "merge", "notes", "stash"}
+TEXT_WRITERS = {"set-content", "add-content", "out-file", "sc", "ac"}
 # Variables set in the command itself, substituted into what follows. PowerShell
 # ($name = value) and bash (NAME=value, export NAME=value); the value's end is found
 # by _value_end, so $(...), backticks and nested quotes stay whole.
@@ -206,10 +234,15 @@ ASSIGNMENT = {
     "PowerShell": re.compile(r"(?:^|(?<=[;&|{(\n]))\s*\$(\w+)\s*=(?!=)\s*"
                              r"(@'.*?'@|@\".*?\"@|'[^']*'|\"(?:[^\"`]|`.)*\"|[^;\n|&]+)",
                              re.DOTALL),
-    "Bash": re.compile(r"(?:^|(?<=[;&|\n]))\s*(?:export\s+|local\s+|declare\s+)?"
+    # Also after then, do, else or {, and after declare, typeset or readonly with
+    # their flags (R13b round 5 review).
+    "Bash": re.compile(r"(?:^|(?<=[;&|\n(]))\s*(?:(?:then|do|else|\{)\s+)?"
+                       r"(?:(?:export|local|declare|typeset|readonly)(?:\s+[-+]\w+)*\s+)?"
                        r"([A-Za-z_]\w*)=()"),
 }
 TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
+# Backslashes before a double quote, which PowerShell does not read as an escape.
+PS_BACKSLASHES = re.compile(r"\\+(?=\")")
 # PowerShell's ${C:\path}, which reads the file, even inside double quotes.
 PROVIDER_VARIABLE = re.compile(r"\$\{([A-Za-z]:[^}]*)\}")
 # A search's pattern: the value of its pattern option, or else its first quoted argument.
@@ -472,7 +505,7 @@ def _names_workspace(text):
     if LIVE_WORKSPACE.search(text):
         return True
     for match in WILDCARD_CHILD.finditer(text):
-        children = _brace_alternatives(match.group(1).lower())
+        children = _brace_alternatives(UNKNOWN_NAME.sub("*", match.group(1).lower()))
         below = (match.group(2) or "").lower()
         if below != "models" and any(fnmatch.fnmatchcase(name, child)
                                      for name in DATA_NAMES for child in children):
@@ -510,6 +543,8 @@ def _expand(text):
     previous = None
     while previous != text:
         previous, text = text, UP_STEP.sub("", text)
+        if text == previous:
+            text = ROOT_UP_STEP.sub("", text)
     return text
 
 
@@ -596,10 +631,13 @@ def _drop_written(command, shell):
     def message(match):
         text = match.group(0)
         option = (match.group("option") or "").lower()
-        program = _program_at(match.string, match.start())
+        words = _words_at(match.string, match.start())
+        program = _program(words) if words else ""
+        message_option = program == "gh" or (
+            program == "git" and option == "-m" and _git_sub(words) in GIT_MESSAGE)
         # Another program's -m, -b, -t, -Value or -f takes a value that may be a
-        # path: checked as one (R13b round 4 review).
-        if (option in SHORT_MESSAGE and program not in MESSAGE_PROGRAMS) or (
+        # path: checked as one (R13b rounds 4 and 5).
+        if (option in SHORT_MESSAGE and not message_option) or (
                 option == "-value" and program not in TEXT_WRITERS) or (
                 not option and program != "gh"):
             return text
@@ -622,6 +660,8 @@ def _substitute(command, shell):
     pattern = ASSIGNMENT.get(shell)
     if not pattern:
         return command
+    if shell == "Bash":
+        command = _for_lists(command)
     flags = re.IGNORECASE if shell == "PowerShell" else 0
     scope = r"(?:(?:script|global|local|private):)?" if shell == "PowerShell" else ""
     position = 0
@@ -656,6 +696,22 @@ def _substitute(command, shell):
             middle = command[start:end]
         command = command[:start] + middle + after
         position = start + len(middle)
+    return command
+
+
+FOR_LIST = re.compile(r"(?:^|(?<=[;&|\n(]))\s*for\s+([A-Za-z_]\w*)\s+in\s+([^;\n]*?)"
+                      r"\s*(?:;|\n|\s+do(?!\w))")
+
+
+def _for_lists(command):
+    """command with each $NAME after bash's for NAME in LIST written as the list, so
+    a loop over local AppData named whole is seen for what it searches (R13b
+    round 5 review)."""
+    for match in reversed(list(FOR_LIST.finditer(command))):
+        name, values = match.group(1), match.group(2)
+        use = re.compile(r"\$\{?" + re.escape(name) + r"(?!\w)\}?")
+        rest = use.sub(lambda m, text=values: text, command[match.end():])
+        command = command[:match.end()] + rest
     return command
 
 
@@ -707,22 +763,23 @@ def _bracket_end(text, i, escape):
     return len(text)
 
 
-def _value_end(command, start, shell, matched_end):
+def _value_end(command, start, shell, matched_end=None, word=False):
     """Where the value assigned at start ends (R13b round 4 review: a bash value
     stopped at the first space or inner quote, so FOLDER=$(cygpath "$LOCALAPPDATA")
     kept only "$(cygpath"). Bash: the whole shell word, with its quotes, $(...),
     ${...} and backticks. PowerShell: a quoted value or here-string as matched, an
     unquoted one to the end of the statement, past brackets and quotes. A $(...)
-    or quote left open runs to the end of the command, which fails closed."""
+    or quote left open runs to the end of the command, which fails closed. With word,
+    a PowerShell value ends at a space too: one argument, (...) and all."""
     escape = "\\" if shell == "Bash" else "`"
-    if shell == "PowerShell" and command[start:start + 1] in ("'", '"', "@"):
+    if shell == "PowerShell" and not word and command[start:start + 1] in ("'", '"', "@"):
         return matched_end
     j = start
     while j < len(command):
         char = command[j]
         if shell == "Bash" and (char in " \t\n;&|<>()"):
             break
-        if shell == "PowerShell" and char in ";\n|&)}":
+        if shell == "PowerShell" and (char in ";\n|&)}" or (word and char in " \t")):
             break
         if char == escape:
             j += 2
@@ -747,7 +804,10 @@ def _segments(command, shell):
     """The command's segments with message text removed, each as (words, text,
     dialect): the shell that reads the program's options, "cmd" for cmd /c."""
     for segment in SEGMENTS.split(command):
-        words = _lead_words(segment)
+        # A segment of assignments alone (x=1, or d=json.load(open(r'...')) inside
+        # python -c code split at ;) is still checked, as text that runs no
+        # program (R13b round 5 review).
+        words = _lead_words(segment) or [w.strip("\"'").lower() for w in segment.split()][:1]
         program = _unwrap(words)
         dialect = shell
         if program is not words:
@@ -772,9 +832,10 @@ def _lead_words(segment):
     return [w.strip("\"'").lower() for w in words]
 
 
-def _program_at(command, position):
-    """The program of the segment that holds position: the text back to the last
-    |, ;, & or line break outside quotes, read past brackets, wrappers and cmd /c."""
+def _words_at(command, position):
+    """The words of the segment that holds position, from its program on: the text
+    back to the last |, ;, & or line break outside quotes, read past brackets,
+    wrappers and cmd /c."""
     start, quote = 0, None
     for k, char in enumerate(command[:position]):
         if quote:
@@ -784,8 +845,7 @@ def _program_at(command, position):
             quote = char
         elif char in "|;&\n":
             start = k + 1
-    words = _unwrap(_lead_words(command[start:position].lstrip(" \t({$\"'")))
-    return _program(words) if words else ""
+    return _unwrap(_lead_words(command[start:position].lstrip(" \t({$\"'")))
 
 
 def _program(words):
@@ -899,18 +959,6 @@ def _arguments(text, program, sub):
     return found
 
 
-def _first_argument(text):
-    """The first argument that is not an option (cd /d X, Set-Location -Path X), or
-    the value joined to an option (Set-Location -Path:X, R13b round 4 review)."""
-    for token in TOKEN.findall(text):
-        joined = COLON_VALUE.match(token)
-        if joined:
-            return joined.group(1)
-        if not token.startswith("-") and token.lower() != "/d":
-            return token
-    return None
-
-
 def _path_words(tokens):
     """The tokens that may name a path: those that are not options, and the values
     joined to options with a colon (-Path:X, -LiteralPath:X)."""
@@ -963,24 +1011,77 @@ class _Folder:
         self.previous = self.here
         self.stack = []
 
-    def change(self, verb, rest):
+    def change(self, verb, rest, shell="Bash"):
         verb = verb.lower()
         if verb in ("popd", "pop-location"):
             # An empty stack is an error, and the folder stays (R13b round 4 review).
             if self.stack:
                 self.here = self.stack.pop()
             return
-        target = "-" if rest.strip() == "-" else _first_argument(_expand(rest))
-        if target is None:
+        word = _cd_word(rest, shell)
+        if word is None:
             # bash's (and PowerShell 7's) cd goes home; 5.1's stays. Taken as home,
             # which a search from there must not reach (R13b round 3 review).
             self.previous, self.here = self.here, ntpath.expanduser("~")
-        elif target == "-":
+        elif word == "-":
             self.previous, self.here = self.here, self.previous
         else:
             if verb in ("pushd", "push-location"):
                 self.stack.append(self.here)
-            self.previous, self.here = self.here, _resolve(self.here, target)
+            self.previous, self.here = self.here, _cd_folder(self.here, word)
+
+
+# A command whose output is the folder it is given (cygpath, realpath, Resolve-Path)
+# or the folder above it (dirname, Split-Path), in a cd's argument (R13b round 5).
+FOLDER_OF = re.compile(
+    r"(?:\$\(|`|\()\s*(?:(?:cygpath|realpath|readlink|resolve-path|convert-path|get-item)"
+    r"|(dirname|split-path))(?:\s+-[\w-]+)*\s+(\"[^\"`]*\"|'[^']*'|[^\s)`'\"]+)\s*[)`]",
+    re.IGNORECASE)
+# What the shell runs or substitutes, left in a cd's argument after that.
+UNRESOLVED = re.compile(r"[$`%]|^\(")
+
+
+def _cd_word(rest, shell):
+    """The argument of a cd, pushd or Set-Location as one whole shell word, with
+    its quotes, $(...), backticks or PowerShell (...) (R13b round 5 review: a
+    folder from cygpath was cut at its inner quote); past options (cd -P, cd /d,
+    Set-Location -Path), or the value joined to one (-Path:X). "-" for the previous
+    folder, None when it names none."""
+    i = 0
+    while True:
+        while i < len(rest) and rest[i] in " \t":
+            i += 1
+        end = _value_end(rest, i, shell, word=True) if i < len(rest) else i
+        if end <= i:
+            return None
+        token = rest[i:end]
+        joined = COLON_VALUE.match(token)
+        if joined:
+            return joined.group(1)
+        if token == "-" or not (token.startswith("-") or token.lower() == "/d"):
+            return token
+        i = end
+
+
+def _cd_folder(here, word):
+    """The folder a cd's argument names, from here. cygpath X and the like are X,
+    dirname X is X\\.., and the variables are written out. When the shell still
+    has to run or substitute part of it, the folder is unknown (""), unless that
+    part names local AppData, the home folder or a folder at or above them: then
+    it is that folder, which a search from there must not reach."""
+    previous = None
+    while previous != word:
+        previous = word
+        word = FOLDER_OF.sub(lambda m: m.group(2).strip("\"'") + ("\\.." if m.group(1) else ""),
+                             word)
+    expanded = _expand(word.replace('"', "").replace("'", ""))
+    if not UNRESOLVED.search(expanded):
+        return _resolve(here, expanded)
+    for part in re.split(r"[\s$`()]+", expanded):
+        path = _resolve(here, part) if part else ""
+        if path and (_above_data(_canonical(path)) or _in_data(_canonical(path))):
+            return path
+    return ""
 
 
 def _searches_above_data(text, program, sub, here, dialect="PowerShell"):
@@ -1045,6 +1146,41 @@ def _searches(words, text, here, dialect):
                 or _searches_above_data(expanded, program, sub, here, dialect))
 
 
+def _holds_extracted(folder):
+    """True when the folder is a source checkout (it holds AGENTS.md) with an
+    extracted/ folder in it. Metadata only; nothing is read."""
+    full = _canonical(folder) if folder else ""
+    return bool(full) and os.path.isdir(ntpath.join(full, "extracted")) and \
+        os.path.isfile(ntpath.join(full, "AGENTS.md"))
+
+
+def _searches_extracted(words, text, here, dialect, dropped=False):
+    """True when a recursive search or listing starts from a checkout that holds an
+    extracted/ folder, which it would read (R13b round 5 review). rg and ag skip
+    what .gitignore names, unless told not to (-u, --no-ignore)."""
+    program = _program(words)
+    sub = _git_sub(words) if program == "git" else ""
+    if not _recursive(program, words, text, dialect):
+        return False
+    if program in ("rg", "ag") and not any(
+            w.startswith(("--no-ignore", "--unrestricted", "--skip-vcs-ignores"))
+            or re.fullmatch(r"-[a-z]*u[a-z]*|-U", w) for w in words[1:]):
+        return False
+    folders = []
+    searched = text if dropped else _without_pattern(words, text)
+    for arg in _arguments(_expand(searched), program, sub):
+        clean = arg.strip("\"'")
+        head, sep, leaf = clean.replace("/", "\\").rpartition("\\")
+        # A wildcard last part (grep -r x *) searches the folder it is in.
+        if re.search(r"[*?\[]", leaf):
+            clean = (head or "\\") if sep else "."
+        folders.append(_resolve(here, clean))
+    # find with no folder named (find -name x) starts from here.
+    if not folders or (program == "find" and len(words) > 1 and words[1].startswith("-")):
+        folders.append(here)
+    return any(_holds_extracted(folder) for folder in folders)
+
+
 def _nested(text, shell):
     """The searches and listings inside a segment, each as (words, text, dialect):
     from the program's name to the end of the brackets around it (R13b round 3
@@ -1075,6 +1211,10 @@ def _check_shell(command, cwd="", shell="Bash"):
     folder = _Folder(cwd)
     if _reaches_data(folder.here):
         return f"A command run in the live Unminute workspace is blocked. {ADVICE}"
+    if shell == "PowerShell":
+        # "$env:LOCALAPPDATA\..\" ends at its quote in PowerShell. Doubled, the
+        # backslashes read that way below too (R13b round 5 review).
+        command = PS_BACKSLASHES.sub(lambda m: m.group(0) * 2, command)
     command = _drop_written(_substitute(command, shell), shell)
     blocked = f"A command naming the live Unminute workspace is blocked. {ADVICE}"
     searching = f"Searching a folder that holds the live Unminute workspace is blocked. {ADVICE}"
@@ -1098,14 +1238,21 @@ def _check_shell(command, cwd="", shell="Bash"):
     # whole (R13b round 4 review: os.walk, rglob, readdirSync recursive).
     code = " ; ".join(_without_pattern(words, text) for words, text, _ in
                       _segments(command, shell))
-    expanded = _expand(code)
-    whole = BARE_LOCAL.search(expanded) or BARE_HOME.search(expanded) or HOME_CODE.search(code)
+    code_expanded = _expand(code)
+    # A cd to the home folder is followed below, not taken as code that names it
+    # (cd ~ && cd repo && python ... os.walk('.'), R13b round 5 review).
+    named = _expand(" ; ".join(_without_pattern(words, text) for words, text, _ in
+                               _segments(command, shell) if not CHANGE_FOLDER.search(text)))
+    whole = BARE_LOCAL.search(code_expanded) or BARE_HOME.search(named) or HOME_CODE.search(code)
     walks = (INTERPRETER.search(code) and WALKER.search(code)) or ALL_DIRECTORIES.search(code)
-    if walks and (whole or _walk_starts_above_data(expanded, folder.here)):
+    if walks and (whole or _walk_starts_above_data(code_expanded, folder.here)):
         return searching
-    # Each folder the command moves to, for a walk that starts from a relative path.
-    visited = [folder.here]
+    # The folder each interpreter runs in, for a walk that starts from a relative
+    # path (the folder in force then, not every folder visited: R13b round 5).
+    interpreted = []
     for words, text, dialect in _segments(command, shell):
+        if INTERPRETER.search(text) and folder.here not in interpreted:
+            interpreted.append(folder.here)
         program = _program(words)
         sub = _git_sub(words) if program == "git" else ""
         segment = text
@@ -1128,12 +1275,17 @@ def _check_shell(command, cwd="", shell="Bash"):
         if _searches(words, segment, folder.here, dialect) or any(
                 _searches(w, t, folder.here, d) for w, t, d in _nested(text, shell)):
             return searching
+        # A search from a checkout that holds extracted/ reads it (R13b round 5).
+        # A nested search's text has its pattern dropped already.
+        if _searches_extracted(words, segment, folder.here, dialect) or any(
+                _searches_extracted(w, t, folder.here, d, dropped=True)
+                for w, t, d in _nested(text, shell)):
+            return f"Searching a checkout that holds an extracted/ folder is blocked. {ADVICE}"
         change = CHANGE_FOLDER.search(text) or BLOCK_CHANGE.search(text)
         if change:
-            folder.change(change.group(1), change.group(2))
+            folder.change(change.group(1), change.group(2), shell)
             if _reaches_data(folder.here):
                 return blocked
-            visited.append(folder.here)
         # Most git subcommands cannot read an ignored folder's files (check-ignore,
         # status); staging and --no-index diffs can.
         git_reads = sub in ("add", "stage", "mv") or "--no-index" in words
@@ -1146,7 +1298,7 @@ def _check_shell(command, cwd="", shell="Bash"):
                         "of the repo (AGENTS.md, invariant P1).")
     # Interpreter code walking a relative path, run after a cd to a folder above
     # local AppData (cd /c/Users && python -c "...os.walk('.')", R13b round 4).
-    if walks and any(_walk_starts_above_data(expanded, here) for here in visited[1:]):
+    if walks and any(_walk_starts_above_data(code_expanded, here) for here in interpreted):
         return searching
     return None
 

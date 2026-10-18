@@ -989,6 +989,190 @@ class ShellTests(unittest.TestCase):
         self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ whisper/workspace")))
 
 
+class RoundFiveTests(unittest.TestCase):
+    """Phrasings the R13b round 5 review found allowed, each failing on 3d91ed6."""
+
+    def check(self, fresh, blocked, allowed):
+        for command, name in blocked:
+            with self.subTest(command=command, tool=name):
+                self.assertIsNotNone(fresh.decide(shell(command, name)))
+        for command, name in allowed:
+            with self.subTest(command=command, tool=name):
+                self.assertIsNone(fresh.decide(shell(command, name)))
+
+    def test_a_cd_to_a_command_substitution_is_followed(self):
+        # The cd's argument is one whole shell word; cygpath X is X, dirname X and
+        # Split-Path X are X\.., and an unknown $(...) naming local AppData or the
+        # home folder is taken as that folder.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('D=$(cygpath -u "$LOCALAPPDATA"); cd "$D" && cat Unminute/workspace/settings.json',
+                 "Bash"),
+                ('cd "$(cygpath -u "$LOCALAPPDATA")" && sqlite3 Unminute/workspace/workspace.db '
+                 '.tables', "Bash"),
+                ('cd "$(cygpath -u "$LOCALAPPDATA")"; ls Unminute/workspace', "Bash"),
+                ('cd "$(cygpath "$LOCALAPPDATA")" && rg -l budget', "Bash"),
+                ('cd $(cygpath -u "$LOCALAPPDATA") && grep -rl budget .', "Bash"),
+                ('cd `cygpath "$LOCALAPPDATA"` && rg -l budget', "Bash"),
+                ('pushd "$(cygpath "$LOCALAPPDATA")" && rg -l budget', "Bash"),
+                ('cd "$(cygpath "$USERPROFILE")" && rg -l budget', "Bash"),
+                ('cd "$(dirname "$LOCALAPPDATA")" && rg -l budget', "Bash"),
+                ('cd "$(cygpath -u "$LOCALAPPDATA")/Temp/.." && rg -l budget', "Bash"),
+                ('cd "$(cygpath -u "$LOCALAPPDATA")/Unminute" && ls workspace', "Bash"),
+                ('cd "$(echo "$LOCALAPPDATA" | tr a a)" && rg -l budget', "Bash"),
+                ("Set-Location (Split-Path $env:LOCALAPPDATA); Get-ChildItem -Recurse -Filter *.db",
+                 "PowerShell"),
+                ("Set-Location (Resolve-Path ~); rg -l budget", "PowerShell"),
+                ('Push-Location "$($env:LOCALAPPDATA)"; rg -l budget', "PowerShell"),
+                ('Set-Location -Path "$env:LOCALAPPDATA"; gci -r', "PowerShell")),
+                allowed=(
+                ('cd "$(git rev-parse --show-toplevel)" && rg -n budget', "Bash"),
+                ('cd "$(git rev-parse --show-toplevel)" && grep -rn budget workspace', "Bash"),
+                ('cd "$(cygpath "$USERPROFILE")/Local_Repos/unminute" && rg -l budget', "Bash"),
+                ('cd "$(cygpath -u "$LOCALAPPDATA")/Temp" && rg -l budget', "Bash"),
+                ('pushd "$(mktemp -d)" && ls -R . && popd', "Bash"),
+                ("cd -P workspace && ls", "Bash"),
+                ("Push-Location (Split-Path $PSScriptRoot); rg -l budget", "PowerShell")))
+
+    def test_a_climb_before_more_arguments_keeps_its_folder(self):
+        # "$LOCALAPPDATA/.." expanded no longer ends in \" (an escaped quote), and a
+        # PowerShell backslash before a quote is not an escape.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('find "$LOCALAPPDATA/.." -name "*.db"', "Bash"),
+                ('find "$TEMP/.." -name "*.db"', "Bash"),
+                ('grep -rn budget "$LOCALAPPDATA/.." --include="*.json"', "Bash"),
+                ('rg budget "$LOCALAPPDATA/.." -g "*.json"', "Bash"),
+                ('find "$LOCALAPPDATA/../.." -name "*.db"', "Bash"),
+                ('rg budget "$env:LOCALAPPDATA\\..\\" -g "*.json"', "PowerShell"),
+                ('rg budget "$env:LOCALAPPDATA\\.." -g "*.json"', "PowerShell"),
+                ('rg x C:/Users/someone/AppData/Local/Temp/.. -g "*.json"', "Bash"),
+                ('rg x "C:/Users/.."', "Bash")),
+                allowed=(
+                ('ls "$LOCALAPPDATA/Unminute/models/a/.."', "Bash"),
+                ('rg -n budget "$TEMP/claude/../claude" -g "*.json"', "Bash")))
+
+    def test_compact_assignments_in_interpreter_code_are_checked(self):
+        # A ;-separated statement that is only an assignment (d=json.load(...)) is
+        # checked, for both data folders.
+        data = r"C:\Users\someone\AppData\Local"
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                (f"python -c \"import json;d=json.load(open(r'{data}\\Unminute\\workspace"
+                 f"\\settings.json'));print(d)\"", "Bash"),
+                (f"python -c \"import json;d=json.load(open(r'{data}\\Unminute\\workspace"
+                 f"\\settings.json'));print(d)\"", "PowerShell"),
+                (f"python -c \"import sqlite3;c=sqlite3.connect(r'{data}\\whisper\\workspace"
+                 f"\\workspace.db');print(c)\"", "Bash"),
+                ("python -c \"import os;p=os.path.join(os.environ['LOCALAPPDATA'],'Unminute',"
+                 "'workspace');print(os.listdir(p))\"", "Bash"),
+                ("python -c \"import pathlib;p=pathlib.Path.home()/'AppData/Local/Unminute/"
+                 "workspace';print(list(p.iterdir()))\"", "Bash"),
+                ("python - <<'EOF'\nimport os\np=os.path.expanduser(\"~/AppData/Local/Unminute/"
+                 "workspace\")\nprint(os.listdir(p))\nEOF", "Bash"),
+                ("python -c \"import os;root=os.environ['LOCALAPPDATA'];"
+                 "print([r for r,d,f in os.walk(root)])\"", "Bash")),
+                allowed=(
+                ('python -c "a=1;b=2;print(a+b)"', "Bash"),
+                ("x=1; y=2; echo $x", "Bash"),
+                ("PYTHONDONTWRITEBYTECODE=1 python tools/run_tests.py", "Bash"),
+                ("python -c \"import os;p=os.path.join('workspace','store.py');print(p)\"",
+                 "Bash")))
+
+    def test_git_short_options_are_message_text_only_where_git_takes_one(self):
+        # -m only for commit, tag, merge, notes and stash; git's -b and -t take a
+        # path or a name (git diff --no-index -b, git commit -t).
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('git diff --no-index -b "$LOCALAPPDATA/Unminute/workspace/a.json" b.json',
+                 "Bash"),
+                ("git diff --no-index -b 'C:/Users/someone/AppData/Local/Unminute/workspace/"
+                 "a.json' b.json", "Bash"),
+                ('git diff --no-index -t "C:/Users/someone/AppData/Local/whisper/workspace/'
+                 'a.json" b.json', "Bash"),
+                ('git commit -t "C:/Users/someone/AppData/Local/Unminute/workspace/a.txt"',
+                 "Bash")),
+                allowed=(
+                ('git stash push -m "wip rg -n x $LOCALAPPDATA"', "Bash"),
+                ('git tag -a v1 -m "rg -n x $LOCALAPPDATA"', "Bash"),
+                ('git merge -m "rg -n x $LOCALAPPDATA" topic', "Bash"),
+                ('gh issue create -t "x" -b "cd $LOCALAPPDATA && rg x"', "Bash"),
+                ("git checkout -b feature/x", "Bash"),
+                ("git diff --no-index -b a.json b.json", "Bash")))
+
+    def test_loop_variables_and_other_assignments_are_followed(self):
+        # A variable straight after local AppData stands for any name; bash's for
+        # list is written where its variable is used; assignments after then, do,
+        # { and declare -x, readonly or typeset are substituted; a ) ends a name.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('ls "$LOCALAPPDATA" | while read d; do ls -R "$LOCALAPPDATA/$d"; done', "Bash"),
+                ('ls -R "$LOCALAPPDATA/$d"', "Bash"),
+                ('ls -R "$LOCALAPPDATA/${d}"', "Bash"),
+                ('if true; then L=$LOCALAPPDATA; fi; rg -n budget "$L"', "Bash"),
+                ('declare -x L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
+                ('readonly L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
+                ('typeset -r L=$LOCALAPPDATA; rg -n budget "$L"', "Bash"),
+                ('{ L=$LOCALAPPDATA; rg -n budget "$L"; }', "Bash"),
+                ('for d in "$LOCALAPPDATA"; do rg -n budget "$d"; done', "Bash"),
+                ('for d in ~; do rg -n x "$d"; done', "Bash"),
+                ('cat "$(ls -d $LOCALAPPDATA/Unm*)/workspace/settings.json"', "Bash")),
+                allowed=(
+                ('ls "$LOCALAPPDATA" | while read d; do ls -R "$LOCALAPPDATA/$d/models"; done',
+                 "Bash"),
+                ('ls "$TEMP/$x"', "Bash"),
+                ("for f in $(git ls-files '*.py'); do ruff check \"$f\"; done", "Bash"),
+                ('for f in workspace/*.py; do ruff check "$f"; done', "Bash"),
+                ('readonly L=workspace; rg -n budget "$L"', "Bash")))
+
+    def test_text_writer_aliases_and_the_walk_folder(self):
+        # sc and ac write -Value text; a relative walk is judged from the folder
+        # the interpreter runs in, not every folder visited before it.
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('cd /c/Users && python -c "import os; print([r for r, d, f in os.walk(\'.\')])"',
+                 "Bash"),
+                ("cd /c/Users\npython - <<'EOF'\nimport os\nprint([r for r, d, f in "
+                 "os.walk('.')])\nEOF", "Bash"),
+                ('cd ~; python -c "import os; print([r for r, d, f in os.walk(\'.\')])"', "Bash")),
+                allowed=(
+                ("sc notes.md -Value 'rg -n budget $env:LOCALAPPDATA'", "PowerShell"),
+                ("ac notes.md -Value 'rg -n budget $env:LOCALAPPDATA'", "PowerShell"),
+                ('cd ~ && cd Local_Repos/unminute && python -c "import os; '
+                 'print([r for r, d, f in os.walk(\'.\')])"', "Bash"),
+                ('python -c "import os; print([r for r, d, f in os.walk(\'.\')])"; cd /c/Users',
+                 "Bash")))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows paths")
+    def test_a_search_of_a_checkout_holding_extracted_is_blocked(self):
+        # grep -r, rg -uu, Get-ChildItem -Recurse and findstr /s from a checkout read
+        # its extracted/ folder; rg and ag skip it by .gitignore unless told not to.
+        # Synthetic checkouts in a temporary folder; nothing in them is read.
+        with tempfile.TemporaryDirectory() as temp:
+            held, plain = Path(temp) / "held", Path(temp) / "plain"
+            for checkout in (held, plain):
+                (checkout / "workspace").mkdir(parents=True)
+                (checkout / "AGENTS.md").write_text("synthetic\n", encoding="utf-8")
+            (held / "extracted").mkdir()
+            searches = (("grep -rn budget .", "Bash"), ("grep -rn budget", "Bash"),
+                        ("grep -rn budget *", "Bash"), ("rg -uu budget", "Bash"),
+                        ("rg --no-ignore -n budget .", "Bash"), ('find . -name "*.md"', "Bash"),
+                        ("Get-ChildItem -Recurse -Filter *.md | Select-String budget",
+                         "PowerShell"),
+                        ("findstr /s /i budget *.md", "PowerShell"))
+            for command, name in searches:
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNotNone(guard.decide(tool(name, cwd=held, command=command)))
+                    self.assertIsNone(guard.decide(tool(name, cwd=plain, command=command)))
+            for command, name in (("rg -n budget", "Bash"), ("rg -n budget .", "Bash"),
+                                  ("git grep -n budget", "Bash"),
+                                  ("grep -rn budget workspace", "Bash")):
+                with self.subTest(command=command, tool=name):
+                    self.assertIsNone(guard.decide(tool(name, cwd=held, command=command)))
+            # The checkout named as the folder searched, from anywhere.
+            self.assertIsNotNone(guard.decide(tool("Bash", command=f'grep -rn budget "{held}"')))
+
+
 class HookProcessTests(unittest.TestCase):
     def run_hook(self, payload):
         return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
