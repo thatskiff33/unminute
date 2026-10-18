@@ -22,9 +22,10 @@
 #     brackets, a loop, a string run by another shell or after a wrapper such as
 #     timeout; or fed local AppData by a pipeline;
 #   - git add and git commit may not name a media file.
-# A leading ~ is the home folder, as the Grep and Glob tools read it, and /c/x is
-# C:\x, as Git Bash reads it. Variables are written out as the folders they are:
-# LOCALAPPDATA, TEMP, APPDATA, USERPROFILE, HOME, HOMEDRIVE with HOMEPATH,
+# A leading ~ is the home folder, as the Grep and Glob tools read it, and /c/x (or
+# /mnt/c/x, /proc/cygdrive/c/x) is C:\x, as Git Bash reads it. Variables are
+# written out as the folders they are: LOCALAPPDATA, TEMP, APPDATA, USERPROFILE,
+# HOME, HOMEDRIVE with HOMEPATH,
 # SystemDrive, USERNAME, PUBLIC, OneDrive, GetFolderPath('UserProfile'), and any
 # other whose value is a full path (windir, ProgramData), so a .. after one is seen
 # for what it reaches. A variable set earlier in the same command is substituted
@@ -60,9 +61,11 @@
 #     Compress-Archive), attrib /s, icacls /t, takeown /r, fd, Everything's es;
 #   - a link made and used in the same command (a later command through it is
 #     resolved).
-# Known false positive, which fails closed: a search pattern holding ;, &, | or a
+# Known false positives, which fail closed: a search pattern holding ;, &, | or a
 # line break is split there like a command (grep -rn 'cd X; rg' tests reads X as a
-# folder searched); search for part of the text, or use the Grep tool.
+# folder searched), so search for part of the text or use the Grep tool; and local
+# AppData named whole and piped into rg, ag or grep that reads the pipe (echo
+# "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it.
 # Codex does not run it. Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -330,8 +333,8 @@ def _remote_drive(path):
 
 
 # Git Bash's spelling of a drive (/c/Users, /mnt/c), which the Grep and Glob tools
-# accept too (R13b round 3 review).
-MSYS_DRIVE = re.compile(r"^[\\/](?:mnt[\\/])?([A-Za-z])(?=[\\/]|$)")
+# accept too (R13b round 3 review), and /proc/cygdrive/c (round 4).
+MSYS_DRIVE = re.compile(r"^[\\/](?:mnt[\\/]|proc[\\/]cygdrive[\\/])?([A-Za-z])(?=[\\/]|$)")
 
 
 def _home(path):
@@ -633,9 +636,11 @@ def _substitute(command, shell):
         if not value:
             continue
         use = re.compile(r"\$\{?" + scope + re.escape(name) + r"(?!\w)\}?", flags)
-        # Any mention of the name: $name, $any:name, or the bare word (Get-Variable).
+        # Any mention of the name: $name, $any:name, the bare word (Get-Variable), or
+        # the variable: drive (Get-Content variable:p, R13b round 4 review).
         mention = re.compile(r"\$\{?(?:\w+:)?" + re.escape(name) + r"(?!\w)"
-                             r"|(?<![\w$:-])" + re.escape(name) + r"(?![\w-])", flags)
+                             r"|(?<![\w$:-])" + re.escape(name) + r"(?![\w-])"
+                             r"|variable:[\\/]?" + re.escape(name) + r"(?!\w)", flags)
         rest = command[end:]
         after = use.sub(lambda m, text=value: text, rest)
         whole = re.match(r"[ \t]*(?:[;\n|&]|$)", rest) is not None

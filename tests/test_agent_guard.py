@@ -915,6 +915,26 @@ class ShellTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command, name)))
 
+    def test_cygdrive_paths_and_variable_drive_reads_are_checked(self):
+        # Git Bash's /proc/cygdrive/c is C:\, and a value read back through
+        # PowerShell's variable: drive is substituted like $p (R13b round 4 review;
+        # 27e1cac blocked the variable: forms).
+        data = r"C:\Users\someone\AppData\Local\Unminute\workspace\a.json"
+        for payload in (shell("rg -n budget /proc/cygdrive/c/Users"),
+                        shell("grep -rn budget /proc/cygdrive/c/Users/someone/AppData"),
+                        tool("Grep", pattern="budget", path="/proc/cygdrive/c/Users"),
+                        shell(f'$p = "{data}"; Get-Content (Get-Content variable:p)', "PowerShell"),
+                        shell(f'$p = "{data}"; Get-Content (Get-Item variable:p).Value',
+                              "PowerShell"),
+                        shell(f"$p = '{data}'; Get-Content (Get-Item variable:\\p).Value",
+                              "PowerShell")):
+            with self.subTest(payload=payload):
+                self.assertIsNotNone(guard.decide(payload))
+        for payload in (shell("ls /proc/cygdrive/c/Users"),
+                        shell('$p = "notes: workspace"; Get-Content variable:q', "PowerShell")):
+            with self.subTest(payload=payload):
+                self.assertIsNone(guard.decide(payload))
+
     def test_monitor_commands_are_checked(self):
         # Monitor runs a shell command too.
         self.assertIsNotNone(guard.decide(tool(
