@@ -81,6 +81,48 @@ class RatchetTests(unittest.TestCase):
         self.assertEqual(set(ui_idle_check.MODES), set(ratchets))
         for mode, limits in ratchets.items():
             self.assertEqual(METRICS, set(limits), mode)
+        self.assertEqual({"transcribing": GROW_METRICS},
+                         {m: set(v) for m, v in data["ui_transcribing"]["ratchets"].items()})
+
+
+GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"}
+
+
+class TranscribingTests(unittest.TestCase):
+    # A long meeting open while it is transcribed (#127): new passages are
+    # appended, and the whole list is redrawn only where appending is not safe.
+    RIGHT = {"page_errors": [], "each_once_in_order": True, "rows_shown": 3105,
+             "rows_expected": 3105, "turns_right": True, "edit_held_back": True,
+             "edit_kept": True, "redraw_steps": [3, 7, 10], "expected_redraw_steps": [3, 7, 10]}
+
+    def test_a_page_that_shows_every_passage_once_in_order_passes(self):
+        self.assertEqual([], ui_idle_check.transcribing_problems(self.RIGHT))
+
+    def test_each_way_of_showing_the_transcript_wrongly_fails(self):
+        for change, words in (
+                ({"page_errors": ["TypeError: x"]}, "threw"),
+                ({"each_once_in_order": False, "rows_shown": 3115}, "once and in order"),
+                ({"turns_right": False}, "turns"),
+                ({"edit_held_back": False}, "being edited"),
+                ({"edit_kept": False}, "does not show the edit"),
+                # A redraw missed (a re-done chunk appended after the end) ...
+                ({"redraw_steps": [7, 10]}, "redrawn after steps"),
+                # ... or the whole list redrawn on every step, as before #127.
+                ({"redraw_steps": [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12]}, "redrawn after steps"),
+                ({"redraw_steps": None}, "redrawn after steps")):
+            problems = ui_idle_check.transcribing_problems(dict(self.RIGHT, **change))
+            self.assertEqual(1, len(problems), change)
+            self.assertIn(words, problems[0])
+
+    def test_the_counts_are_held_to_their_ratchets(self):
+        ratchets = {"transcribing": {"rows_fetched": 9269, "full_redraws": 3}}
+        self.assertEqual([], ui_idle_check.compare(
+            {"transcribing": {"rows_fetched": 9269, "full_redraws": 3}}, ratchets))
+        self.assertEqual([("transcribing", "rows_fetched", 33625, 9269),
+                          ("transcribing", "full_redraws", 11, 3)],
+                         ui_idle_check.compare(
+                             {"transcribing": {"rows_fetched": 33625, "full_redraws": 11}},
+                             ratchets))
 
 
 class EarlyErrorTests(unittest.TestCase):

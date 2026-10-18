@@ -8,13 +8,16 @@
 # minute pass in a few seconds of real time. Run once visible and once with the
 # page reporting itself hidden, as a minimised window should. A third run
 # throws page errors before the bridge is ready, which the page must keep and
-# report once it is (#171).
+# report once it is (#171). A fourth opens a long meeting while it is being
+# transcribed and counts what the page fetches and draws as passages arrive,
+# with an earlier chunk done again, an edit, speakers and a search on the way;
+# the rows shown must then be each passage once, in order (#127).
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
-# Exit code 1 when a figure is over its ratchet in tests/budgets.json ("ui_idle").
-# Lower a ratchet when the figure drops (#127); raise one only with a reason in
-# the pull request. Needs Microsoft Edge; no Python packages.
+# Exit code 1 when a figure is over its ratchet in tests/budgets.json ("ui_idle",
+# "ui_transcribing"). Lower a ratchet when the figure drops (#127); raise one
+# only with a reason in the pull request. Needs Microsoft Edge; no Python packages.
 
 import argparse
 import http.server
@@ -33,6 +36,8 @@ import design_check  # noqa: E402  (its server and Edge helpers; Pillow is not n
 BUDGETS = ROOT / "tests" / "budgets.json"
 MODES = ("visible", "hidden")
 SCENARIO = "home"            # the Meetings view with the sample meetings, nothing busy
+GROW_SCENARIO = "meeting-transcribing-long"   # a long meeting open while transcribing
+GROW_PAGE_MS = 90000         # its steps (12 x 4 s) after start-up, with room to spare
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
 EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
@@ -67,6 +72,42 @@ def run_page(base, mode, page_ms):
             + f". stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
     import html
     return json.loads(html.unescape(found.group(1)))
+
+
+def run_transcribing(base):
+    """What the page fetched and drew while a long meeting was transcribed
+    (fixtures.js, transcribing mode)."""
+    out = final_dom(f"{base}/app/index.html?perf=transcribing#{GROW_SCENARIO}", GROW_PAGE_MS)
+    found = RESULT.search(out.stdout or "")
+    if not found:
+        raise RuntimeError(f"Edge returned no transcribing result (exit {out.returncode}). "
+                           f"stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
+    import html
+    return json.loads(html.unescape(found.group(1)))
+
+
+def transcribing_problems(result):
+    """Reasons the page showed the growing transcript wrongly: a passage
+    missing, repeated or out of order, speaker turns wrong, an edit lost or
+    drawn over, or a whole redraw where appending was not safe missed (or one
+    where it was)."""
+    problems = []
+    if result.get("page_errors"):
+        problems.append(f"transcribing: the page threw: {'; '.join(result['page_errors'][:3])}")
+    if not result.get("each_once_in_order"):
+        problems.append(f"transcribing: the page shows {result.get('rows_shown')} rows, not each "
+                        f"of the {result.get('rows_expected')} passages once and in order")
+    if not result.get("turns_right"):
+        problems.append("transcribing: speaker turns are marked wrongly")
+    if result.get("edit_held_back") is not True:
+        problems.append("transcribing: rows were drawn while a passage was being edited")
+    if not result.get("edit_kept"):
+        problems.append("transcribing: the edited passage does not show the edit")
+    if result.get("redraw_steps") != result.get("expected_redraw_steps"):
+        problems.append(f"transcribing: the whole list was redrawn after steps "
+                        f"{result.get('redraw_steps')}, not {result.get('expected_redraw_steps')} "
+                        "(an earlier chunk done again, speakers identified, a search open)")
+    return problems
 
 
 def run_early(base):
@@ -170,13 +211,15 @@ def main():
     try:
         results = {mode: run_page(base, mode, args.page_ms) for mode in MODES}
         early = run_early(base)
+        growing = run_transcribing(base)
     finally:
         server.shutdown()
-    ratchets = json.loads(BUDGETS.read_text(encoding="utf-8"))["ui_idle"]["ratchets"]
-    over = compare(results, ratchets)
-    problems = sanity(results) + early_problems(early)
+    budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
+    over = (compare(results, budgets["ui_idle"]["ratchets"])
+            + compare({"transcribing": growing}, budgets["ui_transcribing"]["ratchets"]))
+    problems = sanity(results) + early_problems(early) + transcribing_problems(growing)
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
-              "early_error": early,
+              "early_error": early, "transcribing": growing,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -190,6 +233,10 @@ def main():
               f"{r.get('live_intervals')} interval(s), fastest {r.get('fastest_interval_ms')} ms")
     if not early_problems(early):
         print("early: the first error before the bridge was ready was reported once, after it")
+    print(f"transcribing: {growing.get('transcript_calls')} transcript calls, "
+          f"{growing.get('rows_fetched')} rows fetched, {growing.get('rows_drawn')} rows drawn, "
+          f"{growing.get('full_redraws')} full redraw(s) over {growing.get('steps')} steps; "
+          f"{growing.get('rows_shown')} of {growing.get('rows_expected')} passages shown")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:

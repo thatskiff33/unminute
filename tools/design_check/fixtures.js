@@ -64,6 +64,7 @@
     window.addEventListener("unhandledrejection", (e) => { perf.errors.push(String(e.reason)); });
   }
   function perfMeasure() {
+    if (perfMode === "transcribing") { growMeasure(); return; }
     const ms = Number(query.get("ms")) || 60000;
     const groups = document.getElementById("groups");
     if (groups) {
@@ -122,6 +123,143 @@
       meeting_rows: seen.rows,
       catch_up_calls: catchUp,           // hidden: the methods called once shown again
       redrawn_after_change: redrawn,     // visible: the list redrawn within a poll of a change
+      page_errors: perf.errors,
+    };
+    const out = document.createElement("pre");
+    out.id = "perf-result";
+    out.textContent = JSON.stringify(result);
+    document.body.append(out);
+  }
+
+  // -- transcribing mode (tools/ui_idle_check.py, #127) -----------------------------
+  // index.html?perf=transcribing#meeting-transcribing-long: a long meeting open
+  // while it is transcribed. Every GROW_STEP_MS of page time a step changes the
+  // data as transcription would (more passages, an earlier chunk done again,
+  // speakers identified) or as a person would (an edit, a search). The page
+  // polls every 2 s, so it sees each step at least once before the next. What
+  // the page fetched and drew is counted; at the end the rows shown are checked
+  // against the data: each passage once, in order, speaker turns right.
+  const GROW_STEP_MS = 4000;
+  const GROW_LONG = 3000;          // passages before the measured window
+  const grow = { added: 0, redraws: 0, rowsSent: 0, redrawSteps: [], editId: 5,
+                 editText: "Edited while transcribing (sample).", editHeld: null };
+  const LABELS = ["SPEAKER_00", "SPEAKER_01"];
+  function growRow(i, t, label = null) {
+    return [t, t + 2.5, label, `Passage ${i} about the plan (sample).`, false, i];
+  }
+  function growMore(n, labels = null) {
+    const rows = data.transcript["m-garden"];
+    const next = Math.max(...rows.map((r) => r[5])) + 1;
+    const t = Math.max(...rows.map((r) => r[0])) + 3;
+    for (let k = 0; k < n; k++) rows.push(growRow(next + k, t + 3 * k, labels ? labels[k] : null));
+    growProgress();
+  }
+  function growProgress() {
+    const d = data.detail["m-garden"];
+    data.detail["m-garden"] = { ...d, progress: d.progress + 1 };
+  }
+  function growSort() {
+    data.transcript["m-garden"].sort((a, b) => a[0] - b[0] || a[5] - b[5]);
+  }
+  const otherLabel = (label) => (label === LABELS[0] ? LABELS[1] : LABELS[0]);
+  const lastLabel = () => data.transcript["m-garden"].at(-1)[2];
+  const searchFor = (text) => {
+    const box = document.getElementById("m-search");
+    box.value = text;
+    box.dispatchEvent(new Event("input"));
+  };
+  // Step n (from 1) runs GROW_STEPS[n - 1]; a redraw the page made between
+  // step n and step n + 1 is put down to step n.
+  const GROW_STEPS = [
+    () => growMore(10),
+    () => growMore(10),
+    () => {                          // an earlier chunk done again: passages land mid-list
+      const rows = data.transcript["m-garden"];
+      const next = Math.max(...rows.map((r) => r[5])) + 1;
+      for (let k = 0; k < 5; k++) rows.push(growRow(next + k, 3 * (200 + k) + 1.5));
+      growSort();
+      growProgress();
+    },
+    () => growMore(10),
+    () => {                          // an edit starts; transcription goes on
+      const span = document.querySelector(`#transcript .text[data-id="${grow.editId}"]`);
+      span.click();
+      span.textContent = grow.editText;
+      span.dispatchEvent(new Event("input"));
+      grow.addedAtEdit = grow.added;
+      growMore(10);
+    },
+    () => {                          // nothing was drawn under the edit; it ends
+      grow.editHeld = grow.added === grow.addedAtEdit;
+      document.activeElement.blur();
+      growMore(10);
+    },
+    () => {                          // speakers identified: every passage labelled
+      data.transcript["m-garden"].forEach((r, i) => { r[2] = LABELS[Math.floor(i / 4) % 2]; });
+      const d = data.detail["m-garden"];
+      data.detail["m-garden"] = { ...d, speakers: { status: "done", error: null, device: "cpu",
+                                                    count: null, started_at: at(14, 20) },
+                                  speaker_count: 2 };
+    },
+    () => {                          // the next passages carry on the last speaker's turn
+      const l = lastLabel(), o = otherLabel(l);
+      growMore(10, [l, l, o, o, o, l, l, o, l, o]);
+    },
+    () => {                          // ...or start a new turn
+      const o = otherLabel(lastLabel());
+      growMore(10, [o, o, otherLabel(o), o, o, o, otherLabel(o), otherLabel(o), o, o]);
+    },
+    () => { searchFor("plan"); growMore(10, Array(10).fill(lastLabel())); },
+    () => { searchFor(""); growMore(10, Array(10).fill(otherLabel(lastLabel()))); },
+    () => growMore(10, Array(10).fill(lastLabel())),
+  ];
+  // The steps after which the page must redraw the whole list: an earlier
+  // chunk, speakers identified, and more passages while a search is open.
+  const GROW_REDRAW_STEPS = [3, 7, 10];
+
+  function growMeasure() {
+    const list = document.getElementById("transcript");
+    new MutationObserver((records) => {
+      for (const r of records) {
+        grow.added += r.addedNodes.length;
+        if (r.removedNodes.length) grow.redraws++;
+      }
+    }).observe(list, { childList: true });
+    perf.calls = {}; perf.timeouts = 0; grow.rowsSent = 0;
+    let step = 0, redraws = 0;
+    const tick = () => {
+      if (step && grow.redraws > redraws) grow.redrawSteps.push(step);
+      redraws = grow.redraws;
+      if (step === GROW_STEPS.length) { growFinish(); return; }
+      GROW_STEPS[step++]();
+      realSetTimeout(tick, GROW_STEP_MS);
+    };
+    realSetTimeout(tick, GROW_STEP_MS);
+  }
+
+  function growFinish() {
+    const rows = data.transcript["m-garden"];
+    const shown = [...document.querySelectorAll("#transcript > li")];
+    const ids = shown.map((li) => Number(li.dataset.id));
+    // A passage starts a turn when its speaker differs from the one before.
+    const turns = rows.map((r, i) => !!r[2] && (i === 0 || r[2] !== rows[i - 1][2]));
+    const edited = document.querySelector(`#transcript .text[data-id="${grow.editId}"]`);
+    const result = {
+      mode: perfMode, steps: GROW_STEPS.length, step_ms: GROW_STEP_MS,
+      calls: { ...perf.calls },
+      transcript_calls: perf.calls.transcript || 0,
+      rows_fetched: grow.rowsSent,
+      rows_drawn: grow.added,
+      full_redraws: grow.redraws,
+      redraw_steps: grow.redrawSteps,
+      expected_redraw_steps: GROW_REDRAW_STEPS,
+      rows_shown: ids.length,
+      rows_expected: rows.length,
+      each_once_in_order: ids.length === rows.length && ids.every((id, i) => id === rows[i][5]),
+      turns_right: shown.length === rows.length &&
+                   shown.every((li, i) => li.classList.contains("turn") === turns[i]),
+      edit_held_back: grow.editHeld,
+      edit_kept: !!edited && edited.textContent === grow.editText,
       page_errors: perf.errors,
     };
     const out = document.createElement("pre");
@@ -362,6 +500,16 @@
       },
       steps: [openGarden],
     },
+    // Transcribing mode (tools/ui_idle_check.py): a long meeting, still transcribing.
+    "meeting-transcribing-long": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ stage: "inbox", progress: 40, busy: "transcribe", speakers: null,
+                                         speaker_count: null, edits: 0, can_undo: false });
+        d.transcript["m-garden"] = Array.from({ length: GROW_LONG }, (_, i) => growRow(i + 1, 3 * i));
+        d.status.busy = "transcribe";
+      },
+      steps: [openGarden],
+    },
     "meeting-edit": {
       steps: [...openAndPlay(), () => {
         const box = document.getElementById("m-search");
@@ -451,9 +599,11 @@
   if (scenario.change) scenario.change(data);
 
   // -- the bridge ----------------------------------------------------------------------
+  // A row's id is its sixth field where it has one (the transcribing mode's
+  // passages keep theirs when others land before them), else its place.
   function transcriptPage(mid, start, count) {
-    const rows = (data.transcript[mid] || []).map(([t, end, label, text, edited], i) => ({
-      id: i + 1, t, end, text, edited: !!edited, label, who: NAMES[label] || null, overlap: false }));
+    const rows = (data.transcript[mid] || []).map(([t, end, label, text, edited, id], i) => ({
+      id: id || i + 1, t, end, text, edited: !!edited, label, who: NAMES[label] || null, overlap: false }));
     return { total: rows.length, start, items: rows.slice(start, start + count) };
   }
   const handlers = {
@@ -490,7 +640,11 @@
     },
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],
     detail: (mid) => data.detail[mid],
-    transcript: (mid, start = 0, count = 500) => transcriptPage(mid, start, count),
+    transcript: (mid, start = 0, count = 500) => {
+      const page = transcriptPage(mid, start, count);
+      grow.rowsSent += page.items.length;
+      return page;
+    },
     search: (mid, q) => transcriptPage(mid, 0, 1000).items
       .filter((it) => it.text.toLowerCase().includes(String(q).toLowerCase())).map((it) => it.id),
     speakers: () => ({ speakers: SPEAKERS, can_undo: false }),
@@ -505,6 +659,14 @@
     receipts: () => data.receipts || [],
     zoom: () => null,
   };
+  if (perfMode === "transcribing") {
+    handlers.edit = (mid, id, text) => {
+      const row = data.transcript[mid].find((r) => r[5] === id);
+      row[3] = text;
+      row[4] = true;
+      return { edited: true };
+    };
+  }
   const api = new Proxy({}, {
     get: (_, method) => async (...args) => {
       perf.calls[method] = (perf.calls[method] || 0) + 1;

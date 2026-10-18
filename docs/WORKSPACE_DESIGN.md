@@ -286,6 +286,7 @@ Failure reasons are stored without file paths.
 - The store pages in SQL (`transcript_page()`, with `LIMIT` and `OFFSET` in transcript order), so a page reads and opens only its own passages, without their word timings; search makes one pass over the text and returns passage ids.
 - `content-visibility: auto` lets the browser skip off-screen rows.
 - On the UI check, a 5000-passage transcript rendered in under 0.5 s.
+- **While transcribing (#127).** When only the progress has moved, the page fetches from the last row it drew onwards (the existing `transcript(mid, start, count)` call, no new bridge method) and appends the new rows. Passages are only ever added to a version, never removed or moved, so if that last row is still at its place with the same speaker, every row drawn is still there in order. The whole list is redrawn instead when that cannot be shown: an earlier passage added (a chunk done after a later one), a different version, speakers identified or changed, a search open, totals that do not line up while paging, or an error. While a passage is being edited nothing is drawn; the rows follow once the edit ends. Measured by `tools/ui_idle_check.py` (transcribing run, ratchets in `tests/budgets.json`) and `tools/workspace_ui_check.py` ("growing transcript").
 
 ## Speaker names (#21)
 

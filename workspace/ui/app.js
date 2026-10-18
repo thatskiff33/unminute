@@ -16,6 +16,7 @@ const state = {
   view: "meetings", mid: null, detail: null, total: -1, signature: "",
   hits: [], hit: -1, editing: null, saveTimer: null,
   version: null,                 // null = current version; else an earlier one (read only)
+  drawnFor: null,                // "meeting|version" of the transcript rows last drawn in full
   saving: Promise.resolve(),     // edits are saved strictly in order
   listsSig: "",                  // the meeting list last drawn
   changes: null,                 // status().changes at the last poll
@@ -392,8 +393,10 @@ async function renderReminders() {
 }
 
 // -- one meeting ---------------------------------------------------------------
+// What the drawn transcript depends on, apart from how far transcription has
+// got (the progress, which renderMeeting adds in front).
 function signatureOf(d) {
-  return [d.progress, d.speakers && d.speakers.status, d.speakers && d.speakers.started_at,
+  return [d.speakers && d.speakers.status, d.speakers && d.speakers.started_at,
           d.model, d.reviewed_at,
           d.audio_available].join("|");
 }
@@ -465,10 +468,16 @@ async function renderMeeting() {
   renderHolds(d);
   $("m-retranscribe").disabled = !d.audio_available || !!d.reviewed_at || transcribing;
 
-  const sig = signatureOf(d) + "|" + state.version + "|" + state.speakerList.map((x) => x.label + x.name).join(",");
+  const shape = signatureOf(d) + "|" + state.version + "|" + state.speakerList.map((x) => x.label + x.name).join(",");
+  const sig = `${d.progress}|${shape}`;
   if (sig !== state.signature && !state.editing) {
+    // Only the progress moved (transcription went on): new passages normally
+    // just extend the list, so append them (#127). Anything else, or an
+    // append that cannot be proved safe, redraws the whole list.
+    const before = state.signature;
+    const onlyProgress = before !== "" && before.slice(before.indexOf("|") + 1) === shape;
     state.signature = sig;
-    await renderTranscript();
+    if (!(onlyProgress && await appendTranscript())) await renderTranscript();
   }
 }
 
@@ -909,11 +918,63 @@ async function renderTranscript() {
   }));
   state.items = items;
   state.total = total;
+  state.drawnFor = `${mid}|${version}`;
   state.playingRow = null;
   document.scrollingElement.scrollTop = scroll;
   document.querySelector(".transcript-wrap").scrollTop = paneScroll;
   if ($("m-search").value) runSearch(false);
   updatePlayer();
+}
+
+// While transcribing, append the passages that came after the last one drawn
+// instead of drawing every row again (#127). Fetched from the last row drawn
+// on, so it can be compared. Passages are only ever added to a version, never
+// removed or moved, so if that row is still at its place, unchanged, every row
+// drawn is still there in the same order and the rest are new. Returns false,
+// having changed nothing, when that cannot be shown: nothing drawn yet, an
+// earlier version shown, a search open (its matches would go stale), an
+// earlier passage added (a chunk done again), the speakers or totals not
+// lining up, an error, or an edit, a meeting or a newer draw that started
+// while this was loading. The caller then redraws the whole list.
+async function appendTranscript() {
+  const mid = state.mid, base = state.items || [], n = base.length;
+  if (!n || state.version !== null || state.drawnFor !== `${mid}|null` || $("m-search").value.trim())
+    return false;
+  const fetched = [];
+  let start = n - 1, total = null;
+  try {
+    do {
+      const page = await call("transcript", mid, start, PAGE, null);
+      if (total !== null && page.total !== total) return false;   // it changed while paging
+      total = page.total;
+      fetched.push(...page.items);
+      start += page.items.length;
+      if (!page.items.length) break;
+    } while (start < total);
+  } catch {
+    return false;                      // the full redraw reports the error
+  }
+  const last = base[n - 1], first = fetched[0];
+  if (total < n || fetched.length !== total - (n - 1) || !first || first.id !== last.id ||
+      first.label !== last.label || first.who !== last.who || first.overlap !== last.overlap)
+    return false;
+  if (state.editing || state.mid !== mid || state.version !== null || state.items !== base ||
+      $("m-search").value.trim())
+    return false;
+  const added = fetched.slice(1);
+  if (added.length) {
+    const audio = state.detail && state.detail.audio_available;
+    let prev = last.label;
+    $("transcript").append(...added.map((item) => {
+      const turn = !!item.label && item.label !== prev;
+      prev = item.label;
+      return transcriptRow(item, audio, turn);
+    }));
+    state.items = base.concat(added);
+  }
+  state.total = total;
+  updatePlayer();
+  return true;
 }
 
 const EDIT_HINT = "Enter or Esc to finish · Shift+Enter for a new line · saves as you type";
