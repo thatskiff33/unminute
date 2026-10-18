@@ -101,18 +101,13 @@ def add_folder(store, path, include_existing=False):
                           "your whole user folder.")
     from workspace.store import new_id
     fid = new_id()
-    try:
-        with store.tx() as db:
-            db.execute("INSERT INTO watched_folders (id, path, created_at, include_existing) "
-                       "VALUES (?, ?, ?, ?)", (fid, real, time.time(),
-                                               1 if include_existing else 0))
-    except Exception as exc:
-        raise IntakeError("That folder is already watched.") from exc
+    if not store.add_folder(fid, real, include_existing):
+        raise IntakeError("That folder is already watched.")
     return fid
 
 
 def folders(store):
-    return store._all("SELECT * FROM watched_folders ORDER BY created_at")
+    return store.folders()
 
 
 def set_active(store, fid, active):
@@ -140,9 +135,8 @@ def deletion_roots(store, mid):
     still has deletion authority right now. Authority belongs to the folder a
     recording was imported from, never to another (e.g. a parent) folder, and
     revoking it keeps the original. Paused folders keep their authority."""
-    return [r["path"] for r in store._all(
-        "SELECT wf.path FROM sources s JOIN watched_folders wf ON wf.id = s.intake_folder "
-        "WHERE s.meeting_id = ? AND wf.delete_originals = 1", (mid,))]
+    came_from = {s["intake_folder"] for s in store.sources(mid) if s["intake_folder"]}
+    return [f["path"] for f in store.folders("delete_originals = 1") if f["id"] in came_from]
 
 
 def authority_for(store, fid):

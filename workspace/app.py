@@ -234,14 +234,16 @@ class Settings:
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None, check_integrity=False, lid_switch=None):
+                 policy_reader=None, check_integrity=False, lid_switch=None, codec=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
         app reads HKLM\\SOFTWARE\\Policies\\Unminute (workspace.policy).
         check_integrity: the app's own start (R11): check the database when
         the app last ended without closing, or the last check found damage.
-        lid_switch: tests only; a power.LidSwitch with a fake power scheme."""
+        lid_switch: tests only; a power.LidSwitch with a fake power scheme.
+        codec: how the store keeps content columns (store.PlainCodec unless
+        given; tests pass one that changes every value, #111 C2)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
@@ -266,7 +268,7 @@ class Workspace:
             self._integrity_ok.set()
         # A damaged database opens without marking interrupted work, and the
         # start-up upkeep below waits too: on damaged pages it could delete.
-        self.store = Store(self.root / "workspace.db", housekeeping=not held)
+        self.store = Store(self.root / "workspace.db", housekeeping=not held, codec=codec)
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
@@ -464,10 +466,10 @@ class Workspace:
         fid = _hold_id(fid)
         if not self._allowed("AllowDeleteOriginals"):
             return None
-        row = self.store._one("SELECT path FROM watched_folders WHERE id = ?", (fid,))
-        if row is None:
+        rows = self.store.folders("id = ?", (fid,))
+        if not rows:
             raise WorkspaceError("Not found.")
-        return row["path"]
+        return rows[0]["path"]
 
     def meeting_for_discard(self, mid):
         """Title and import time, for the Windows question."""
@@ -633,16 +635,11 @@ class Workspace:
     def _import_one(self, path, folder_id=None, title=None):
         title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
-        with self.store.tx() as db:
-            if (folder_id and intake.authority_for(self.store, folder_id)
-                    and self._allowed("AllowDeleteOriginals")):
-                # Authority comes only from the folder's explicit setting (#24);
-                # the original's location is kept only when it may be deleted.
-                db.execute("UPDATE sources SET delete_original = 1, intake_folder = ? "
-                           "WHERE id = ?", (folder_id, sid))
-            else:
-                db.execute("UPDATE sources SET original_path = NULL, intake_folder = ? "
-                           "WHERE id = ?", (folder_id, sid))
+        # Authority comes only from the folder's explicit setting (#24); the
+        # original's location is kept only when it may be deleted.
+        self.store.set_source_intake(sid, folder_id, may_delete=bool(
+            folder_id and intake.authority_for(self.store, folder_id)
+            and self._allowed("AllowDeleteOriginals")))
         try:
             self._plan_version(mid, sid)
         except BaseException:
@@ -1195,9 +1192,8 @@ class Workspace:
                 if m["paused"]:
                     continue                        # kept for Resume
                 return ("rerun", mid, (v["id"], count, self.store.skip_count(v["id"])))
-        for m in self.store._all("SELECT * FROM meetings WHERE paused = 0 AND phase != 'error' "
-                                 "AND reviewed_at IS NULL AND audio_removed_at IS NULL "
-                                 "ORDER BY created_at"):
+        for m in self.store.meetings("paused = 0 AND phase != ? AND reviewed_at IS NULL "
+                                     "AND audio_removed_at IS NULL", ("error",)):
             v = self.store.active_version(m["id"])
             if v is None:
                 continue
@@ -1417,8 +1413,7 @@ class Workspace:
     def rename(self, mid, title):
         self._meeting(mid)
         title = _clean_text(title, MAX_TITLE_CHARS) or "Untitled meeting"
-        with self.store.tx() as db:
-            db.execute("UPDATE meetings SET title = ? WHERE id = ?", (title, mid))
+        self.store.rename_meeting(mid, title)
 
     def rerun_speakers(self, mid, count=None):
         m = self._meeting(mid)
@@ -1690,9 +1685,7 @@ class Workspace:
         return self._segment(sid) if sid else None
 
     def _segment(self, sid):
-        r = self.store._one("SELECT s.id, COALESCE(e.text, s.text) AS text, "
-                            "e.text IS NOT NULL AS edited FROM segments s LEFT JOIN edits e "
-                            "ON e.segment_id = s.id WHERE s.id = ?", (sid,))
+        r = self.store.passage(sid)
         return {"id": r["id"], "text": r["text"], "edited": bool(r["edited"])}
 
     def clip(self, mid, start, end):
@@ -1730,7 +1723,7 @@ class Workspace:
             rows = holds.unfinished_work(self.store)
             if not rows:
                 return []
-            meetings = {m["id"]: m for m in q("SELECT * FROM meetings")}
+            meetings = {m["id"]: m for m in self.store.meetings()}
             versions = {v["meeting_id"]: v for v in q(
                 "SELECT * FROM versions WHERE state = 'active'")}
             chunks = {c["version_id"]: c for c in q(
@@ -1738,8 +1731,7 @@ class Workspace:
                 "start_sample END), 0) AS done, COALESCE(SUM(end_sample - start_sample), 0) "
                 "AS total, SUM(status = 'pending') AS pending FROM chunks "
                 f"WHERE version_id IN ({active}) GROUP BY version_id")}
-            runs = _group(q(f"SELECT * FROM speaker_runs WHERE version_id IN ({active}) "
-                            "ORDER BY started_at, rowid"), "version_id")
+            runs = _group(self.store.active_speaker_runs(), "version_id")
             sources = {s["id"]: s for s in q(
                 "SELECT id, samples, sample_rate FROM sources WHERE id IN "
                 "(SELECT source_id FROM versions WHERE state = 'active')")}
@@ -1750,10 +1742,7 @@ class Workspace:
                        if (done := [r for r in rs if r["status"] == "done"])}
             # Corrections of finished runs of active versions: a version has at
             # most one (finishing a run supersedes the one before), the current.
-            logs = _group(q(
-                "SELECT run_id, id, kind, target, value FROM speaker_corrections "
-                "WHERE run_id IN (SELECT id FROM speaker_runs WHERE status = 'done' "
-                f"AND version_id IN ({active})) ORDER BY id"), "run_id") if current else {}
+            logs = _group(self.store.active_corrections(), "run_id") if current else {}
             # Known counts cost nothing; a new run or correction is worked out
             # here, still under the lock, from the same view of the data.
             counts = {vid: self._speaker_count(vid, run, _log_key(logs.get(run["id"], [])))
@@ -1796,9 +1785,7 @@ class Workspace:
         if known is None:
             with self.store._lock:
                 run = speaker_names.current_run(self.store, v["id"])
-                log = _log_key(self.store._all(
-                    "SELECT id, kind, target, value FROM speaker_corrections WHERE run_id = ? "
-                    "ORDER BY id", (run["id"],))) if run else ()
+                log = _log_key(self.store.corrections(run["id"])) if run else ()
                 known = (self.store.source(v["source_id"]),
                          self._speaker_count(v["id"], run, log))
         src, count = known
@@ -1891,7 +1878,7 @@ class Workspace:
     def reminders(self):
         """Shown while the app is open: holds due for review and cleanup that
         waits for a confirmation. Nothing is scheduled outside the app."""
-        titles = {m["id"]: m["title"] for m in self.store._all("SELECT id, title FROM meetings")}
+        titles = {m["id"]: m["title"] for m in self.store.meetings()}
         return {
             "holds_due": [{"id": h["id"], "meeting": h["meeting_id"],
                            "title": titles.get(h["meeting_id"], ""), "reason": h["reason"]}

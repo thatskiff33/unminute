@@ -44,18 +44,14 @@ def add_hold(store, mid, scope, reason, now=None):
     if store.meeting(mid) is None:
         raise HoldError("Meeting not found.")
     hid, now = new_id(), now or time.time()
-    with store.tx() as db:
-        db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at, reviewed_at) "
-                   "VALUES (?, ?, ?, ?, ?, ?)", (hid, mid, scope, reason[:500], now, now))
+    store.add_hold(hid, mid, scope, reason[:500], now)
     return hid
 
 
 def active_holds(store, mid=None):
-    q, args = "SELECT * FROM holds WHERE released_at IS NULL", []
     if mid:
-        q += " AND meeting_id = ?"
-        args.append(mid)
-    return store._all(q + " ORDER BY created_at", args)
+        return store.holds("released_at IS NULL AND meeting_id = ?", (mid,))
+    return store.holds("released_at IS NULL")
 
 
 def mark_reviewed(store, hid, now=None):
@@ -68,15 +64,16 @@ def mark_reviewed(store, hid, now=None):
 def due_for_review(store, now=None):
     """Active holds not reviewed in the last HOLD_REVIEW_DAYS (shown in the app)."""
     cutoff = (now or time.time()) - HOLD_REVIEW_DAYS * DAY
-    return store._all("SELECT * FROM holds WHERE released_at IS NULL AND "
-                      "COALESCE(reviewed_at, created_at) <= ? ORDER BY created_at", (cutoff,))
+    return store.holds("released_at IS NULL AND COALESCE(reviewed_at, created_at) <= ?",
+                       (cutoff,))
 
 
 def release_hold(store, hid, now=None):
     """Release a hold. Cleanup it was blocking does NOT run: those jobs wait
     for the user's explicit confirmation (confirm_pending_cleanup)."""
     with store.tx() as db:
-        hold = db.execute("SELECT * FROM holds WHERE id = ?", (hid,)).fetchone()
+        hold = db.execute("SELECT meeting_id, scope, released_at FROM holds WHERE id = ?",
+                          (hid,)).fetchone()
         if hold is None or hold["released_at"] is not None:
             return []
         db.execute("UPDATE holds SET released_at = ? WHERE id = ?", (now or time.time(), hid))
@@ -135,7 +132,7 @@ def unfinished_work(store, now=None):
     out = []
     held = {r["meeting_id"] for r in store._all(
         "SELECT meeting_id FROM holds WHERE released_at IS NULL")}
-    for m in store._all("SELECT * FROM meetings ORDER BY created_at"):
+    for m in store.meetings():
         if m["final_saved_at"]:
             action = "Cleanup pending"
         elif m["reviewed_at"]:
