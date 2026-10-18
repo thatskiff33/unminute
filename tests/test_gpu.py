@@ -45,16 +45,56 @@ def make_wheel(name, version, files):
 
 
 class ActivateTests(unittest.TestCase):
-    def test_the_component_caches_its_bytecode_although_the_app_runs_with_b(self):
+    def test_only_the_component_caches_its_bytecode_although_the_app_runs_with_b(self):
         # The app starts with -B and ships precompiled; the component is unpacked
         # from wheels without .pyc, so torch would be compiled at every start.
-        from workspace import gpu
-        with tempfile.TemporaryDirectory() as site, \
+        # Every other module keeps -B: the GPU worker once cached the app's own
+        # modules, and in a checkout left bytecode behind after the tests (#206).
+        from importlib.machinery import SourceFileLoader
+        with tempfile.TemporaryDirectory() as tmp, \
                 mock.patch.object(sys, "dont_write_bytecode", True), \
-                mock.patch.object(sys, "path", list(sys.path)):
-            gpu.activate(site)
-            self.assertFalse(sys.dont_write_bytecode)
-            self.assertEqual(sys.path[0], site)
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch.object(sys, "path_hooks", list(sys.path_hooks)), \
+                mock.patch.dict(sys.path_importer_cache), \
+                mock.patch.dict(sys.modules):
+            site, app = Path(tmp, "gpu-site"), Path(tmp, "app")
+            (site / "zqcomponent").mkdir(parents=True)
+            app.mkdir()
+            (site / "zqcomponent" / "__init__.py").write_text("from . import part\n")
+            (site / "zqcomponent" / "part.py").write_text("VALUE = 2\n")
+            (app / "zqapp.py").write_text("VALUE = 1\n")
+            gpu.activate(str(site))
+            sys.path.insert(1, str(app))
+            self.assertEqual(sys.path[0], str(site))
+            import zqapp  # noqa: F401
+            import zqcomponent
+            self.assertEqual(zqcomponent.part.VALUE, 2)
+            self.assertTrue(sys.dont_write_bytecode)
+            self.assertFalse((app / "__pycache__").exists())
+            for source in (site / "zqcomponent" / "__init__.py",
+                           site / "zqcomponent" / "part.py"):
+                pyc = Path(importlib.util.cache_from_source(str(source)))
+                self.assertTrue(pyc.is_file(), pyc.name)
+                # Python's own loader takes the cache as valid, without compiling.
+                loader = SourceFileLoader("zqcheck", str(source))
+                with mock.patch.object(loader, "source_to_code",
+                                       side_effect=AssertionError("compiled again")):
+                    self.assertIsNotNone(loader.get_code("zqcheck"))
+
+    def test_a_cache_that_cannot_be_written_is_no_error(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(sys, "dont_write_bytecode", True), \
+                mock.patch.object(sys, "path", list(sys.path)), \
+                mock.patch.object(sys, "path_hooks", list(sys.path_hooks)), \
+                mock.patch.dict(sys.path_importer_cache), \
+                mock.patch.dict(sys.modules):
+            site = Path(tmp, "gpu-site")
+            site.mkdir()
+            (site / "zqreadonly.py").write_text("VALUE = 3\n")
+            (site / "__pycache__").write_text("")      # a file where the folder would go
+            gpu.activate(str(site))
+            import zqreadonly
+            self.assertEqual(zqreadonly.VALUE, 3)
 
 
 class DetectTests(unittest.TestCase):

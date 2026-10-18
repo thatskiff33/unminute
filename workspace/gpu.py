@@ -377,6 +377,52 @@ def _rename(src, dst, attempts=20, wait=0.5):
             time.sleep(wait)
 
 
+def _cache_bytecode_under(site):
+    """Cache the bytecode of modules loaded from under site, and only those,
+    even when sys.dont_write_bytecode (-B) is set. A path hook gives the
+    folders under site their own finder, whose source loader writes the cache
+    itself after compiling; every other folder keeps Python's own finder."""
+    import importlib.machinery as machinery
+    import importlib.util
+    import marshal
+    import sys
+    root = os.path.normcase(os.path.abspath(site))
+
+    class ComponentLoader(machinery.SourceFileLoader):
+        # Python compiles a module only when it found no valid cached bytecode.
+        def source_to_code(self, data, path, *, _optimize=-1):
+            code = super().source_to_code(data, path, _optimize=_optimize)
+            if sys.dont_write_bytecode:          # otherwise Python caches it itself
+                try:
+                    mtime = int(self.path_stats(path)["mtime"])
+                    # A timestamp .pyc (PEP 552): magic, flags 0, source mtime and size.
+                    pyc = (importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
+                           + (mtime & 0xFFFFFFFF).to_bytes(4, "little")
+                           + (len(data) & 0xFFFFFFFF).to_bytes(4, "little")
+                           + marshal.dumps(code))
+                    self.set_data(importlib.util.cache_from_source(path), pyc)
+                except (OSError, ValueError, NotImplementedError):
+                    pass                         # no cache is slower, never wrong
+            return code
+
+    def under(path):
+        folder = os.path.normcase(os.path.abspath(path))
+        return folder == root or folder.startswith(root + os.sep)
+
+    def hook(path):
+        if not under(path):
+            raise ImportError("not the GPU component")        # Python's own finder
+        # Python's own loaders, in its own order, except for source files.
+        return machinery.FileFinder(
+            path, (machinery.ExtensionFileLoader, machinery.EXTENSION_SUFFIXES),
+            (ComponentLoader, machinery.SOURCE_SUFFIXES),
+            (machinery.SourcelessFileLoader, machinery.BYTECODE_SUFFIXES))
+
+    sys.path_hooks.insert(0, hook)
+    for path in [p for p in sys.path_importer_cache if under(p)]:   # found before the hook
+        del sys.path_importer_cache[path]
+
+
 def activate(site):
     """In a fresh worker process, BEFORE anything imports torch: put the CUDA
     build first on the import path and make its DLLs loadable."""
@@ -384,9 +430,11 @@ def activate(site):
     site = str(site)
     # The app starts with -B (its own folder ships precompiled), and this
     # worker inherits it. The component is unpacked from wheels without .pyc:
-    # let Python cache its bytecode beside it, as before #111 B2, rather than
-    # compile torch again at every worker start.
-    sys.dont_write_bytecode = False
+    # Python caches its bytecode beside it, as before #111 B2, rather than
+    # compile torch again at every worker start. Only the component's: -B
+    # stays in force for every other module, so the worker writes no bytecode
+    # into the app's folder or a checkout (#206).
+    _cache_bytecode_under(site)
     sys.path.insert(0, site)
     lib = os.path.join(site, "torch", "lib")
     if os.path.isdir(lib):

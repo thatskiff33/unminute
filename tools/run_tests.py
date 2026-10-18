@@ -7,10 +7,16 @@
 # the clipboard, Credential Manager, junctions, file locks or Windows paths was
 # not exercised, and green CI would overstate what was tested.
 #
+# The run writes no bytecode into the checkout, and fails if anything did: a
+# test, or a process it started, that left a new or changed .pyc behind (#206).
+# tools/evidence.py refuses a checkout holding ignored files such as
+# __pycache__. The runner reports such files but never deletes them.
+#
 #   python tools/run_tests.py                  # same as unittest discover
 #   python tools/run_tests.py --strict-skips   # Windows CI
 
 import argparse
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -26,12 +32,49 @@ ALLOWED_SKIPS = {
     "download libraries not installed": "model download stack not installed in CI",
 }
 
+# Folders the bytecode check does not walk: git's store, virtual environments,
+# package build output (tools/build_package.py), and extracted/, which holds
+# real transcripts that are never listed (AGENTS.md, P2).
+NOT_SCANNED = {".git", ".venv", "venv", "env", "dist", "extracted"}
+
+
+def bytecode(root):
+    """Every bytecode file under root, as {relative path: (size, modified)}."""
+    found = {}
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in NOT_SCANNED]
+        for name in files:
+            if name.endswith((".pyc", ".pyo")):
+                path = os.path.join(folder, name)
+                try:
+                    st = os.stat(path)
+                except OSError:              # gone again since the listing
+                    continue
+                found[os.path.relpath(path, root)] = (st.st_size, st.st_mtime_ns)
+    return found
+
+
+def written(before, after):
+    """The bytecode files that are new or changed since before."""
+    return sorted(path for path, stat in after.items() if before.get(path) != stat)
+
+
+def no_bytecode():
+    """Neither this process nor any process it starts writes bytecode. -B alone
+    does not reach a child started as a bare sys.executable; the variable does
+    (a child started with -I ignores it, so it must pass -B itself)."""
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--strict-skips", action="store_true",
                         help="fail when a test is skipped for an unlisted reason")
     args = parser.parse_args()
+
+    no_bytecode()
+    before = bytecode(ROOT)
 
     # Same as "python -m unittest discover -s tests" run from the repo root.
     sys.path.insert(0, str(ROOT))
@@ -45,7 +88,13 @@ def main():
         for test, reason in result.skipped:
             mark = "  " if reason in ALLOWED_SKIPS else "! "
             print(f"{mark}{test.id()}: {reason}")
-    if not result.wasSuccessful() or result.testsRun == 0:
+    stray = written(before, bytecode(ROOT))
+    if stray:
+        print(f"\n{len(stray)} bytecode file(s) written into the checkout during the run "
+              "(by a test or a process it started; see #206). They are left in place:")
+        for path in stray:
+            print(f"! {path}")
+    if not result.wasSuccessful() or result.testsRun == 0 or stray:
         return 1
     if args.strict_skips and unexpected:
         print(f"\n{len(unexpected)} test(s) skipped for a reason not allowed in a strict run.")

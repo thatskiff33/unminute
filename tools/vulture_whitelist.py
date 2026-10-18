@@ -57,7 +57,6 @@ _.SimpleReasonString    # REASON_CONTEXT (workspace/power.py)
 _.before_load           # pywebview window event (workspace/shell.py)
 _.dragover              # pywebview DOM events (workspace/api.py)
 _.drop
-_.dont_write_bytecode   # sys.dont_write_bytecode (workspace/gpu.py)
 _.intra_op_num_threads  # onnxruntime SessionOptions (asr_engines.py)
 _.inter_op_num_threads
 _.row_factory           # sqlite3 connection (workspace/store.py)
