@@ -844,7 +844,9 @@ class ShellTests(unittest.TestCase):
                                "PowerShell"),
                               ('powershell -NoProfile -Command "cd $env:LOCALAPPDATA; '
                                'Get-ChildItem -Recurse -Filter *.json"', "PowerShell"),
-                              (r"& { cd $env:LOCALAPPDATA; rg -n budget }", "PowerShell")):
+                              (r"& { cd $env:LOCALAPPDATA; rg -n budget }", "PowerShell"),
+                              ('if true; then cd "$LOCALAPPDATA"; fi; rg -n budget', "Bash"),
+                              ('for d in a; do cd "$LOCALAPPDATA"; done; rg -n budget', "Bash")):
             with self.subTest(command=command):
                 self.assertIsNotNone(guard.decide(shell(command, name)))
         self.assertIsNone(guard.decide(shell('bash -c "cd workspace && rg -n x"')))

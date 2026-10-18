@@ -15,7 +15,8 @@
 #     AllDirectories, or interpreter code that walks it: os.walk, rglob, a
 #     recursive readdir); also with a wildcard or file name as the last part, or no
 #     folder named when run from local AppData or above (cd, pushd and popd are
-#     followed, also at the start of bash -c, pwsh -c and { } blocks); inside
+#     followed, also at the start of bash -c, pwsh -c and { } blocks and after
+#     then, do or else); inside
 #     brackets, a loop, a string run by another shell or after a wrapper such as
 #     timeout; or fed local AppData by a pipeline;
 #   - git add and git commit may not name a media file.
@@ -27,14 +28,14 @@
 # for what it reaches. A variable set earlier in the same command is substituted
 # where it is used, a $(...) or backtick value whole.
 # Message text (git's and gh's -m, -b, -t and gh's -f fields, any program's --body,
-# --message or --title, Set-Content's or Add-Content's -Value, quoted heredocs and
-# here-strings not fed to an interpreter, PowerShell text held in a variable) and
-# the patterns given to text searches are ignored, so rules can be quoted and
-# searched for.
+# --message or --title, -Value of Set-Content, Add-Content or Out-File, quoted
+# heredocs and here-strings not fed to an interpreter, PowerShell text held in a
+# variable) and the patterns given to text searches are ignored, so rules can be
+# quoted and searched for.
 # It is a guard rail, not a security boundary: a text heuristic over the command,
 # which cannot be complete. Known gaps (R13b round 4):
-#   - a path held in a variable from an earlier tool call, or set with Set-Variable,
-#     New-Variable or inside a scriptblock or function;
+#   - a path held in a variable from an earlier tool call, or set with Set-Variable
+#     or New-Variable;
 #   - a script file written in one step (Write, cat > f <<EOF, Set-Content) and run
 #     in another;
 #   - a path the program builds itself or deliberately obscured: the app's own
@@ -46,9 +47,9 @@
 #     listed above;
 #   - a search program named by a variable or a full path (& $rg, /usr/bin/grep)
 #     inside another command;
-#   - a cd that is not at the start of a segment, of bash -c, pwsh -c or
-#     Invoke-Expression, or of a { } block (after another command inside a block,
-#     or in a here-string): the folder is then not followed;
+#   - a cd that is not at the start of a segment (after ;, &&, || or |), of bash -c,
+#     pwsh -c or Invoke-Expression, of a { } block, or after then, do or else (for
+#     example after a wrapper: time cd X): the folder is then not followed;
 #   - less common programs that walk a tree: copies and archives of local AppData
 #     or a folder above it (Copy-Item -Recurse, robocopy, xcopy /s, tar, 7z,
 #     Compress-Archive), attrib /s, icacls /t, takeown /r, fd, Everything's es;
@@ -228,12 +229,13 @@ CMD_WRAPPER = re.compile(r"\s*(?:\S*[\\/])?cmd(?:\.exe)?\s+(?:/[^\s/]+\s+)*?/[ck
                          re.IGNORECASE)
 STATEMENTS = re.compile(r"\|\||&&|[;&\n]")         # a pipeline stays together
 # A change of folder at the start of a segment, of a $(...) or of a string another
-# shell runs: cmd /c "cd ... && ...", bash -c, pwsh -c, Invoke-Expression (R13b
-# round 4 review).
+# shell runs: cmd /c "cd ... && ...", bash -c, pwsh -c, Invoke-Expression, or after
+# bash's then, do or else (R13b round 4 review).
 CHANGE_FOLDER = re.compile(r"^[\s(\{\"'$]*(?:(?:cmd(?:\.exe)?\s+/[ck]\s+"
                            r"|(?:\S*[\\/])?(?:bash|sh|zsh|pwsh|powershell)(?:\.exe)?\s+"
                            r"(?:-\S+\s+)*?-c\w*\s+"
                            r"|(?:iex|invoke-expression)\s+)[\"'{]?\s*)?"
+                           r"(?:(?:then|do|else)\s+)?"
                            r"(cd|chdir|pushd|popd|sl|set-location|push-location|pop-location)"
                            r"(?=[\s\"');]|$)(.*)", re.IGNORECASE | re.DOTALL)
 
