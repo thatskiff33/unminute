@@ -9,6 +9,12 @@
 # reference only and never used for budgets: summing them counts shared pages
 # once per process.
 #
+# The recording states record synthetic audio, never the room: the tool puts a
+# paced stream (PacedStream) in place of the microphone through the recorder's
+# open_stream seam and answers the app's own recording question itself, so the
+# recording is started, confirmed and saved with its consent record by the
+# shipped code. Both stand-ins exist only in this tool's child process.
+#
 # Run "python tools/perf_check.py --help" for the states, the output and the
 # exit codes. The window is visible for the whole run; leave the machine idle,
 # on mains power, on the Balanced power plan. The worker's peak memory and
@@ -34,8 +40,19 @@ sys.path.append(str(ROOT / "tools"))     # evidence.py, also under -I; after the
 import evidence  # noqa: E402
 
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
-STATES = ("meetings", "settings", "minimised")
+# The recording states come last: each earlier state is measured before any
+# recording has started, and the recording is discarded before anything after
+# them (the leak check, quitting).
+STATES = ("meetings", "settings", "minimised", "recording", "recording-minimised")
+RECORDING_STATES = ("recording", "recording-minimised")
 MEETINGS = 3                      # synthetic meetings in the measured workspace
+# The synthetic microphone: a common Windows input rate, the recorder's block.
+SYNTHETIC_RATE = 48000
+SYNTHETIC_BLOCK_S = 0.1           # recorder.BLOCK_S, checked by the child at start
+SYNTHETIC_DEVICE = {"index": 0, "name": "Synthetic input (performance check)",
+                    "label": "Synthetic input (performance check)", "default": True,
+                    "rate": SYNTHETIC_RATE}
+PACE_MAX_LATE_S = 1.0             # held up longer: carry on from now, never a burst
 PREFIX = "PERF "                  # protocol lines between parent and child
 WORKER_WAIT_S = 240               # the worker unloads after 120 s idle (worker.py)
 READY_TIMEOUT_S = 600             # seeding (up to 300 s) plus the page starting
@@ -47,7 +64,17 @@ RELEASE_SETTLE_S = evidence.PERF_RELEASE["settle_s"]
 RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
-(the Settings view) and minimised. Before them it times start-up to
+(the Settings view), minimised, recording (the Meetings view while recording,
+with the level display running) and recording-minimised (minimised while
+recording). The recording states record synthetic audio fed in at real-time
+pace in place of the microphone (48 kHz, 0.1 s blocks); no microphone or
+audio device is opened. The tool turns microphone recording on in the
+throwaway workspace, presses Record and answers the app's recording question
+itself; the recording then runs through the app's own code and is discarded
+before the next step. Its figures include the stand-in's own feeding thread
+(small) and leave out the Windows audio service, which a real microphone
+would also use. Where policy turns microphone recording off, the recording
+states cannot be measured (exit 2). Before the first state it times start-up to
 interactive (imports, then window creation until the meeting list has
 rendered; interpreter start and opening the workspace are left out) and waits
 for the worker to unload. With --leak-minutes it then holds the Meetings view
@@ -142,7 +169,131 @@ def propose(figures, margin=0.2):
     return out
 
 
-# -- measuring from outside (Windows only) --------------------------------------------
+# -- the recording states (pure apart from PacedStream's thread; tested) --------------
+
+def synthetic_blocks(rate=SYNTHETIC_RATE, block_s=SYNTHETIC_BLOCK_S, seconds=6, seed=7):
+    """Speech-like synthetic audio, as 16-bit mono blocks shaped (frames, 1)
+    like sounddevice's: noise under a syllable-rate envelope with short
+    pauses, so the level display moves as it would for a voice. Made once and
+    looped, so feeding it costs almost nothing per block."""
+    import numpy as np
+    frames = int(rate * block_s)
+    count = max(1, int(round(seconds / block_s)))
+    t = np.arange(frames * count) / rate
+    envelope = np.abs(np.sin(2 * np.pi * 2.5 * t)) * (np.sin(2 * np.pi * 0.4 * t) > -0.6)
+    noise = np.random.default_rng(seed).standard_normal(t.size)
+    audio = np.clip(noise * envelope * 3000, -32768, 32767).astype(np.int16)
+    return [audio[i * frames:(i + 1) * frames].reshape(-1, 1) for i in range(count)]
+
+
+class PacedStream:
+    """A stand-in for sounddevice's InputStream at the recorder's open_stream
+    seam (workspace.recorder.Recording): from its own thread, as PortAudio
+    does, it calls callback(block, frames, None, None) with the next synthetic
+    block each time one block of real time has passed. The schedule is fixed
+    from the start, so pacing does not drift; after a hold-up longer than
+    max_late_s it carries on from now instead of sending a burst (the missed
+    blocks are counted in `skipped`). finished() runs once when the stream
+    stops, as sounddevice's finished_callback does. Opens no device."""
+
+    def __init__(self, rate, callback, finished, block_s=SYNTHETIC_BLOCK_S, blocks=None,
+                 clock=time.monotonic, wait=None, max_late_s=PACE_MAX_LATE_S):
+        self.rate, self.block_s = int(rate), block_s
+        self.frames = int(self.rate * block_s)
+        self._callback, self._finished = callback, finished
+        self._blocks = blocks if blocks is not None else synthetic_blocks(self.rate, block_s)
+        self._clock, self._max_late = clock, max_late_s
+        self._halt = threading.Event()
+        self._wait = wait or self._halt.wait     # True once stopped
+        self._ended = threading.Lock()
+        self._finished_called = False
+        self._thread = None
+        self.delivered = self.skipped = 0
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, name="perf-synthetic-input",
+                                        daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        start, n = self._clock(), 0
+        try:
+            while not self._halt.is_set():
+                due = start + (n + 1) * self.block_s    # a block arrives once it is captured
+                delay = due - self._clock()
+                if delay > 0 and self._wait(delay):
+                    break
+                if self._halt.is_set():
+                    break
+                late = self._clock() - due
+                if late > self._max_late:            # held up: no burst of old blocks
+                    self.skipped += math.floor(round(late / self.block_s, 6))
+                    start = self._clock() - (n + 1) * self.block_s
+                self._callback(self._blocks[n % len(self._blocks)], self.frames, None, None)
+                n += 1
+                self.delivered += 1
+        except Exception:
+            pass                       # as PortAudio: a failing callback ends the stream
+        finally:
+            if not self._halt.is_set():
+                self._end()
+
+    def _end(self):
+        with self._ended:
+            if self._finished_called:
+                return
+            self._finished_called = True
+        self._finished()
+
+    def stop(self):
+        self._halt.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(5)
+        self._end()
+
+    def close(self):
+        if not self._halt.is_set():
+            self.stop()
+
+
+def consent_answerer(recording_title):
+    """The tool's answer to the app's own questions (workspace.consent), as a
+    function for make_api's confirm: yes to the recording question only, so
+    the recording is started, and its consent record made, by the shipped
+    bridge; no to anything else (a deletion grant or a discard is never
+    approved). Returns (confirm, asked), asked listing the titles shown."""
+    asked = []
+
+    def confirm(question):
+        asked.append(question.get("title"))
+        return question.get("title") == recording_title
+    return confirm, asked
+
+
+def steps(state, recording):
+    """What the child does, in order, to put the window in `state` ("quit" to
+    end), given whether a recording is open. A recording is started only for
+    the recording states, before minimising (the window then keeps the page
+    running instead of suspending it), and is discarded before any other
+    state and before quitting, so no other figure includes it and nothing is
+    imported."""
+    if state == "quit":
+        return ["discard"] if recording else []
+    if state not in STATES:
+        raise ValueError(f"unknown state {state!r}")
+    wanted = state in RECORDING_STATES
+    out = ["restore"]
+    if recording and not wanted:
+        out.append("discard")
+    out.append("show:settings" if state == "settings" else "show:meetings")
+    if wanted and not recording:
+        out.append("record")
+    if state in ("minimised", "recording-minimised"):
+        out.append("minimise")
+    return out
+
+
+# -- measuring from outside (Windows only)--------------------------------------------
 
 def _win():
     import ctypes
@@ -489,7 +640,9 @@ def parent(args):
     settle, window, runs = (20, 60, 1) if args.quick else (args.settle, args.window, args.runs)
     report = {"tool": "tools/perf_check.py", "mode": "quick" if args.quick else "release",
               "settle_s": settle, "window_s": window, "runs": runs,
-              "leak_minutes": args.leak_minutes}
+              "leak_minutes": args.leak_minutes,
+              "recording_input": {"synthetic": True, "rate": SYNTHETIC_RATE,
+                                  "block_s": SYNTHETIC_BLOCK_S, "paced": "real time"}}
     results = []
     try:
         # Inside the guard: a probe that fails (a damaged version.json, a
@@ -551,11 +704,25 @@ def child(args):
 
     import numpy as np
 
-    from workspace import api, credentials, shell
+    from workspace import api, consent, credentials, power, recorder, shell
     from workspace.app import Workspace
     imports_s = time.perf_counter() - t0
     if args.app:
         evidence.require_app_modules(app)       # measuring the package, not this checkout
+    # The synthetic microphone, in this process only: the device list names
+    # one synthetic input and opening it starts a PacedStream, so no audio
+    # device (and no sounddevice) is ever loaded. Never the real power scheme.
+    if recorder.BLOCK_S != SYNTHETIC_BLOCK_S:
+        raise SystemExit("perf_check: recorder.BLOCK_S changed; update SYNTHETIC_BLOCK_S")
+    blocks = synthetic_blocks()
+    recorder.list_devices = lambda: [dict(SYNTHETIC_DEVICE)]
+
+    def open_synthetic(device, rate, callback, finished):
+        return PacedStream(rate, callback, finished, blocks=blocks)
+
+    def never(*a, **k):
+        raise RuntimeError("perf_check never changes the power scheme")
+    power._PowrProf.write = power._PowrProf.apply = never
 
     def send(**msg):
         sys.stdout.write(PREFIX + json.dumps(msg) + "\n")
@@ -568,6 +735,7 @@ def child(args):
     root = Path(args.workdir)          # made and removed by the parent
     ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
                    battery=False)
+    ws.open_stream = open_synthetic
     try:
         ws.settings.update(model=fake + "sentences", speakers=False, onboarded=True)
         ws.start()
@@ -618,23 +786,65 @@ def child(args):
                      startup_s=round(imports_s + interactive, 2), **worker)
                 for line in sys.stdin:
                     state = line.strip()
+                    for step in steps(state, ws.recording_active()):
+                        if step == "restore":
+                            window.restore()
+                        elif step == "discard":          # never imported or kept
+                            ws.discard_recording()
+                        elif step.startswith("show:"):
+                            window.evaluate_js(f"window.workspace.show('{step[5:]}')")
+                        elif step == "record":
+                            record(window)
+                        elif step == "minimise":
+                            window.minimize()
                     if state == "quit":
                         break
-                    window.restore()
-                    if state in ("meetings", "minimised"):
-                        window.evaluate_js("window.workspace.show('meetings')")
-                    elif state == "settings":
-                        window.evaluate_js("window.workspace.show('settings')")
-                    if state == "minimised":
-                        window.minimize()
                     send(state=state)
             except Exception as exc:          # report, then let the window close
                 send(error=f"{type(exc).__name__}: {exc}")
             finally:
+                try:
+                    if ws.recording_active():
+                        ws.discard_recording()
+                except Exception:
+                    pass
                 window.destroy()
 
+        def record(window):
+            """Start a recording as a person does: microphone recording on in
+            Settings, then Record. The bridge asks the app's own recording
+            question; consent_answerer says yes, and the bridge makes the
+            consent record that start_recording requires and keeps."""
+            if not ws.settings["microphone"]:
+                ws.set_settings({"microphone": True})
+                window.evaluate_js("window.workspace.show('meetings')")
+            wait_for(window, "(() => { const b = document.getElementById('rec-start');"
+                             " return !!b && !b.hidden && !b.disabled; })()", bool,
+                     "the Record button was not ready")
+            window.evaluate_js("document.getElementById('rec-start').click()")
+            wait_for(window, "!document.getElementById('rec-card').hidden", bool,
+                     "the recording did not start")
+            rec = getattr(ws, "_recording", None)
+            if rec is None or not consent.valid_recording_record(rec.journal.get("consent")):
+                raise RuntimeError("the recording has no valid consent record")
+            if asked != [consent.RECORDING_TITLE]:
+                raise RuntimeError(f"unexpected questions: {asked}")
+            asked.clear()
+            end = time.monotonic() + 30
+            while (ws.recording_status().get("recording") or {}).get("seconds", 0) < 1:
+                if time.monotonic() > end:
+                    raise TimeoutError("no synthetic audio reached the recording")
+                time.sleep(0.1)
+            if "sounddevice" in sys.modules:
+                raise RuntimeError("an audio device library was loaded")
+            log("recording synthetic audio")
+
+        # make_api's confirm seam (for tests and this tool; the app passes none):
+        # the recording question is answered here, never shown on screen.
+        confirm, asked = consent_answerer(consent.RECORDING_TITLE)
         holder["t1"] = time.perf_counter()          # window creation to interactive
-        window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
+        window = shell.create_window(api.make_api(ws, lambda: holder.get("window"),
+                                                  confirm=confirm),
                                      title="Unminute performance check (synthetic data)",
                                      allowed=api.API_METHODS)
         holder["window"] = window
