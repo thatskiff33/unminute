@@ -3,11 +3,16 @@
 
 import importlib.util
 import json
+import os
+import shutil
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -88,6 +93,206 @@ class GateTests(unittest.TestCase):
         s.close()
         kinds = {b["kind"] for b in update.blockers(self.db)}
         self.assertEqual(kinds, {"meetings"})
+
+
+# Folder names a SQLite URI misreads unless the path is escaped (#164): "#"
+# starts a fragment, "?" a query, and "%41" is decoded to "A". Windows does not
+# allow "?" in a name, so that one runs on Linux only.
+AWKWARD = ["a#b", "c%41d", "e%f"] + ([] if os.name == "nt" else ["g?h"])
+
+
+def synthetic_workspace(db):
+    """A synthetic workspace with a meeting, an active hold and a cleanup job."""
+    db.parent.mkdir(parents=True, exist_ok=True)
+    s = Store(db)
+    mid = s.create_meeting("Synthetic")
+    holds.add_hold(s, mid, "all", "dispute")
+    with s.tx() as con:
+        con.execute("INSERT INTO cleanup_jobs (id, meeting_id, phase, state, intent_at) "
+                    "VALUES ('j', ?, 'audio', 'failed', 0)", (mid,))
+    s.close()
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class GatePathTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def workspace(self, db):
+        synthetic_workspace(db)
+
+    def test_awkward_folder_names_are_read_not_refused(self):
+        for name in AWKWARD:
+            with self.subTest(folder=name):
+                db = Path(self.tmp.name) / name / "workspace.db"
+                self.workspace(db)
+                before = db.read_bytes()
+                self.assertEqual(update.current_schema(db), store.SCHEMA_VERSION)
+                kinds = {b["kind"] for b in update.blockers(db)}
+                self.assertEqual(kinds, {"holds", "meetings", "cleanup"})
+                g = update.gate(db, store.SCHEMA_VERSION)
+                self.assertEqual((g["code"], g["kind"]), (update.ALLOWED, "compatible"))
+                g = update.gate(db, store.SCHEMA_VERSION + 1)
+                self.assertEqual((g["code"], g["kind"]), (update.WAIT, "migration"))
+                self.assertEqual(db.read_bytes(), before)        # the gate wrote nothing
+                # The gate's connection cannot write. Unescaped, a "#" also
+                # dropped "?mode=ro" into the URI's fragment (#164).
+                con = update._connect(db)
+                try:
+                    with self.assertRaises(sqlite3.OperationalError):
+                        con.execute("CREATE TABLE gate_wrote (x)")
+                finally:
+                    con.close()
+                self.assertEqual(db.read_bytes(), before)
+
+    def test_gate_command_reads_a_workspace_under_an_awkward_path(self):
+        # The installer's check (python -m workspace --gate), in a child process
+        # with LOCALAPPDATA pointing at a synthetic folder, never the real one.
+        appdata = Path(self.tmp.name).joinpath(*AWKWARD)
+        self.workspace(appdata / "whisper" / "workspace" / "workspace.db")
+        env = dict(os.environ, LOCALAPPDATA=str(appdata))
+        root = Path(__file__).resolve().parents[1]
+        for schema, code, kind in ((store.SCHEMA_VERSION, update.ALLOWED, "compatible"),
+                                   (store.SCHEMA_VERSION + 1, update.WAIT, "migration")):
+            with self.subTest(schema=schema):
+                r = subprocess.run([sys.executable, "-m", "workspace", "--gate",
+                                    "--schema", str(schema)], cwd=root, env=env,
+                                   capture_output=True, text=True, timeout=120)
+                self.assertEqual(r.returncode, code, r.stderr)
+                result = json.loads(r.stdout.strip().splitlines()[-1])
+                self.assertEqual((result["kind"], result["current_schema"]),
+                                 (kind, store.SCHEMA_VERSION))
+
+    def assert_refused_untouched(self, raw):
+        def touched(*args, **kwargs):
+            raise AssertionError("the gate touched a path that is not local")
+        with mock.patch("os.stat", touched), mock.patch("os.path.exists", touched), \
+                mock.patch("sqlite3.connect", touched):
+            with self.assertRaises(sqlite3.OperationalError) as caught:
+                update._connect(raw)
+            self.assertNotIn("server", str(caught.exception))      # no path (P3)
+            self.assertNotIn("localhost", str(caught.exception))
+            self.assertIs(update.current_schema(raw), update.UNREADABLE)
+            g = update.gate(raw, store.SCHEMA_VERSION)
+            self.assertEqual((g["code"], g["kind"]), (update.WAIT, "unreadable"))
+            with self.assertRaises(sqlite3.OperationalError):
+                update.blockers(raw)
+
+    def test_a_path_not_on_a_local_drive_is_refused_untouched(self):
+        # as_uri() turns \\localhost\C$\x into file://localhost/C%24/x, which
+        # SQLite opens as /C$/x on the current drive: a different file. The
+        # gate refuses UNC, extended, device and NT-namespace paths before
+        # reading anything (no network access), and the update waits.
+        paths = ["\\\\localhost\\C$\\x\\workspace.db", "\\\\127.0.0.1\\C$\\x\\workspace.db",
+                 "//server/share/x/workspace.db", "\\\\?\\UNC\\server\\share\\x\\workspace.db"]
+        if os.name == "nt":
+            # Windows passes \??\ straight to the NT namespace, so \??\UNC\
+            # reaches the network, though Python reads it as C:\??\... (#164).
+            # On Linux these are ordinary relative names.
+            paths += ["\\??\\UNC\\server\\share\\x\\workspace.db", "\\??\\C:\\x\\workspace.db",
+                      "/??/UNC/server/share/x/workspace.db", "\\\\?\\C:\\x\\workspace.db",
+                      "\\\\.\\pipe\\workspace.db", "C:\\x\\NUL"]
+        for raw in paths:
+            with self.subTest(path=raw):
+                self.assert_refused_untouched(raw)
+
+    def test_a_relative_path_under_a_unc_current_folder_is_refused_untouched(self):
+        # The path as resolved against the current folder is checked too.
+        unc = "\\\\server\\share\\" if os.name == "nt" else "//server/share/"
+        with mock.patch("os.path.abspath", lambda p: unc + os.fspath(p)):
+            self.assert_refused_untouched("workspace.db")
+
+    def test_a_workspace_whose_existence_cannot_be_told_is_unreadable(self):
+        # Only "not found" means no workspace; any other error fails closed.
+        db = Path(self.tmp.name) / "w" / "workspace.db"
+        self.workspace(db)
+        with mock.patch("os.stat", side_effect=PermissionError(13, "Access is denied")):
+            self.assertIs(update.current_schema(db), update.UNREADABLE)
+            g = update.gate(db, store.SCHEMA_VERSION + 1)
+        self.assertEqual((g["code"], g["kind"]), (update.WAIT, "unreadable"))
+
+    def test_blockers_still_reads_a_workspace_whose_existence_cannot_be_told(self):
+        # blockers() must not fail open: when os.stat is refused it reads the
+        # database (or raises), and never reports an empty workspace.
+        db = Path(self.tmp.name) / "w" / "workspace.db"
+        self.workspace(db)
+        real_stat = os.stat
+
+        def stat(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == "workspace.db":
+                raise PermissionError(13, "Access is denied")
+            return real_stat(path, *args, **kwargs)
+
+        with mock.patch("os.stat", stat):
+            with self.assertRaises(PermissionError):
+                os.stat(db)                             # the refusal holds
+            kinds = {b["kind"] for b in update.blockers(db)}
+        self.assertEqual(kinds, {"holds", "meetings", "cleanup"})
+
+
+EXTENDED = "\\\\?\\"
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class GateLongPathTests(unittest.TestCase):
+    """A workspace whose path is longer than MAX_PATH (260). With long paths
+    not enabled (LongPathsEnabled 0), Windows reports such a path as missing,
+    and the gate must not then say "no workspace yet"."""
+
+    def setUp(self):
+        self.base = os.path.abspath(tempfile.mkdtemp())
+        # Windows needs the extended form to create and remove the long path.
+        self.ext = EXTENDED if os.name == "nt" else ""
+        d = self.base
+        for part in ["d" * 50] * 5:
+            d = os.path.join(d, part)
+            os.mkdir(self.ext + d)
+        self.db = Path(d) / "workspace.db"
+        self.assertGreater(len(str(self.db)), 260)
+        short = Path(self.base) / "short" / "workspace.db"
+        synthetic_workspace(short)
+        shutil.copyfile(short, self.ext + str(self.db))
+
+    def tearDown(self):
+        shutil.rmtree(self.ext + self.base)
+
+    def check_never_fresh(self):
+        # Either read (long paths enabled, or not Windows) or UNREADABLE:
+        # never None, which would let a schema-changing update go ahead.
+        cur = update.current_schema(self.db)
+        self.assertIn(cur, (store.SCHEMA_VERSION, update.UNREADABLE))
+        g = update.gate(self.db, store.SCHEMA_VERSION + 1)
+        self.assertEqual(g["code"], update.WAIT)
+        self.assertIn(g["kind"], ("migration", "unreadable"))
+
+    def test_a_workspace_beyond_max_path_is_never_fresh(self):
+        # Fails without the fix on a Windows machine with LongPathsEnabled 0.
+        self.check_never_fresh()
+
+    @unittest.skipUnless(os.name == "nt", "Windows MAX_PATH and the extended path form")
+    def test_a_workspace_beyond_max_path_is_never_fresh_without_long_paths(self):
+        # The same with LongPathsEnabled 0 emulated, so the check holds on a
+        # machine (such as CI) that has long paths enabled.
+        real_stat, real_exists = os.stat, os.path.exists
+
+        def legacy(path):
+            s = os.fspath(path) if isinstance(path, (str, os.PathLike)) else ""
+            return len(s) >= 260 and not s.startswith(EXTENDED)
+
+        def stat(path, *args, **kwargs):
+            if legacy(path):
+                raise FileNotFoundError(2, "The system cannot find the path specified")
+            return real_stat(path, *args, **kwargs)
+
+        def exists(path):
+            return False if legacy(path) else real_exists(path)
+
+        with mock.patch("os.stat", stat), mock.patch("os.path.exists", exists):
+            self.assertFalse(self.db.exists())          # the emulation holds
+            self.check_never_fresh()
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
