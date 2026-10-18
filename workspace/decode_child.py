@@ -139,8 +139,10 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
     positions, guessing a layout when a file declares none: it drops a
     low-frequency channel and halves or boosts others, so a recorder that
     puts one person on each track could lose a person, and a mix of similar
-    channels could exceed full scale. A mean keeps every track and never
-    exceeds the loudest channel."""
+    channels could exceed full scale. A mean keeps every track and adds no
+    gain: before resampling it never exceeds the loudest channel. The 16 kHz
+    resampler that follows can still overshoot full scale slightly on
+    full-scale input, exactly as it does for a mono file."""
     from fractions import Fraction
 
     import av
