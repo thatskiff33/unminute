@@ -18,7 +18,8 @@
 #     torch reads;
 #   - torch.load runs with weights_only=True and a scoped allowlist of three
 #     pyannote classes (torch.serialization.safe_globals, never the
-#     process-wide add_safe_globals);
+#     process-wide add_safe_globals), and must leave the Problem and
+#     Resolution members as they were;
 #   - the pipeline and model classes are fixed in code, never named by a file,
 #     and the config, checkpoint metadata, specifications, hyperparameters and
 #     PLDA arrays must be exactly the pinned revision's (EXPECTED_*); a config
@@ -33,7 +34,12 @@
 #
 # The SHA-256 pins (asr_engines.SPEAKER_MODEL) stay the main control. The
 # weights-only allowlist cannot run code, but a hostile pickle could still
-# set unusual Enum or Specifications values, which the exact checks here catch.
+# build objects of the allowed classes. A new Specifications is checked
+# exactly, field by field. Problem and Resolution members are the module's
+# own singletons, which a pickle can reach and change (BUILD sets their
+# attributes) and which the identity checks would not notice, so every
+# unpickling compares each member's attributes before and after, restores a
+# changed member and refuses the load (enums_unchanged).
 # A new model revision needs the EXPECTED_* values below updated with its pins.
 #
 # Imports torch, pyannote, numpy and yaml only inside functions: the module is
@@ -51,6 +57,8 @@ from asr_engines import ModelLoadError
 
 LOAD_FAILED = ("The speaker identification model did not pass its safety checks and was "
                "not loaded. Repair it in Setup.")
+
+ENUM_CHANGED = "checkpoint changed a shared Enum member"
 
 PIPELINE_NAME = "pyannote.audio.pipelines.SpeakerDiarization"
 
@@ -373,17 +381,45 @@ def weights_only_load(data, classes):
         return torch.load(io.BytesIO(data), map_location="cpu", weights_only=True)
 
 
+def enums_unchanged(enums, load):
+    """load(), refused if it changed any member of the given Enums. The
+    weights-only unpickler may call an allowed Enum (giving the module's own
+    member) and BUILD onto it, changing it for the whole worker; the checks
+    compare members by identity and would not notice. So every member's
+    attributes are compared, by identity, before and after; a changed member
+    is put back as it was and the load is refused."""
+    saved = {member: dict(vars(member)) for enum in enums for member in enum}
+    try:
+        return load()
+    finally:
+        changed = False
+        for member, attrs in saved.items():
+            now = vars(member)
+            if now.keys() != attrs.keys() or any(now[k] is not v for k, v in attrs.items()):
+                now.clear()
+                now.update(attrs)
+                changed = True
+        if changed:
+            raise Refused(ENUM_CHANGED)
+
+
 def load_model(data, expected, classes):
-    """One sub-model from its checked bytes, as the fixed class."""
+    """One sub-model from its checked bytes, as the fixed class. Both
+    unpicklings (the check's and Lightning's) leave the Enums as they were."""
     import importlib
 
     import torch
     check_pickle(data)
-    check_checkpoint(weights_only_load(data, classes), expected, classes, torch.Tensor)
+    enums = classes[:2]                                    # Problem, Resolution
+    checkpoint = enums_unchanged(enums, lambda: weights_only_load(data, classes))
+    check_checkpoint(checkpoint, expected, classes, torch.Tensor)
     klass = getattr(importlib.import_module(expected.module), expected.cls)
-    with torch.serialization.safe_globals(list(classes)):
-        model = klass.load_from_checkpoint(io.BytesIO(data), map_location="cpu",
-                                           strict=True, weights_only=True)
+
+    def from_checkpoint():
+        with torch.serialization.safe_globals(list(classes)):
+            return klass.load_from_checkpoint(io.BytesIO(data), map_location="cpu",
+                                              strict=True, weights_only=True)
+    model = enums_unchanged(enums, from_checkpoint)
     if type(model) is not klass:
         raise Refused("model has the wrong type")
     check_specifications(model.specifications, expected, classes)
@@ -452,11 +488,22 @@ class _Payload:
         return eval, ("0",)
 
 
+class _EnumEdit:
+    """Pickles as the Enum member, then BUILD with an extra attribute: what a
+    checkpoint that changes a shared member does (only allowed globals)."""
+    def __init__(self, member):
+        self.member = member
+
+    def __reduce__(self):
+        return type(self.member), (self.member.value,), {"_self_test_edit": True}
+
+
 def self_check():
     """[(ok, text)]: a synthetic code-running checkpoint is refused by the
-    loader and by torch's weights-only unpickler, the allowlist ends with its
-    scope, and TORCH_FORCE_WEIGHTS_ONLY_LOAD overrides weights_only=False.
-    Needs torch and pyannote; reads and writes no file."""
+    loader and by torch's weights-only unpickler, a checkpoint that changes a
+    shared Enum member is refused and the member restored, the allowlist ends
+    with its scope, and TORCH_FORCE_WEIGHTS_ONLY_LOAD overrides
+    weights_only=False. Needs torch and pyannote; reads and writes no file."""
     import os
 
     import torch
@@ -486,6 +533,21 @@ def self_check():
             lambda: load_model(hostile, SEGMENTATION, classes))
     refused("weights-only loading refuses a code-running checkpoint",
             lambda: weights_only_load(hostile, classes))
+    member = problem.MONO_LABEL_CLASSIFICATION
+    before = dict(vars(member))
+    try:
+        load_model(checkpoint(_EnumEdit(member)), SEGMENTATION, classes)
+        outcome = "loaded"
+    except Refused as exc:
+        outcome = str(exc)                     # fixed wording, never content
+    except Exception as exc:
+        outcome = type(exc).__name__
+    restored = vars(member) == before
+    vars(member).clear()
+    vars(member).update(before)
+    ok = outcome == ENUM_CHANGED and restored
+    results.append((ok, "speaker model loader refuses a checkpoint that changes an Enum "
+                        "member, and restores it" + ("" if ok else f" ({outcome})")))
     try:
         loaded = weights_only_load(plain, classes)
         ok = type(loaded["pyannote.audio"]["specifications"]) is specifications

@@ -176,6 +176,7 @@ class FakeLibraries:
         self.allowlist = None
         self.checkpoints = {}            # bytes -> checkpoint dict
         self.load_error = None
+        self.on_load = None              # called with the load's number (from 1)
         fake = self
 
         torch = types.ModuleType("torch")
@@ -201,6 +202,8 @@ class FakeLibraries:
             data = f.getvalue() if isinstance(f, io.BytesIO) else None
             fake.loads.append({"source": type(f).__name__, "data": data,
                                "weights_only": weights_only, "allowlist": fake.allowlist})
+            if fake.on_load is not None:
+                fake.on_load(len(fake.loads))
             if fake.load_error is not None:
                 raise fake.load_error
             return copy.deepcopy(fake.checkpoints[data])
@@ -446,6 +449,43 @@ class SpeakerModelLoadTests(unittest.TestCase):
             self.diarize(model, fake)
         self.assertEqual(str(caught.exception), speaker_load.LOAD_FAILED)
         self.assertEqual((fake.loads, fake.pipelines), ([], []))
+
+    def test_a_checkpoint_that_changes_a_shared_enum_is_refused(self):
+        # torch's weights-only unpickler may call and BUILD an allowed class:
+        # Problem(1) is the module's own member, and BUILD can then set its
+        # attributes for the whole worker. The specifications check compares
+        # members by identity, so it would not notice. Such a pickle passes
+        # the pickle check; the stand-in torch.load applies its BUILD.
+        # PROTO 2, GLOBAL Problem, (1,), REDUCE, {"_value_": 99}, BUILD, STOP.
+        edit = (b"\x80\x02cpyannote.audio.core.task\nProblem\nK\x01\x85R"
+                b"}X\x07\x00\x00\x00_value_Kcsb.")
+        speaker_load.check_pickle(archive(edit))
+        member = Problem.MONO_LABEL_CLASSIFICATION
+        original = dict(vars(member))
+
+        def restore():
+            vars(member).clear()
+            vars(member).update(original)
+        self.addCleanup(restore)
+
+        for label, at in (("the check's unpickling", 1), ("Lightning's unpickling", 2),
+                          ("an attribute added", 1)):
+            with self.subTest(label):
+                model = SyntheticModel(Path(self.tmp.name) / label, segmentation=archive(edit))
+                fake = model.libraries()
+                change = ({"added": True} if label == "an attribute added"
+                          else {"_value_": 99})
+                fake.on_load = lambda n, at=at, change=change: (
+                    vars(member).update(change) if n == at else None)
+                try:
+                    with self.assertRaises(asr_engines.ModelLoadError) as caught:
+                        self.diarize(model, fake)
+                    self.assertEqual(str(caught.exception), speaker_load.LOAD_FAILED)
+                    self.assertEqual(fake.pipelines, [])
+                    # The member is put back as it was, for the rest of the worker.
+                    self.assertEqual(vars(member), original)
+                finally:
+                    restore()
 
     def test_failures_have_fixed_wording(self):
         # P3: an unpickling error's text (which can hold anything) is not shown.
