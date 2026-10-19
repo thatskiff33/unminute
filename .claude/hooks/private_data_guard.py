@@ -75,12 +75,15 @@
 # and tests check the time). Not every shape is: each variable set and used later
 # rescans the rest of the command (300 take about 0.15 s), and so do a chain of
 # thousands of cd into ever deeper folders and thousands of heredocs or
-# here-strings that are never closed. So past 2,000 assignments or loops, 20
+# here-strings that are never closed (many unclosed @' openers: a 24 KB command
+# took 1.8 to 5.8 s in two measurements, and a 90 KB one runs past the 20 s limit
+# below, #236). So past 2,000 assignments or loops, 20
 # million characters rescanned, or values that grow the command past twice its
 # length plus a million characters (a=x; b=$a$a; c=$b$b ...), a command is blocked
 # as too complex to check; and a command over 20,000 characters, or one that its
 # variables grow past 20,000 (#221 round 2), is checked in a child process, and
-# blocked if that takes more than 20 seconds or the child cannot start.
+# blocked if that takes more than 20 seconds or the child cannot start (so a long
+# enough run of unclosed openers is blocked: it fails closed).
 # It is a guard rail, not a security boundary: a text heuristic over the command,
 # which cannot be complete. The target (owner, 19 Oct 2026): block the plain and
 # common ways to read, list, search, copy or stage the data, never block ordinary
@@ -120,6 +123,28 @@
 #     named only inside quoted words that hold a space and that no shell or
 #     interpreter on the line runs (env -S "python -" <<'EOF'); one fed to xargs,
 #     read, cpio, tar -T, zip -@, --files-from or git --stdin-paths is checked;
+#   - in a PowerShell command that holds no here-string, a heredoc span (<<EOF,
+#     <<'EOF' or <<-EOF ... EOF, the delimiter quoted or not), which is dropped as
+#     heredoc text as in Bash, although PowerShell has no
+#     heredocs and runs what lies inside it (for example when one quoted argument
+#     holds the opener and a later quoted string ends after the closing line):
+#     code inside the span is not checked (#236; main's earlier check, the first
+#     layer, misses it too);
+#   - message text that PowerShell ends where the message pattern does not: a
+#     message option's quoted value or here-string (', ", @' or @"; also -Value
+#     and gh -f, -F, --field and --raw-field fields) closed by a typographic
+#     quote (for a here-string, one before the closing @), which the pattern
+#     reads on to a later plain quote, and a --message " inside a here-string
+#     body, which the pattern pairs with a quote after the here-string's closer;
+#     what lies between is dropped as text and not checked (#236; main's earlier
+#     check, the first layer, misses it too);
+#   - a message option or heredoc opener that the shell never starts, because it
+#     is inside a quoted string or a comment (Bash and PowerShell) or is not a
+#     heredoc operator at all (in Bash: a left shift in arithmetic, $((1<<EOF))
+#     or (( )), a here-string <<<, an escaped \<<), which the patterns still pair
+#     with a later quote or closing line; what lies between is dropped as text
+#     and not checked (#242 reviews; main's earlier check, the first layer,
+#     misses it too);
 #   - a substitution that renames a folder in a variable's value
 #     (${APPDATA/Roaming/Local});
 #   - a cygpath, dirname or Split-Path nested more than eight levels deep (its
@@ -148,8 +173,13 @@
 # command (a here-string is dropped as text only when the command is nothing but
 # it, alone or assigned, piped on its closing line to one program that takes
 # text), so give gh or git a here-string body as a command of its own; such a
-# body naming the data that holds any non-ASCII character (an em dash, a
-# typographic apostrophe, a macron) is checked too;
+# body naming the data is checked too when any non-ASCII or control character
+# appears anywhere in the command, in the body or not (an em dash, a typographic
+# apostrophe, a macron, a lone carriage return; tabs, line feeds and a carriage
+# return before a line feed excepted), since PowerShell ends a string at some of
+# them (#236); a Bash heredoc run by Monitor whose body holds a here-string naming
+# the data (Monitor is checked as both Bash and PowerShell, and as PowerShell the
+# heredoc is not dropped where a here-string is present, #236);
 # local AppData named whole and piped into rg, ag or grep that reads the pipe (echo
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
@@ -160,7 +190,9 @@
 # and one that cuts or replaces part of a value but leaves it as it was, read as
 # the folder above too (ls -R "${TEMP%/x}" lists local AppData's tree); a quoted
 # single word on a heredoc's line that names an interpreter or xargs (--title
-# "Python"); and a command too complex to check (above).
+# "Python"); and a command too complex to check, or over 20,000 characters and
+# too slow to check within 20 seconds, such as one with a long run of unclosed
+# here-string openers (above).
 # Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
