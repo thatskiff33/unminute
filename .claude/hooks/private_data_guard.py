@@ -123,18 +123,20 @@
 #     named only inside quoted words that hold a space and that no shell or
 #     interpreter on the line runs (env -S "python -" <<'EOF'); one fed to xargs,
 #     read, cpio, tar -T, zip -@, --files-from or git --stdin-paths is checked;
-#   - in a PowerShell command that holds no here-string, a <<'EOF' ... EOF span,
-#     which is dropped as heredoc text as in Bash, although PowerShell has no
+#   - in a PowerShell command that holds no here-string, a heredoc span (<<EOF,
+#     <<'EOF' or <<-EOF ... EOF, the delimiter quoted or not), which is dropped as
+#     heredoc text as in Bash, although PowerShell has no
 #     heredocs and runs what lies inside it (for example when one quoted argument
 #     holds the opener and a later quoted string ends after the closing line):
 #     code inside the span is not checked (#236; main's earlier check, the first
 #     layer, misses it too);
 #   - message text that PowerShell ends where the message pattern does not: a
-#     --message @' here-string closed by a typographic quote before the @, which
-#     the pattern reads on to a later plain '@, and a --message " inside a
-#     here-string body, which the pattern pairs with a quote after the
-#     here-string's closer; what lies between is dropped as text and not checked
-#     (#236; main's earlier check, the first layer, misses it too);
+#     message option's quoted value or here-string (', ", @' or @"; also -Value
+#     and gh -f fields) closed by a typographic quote (for a here-string, one
+#     before the closing @), which the pattern reads on to a later plain quote,
+#     and a --message " inside a here-string body, which the pattern pairs with a
+#     quote after the here-string's closer; what lies between is dropped as text
+#     and not checked (#236; main's earlier check, the first layer, misses it too);
 #   - a substitution that renames a folder in a variable's value
 #     (${APPDATA/Roaming/Local});
 #   - a cygpath, dirname or Split-Path nested more than eight levels deep (its

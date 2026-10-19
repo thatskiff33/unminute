@@ -2073,6 +2073,26 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(set(), (set(guard.FILE_TOOLS) | set(guard.SHELL_TOOLS)) - matched)
         self.assertIn("Monitor", matched)
 
+    def test_hook_header_and_t34_list_the_same_powershell_gaps(self):
+        # The hook's header and docs/SECURITY_MODEL.md T34 both list the guard's
+        # known gaps and false positives. These shapes (#236, #242 review) must be
+        # named in both, so neither copy understates a gap: every heredoc delimiter
+        # form, every quote a message value can open with, and the exact condition
+        # for the non-ASCII false positive.
+        header = []
+        for line in HOOK.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("#"):
+                break
+            header.append(line[1:].strip())
+        header = " ".join(header)
+        security = (ROOT / "docs" / "SECURITY_MODEL.md").read_text(encoding="utf-8")
+        t34 = next(line for line in security.splitlines() if line.startswith("| T34 |"))
+        for shape in ("<<EOF", "<<'EOF'", "<<-EOF", "quoted or not", '@"', "gh -f fields",
+                      "typographic quote", "line feeds", "alone or assigned"):
+            with self.subTest(shape=shape):
+                self.assertTrue(shape in header, "not in the hook's header")
+                self.assertTrue(shape in t34.replace("`", ""), "not in T34")
+
     def test_media_extensions_cover_the_apps_import_list(self):
         source = (ROOT / "workspace" / "app.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
