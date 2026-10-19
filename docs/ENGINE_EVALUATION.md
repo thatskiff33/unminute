@@ -7,7 +7,7 @@ All tests ran on one laptop: Intel Core Ultra 7 255H (16 logical processors, 32 
 ## Summary
 
 - **Most accurate: Qwen3-ASR-1.7B.** On eight whole meetings it had a word error rate of 19.4%, against 24.0% for Parakeet v2 (the default) and 23.9% for Whisper large-v3 turbo. It was the most accurate on every one of the eight meetings.
-- **Parakeet v2 since #107: 21.2%.** Its speech detection now bridges pauses of up to 1 second, which cut its word error rate on the same eight meetings from 24.0% to 21.2% and used less processor time. See [Speech detection pauses](#speech-detection-pauses-107). The other figures on this page were measured before that change.
+- **Parakeet v2 since #107: 21.2%.** Its speech detection now bridges pauses of up to 1 second, which cut its word error rate on the same eight meetings from 24.0% to 21.2% and used less processor time. Those eight meetings were also used to choose the setting, so 21.2% is slightly optimistic: on four meetings held out from that choice the gain was 1.4 points, not 2.9. See [Speech detection pauses](#speech-detection-pauses-107). The other figures on this page were measured before that change.
 - **Fastest: Parakeet v2.** 20 times faster than real time (about 3 minutes per hour of audio), against about 3 times for Qwen3-ASR and turbo (about 20 minutes per hour).
 - **Qwen3-ASR needs much more memory.** Its peak was 11.2 GB per meeting, against 2.2 GB for turbo. That rules it out on 8 GB laptops and makes it tight on 16 GB.
 - **The NPU is not usable** on this laptop for any engine tested (details below).
