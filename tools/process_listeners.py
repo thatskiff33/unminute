@@ -32,7 +32,12 @@ def process_tree(root_pid):
 
 def listeners(pids):
     """Listening TCP sockets and bound UDP sockets owned by `pids`."""
-    out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True).stdout
+    # netstat from the system folder by full path, with the same minimal
+    # environment: a netstat.exe planted beside Python or in the current folder
+    # could otherwise run instead and hide a listener.
+    netstat = windows_powershell.system_program("NETSTAT.EXE")
+    out = subprocess.run([netstat, "-ano"], capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, env=windows_powershell.environment()).stdout
     found = []
     for line in out.splitlines():
         parts = line.split()

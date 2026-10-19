@@ -1,10 +1,11 @@
 # tools/windows_powershell.py
-# Start Windows PowerShell 5.1 for the build and check tools (#235, #237).
+# Start Windows PowerShell 5.1, and other programs from the Windows system
+# folder such as netstat, for the build and check tools (#235, #237).
 #
 # The child is started by its absolute path in the Windows system folder
-# (GetSystemDirectoryW), never by name, so a powershell.exe beside Python, in
-# the current folder or earlier on PATH cannot stand in for it; if that file is
-# missing, nothing runs. Its environment is built from an allowlist rather than
+# (GetSystemDirectoryW), never by name, so a powershell.exe or netstat.exe
+# beside Python, in the current folder or earlier on PATH cannot stand in for
+# it; if that file is missing, nothing runs. Its environment is built from an allowlist rather than
 # inherited: variables that load code into a .NET process (COR_*, COMPlus_*,
 # DOTNET_*, profilers) or point PowerShell at other modules (PSModulePath)
 # never reach it, whatever shell or tool started the build. Standard library
@@ -46,6 +47,16 @@ def executable():
     if not os.path.isfile(exe):
         raise FileNotFoundError("Windows PowerShell 5.1 is missing from the system folder: "
                                 + exe)
+    return exe
+
+
+def system_program(name):
+    """`name` (for example "NETSTAT.EXE") in the system folder itself;
+    FileNotFoundError if it is not there (it is never looked for anywhere
+    else). Start it with env=environment()."""
+    exe = os.path.join(system_folder(), name)
+    if not os.path.isfile(exe):
+        raise FileNotFoundError(name + " is missing from the system folder: " + exe)
     return exe
 
 

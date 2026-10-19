@@ -1,4 +1,4 @@
-# Windows PowerShell 5.1 for the build and check tools (#237): started by its
+# Windows PowerShell 5.1 (and netstat) for the build and check tools (#237): started by its
 # absolute path in the system folder, never by name, with an allowlisted
 # environment, so a .NET profiler, COMPlus_* or DOTNET_* setting or another
 # module path in the parent never reaches it. Synthetic values only.
@@ -43,12 +43,14 @@ class FakeWindows:
     """A system folder in a temporary directory, with or without a
     powershell.exe, and subprocess.run replaced by a recorder."""
 
-    def __init__(self, root, with_exe=True):
+    def __init__(self, root, with_exe=True, with_netstat=True):
         self.system = Path(root) / "Windows" / "System32"
         self.home = self.system / "WindowsPowerShell" / "v1.0"
         self.home.mkdir(parents=True)
         if with_exe:
             (self.home / "powershell.exe").write_bytes(b"")
+        if with_netstat:
+            (self.system / "NETSTAT.EXE").write_bytes(b"")
         self.calls = []
 
     def run(self, argv, **kwargs):
@@ -147,13 +149,51 @@ class WindowsPowerShellTests(unittest.TestCase):
                 self.assertEqual(env["PSModulePath"], str(win.home / "Modules"))
                 self.assertNotIn("UNMINUTE_SYNTHETIC_PARENT", env)
 
-    def test_no_tool_starts_powershell_by_name(self):
-        for tool in ("build_package.py", "packaged_check.py", "process_listeners.py",
-                     "perf_check.py"):
-            with self.subTest(tool=tool):
-                source = (ROOT / "tools" / tool).read_text(encoding="utf-8")
+    def test_netstat_is_started_by_its_full_path_with_the_clean_environment(self):
+        # The window checks' listener check: a netstat.exe planted beside
+        # Python or in the current folder must not run instead (and could hide
+        # a listener), and the parent's .NET settings never reach the child.
+        win = self.fake()
+        decoy = self.root / "decoy"
+        decoy.mkdir()
+        (decoy / "netstat.exe").write_bytes(b"")
+        first, second = win.patches()
+        with first, second, mock.patch.dict(os.environ, {**POISON, "PATH": str(decoy)}):
+            self.assertEqual(process_listeners.listeners({1: "x"}), [])
+        (argv, kwargs), = win.calls
+        self.assertEqual(argv, [str(win.system / "NETSTAT.EXE"), "-ano"])
+        self.assertTrue(os.path.isabs(argv[0]))
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        env = kwargs.get("env")
+        self.assertIsNotNone(env, "the child would inherit the whole environment")
+        self.assertEqual(forbidden(env), [])
+        self.assertNotIn("UNMINUTE_SYNTHETIC_PARENT", env)
+        self.assertEqual(env["PATH"].split(os.pathsep),
+                         [str(win.system), str(win.system / "Wbem"), str(win.home)])
+
+    def test_a_missing_netstat_fails_clearly_and_runs_nothing(self):
+        win = self.fake(with_netstat=False)
+        first, second = win.patches()
+        with first, second, self.assertRaisesRegex(
+                FileNotFoundError, "NETSTAT.EXE is missing from the system folder"):
+            process_listeners.listeners({1: "x"})
+        self.assertEqual(win.calls, [])
+
+    def test_no_tool_starts_powershell_or_netstat_by_name(self):
+        # The tools, and the tests that start Windows PowerShell themselves.
+        # tests/test_agent_guard.py is left out on purpose: it finds PowerShell
+        # the way Claude Code does, because it checks the hook as Claude Code
+        # runs it.
+        sources = [ROOT / "tools" / tool for tool in
+                   ("build_package.py", "packaged_check.py", "process_listeners.py",
+                    "perf_check.py")]
+        sources += [ROOT / "tests" / test for test in ("test_evidence.py", "test_hardening.py")]
+        for path in sources:
+            with self.subTest(file=path.name):
+                source = path.read_text(encoding="utf-8")
                 self.assertNotIn('["powershell"', source)
                 self.assertNotIn('"powershell.exe"', source)
+                self.assertNotIn('["netstat', source.lower())
 
     def test_the_build_writes_no_bytecode_for_the_helper(self):
         # The release build runs `python -I tools/build_package.py`, and -I

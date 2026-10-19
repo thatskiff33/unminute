@@ -103,16 +103,21 @@ real time, and remove it when the cause is fixed.
   running as the user can write to. The tools therefore start Windows PowerShell through
   `tools/windows_powershell.py` (#237): by its absolute path in the system folder
   (`GetSystemDirectoryW`), since a bare `powershell` is searched for beside Python and in
-  the current folder first, and not at all if that file is missing; with `PSModulePath`
-  set to the system folder's `WindowsPowerShell\v1.0\Modules` (5.1 adds
+  the current folder first (if that file is missing, the tools stop rather than look
+  anywhere else); with `PSModulePath` set to the system folder's
+  `WindowsPowerShell\v1.0\Modules` (5.1 adds
   `Program Files\WindowsPowerShell\Modules`, from the known folder rather than the
   `ProgramFiles` variable); and with an allowlisted environment instead of the parent's, so
   .NET settings such as `COR_ENABLE_PROFILING`, `COR_PROFILER` or `COMPlus_*`, which can
   load a DLL into `powershell.exe`, never reach it. A script that needs another variable
   passes it to `windows_powershell.run` explicitly. `tools/build_package.py` (the signature
   checks), `tools/packaged_check.py`, `tools/process_listeners.py` and `tools/perf_check.py`
-  use it. A child that is not `-ErrorAction Stop` can also exit 0 after such an error, so
-  read its stderr, not only its exit code. To reproduce: from `pwsh` 7, start Python, and
+  use it, as do the tests that start Windows PowerShell themselves (`tests/test_evidence.py`,
+  `tests/test_hardening.py`; `tests/test_agent_guard.py` finds it as Claude Code does, on
+  purpose). `process_listeners.listeners()` starts `netstat` the same way, through
+  `windows_powershell.system_program("NETSTAT.EXE")` with the same environment. A child that
+  is not `-ErrorAction Stop` can also exit 0 after such an error, so read its stderr, not
+  only its exit code. To reproduce: from `pwsh` 7, start Python, and
   from Python start `powershell`.
 
 ## Claude Code hooks on Windows
