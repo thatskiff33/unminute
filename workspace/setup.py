@@ -48,8 +48,8 @@ SPEECH = [
     # #246 (owner's decision, 20 Oct 2026): offered so that a meeting set to it
     # can run in a new install. Turbo stays the suggested Whisper model.
     (asr_engines.WHISPER_LARGE,
-     "The most accurate Whisper model, though only slightly ahead of turbo in our tests. "
-     "The slowest on a processor."),
+     "OpenAI's most accurate Whisper model. In our tests it was no more accurate than "
+     "turbo and needed about twice the memory. The slowest on a processor."),
 ]
 CARDS = [
     *(_speech_card(name, name == asr_engines.RECOMMENDED_PARAKEET, about)

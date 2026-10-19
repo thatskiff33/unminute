@@ -86,8 +86,14 @@ class SetupTests(unittest.TestCase):
                           large["revision"], large["needs_token"], large["recommended"]),
                          ("speech", "Whisper large-v3", "missing", "MIT", "edaa852", False,
                           False))
-        self.assertIn("most accurate Whisper model", large["about"])
-        self.assertIn("slowest on a processor", large["about"])
+        # Round 1 review: the card says what docs/ENGINE_EVALUATION.md found
+        # (no more accurate than turbo, about twice the memory), never that it
+        # was ahead of turbo; "most accurate" is OpenAI's claim, attributed.
+        self.assertEqual(large["about"],
+                         "OpenAI's most accurate Whisper model. In our tests it was no more "
+                         "accurate than turbo and needed about twice the memory. The slowest "
+                         "on a processor.")
+        self.assertNotIn("ahead of turbo", large["about"])
         self.assertLess(speech.index(asr_engines.WHISPER_TURBO),
                         speech.index(asr_engines.WHISPER_LARGE))
         self.assertEqual([c["name"] for c in cards if c["role"] == "speech" and c["recommended"]],

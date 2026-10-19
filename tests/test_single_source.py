@@ -198,6 +198,10 @@ class ModelNameTests(unittest.TestCase):
         # page and in Setup, so a model error can always send the user there.
         # Whisper large-v3 (the owner's case) had none, which #244 worked
         # around with a note naming IT; a new model without a card fails here.
+        # This is the only guard against Settings or an error pointing a user
+        # at a page with no card for the model (the #244 rule): the Settings
+        # tests stay green without a card, so these must stay equalities,
+        # never subset checks (#246 round 1 review).
         from workspace import app, engines
         speech = {*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS}
         self.assertEqual({n for n, _ in setup.SPEECH}, speech)
@@ -235,7 +239,8 @@ class ModelNameTests(unittest.TestCase):
                          "model in Settings, or ask your IT team to install it.")
         # #246: Whisper large-v3, now offered like turbo, gets the same wording
         # from its real load error.
-        with mock.patch.object(asr_engines, "find_verified", return_value=None),                 self.assertRaises(asr_engines.ModelLoadError) as caught:
+        with mock.patch.object(asr_engines, "find_verified", return_value=None), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
             engines.load_engine(asr_engines.WHISPER_LARGE, ".", 1)
         self.assertEqual(engines.advice_without_downloads(f"ModelLoadError: {caught.exception}"),
                          "ModelLoadError: Whisper large-v3 is not installed or failed "
@@ -300,6 +305,29 @@ class ModelNameTests(unittest.TestCase):
         # Other errors are kept.
         kept = "Transcription failed: RuntimeError: synthetic"
         self.assertEqual(engines.advice_without_downloads(kept), kept)
+
+    def test_the_design_fixture_speech_cards_match_the_app(self):
+        # #246 round 1 review: the design check's fake bridge showed turbo with
+        # Parakeet's licence, source and revision, and the large-v3 card text
+        # was copied by hand. Each speech card it serves says what the app's does.
+        text = (ROOT / "tools" / "design_check" / "fixtures.js").read_text(encoding="utf-8")
+        pairs = r'(\w+): "([^"]*)"'
+        defaults = dict(re.findall(pairs, re.search(r"const card = \(over\) => \(\{(.*?)\}\);",
+                                                     text, re.S).group(1)))
+        fixture = {}
+        for body in re.findall(r"card\(\{(.*?)\}\)", text, re.S):
+            fields = {**defaults, **dict(re.findall(pairs, body))}
+            size = re.search(r"size_gb: ([0-9.]+)", body)
+            fields["size_gb"] = float(size.group(1)) if size else None
+            if fields.get("role") == "speech":
+                fixture[fields["name"]] = fields
+        with tempfile.TemporaryDirectory() as cache:
+            real = {c["name"]: c for c in setup.cards(cache) if c["role"] == "speech"}
+        self.assertEqual(set(fixture), set(real))
+        for name, card in real.items():
+            for key in ("label", "title", "about", "licence", "source", "revision", "size_gb"):
+                with self.subTest(model=name, field=key):
+                    self.assertEqual(fixture[name][key], card[key])
 
     def test_a_parakeet_engine_names_the_model_by_its_label(self):
         engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
