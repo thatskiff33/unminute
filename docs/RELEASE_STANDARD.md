@@ -275,7 +275,7 @@ Status is one of:
 | Update gate, rollback and migration | 9 | Unit tests (`tests/test_update.py`); installer end to end | Unit tests in place; installer check manual |
 | First-launch fallback to the previous version; atomic version pointer; installer log | 9 | Installer and launcher tests | Security plan: B5, B6 |
 | Screenshots match the shipped app | 10 | Pull request template and review | In place |
-| Known limitations stated in each full release's notes | 10, 14 | [RELEASING.md](RELEASING.md), "Unminute package releases", step 3 | Manual |
+| Known limitations stated in each full release's notes | 10, 14 | [RELEASING.md](RELEASING.md), "Cutting a release", step 3 | Manual |
 | Pilot ring before a full release | 14 | Release decision | Not yet possible: no pilot group chosen (#121) |
 | Device-management health check without telemetry | 14 | `--status`; `--health` for Intune Remediation (`docs/PACKAGING.md`) | In place |
 | Withdrawal runbook | 14 | [RELEASING.md](RELEASING.md) | In place |

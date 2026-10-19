@@ -94,6 +94,8 @@ You can skip the optional steps and turn them on later in Settings. **Graphics c
 
 Transcription runs in the background, one meeting at a time. The Meetings page groups meetings by what they need next: **Needs attention**, **Ready for you**, **Transcribing** and **Cleaning up**. Transcribing meetings show progress, with **Pause** and **Stop now**.
 
+Parakeet now keeps speech separated by pauses of up to a second together, so it hears each phrase with more of its context and recognises more words than in 0.4.3: on eight public meeting recordings its word error rate fell from 24.0% to 21.2% (see [Measured performance](#measured-performance)). A sentence that two people share is now slightly more often given one speaker's label.
+
 ![Recording a meeting, with the live sound curve and the timer](docs/screenshots/workspace-recording.png)
 
 ### Review and name speakers
@@ -103,6 +105,7 @@ Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) 
 - Select a time to play from that passage; the player at the bottom carries on through the meeting. While the audio is kept, Space plays or pauses, and J and K move between passages.
 - Select text, or press Enter, to correct it. Ctrl+Z undoes the last edit.
 - Search with Ctrl+F. In a wide window the transcript and the side panel scroll separately.
+- You can open a meeting while it is still transcribing. New passages are added to the end as they arrive, so scrolling, playing and correcting earlier passages stay smooth on long meetings.
 - **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
 - **Skip speakers** (on the meeting's row) or **Skip speaker identification** (in its speaker panel) is for a recording of one or two people: the meeting goes straight to review and hand off without speaker labels. While the audio is kept, **Identify again…** still works later.
 - The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**.

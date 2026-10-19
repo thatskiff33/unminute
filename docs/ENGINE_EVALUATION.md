@@ -72,6 +72,8 @@ Benchmark of 19 October 2026 on public AMI meetings, reproduced by an independen
 | **1,000 ms (adopted)** | **21.2%** | 4.9% | 14.8% | 1.5% | **19.8%** | 1,510 | 92 | 2,311 s |
 | 2,000 ms | 21.2% | 4.8% | 14.9% | 1.6% | not run | 1,074 | 92 | 2,343 s |
 
+The 100 ms row is a fresh measurement at 7d5061f with this investigation's own scoring scripts, so its error split and its count of words placed in silence are not directly comparable with the whole-meeting table above (measured at 5b7132d: 6.2%, 16.2% and 1.7%, and 13 words placed in silence per hour). The cause of the difference was not traced; it may be the decoder change in #187 or differences between the scorers.
+
 - 1,000 ms against before: 2.9 points better on the eight meetings (interval 2.2 to 3.5), and better on all eight; 1.4 points better on the four held out (interval 0.6 to 2.1), and better on all four.
 - Insertions did not rise. Words placed in silence fell from 108 to 92 (held out: 60 to 58).
 - Processor time fell by 14% in this run, but varied by meeting (7% to 21% on the three meetings the reviewer reran).
