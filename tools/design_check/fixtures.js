@@ -141,8 +141,9 @@
   // against the data: each passage once, in order, speaker turns right.
   const GROW_STEP_MS = 4000;
   const GROW_LONG = 3000;          // passages before the measured window
+  const GROW_HELD = 10;            // passages held back while the edit runs (steps 5 and 6)
   const grow = { added: 0, redraws: 0, rowsSent: 0, redrawSteps: [], editId: 5,
-                 editText: "Edited while transcribing (sample).", editHeld: null, editOnLoad: false };
+                 editText: "Edited while transcribing (sample).", editHeld: null, heldDrawn: null, editOnLoad: false };
   // Start editing a passage from inside a transcript call, so the page's
   // append is still waiting on that call when the edit begins: it must give up
   // without drawing anything or fetching the whole list (a redraw it would
@@ -195,14 +196,17 @@
     () => growMore(10),
     () => {                          // more passages; an edit starts while the page loads them
       grow.editOnLoad = true;
-      growMore(10);
+      growMore(GROW_HELD);
     },
     () => {                          // nothing was drawn under the edit; it ends
       grow.editHeld = grow.added === grow.addedAtEdit;
       document.activeElement.blur();
-      growMore(10);
+      // No new passages and no progress: the rows held back must still be
+      // appended once the edit has ended, because the given-up append put its
+      // signature back. Nothing else changes before step 7 to draw them.
     },
     () => {                          // speakers identified: every passage labelled
+      grow.heldDrawn = grow.added - grow.addedAtEdit;
       data.transcript["m-garden"].forEach((r, i) => { r[2] = LABELS[Math.floor(i / 4) % 2]; });
       const d = data.detail["m-garden"];
       data.detail["m-garden"] = { ...d, speakers: { status: "done", error: null, device: "cpu",
@@ -267,6 +271,8 @@
       turns_right: shown.length === rows.length &&
                    shown.every((li, i) => li.classList.contains("turn") === turns[i]),
       edit_held_back: grow.editHeld,
+      held_rows_drawn: grow.heldDrawn,
+      held_rows_expected: GROW_HELD,
       edit_kept: !!edited && edited.textContent === grow.editText,
       page_errors: perf.errors,
     };

@@ -91,9 +91,10 @@ GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"
 class TranscribingTests(unittest.TestCase):
     # A long meeting open while it is transcribed (#127): new passages are
     # appended, and the whole list is redrawn only where appending is not safe.
-    RIGHT = {"page_errors": [], "each_once_in_order": True, "rows_shown": 3105,
-             "rows_expected": 3105, "turns_right": True, "edit_held_back": True,
-             "edit_kept": True, "redraw_steps": [3, 7, 10], "expected_redraw_steps": [3, 7, 10]}
+    RIGHT = {"page_errors": [], "each_once_in_order": True, "rows_shown": 3095,
+             "rows_expected": 3095, "turns_right": True, "edit_held_back": True,
+             "held_rows_drawn": 10, "held_rows_expected": 10, "edit_kept": True,
+             "redraw_steps": [3, 7, 10], "expected_redraw_steps": [3, 7, 10]}
 
     def test_a_page_that_shows_every_passage_once_in_order_passes(self):
         self.assertEqual([], ui_idle_check.transcribing_problems(self.RIGHT))
@@ -101,9 +102,14 @@ class TranscribingTests(unittest.TestCase):
     def test_each_way_of_showing_the_transcript_wrongly_fails(self):
         for change, words in (
                 ({"page_errors": ["TypeError: x"]}, "threw"),
-                ({"each_once_in_order": False, "rows_shown": 3115}, "once and in order"),
+                ({"each_once_in_order": False, "rows_shown": 3105}, "once and in order"),
                 ({"turns_right": False}, "turns"),
                 ({"edit_held_back": False}, "being edited"),
+                # The rows held back by the edit never drawn once it ended
+                # (the given-up append's signature not put back) ...
+                ({"held_rows_drawn": 0}, "held back during the edit"),
+                # ... or the figure missing.
+                ({"held_rows_drawn": None}, "held back during the edit"),
                 ({"edit_kept": False}, "does not show the edit"),
                 # A redraw missed (a re-done chunk appended after the end) ...
                 ({"redraw_steps": [7, 10]}, "redrawn after steps"),
@@ -115,13 +121,13 @@ class TranscribingTests(unittest.TestCase):
             self.assertIn(words, problems[0])
 
     def test_the_counts_are_held_to_their_ratchets(self):
-        ratchets = {"transcribing": {"rows_fetched": 9280, "full_redraws": 3}}
+        ratchets = {"transcribing": {"rows_fetched": 9250, "full_redraws": 3}}
         self.assertEqual([], ui_idle_check.compare(
-            {"transcribing": {"rows_fetched": 9280, "full_redraws": 3}}, ratchets))
-        self.assertEqual([("transcribing", "rows_fetched", 36670, 9280),
+            {"transcribing": {"rows_fetched": 9250, "full_redraws": 3}}, ratchets))
+        self.assertEqual([("transcribing", "rows_fetched", 36600, 9250),
                           ("transcribing", "full_redraws", 11, 3)],
                          ui_idle_check.compare(
-                             {"transcribing": {"rows_fetched": 36670, "full_redraws": 11}},
+                             {"transcribing": {"rows_fetched": 36600, "full_redraws": 11}},
                              ratchets))
 
 

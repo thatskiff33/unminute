@@ -101,6 +101,10 @@ def transcribing_problems(result):
         problems.append("transcribing: speaker turns are marked wrongly")
     if result.get("edit_held_back") is not True:
         problems.append("transcribing: rows were drawn while a passage was being edited")
+    held, expected = result.get("held_rows_drawn"), result.get("held_rows_expected")
+    if held is None or held != expected:
+        problems.append(f"transcribing: {held} of the {expected} passages held back during the "
+                        "edit were drawn after it ended, before anything else changed")
     if not result.get("edit_kept"):
         problems.append("transcribing: the edited passage does not show the edit")
     if result.get("redraw_steps") != result.get("expected_redraw_steps"):
