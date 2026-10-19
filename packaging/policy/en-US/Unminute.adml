@@ -17,7 +17,7 @@
 Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models, so the app never needs the network (a models package for Intune is planned).</string>
 
       <string id="AllowGpuComponent">Allow the graphics card component</string>
-      <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card component (about 1.9 GB of PyTorch and CUDA libraries into their profile) and use it for speaker identification.
+      <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card component (about 2 GB of PyTorch and CUDA libraries into their profile) and use it for speaker identification.
 
 Disabled: the component cannot be downloaded or used; speaker identification runs on the processor.</string>
 

@@ -9,7 +9,7 @@ Changes not yet released are in [`changelog.d/`](changelog.d/README.md), one fil
 
 ## v0.5.0-preview.1 (2026-10-19)
 
-Preview for testing, built and signed by GitHub Actions. Not an update in place from 0.4.3 or earlier: finish with the earlier version and uninstall it first (see Updates in docs/PACKAGING.md).
+Preview for testing, built by GitHub Actions with signed build provenance. Not an update in place from 0.4.3 or earlier: finish with the earlier version and uninstall it first (see Updates in docs/PACKAGING.md).
 
 - **More words recognised.** Parakeet now ends a stretch of speech after a 1-second pause instead of a tenth of a second, so it hears each phrase with more of its context. On eight public meeting recordings its word error rate fell from 24.0% to 21.2% (by 1.4 points on four more that were not used to choose the setting), without more invented words overall, and it used less processor time. Whisper is not affected. Sentences can be a little longer, so a sentence that two people share is slightly more often given one speaker's label (#107).
 - **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
