@@ -98,8 +98,13 @@ real time, and remove it when the cause is fixed.
   That failed the first hosted release build (v0.5.0-preview.1, 19 Oct 2026) while the same
   build passed from Windows PowerShell or Git Bash. `pwsh` repairs the variable only for a
   `powershell.exe` it starts itself, so the error does not show when you try the command at a
-  `pwsh` prompt. `powershell()` in `tools/build_package.py` therefore leaves `PSModulePath`
-  out of the child's environment, and 5.1 builds its default. A child that is not
+  `pwsh` prompt. Removing the variable is not enough either: 5.1 then rebuilds a default
+  that puts the user's own `Documents\WindowsPowerShell\Modules` first, which any program
+  running as the user can write to. `powershell()` in `tools/build_package.py` therefore
+  sets `PSModulePath` to the system folder's `WindowsPowerShell\v1.0\Modules` (5.1 adds
+  `Program Files\WindowsPowerShell\Modules`), and starts `powershell.exe` by its absolute
+  path in the system folder (`GetSystemDirectoryW`), since a bare `powershell` is searched
+  for beside Python and in the current folder first. A child that is not
   `-ErrorAction Stop` can also exit 0 after such an error, so read its stderr, not only its
   exit code. To reproduce: from `pwsh` 7, start Python, and from Python start `powershell`.
 

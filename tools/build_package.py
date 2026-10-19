@@ -155,18 +155,42 @@ def fetch_runtime(cache):
     return target
 
 
+def system_folder():
+    """The Windows system folder, from GetSystemDirectoryW (never from PATH,
+    the current folder or an environment variable)."""
+    if os.name != "nt":
+        sys.exit("The signature check needs Windows.")
+    import ctypes
+    buf = ctypes.create_unicode_buffer(260)
+    n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260)
+    if not 0 < n < 260:
+        sys.exit("Could not find the Windows system folder.")
+    return buf.value
+
+
 def powershell(script, **paths):
     """Run a Windows PowerShell 5.1 script with paths passed as environment
     variables ($env:UNMINUTE_<NAME>), never inside the command text, so a quote
     in a folder or user name cannot break it.
 
-    PSModulePath is left out so 5.1 builds its own default. Started from
-    PowerShell 7 (the shell of GitHub's Windows runners), the inherited value
-    lists 7's module folders first, and 5.1 then fails to load
-    Microsoft.PowerShell.Security, which holds Get-AuthenticodeSignature."""
+    The child is started by its absolute path in the system folder, so a
+    powershell.exe beside Python or in the current folder cannot stand in for
+    it. Its PSModulePath is pinned to the system folder's modules (5.1 adds
+    Program Files' modules; both need an administrator to change). Inherited,
+    the variable breaks the check when the build starts from PowerShell 7 (the
+    shell of GitHub's Windows runners): 7's module folders come first, and 5.1
+    then fails to load Microsoft.PowerShell.Security, which holds
+    Get-AuthenticodeSignature. Left unset, 5.1 would put the user's own
+    Documents modules folder first, which any program running as the user can
+    write to."""
+    home = os.path.join(system_folder(), "WindowsPowerShell", "v1.0")
+    exe = os.path.join(home, "powershell.exe")
+    if not os.path.isfile(exe):
+        sys.exit("Windows PowerShell 5.1 is missing from the system folder: " + exe)
     env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env["PSModulePath"] = os.path.join(home, "Modules")
     env.update({f"UNMINUTE_{k.upper()}": str(v) for k, v in paths.items()})
-    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
                           env=env, capture_output=True, text=True)
 
 

@@ -345,9 +345,16 @@ class ReproducibleBuildTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "catalog"):
             bp.signers(self.root, ["runtime/msvcp140.dll"])
 
-    def test_windows_powershell_builds_its_own_module_path(self):
+    def test_windows_powershell_runs_from_the_system_folder_with_its_own_modules(self):
         # GitHub's runners start the build from PowerShell 7, whose module path
-        # stops Windows PowerShell 5.1 loading Get-AuthenticodeSignature.
+        # stops Windows PowerShell 5.1 loading Get-AuthenticodeSignature. The
+        # child is found by absolute path (never through PATH or the current
+        # folder) and its module path is pinned to the system folder's modules,
+        # so no user-writable folder (Documents) can supply the cmdlet.
+        system = self.root / "System32"
+        home = system / "WindowsPowerShell" / "v1.0"
+        home.mkdir(parents=True)
+        (home / "powershell.exe").write_bytes(b"")
         seen = {}
 
         def fake_run(argv, env, **kwargs):
@@ -356,12 +363,41 @@ class ReproducibleBuildTests(unittest.TestCase):
         inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules",
                      "SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\System32"}
         with mock.patch.dict(os.environ, inherited), \
+                mock.patch.object(bp, "system_folder", return_value=str(system)), \
                 mock.patch.object(bp.subprocess, "run", fake_run):
-            bp.powershell("Get-AuthenticodeSignature", file="C:\\a b\\python.exe")
-        self.assertEqual(seen["argv"][0], "powershell")
-        self.assertNotIn("PSMODULEPATH", {k.upper() for k in seen["env"]})
-        self.assertEqual(seen["env"]["UNMINUTE_FILE"], "C:\\a b\\python.exe")
+            bp.powershell("Get-AuthenticodeSignature", file=r"C:\a b\python.exe")
+        self.assertEqual(seen["argv"][0], str(home / "powershell.exe"))
+        self.assertEqual(seen["argv"][1:4], ["-NoProfile", "-NonInteractive", "-Command"])
+        module_paths = [v for k, v in seen["env"].items() if k.upper() == "PSMODULEPATH"]
+        self.assertEqual(module_paths, [str(home / "Modules")])
+        self.assertEqual(seen["env"]["UNMINUTE_FILE"], r"C:\a b\python.exe")
         self.assertEqual(seen["env"]["PATH"], r"C:\Windows\System32")    # the rest is kept
+
+    def test_a_missing_windows_powershell_stops_the_build(self):
+        ran = []
+        with mock.patch.object(bp, "system_folder", return_value=str(self.root)), \
+                mock.patch.object(bp.subprocess, "run", lambda *a, **k: ran.append(a)), \
+                self.assertRaisesRegex(SystemExit, "Windows PowerShell"):
+            bp.powershell("Get-AuthenticodeSignature", file=r"C:\python.exe")
+        self.assertEqual(ran, [])                     # nothing found by name instead
+
+    @unittest.skipUnless(sys.platform == "win32", "runs Windows PowerShell")
+    def test_an_inherited_module_path_cannot_supply_the_signature_cmdlet(self):
+        # A synthetic module named like the real one, first in the parent's
+        # module path (as a planted user module would be), must not load.
+        fake = self.root / "mods" / "Microsoft.PowerShell.Security"
+        fake.mkdir(parents=True)
+        (fake / "Microsoft.PowerShell.Security.psm1").write_text(
+            "function Get-AuthenticodeSignature { 'fake' }\n", encoding="utf-8")
+        system = bp.system_folder()
+        with mock.patch.dict(os.environ, {"PSModulePath": str(self.root / "mods")}):
+            r = bp.powershell("(Get-Command Get-AuthenticodeSignature).Module.ModuleBase; "
+                              "$env:PSModulePath")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        base, module_path = r.stdout.strip().splitlines()[-2:]
+        self.assertTrue(base.lower().startswith(system.lower()), base)
+        self.assertNotIn(str(self.root).lower(), module_path.lower())
+        self.assertNotIn(os.path.expanduser("~").lower(), module_path.lower())
 
     def test_a_failed_runtime_signature_check_says_why(self):
         error = ("Get-AuthenticodeSignature : The 'Get-AuthenticodeSignature' command was\n"
