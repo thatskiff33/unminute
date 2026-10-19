@@ -55,20 +55,23 @@ def _shift(s, offset):
 
 
 def run_version(store, mid, vid, reader, engine, *, on_progress=None, hooks=None,
-                retry_failed=False):
+                retry_failed=False, downloads_allowed=True):
     """Process pending chunks until done, paused or failed. Returns a RunResult.
     retry_failed=True is the user's explicit "Try again": it clears the
-    failure counts that would otherwise stop a chunk after MAX_ATTEMPTS."""
+    failure counts that would otherwise stop a chunk after MAX_ATTEMPTS.
+    downloads_allowed=False (managed policy, read by the caller) gives a model
+    that is not ready the IT wording instead of Manage downloads (#257)."""
     try:
         if retry_failed:
             store.reset_failures(vid)
-        return _run(store, mid, vid, reader, engine, on_progress, hooks or {})
+        return _run(store, mid, vid, reader, engine, on_progress, hooks or {},
+                    downloads_allowed)
     except StoreError as exc:     # a read failed (e.g. database unavailable)
         _note_error(store, mid, f"Could not read progress: {exc}")
         return RunResult.STORE_ERROR
 
 
-def _run(store, mid, vid, reader, engine, on_progress, hooks):
+def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=True):
     version = store.version(vid)
     source = store.source(version["source_id"])
     total = source["samples"]
@@ -122,7 +125,11 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks):
                 # The model is missing or damaged: not this chunk's fault, so
                 # it must not count towards the chunk's failure limit.
                 _finish(store, attempt, "unavailable", engine)
-                _note_error(store, mid, f"The speech model is not ready: {exc}"[:300])
+                why = str(exc)
+                if not downloads_allowed:
+                    from workspace.engines import advice_without_downloads
+                    why = advice_without_downloads(why)
+                _note_error(store, mid, f"The speech model is not ready: {why}"[:300])
                 return RunResult.FAILED
             _finish(store, attempt, "failed", engine)
             if hooks.get("reraise"):

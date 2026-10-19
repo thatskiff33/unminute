@@ -1311,6 +1311,10 @@ class Workspace:
             return
         threads = resources.worker_threads(self.settings["mode"])
         self.handle.quiet = self.settings["mode"] == resources.QUIET
+        # A model that is not ready names IT, not Manage downloads, when
+        # managed policy turns downloads off (K3; unreadable: off). The worker
+        # never reads the policy, so its error is reworded here (#257).
+        downloads = self._allowed("AllowModelDownloads")
         if kind == "rerun":
             vid, count, skips = ref
             with self._lock:
@@ -1323,7 +1327,8 @@ class Workspace:
                                                media.audio_path(self.media, mid),
                                                threads=threads, hint=count,
                                                model=self.speaker_model, device=device,
-                                               gpu_site=site, skips_seen=skips)
+                                               gpu_site=site, skips_seen=skips,
+                                               downloads_allowed=downloads)
                 m = self.store.meeting_state(mid)
                 if result == speakers.SpeakerResult.STOPPED and m and m["paused"]:
                     with self._lock:          # paused mid-pass: kept, with its count,
@@ -1346,7 +1351,8 @@ class Workspace:
             reader = media.AudioReader(media.audio_path(self.media, mid))
             try:
                 engine = WorkerEngine(self.handle, self.store.version(ref)["model"], threads)
-                result = runner.run_version(self.store, mid, ref, reader, engine)
+                result = runner.run_version(self.store, mid, ref, reader, engine,
+                                            downloads_allowed=downloads)
             finally:
                 reader.close()               # release the handle before any cleanup
             if result == runner.RunResult.STOPPED and not self._closing.is_set() \
@@ -1360,7 +1366,7 @@ class Workspace:
             speakers.run_speakers(self.store, mid, ref, self.handle,
                                   media.audio_path(self.media, mid), threads=threads,
                                   model=self.speaker_model, device=device, gpu_site=site,
-                                  skips_seen=0)
+                                  skips_seen=0, downloads_allowed=downloads)
         finally:
             self._gpu_pass = False
 

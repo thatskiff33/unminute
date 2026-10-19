@@ -28,10 +28,12 @@ class SpeakerResult:
 
 
 def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, model="pyannote",
-                 device="cpu", gpu_site=None, skips_seen=None):
+                 device="cpu", gpu_site=None, skips_seen=None, downloads_allowed=True):
     """Separate speakers for an already-transcribed version. Returns a SpeakerResult.
     skips_seen: the version's skip count when this pass was chosen; a skip
-    since then means nothing starts (SKIPPED)."""
+    since then means nothing starts (SKIPPED). downloads_allowed=False
+    (managed policy, read by the caller) gives a speaker model that is not
+    ready the IT wording instead of Manage downloads (#257)."""
     if hint is not None and (isinstance(hint, bool) or not isinstance(hint, int)
                              or not 1 <= hint <= MAX_HINT):
         return SpeakerResult.BAD_HINT
@@ -51,7 +53,11 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
         return SpeakerResult.STOPPED
     except Exception as exc:
         from workspace.worker import safe_message
-        _end(store, rid, "failed", f"{type(exc).__name__}: {safe_message(exc)}"[:300])
+        why = f"{type(exc).__name__}: {safe_message(exc)}"
+        if not downloads_allowed:
+            from workspace.engines import advice_without_downloads
+            why = advice_without_downloads(why)
+        _end(store, rid, "failed", why[:300])
         return SpeakerResult.FAILED
     try:
         if not store.finish_speaker_run(rid, turns, exclusive, backend=device,

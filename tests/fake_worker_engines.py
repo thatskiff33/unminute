@@ -121,6 +121,17 @@ def load_fails(threads):
     raise RuntimeError("model files failed verification")
 
 
+def speech_not_ready(threads):
+    """The real load of Parakeet v2 from an empty model folder: the worker's own
+    "not ready" error and its advice (#257)."""
+    import tempfile
+
+    import asr_engines
+    from workspace.engines import load_engine
+    with tempfile.TemporaryDirectory() as empty:
+        return load_engine(asr_engines.PARAKEET_V2, empty, threads)
+
+
 def weights_only_env(threads):
     """Reports the worker's torch.load switches (#218)."""
     seen = {k: os.environ.get(k) for k in ("TORCH_FORCE_WEIGHTS_ONLY_LOAD",
@@ -143,6 +154,19 @@ def fake_diarizer(audio, hint):
 
 def diarizer_fails(audio, hint):
     raise RuntimeError("speaker model failed verification")
+
+
+def speaker_not_ready(audio, hint):
+    """The real speaker identification load from an empty model folder: the
+    worker's own error and its advice (#257)."""
+    import tempfile
+    from pathlib import Path
+
+    from workspace.engines import diarize_file
+    with tempfile.TemporaryDirectory() as empty:
+        path = Path(empty) / "audio.f32"
+        audio.astype("<f4").tofile(path)
+        return diarize_file("pyannote", empty, path, hint, 1)
 
 
 def diarizer_sleepy(audio, hint):
