@@ -76,8 +76,9 @@ def package_version():
 # network share (D3), and as_uri() would turn \\localhost\C$\x into
 # file://localhost/C%24/x, which SQLite opens as /C$/x on the current drive, a
 # different file. A mapped network drive letter (Z:\) passes here: for the
-# installer's --gate, store.local_appdata() refuses it first (through
-# default_root()), so the gate never sees one.
+# installer's --gate, store.default_root() refuses it first (for
+# %LOCALAPPDATA% itself, and since #219 for Unminute and Unminute\workspace
+# redirected there by a junction or link), so the gate never sees one.
 _DRIVE = re.compile(r"[A-Za-z]:\\")
 _NT_NAMESPACE = "\\??\\"
 

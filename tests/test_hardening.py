@@ -588,6 +588,177 @@ class WorkspaceLocationTests(unittest.TestCase):
                 self.check({"LOCALAPPDATA": "C:\\Users\\a\\AppData\\Local"})
 
 
+@unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
+class RedirectedDataFolderTests(unittest.TestCase):
+    """#219 (D3): %LOCALAPPDATA% itself is local, but a junction at Unminute or
+    at Unminute\\workspace takes the workspace into OneDrive or onto a network
+    drive. Junctions need no privilege, so these run on every Windows machine.
+    Only Unminute\\models may be redirected."""
+
+    SYNCED = "OneDrive - Synthetic Firm"
+
+    def setUp(self):
+        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.synced = self.tmp / self.SYNCED
+        self.share = self.tmp / "Share"
+        self.cases = 0
+        self.fresh_local()
+
+    def fresh_local(self):
+        """A new, empty LOCALAPPDATA for the next case."""
+        self.cases += 1
+        self.local = self.tmp / f"Local {self.cases}"
+        self.local.mkdir()
+
+    def junction(self, at, target):
+        """LOCALAPPDATA\\<at> made a junction to target (created first)."""
+        link = self.local / at
+        link.parent.mkdir(parents=True, exist_ok=True)
+        target.mkdir(parents=True, exist_ok=True)
+        r = mklink_junction(link, target, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Removes the junction only, never its target, and before the
+        # temporary folder goes (cleanups run last in, first out).
+        self.addCleanup(lambda: os.path.isjunction(link) and os.rmdir(link))
+        return link
+
+    def env(self, var="OneDriveCommercial"):
+        return {"LOCALAPPDATA": str(self.local), var: str(self.synced)}
+
+    def child_env(self):
+        """This process's environment for a child, with the test's folders."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer")}
+        env.update(self.env())
+        return env
+
+    def default_root(self, env):
+        from workspace import store
+        with mock.patch.dict(os.environ, env, clear=True):
+            return store.default_root()
+
+    def on_share(self):
+        """_remote_drive as if self.share were a mapped network drive."""
+        from workspace import store
+        share = store._folder_key(os.path.realpath(self.share))
+        return mock.patch.object(store, "_remote_drive",
+                                 lambda path: store._folder_key(path).startswith(share))
+
+    def assert_path_free(self, message):
+        # P3: no folder name from this computer, only the app's own words.
+        for part in (str(self.tmp), self.tmp.name, self.SYNCED, "Share", "Local"):
+            self.assertNotIn(part, message)
+        self.assertIn("Ask your IT team", message)
+
+    def test_a_data_folder_junction_into_onedrive_is_refused(self):
+        from workspace import store
+        from workspace.store import StoreError
+        for at in ("Unminute", "Unminute\\workspace"):
+            for var in ("OneDriveCommercial", "OneDrive"):
+                with self.subTest(at=at, var=var):
+                    self.fresh_local()
+                    target = self.synced / f"Moved {self.cases}"
+                    self.junction(at, target)
+                    with mock.patch.dict(os.environ, self.env(var), clear=True):
+                        self.assertEqual(store.local_appdata(), self.local)  # itself is fine
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env(var))
+                    self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
+                    self.assert_path_free(str(caught.exception))
+                    self.assertEqual(list(target.iterdir()), [])     # nothing written there
+
+    def test_a_junction_into_onedrive_whose_target_is_missing_is_refused(self):
+        # Round 1 review: realpath stops at a missing target and returns it as
+        # stored, so a junction or 8.3 short name inside that stored target
+        # hid OneDrive, and the app then failed in mkdir without its message.
+        import ctypes
+        from workspace import store
+        from workspace.store import StoreError
+        alias = self.tmp / "alias"
+        self.synced.mkdir(parents=True, exist_ok=True)
+        made = mklink_junction(alias, self.synced, capture_output=True, text=True)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        self.addCleanup(lambda: os.path.isjunction(alias) and os.rmdir(alias))
+        spellings = {"junction": alias}
+        # The short name, where the volume makes them (CI's may not).
+        buffer = ctypes.create_unicode_buffer(1024)
+        ctypes.windll.kernel32.GetShortPathNameW(str(self.synced), buffer, 1024)
+        if buffer.value and Path(buffer.value).name.lower() != self.SYNCED.lower():
+            spellings["short name"] = Path(buffer.value)
+        for at in ("Unminute", "Unminute\\workspace"):
+            for how, synced in spellings.items():
+                with self.subTest(at=at, how=how):
+                    self.fresh_local()
+                    moved = f"Moved {self.cases}"
+                    link = self.junction(at, synced / moved)
+                    os.rmdir(self.synced / moved)                # the target is gone
+                    self.assertFalse(os.path.exists(link))
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env())
+                    self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
+                    self.assert_path_free(str(caught.exception))
+                    self.assertFalse((self.synced / moved).exists())   # nothing made there
+
+    def test_a_data_folder_junction_onto_a_network_drive_is_refused(self):
+        from workspace import store
+        from workspace.store import StoreError
+        for at in ("Unminute", "Unminute\\workspace"):
+            with self.subTest(at=at):
+                self.fresh_local()
+                self.junction(at, self.share / f"Moved {self.cases}")
+                with self.on_share():
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env())
+                self.assertEqual(str(caught.exception), store.REDIRECTED["network"])
+                self.assert_path_free(str(caught.exception))
+
+    def test_redirecting_only_the_models_folder_is_allowed(self):
+        models = self.junction("Unminute\\models", self.synced / "Models")
+        expected = self.local / "Unminute" / "workspace"
+        self.assertEqual(self.default_root(self.env()), expected)
+        # The model cache the app uses is still the redirected folder. In a
+        # child process: importing workspace.__main__ installs the network guard.
+        r = subprocess.run([sys.executable, "-c",
+                            "import workspace.__main__ as m; print(m.model_cache())"],
+                           cwd=ROOT, env=self.child_env(), capture_output=True, text=True,
+                           timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(Path(r.stdout.strip()), models)
+        os.rmdir(models)
+        self.junction("Unminute\\models", self.share / "Models")
+        with self.on_share():
+            self.assertEqual(self.default_root(self.env()), expected)
+
+    @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+    def test_the_app_does_not_open_a_redirected_workspace(self):
+        from workspace import app, store
+        from workspace.store import StoreError
+        target = self.synced / "Unminute"
+        self.junction("Unminute", target)
+        with mock.patch.dict(os.environ, self.env(), clear=True):
+            with self.assertRaises(StoreError) as caught:
+                app.Workspace(cache_dir=self.tmp / "models", start=False, battery=False)
+        self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
+        self.assertEqual(list(target.iterdir()), [])                 # no workspace.db there
+
+    def test_status_and_health_report_it_without_a_path(self):
+        self.junction("Unminute", self.synced / "Unminute")
+
+        def run(flag):
+            return subprocess.run([sys.executable, "-c",
+                                   f"import sys; sys.argv = ['x', {flag!r}]; "
+                                   "import workspace.__main__ as m; sys.exit(m.main())"],
+                                  cwd=ROOT, env=self.child_env(), capture_output=True,
+                                  text=True, timeout=120)
+        status = run("--status")
+        self.assertEqual(status.returncode, 1, status.stderr)
+        self.assert_path_free(status.stdout)
+        self.assertIn("redirected into OneDrive", json.loads(status.stdout)["error"])
+        health = run("--health")
+        self.assertEqual(json.loads(health.stdout.strip().splitlines()[-1])["workspace"],
+                         "location", health.stderr)
+
+
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class StoreTempTests(unittest.TestCase):
     def test_temporary_data_stays_in_memory(self):

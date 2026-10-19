@@ -184,5 +184,58 @@ class AuthorityFlowTests(unittest.TestCase):
         self.assertIn("changed", result)
 
 
+@unittest.skipUnless(HAVE_DEPS and os.name == "nt", "Windows paths")
+class SyncedSourceTests(unittest.TestCase):
+    """#219: the workspace is refused in OneDrive (D3), but recordings are not.
+    Teams saves recordings to OneDrive, so one there must still import by hand
+    and through a watched folder, with the app opening its default workspace
+    while the OneDrive variables name the synced folder."""
+
+    def test_a_recording_in_onedrive_still_imports_and_is_watched(self):
+        from unittest import mock
+
+        from workspace import app
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            local = root / "Local"
+            local.mkdir()
+            synced = root / "OneDrive - Synthetic Firm"
+            recordings = synced / "Recordings"
+            teams = wav(recordings / "Synthetic Teams call.wav", seconds=6, seed=31)
+            env = {"LOCALAPPDATA": str(local), "OneDrive": str(synced),
+                   "OneDriveCommercial": str(synced)}
+            saved = (intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S)
+            intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = 1, 0, 0
+            ws = None
+            try:
+                with mock.patch.dict(os.environ, env):
+                    ws = app.Workspace(cache_dir=root / "models", start=False,
+                                       allow_test_engines=True, battery=False)
+                    self.assertEqual(ws.root, local / "Unminute" / "workspace")
+                    ws.settings.update(model="test:fake_worker_engines:sentences",
+                                       speakers=False)
+                    # By hand (the file dialog or a drop).
+                    self.assertEqual(ws.import_paths([str(teams)]),
+                                     {"accepted": 1, "refused": []})
+                    # Watched: what is there already is the baseline; a new one imports.
+                    ws.add_watched_folder(str(recordings), False)
+                    ws.start()
+                    time.sleep(2.5)                              # baseline scan done
+                    wav(recordings / "Synthetic standup.wav", seconds=8, seed=32)
+                    end = time.time() + 60
+                    while time.time() < end and len(ws.meetings()) < 2:
+                        time.sleep(0.5)
+                    self.assertTrue(ws.wait_idle(60))
+                    self.assertEqual(sorted(m["title"] for m in ws.meetings()),
+                                     ["Synthetic Teams call", "Synthetic standup"])
+                    [folder] = ws.watched_folders()["folders"]
+                    self.assertEqual(folder["imported"], 1)
+                    self.assertFalse(folder["error"])
+            finally:
+                intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = saved
+                if ws is not None:
+                    ws.close()
+
+
 if __name__ == "__main__":
     unittest.main()
