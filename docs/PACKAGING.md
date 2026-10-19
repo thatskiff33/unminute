@@ -227,7 +227,7 @@ The administrative template is in `packaging/policy/` (`Unminute.admx` and `en-U
 
 | Value | Type | Not set | Effect when set |
 | --- | --- | --- | --- |
-| `AllowModelDownloads` | DWORD 0/1 | Allowed | 0: the app refuses model downloads and repairs; Setup and Downloads show "Ask your IT team" instead of a Download button |
+| `AllowModelDownloads` | DWORD 0/1 | Allowed | 0: the app refuses model downloads and repairs; Setup and Downloads show "Ask your IT team" instead of a Download button, and a model that is not ready (in Settings, Transcribe again, or a meeting or speaker identification that stopped because of it) names the IT team instead of Manage downloads |
 | `AllowGpuComponent` | DWORD 0/1 | Allowed | 0: the graphics card component cannot be downloaded or used; speaker identification runs on the processor |
 | `AllowMicrophoneRecording` | DWORD 0/1 | Allowed | 0: microphone recording is off and cannot be turned on; a recording in progress is stopped and saved when the app reads the change; imports still work |
 | `AllowLidOverride` | DWORD 0/1 | Allowed | 0: "Keep recording when the lid is closed" cannot be turned on, and a lid action the app set to "Do nothing" is put back when the app reads the change. The app never changes a lid action that Group Policy or Intune sets (#172) |

@@ -33,6 +33,31 @@ def fix_speech(name, repair_only=False):
     return f"Download or repair it in {DOWNLOADS}, or {OTHER_SPEECH}."
 
 
+# The speaker model's advice (speaker_load.LOAD_FAILED ends with it too; a test
+# keeps the two equal).
+SPEAKER_FIX = f"Repair it in {DOWNLOADS}."
+# With downloads turned off by managed policy (K3), Manage downloads cannot fix
+# a model. A worker never reads the policy, so the window process, which does,
+# swaps the advice above for these before it stores a load error (#257). The
+# speech wording matches the note Settings shows beside the picker.
+MANAGED_SPEECH_FIX = ("Downloads are turned off by your organisation. Choose another speech "
+                      "model in Settings, or ask your IT team to install it.")
+MANAGED_SPEAKER_FIX = ("Downloads are turned off by your organisation. Ask your IT team to "
+                       "install or repair it.")
+
+
+def advice_without_downloads(message):
+    """A worker's model error with the Manage downloads advice replaced by the
+    IT wording, for when managed policy turns downloads off (#257). Only the
+    fixed advice written here, in asr_engines and in speaker_load is replaced;
+    the rest of the message is kept as it was."""
+    for name in sorted(OFFERED_SPEECH):
+        for repair_only in (False, True):
+            message = message.replace(fix_speech(name, repair_only), MANAGED_SPEECH_FIX)
+    message = message.replace(asr_engines.PARAKEET_FIX, MANAGED_SPEECH_FIX)
+    return message.replace(SPEAKER_FIX, MANAGED_SPEAKER_FIX)
+
+
 def _test_factory(name, allow_test):
     """The factory named by a "test:module:function" engine. Only tests set
     allow_test: otherwise any stored model name could import any module."""
@@ -105,7 +130,7 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
     blobs = asr_engines.read_verified(asr_engines.SPEAKER_MODEL, cache_dir)
     if blobs is None:
         raise ModelLoadError("The speaker identification model is not installed or failed "
-                             f"verification. Repair it in {DOWNLOADS}.")
+                             f"verification. {SPEAKER_FIX}")
     import torch
     torch.set_num_threads(threads)
     label = "cpu"

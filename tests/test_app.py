@@ -22,7 +22,7 @@ if HAVE_DEPS:
     import numpy as np
 
     import asr_engines
-    from workspace import api, media, policy
+    from workspace import api, engines, media, policy
     from workspace.app import Workspace, WorkspaceError
     from workspace.store import new_id
 
@@ -238,6 +238,99 @@ class WorkspaceTests(unittest.TestCase):
                                                     "organisation. .*ask your IT team"):
             ws.retranscribe(mid)
         self.assertEqual([v["id"] for v in ws.store.versions(mid)], before)
+
+    # Managed policy as read from the registry: downloads allowed (no policy),
+    # turned off, and a policy key that cannot be read (K3: grants nothing).
+    @staticmethod
+    def download_policies():
+        return {"allowed": ({}, ()), "off": ({"AllowModelDownloads": False}, ()),
+                "unreadable": ({}, policy.UNREADABLE)}
+
+    def open_under_policy(self, case, read, model="sentences", speaker_model="fake_diarizer"):
+        """A workspace of its own for one policy case, started after the policy is set."""
+        if self.ws:
+            self.ws.close()
+        ws = Workspace(self.root / case / "ws", self.root / case / "models", start=False,
+                       allow_test_engines=True, speaker_model=fake(speaker_model),
+                       battery=False)
+        ws.settings.update(model=fake(model), speakers=True)
+        ws.policy = policy.PolicySource(reader=lambda: read)
+        self.ws = ws
+        ws.start()
+        return ws
+
+    def test_a_speech_model_that_is_not_ready_names_it_when_downloads_are_off(self):
+        # #257: the worker's own "not ready" error (Parakeet v2 from an empty
+        # model folder) sends the user to Manage downloads. With downloads
+        # turned off by policy, or a policy that cannot be read, that page
+        # cannot help: the stored error names the organisation and IT instead.
+        for case, read in self.download_policies().items():
+            with self.subTest(case):
+                ws = self.open_under_policy(case, read, model="speech_not_ready")
+                self.imported(ws)
+                [m] = ws.meetings()
+                error = m["error"]
+                self.assertTrue(error.startswith("The speech model is not ready: "
+                                                 "ModelLoadError: Parakeet v2 is not ready. "),
+                                error)
+                if case == "allowed":
+                    self.assertIn(engines.fix_speech(asr_engines.PARAKEET_V2), error)
+                    self.assertNotIn("organisation", error)
+                else:
+                    self.assertNotIn("Manage downloads", error)
+                    self.assertIn("Parakeet v2 is not ready. Downloads are turned off by your "
+                                  "organisation. Choose another speech model in Settings, or "
+                                  "ask your IT team to install it.", error)
+                self.assertNotIn(str(self.root), error)            # P3: no paths
+                self.assertTrue(m["can_retranscribe"])
+
+    def test_parakeets_own_load_error_names_it_when_downloads_are_off(self):
+        # #260 review: Parakeet's own load errors (a copy that fails its full
+        # hash check, or one the runtime cannot load) carry their own advice.
+        # Through the real worker, with downloads off it names IT too.
+        for case, read in self.download_policies().items():
+            with self.subTest(case):
+                ws = self.open_under_policy(case, read, model="speech_cannot_be_used")
+                self.imported(ws)
+                [m] = ws.meetings()
+                error = m["error"]
+                self.assertTrue(error.startswith("The speech model is not ready: "
+                                                 "ModelLoadError: Parakeet v2 cannot be used. "),
+                                error)
+                if case == "allowed":
+                    self.assertIn(asr_engines.PARAKEET_FIX, error)
+                    self.assertNotIn("organisation", error)
+                else:
+                    self.assertNotIn("Manage downloads", error)
+                    self.assertIn("Parakeet v2 cannot be used. Downloads are turned off by your "
+                                  "organisation. Choose another speech model in Settings, or "
+                                  "ask your IT team to install it. (", error)
+                self.assertNotIn(str(self.root), error)            # P3: no paths
+                self.assertTrue(m["can_retranscribe"])
+
+    def test_a_speaker_model_that_is_not_ready_names_it_when_downloads_are_off(self):
+        # #257: the same for speaker identification (the real load from an
+        # empty model folder). The transcript stays usable either way (D4).
+        for case, read in self.download_policies().items():
+            with self.subTest(case):
+                ws = self.open_under_policy(case, read, speaker_model="speaker_not_ready")
+                mid = self.imported(ws)
+                d = ws.detail(mid)
+                self.assertEqual((d["stage"], d["speakers"]["status"]), ("review", "failed"))
+                error = d["speakers"]["error"]
+                self.assertTrue(error.startswith(
+                    "WorkerError: ModelLoadError: The speaker identification model is not "
+                    "installed or failed verification. "), error)
+                if case == "allowed":
+                    self.assertIn("Repair it in Settings > Manage downloads.", error)
+                    self.assertNotIn("organisation", error)
+                else:
+                    self.assertNotIn("Manage downloads", error)
+                    self.assertIn("failed verification. Downloads are turned off by your "
+                                  "organisation. Ask your IT team to install or repair it.",
+                                  error)
+                self.assertNotIn(str(self.root), error)            # P3: no paths
+                self.assertGreater(ws.transcript(mid)["total"], 20)
 
     def test_search_finds_edited_text(self):
         ws = self.open()

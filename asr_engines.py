@@ -71,6 +71,13 @@ class ModelLoadError(RuntimeError):
     """A model is missing, damaged or failed to load. The message says what to do."""
 
 
+# ParakeetEngine.load's advice. It comes before the details, so a long error
+# still carries it, and workspace.engines replaces it with the IT wording when
+# managed policy turns downloads off (#257).
+PARAKEET_FIX = ("Repair it in Settings > Manage downloads; if it keeps failing, choose "
+                "another speech model in Settings.")
+
+
 # --- Parakeet model manifests -------------------------------------------------
 
 @dataclass(frozen=True)
@@ -839,8 +846,8 @@ class ParakeetEngine:
             problems = check_files(spec, model_dir(spec, self.cache_dir))
             if problems:
                 raise ModelLoadError(
-                    f"{label(spec.name)} cannot be used: {'; '.join(problems)}. "
-                    f"Repair it in Settings > Manage downloads.")
+                    f"{label(spec.name)} cannot be used. {PARAKEET_FIX} "
+                    f"({'; '.join(problems)})")
         try:
             import onnx_asr
             import onnxruntime as rt
@@ -866,9 +873,8 @@ class ParakeetEngine:
                                      min_silence_duration_ms=VAD_MIN_SILENCE_MS).with_timestamps()
         except Exception as exc:
             raise ModelLoadError(
-                f"{label(self.spec.name)} failed to load ({type(exc).__name__}: {exc}). "
-                f"Repair it in Settings > Manage downloads; if it keeps failing, "
-                f"choose a Whisper model.") from exc
+                f"{label(self.spec.name)} failed to load. {PARAKEET_FIX} "
+                f"({type(exc).__name__}: {exc})") from exc
         return self
 
     def transcribe(self, audio):
