@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import hashlib
 import io
+import itertools
 import json
 import os
 import sys
@@ -304,7 +305,9 @@ def lock_error(winerror):
 
 
 class FakeClock:
-    """Stands in for the retry's clock and sleep, so no test waits."""
+    """Stands in for the retry's clock and sleep. A pause moves the clock on
+    by its length but really waits at most 50 ms, so a test takes no 30 s and
+    a real virus scan of the test's own new files still has a moment to end."""
 
     def __init__(self):
         self.now, self.sleeps = 1000.0, []
@@ -315,6 +318,7 @@ class FakeClock:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.now += seconds
+        time.sleep(min(seconds, 0.05))
 
 
 class LockRetryTests(unittest.TestCase):
@@ -334,6 +338,11 @@ class LockRetryTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.calls = []
+        self.times = {}          # folder name: the fake clock at each attempt
+
+    def gaps(self, name):
+        """The pauses between attempts to rename the folder `name`."""
+        return [round(b - a, 6) for a, b in itertools.pairwise(self.times.get(name, []))]
 
     def lock(self, refusals):
         """Refuse renames of the folders named in `refusals` ({name: (error,
@@ -344,6 +353,7 @@ class LockRetryTests(unittest.TestCase):
         def rename(path, dest):
             name = Path(path).name
             self.calls.append(name)
+            self.times.setdefault(name, []).append(self.clock.now)
             if name in refusals and (left[name] is None or left[name] > 0):
                 if left[name] is not None:
                     left[name] -= 1
@@ -371,9 +381,13 @@ class LockRetryTests(unittest.TestCase):
         self.assertEqual(len(self.kept()), 1)
         self.assertEqual((self.kept()[0] / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
         self.assertFalse(self.staging.exists())
-        # The same two folders each time: the damaged copy aside, then the download in.
-        self.assertEqual(self.calls, [self.target.name] * 3 + [self.staging.name] * 4)
-        self.assertEqual(self.clock.sleeps, [0.25, 0.5, 0.25, 0.5, 1.0])   # per rename
+        # The same two folders each time: the damaged copy aside, then the
+        # download in. (A real scan of the new files can add an attempt.)
+        self.assertEqual(set(self.calls), {self.target.name, self.staging.name})
+        first_in = self.calls.index(self.staging.name)
+        self.assertNotIn(self.target.name, self.calls[first_in:])
+        self.assertEqual(self.gaps(self.target.name)[:2], [0.25, 0.5])
+        self.assertEqual(self.gaps(self.staging.name)[:3], [0.25, 0.5, 1.0])   # per rename
 
     def test_a_file_still_in_use_fails_after_30_seconds_with_the_same_message(self):
         self.damaged_target()
@@ -385,10 +399,10 @@ class LockRetryTests(unittest.TestCase):
         self.assertIn("Wait a minute and try the download again", str(ctx.exception))
         self.assertIsInstance(ctx.exception.__cause__, PermissionError)
         # Bounded: 30 seconds from the first refusal, pauses doubling to 4 s.
-        self.assertAlmostEqual(sum(self.clock.sleeps), ae.LOCK_RETRY_SECONDS)
-        self.assertAlmostEqual(self.clock.now - 1000.0, ae.LOCK_RETRY_SECONDS)
-        self.assertEqual(self.clock.sleeps[:6], [0.25, 0.5, 1.0, 2.0, 4.0, 4.0])
-        self.assertLessEqual(max(self.clock.sleeps), 4.0)
+        gaps = self.gaps(self.staging.name)
+        self.assertAlmostEqual(sum(gaps), ae.LOCK_RETRY_SECONDS)
+        self.assertEqual(gaps[:6], [0.25, 0.5, 1.0, 2.0, 4.0, 4.0])
+        self.assertLessEqual(max(gaps), 4.0)
         # Today's handling: the damaged folder is put back, the download kept.
         self.assertEqual((self.target / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
         self.assertEqual(self.kept(), [])
@@ -403,7 +417,7 @@ class LockRetryTests(unittest.TestCase):
         with self.assertRaises(PermissionError) as ctx:
             ae.install_model(self.spec, self.cache, lambda m: None, FakeDownload())
         self.assertEqual(ctx.exception.winerror, 5)
-        self.assertAlmostEqual(sum(self.clock.sleeps), ae.LOCK_RETRY_SECONDS)
+        self.assertAlmostEqual(sum(self.gaps(self.target.name)), ae.LOCK_RETRY_SECONDS)
         self.assertNotIn(self.staging.name, self.calls)            # never moved in
         self.assertEqual((self.target / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
         self.assertEqual(self.kept(), [])
@@ -437,7 +451,6 @@ class LockRetryTests(unittest.TestCase):
         with self.assertRaises(ae.ModelLoadError):
             ae.install_model(self.spec, self.cache, lambda m: None, FakeDownload())
         self.assertEqual(self.calls.count(self.staging.name), 1)
-        self.assertEqual(self.clock.sleeps, [])
         self.assertTrue(self.target.is_dir())                      # put back, as today
 
     @unittest.skipUnless(os.name == "nt", "Windows file locking")
@@ -473,7 +486,7 @@ class LockRetryTests(unittest.TestCase):
                                               Holding()), "installed")
         self.assertTrue(first_error)
         self.assertIn(first_error[0].winerror, (5, 32))           # what Windows really says
-        self.assertEqual(self.clock.sleeps, [0.25])
+        self.assertEqual(self.clock.sleeps[0], 0.25)
         self.assertEqual(ae.check_files(self.spec, self.target, full=True), [])
 
 

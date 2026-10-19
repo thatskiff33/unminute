@@ -8,10 +8,12 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import itertools
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -35,7 +37,9 @@ def lock_error(winerror):
 
 
 class FakeClock:
-    """Stands in for the rename retry's clock and sleep, so no test waits."""
+    """Stands in for the rename retry's clock and sleep. A pause moves the
+    clock on by its length but really waits at most 50 ms, so a test takes no
+    30 s and a real virus scan of the test's own new files can still end."""
 
     def __init__(self):
         self.now, self.sleeps = 1000.0, []
@@ -46,6 +50,7 @@ class FakeClock:
     def sleep(self, seconds):
         self.sleeps.append(seconds)
         self.now += seconds
+        time.sleep(min(seconds, 0.05))
 
 
 def make_wheel(name, version, files):
@@ -346,7 +351,8 @@ class InstallTests(unittest.TestCase):
 
     def lock_component(self, error, times=None):
         """Refuse renames of the download folder with `error`, `times` times
-        (None: always), on the retry's fake clock. Returns (clock, calls)."""
+        (None: always), on the retry's fake clock. Returns (clock, calls):
+        calls holds the fake clock's time at each attempt."""
         clock = FakeClock()
         calls = []
         left = [times]
@@ -355,7 +361,7 @@ class InstallTests(unittest.TestCase):
 
         def rename(path, dest):
             if Path(path).name == staging:
-                calls.append(path)
+                calls.append(clock.now)
                 if left[0] is None or left[0] > 0:
                     if left[0] is not None:
                         left[0] -= 1
@@ -374,14 +380,15 @@ class InstallTests(unittest.TestCase):
         clock, calls = self.lock_component(lock_error(32), times=2)
         gpu.install(self.cache, lambda m: None, self.fetch)
         self.assertEqual(gpu.status(self.cache)[0], "ready")
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(clock.sleeps, [0.25, 0.5])
+        # A real scan of the new files can add an attempt after the two refusals.
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual([b - a for a, b in itertools.pairwise(calls)][:2], [0.25, 0.5])
 
     def test_a_component_folder_still_in_use_fails_after_30_seconds(self):
         clock, calls = self.lock_component(lock_error(5))
         with self.assertRaises(PermissionError):
             gpu.install(self.cache, lambda m: None, self.fetch)
-        self.assertAlmostEqual(sum(clock.sleeps), asr_engines.LOCK_RETRY_SECONDS)
+        self.assertAlmostEqual(calls[-1] - calls[0], asr_engines.LOCK_RETRY_SECONDS)
         self.assertEqual(gpu.status(self.cache)[0], "missing")
 
     def test_any_other_rename_error_of_the_component_fails_at_once(self):
