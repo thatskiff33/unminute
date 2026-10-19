@@ -1,1 +1,0 @@
-- **A saved handoff file marks the transcript as data.** Save Markdown now writes the same note and BEGIN/END lines that the copied text has, so an AI assistant is told to treat the transcript as information, not instructions, even when the file is attached on its own. Copy prompt only points the assistant at those lines.

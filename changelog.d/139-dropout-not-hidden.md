@@ -1,1 +1,0 @@
-- **An earlier dropout is no longer hidden by a later microphone disconnection.** If saving was behind when the microphone went, a dropout from earlier in the recording could be folded into the disconnection note instead of being reported on its own (#126).

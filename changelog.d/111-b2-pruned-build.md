@@ -1,3 +1,0 @@
-Security hardening (#111, slice B2):
-
-- **A leaner, precompiled package.** The package leaves out what Unminute never uses: three packages (grpcio, pyannoteai-sdk, setuptools), the test suites inside packages, files only needed to build software, and some binaries for other processors: about 15,000 files, 15 of them programs and libraries. Every module now ships precompiled (about 10,000 files), so Unminute writes nothing into its own folder when it runs. Together these take the zip from about 27,800 files to about 23,000. The precompiled files add about 79 MB, so the zip is about 379 MB, including the cryptography library added in slice C1 (the 0.4.3 zip was 329 MB).

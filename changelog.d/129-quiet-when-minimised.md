@@ -1,2 +1,0 @@
-- **Quieter when minimised.** When the window is minimised, the page stops drawing. If nothing is recording, it is also paused a few seconds later (after any edit you were typing has been saved) and uses less working memory, until you restore it.
-- **Closing from the taskbar while recording shows the question.** If you close a minimised window while recording, it comes back to the front, as it was before (maximised stays maximised), so you can see the Stop, Discard or Keep recording question.
