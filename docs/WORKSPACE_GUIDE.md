@@ -21,7 +21,7 @@ This guide covers the packaged workspace.
 
 1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.
 2. **Set up.** On first start, Setup takes you through five steps:
-   - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options. Whisper large-v3 is the largest download and the slowest on a processor.
+   - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options. Whisper large-v3 is the largest download, so expect it to be the slowest on a processor.
    - **Speaker names** (optional): speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
    - **Microphone** (optional): turn on recording and test the microphone.
    - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later. Settings > **Speech model** marks a model that is not downloaded or is damaged.

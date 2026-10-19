@@ -75,7 +75,7 @@ class Component extends DCLogic {
         { ...ready, name: 'Parakeet v2', tag: 'Recommended · in use', desc: 'Speech to text. Fast and accurate for English. 0.66 GB.' },
         { ...ready, name: 'Parakeet v3', tag: '', desc: 'Speech to text. Multilingual; less accurate for English in our tests. 0.67 GB.' },
         { ...missing, action: 'Download (1.62 GB)', name: 'Whisper large-v3 turbo', tag: '', desc: 'Speech to text. Alternative engine; slower on a processor.' },
-        { ...missing, action: 'Download (3.09 GB)', name: 'Whisper large-v3', tag: '', desc: "Speech to text. OpenAI's most accurate Whisper model. In our tests it was no more accurate than turbo and needed about twice the memory. The slowest on a processor." },
+        { ...missing, action: 'Download (3.09 GB)', name: 'Whisper large-v3', tag: '', desc: "Speech to text. OpenAI's most accurate Whisper model. In our tests on Intel Arc graphics it was no more accurate than turbo. It is the largest model, so expect it to be the slowest on a processor." },
         { ...ready, name: 'Speaker identification', tag: 'Optional', desc: 'Works out who spoke when. 0.03 GB.' },
         { ...missing, action: 'Download (2 GB)', name: 'Graphics card acceleration', tag: 'Optional', desc: 'NVIDIA RTX 500. Speeds up speaker identification in Faster mode.' }
       ]

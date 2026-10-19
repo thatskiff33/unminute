@@ -87,12 +87,14 @@ class SetupTests(unittest.TestCase):
                          ("speech", "Whisper large-v3", "missing", "MIT", "edaa852", False,
                           False))
         # Round 1 review: the card says what docs/ENGINE_EVALUATION.md found
-        # (no more accurate than turbo, about twice the memory), never that it
-        # was ahead of turbo; "most accurate" is OpenAI's claim, attributed.
+        # (no more accurate than turbo), never that it was ahead of turbo;
+        # "most accurate" is OpenAI's claim, attributed. Round 3: those tests
+        # ran on Intel Arc graphics, so the card says so and drops the memory
+        # figure; speed on a processor is reasoned from size, not measured.
         self.assertEqual(large["about"],
-                         "OpenAI's most accurate Whisper model. In our tests it was no more "
-                         "accurate than turbo and needed about twice the memory. The slowest "
-                         "on a processor.")
+                         "OpenAI's most accurate Whisper model. In our tests on Intel Arc "
+                         "graphics it was no more accurate than turbo. It is the largest "
+                         "model, so expect it to be the slowest on a processor.")
         self.assertNotIn("ahead of turbo", large["about"])
         self.assertLess(speech.index(asr_engines.WHISPER_TURBO),
                         speech.index(asr_engines.WHISPER_LARGE))

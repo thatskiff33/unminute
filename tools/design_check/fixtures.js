@@ -341,7 +341,7 @@
     card({ name: "large-v3", role: "speech", size_gb: 3.09, state: "missing", status: "Not downloaded.",
            removable: false, licence: "MIT", source: "OpenAI whisper-large-v3, CTranslate2 conversion by Systran",
            revision: "edaa852", label: "Whisper large-v3", title: "Speech to text: Whisper large-v3",
-           about: "OpenAI's most accurate Whisper model. In our tests it was no more accurate than turbo and needed about twice the memory. The slowest on a processor." }),
+           about: "OpenAI's most accurate Whisper model. In our tests on Intel Arc graphics it was no more accurate than turbo. It is the largest model, so expect it to be the slowest on a processor." }),
     card({ name: "pyannote/speaker-diarization-community-1", role: "speakers", recommended: true, size_gb: 0.03,
            needs_token: true, label: "Speaker identification", title: "Speaker identification (optional)",
            about: "Works out who spoke when. Downloading it needs a free Hugging Face account and token." }),
