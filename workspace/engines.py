@@ -49,11 +49,12 @@ MANAGED_SPEAKER_FIX = ("Downloads are turned off by your organisation. Ask your 
 def advice_without_downloads(message):
     """A worker's model error with the Manage downloads advice replaced by the
     IT wording, for when managed policy turns downloads off (#257). Only the
-    fixed advice written here and in speaker_load is replaced; the rest of the
-    message is kept as it was."""
+    fixed advice written here, in asr_engines and in speaker_load is replaced;
+    the rest of the message is kept as it was."""
     for name in sorted(OFFERED_SPEECH):
         for repair_only in (False, True):
             message = message.replace(fix_speech(name, repair_only), MANAGED_SPEECH_FIX)
+    message = message.replace(asr_engines.PARAKEET_FIX, MANAGED_SPEECH_FIX)
     return message.replace(SPEAKER_FIX, MANAGED_SPEAKER_FIX)
 
 

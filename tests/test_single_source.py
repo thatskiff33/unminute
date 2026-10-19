@@ -244,20 +244,50 @@ class ModelNameTests(unittest.TestCase):
             "WorkerError: ModelLoadError: The speaker identification model did not pass its "
             "safety checks and was not loaded. Downloads are turned off by your organisation. "
             "Ask your IT team to install or repair it. (code U-2)")
+        # #260 review: Parakeet's own load errors, for a copy that fails its
+        # full hash check and for one the runtime cannot load, get the speech
+        # wording too, with the details kept after it.
+        engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
+        with mock.patch.object(asr_engines, "check_files", return_value=["x does not match"]), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engine.load()
+        self.assertEqual(engines.advice_without_downloads(f"ModelLoadError: {caught.exception}"),
+                         f"ModelLoadError: Parakeet v2 cannot be used. "
+                         f"{engines.MANAGED_SPEECH_FIX} (x does not match)")
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("synthetic")
+        onnx_asr = types.ModuleType("onnx_asr")
+        onnx_asr.load_model = onnx_asr.load_vad = fail
+        onnxruntime = types.ModuleType("onnxruntime")
+        onnxruntime.disable_telemetry_events = lambda: None
+        onnxruntime.SessionOptions = mock.MagicMock
+        with mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=onnxruntime), \
+                mock.patch.object(asr_engines, "check_files", return_value=[]), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engine.load()
+        self.assertEqual(engines.advice_without_downloads(f"ModelLoadError: {caught.exception}"),
+                         f"ModelLoadError: Parakeet v2 failed to load. "
+                         f"{engines.MANAGED_SPEECH_FIX} (RuntimeError: synthetic)")
         # No other advice names Manage downloads: a new message that does must
         # be added to advice_without_downloads, and to this test.
-        for path, expected in (("engines.py", ["Settings > Manage downloads"]),
-                               ("speaker_load.py", [speaker_load.LOAD_FAILED])):
-            tree = ast.parse((ROOT / "workspace" / path).read_text(encoding="utf-8"))
+        for path, expected in ((ROOT / "workspace" / "engines.py", ["Settings > Manage downloads"]),
+                               (ROOT / "workspace" / "speaker_load.py", [speaker_load.LOAD_FAILED]),
+                               (ROOT / "asr_engines.py", [asr_engines.PARAKEET_FIX])):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
             docs = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
             named = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
                      and isinstance(node.value, str) and "Manage downloads" in node.value
                      and id(node) not in docs]
-            self.assertEqual(named, expected, path)
-        tree = ast.parse((ROOT / "workspace" / "engines.py").read_text(encoding="utf-8"))
-        uses = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
-                and node.id == "DOWNLOADS" and isinstance(node.ctx, ast.Load)]
-        self.assertEqual(len(uses), 3)     # fix_speech (twice) and SPEAKER_FIX only
+            self.assertEqual(named, expected, path.name)
+        for path, name, count in (("workspace/engines.py", "DOWNLOADS", 3),
+                                  ("asr_engines.py", "PARAKEET_FIX", 2)):
+            tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
+            uses = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
+                    and node.id == name and isinstance(node.ctx, ast.Load)]
+            # DOWNLOADS: fix_speech (twice) and SPEAKER_FIX only. PARAKEET_FIX:
+            # ParakeetEngine.load's two errors only.
+            self.assertEqual(len(uses), count, name)
         # Advice that never names Manage downloads, and other errors, are kept.
         for kept in (engines.fix_speech(asr_engines.WHISPER_LARGE),
                      "Transcription failed: RuntimeError: synthetic"):
@@ -279,7 +309,8 @@ class ModelNameTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, onnx_asr=onnx_asr, onnxruntime=onnxruntime), \
                 mock.patch.object(asr_engines, "check_files", return_value=[]), \
                 self.assertRaisesRegex(asr_engines.ModelLoadError,
-                                       r"^Parakeet v2 failed to load \(RuntimeError"):
+                                       r"^Parakeet v2 failed to load\. Repair it in .*"
+                                       r" \(RuntimeError: synthetic\)$"):
             engine.load()
 
     def test_the_page_reads_no_names_out_of_titles_or_ids(self):

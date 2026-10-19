@@ -132,6 +132,16 @@ def speech_not_ready(threads):
         return load_engine(asr_engines.PARAKEET_V2, empty, threads)
 
 
+def speech_cannot_be_used(threads):
+    """Parakeet's own load from an empty model folder: its "cannot be used"
+    error and advice, as a copy that fails its full hash check gets (#260)."""
+    import tempfile
+
+    import asr_engines
+    with tempfile.TemporaryDirectory() as empty:
+        return asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, empty, threads).load()
+
+
 def weights_only_env(threads):
     """Reports the worker's torch.load switches (#218)."""
     seen = {k: os.environ.get(k) for k in ("TORCH_FORCE_WEIGHTS_ONLY_LOAD",

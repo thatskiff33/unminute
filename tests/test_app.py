@@ -284,6 +284,30 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertNotIn(str(self.root), error)            # P3: no paths
                 self.assertTrue(m["can_retranscribe"])
 
+    def test_parakeets_own_load_error_names_it_when_downloads_are_off(self):
+        # #260 review: Parakeet's own load errors (a copy that fails its full
+        # hash check, or one the runtime cannot load) carry their own advice.
+        # Through the real worker, with downloads off it names IT too.
+        for case, read in self.download_policies().items():
+            with self.subTest(case):
+                ws = self.open_under_policy(case, read, model="speech_cannot_be_used")
+                self.imported(ws)
+                [m] = ws.meetings()
+                error = m["error"]
+                self.assertTrue(error.startswith("The speech model is not ready: "
+                                                 "ModelLoadError: Parakeet v2 cannot be used. "),
+                                error)
+                if case == "allowed":
+                    self.assertIn(asr_engines.PARAKEET_FIX, error)
+                    self.assertNotIn("organisation", error)
+                else:
+                    self.assertNotIn("Manage downloads", error)
+                    self.assertIn("Parakeet v2 cannot be used. Downloads are turned off by your "
+                                  "organisation. Choose another speech model in Settings, or "
+                                  "ask your IT team to install it. (", error)
+                self.assertNotIn(str(self.root), error)            # P3: no paths
+                self.assertTrue(m["can_retranscribe"])
+
     def test_a_speaker_model_that_is_not_ready_names_it_when_downloads_are_off(self):
         # #257: the same for speaker identification (the real load from an
         # empty model folder). The transcript stays usable either way (D4).
