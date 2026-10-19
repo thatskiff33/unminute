@@ -110,7 +110,9 @@ public static class Dlg {
 } catch {
     $result.error = $_.Exception.Message
 } finally {
-    Start-Process taskkill -ArgumentList '/F', '/T', '/PID', $proc.Id -NoNewWindow -Wait | Out-Null
+    # taskkill by its full path in the system folder, never by name (#253).
+    $taskkill = Join-Path ([Environment]::SystemDirectory) 'taskkill.exe'
+    Start-Process $taskkill -ArgumentList '/F', '/T', '/PID', $proc.Id -NoNewWindow -Wait | Out-Null
     Start-Sleep -Seconds 2
     Remove-Item $profileDir -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
     $result.profile_removed = -not (Test-Path $profileDir)

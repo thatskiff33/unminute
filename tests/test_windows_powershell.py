@@ -41,6 +41,10 @@ SYSTEM_PROGRAMS = r"(?:powershell|netstat|taskkill|cmd)(?:\.exe)?"
 BY_NAME = re.compile(r"""\[\s*[rRbBuU]?["']""" + SYSTEM_PROGRAMS + r"""["']"""
                      r"""|\b(?:run|Popen|call|check_call|check_output|system|popen)\(\s*"""
                      r"""[rRbBuUfF]?["']""" + SYSTEM_PROGRAMS + r"""[\s"']""", re.IGNORECASE)
+# The same in a PowerShell tool: Start-Process or the call operator with the
+# bare name (PowerShell finds it on PATH).
+PS_BY_NAME = re.compile(r"""(?:\bStart-Process(?:\s+-FilePath)?|&)\s+["']?"""
+                        + SYSTEM_PROGRAMS + r"""(?=["'\s]|$)""", re.IGNORECASE | re.MULTILINE)
 
 
 def forbidden(names):
@@ -249,6 +253,15 @@ class WindowsPowerShellTests(unittest.TestCase):
                      'run(["<cmdkey>", "/list"])'):
             with self.subTest(text=text):
                 self.assertIsNone(BY_NAME.search(text.replace("<", "").replace(">", "")))
+        for text in ("Start-Process <taskkill> -ArgumentList '/F'", "& <cmd>.exe /c dir",
+                     "Start-Process -FilePath '<powershell>' -Wait", "x; & '<netstat>' -ano"):
+            with self.subTest(text=text):
+                self.assertTrue(PS_BY_NAME.search(text.replace("<", "").replace(">", "")))
+        for text in ("Start-Process $<taskkill> -ArgumentList '/F'", "& $<cmd> /c dir",
+                     "#   <powershell> -File tools\\x.ps1", "Start-Process <cmdkey>",
+                     "& (Join-Path $Version 'runtime\\python.exe') -c $probe"):
+            with self.subTest(text=text):
+                self.assertIsNone(PS_BY_NAME.search(text.replace("<", "").replace(">", "")))
 
     def test_no_tool_or_test_starts_a_system_program_by_name(self):
         # Every tool and test, so a start added later is caught too: Windows
@@ -262,6 +275,13 @@ class WindowsPowerShellTests(unittest.TestCase):
         for path in sources:
             with self.subTest(file=path.name):
                 found = BY_NAME.findall(path.read_text(encoding="utf-8"))
+                self.assertEqual(found, [])
+        # The PowerShell tools too, such as the import dialog check's taskkill.
+        scripts = sorted((ROOT / "tools").rglob("*.ps1"))
+        self.assertIn(ROOT / "tools" / "import_dialog_check.ps1", scripts)
+        for path in scripts:
+            with self.subTest(file=path.name):
+                found = PS_BY_NAME.findall(path.read_text(encoding="utf-8"))
                 self.assertEqual(found, [])
         # The tools #237 moved never name powershell.exe on its own either.
         for tool in ("build_package.py", "packaged_check.py", "process_listeners.py",
