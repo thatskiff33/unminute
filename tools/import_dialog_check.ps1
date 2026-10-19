@@ -11,6 +11,13 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
 $T = [System.Windows.Automation.TreeScope]
 
+# taskkill by its full path in the system folder, never by name (#253). Found
+# before the app starts, so a missing one stops the check with no app running.
+$taskkill = Join-Path ([Environment]::SystemDirectory) 'taskkill.exe'
+if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf)) {
+    throw 'taskkill.exe is missing from the system folder'
+}
+
 # 1. Throwaway profile, onboarding already done (no models needed to import).
 $profileDir = Join-Path $env:TEMP ("umdialog-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force (Join-Path $profileDir 'Unminute\workspace') | Out-Null
@@ -110,7 +117,7 @@ public static class Dlg {
 } catch {
     $result.error = $_.Exception.Message
 } finally {
-    Start-Process taskkill -ArgumentList '/F', '/T', '/PID', $proc.Id -NoNewWindow -Wait | Out-Null
+    Start-Process $taskkill -ArgumentList '/F', '/T', '/PID', $proc.Id -NoNewWindow -Wait | Out-Null
     Start-Sleep -Seconds 2
     Remove-Item $profileDir -Recurse -Force -Confirm:$false -ErrorAction SilentlyContinue
     $result.profile_removed = -not (Test-Path $profileDir)

@@ -26,6 +26,22 @@ spec = importlib.util.spec_from_file_location("private_data_guard", HOOK)
 guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
+# Junctions are made with cmd.exe from the system folder, never by name, and
+# with the minimal environment (#253). The helper is loaded from its file so
+# tools/ stays off this module's import path.
+_wps_spec = importlib.util.spec_from_file_location("windows_powershell",
+                                                   ROOT / "tools" / "windows_powershell.py")
+windows_powershell = importlib.util.module_from_spec(_wps_spec)
+_wps_spec.loader.exec_module(windows_powershell)
+
+
+def mklink_junction(link, target, **kwargs):
+    """cmd /c mklink /J link target, with cmd.exe from the system folder and
+    the minimal environment, never cmd by name (#253)."""
+    return subprocess.run([windows_powershell.system_program("cmd.exe"), "/c", "mklink", "/J",
+                           str(link), str(target)],
+                          env=windows_powershell.environment(), **kwargs)
+
 
 def tool(name, cwd=ROOT, **tool_input):
     return {"tool_name": name, "tool_input": tool_input, "cwd": str(cwd)}
@@ -370,8 +386,8 @@ class FileToolTests(unittest.TestCase):
             (local / "Temp").mkdir()
             (local / "Unminute" / "workspace" / "settings.json").write_text("{}")
             junction = home / "Local Settings"
-            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(local)],
-                                  capture_output=True, text=True, timeout=30)
+            made = mklink_junction(junction, local, capture_output=True, text=True,
+                                   timeout=30)
             self.assertEqual(0, made.returncode, made.stdout + made.stderr)
             with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
                 fresh = importlib.util.module_from_spec(spec)
