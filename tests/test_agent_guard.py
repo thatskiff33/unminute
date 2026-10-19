@@ -1654,7 +1654,20 @@ class HardeningTests(unittest.TestCase):
                 ("@'\n" + self.DATA + "\\settings.json\n'@\n| ForEach-Object { Get-Content $_ }",
                  "PowerShell"),
                 ("@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output |\n"
-                 "ForEach-Object { Get-Content $_ }", "PowerShell")),
+                 "ForEach-Object { Get-Content $_ }", "PowerShell"),
+                # Round 5: dropped only on a text-only consumer on its own lines; a
+                # blank line, a backtick, a bracket or no consumer keeps it checked.
+                ("@'\n" + self.DATA + "\\settings.json\n'@ |\n\nForEach-Object { Get-Content $_ }",
+                 "PowerShell"),
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output `\n"
+                 "  -NoEnumerate | ForEach-Object { Get-Content $_ }", "PowerShell"),
+                ("Get-Content -Path (\n@'\n" + self.DATA + "\\settings.json\n'@\n)", "PowerShell"),
+                ("foreach ($f in (\n@'\n" + self.DATA + "\\settings.json\n'@\n))"
+                 " { Get-Content $f }", "PowerShell"),
+                ("$p = @(\n@'\n" + self.DATA + "\\settings.json\n'@\n)\nGet-Content $p",
+                 "PowerShell"),
+                ("@'\nBlocks " + self.DATA + "\n'@ |\n  gh pr create --title \"Notes\""
+                 " --body-file -", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",
@@ -1664,8 +1677,7 @@ class HardeningTests(unittest.TestCase):
                     "Guard: zip -@ heredocs")) + (
                 ("@'\nBlocks " + self.DATA + "\n'@ | gh pr create --title \"Move to Python 3.14\""
                  " --body-file -", "PowerShell"),
-                ("@'\nBlocks " + self.DATA + "\n'@ |\n  gh pr create --title \"Notes\""
-                 " --body-file -", "PowerShell"),))
+                ))
 
     def test_text_kept_in_a_variable_is_checked(self):
         # Round 2: a here-string given to a program that takes text but also keeps

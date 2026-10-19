@@ -144,7 +144,9 @@
 # line break, which is split there like a command (grep -rn 'cd X; rg' tests reads
 # X as a folder searched), so search for part of the text or use the Grep tool;
 # a here-string naming the data and piped to gh or git with a quoted title that
-# holds | (the title is split there, as on main);
+# holds | (the title is split there, as on main), or piped to them across a line
+# break, a backtick or a bracket (only a text-only program on the here-string's
+# own line drops it), so keep such a pipeline on one line;
 # local AppData named whole and piped into rg, ag or grep that reads the pipe (echo
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
@@ -885,23 +887,27 @@ def _consumer(command, start, end):
     return before + " " + after
 
 
-def _pipeline_lines(command, end):
-    """The lines a here-string's pipeline goes on to after its own line (#221
-    round 4): while a line ends in | or the next line starts with |, the next
-    line belongs to it. Each line is looked at once, so linear. Only for
-    here-strings: the lines after a heredoc's line are its body."""
-    out, pos = [], end
-    while True:
-        line_end = command.find("\n", pos)
-        if line_end < 0:
-            return " ".join(out)
+def _carried_on(command, start, end):
+    """True when something carries a here-string to another line, where the
+    program that reads it may be (#221 rounds 4 and 5): its closing line ends in
+    | or a backtick continuation, the next line starts with |, a bracket opens
+    before it or closes after it, or its opening line ends in a backtick. Looks
+    only at its own lines and the start of the next, so linear over many
+    here-strings. Only for here-strings: a heredoc's next lines are its body."""
+    line_start = command.rfind("\n", 0, start) + 1
+    before = command[line_start:start].rstrip()
+    line_end = command.find("\n", end)
+    after = command[end:line_end if line_end >= 0 else len(command)].rstrip()
+    if after.endswith(("|", "`")) or before.endswith(("(", "{", "[", "`", ",")):
+        return True
+    if after.lstrip().startswith((")", "}", "]", ".", ",")):
+        return True
+    if line_end >= 0:
         next_end = command.find("\n", line_end + 1)
         following = command[line_end + 1:next_end if next_end >= 0 else len(command)]
-        if not (command[pos:line_end].rstrip().endswith("|")
-                or following.lstrip().startswith("|")):
-            return " ".join(out)
-        out.append(following)
-        pos = line_end + 1
+        if following.lstrip().startswith(("|", ")", "}", "]", ".")):
+            return True
+    return False
 
 
 # A quoted program path (a drive, a root, ~ or . at its start), which is kept.
@@ -960,12 +966,12 @@ def _drop_written(command, shell):
         # _unquoted pairs quotes naively, so an escaped quote or a comment could
         # hide the program that reads the lines (round 3 review). Quoted titles are
         # dropped only when looking for an interpreter ("Move to Python 3.14").
+        # Dropped as written text only on positive evidence on its own lines: a
+        # text-only consumer there, and nothing (an empty consumer, a pipe, a
+        # backtick or a bracket) that carries it to another line (rounds 4 and 5).
         consumer = _consumer(command, match.start(), match.end())
-        more = _pipeline_lines(command, match.end())
-        if more:
-            # A pipeline that goes on to the next lines (main blocks these).
-            consumer += " " + re.split(r"\|\||&&|;", more)[0]
-        if INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer):
+        if (not consumer.strip() or _carried_on(command, match.start(), match.end())
+                or INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer)):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)
 
