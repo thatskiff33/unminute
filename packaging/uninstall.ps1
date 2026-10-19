@@ -145,6 +145,54 @@ function Test-Install([string]$Dir) {
     } catch { return $false }
 }
 
+# A folder cannot be renamed or removed while any process has a file in it open, and
+# antivirus software (such as Microsoft Defender) opens newly written .exe, .dll and
+# .pyd files for a moment to scan them (#239). So a rename or removal refused as access
+# denied or in use is tried again, with a short back-off, for up to $LockRetrySeconds
+# from its first refusal; then its error stands. The wait starts at the first refusal,
+# not at the start of the step, because removing a large folder can take longer than
+# that before it reaches the file in use. Any other error is not retried. install.ps1
+# and uninstall.ps1 have the same functions (tests/test_hardening.py keeps them equal).
+$LockRetrySeconds = 30
+
+function Test-TransientLock([Exception]$Exception) {
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ($e -is [UnauthorizedAccessException]) { return $true }
+        if ($e -isnot [IO.IOException]) { continue }
+        # Access denied (0x80070005) or in use, a sharing violation (0x80070020).
+        if (@(0x80070005, 0x80070020) -contains $e.HResult) { return $true }
+        # Windows PowerShell's folder rename reports access denied as a plain
+        # IOException without the Windows code (0x80131620, "Access to the path ... is
+        # denied"). Other failures of that rename carry their own code.
+        if ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620) { return $true }
+    }
+    return $false
+}
+
+# Runs $Action (which must not use the names below) until it succeeds, it fails for
+# any reason but a file in use, or $LockRetrySeconds have passed since its first refusal.
+function Invoke-LockRetry([scriptblock]$Action) {
+    $clock = $null
+    $pause = 250
+    $said = $false
+    while ($true) {
+        try {
+            & $Action
+            return
+        } catch {
+            if ($null -eq $clock) { $clock = [Diagnostics.Stopwatch]::StartNew() }
+            $left = $LockRetrySeconds * 1000 - $clock.ElapsedMilliseconds
+            if ($left -le 0 -or -not (Test-TransientLock $_.Exception)) { throw }
+            if (-not $said) {
+                Write-Step "A file in the folder is in use, perhaps by a virus scan. Trying again for up to $LockRetrySeconds seconds..."
+                $said = $true
+            }
+            Start-Sleep -Milliseconds ([Math]::Min($pause, $left))
+            $pause = [Math]::Min($pause * 2, 4000)
+        }
+    }
+}
+
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so the checks and the removals below use the same path.
@@ -199,7 +247,7 @@ try {
         # The script itself lives in InstallDir: remove the rest first.
         foreach ($name in "versions", "current.json") {
             $path = Join-Path $Options.InstallDir $name
-            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+            if (Test-Path -LiteralPath $path) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Recurse -Force } }
         }
         Remove-Item -LiteralPath $Options.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
     }
