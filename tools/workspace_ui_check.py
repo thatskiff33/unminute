@@ -2,6 +2,8 @@
 # #20 UI check: run the real workspace window (WebView2) on a throwaway
 # workspace with synthetic audio and fake engines, drive the page like a user
 # and record evidence as JSON. Opens a window for about a minute; audio is muted.
+# Includes a meeting that stops because its speech model is not ready and is
+# moved to another model (#244); no real model is downloaded or loaded.
 #
 #   python tools/workspace_ui_check.py <report.json>
 #
@@ -36,10 +38,18 @@ APP = evidence.app_folder(TOOLS.parent)
 evidence.add_app(APP)
 from process_listeners import listeners, process_tree  # noqa: E402
 
+import asr_engines  # noqa: E402
 from workspace import api, shell  # noqa: E402
 from workspace.app import Workspace  # noqa: E402
 
 FAKE = "test:fake_worker_engines:"
+# #244: a meeting that stops because its chosen speech model is not ready, then
+# moves to a ready model. The not-ready model is named only: this check's model
+# folder is a new, empty one, so nothing is downloaded or loaded.
+FAILED_TITLE = "synthetic-model-not-ready"
+NOT_READY_MODEL = asr_engines.RECOMMENDED_PARAKEET
+READY_MODEL = FAKE + "sentences"
+ANOTHER_MODEL = "Transcribe with another model…"
 VAULT = {}          # stands in for Windows Credential Manager during the check
 HOSTILE = '<img src=x onerror="window.__pwned=1"> and <script>window.__pwned=2</script>'
 SR = 16000
@@ -355,7 +365,7 @@ def native_checks(window, ws, mid):
     return out
 
 
-def checks(window, ws, mid, long_mid, grow_mid, report):
+def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
     try:
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
@@ -589,6 +599,7 @@ def checks(window, ws, mid, long_mid, grow_mid, report):
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
         report["growing"] = growing_checks(window, ws, grow_mid)
         report["native"] = native_checks(window, ws, long_mid)
+        report["failed_meeting"] = failed_meeting_checks(window, ws, fail_mid)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
@@ -781,6 +792,138 @@ def growing_problems(gr):
     return bad
 
 
+# Page helpers for the failed meeting: its row in the list, and the row's
+# Transcribe with another model button.
+FAILED_JS = WAIT + f"""
+    const row = () => [...document.querySelectorAll('#groups li')]
+        .find(li => li.textContent.includes('{FAILED_TITLE}'));
+    const another = (li) => li && [...li.querySelectorAll('button')]
+        .find(b => b.textContent === {json.dumps(ANOTHER_MODEL)});
+    const meetings = async () => {{
+        window.workspace.show('meetings'); await window.workspace.refresh();
+        for (let i = 0; i < 50 && !row(); i++) await wait(200);
+        await wait(300); }};"""
+
+
+def failed_meeting_checks(window, ws, fail_mid):
+    """#244: a meeting that stopped because its chosen speech model is not
+    ready (add_failed_meeting). Its row offers Transcribe with another model;
+    with the same model still chosen, that says the model is still not ready
+    and changes nothing. Settings marks the model; a ready model is chosen
+    there as a person would; the row's confirmed Transcribe again then takes
+    the meeting out of Needs attention, with the failed version kept as an
+    earlier version."""
+    out = {"model_label": asr_engines.label(NOT_READY_MODEL)}
+    chosen = next(c for c in ws.get_settings()["choices"] if c["name"] == NOT_READY_MODEL)
+    out["downloads_offered"] = chosen["offered"]       # False when policy turns downloads off
+    versions = [v["id"] for v in ws.store.versions(fail_mid)]
+    out["failed"] = evaluate(window, FAILED_JS + """
+        await meetings();
+        const li = row(), b = another(li);
+        const out = {row_found: !!li, needs_attention: !!li && li.textContent
+                         .includes('Needs attention'), offered: !!b};
+        if (!b) return out;
+        b.click();
+        const dlg = document.getElementById('model-dlg');
+        for (let i = 0; i < 50 && !dlg.open; i++) await wait(100);
+        await wait(300);
+        Object.assign(out, {dialog_open: dlg.open,
+            title: document.getElementById('md-title').textContent,
+            body: document.getElementById('md-body').textContent,
+            downloads_shown: !document.getElementById('md-downloads').hidden,
+            confirm_open: document.getElementById('confirm').open});
+        dlg.returnValue = 'cancel'; dlg.close('cancel'); await wait(300);
+        return out;""")
+    out["unchanged_by_not_ready"] = ([v["id"] for v in ws.store.versions(fail_mid)] == versions
+                                     and ws.detail(fail_mid)["error"] is not None)
+    out["settings"] = evaluate(window, WAIT + f"""
+        window.workspace.show('settings');
+        const sel = document.getElementById('s-model');
+        for (let i = 0; i < 50 && !sel.options.length; i++) await wait(200);
+        await wait(500);
+        const hint = document.getElementById('s-model-hint');
+        const out = {{marked: sel.selectedOptions[0]?.textContent || '',
+                     hint_shown: !hint.hidden && hint.textContent.length > 0,
+                     downloads_primary: document.getElementById('s-downloads')
+                         .classList.contains('primary')}};
+        // A ready model, chosen as a person would (the picker's change event).
+        // The picker lists only real models, so the check's synthetic one is
+        // added first; the select keeps the focus, so a poll does not refill it.
+        sel.focus();
+        sel.append(new Option('Synthetic test model', {json.dumps(READY_MODEL)}));
+        sel.value = {json.dumps(READY_MODEL)};
+        sel.dispatchEvent(new Event('change')); await wait(1500);
+        sel.blur();
+        out.chosen = (await window.workspace.call('settings')).model;
+        return out;""")
+    out["confirm"] = evaluate(window, FAILED_JS + """
+        await meetings();
+        const b = another(row());
+        if (!b) return {offered: false};
+        b.click();
+        const dlg = document.getElementById('confirm');
+        for (let i = 0; i < 50 && !dlg.open; i++) await wait(100);
+        await wait(300);
+        const out = {offered: true, open: dlg.open,
+                     not_ready_open: document.getElementById('model-dlg').open,
+                     title: document.getElementById('c-title').textContent,
+                     body: document.getElementById('c-body').textContent,
+                     ok_disabled_until_ticked: document.getElementById('c-ok').disabled};
+        document.getElementById('c-check').click();
+        dlg.returnValue = 'ok'; dlg.close('ok'); await wait(1500);
+        return out;""")
+    end = time.time() + 180                     # the synthetic engine takes seconds
+    while time.time() < end and ws.detail(fail_mid)["stage"] != "review":
+        time.sleep(0.25)
+    d = ws.detail(fail_mid)
+    out["after"] = {"stage": d["stage"], "error": d["error"], "model": d["model"],
+                    "older_models": [x["model"] for x in d["older_versions"]],
+                    "passages": ws.transcript(fail_mid)["total"]}
+    out["after"].update(evaluate(window, FAILED_JS + """
+        await meetings();
+        const li = row();
+        return {row_found: !!li,
+                row_needs_attention: !!li && li.textContent.includes('Needs attention')};"""))
+    return out
+
+
+def failed_meeting_problems(fm):
+    """What the failed-meeting check found wrong (an empty list: nothing)."""
+    bad = []
+    s = fm.get("failed") or {}
+    if not (s.get("row_found") and s.get("needs_attention") and s.get("offered")):
+        bad.append("the failed row did not offer " + ANOTHER_MODEL)
+    label = fm.get("model_label")
+    if not (s.get("dialog_open") and not s.get("confirm_open")
+            and s.get("title") == f"{label} is still not ready"
+            and (s.get("body") or "").startswith("This meeting stopped because its speech "
+                                                 "model is not ready")
+            and s.get("downloads_shown") == fm.get("downloads_offered")):
+        bad.append("the not-ready dialog for the same model")
+    if not fm.get("unchanged_by_not_ready"):
+        bad.append("the not-ready dialog changed the meeting")
+    st = fm.get("settings") or {}
+    if not ((st.get("marked") or "").endswith("(not downloaded)") and st.get("hint_shown")
+            and st.get("downloads_primary") == fm.get("downloads_offered")):
+        bad.append("Settings did not mark the model that is not ready")
+    if st.get("chosen") != READY_MODEL:
+        bad.append("the ready model was not chosen in Settings")
+    c = fm.get("confirm") or {}
+    if not (c.get("offered") and c.get("open") and not c.get("not_ready_open")
+            and c.get("title") == "Transcribe again with the current model?"
+            and c.get("ok_disabled_until_ticked")):
+        bad.append("the Transcribe again confirmation")
+    a = fm.get("after") or {}
+    if not (a.get("stage") == "review" and a.get("error") is None
+            and a.get("model") == READY_MODEL and (a.get("passages") or 0) > 0):
+        bad.append("the meeting did not leave the error state")
+    if a.get("older_models") != [NOT_READY_MODEL]:
+        bad.append("the earlier version was not kept")
+    if not (a.get("row_found") and a.get("row_needs_attention") is False):
+        bad.append("the row still needs attention")
+    return bad
+
+
 def add_growing_meeting(ws, root):
     """A third meeting, part transcribed: six minutes of audio planned as
     several chunks, the first holding GROW_FIRST short passages (a long
@@ -840,6 +983,22 @@ def add_long_meeting(ws, root, passages=5000):
     return long_mid
 
 
+def add_failed_meeting(ws, root):
+    """A meeting that stops because its speech model is not ready (#244).
+    NOT_READY_MODEL is chosen in Settings, but this check's model folder is a
+    new, empty one, so the worker refuses to load it (nothing is downloaded or
+    loaded) and the meeting needs attention. The model stays chosen, so the
+    page's "still not ready" dialog for the same model can be checked. Returns
+    the meeting's id."""
+    ws.set_settings({"model": NOT_READY_MODEL})
+    ws.import_paths([str(write_wav(root / f"{FAILED_TITLE}.wav", 30))])
+    assert ws.wait_idle(180), "processing did not stop"
+    m = next(m for m in ws.meetings() if m["title"] == FAILED_TITLE)
+    assert (m["model"], m["stage"]) == (NOT_READY_MODEL, "inbox"), "unexpected failed meeting"
+    assert "speech model is not ready" in (m["error"] or ""), "it did not stop on its model"
+    return m["id"]
+
+
 def main():
     ap = argparse.ArgumentParser(description="Real-window UI check on synthetic data (#20).",
                                  allow_abbrev=False)
@@ -867,6 +1026,7 @@ def main():
         long_mid = add_long_meeting(ws, root)
         grow_mid = add_growing_meeting(ws, root)
         ws.settings.update(speakers=False)
+        fail_mid = add_failed_meeting(ws, root)
         ws.store.set_paused(long_mid, False)
         # Setup: fake downloads, and never touch the real Credential Manager.
         import fake_worker_engines
@@ -882,10 +1042,13 @@ def main():
                                      allowed=api.API_METHODS)
         holder["window"] = window
         storage = shell.storage_folder(ws.root)
-        shell.run(checks, (window, ws, mid, long_mid, grow_mid, report), storage_path=storage)
+        shell.run(checks, (window, ws, mid, long_mid, grow_mid, fail_mid, report),
+                  storage_path=storage)
         report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
     report["growing_problems"] = growing_problems(report.get("growing") or {})
+    report["failed_meeting_problems"] = failed_meeting_problems(
+        report.get("failed_meeting") or {})
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
@@ -971,6 +1134,8 @@ def main():
         bad.append("transcript pane scrolling")
     if report["growing_problems"]:
         bad.append("growing transcript (" + "; ".join(report["growing_problems"]) + ")")
+    if report["failed_meeting_problems"]:
+        bad.append("failed meeting (" + "; ".join(report["failed_meeting_problems"]) + ")")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
         ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,

@@ -10,6 +10,9 @@
 #   - tools/packaged_crash_check.py's inspect step reads through the store, and
 #     tools/workspace_ui_check.py's long meeting is never transcribed by the
 #     processing loop before its passages are committed through the store.
+#   - That tool's failed meeting (#244) stops because its model is not ready
+#     without anything downloaded or loaded, and moves to a ready model; its
+#     verdict on the failed-meeting report names each thing that went wrong.
 # Synthetic text only.
 #   python tools/run_tests.py
 
@@ -474,6 +477,102 @@ def ui_check_long_meeting():
     return space["add_long_meeting"]
 
 
+# The failed-meeting constants of tools/workspace_ui_check.py (#244).
+UI_CHECK_FAILED = ("FAKE", "FAILED_TITLE", "NOT_READY_MODEL", "READY_MODEL", "ANOTHER_MODEL")
+
+
+def ui_check_parts(*names):
+    """Top-level functions and constants of tools/workspace_ui_check.py, by
+    name, taken by ast without importing the tool (which opens windows), with
+    this file's write_wav."""
+    import asr_engines
+    tool = ast.parse((ROOT / "tools" / "workspace_ui_check.py").read_text(encoding="utf-8"))
+    wanted = [n for n in tool.body
+              if (isinstance(n, ast.FunctionDef) and n.name in names)
+              or (isinstance(n, ast.Assign) and any(getattr(t, "id", None) in names
+                                                    for t in n.targets))]
+    space = {"asr_engines": asr_engines, "write_wav": write_wav}
+    exec(compile(ast.Module(body=wanted, type_ignores=[]), "workspace_ui_check", "exec"), space)
+    missing = [n for n in names if n not in space]
+    assert not missing, f"not in the tool: {missing}"
+    return types.SimpleNamespace(**{n: space[n] for n in names})
+
+
+class UiCheckVerdictTests(unittest.TestCase):
+    """tools/workspace_ui_check.py's verdict on its failed-meeting report
+    (failed_meeting_problems, #244): a report of the flow working passes, with
+    downloads allowed or turned off by policy, and each thing that can go wrong
+    is named."""
+
+    def setUp(self):
+        self.ui = ui_check_parts("failed_meeting_problems", *UI_CHECK_FAILED)
+
+    def good(self, downloads=True):
+        ui = self.ui
+        return {
+            "model_label": "Parakeet v2", "downloads_offered": downloads,
+            "failed": {"row_found": True, "needs_attention": True, "offered": True,
+                       "dialog_open": True, "confirm_open": False,
+                       "title": "Parakeet v2 is still not ready",
+                       "body": "This meeting stopped because its speech model is not ready, "
+                               "and it is still the model chosen in Settings > Speech model. "
+                               "Parakeet v2 is not downloaded.",
+                       "downloads_shown": downloads},
+            "unchanged_by_not_ready": True,
+            "settings": {"marked": "Parakeet v2 (recommended) (not downloaded)",
+                         "hint_shown": True, "downloads_primary": downloads,
+                         "chosen": ui.READY_MODEL},
+            "confirm": {"offered": True, "open": True, "not_ready_open": False,
+                        "title": "Transcribe again with the current model?",
+                        "body": "It uses the model chosen in Settings > Speech model.",
+                        "ok_disabled_until_ticked": True},
+            "after": {"stage": "review", "error": None, "model": ui.READY_MODEL,
+                      "older_models": [ui.NOT_READY_MODEL], "passages": 12,
+                      "row_found": True, "row_needs_attention": False}}
+
+    def test_the_flow_working_passes(self):
+        self.assertEqual([], self.ui.failed_meeting_problems(self.good()))
+        self.assertEqual([], self.ui.failed_meeting_problems(self.good(downloads=False)))
+
+    def test_an_empty_report_fails_on_every_step(self):
+        # The window check stopped early (an error): nothing passes by default.
+        self.assertEqual(9, len(self.ui.failed_meeting_problems({})))
+
+    def test_each_problem_is_named(self):
+        ui = self.ui
+        cases = [
+            ("failed", "offered", False, "did not offer " + ui.ANOTHER_MODEL),
+            ("failed", "needs_attention", False, "did not offer"),
+            ("failed", "title", "Parakeet v2 is not ready", "not-ready dialog for the same"),
+            ("failed", "confirm_open", True, "not-ready dialog for the same"),
+            ("failed", "downloads_shown", False, "not-ready dialog for the same"),
+            (None, "unchanged_by_not_ready", False, "dialog changed the meeting"),
+            ("settings", "marked", "Parakeet v2 (recommended)", "did not mark"),
+            ("settings", "hint_shown", False, "did not mark"),
+            ("settings", "downloads_primary", False, "did not mark"),
+            ("settings", "chosen", ui.NOT_READY_MODEL, "ready model was not chosen"),
+            ("confirm", "not_ready_open", True, "Transcribe again confirmation"),
+            ("confirm", "ok_disabled_until_ticked", False, "Transcribe again confirmation"),
+            ("after", "stage", "inbox", "did not leave the error state"),
+            ("after", "error", "The speech model is not ready", "did not leave the error"),
+            ("after", "model", ui.NOT_READY_MODEL, "did not leave the error state"),
+            ("after", "passages", 0, "did not leave the error state"),
+            ("after", "older_models", [], "earlier version was not kept"),
+            ("after", "row_needs_attention", True, "still needs attention"),
+        ]
+        for part, key, value, problem in cases:
+            with self.subTest(part=part, key=key):
+                report = self.good()
+                (report[part] if part else report)[key] = value
+                found = ui.failed_meeting_problems(report)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(problem, found[0])
+        # Manage downloads shown although policy turns downloads off.
+        report = self.good(downloads=False)
+        report["failed"]["downloads_shown"] = True
+        self.assertEqual(1, len(ui.failed_meeting_problems(report)))
+
+
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class UiCheckSetupTests(unittest.TestCase):
 
@@ -502,6 +601,41 @@ class UiCheckSetupTests(unittest.TestCase):
                 vid = ws.store.active_version(mid)["id"]
                 self.assertEqual(50, ws.store.passage_count(vid))
                 self.assertEqual([], ws.store.chunks(vid, status="pending"))
+            finally:
+                ws.close()
+
+    def test_the_failed_meeting_stops_on_its_model_and_moves_to_a_ready_one(self):
+        # #244: the UI check's failed meeting, without a window. Its real model
+        # name fails at load because the check's model folder is new and empty:
+        # nothing is downloaded or loaded. What the window then does by hand
+        # (choose a ready model, confirm Transcribe again) leaves the error
+        # state and keeps the failed version as an earlier one.
+        from workspace.app import Workspace
+        ui = ui_check_parts("add_failed_meeting", *UI_CHECK_FAILED)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                           allow_test_engines=True)
+            try:
+                ws.settings.update(model=ui.READY_MODEL, speakers=False)
+                ws.start()
+                mid = ui.add_failed_meeting(ws, root)
+                [row] = [m for m in ws.meetings() if m["id"] == mid]
+                self.assertTrue(row["can_retranscribe"])
+                self.assertEqual([], [p for p in (root / "models").rglob("*") if p.is_file()])
+                # Settings marks it, so the window's "still not ready" dialog applies.
+                [choice] = [c for c in ws.get_settings()["choices"]
+                            if c["name"] == ui.NOT_READY_MODEL]
+                self.assertEqual("missing", choice["state"])
+                self.assertTrue(choice["note"])
+                ws.set_settings({"model": ui.READY_MODEL})
+                ws.retranscribe(mid)
+                self.assertTrue(ws.wait_idle(120))
+                d = ws.detail(mid)
+                self.assertEqual(("review", None, ui.READY_MODEL),
+                                 (d["stage"], d["error"], d["model"]))
+                self.assertEqual([ui.NOT_READY_MODEL], [x["model"] for x in d["older_versions"]])
+                self.assertGreater(ws.transcript(mid)["total"], 0)
             finally:
                 ws.close()
 
