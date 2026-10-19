@@ -34,8 +34,10 @@ import time
 import wave
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))    # evidence.py, also under -I
+# evidence.py and windows_powershell.py, also under -I
+sys.path.append(str(Path(__file__).resolve().parent))
 import evidence  # noqa: E402
+import windows_powershell  # noqa: E402
 
 MARKER = "quokkalanternmeridian"    # distinctive text written into the transcript
 FLAGS = ["-I", "-B", "-X", "disable-remote-debug"]   # as the Start menu shortcut starts it
@@ -52,6 +54,9 @@ class Child:
     """One run of CHILD in the packaged runtime; status lines arrive on a queue."""
 
     def __init__(self, ctx, *args):
+        # taskkill by its full path in the system folder, never by name (#253);
+        # found first, so a missing one stops the check before the child starts.
+        self.taskkill = windows_powershell.system_program("taskkill.exe")
         self.p = subprocess.Popen([ctx["py"], *FLAGS, str(ctx["script"]), *map(str, args)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                   env=ctx["env"], cwd=ctx["app"])
@@ -86,7 +91,8 @@ class Child:
     def kill(self):
         """Hard kill of the app process and its worker, like a crash or power cut."""
         alive = self.p.poll() is None
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.p.pid)], capture_output=True)
+        subprocess.run([self.taskkill, "/F", "/T", "/PID", str(self.p.pid)], capture_output=True,
+                       stdin=subprocess.DEVNULL, env=windows_powershell.environment())
         self.p.wait(30)
         return alive
 

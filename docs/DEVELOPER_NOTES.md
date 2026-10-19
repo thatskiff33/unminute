@@ -114,8 +114,12 @@ real time, and remove it when the cause is fixed.
   checks), `tools/packaged_check.py`, `tools/process_listeners.py` and `tools/perf_check.py`
   use it, as do the tests that start Windows PowerShell themselves (`tests/test_evidence.py`,
   `tests/test_hardening.py`; `tests/test_agent_guard.py` finds it as Claude Code does, on
-  purpose). `process_listeners.listeners()` starts `netstat` the same way, through
-  `windows_powershell.system_program("NETSTAT.EXE")` with the same environment. A child that
+  purpose). Other system programs are started the same way, through
+  `windows_powershell.system_program(...)` with `windows_powershell.environment()`:
+  `netstat` in `process_listeners.listeners()`, `taskkill` in `tools/packaged_check.py` and
+  `tools/packaged_crash_check.py`, and `cmd` for `mklink /J` in the tests that make
+  junctions (#253). `tests/test_windows_powershell.py` scans every tool and test for a start
+  of any of these by name. A child that
   is not `-ErrorAction Stop` can also exit 0 after such an error, so read its stderr, not
   only its exit code. To reproduce: from `pwsh` 7, start Python, and
   from Python start `powershell`.

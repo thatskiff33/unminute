@@ -24,13 +24,22 @@ sys.path.insert(0, str(ROOT))
 
 from workspace import credentials, shell  # noqa: E402
 
-# The installer tests start Windows PowerShell by its full path in the system
-# folder, never by name (#237). The helper is loaded from its file so tools/
-# stays off this module's import path.
+# The installer tests start Windows PowerShell, and the junction tests cmd.exe,
+# by the full path in the system folder, never by name (#237, #253). The helper
+# is loaded from its file so tools/ stays off this module's import path.
 _spec = importlib.util.spec_from_file_location("windows_powershell",
                                                ROOT / "tools" / "windows_powershell.py")
 windows_powershell = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(windows_powershell)
+
+
+def mklink_junction(link, target, **kwargs):
+    """cmd /c mklink /J link target, with cmd.exe from the system folder and
+    the minimal environment, never cmd by name (#253)."""
+    return subprocess.run([windows_powershell.system_program("cmd.exe"), "/c", "mklink", "/J",
+                           str(link), str(target)],
+                          env=windows_powershell.environment(), **kwargs)
+
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 HAVE_WEBVIEW = importlib.util.find_spec("webview") is not None
@@ -376,23 +385,20 @@ class StorageFolderTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
     def test_links_are_removed_never_followed(self):
-        import subprocess
         with tempfile.TemporaryDirectory() as tmp:
             precious = Path(tmp) / "Documents"
             (precious / "inner").mkdir(parents=True)
             (precious / "client.docx").write_text("keep me")
             ws = Path(tmp) / "ws"
             ws.mkdir()
-            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(ws / "webview"),
-                                str(precious)], capture_output=True, text=True)
+            r = mklink_junction(ws / "webview", precious, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             shell.storage_folder(ws)                       # "webview" itself is a junction
             self.assertTrue((precious / "client.docx").exists())
             self.assertTrue((precious / "inner").is_dir())
             self.assertFalse(os.path.isjunction(ws / "webview"))
             inner = ws / "webview" / "old-profile"
-            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(inner), str(precious)],
-                               capture_output=True, text=True)
+            r = mklink_junction(inner, precious, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             shell.storage_folder(ws)                       # a junction inside it
             self.assertFalse(inner.exists())
@@ -560,14 +566,12 @@ class WorkspaceLocationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
     def test_a_junction_into_onedrive_is_refused(self):
-        import subprocess
         from workspace.store import StoreError
         with tempfile.TemporaryDirectory() as tmp:
             synced = Path(tmp) / "OneDrive - Firm"
             (synced / "AppData").mkdir(parents=True)
             link = Path(tmp) / "Local"
-            r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(synced / "AppData")],
-                               capture_output=True, text=True)
+            r = mklink_junction(link, synced / "AppData", capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             try:
                 with self.assertRaises(StoreError):
@@ -885,8 +889,8 @@ class DataFolderOverlapTests(unittest.TestCase):
             parent = Path(tmp) / "Programs With A Long Name"
             registered = parent / "Unminute"
             junction = Path(tmp) / "alias"
-            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(parent)],
-                                  capture_output=True, text=True, timeout=30)
+            made = mklink_junction(junction, parent, capture_output=True, text=True,
+                                   timeout=30)
             self.assertEqual(0, made.returncode, made.stdout + made.stderr)
             aliases = [str(junction / "Unminute")]
             # The short name, where the volume makes them (CI's may not).

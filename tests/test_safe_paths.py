@@ -11,9 +11,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from workspace import safe_paths as sp  # noqa: E402
+
+# Junctions are made with cmd.exe from the system folder, never by name, and
+# with the minimal environment (#253). The helper is loaded from its file so
+# tools/ stays off this module's import path.
+_wps_spec = importlib.util.spec_from_file_location("windows_powershell",
+                                                   ROOT / "tools" / "windows_powershell.py")
+windows_powershell = importlib.util.module_from_spec(_wps_spec)
+_wps_spec.loader.exec_module(windows_powershell)
+
+
+def mklink_junction(link, target, **kwargs):
+    """cmd /c mklink /J link target, with cmd.exe from the system folder and
+    the minimal environment, never cmd by name (#253)."""
+    return subprocess.run([windows_powershell.system_program("cmd.exe"), "/c", "mklink", "/J",
+                           str(link), str(target)],
+                          env=windows_powershell.environment(), **kwargs)
+
 
 AUDIO = (".wav", ".mp3", ".m4a")
 
@@ -57,8 +75,7 @@ class FileValidationTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "NTFS junctions are Windows-only")
     def test_refuses_junction_escape(self):
         link = self.root / "looks-inside"
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.outside)],
-                           capture_output=True, text=True)
+        r = mklink_junction(link, self.outside, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         try:
             with self.assertRaises(sp.UnsafePathError) as ctx:
@@ -98,8 +115,7 @@ class FileValidationTests(unittest.TestCase):
 
     def test_junction_to_a_local_folder_is_still_allowed(self):
         link = self.root / "via-junction"
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.outside)],
-                           capture_output=True, text=True)
+        r = mklink_junction(link, self.outside, capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         try:
             got = sp.validate_input_file(link / "secret.wav", AUDIO, 10**6)

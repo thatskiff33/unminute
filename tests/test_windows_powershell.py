@@ -1,10 +1,11 @@
-# Windows PowerShell 5.1 (and netstat) for the build and check tools (#237): started by its
-# absolute path in the system folder, never by name, with an allowlisted
-# environment, so a .NET profiler, COMPlus_* or DOTNET_* setting or another
-# module path in the parent never reaches it. Synthetic values only.
+# Windows PowerShell 5.1 (and netstat, taskkill and cmd) for the build and check tools and
+# the tests (#237, #253): started by its absolute path in the system folder, never by name,
+# with an allowlisted environment, so a .NET profiler, COMPlus_* or DOTNET_* setting or
+# another module path in the parent never reaches it. Synthetic values only.
 #   python tools/run_tests.py
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import build_package  # noqa: E402
 import packaged_check  # noqa: E402
+import packaged_crash_check  # noqa: E402
 import perf_check  # noqa: E402
 import process_listeners  # noqa: E402
 import windows_powershell as wps  # noqa: E402
@@ -33,6 +35,12 @@ POISON = {"COR_ENABLE_PROFILING": "1",
           "UNMINUTE_SYNTHETIC_PARENT": "x"}
 # Prefixes that must never reach the child.
 FORBIDDEN = ("COR_", "COMPLUS_", "DOTNET_", "CORECLR_")
+# A system program started by name: its name first in an argument list, or at
+# the start of a command line handed to subprocess or os (#237, #253).
+SYSTEM_PROGRAMS = r"(?:powershell|netstat|taskkill|cmd)(?:\.exe)?"
+BY_NAME = re.compile(r"""\[\s*[rRbBuU]?["']""" + SYSTEM_PROGRAMS + r"""["']"""
+                     r"""|\b(?:run|Popen|call|check_call|check_output|system|popen)\(\s*"""
+                     r"""[rRbBuUfF]?["']""" + SYSTEM_PROGRAMS + r"""[\s"']""", re.IGNORECASE)
 
 
 def forbidden(names):
@@ -43,7 +51,7 @@ class FakeWindows:
     """A system folder in a temporary directory, with or without a
     powershell.exe, and subprocess.run replaced by a recorder."""
 
-    def __init__(self, root, with_exe=True, with_netstat=True):
+    def __init__(self, root, with_exe=True, with_netstat=True, with_taskkill=True):
         self.system = Path(root) / "Windows" / "System32"
         self.home = self.system / "WindowsPowerShell" / "v1.0"
         self.home.mkdir(parents=True)
@@ -51,6 +59,8 @@ class FakeWindows:
             (self.home / "powershell.exe").write_bytes(b"")
         if with_netstat:
             (self.system / "NETSTAT.EXE").write_bytes(b"")
+        if with_taskkill:
+            (self.system / "taskkill.exe").write_bytes(b"")
         self.calls = []
 
     def run(self, argv, **kwargs):
@@ -179,21 +189,86 @@ class WindowsPowerShellTests(unittest.TestCase):
             process_listeners.listeners({1: "x"})
         self.assertEqual(win.calls, [])
 
-    def test_no_tool_starts_powershell_or_netstat_by_name(self):
-        # The tools, and the tests that start Windows PowerShell themselves.
-        # tests/test_agent_guard.py is left out on purpose: it finds PowerShell
-        # the way Claude Code does, because it checks the hook as Claude Code
-        # runs it.
-        sources = [ROOT / "tools" / tool for tool in
-                   ("build_package.py", "packaged_check.py", "process_listeners.py",
-                    "perf_check.py")]
-        sources += [ROOT / "tests" / test for test in ("test_evidence.py", "test_hardening.py")]
+    def assert_clean_child(self, win, kwargs):
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        env = kwargs.get("env")
+        self.assertIsNotNone(env, "the child would inherit the whole environment")
+        self.assertEqual(forbidden(env), [])
+        self.assertNotIn("UNMINUTE_SYNTHETIC_PARENT", env)
+        self.assertEqual(env["PATH"].split(os.pathsep),
+                         [str(win.system), str(win.system / "Wbem"), str(win.home)])
+
+    def test_taskkill_is_started_by_its_full_path_with_the_clean_environment(self):
+        # The package checks' hard kill (#253): a taskkill.exe planted on PATH
+        # or in the current folder must not run instead (and leave the app
+        # running), and the parent's .NET settings never reach the child.
+        win = self.fake()
+        decoy = self.root / "decoy"
+        decoy.mkdir()
+        (decoy / "taskkill.exe").write_bytes(b"")
+        taskkill = str(win.system / "taskkill.exe")
+        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root)}
+        child_process = mock.Mock(stdout=[], stderr=[], pid=4321)
+        child_process.poll.return_value = None
+        first, second = win.patches()
+        with first, second, mock.patch.dict(os.environ, {**POISON, "PATH": str(decoy)}):
+            packaged_check.kill(wps.system_program("taskkill.exe"), [11, 12])
+            with mock.patch.object(packaged_crash_check.subprocess, "Popen",
+                                   return_value=child_process):
+                child = packaged_crash_check.Child(ctx, "run")
+            self.assertTrue(child.kill())
+        self.assertEqual([argv for argv, _ in win.calls],
+                         [[taskkill, "/F", "/PID", "12"], [taskkill, "/F", "/PID", "11"],
+                          [taskkill, "/F", "/T", "/PID", "4321"]])
+        for _, kwargs in win.calls:
+            self.assert_clean_child(win, kwargs)
+
+    def test_a_missing_taskkill_stops_the_crash_check_before_its_child_starts(self):
+        win = self.fake(with_taskkill=False)
+        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root)}
+        first, second = win.patches()
+        with first, second, \
+                mock.patch.object(packaged_crash_check.subprocess, "Popen") as popen, \
+                self.assertRaisesRegex(FileNotFoundError,
+                                       "taskkill.exe is missing from the system folder"):
+            packaged_crash_check.Child(ctx, "run")
+        popen.assert_not_called()
+        self.assertEqual(win.calls, [])
+
+    def test_the_by_name_pattern_finds_each_way_of_writing_a_start(self):
+        # Each name is written <name> here and unwrapped below, so this file's
+        # own source holds no start by name for the scan to find.
+        for text in ('subprocess.run(["<taskkill>", "/F"])', "Popen(['<cmd>', '/c'])",
+                     'run([\n    "<powershell>", "-NoProfile"])',
+                     'run(["<NETSTAT.EXE>", "-ano"])', 'subprocess.run("<taskkill> /F /PID 1")',
+                     "os.system('<cmd> /c mklink')", 'check_output(f"<powershell> -Command {x}")'):
+            with self.subTest(text=text):
+                self.assertTrue(BY_NAME.search(text.replace("<", "").replace(">", "")))
+        for text in ('wps.system_program("<cmd.exe>")', 'shell(r"<cmd> /c dir /s x")',
+                     '"<powershell.exe>"', 'run([wps.system_program("<taskkill.exe>"), "/F"])',
+                     'run(["<cmdkey>", "/list"])'):
+            with self.subTest(text=text):
+                self.assertIsNone(BY_NAME.search(text.replace("<", "").replace(">", "")))
+
+    def test_no_tool_or_test_starts_a_system_program_by_name(self):
+        # Every tool and test, so a start added later is caught too: Windows
+        # PowerShell, netstat, taskkill and cmd are started by their full path
+        # in the system folder (windows_powershell), never by name (#237, #253).
+        # tests/test_agent_guard.py finds PowerShell with shutil.which on
+        # purpose, the way Claude Code does, because it checks the hook as
+        # Claude Code runs it; that lookup is not a start by name.
+        sources = sorted((ROOT / "tools").glob("*.py")) + sorted((ROOT / "tests").glob("*.py"))
+        self.assertIn(ROOT / "tools" / "packaged_crash_check.py", sources)
         for path in sources:
             with self.subTest(file=path.name):
-                source = path.read_text(encoding="utf-8")
-                self.assertNotIn('["powershell"', source)
+                found = BY_NAME.findall(path.read_text(encoding="utf-8"))
+                self.assertEqual(found, [])
+        # The tools #237 moved never name powershell.exe on its own either.
+        for tool in ("build_package.py", "packaged_check.py", "process_listeners.py",
+                     "perf_check.py"):
+            with self.subTest(tool=tool):
+                source = (ROOT / "tools" / tool).read_text(encoding="utf-8")
                 self.assertNotIn('"powershell.exe"', source)
-                self.assertNotIn('["netstat', source.lower())
 
     def test_the_build_writes_no_bytecode_for_the_helper(self):
         # The release build runs `python -I tools/build_package.py`, and -I

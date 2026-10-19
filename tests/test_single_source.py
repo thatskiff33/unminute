@@ -5,6 +5,7 @@ The page shows what Python sends and reads nothing out of a title or message.
 import ast
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -23,6 +24,22 @@ sys.path.insert(0, str(ROOT))
 
 import asr_engines  # noqa: E402
 from workspace import gpu, setup  # noqa: E402
+
+# Junctions are made with cmd.exe from the system folder, never by name, and
+# with the minimal environment (#253). The helper is loaded from its file so
+# tools/ stays off this module's import path.
+_wps_spec = importlib.util.spec_from_file_location("windows_powershell",
+                                                   ROOT / "tools" / "windows_powershell.py")
+windows_powershell = importlib.util.module_from_spec(_wps_spec)
+_wps_spec.loader.exec_module(windows_powershell)
+
+
+def mklink_junction(link, target, **kwargs):
+    """cmd /c mklink /J link target, with cmd.exe from the system folder and
+    the minimal environment, never cmd by name (#253)."""
+    return subprocess.run([windows_powershell.system_program("cmd.exe"), "/c", "mklink", "/J",
+                           str(link), str(target)],
+                          env=windows_powershell.environment(), **kwargs)
 
 APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
 # Shipped code a person could edit a fact into (tests and tools are not shipped).
@@ -197,8 +214,7 @@ def _outside_folder(base, at):
         (outside / rel).parent.mkdir(parents=True, exist_ok=True)
         (outside / rel).write_text("synthetic", encoding="utf-8")
     at.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(at), str(outside)],
-                   check=True, capture_output=True)
+    mklink_junction(at, outside, check=True, capture_output=True)
     try:
         yield outside
     finally:
@@ -471,8 +487,7 @@ class ProgressTests(unittest.TestCase):
                 os.utime(weights, ns=(st.st_atime_ns, st.st_mtime_ns))  # same time
                 self.assertEqual(asr_engines.check_files(spec, files, marker=record), [])
                 link.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(real)],
-                               check=True, capture_output=True)
+                mklink_junction(link, real, check=True, capture_output=True)
                 try:
                     self.assertEqual(asr_engines.check_files(spec, via, marker=via_record),
                                      ["weights.onnx does not match the expected checksum"])
@@ -490,8 +505,7 @@ class ProgressTests(unittest.TestCase):
         (staging / "own.bin").write_bytes(b"x" * 1000)
 
         def junction(link, target):
-            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],
-                           check=True, capture_output=True)
+            mklink_junction(link, target, check=True, capture_output=True)
         junction(staging / "to-elsewhere", elsewhere)
         junction(staging / "loop-a", staging)                # a loop back to the folder
         junction(staging / "loop-b", staging)

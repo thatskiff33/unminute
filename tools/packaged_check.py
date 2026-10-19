@@ -145,7 +145,9 @@ def check(version_dir, cache, wav, report):
                           "content_backups": [n for n in names if n.endswith(
                               (".bak", ".backup", ".old", ".copy")) or "backup" in n.lower()]}
 
-    # Idle window: CPU and memory of the whole process tree for 60 s.
+    # Idle window: CPU and memory of the whole process tree for 60 s. taskkill
+    # is found first, so a missing one stops the check before the app starts.
+    taskkill = windows_powershell.system_program("taskkill.exe")
     p = subprocess.Popen([str(runtime / "pythonw.exe"), *flags, "-m", "workspace"], env=env,
                          cwd=Path(version_dir) / "app")
     time.sleep(20)
@@ -160,8 +162,7 @@ def check(version_dir, cache, wav, report):
     report["idle_window"] = {"window_running": p.poll() is None, "processes": len(pids),
                              "cpu_percent_of_one_core": round((cpu1 - cpu0) / 60 * 100, 1),
                              "working_set_mb": sum(m[0] for m in mems if m)}
-    for x in reversed(pids):
-        subprocess.run(["taskkill", "/F", "/PID", str(x)], capture_output=True)
+    kill(taskkill, pids)
     # The throwaway profile goes (files can stay locked for a moment after the
     # kill). Its path names the Windows user, so it is not reported.
     for _ in range(20):
@@ -170,6 +171,17 @@ def check(version_dir, cache, wav, report):
             break
         time.sleep(0.5)
     report["profile_removed"] = not tmp.exists()
+
+
+def kill(taskkill, pids):
+    """Hard-kill each process in `pids`, the last first. `taskkill` is
+    windows_powershell.system_program("taskkill.exe"): started by its full
+    path in the system folder with the minimal environment, so a taskkill.exe
+    in the current folder or on PATH never runs instead (#253)."""
+    env = windows_powershell.environment()
+    for x in reversed(pids):
+        subprocess.run([taskkill, "/F", "/PID", str(x)], capture_output=True,
+                       stdin=subprocess.DEVNULL, env=env)
 
 
 LIFECYCLE = r'''

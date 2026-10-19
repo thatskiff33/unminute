@@ -1,6 +1,7 @@
 # tools/windows_powershell.py
 # Start Windows PowerShell 5.1, and other programs from the Windows system
-# folder such as netstat, for the build and check tools (#235, #237).
+# folder such as netstat, taskkill and cmd, for the build and check tools and
+# the tests (#235, #237, #253).
 #
 # The child is started by its absolute path in the Windows system folder
 # (GetSystemDirectoryW), never by name, so a powershell.exe or netstat.exe
