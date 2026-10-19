@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -69,6 +70,54 @@ class SetupTests(unittest.TestCase):
             self.assertTrue(c["licence"])
         self.assertFalse(s["speech_ready"])
         self.assertFalse(s["onboarded"])
+
+    def test_settings_mark_speech_models_as_the_downloads_page_does(self):
+        # #244: each choice carries the state the Downloads page shows, and a
+        # model that is not ready carries the note shown beside the picker.
+        states = {asr_engines.PARAKEET_V2: "ready", asr_engines.PARAKEET_V3: "invalid",
+                  asr_engines.WHISPER_TURBO: "missing", asr_engines.WHISPER_LARGE: "missing"}
+        calls = []
+
+        def status(name, cache_dir):
+            calls.append(name)
+            return states.get(name, "missing"), "synthetic", ""
+        with mock.patch.object(setup, "status", side_effect=status):
+            s = self.ws.get_settings()
+            cards = self.ws.setup_state()["cards"]
+            choices = {c["name"]: c for c in s["choices"]}
+            self.assertEqual(list(choices), [*asr_engines.PARAKEET_MODELS,
+                                             *asr_engines.WHISPER_MODELS])
+            speech = [c for c in cards if c["role"] == "speech"]
+            self.assertTrue(speech)
+            for card in speech:                      # the same state as Downloads
+                self.assertEqual(choices[card["name"]]["state"], card["state"])
+                self.assertTrue(choices[card["name"]]["offered"])
+            for name, state in states.items():
+                self.assertEqual(choices[name]["state"], state)
+            self.assertIsNone(choices[asr_engines.PARAKEET_V2]["note"])
+            self.assertEqual(choices[asr_engines.PARAKEET_V3]["note"],
+                             "Parakeet v3 is damaged. Repair it in Settings > Manage downloads, "
+                             "or choose another speech model.")
+            self.assertEqual(choices[asr_engines.WHISPER_TURBO]["note"],
+                             "Whisper large-v3 turbo is not downloaded. Download it in Settings > "
+                             "Manage downloads, or choose another speech model.")
+            # A model the Downloads page does not offer is never sent there.
+            large = choices[asr_engines.WHISPER_LARGE]
+            self.assertFalse(large["offered"])
+            self.assertIn("Manage downloads does not offer it", large["note"])
+
+            # Settings is polled while open: the files are checked at most once
+            # a minute, and again at once after a download or check ends.
+            checked = len(calls)
+            self.ws.get_settings()
+            self.ws.get_settings()
+            self.assertEqual(len(calls), checked)
+            states[asr_engines.WHISPER_TURBO] = "ready"
+            self.ws._after_download()
+            turbo = next(c for c in self.ws.get_settings()["choices"]
+                         if c["name"] == asr_engines.WHISPER_TURBO)
+            self.assertEqual((turbo["state"], turbo["note"]), ("ready", None))
+            self.assertGreater(len(calls), checked)
 
     def test_public_model_never_receives_a_token(self):
         self.vault["t"] = SECRET

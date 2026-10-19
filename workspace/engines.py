@@ -12,6 +12,11 @@ import asr_engines
 from asr_engines import ModelLoadError
 
 TEST_PREFIX = "test:"      # "test:module:function" loads a test engine factory
+# Where a user downloads or repairs a model once Setup is done (#244). A worker
+# only loads models after Setup, so its messages always point here.
+DOWNLOADS = "Settings > Manage downloads"
+FIX_SPEECH = (f"Download or repair it in {DOWNLOADS}, or choose another speech model in "
+              "Settings.")
 
 
 def _test_factory(name, allow_test):
@@ -31,8 +36,8 @@ def load_engine(name, cache_dir, threads, allow_test=False):
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
         if state != "ready":
-            raise ModelLoadError(f"{asr_engines.label(name)} is not ready ({detail}). "
-                                 "Download or repair it in Setup.")
+            raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {FIX_SPEECH} "
+                                 f"({detail})")
         # No decoder: the worker passes decoded arrays. faster_whisper's
         # decoder would load faster_whisper, and CTranslate2 with it, into
         # every Parakeet worker (R12, #133).
@@ -43,13 +48,14 @@ def load_engine(name, cache_dir, threads, allow_test=False):
         folder = asr_engines.find_verified(spec, cache_dir)
         if folder is None:
             raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
-                                 "verification. Download or repair it in Setup.")
+                                 f"verification. {FIX_SPEECH}")
         from faster_whisper import WhisperModel
         model = WhisperModel(str(folder), device="cpu", compute_type="int8",
                              cpu_threads=threads)
         problem = asr_engines.feature_width_problem(model, spec)
         if problem:
-            raise ModelLoadError(f"{problem}. Repair {asr_engines.label(name)} in Setup.")
+            raise ModelLoadError(f"{problem}. Repair {asr_engines.label(name)} in "
+                                 f"{DOWNLOADS}, or choose another speech model in Settings.")
         # Word times are required: chunk ownership is decided per word.
         return asr_engines.WhisperEngine(model, name, "int8", "en")
 
@@ -86,7 +92,7 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
     blobs = asr_engines.read_verified(asr_engines.SPEAKER_MODEL, cache_dir)
     if blobs is None:
         raise ModelLoadError("The speaker identification model is not installed or failed "
-                             "verification. Repair it in Setup.")
+                             f"verification. Repair it in {DOWNLOADS}.")
     import torch
     torch.set_num_threads(threads)
     label = "cpu"

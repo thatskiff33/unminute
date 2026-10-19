@@ -345,9 +345,14 @@
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
     model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
-    choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true },
-              { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false },
-              { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false }],
+    // Each with its state as the Downloads page shows it (#244); CARDS above.
+    choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true,
+                state: "ready", offered: true, note: null },
+              { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false,
+                state: "ready", offered: true, note: null },
+              { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false,
+                state: "missing", offered: true,
+                note: "Whisper large-v3 turbo is not downloaded. Download it in Settings > Manage downloads, or choose another speech model." }],
     gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: "580", component: "ready" },
     deployment: { mode: "self-service", version: "0.3.0" },
     update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
@@ -394,7 +399,13 @@
     // As the app reports it: Skip applies until speakers are labelled or skipped.
     if (!("can_skip" in m))
       m.can_skip = !m.reviewed_at && !(m.speakers && ["done", "skipped"].includes(m.speakers.status));
+    if (!("can_retranscribe" in m)) m.can_retranscribe = canRetranscribe(m);
     return m;
+  }
+  // As the app reports it (#244): with the audio kept and the review not
+  // confirmed, unless still transcribing; a failed meeting can switch model.
+  function canRetranscribe(m) {
+    return m.audio_available !== false && !m.reviewed_at && (m.stage !== "inbox" || !!m.error);
   }
 
   const data = {
@@ -422,9 +433,13 @@
 
   // -- scenarios -----------------------------------------------------------------------
   // Each changes the data and lists steps to run once the page is ready.
-  const row = (over) => ({ held: false, progress: 100, paused: false, error: null, busy: null,
-    duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true,
-    cleanup: [], age_days: 0, action: "", can_skip: true, ...over });
+  const row = (over) => {
+    const m = { held: false, progress: 100, paused: false, error: null, busy: null,
+      duration_s: 1500, speaker_count: null, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", audio_available: true,
+      cleanup: [], age_days: 0, action: "", can_skip: true, ...over };
+    if (!("can_retranscribe" in m)) m.can_retranscribe = canRetranscribe(m);
+    return m;
+  };
   // Board heights of the level meter's bars, as microphone levels in dB.
   const LEVELS = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54,
                   62, 44, 30, 24, 42, 50, 38, 26, 18, 14]
@@ -583,6 +598,23 @@
       steps: [show("settings")],
     },
     downloads: { steps: [show("downloads")] },
+    // #244: a chosen model that is not downloaded (no board yet): the note
+    // beside the picker; and the failed meeting's Transcribe with another model.
+    "settings-model-not-ready": {
+      change: (d) => { d.settings = { ...d.settings, model: "large-v3-turbo" }; },
+      steps: [show("settings")],
+    },
+    "failed-model-not-ready": {
+      change: (d) => {
+        d.settings = { ...d.settings, model: "large-v3-turbo" };
+        d.meetings = [row({ id: "m-site", title: "Site visit notes (sample)", stage: "inbox", progress: 0,
+                            model: "large-v3-turbo", model_label: "Whisper large-v3 turbo",
+                            error: "The speech model is not ready: Whisper large-v3 turbo is not installed or failed verification." })];
+      },
+      steps: [show("meetings"), wait(400),
+              () => [...document.querySelectorAll("#view-meetings button")]
+                .find((b) => b.textContent.startsWith("Transcribe with another model")).click()],
+    },
     "meeting-earlier": {
       change: (d) => {
         d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",

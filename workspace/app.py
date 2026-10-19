@@ -57,6 +57,9 @@ PAGE_ERRORS = 20                    # page script errors recorded per run (repor
 SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
 SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
+# The speech models Settings offers, in the order it lists them.
+SPEECH_MODELS = (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)
+
 DEFAULT_SETTINGS = {
     "mode": resources.QUIET,                       # quiet | faster
     "model": asr_engines.RECOMMENDED_PARAKEET,
@@ -76,6 +79,23 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 
 class WorkspaceError(ValueError):
     """A refused request. The message is safe to show in the UI."""
+
+
+def _model_note(name, state):
+    """What Settings says beside the picker about a speech model that is not
+    ready, and why Transcribe again refuses it (#244); None when it is ready."""
+    if state == "ready":
+        return None
+    label = asr_engines.label(name)
+    what = "damaged" if state == "invalid" else "not downloaded"
+    if not setup.offered(name):
+        return (f"{label} is {what}, and Manage downloads does not offer it. Choose another "
+                "speech model, or ask your IT team to install it.")
+    if state == "invalid":
+        return (f"{label} is damaged. Repair it in Settings > Manage downloads, or choose "
+                "another speech model.")
+    return (f"{label} is not downloaded. Download it in Settings > Manage downloads, or "
+            "choose another speech model.")
 
 
 def _clean_text(text, limit):
@@ -1509,7 +1529,11 @@ class Workspace:
 
     def retranscribe(self, mid):
         """Transcribe again with the current model. The previous version and
-        its edits are kept (superseded), never overwritten."""
+        its edits are kept (superseded), never overwritten. Also how a meeting
+        that failed (phase "error") moves to the model now chosen in Settings
+        (#244): its finished parts stay with the earlier version. A model that
+        is not ready is refused before anything changes, so a working version
+        is never superseded by one that cannot run."""
         m = self._meeting(mid)
         if not self._audio_available(m):
             raise WorkspaceError("The audio has been removed, so the meeting cannot be "
@@ -1518,6 +1542,11 @@ class Workspace:
             raise WorkspaceError("The transcript review is confirmed; it cannot be replaced.")
         if self._busy and self._busy[0] == mid:
             raise WorkspaceError("Pause this meeting first.")
+        model = self.settings["model"]
+        if model in SPEECH_MODELS:            # test engines have no download state
+            note = _model_note(model, self._speech_states().get(model, "missing"))
+            if note:
+                raise WorkspaceError(note)
         v = self.store.active_version(mid)
         source = self.store._one("SELECT id FROM sources WHERE meeting_id = ? "
                                  "ORDER BY created_at DESC LIMIT 1", (mid,))
@@ -1528,9 +1557,16 @@ class Workspace:
             reader.close()
         new = self._new_version(mid, source["id"], plan)
         if v is not None and new == v["id"]:
+            if m["phase"] == "error":
+                raise WorkspaceError(f"This meeting already uses {asr_engines.label(model)}. "
+                                     "Use Try again, or choose another speech model in "
+                                     "Settings first.")
             raise WorkspaceError("It is already transcribed with this model and settings. "
                                  "Change the model in Settings first.")
         self._carry_skip(v, new)
+        # Clears a failed meeting's error with its phase: the processing
+        # thread skips only meetings in the error phase, so the new version
+        # starts at the next wake.
         self.store.set_phase(mid, "transcribing")
         self._wake.set()
 
@@ -1769,6 +1805,7 @@ class Workspace:
                         "unfinished": v is None and not importing
                         and not m["reviewed_at"],
                         "can_skip": bool(v) and self._can_skip(m, runs.get(v["id"], [])),
+                        "can_retranscribe": bool(v) and self._can_retranscribe(m, stage),
                         "action": self._action(m, stage)})
         return out
 
@@ -1807,6 +1844,14 @@ class Workspace:
             hit = cache[vid] = (key, len(speaker_names.resolve(self.store, vid)["order"]))
         return hit[1]
 
+    def _can_retranscribe(self, m, stage):
+        """Transcribe again is offered while the audio is kept and the review
+        is not confirmed, except while the meeting is still being transcribed.
+        A meeting that failed is still in the inbox, but can switch model
+        (#244)."""
+        return (self._audio_available(m) and not m["reviewed_at"]
+                and (stage != "inbox" or m["phase"] == "error"))
+
     @staticmethod
     def _action(m, stage):
         if stage == "inbox":
@@ -1839,9 +1884,10 @@ class Workspace:
         older = [x for x in self.store.versions(mid) if v is None or x["id"] != v["id"]]
         due = {h["id"] for h in holds.due_for_review(self.store)}
         done, total = self.store.progress(v["id"]) if v else (0, 0)
+        stage = self._stage(m, v)
         return {
             "id": mid, "title": m["title"], "created_at": m["created_at"],
-            "stage": self._stage(m, v), "paused": bool(m["paused"]),
+            "stage": stage, "paused": bool(m["paused"]),
             "error": m["last_error"] if m["phase"] == "error" else None,
             "busy": (self._busy[1] if self._busy and self._busy[0] == mid else None),
             "progress": round(100 * done / total) if total else 0,
@@ -1857,6 +1903,7 @@ class Workspace:
                                 "edits": self.store.edit_count(x["id"])}
                                for i, x in enumerate(older)],
             "can_skip": bool(v) and self._can_skip(m, runs),
+            "can_retranscribe": bool(v) and self._can_retranscribe(m, stage),
             "speakers": ({"status": runs[-1]["status"], "error": self._run_note(m, runs),
                           "device": runs[-1]["backend"],
                           "count": runs[-1]["hint_count"],
@@ -2033,10 +2080,29 @@ class Workspace:
                  "completed_at": r["completed_at"], "result": r["result"]}
                 for r in holds.receipts(self.store)]
 
+    def _speech_states(self):
+        """Each speech model's state ("ready", "missing" or "invalid"), worked
+        out as the Downloads page does (setup.status) and kept as long as its
+        cards (DISPLAY_CACHE_S, or until a download, removal or check ends). A
+        model with no card there is checked on its own, as rarely (#244)."""
+        cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
+        states = {c["name"]: c["state"] for c in cards if c["role"] == "speech"}
+        rest = tuple(n for n in SPEECH_MODELS if n not in states)
+        if rest:
+            states.update(self._display_value(
+                "speech_states", lambda: {n: setup.status(n, self.cache_dir)[0] for n in rest}))
+        return states
+
     def get_settings(self):
+        states = self._speech_states()
         choices = [{"name": n, "label": asr_engines.label(n),
-                    "recommended": n == asr_engines.RECOMMENDED_PARAKEET}
-                   for n in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)]
+                    "recommended": n == asr_engines.RECOMMENDED_PARAKEET,
+                    # The page labels a model that is not ready and shows the
+                    # note beside the picker, with Manage downloads if it is
+                    # offered there (#244). The choice is still saved.
+                    "state": states.get(n, "missing"), "offered": setup.offered(n),
+                    "note": _model_note(n, states.get(n, "missing"))}
+                   for n in SPEECH_MODELS]
         from workspace import update
         info = gpu.detected()
         self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
@@ -2087,7 +2153,8 @@ class Workspace:
                 raise WorkspaceError("This computer has no NVIDIA graphics card with a recent "
                                      f"enough driver ({gpu.MIN_DRIVER_TEXT} or later).")
             if gpu.status(self.cache_dir)[0] != "ready":
-                raise WorkspaceError("Download the graphics card component in Setup first.")
+                raise WorkspaceError("Download the graphics card component in Settings > "
+                                     "Manage downloads first.")
         if changes.get("microphone") is False and self._recording is not None:
             raise WorkspaceError("Stop the recording before turning the microphone off.")
         quiet_before = self.handle.quiet

@@ -150,6 +150,29 @@ class ModelNameTests(unittest.TestCase):
                 self.assertRaisesRegex(asr_engines.ModelLoadError, "^Parakeet v3 is not ready"):
             engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
 
+    def test_model_errors_point_at_manage_downloads(self):
+        # #244: after Setup, models are downloaded and repaired in Settings >
+        # Manage downloads. A worker loads models only after Setup.
+        from workspace import engines, speaker_load
+        with mock.patch.object(asr_engines, "parakeet_status", return_value=("missing", "x")), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
+        self.assertEqual(str(caught.exception), "Parakeet v3 is not ready. Download or repair "
+                         "it in Settings > Manage downloads, or choose another speech model "
+                         "in Settings. (x)")
+        with mock.patch.object(asr_engines, "find_verified", return_value=None), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.WHISPER_LARGE, ".", 1)
+        self.assertEqual(str(caught.exception), "Whisper large-v3 is not installed or failed "
+                         "verification. Download or repair it in Settings > Manage downloads, "
+                         "or choose another speech model in Settings.")
+        self.assertTrue(speaker_load.LOAD_FAILED.endswith(
+            "Repair it in Settings > Manage downloads."))
+        # No message anywhere in shipped code sends the user back to Setup.
+        found = [f"{path.name}: {s[:60]}" for path in SHIPPED for s in strings(path)
+                 if re.search(r"\bin Setup\b", s)]
+        self.assertEqual(found, [])
+
     def test_a_parakeet_engine_names_the_model_by_its_label(self):
         engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
         self.assertEqual(engine.label, asr_engines.PARAKEET_V2)      # the id, as stored

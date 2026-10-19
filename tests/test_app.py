@@ -20,7 +20,8 @@ SR = 16000
 if HAVE_DEPS:
     import numpy as np
 
-    from workspace import api, policy
+    import asr_engines
+    from workspace import api, media, policy
     from workspace.app import Workspace, WorkspaceError
     from workspace.store import new_id
 
@@ -138,6 +139,81 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.transcript(mid)["items"][0]["text"].startswith("second"))
         old = ws.store._one("SELECT text FROM edits WHERE segment_id = ?", (seg["id"],))
         self.assertEqual(old["text"], "Human correction")    # machine history untouched
+
+    def test_a_failed_meeting_is_transcribed_again_with_another_model(self):
+        # #244: the model the meeting started with cannot load, so Try again
+        # would fail again. Transcribe again moves it to the model now chosen.
+        ws = self.open(model="load_fails")
+        mid = self.imported(ws)
+        [m] = ws.meetings()
+        self.assertEqual(m["stage"], "inbox")
+        self.assertIn("speech model is not ready", m["error"])
+        self.assertTrue(m["can_retranscribe"])
+        with self.assertRaisesRegex(WorkspaceError, "already uses .*Use Try again"):
+            ws.retranscribe(mid)                     # the same model: Try again is the way
+        ws.set_settings({"model": fake("sentences")})
+        ws.retranscribe(mid)
+        self.assertTrue(ws.wait_idle(120))
+        d = ws.detail(mid)
+        self.assertEqual((d["stage"], d["error"], d["model"]), ("review", None, fake("sentences")))
+        [older] = d["older_versions"]
+        self.assertEqual(older["model"], fake("load_fails"))
+        self.assertGreater(ws.transcript(mid)["total"], 20)
+
+    def test_a_failed_meeting_keeps_its_finished_parts_and_edits(self):
+        # D1: what was finished (and corrected) before the failure stays as the
+        # earlier version; the new model's text never overwrites it.
+        ws = self.open()
+        mid = self.imported(ws)
+        seg = ws.transcript(mid)["items"][0]
+        ws.edit(mid, seg["id"], "Human correction")
+        ws.store.set_phase(mid, "error", "Synthetic failure")     # as a run that stopped
+        ws.set_settings({"model": fake("sentences_v2")})
+        ws.retranscribe(mid)
+        self.assertTrue(ws.wait_idle(120))
+        d = ws.detail(mid)
+        self.assertIsNone(d["error"])
+        [older] = d["older_versions"]
+        self.assertEqual((older["model"], older["edits"]), (fake("sentences"), 1))
+        self.assertEqual(ws.transcript(mid, version=0)["items"][0]["text"], "Human correction")
+        self.assertTrue(ws.transcript(mid)["items"][0]["text"].startswith("second"))
+
+    def test_transcribe_again_is_offered_unless_transcribing_reviewed_or_without_audio(self):
+        ws = self.open(start=False)
+        ws._import_one(self.rec)
+        [m] = ws.meetings()
+        mid = m["id"]
+        self.assertFalse(m["can_retranscribe"])               # still being transcribed
+        self.assertFalse(ws.detail(mid)["can_retranscribe"])
+        ws.store.set_phase(mid, "error", "Synthetic failure")
+        [m] = ws.meetings()
+        self.assertEqual(m["stage"], "inbox")
+        self.assertTrue(m["can_retranscribe"])                # failed: can switch model
+        self.assertTrue(ws.detail(mid)["can_retranscribe"])
+        row = ws.store.meeting_state(mid)
+        self.assertFalse(ws._can_retranscribe({**dict(row), "reviewed_at": 1.0}, "inbox"))
+        self.assertFalse(ws._can_retranscribe({**dict(row), "reviewed_at": 1.0}, "handoff"))
+        self.assertTrue(ws._can_retranscribe({**dict(row), "phase": "transcribing"}, "review"))
+        media.audio_path(ws.media, mid).unlink()              # audio removed
+        [m] = ws.meetings()
+        self.assertFalse(m["can_retranscribe"])
+        self.assertFalse(ws.detail(mid)["can_retranscribe"])
+
+    def test_transcribe_again_refuses_a_model_that_is_not_ready(self):
+        # Nothing is downloaded in this test's model folder: a meeting is
+        # never moved to a model that cannot run, and nothing changes.
+        ws = self.open(start=False)
+        ws._import_one(self.rec)
+        [m] = ws.meetings()
+        mid = m["id"]
+        ws.store.set_phase(mid, "error", "Synthetic failure")
+        before = [v["id"] for v in ws.store.versions(mid)]
+        ws.set_settings({"model": asr_engines.RECOMMENDED_PARAKEET})
+        with self.assertRaisesRegex(WorkspaceError, "^Parakeet v2 is not downloaded. Download "
+                                                    "it in Settings > Manage downloads"):
+            ws.retranscribe(mid)
+        self.assertEqual([v["id"] for v in ws.store.versions(mid)], before)
+        self.assertEqual(ws.meetings()[0]["error"], "Synthetic failure")
 
     def test_search_finds_edited_text(self):
         ws = self.open()
