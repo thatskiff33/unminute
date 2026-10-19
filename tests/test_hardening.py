@@ -24,6 +24,14 @@ sys.path.insert(0, str(ROOT))
 
 from workspace import credentials, shell  # noqa: E402
 
+# The installer tests start Windows PowerShell by its full path in the system
+# folder, never by name (#237). The helper is loaded from its file so tools/
+# stays off this module's import path.
+_spec = importlib.util.spec_from_file_location("windows_powershell",
+                                               ROOT / "tools" / "windows_powershell.py")
+windows_powershell = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(windows_powershell)
+
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 HAVE_WEBVIEW = importlib.util.find_spec("webview") is not None
 
@@ -690,7 +698,8 @@ class DataFolderOverlapTests(unittest.TestCase):
             # A relative -InstallDir is read from PowerShell's location, which
             # Set-Location moves away from the process's own folder.
             call = f"Set-Location -LiteralPath '{location}'; {call}"
-        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        return subprocess.run([windows_powershell.executable(), "-NoProfile",
+                               "-ExecutionPolicy", "Bypass",
                                "-Command", f"{call}; exit $LASTEXITCODE"],
                               capture_output=True, text=True, timeout=180, cwd=cwd,
                               env=dict(os.environ, LOCALAPPDATA=str(local)))
@@ -1296,7 +1305,8 @@ class UninstallLidRestoreTests(unittest.TestCase):
         env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_LOG=str(self.log),
                    UNMINUTE_TEST_MODE=mode)
         call = f"& '{script or self.copy}' -InstallDir '{install}' -Silent"
-        return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        return subprocess.run([windows_powershell.executable(), "-NoProfile",
+                               "-ExecutionPolicy", "Bypass",
                                "-Command", f"{call}; exit $LASTEXITCODE"],
                               capture_output=True, text=True, timeout=180, cwd=self.tmp.name,
                               env=env)

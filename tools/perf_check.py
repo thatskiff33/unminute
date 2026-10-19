@@ -36,8 +36,10 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(ROOT / "tools"))     # evidence.py, also under -I; after the stdlib
+# evidence.py and windows_powershell.py, also under -I; after the stdlib
+sys.path.append(str(ROOT / "tools"))
 import evidence  # noqa: E402
+import windows_powershell  # noqa: E402
 
 BUDGETS = ROOT / "docs" / "perf-budgets.json"
 # The recording states come last, after the leak check too (plan()): every
@@ -696,14 +698,11 @@ class WindowsProbe:
 
     def cim(self):
         """{class: [{property: value}]} for CIM_READS, from Windows PowerShell's
-        Get-CimInstance (local WMI; no network), or None."""
-        exe = _system_program("WindowsPowerShell", "v1.0", "powershell.exe")
-        if exe is None:
-            return None
+        Get-CimInstance (local WMI; no network), or None. Started by full path
+        with a minimal environment (#237); a missing powershell.exe gives None."""
         try:
-            r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", cim_script()],
-                               capture_output=True, timeout=120,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            r = windows_powershell.run(cim_script(), text=False, timeout=120,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if r.returncode != 0:
                 return None
             data = json.loads(r.stdout.decode("utf-8-sig", errors="replace"))

@@ -33,8 +33,10 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))    # evidence.py, also under -I
+# evidence.py and windows_powershell.py, also under -I
+sys.path.append(str(Path(__file__).resolve().parent))
 import evidence  # noqa: E402
+import windows_powershell  # noqa: E402
 
 MARKER = "zebracrossingquartz"     # distinctive text written into the transcript
 
@@ -83,10 +85,9 @@ def cpu_seconds(pid):
 
 
 def tree(root_pid):
-    out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                          "Get-CimInstance Win32_Process | ForEach-Object "
-                          "{ \"$($_.ProcessId) $($_.ParentProcessId)\" }"],
-                         capture_output=True, text=True).stdout
+    # Windows PowerShell by full path, with a minimal environment (#237).
+    out = windows_powershell.run("Get-CimInstance Win32_Process | ForEach-Object "
+                                 "{ \"$($_.ProcessId) $($_.ParentProcessId)\" }").stdout
     kids = {}
     for line in out.splitlines():
         parts = line.split()

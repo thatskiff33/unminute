@@ -22,6 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import evidence  # noqa: E402
+import windows_powershell  # noqa: E402
 
 SHA = "a" * 64
 COMMIT = "c" * 40
@@ -746,8 +747,9 @@ class ToolTests(TempDir):
                   "[Console]::Out.WriteLine('shown'); [Console]::Out.Flush(); "
                   "for ($i = 0; $i -lt 100; $i++) { [Windows.Forms.Application]::DoEvents(); "
                   "Start-Sleep -Milliseconds 100 }")
-        other = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                  script], stdout=subprocess.PIPE, text=True,
+        other = subprocess.Popen([windows_powershell.executable(), "-NoProfile",
+                                  "-NonInteractive", "-Command", script],
+                                 stdout=subprocess.PIPE, text=True,
                                  env=dict(os.environ, UNMINUTE_TITLE=title))
         try:
             self.assertEqual("shown", other.stdout.readline().strip())
@@ -803,8 +805,9 @@ class ToolTests(TempDir):
             "for ($i = 0; $i -lt 300 -and $f.Visible; $i++) { "
             "[Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }; "
             "Say 'done'")
-        form = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 script], stdout=subprocess.PIPE, text=True,
+        form = subprocess.Popen([windows_powershell.executable(), "-NoProfile",
+                                 "-NonInteractive", "-Command", script],
+                                stdout=subprocess.PIPE, text=True,
                                 env=dict(os.environ, UNMINUTE_TITLE=title,
                                          UNMINUTE_CHECK=statement))
         try:

@@ -350,8 +350,9 @@ class ReproducibleBuildTests(unittest.TestCase):
         # stops Windows PowerShell 5.1 loading Get-AuthenticodeSignature. The
         # child is found by absolute path (never through PATH or the current
         # folder) and its module path is pinned to the system folder's modules,
-        # so no user-writable folder (Documents) can supply the cmdlet.
-        system = self.root / "System32"
+        # so no user-writable folder (Documents) can supply the cmdlet. Nothing
+        # else is inherited (#237; tests/test_windows_powershell.py has more).
+        system = self.root / "Windows" / "System32"
         home = system / "WindowsPowerShell" / "v1.0"
         home.mkdir(parents=True)
         (home / "powershell.exe").write_bytes(b"")
@@ -361,23 +362,30 @@ class ReproducibleBuildTests(unittest.TestCase):
             seen["argv"], seen["env"] = argv, env
             return subprocess.CompletedProcess(argv, 0, "", "")
         inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules",
-                     "SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\System32"}
+                     "SYSTEMROOT": r"C:\Elsewhere", "PATH": str(self.root / "bin"),
+                     "COR_ENABLE_PROFILING": "1"}
         with mock.patch.dict(os.environ, inherited), \
-                mock.patch.object(bp, "system_folder", return_value=str(system)), \
-                mock.patch.object(bp.subprocess, "run", fake_run):
+                mock.patch.object(bp.windows_powershell, "system_folder",
+                                  return_value=str(system)), \
+                mock.patch.object(bp.windows_powershell.subprocess, "run", fake_run):
             bp.powershell("Get-AuthenticodeSignature", file=r"C:\a b\python.exe")
         self.assertEqual(seen["argv"][0], str(home / "powershell.exe"))
         self.assertEqual(seen["argv"][1:4], ["-NoProfile", "-NonInteractive", "-Command"])
         module_paths = [v for k, v in seen["env"].items() if k.upper() == "PSMODULEPATH"]
         self.assertEqual(module_paths, [str(home / "Modules")])
         self.assertEqual(seen["env"]["UNMINUTE_FILE"], r"C:\a b\python.exe")
-        self.assertEqual(seen["env"]["PATH"], r"C:\Windows\System32")    # the rest is kept
+        self.assertEqual(seen["env"]["SystemRoot"], str(system.parent))
+        self.assertEqual(seen["env"]["PATH"].split(os.pathsep),
+                         [str(system), str(system / "Wbem"), str(home)])
+        self.assertNotIn("COR_ENABLE_PROFILING", {k.upper() for k in seen["env"]})
 
     def test_a_missing_windows_powershell_stops_the_build(self):
         ran = []
-        with mock.patch.object(bp, "system_folder", return_value=str(self.root)), \
-                mock.patch.object(bp.subprocess, "run", lambda *a, **k: ran.append(a)), \
-                self.assertRaisesRegex(SystemExit, "Windows PowerShell"):
+        with mock.patch.object(bp.windows_powershell, "system_folder",
+                               return_value=str(self.root)), \
+                mock.patch.object(bp.windows_powershell.subprocess, "run",
+                                  lambda *a, **k: ran.append(a)), \
+                self.assertRaisesRegex(SystemExit, "Windows PowerShell 5.1 is missing"):
             bp.powershell("Get-AuthenticodeSignature", file=r"C:\python.exe")
         self.assertEqual(ran, [])                     # nothing found by name instead
 
@@ -389,14 +397,14 @@ class ReproducibleBuildTests(unittest.TestCase):
         fake.mkdir(parents=True)
         (fake / "Microsoft.PowerShell.Security.psm1").write_text(
             "function Get-AuthenticodeSignature { 'fake' }\n", encoding="utf-8")
-        system = bp.system_folder()
+        system = bp.windows_powershell.system_folder()
         # Called, not just looked up: Get-Command names the real module even
         # when a call would run the planted one.
         with mock.patch.dict(os.environ, {"PSModulePath": str(self.root / "mods")}):
-            r = bp.powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:ComSpec; "
+            r = bp.powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:UNMINUTE_FILE; "
                               "$s.GetType().FullName; "
                               "(Get-Module Microsoft.PowerShell.Security).ModuleBase; "
-                              "$env:PSModulePath")
+                              "$env:PSModulePath", file=os.path.join(system, "cmd.exe"))
         self.assertEqual(r.returncode, 0, r.stderr)
         kind, base, module_path = r.stdout.strip().splitlines()[-3:]
         self.assertEqual(kind, "System.Management.Automation.Signature")

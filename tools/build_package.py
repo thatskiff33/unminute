@@ -66,6 +66,14 @@ import zipfile
 import zlib
 from pathlib import Path
 
+# tools/windows_powershell.py, also under -I; after the standard library. The
+# build runs as `python -I` (which ignores PYTHONDONTWRITEBYTECODE), so it
+# says itself that no import writes bytecode into the checkout: an ignored
+# tools/__pycache__ makes the checkout unclean for tools/evidence.py (#206).
+sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parent))
+import windows_powershell  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 
 PYTHON_VERSION = "3.14.8"
@@ -155,43 +163,27 @@ def fetch_runtime(cache):
     return target
 
 
-def system_folder():
-    """The Windows system folder, from GetSystemDirectoryW (never from PATH,
-    the current folder or an environment variable)."""
-    if os.name != "nt":
-        sys.exit("The signature check needs Windows.")
-    import ctypes
-    buf = ctypes.create_unicode_buffer(260)
-    n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260)
-    if not 0 < n < 260:
-        sys.exit("Could not find the Windows system folder.")
-    return buf.value
-
-
 def powershell(script, **paths):
     """Run a Windows PowerShell 5.1 script with paths passed as environment
     variables ($env:UNMINUTE_<NAME>), never inside the command text, so a quote
     in a folder or user name cannot break it.
 
-    The child is started by its absolute path in the system folder, so a
-    powershell.exe beside Python or in the current folder cannot stand in for
-    it. Its PSModulePath is pinned to the system folder's modules (5.1 adds
-    Program Files' modules; both need an administrator to change). Inherited,
-    the variable breaks the check when the build starts from PowerShell 7 (the
-    shell of GitHub's Windows runners): 7's module folders come first, and 5.1
-    then fails to load Microsoft.PowerShell.Security, which holds
-    Get-AuthenticodeSignature. Left unset, 5.1 would put the user's own
-    Documents modules folder first, which any program running as the user can
-    write to."""
-    home = os.path.join(system_folder(), "WindowsPowerShell", "v1.0")
-    exe = os.path.join(home, "powershell.exe")
-    if not os.path.isfile(exe):
-        sys.exit("Windows PowerShell 5.1 is missing from the system folder: " + exe)
-    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
-    env["PSModulePath"] = os.path.join(home, "Modules")
-    env.update({f"UNMINUTE_{k.upper()}": str(v) for k, v in paths.items()})
-    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
-                          env=env, capture_output=True, text=True)
+    tools/windows_powershell.py starts the child by its absolute path in the
+    system folder, with an allowlisted environment (#237): nothing the build
+    inherits, such as COR_ENABLE_PROFILING or COMPlus_* (which can load a DLL
+    into powershell.exe), reaches it. Its PSModulePath is pinned to the system
+    folder's modules (5.1 adds Program Files' modules; both need an
+    administrator to change). Inherited, the variable breaks the check when the
+    build starts from PowerShell 7 (the shell of GitHub's Windows runners): 7's
+    module folders come first, and 5.1 then fails to load
+    Microsoft.PowerShell.Security, which holds Get-AuthenticodeSignature. Left
+    unset, 5.1 would put the user's own Documents modules folder first, which
+    any program running as the user can write to (#235)."""
+    try:
+        return windows_powershell.run(
+            script, {f"UNMINUTE_{k.upper()}": str(v) for k, v in paths.items()})
+    except OSError as e:
+        sys.exit(str(e))
 
 
 def said(text, limit=500):
