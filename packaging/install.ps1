@@ -248,8 +248,10 @@ function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema =
 # antivirus software (such as Microsoft Defender) opens newly written .exe, .dll and
 # .pyd files for a moment to scan them (#239). So a rename or removal refused as access
 # denied or in use is tried again, with a short back-off, for up to $LockRetrySeconds
-# in all; then its error stands. Any other error is not retried. install.ps1 and
-# uninstall.ps1 have the same functions (tests/test_hardening.py keeps them equal).
+# from its first refusal; then its error stands. The wait starts at the first refusal,
+# not at the start of the step, because removing a large folder can take longer than
+# that before it reaches the file in use. Any other error is not retried. install.ps1
+# and uninstall.ps1 have the same functions (tests/test_hardening.py keeps them equal).
 $LockRetrySeconds = 30
 
 function Test-TransientLock([Exception]$Exception) {
@@ -267,9 +269,9 @@ function Test-TransientLock([Exception]$Exception) {
 }
 
 # Runs $Action (which must not use the names below) until it succeeds, it fails for
-# any reason but a file in use, or $LockRetrySeconds have passed.
+# any reason but a file in use, or $LockRetrySeconds have passed since its first refusal.
 function Invoke-LockRetry([scriptblock]$Action) {
-    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $clock = $null
     $pause = 250
     $said = $false
     while ($true) {
@@ -277,6 +279,7 @@ function Invoke-LockRetry([scriptblock]$Action) {
             & $Action
             return
         } catch {
+            if ($null -eq $clock) { $clock = [Diagnostics.Stopwatch]::StartNew() }
             $left = $LockRetrySeconds * 1000 - $clock.ElapsedMilliseconds
             if ($left -le 0 -or -not (Test-TransientLock $_.Exception)) { throw }
             if (-not $said) {

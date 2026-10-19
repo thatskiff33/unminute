@@ -941,11 +941,20 @@ function Wait-ForTest([string]$Stage) {
 WINDOWS_ONLY = unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
 
 
+def lock_retry_block(name):
+    """The wait for a file in use (#239), as packaging/<name> has it: the time limit,
+    Test-TransientLock and Invoke-LockRetry."""
+    text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+    start = text.index("# A folder cannot be renamed or removed")
+    return text[start:text.index("\n}\n", text.index("function Invoke-LockRetry")) + 3]
+
+
 class FolderInUseTests(unittest.TestCase):
     """#239: a folder cannot be renamed or removed while a file in it is open, and
     antivirus software opens newly written files for a moment to scan them. The
     installer's two renames and the uninstaller's removal are tried again for up to
-    30 seconds when refused as access denied or in use, then fail with the message
+    30 seconds from the first refusal, for each step, when refused as access denied
+    or in use, then fail with the message
     they always gave; any other error fails at once. Copies of the scripts run for
     real in temporary folders with a temporary LOCALAPPDATA (DataFolderOverlapTests);
     the installer's copy runs only Install-Version, on a small synthetic package. A
@@ -1153,13 +1162,52 @@ class FolderInUseTests(unittest.TestCase):
         self.assertTrue(held.is_file() and link.is_file())
         self.assertTrue(2.5 < waited < 20, waited)
 
+    @WINDOWS_ONLY
+    def test_the_time_limit_counts_from_the_first_refusal(self):
+        # The uninstaller's removal of a large versions folder can run for tens of
+        # seconds before it reaches a file a scanner holds; it still gets the whole
+        # wait, which starts at the first refusal, not at the start of the step. A
+        # 2-second limit for speed, with a first attempt that takes 3 seconds.
+        script = self.root / "retry.ps1"
+
+        def run(attempt):
+            script.write_text(
+                '$ErrorActionPreference = "Stop"\n'
+                '$Options = @{ Silent = $false }\n'
+                'function Write-Step([string]$Message) { Write-Output $Message }\n'
+                + lock_retry_block("uninstall.ps1").replace(self.BOUND, "$LockRetrySeconds = 2\n")
+                + '$script:tries = 0\n'
+                'try {\n'
+                '    Invoke-LockRetry {\n'
+                '        $script:tries++\n'
+                f'        {attempt}\n'
+                '    }\n'
+                '    Write-Output "DONE tries=$script:tries"\n'
+                '} catch { Write-Output "FAILED tries=$script:tries $($_.Exception.Message)" }\n',
+                encoding="utf-8")
+            r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                "-File", str(script)], capture_output=True, text=True,
+                               timeout=60, cwd=self.root)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            return r.stdout
+
+        slow_then_refused = ('if ($script:tries -eq 1) { Start-Sleep -Seconds 3; '
+                             'throw [UnauthorizedAccessException]::new("held") }')
+        out = run(slow_then_refused)
+        self.assertIn("DONE tries=2", out)
+        self.assertEqual(out.count("Trying again for up to 2 seconds"), 1, out)
+        # Still bounded: a step refused every time fails once the wait has passed.
+        start = time.monotonic()
+        out = run('Start-Sleep -Milliseconds 500; throw [UnauthorizedAccessException]::new("held")')
+        self.assertIn("FAILED", out)
+        self.assertIn("held", out)
+        self.assertGreater(int(out.split("FAILED tries=")[1].split()[0]), 2)
+        self.assertLess(time.monotonic() - start, 20)
+
     def test_both_scripts_wait_the_same_way(self):
-        def block(name):
-            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
-            start = text.index("# A folder cannot be renamed or removed")
-            return text[start:text.index("\n}\n", text.index("function Invoke-LockRetry")) + 3]
+        block = lock_retry_block
         self.assertEqual(block("install.ps1"), block("uninstall.ps1"))
-        self.assertIn(self.BOUND, block("install.ps1"))     # about 30 seconds in all (#239)
+        self.assertIn(self.BOUND, block("install.ps1"))     # about 30 seconds a step (#239)
         install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
         for step in (self.STAGING, self.OLD):
             self.assertIn("Invoke-LockRetry { " + step, install)
