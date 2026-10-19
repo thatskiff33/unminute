@@ -390,11 +390,16 @@ class ReproducibleBuildTests(unittest.TestCase):
         (fake / "Microsoft.PowerShell.Security.psm1").write_text(
             "function Get-AuthenticodeSignature { 'fake' }\n", encoding="utf-8")
         system = bp.system_folder()
+        # Called, not just looked up: Get-Command names the real module even
+        # when a call would run the planted one.
         with mock.patch.dict(os.environ, {"PSModulePath": str(self.root / "mods")}):
-            r = bp.powershell("(Get-Command Get-AuthenticodeSignature).Module.ModuleBase; "
+            r = bp.powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:ComSpec; "
+                              "$s.GetType().FullName; "
+                              "(Get-Module Microsoft.PowerShell.Security).ModuleBase; "
                               "$env:PSModulePath")
         self.assertEqual(r.returncode, 0, r.stderr)
-        base, module_path = r.stdout.strip().splitlines()[-2:]
+        kind, base, module_path = r.stdout.strip().splitlines()[-3:]
+        self.assertEqual(kind, "System.Management.Automation.Signature")
         self.assertTrue(base.lower().startswith(system.lower()), base)
         self.assertNotIn(str(self.root).lower(), module_path.lower())
         self.assertNotIn(os.path.expanduser("~").lower(), module_path.lower())
