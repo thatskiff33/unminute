@@ -364,17 +364,11 @@ def verified_for_use(cache_dir):
     return not full_check(cache_dir)
 
 
-def _rename(src, dst, attempts=20, wait=0.5):
+def _rename(src, dst):
     """Rename a folder of freshly written files. Antivirus or the search
-    indexer may hold them for a moment, so a refused rename is retried briefly."""
-    import time
-    for i in range(attempts):
-        try:
-            return src.rename(dst)
-        except PermissionError:
-            if i == attempts - 1:
-                raise
-            time.sleep(wait)
+    indexer may hold them for a moment, so a rename refused as access denied or
+    in use is retried as a model's is (asr_engines.rename_with_retry, #249)."""
+    return asr_engines.rename_with_retry(src, dst)
 
 
 def _cache_bytecode_under(site):
