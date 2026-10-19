@@ -189,7 +189,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | Problem | What to do |
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > Manage downloads (the Downloads page) > Repair. The damaged copy is kept aside, not deleted. |
-| A meeting stopped because its speech model is not ready | Download or repair the model in Settings > Manage downloads, then select **Try again**. Or choose a downloaded model in Settings > Speech model and select **Transcribe with another model…** on the meeting's row. |
+| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > Speech model and select **Transcribe with another model…** on the meeting's row. Or download or repair the model in Settings > Manage downloads, then select **Try again**. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > Manage downloads, then use Identify again in the meeting's Speakers tab. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |
