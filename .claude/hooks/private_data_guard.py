@@ -144,9 +144,10 @@
 # line break, which is split there like a command (grep -rn 'cd X; rg' tests reads
 # X as a folder searched), so search for part of the text or use the Grep tool;
 # a here-string naming the data and piped to gh or git with a quoted title that
-# holds | (the title is split there, as on main), or piped to them across a line
-# break, a backtick or a bracket (only a text-only program on the here-string's
-# own line drops it), so keep such a pipeline on one line;
+# holds | (the title is split there, as on main), or anything else in the same
+# command (a here-string is dropped as text only when the command is nothing but
+# it, alone or assigned, piped on its closing line to one program that takes
+# text), so give gh or git a here-string body as a command of its own;
 # local AppData named whole and piped into rg, ag or grep that reads the pipe (echo
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
@@ -887,27 +888,32 @@ def _consumer(command, start, end):
     return before + " " + after
 
 
-def _carried_on(command, start, end):
-    """True when something carries a here-string to another line, where the
-    program that reads it may be (#221 rounds 4 and 5): its closing line ends in
-    | or a backtick continuation, the next line starts with |, a bracket opens
-    before it or closes after it, or its opening line ends in a backtick. Looks
-    only at its own lines and the start of the next, so linear over many
-    here-strings. Only for here-strings: a heredoc's next lines are its body."""
-    line_start = command.rfind("\n", 0, start) + 1
-    before = command[line_start:start].rstrip()
+# The start of a command that is only a here-string, or one assigned to a variable.
+ALONE_LEAD = re.compile(r"\s*(?:\$[\w:]+\s*=\s*)?")
+# Nothing but white space to the end of the command.
+ALONE_TAIL = re.compile(r"\s*\Z")
+# What may not follow a here-string on its closing line, outside quoted titles:
+# a second pipe, a bracket, a backtick, a separator or a redirect.
+NOT_ALONE = re.compile(r"[|()\[\]{}`;&<>]")
+
+
+def _alone(command, start, end):
+    """True when the whole command is this one here-string, alone or assigned to a
+    variable, and its closing line holds nothing or a single pipe to one program
+    with no bracket, backtick, separator or redirect (#221 rounds 4 to 6). Only
+    then may it be text only: anything before, after or around it could read it,
+    and finding every such shape by its context did not converge. Linear: every
+    here-string but one fails the first check at once."""
+    lead = ALONE_LEAD.match(command)
+    if lead.end() != start:
+        return False
     line_end = command.find("\n", end)
-    after = command[end:line_end if line_end >= 0 else len(command)].rstrip()
-    if after.endswith(("|", "`")) or before.endswith(("(", "{", "[", "`", ",")):
+    if line_end >= 0 and not ALONE_TAIL.match(command, line_end):
+        return False
+    rest = command[end:line_end if line_end >= 0 else len(command)].strip()
+    if not rest:
         return True
-    if after.lstrip().startswith((")", "}", "]", ".", ",")):
-        return True
-    if line_end >= 0:
-        next_end = command.find("\n", line_end + 1)
-        following = command[line_end + 1:next_end if next_end >= 0 else len(command)]
-        if following.lstrip().startswith(("|", ")", "}", "]", ".")):
-            return True
-    return False
+    return rest.startswith("|") and not NOT_ALONE.search(_unquoted(rest[1:]))
 
 
 # A quoted program path (a drive, a root, ~ or . at its start), which is kept.
@@ -966,11 +972,11 @@ def _drop_written(command, shell):
         # _unquoted pairs quotes naively, so an escaped quote or a comment could
         # hide the program that reads the lines (round 3 review). Quoted titles are
         # dropped only when looking for an interpreter ("Move to Python 3.14").
-        # Dropped as written text only on positive evidence on its own lines: a
-        # text-only consumer there, and nothing (an empty consumer, a pipe, a
-        # backtick or a bracket) that carries it to another line (rounds 4 and 5).
+        # Dropped as written text only when the whole command is this here-string,
+        # alone or assigned, piped on its closing line to one program that only
+        # takes text (rounds 4 to 6); every other shape keeps it checked, as main.
         consumer = _consumer(command, match.start(), match.end())
-        if (not consumer.strip() or _carried_on(command, match.start(), match.end())
+        if (not _alone(command, match.start(), match.end())
                 or INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer)):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)

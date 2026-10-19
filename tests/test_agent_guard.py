@@ -1667,7 +1667,24 @@ class HardeningTests(unittest.TestCase):
                 ("$p = @(\n@'\n" + self.DATA + "\\settings.json\n'@\n)\nGet-Content $p",
                  "PowerShell"),
                 ("@'\nBlocks " + self.DATA + "\n'@ |\n  gh pr create --title \"Notes\""
-                 " --body-file -", "PowerShell")),
+                 " --body-file -", "PowerShell"),
+                # Round 6: an opener on an earlier line or before a ; and a text-only
+                # program before a closing bracket; dropped only when the command is
+                # nothing but the here-string piped to one program that takes text.
+                ("Get-Content -Path (\n@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output )",
+                 "PowerShell"),
+                ("Get-Content `\n@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output",
+                 "PowerShell"),
+                ("Get-Content -Path 'a.txt',\n@'\n" + self.DATA + "\\settings.json\n'@"
+                 " | Write-Output", "PowerShell"),
+                ("$p = @(\n@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output )\n"
+                 "Get-Content $p", "PowerShell"),
+                ("foreach ($f in (\n@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output ))"
+                 " { Get-Content $f }", "PowerShell"),
+                ("Get-Content -Path $(1; @'\n" + self.DATA + "\\settings.json\n'@"
+                 " | Write-Output )", "PowerShell"),
+                ("Get-Content -Path (& { 1; @'\n" + self.DATA + "\\settings.json\n'@"
+                 " | Write-Output })", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",
