@@ -56,6 +56,12 @@ class BridgeNameTests(unittest.TestCase):
         end = fixtures.index("\n  };", start)
         served = set(re.findall(r"^    (\w+):", fixtures[start:end], re.MULTILINE))
         self.assertGreater(len(served), 10, "the handlers pattern no longer matches fixtures.js")
+        # Handlers added after the literal (one mode's only, as the transcribing
+        # mode's edit, #127) count too: handlers.name = ... or handlers["name"] = ...
+        added = {dotted or quoted for dotted, quoted in re.findall(
+            r"\bhandlers(?:\.(\w+)|\[\s*[\"'](\w+)[\"']\s*\])\s*=(?!=)", fixtures)}
+        self.assertIn("edit", added, "the added-handler pattern no longer matches fixtures.js")
+        served |= added
         self.assertEqual(set(), served - self.allowed,
                          "tools/design_check/fixtures.js serves methods the app does not expose")
 

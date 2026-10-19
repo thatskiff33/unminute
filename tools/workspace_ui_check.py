@@ -355,7 +355,7 @@ def native_checks(window, ws, mid):
     return out
 
 
-def checks(window, ws, mid, long_mid, report):
+def checks(window, ws, mid, long_mid, grow_mid, report):
     try:
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
@@ -587,6 +587,7 @@ def checks(window, ws, mid, long_mid, report):
                     render_ms: Math.round(render_ms),
                     hit: document.getElementById('m-hits').textContent}};""", timeout=120)
         report["long_transcript"]["wall_s"] = round(time.perf_counter() - t0, 1)
+        report["growing"] = growing_checks(window, ws, grow_mid)
         report["native"] = native_checks(window, ws, long_mid)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
@@ -595,6 +596,223 @@ def checks(window, ws, mid, long_mid, report):
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         window.destroy()
+
+
+GROW_FIRST = 3000      # passages in the growing meeting's first chunk
+GROW_MORE = 20         # passages in each chunk after it
+GROW_TEXT = "Edited while transcribing"
+# Page helpers for the growing transcript: the rows shown, and a wait for a condition.
+GROW_JS = WAIT + """
+    const rows = () => document.querySelectorAll('#transcript > li');
+    const until = async (ok, ms = 20000) => {
+        const end = performance.now() + ms;
+        while (!ok() && performance.now() < end) await wait(25);
+        return ok(); };
+    const frames = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const g = window.__grow;
+    const edited = () => document.querySelector(`#transcript .text[data-id="${g.id}"]`);"""
+
+
+def grow_update(window, expect, extra="", first=""):
+    """Refresh the page after a chunk was committed and wait until it shows
+    `expect` rows: how long that took, what it drew, and whether it redrew
+    the whole list. `extra` adds fields (JavaScript, `name: value, ...`).
+    `first` (JavaScript) runs after the starting counts are taken, so rows a
+    page poll draws during it still count towards this step."""
+    return evaluate(window, GROW_JS + f"""
+        const added = g.added, redraws = g.redraws;
+        {first}
+        const t = performance.now();
+        await window.workspace.refresh();
+        const ok = await until(() => rows().length === {expect});
+        await frames();
+        return {{ok, rows: rows().length, ms: Math.round(performance.now() - t),
+                 added: g.added - added, redrawn: g.redraws > redraws, {extra}}};""")
+
+
+def growing_checks(window, ws, grow_mid):
+    """#127: a long meeting open while it is transcribed. The check commits
+    chunks itself while the page shows the meeting: new passages at the end
+    must be appended, not the whole list redrawn, with an edit held back and
+    then kept, an undo kept, and the whole list redrawn when appending is not
+    safe (a search open, an earlier chunk done after a later one, speakers
+    identified). Each step records how long the page took to show the rows
+    and what it fetched (counted in Python) and drew (counted in the page)."""
+    out, seen = {}, {"calls": 0, "rows": 0}
+    real = ws.transcript
+    vid = ws.store.active_version(grow_mid)["id"]
+
+    def counted(mid, start=0, count=500, version=None):
+        page = real(mid, start, count, version)
+        if mid == grow_mid:
+            seen["calls"] += 1
+            seen["rows"] += len(page["items"])
+        return page
+
+    def step(name, result):
+        """Record a step with what the page fetched for it."""
+        result.update(calls=seen["calls"] - mark["calls"], fetched=seen["rows"] - mark["rows"])
+        out[name] = result
+        mark.update(seen)
+        return result
+
+    ws.transcript = counted                     # the bridge looks it up on each call
+    mark = dict(seen)
+    try:
+        shown = GROW_FIRST
+        step("open", evaluate(window, GROW_JS + f"""
+            const t = performance.now();
+            await window.workspace.openMeeting('{grow_mid}');
+            await until(() => rows().length === {shown}, 60000);
+            await frames();
+            const ms = Math.round(performance.now() - t);
+            const list = document.getElementById('transcript');
+            window.__grow = {{added: 0, redraws: 0}};
+            new MutationObserver(records => {{ for (const r of records) {{
+                window.__grow.added += r.addedNodes.length;
+                if (r.removedNodes.length) window.__grow.redraws++; }} }})
+                .observe(list, {{childList: true}});
+            return {{rows: rows().length, ms}};""", timeout=90))
+        pending = [c["idx"] for c in ws.store.chunks(vid, status="pending")]
+        for n in (1, 2):                        # more passages at the end: appended
+            commit_passages(ws, grow_mid, pending.pop(0), GROW_MORE)
+            shown += GROW_MORE
+            step(f"append_{n}", grow_update(window, shown))
+        # An edit starts; transcription goes on. Nothing is drawn under it.
+        evaluate(window, GROW_JS + f"""
+            const span = document.querySelectorAll('#transcript .text')[1];
+            window.__grow.span = span; window.__grow.original = span.textContent;
+            window.__grow.id = span.dataset.id;
+            span.click(); span.textContent = '{GROW_TEXT}';
+            span.dispatchEvent(new Event('input'));""")
+        commit_passages(ws, grow_mid, pending.pop(0), GROW_MORE)
+        step("while_editing", evaluate(window, GROW_JS + f"""
+            const added = g.added, redraws = g.redraws;
+            await window.workspace.refresh(); await wait(1500);
+            return {{rows: rows().length, held: rows().length === {shown} && g.added === added
+                     && g.redraws === redraws && document.activeElement === g.span}};"""))
+        # The edit ends. A page poll may append the held-back rows during the
+        # wait, so the step's starting counts are taken before the blur.
+        shown += GROW_MORE
+        step("after_edit", grow_update(
+            window, shown, f"kept: edited().textContent === '{GROW_TEXT}'",
+            first="g.span.blur(); await wait(1500);"))
+        out["edit_saved"] = real(grow_mid, 1, 1)["items"][0]["text"] == GROW_TEXT
+        # Undo the edit, then more passages: the undone text stays.
+        out["undone"] = evaluate(window, GROW_JS + """
+            document.getElementById('m-undo').click(); await wait(1500);
+            return edited().textContent === g.original;""")
+        commit_passages(ws, grow_mid, pending.pop(0), GROW_MORE)
+        shown += GROW_MORE
+        step("after_undo", grow_update(
+            window, shown, "kept: edited().textContent === g.original"))
+        # A search open: the whole list is redrawn, so the matches include the new rows.
+        target = pending.pop(0)
+        evaluate(window, GROW_JS + f"""
+            const box = document.getElementById('m-search');
+            box.value = 'growing passage {target}.'; box.dispatchEvent(new Event('input'));
+            await wait(800);""")
+        commit_passages(ws, grow_mid, target, GROW_MORE)
+        shown += GROW_MORE
+        step("searching", grow_update(window, shown,
+                                      "hits: document.getElementById('m-hits').textContent"))
+        evaluate(window, GROW_JS + """
+            const box = document.getElementById('m-search');
+            box.value = ''; box.dispatchEvent(new Event('input')); await wait(800);""")
+        # The last chunk done before the ones in between (one done again after
+        # a failure, say): appended at the end; then the earlier ones land
+        # mid-list, so the whole list is redrawn.
+        commit_passages(ws, grow_mid, pending.pop(), GROW_MORE)
+        shown += GROW_MORE
+        step("later_chunk", grow_update(window, shown))
+        for idx in pending:
+            commit_passages(ws, grow_mid, idx, GROW_MORE)
+            shown += GROW_MORE
+        step("earlier_chunk", grow_update(window, shown,
+                                          "ids: [...rows()].map(li => Number(li.dataset.id))"))
+        out["earlier_chunk"]["in_order"] = (out["earlier_chunk"].pop("ids")
+                                            == ws.store.passage_ids(vid))
+        # Speakers identified: every row gets its label, so the list is redrawn.
+        evaluate(window, GROW_JS + "g.redrawsBeforeSpeakers = g.redraws;")
+        ws.store.set_paused(grow_mid, False)
+        ws.rerun_speakers(grow_mid)
+        end = time.time() + 120
+        while time.time() < end and ((ws.detail(grow_mid)["speakers"] or {}).get("status")
+                                     != "done"):
+            time.sleep(0.25)
+        step("speakers", evaluate(window, GROW_JS + """
+            await window.workspace.refresh();
+            const labelled = await until(() => !!document.querySelector('#transcript .who'));
+            await frames();
+            return {labelled, redrawn: g.redraws > g.redrawsBeforeSpeakers,
+                    turns: document.querySelectorAll('#transcript li.turn').length,
+                    ids: [...rows()].map(li => Number(li.dataset.id))};"""))
+        out["speakers"]["in_order"] = out["speakers"].pop("ids") == ws.store.passage_ids(vid)
+    finally:
+        ws.__dict__.pop("transcript", None)     # the method again
+    return out
+
+
+def growing_problems(gr):
+    """What the growing-transcript check found wrong (an empty list: nothing)."""
+    bad = []
+    if (gr.get("open") or {}).get("rows") != GROW_FIRST:
+        bad.append("the first rows were not shown")
+    # after_edit: the chunk committed while editing, held back until the edit ended.
+    for name in ("append_1", "append_2", "after_edit", "after_undo", "later_chunk"):
+        s = gr.get(name) or {}
+        if not (s.get("ok") and s.get("redrawn") is False and s.get("added") == GROW_MORE):
+            bad.append(f"{name}: new passages were not appended")
+    if not (gr.get("while_editing") or {}).get("held"):
+        bad.append("rows were drawn while a passage was being edited")
+    if not ((gr.get("after_edit") or {}).get("kept") and gr.get("edit_saved")):
+        bad.append("the edit was not kept")
+    if not (gr.get("undone") and (gr.get("after_undo") or {}).get("kept")):
+        bad.append("the undo was not kept")
+    s = gr.get("searching") or {}
+    if not (s.get("ok") and s.get("redrawn") and s.get("hits") == f"{GROW_MORE} found"):
+        bad.append("searching: the list was not redrawn with the new matches")
+    s = gr.get("earlier_chunk") or {}
+    if not (s.get("ok") and s.get("redrawn") and s.get("in_order")):
+        bad.append("earlier chunk: the list was not redrawn in order")
+    s = gr.get("speakers") or {}
+    if not (s.get("labelled") and s.get("redrawn") and s.get("in_order") and s.get("turns", 0) > 1):
+        bad.append("speakers: the list was not redrawn with the speakers")
+    return bad
+
+
+def add_growing_meeting(ws, root):
+    """A third meeting, part transcribed: six minutes of audio planned as
+    several chunks, the first holding GROW_FIRST short passages (a long
+    transcript so far), written through the store. Paused before its plan
+    exists, so the processing thread transcribes none of it: growing_checks
+    commits the other chunks one at a time while the page shows the meeting.
+    Returns its id, still paused."""
+    from workspace import media
+    path = write_wav(root / "synthetic-growing.wav", 360)
+    grow_mid, sid = media.import_recording(ws.store, ws.media, path, path.stem)
+    ws.store.set_paused(grow_mid, True)
+    ws.store.set_source_intake(sid, None, may_delete=False)
+    ws._plan_version(grow_mid, sid)
+    assert ws.wait_idle(180), "processing did not stop"
+    vid = ws.store.active_version(grow_mid)["id"]
+    assert len(ws.store.chunks(vid, status="pending")) >= 8, "too few chunks planned"
+    commit_passages(ws, grow_mid, 0, GROW_FIRST)
+    return grow_mid
+
+
+def commit_passages(ws, mid, idx, n):
+    """Commit chunk idx of the meeting's active version, as transcription
+    would: n synthetic passages spread over the chunk's own time range."""
+    from workspace.media import SAMPLE_RATE
+    vid = ws.store.active_version(mid)["id"]
+    chunk = next(c for c in ws.store.chunks(vid) if c["idx"] == idx)
+    start = chunk["start_sample"] / SAMPLE_RATE
+    gap = (chunk["end_sample"] - chunk["start_sample"]) / SAMPLE_RATE / n
+    assert ws.store.commit_chunk(vid, idx, [
+        types.SimpleNamespace(start=start + i * gap, end=start + (i + 0.8) * gap,
+                              text=f"growing passage {idx}.{i} about the plan", words=())
+        for i in range(n)]), f"chunk {idx} was not committed"
 
 
 def add_long_meeting(ws, root, passages=5000):
@@ -647,6 +865,7 @@ def main():
         third = ws.transcript(mid)["items"][2]
         ws.edit(mid, third["id"], HOSTILE)
         long_mid = add_long_meeting(ws, root)
+        grow_mid = add_growing_meeting(ws, root)
         ws.settings.update(speakers=False)
         ws.store.set_paused(long_mid, False)
         # Setup: fake downloads, and never touch the real Credential Manager.
@@ -663,9 +882,10 @@ def main():
                                      allowed=api.API_METHODS)
         holder["window"] = window
         storage = shell.storage_folder(ws.root)
-        shell.run(checks, (window, ws, mid, long_mid, report), storage_path=storage)
+        shell.run(checks, (window, ws, mid, long_mid, grow_mid, report), storage_path=storage)
         report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
+    report["growing_problems"] = growing_problems(report.get("growing") or {})
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
@@ -749,6 +969,8 @@ def main():
     elif not (lt.get("pane_scrolled") and lt.get("search_visible")
               and lt.get("page_scroll_y") == 0):
         bad.append("transcript pane scrolling")
+    if report["growing_problems"]:
+        bad.append("growing transcript (" + "; ".join(report["growing_problems"]) + ")")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
         ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,
