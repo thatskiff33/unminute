@@ -48,8 +48,42 @@ real time, and remove it when the cause is fixed.
 - **pythonnet returns a new wrapper on every .NET property read**, so `form.Icon is x` is always
   false. Compare handles or values instead.
 - **Clicking WinForms buttons in UI automation.** Post `WM_LBUTTONDOWN` and `WM_LBUTTONUP` at the
-  control's centre. `BM_CLICK` uses the current pointer position, so a button that checks where
-  the mouse was released ignores it, and the check hangs with a dialog open on the user's screen.
+  control's centre, as a real click sends. WinForms turns `BM_CLICK` into the control's Click
+  with no mouse or key event (a posted `BM_CLICK` on an off-screen `Button` raised Click only;
+  19 Oct 2026). On the confirmation's action that skips the app's mouse rule, which is on
+  MouseUp (`mouse_up_on_action` in `workspace/shell.py`), and takes the path of an assistive
+  tool's Invoke instead (`act_clicked`: it answers once the action has been enabled for the
+  wait), so a check meant to test a person's click would test the wrong rule.
+- **A posted click cannot tick a covered WinForms `CheckBox`.** On mouse-up, WinForms'
+  `CheckBox` acts only if `WindowFromPoint` at that point on screen is the check box itself. A
+  check started from a terminal usually cannot bring its window to the foreground (Windows'
+  foreground lock), so the window the user has in front covers the confirmation and the posted
+  click is lost. That made `tools/workspace_ui_check.py` fail for days on an unchanged `main`
+  ("a confirmation was left open (is the screen locked?)"; 19 Oct 2026). It now ticks the
+  statement in two ways that work whatever is in front. The "keyboard" script posts Space to
+  the check box; that ticks it whatever has the focus, so the script's Tab count to the action
+  (Enter answers only on a focused action) is what shows the statement is in the tab order.
+  The "tick first" script posts `BM_CLICK` to the check box, which WinForms turns into the box's
+  Click with no mouse or key event (as on any button, above), so only the tick itself
+  (`CheckedChanged`) can restart the wait, and the check shows that it does. The
+  confirmation's action button is not affected by the cover: the app answers its mouse-up from
+  the button's own client rectangle (`mouse_up_on_action` in `workspace/shell.py`). The
+  real-window check does not try a mouse tick when the confirmation happens to be uncovered:
+  the result would depend on what is on the user's screen, and forcing the foreground or
+  moving the real pointer would take over the user's desktop. Instead `tests/test_evidence.py`
+  shows, on an off-screen stand-in form, that a posted click acts on the check box when nothing
+  covers it and is lost when a window does, and that Space and `BM_CLICK` tick it while it is
+  covered, `BM_CLICK` with no mouse or key event. That test holds a named mutex
+  (`Local\UnminuteTickTest`), because concurrent suites on one machine would put their
+  stand-ins at the same place on screen and cover each other.
+- **Each confirmation rule has a native script only it can pass.** In
+  `tools/workspace_ui_check.py`, keys (Shift posted to the focused Cancel) and clicks on the
+  text before the action is available must restart the wait ("keys wait again", "clicks wait
+  again"); Enter on the ticked statement, long after the action was enabled, must cancel
+  (`AcceptButton` is Cancel); and the keyboard script's quick Enter comes 2.5 s after the tick
+  but just after the action took the focus, so only the focus hold can ignore it. A script
+  that several rules could pass (for example an Enter posted while Cancel has the focus, which
+  WinForms gives to Cancel whatever `AcceptButton` is) proves none of them.
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the

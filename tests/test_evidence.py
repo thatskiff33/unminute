@@ -5,12 +5,14 @@
 # one passing report of every kind naming the zip being published.
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 import zipfile
@@ -77,6 +79,38 @@ def path_prepends(source):
             if any(a.name in IMPORT_LISTS for a in node.names):
                 found.add(node.lineno)
     return sorted(found)
+
+
+TICK_TEST_MUTEX = "Local\\UnminuteTickTest"
+
+
+@contextlib.contextmanager
+def one_run_at_a_time(name, timeout_s=120.0):
+    """Hold a named mutex for this Windows session, so concurrent suites on one
+    machine take turns at something they share (here the stand-in form's fixed
+    place on screen). An owner that died without releasing it hands it on
+    (WAIT_ABANDONED); TimeoutError if another run keeps it for timeout_s."""
+    import ctypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.CreateMutexW(None, False, name)
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        state = kernel32.WaitForSingleObject(handle, int(timeout_s * 1000))
+        if state not in (0, 0x80):                     # WAIT_OBJECT_0, WAIT_ABANDONED
+            raise TimeoutError(f"another run held {name} for {timeout_s} s")
+        try:
+            yield
+        finally:
+            kernel32.ReleaseMutex(handle)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 LONG_S = chr(0x17F)      # Latin small long s: a different name on NTFS, "s" to casefold()
@@ -723,6 +757,187 @@ class ToolTests(TempDir):
         finally:
             other.kill()
             other.wait(10)
+
+    @unittest.skipUnless(os.name == "nt", "Windows windows")
+    def test_the_ui_check_ticks_a_statement_behind_another_window(self):
+        # The UI check's confirmations are usually behind the user's foreground
+        # window (a process started from a terminal cannot take the foreground).
+        # WinForms' CheckBox acts on a mouse-up only if WindowFromPoint there is
+        # the check box itself, so a posted click on a covered statement is
+        # lost; Space and BM_CLICK posted to the check box tick it. A form that
+        # is never activated, off screen under a top-most cover, stands in for
+        # the confirmation. It is in another process, so find_dialog is
+        # pointed at it. Every run uses the same place on screen, so concurrent
+        # suites on one machine take turns (a second run's cover or form would
+        # cover this one's).
+        with one_run_at_a_time(TICK_TEST_MUTEX):
+            self.tick_behind_another_window()
+
+    def tick_behind_another_window(self):
+        import ctypes
+        import io
+        from ctypes import wintypes
+
+        import workspace_ui_check
+        title = f"Unminute tick test {os.getpid()}"
+        statement = "I have read this synthetic statement."
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -WarningAction SilentlyContinue -ReferencedAssemblies System.Windows.Forms "
+            "-TypeDefinition 'public class QuietForm : System.Windows.Forms.Form { protected "
+            "override bool ShowWithoutActivation { get { return true; } } }'; "
+            "function Say($line) { [Console]::Out.WriteLine($line); [Console]::Out.Flush() }; "
+            "$f = New-Object QuietForm; $f.Text = $env:UNMINUTE_TITLE; $f.KeyPreview = $true; "
+            "$f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; "
+            "$f.Location = New-Object Drawing.Point(-32000, -32000); "
+            "$cancel = New-Object Windows.Forms.Button; $cancel.Text = 'Cancel'; "
+            "$check = New-Object Windows.Forms.CheckBox; $check.Text = $env:UNMINUTE_CHECK; "
+            "$check.AutoSize = $true; $check.Top = 40; "
+            "$check.add_CheckedChanged({ Say ('checked ' + $check.Checked) }); "
+            "$check.add_MouseDown({ Say 'mouse' }); $f.add_KeyDown({ Say 'key' }); "
+            "$f.Controls.Add($cancel); $f.Controls.Add($check); $f.Show(); $cancel.Select(); "
+            "$cover = New-Object QuietForm; $cover.Text = $env:UNMINUTE_TITLE + ' cover'; "
+            "$cover.ShowInTaskbar = $false; $cover.FormBorderStyle = 'None'; "
+            "$cover.TopMost = $true; $cover.StartPosition = 'Manual'; $cover.Bounds = $f.Bounds; "
+            "$cover.Show(); Say 'shown'; "
+            "for ($i = 0; $i -lt 300 -and $f.Visible; $i++) { "
+            "[Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }; "
+            "Say 'done'")
+        form = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                 script], stdout=subprocess.PIPE, text=True,
+                                env=dict(os.environ, UNMINUTE_TITLE=title,
+                                         UNMINUTE_CHECK=statement))
+        try:
+            self.assertEqual("shown", form.stdout.readline().strip())
+            user32 = ctypes.WinDLL("user32")
+            user32.FindWindowW.restype = ctypes.c_void_p
+            user32.WindowFromPoint.restype = ctypes.c_void_p
+            hwnd = user32.FindWindowW(None, title)
+            cover = user32.FindWindowW(None, title + " cover")
+            self.assertTrue(hwnd and cover)
+            check = workspace_ui_check.dialog_button(hwnd, statement)
+            rect = wintypes.RECT()
+            user32.GetWindowRect(ctypes.c_void_p(check), ctypes.byref(rect))
+
+            def on_top():
+                """The window at the check box's centre is the check box."""
+                at = wintypes.POINT((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2)
+                return user32.WindowFromPoint(at) == check
+            with mock.patch.object(workspace_ui_check, "find_dialog", return_value=hwnd):
+                self.assertFalse(on_top())
+                # Covered: a posted click arrives (MouseDown) but does not tick.
+                self.assertTrue(workspace_ui_check.press(["click:" + statement], title))
+                # Space posted to the check box ticks it; it needs no focus
+                # (Cancel has it) and arrives as a key press (KeyDown).
+                self.assertTrue(workspace_ui_check.press(["space-on:" + statement], title))
+                # BM_CLICK unticks it with no key or mouse event at all, so in
+                # the real check only CheckedChanged can restart the wait.
+                self.assertTrue(workspace_ui_check.press(["toggle-on:" + statement], title))
+                # Shift posted to the focused Cancel reaches the form as a key
+                # press (KeyPreview) and ticks nothing ("keys wait again").
+                self.assertTrue(workspace_ui_check.press(["shift-on:Cancel"], title))
+                # Uncovered, the same click acts (it ticks), so the click
+                # itself was sound and only the cover lost it.
+                user32.PostMessageW(ctypes.c_void_p(cover), 0x0010, 0, 0)     # WM_CLOSE
+                for _ in range(100):
+                    if on_top():
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(on_top())
+                self.assertTrue(workspace_ui_check.press(["click:" + statement], title))
+                # A step press() does not know is refused, not silently skipped.
+                with contextlib.redirect_stderr(io.StringIO()) as said:
+                    self.assertFalse(workspace_ui_check.press(["space-at:" + statement], title))
+                self.assertIn("unknown step", said.getvalue())
+            user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0)          # WM_CLOSE
+            lines = [line.strip() for line in form.stdout]
+            self.assertEqual(["mouse", "key", "checked True", "checked False", "key",
+                              "mouse", "checked True", "done"], lines)
+        finally:
+            form.kill()
+            form.wait(10)
+            form.stdout.close()
+
+    @unittest.skipUnless(os.name == "nt", "Windows mutex")
+    def test_runs_take_turns_at_the_tick_test(self):
+        # Another process holding the mutex keeps this run waiting; once it lets
+        # go, this run goes ahead. A name of its own, so a real tick test
+        # running at the same time is not held up.
+        name = f"Local\\UnminuteTurnTest{os.getpid()}"
+        holder = subprocess.Popen([sys.executable, "-I", "-c", (
+            "import ctypes, sys\n"
+            "k = ctypes.WinDLL('kernel32')\n"
+            "k.CreateMutexW.restype = ctypes.c_void_p\n"
+            "h = ctypes.c_void_p(k.CreateMutexW(None, True, sys.argv[1]))\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n"
+            "k.ReleaseMutex(h)\n"), name], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            text=True)
+        try:
+            self.assertEqual("held", holder.stdout.readline().strip())
+            began = time.monotonic()
+            with self.assertRaises(TimeoutError):
+                with one_run_at_a_time(name, timeout_s=0.5):
+                    self.fail("went ahead while another run held the mutex")
+            self.assertGreaterEqual(time.monotonic() - began, 0.4)
+            holder.stdin.close()
+            self.assertEqual(0, holder.wait(10))
+            ran = []
+            with one_run_at_a_time(name, timeout_s=10):
+                ran.append(True)
+            self.assertEqual([True], ran)
+        finally:
+            holder.kill()
+            holder.wait(10)
+            holder.stdout.close()
+        # The tick test itself takes its turn under the shared name.
+        body = Path(__file__).read_text(encoding="utf-8").split(
+            "def test_the_ui_check_ticks_a_statement_behind_another_window(", 1)[1].split(
+            "\n    def ", 1)[0]
+        self.assertIn("with one_run_at_a_time(TICK_TEST_MUTEX):", body)
+
+    def test_the_ui_check_never_ticks_its_statements_by_click(self):
+        # A posted click cannot tick a statement behind the user's foreground
+        # window (the test above), so the native checks tick with BM_CLICK
+        # ("tick first": no key or mouse input, so only the tick restarts the
+        # wait) and with Tab and Space (keyboard).
+        native = self.source("workspace_ui_check.py").split(
+            "\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
+        self.assertNotIn('"click:I have read', native)
+        self.assertIn('"click:Confirm", "open?", "toggle-on:" + ticked["check"],\n'
+                      '         "click:Confirm", "open?"', native)
+        self.assertIn('["tab", "space-on:" + keyed["check"]', native)
+
+    def test_the_ui_check_guards_each_confirmation_rule(self):
+        # Each rule in workspace/shell.py's confirmation has a native script
+        # that only that rule can pass (round 2 review of #229).
+        source = self.source("workspace_ui_check.py")
+        native = source.split("\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
+        # The quick Enter comes long after the action was enabled, so only the
+        # focus hold (not "enabled for the wait") ignores it.
+        self.assertIn('"space-on:" + keyed["check"], "wait:2.5", "tab", "tab",\n'
+                      '         "enter-on:Confirm", "open?"', native)
+        # A key press before the action is available restarts the wait: keys at
+        # 0.2, 0.6 and 1.0 s, the action still ignored at 1.5 s.
+        self.assertIn('["wait:0.2", "shift-on:Cancel", "wait:0.35", "shift-on:Cancel", '
+                      '"wait:0.35",\n         "shift-on:Cancel", "wait:0.45", "click:Confirm", '
+                      '"open?"', native)
+        # So does a mouse press on the dialog (its text).
+        self.assertIn('["wait:0.2", "click:" + plain["body"], "wait:0.2", "click:" + '
+                      'plain["body"],\n         "wait:0.2", "click:" + plain["body"], '
+                      '"wait:0.3", "click:Confirm", "open?"', native)
+        # Enter on the ticked statement, long after the action was enabled,
+        # means Cancel (AcceptButton).
+        self.assertIn('["tab", "space-on:" + on_statement["check"], "wait:2.5",\n'
+                      '         "enter-on:" + on_statement["check"]]', native)
+        verdict = source.split('nv = report.get("native")', 1)[1].split("recording indicator", 1)[0]
+        for rule in ('nv.get("keys_restart_wait") is True', 'nv.get("open_after_keys") == [True]',
+                     'nv.get("clicks_restart_wait") is True',
+                     'nv.get("open_after_clicks") == [True]',
+                     'nv.get("enter_on_statement") is False', 'nv.get("pressed_6")',
+                     'nv.get("pressed_7")', 'nv.get("pressed_8")'):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, verdict)
 
     def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
         source = self.source("workspace_ui_check.py")
