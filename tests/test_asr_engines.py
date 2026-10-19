@@ -418,6 +418,7 @@ class LockRetryTests(unittest.TestCase):
         for label_, error in errors.items():
             with self.subTest(label_):
                 self.calls.clear()
+                self.clock.sleeps.clear()
                 patcher = self.lock({"x": (error, None)})
                 src = self.cache / "x"
                 src.mkdir(exist_ok=True)
