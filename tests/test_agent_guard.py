@@ -1684,7 +1684,13 @@ class HardeningTests(unittest.TestCase):
                 ("Get-Content -Path $(1; @'\n" + self.DATA + "\\settings.json\n'@"
                  " | Write-Output )", "PowerShell"),
                 ("Get-Content -Path (& { 1; @'\n" + self.DATA + "\\settings.json\n'@"
-                 " | Write-Output })", "PowerShell")),
+                 " | Write-Output })", "PowerShell"),
+                # Round 7: a lone carriage return (a line break to PowerShell) and a
+                # typographic quote (which closes a string there) after it.
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Set-Content list.txt\r"
+                 "$x = Get-Content list.txt\rGet-Content $x", "PowerShell"),
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Set-Content -Path \"list.txt\u201d ;"
+                 " Get-Content -Path (Get-Content list.txt) ; \"x\"", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",

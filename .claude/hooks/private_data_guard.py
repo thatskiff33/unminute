@@ -897,20 +897,28 @@ ALONE_TAIL = re.compile(r"\s*\Z")
 NOT_ALONE = re.compile(r"[|()\[\]{}`;&<>]")
 
 
-def _alone(command, start, end):
+# PowerShell closes a quoted string at these too, which _unquoted does not pair.
+SMART_QUOTES = frozenset("‘’‚‛“”„")
+
+
+def _alone(command, start, end, lead_end):
     """True when the whole command is this one here-string, alone or assigned to a
     variable, and its closing line holds nothing or a single pipe to one program
     with no bracket, backtick, separator or redirect (#221 rounds 4 to 6). Only
     then may it be text only: anything before, after or around it could read it,
-    and finding every such shape by its context did not converge. Linear: every
-    here-string but one fails the first check at once."""
-    lead = ALONE_LEAD.match(command)
-    if lead.end() != start:
+    and finding every such shape by its context did not converge. A lone carriage
+    return (a line break to PowerShell) or a typographic quote (which closes a
+    string there) after it keeps it checked (round 7). lead_end is where the
+    command's lead (white space and an optional assignment) ends, found once per
+    command, so this is linear: every here-string but one fails at once."""
+    if lead_end != start:
         return False
     line_end = command.find("\n", end)
     if line_end >= 0 and not ALONE_TAIL.match(command, line_end):
         return False
     rest = command[end:line_end if line_end >= 0 else len(command)].strip()
+    if "\r" in rest or not SMART_QUOTES.isdisjoint(rest):
+        return False
     if not rest:
         return True
     return rest.startswith("|") and not NOT_ALONE.search(_unquoted(rest[1:]))
@@ -976,7 +984,7 @@ def _drop_written(command, shell):
         # alone or assigned, piped on its closing line to one program that only
         # takes text (rounds 4 to 6); every other shape keeps it checked, as main.
         consumer = _consumer(command, match.start(), match.end())
-        if (not _alone(command, match.start(), match.end())
+        if (not _alone(command, match.start(), match.end(), lead_end)
                 or INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer)):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)
@@ -999,6 +1007,7 @@ def _drop_written(command, shell):
 
     command = HEREDOC.sub(heredoc, command)
     if shell == "PowerShell":
+        lead_end = ALONE_LEAD.match(command).end()    # once per command (_alone)
         command = HERE_STRING.sub(here_string, command)
     starts = _segment_starts(command)
     return MESSAGE_VALUE.sub(message, command)
