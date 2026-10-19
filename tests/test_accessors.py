@@ -607,6 +607,8 @@ class UiCheckSetupTests(unittest.TestCase):
             finally:
                 ws.close()
 
+    @unittest.skipUnless(sys.platform == "win32",
+                         "imports use Windows path rules (the app is Windows-only)")
     def test_the_failed_meeting_stops_on_its_model_and_moves_to_a_ready_one(self):
         # #244: the UI check's failed meeting, without a window. Its real model
         # name fails at load because the check's model folder is new and empty:
