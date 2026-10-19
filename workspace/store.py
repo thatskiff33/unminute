@@ -323,12 +323,26 @@ def local_appdata():
                          "(LOCALAPPDATA). Ask your IT team.")
     if not base or not path.is_absolute() or base.startswith(("\\\\", "//")):
         raise missing
-    # Compare real paths: short (8.3) names and junctions must not hide that
-    # the folder is inside OneDrive or on a network share.
-    real = _real(base)
-    if _network_path(real) or _remote_drive(real):
+    where = _synced_or_network(base)
+    if where == "network":
         raise StoreError("This account's local app data folder is on a network drive. "
                          "Unminute keeps meetings on this computer. Ask your IT team.")
+    if where == "onedrive":
+        raise StoreError("This account's local app data folder is inside OneDrive. "
+                         "Unminute keeps meetings out of synced folders. Ask your IT team.")
+    return path
+
+
+def _synced_or_network(path):
+    """Where the real location of path is: "network" (a network share or a
+    mapped network drive), "onedrive" (inside a folder a OneDrive variable
+    names) or None (on this computer). Real paths are compared: short (8.3)
+    names and junctions must not hide that a folder is inside OneDrive or on
+    a network share. A folder that does not exist yet resolves through its
+    nearest existing parent."""
+    real = _real(path)
+    if _network_path(real) or _remote_drive(real):
+        return "network"
     resolved = _folder_key(real)
     profile = os.environ.get("USERPROFILE", "")
     for var in ("OneDrive", "OneDriveCommercial", "OneDriveConsumer"):
@@ -346,9 +360,8 @@ def local_appdata():
                 profile and _folder_key(_real(profile)).startswith(synced_key)):
             continue
         if resolved.startswith(synced_key):
-            raise StoreError("This account's local app data folder is inside OneDrive. "
-                             "Unminute keeps meetings out of synced folders. Ask your IT team.")
-    return path
+            return "onedrive"
+    return None
 
 
 def _real(path):
@@ -383,8 +396,38 @@ def _remote_drive(path):
     return ctypes.WinDLL("kernel32").GetDriveTypeW(ctypes.c_wchar_p(root)) == 4  # REMOTE
 
 
-def default_root():
+# The workspace refused because its real location is not on this computer
+# (#219). No path in either message (P3). The models folder is the one folder
+# IT may redirect (docs/PACKAGING.md).
+REDIRECTED = {
+    "network": ("Unminute's workspace folder is redirected to a network drive. Unminute "
+                "keeps meetings on this computer. Ask your IT team: only Unminute's models "
+                "folder may be moved."),
+    "onedrive": ("Unminute's workspace folder is redirected into OneDrive. Unminute keeps "
+                 "meetings out of synced folders. Ask your IT team: only Unminute's models "
+                 "folder may be moved."),
+}
+
+
+def _workspace_folder():
+    # K1: the data folder's name is pinned (tests/test_consistency.py reads this line).
     return local_appdata() / "Unminute" / "workspace"
+
+
+def default_root():
+    """The workspace, %LOCALAPPDATA%\\Unminute\\workspace. local_appdata()
+    checks %LOCALAPPDATA% itself, but a junction or link at Unminute, or at
+    Unminute\\workspace, could still take the workspace into OneDrive or onto
+    a network drive. So the real location of each is checked too, and the
+    workspace is refused there (#219, D3). Only Unminute\\models may be
+    redirected: it holds no meeting content, and the model cache
+    (__main__.model_cache) does not come through here."""
+    root = _workspace_folder()
+    for folder in (root.parent, root):
+        where = _synced_or_network(folder)
+        if where:
+            raise StoreError(REDIRECTED[where])
+    return root
 
 
 def new_id():

@@ -174,7 +174,7 @@ The threat model, the controls in place and the remaining risks are in [docs/SEC
 | Start menu shortcut | Unminute |
 | Version 0.4.3 or earlier, if it was installed | Its own folders, kept until you delete them (see "Updates" in [docs/PACKAGING.md](docs/PACKAGING.md)) |
 
-`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it.
+`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it. Only its `models` folder may be redirected elsewhere; Unminute will not open a workspace that a junction or link puts in OneDrive or on a network drive.
 
 ## Updates, rollback and uninstall
 
@@ -197,6 +197,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 | "Something went wrong (code U-…)", or the app closed by itself | Open **Help and shortcuts**, select **Copy diagnostics** and paste them into your support request with the code. They hold versions, settings, counts and error locations, never meeting content, names or folders. |
 | A message says Unminute found damage in its workspace database | After an unexpected close, Unminute checks its database at the next start and holds processing, imports and cleanup if it finds damage. Follow [If Unminute finds damage](docs/WORKSPACE_GUIDE.md#if-unminute-finds-damage) in the user guide. |
+| A message says Unminute's workspace folder is redirected into OneDrive or to a network drive | Ask your IT team. The workspace stays on this computer, outside synced folders; IT may move only Unminute's models folder (see [docs/PACKAGING.md](docs/PACKAGING.md)). Recordings in OneDrive still import and can be watched. |
 
 For IT support, `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder checks that the main dependencies load, that the network block works and that the speaker model loader refuses a model file that would run code. `--status` prints counts only, never content. `--health` prints a one-line health report for device management and exits 1 when the app needs attention (see [docs/PACKAGING.md](docs/PACKAGING.md)).
 

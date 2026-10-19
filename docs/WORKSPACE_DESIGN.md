@@ -4,7 +4,8 @@ Technical design for Unminute's durable core. It defines state ownership, chunk 
 
 ## Ownership
 
-- One state-owning process opens the database: `%LOCALAPPDATA%\Unminute\workspace\workspace.db`. That is per user, never synced, and in the same family of locations as the model cache. Only the owner writes. Workers (#15) send results back and never touch the database.
+- One state-owning process opens the database: `%LOCALAPPDATA%\Unminute\workspace\workspace.db`. That is per user, never synced, and in the same family of locations as the model cache. Only the owner writes.
+- The workspace stays on this computer, out of synced and network folders (D3). `store.default_root()` refuses it, with a path-free message naming IT, when the real location of `%LOCALAPPDATA%` (in `local_appdata()`), or of `%LOCALAPPDATA%\Unminute` or its `workspace` folder (#219), is inside a folder a OneDrive variable names or on a network drive. Real locations are compared, so short (8.3) names, junctions and links are resolved; a folder not created yet resolves through its nearest existing parent. The model cache (`__main__.model_cache()`) does not go through this check: IT may redirect `Unminute\models` alone (docs/PACKAGING.md). Source recordings are a separate matter: imports and watched folders in OneDrive work as before ([INTAKE.md](INTAKE.md)). Workers (#15) send results back and never touch the database.
 - Meeting media lives in `%LOCALAPPDATA%\Unminute\workspace\media\<meeting id>\`. The meeting id is random; no names or paths from the source appear in any app path.
 - SQLite runs in WAL mode with `synchronous=FULL` and foreign keys on. Each state change that must be atomic is one transaction.
 
