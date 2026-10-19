@@ -1074,7 +1074,8 @@ class FolderInUseTests(unittest.TestCase):
         call = f"& '{copy}' -InstallDir '{self.install}'" + (" -Silent" if silent else "")
         env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_WAIT=stage,
                    UNMINUTE_TEST_SYNC=str(self.sync), UNMINUTE_TEST_PACKAGE=str(self.package))
-        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+        r = subprocess.run([windows_powershell.executable(), "-NoProfile",
+                            "-ExecutionPolicy", "Bypass",
                             "-Command", f"{call}; exit $LASTEXITCODE"],
                            capture_output=True, text=True, timeout=180, cwd=self.root, env=env)
         done = time.monotonic()
@@ -1194,7 +1195,8 @@ class FolderInUseTests(unittest.TestCase):
                 '    Write-Output "DONE tries=$script:tries"\n'
                 '} catch { Write-Output "FAILED tries=$script:tries $($_.Exception.Message)" }\n',
                 encoding="utf-8")
-            r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            r = subprocess.run([windows_powershell.executable(), "-NoProfile",
+                                "-ExecutionPolicy", "Bypass",
                                 "-File", str(script)], capture_output=True, text=True,
                                timeout=60, cwd=self.root)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
