@@ -667,6 +667,38 @@ class RedirectedDataFolderTests(unittest.TestCase):
                     self.assert_path_free(str(caught.exception))
                     self.assertEqual(list(target.iterdir()), [])     # nothing written there
 
+    def test_a_junction_into_onedrive_whose_target_is_missing_is_refused(self):
+        # Round 1 review: realpath stops at a missing target and returns it as
+        # stored, so a junction or 8.3 short name inside that stored target
+        # hid OneDrive, and the app then failed in mkdir without its message.
+        import ctypes
+        from workspace import store
+        from workspace.store import StoreError
+        alias = self.tmp / "alias"
+        self.synced.mkdir(parents=True, exist_ok=True)
+        made = mklink_junction(alias, self.synced, capture_output=True, text=True)
+        self.assertEqual(made.returncode, 0, made.stdout + made.stderr)
+        self.addCleanup(lambda: os.path.isjunction(alias) and os.rmdir(alias))
+        spellings = {"junction": alias}
+        # The short name, where the volume makes them (CI's may not).
+        buffer = ctypes.create_unicode_buffer(1024)
+        ctypes.windll.kernel32.GetShortPathNameW(str(self.synced), buffer, 1024)
+        if buffer.value and Path(buffer.value).name.lower() != self.SYNCED.lower():
+            spellings["short name"] = Path(buffer.value)
+        for at in ("Unminute", "Unminute\\workspace"):
+            for how, synced in spellings.items():
+                with self.subTest(at=at, how=how):
+                    self.fresh_local()
+                    moved = f"Moved {self.cases}"
+                    link = self.junction(at, synced / moved)
+                    os.rmdir(self.synced / moved)                # the target is gone
+                    self.assertFalse(os.path.exists(link))
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env())
+                    self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
+                    self.assert_path_free(str(caught.exception))
+                    self.assertFalse((self.synced / moved).exists())   # nothing made there
+
     def test_a_data_folder_junction_onto_a_network_drive_is_refused(self):
         from workspace import store
         from workspace.store import StoreError

@@ -366,9 +366,27 @@ def _synced_or_network(path):
 
 def _real(path):
     try:
-        return os.path.realpath(path)
+        real = os.path.realpath(path)
     except OSError:              # an error realpath does not handle itself
         return os.path.abspath(path)
+    # Where the path does not exist, realpath stops resolving: for a junction
+    # whose target is missing it returns the stored target as written, with
+    # any short (8.3) name or junction in it left unresolved (#219 review). So
+    # resolve the nearest existing parent again and add back the rest.
+    head, tail = real, []
+    while not os.path.exists(head):
+        parent = os.path.dirname(head)
+        if parent == head:       # nothing of it exists: keep what realpath gave
+            return real
+        tail.append(os.path.basename(head))
+        head = parent
+    if not tail:
+        return real
+    try:
+        head = os.path.realpath(head)
+    except OSError:
+        return real
+    return os.path.join(head, *reversed(tail))
 
 
 def _network_path(path):
