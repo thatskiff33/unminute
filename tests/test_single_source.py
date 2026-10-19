@@ -150,6 +150,51 @@ class ModelNameTests(unittest.TestCase):
                 self.assertRaisesRegex(asr_engines.ModelLoadError, "^Parakeet v3 is not ready"):
             engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
 
+    def test_model_errors_point_at_manage_downloads(self):
+        # #244: after Setup, models are downloaded and repaired in Settings >
+        # Manage downloads. A worker loads models only after Setup.
+        from workspace import engines, speaker_load
+        with mock.patch.object(asr_engines, "parakeet_status", return_value=("missing", "x")), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.PARAKEET_V3, ".", 1)
+        self.assertEqual(str(caught.exception), "Parakeet v3 is not ready. Download or repair "
+                         "it in Settings > Manage downloads, or choose another speech model "
+                         "in Settings. (x)")
+        with mock.patch.object(asr_engines, "find_verified", return_value=None), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.WHISPER_TURBO, ".", 1)
+        self.assertEqual(str(caught.exception), "Whisper large-v3 turbo is not installed or "
+                         "failed verification. Download or repair it in Settings > Manage "
+                         "downloads, or choose another speech model in Settings.")
+        self.assertEqual(engines.fix_speech(asr_engines.WHISPER_TURBO, repair_only=True),
+                         "Repair Whisper large-v3 turbo in Settings > Manage downloads, or "
+                         "choose another speech model in Settings.")
+        self.assertTrue(speaker_load.LOAD_FAILED.endswith(
+            "Repair it in Settings > Manage downloads."))
+        # No message anywhere in shipped code sends the user back to Setup.
+        found = [f"{path.name}: {s[:60]}" for path in SHIPPED for s in strings(path)
+                 if re.search(r"\bin Setup\b", s)]
+        self.assertEqual(found, [])
+
+    def test_a_model_manage_downloads_does_not_offer_is_never_sent_there(self):
+        # #244 review: Whisper large-v3 (the owner's case) has no card on the
+        # Downloads page, so its load errors name another model or IT instead.
+        from workspace import engines
+        with mock.patch.object(asr_engines, "find_verified", return_value=None), \
+                self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.WHISPER_LARGE, ".", 1)
+        self.assertEqual(str(caught.exception), "Whisper large-v3 is not installed or failed "
+                         "verification. Choose another speech model in Settings, or ask your "
+                         "IT team to install it.")
+        self.assertNotIn("Manage downloads",
+                         engines.fix_speech(asr_engines.WHISPER_LARGE, repair_only=True))
+        # The worker's list of offered models is the Downloads page's, without
+        # importing setup into the worker.
+        speech = (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)
+        self.assertEqual(engines.OFFERED_SPEECH, {n for n in speech if setup.offered(n)})
+        self.assertEqual(engines.OFFERED_SPEECH, {n for n, _ in setup.SPEECH})
+        self.assertNotIn(asr_engines.WHISPER_LARGE, engines.OFFERED_SPEECH)
+
     def test_a_parakeet_engine_names_the_model_by_its_label(self):
         engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
         self.assertEqual(engine.label, asr_engines.PARAKEET_V2)      # the id, as stored

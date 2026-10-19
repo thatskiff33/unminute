@@ -81,6 +81,9 @@ def reference_meetings(ws):
                     "unfinished": v is None and ws._imports.unfinished_tasks == 0
                     and not m["reviewed_at"],
                     "can_skip": bool(v) and ws._can_skip(m, runs),
+                    # #244: also for a failed meeting, still in the inbox.
+                    "can_retranscribe": bool(v) and ws._audio_available(m)
+                    and not m["reviewed_at"] and (stage != "inbox" or m["phase"] == "error"),
                     "action": ws._action(m, stage)})
     return out
 
@@ -150,6 +153,9 @@ class MeetingListTests(unittest.TestCase):
                                   "review", "review"])
         self.assertIn(False, [m["can_skip"] for m in new if m["speaker_count"] is None])
         self.assertEqual(sum(m["held"] for m in new), 1)      # the released hold does not count
+        inbox = {bool(m["error"]): m["can_retranscribe"] for m in new
+                 if m["stage"] == "inbox" and m["model"]}
+        self.assertEqual(inbox, {True: True, False: False})   # failed: yes; paused: no
         self.assertTrue(any(m["cleanup"] for m in new))
         self.assertTrue(any(m["paused"] and m["progress"] < 100 for m in new))
         counts = [m["speaker_count"] for m in new]

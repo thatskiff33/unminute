@@ -219,6 +219,9 @@ function attentionRow(m) {
     el("span", { class: "pill bad", textContent: "Needs attention" }),
     el("div", { class: "row-actions" },
       button("Try again", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true }),
+      m.can_retranscribe ? linkButton("Transcribe with another model…", () => transcribeAgain(m.id, m.model, !!m.error),
+        "Uses the model chosen in Settings > Speech model. Finished parts are kept as an earlier version.")
+        : null,
       discardLink(m)));
 }
 
@@ -466,7 +469,7 @@ async function renderMeeting() {
   renderSpeakers(d);
   renderVersions(d);
   renderHolds(d);
-  $("m-retranscribe").disabled = !d.audio_available || !!d.reviewed_at || transcribing;
+  $("m-retranscribe").disabled = !d.can_retranscribe;     // also for a failed meeting (#244)
 
   const shape = signatureOf(d) + "|" + state.version + "|" + state.speakerList.map((x) => x.label + x.name).join(",");
   const sig = `${d.progress}|${shape}`;
@@ -1232,6 +1235,55 @@ function confirmDialog({ title, body, check, onConfirm, limits = true, limitsTex
   dlg.showModal();
 }
 
+// Transcribe again with the model chosen in Settings > Speech model, from the
+// Versions tab or a failed meeting's row (#244). A chosen model that is not
+// ready is not started: the dialog says so and offers Manage downloads.
+// meetingModel: the model the meeting's current version uses; failed: the
+// meeting stopped with an error (only then does "still not ready" apply).
+function transcribeAgain(mid, meetingModel, failed) {
+  attempt(async () => {
+    const s = await call("settings");
+    const chosen = s.choices.find((c) => c.name === s.model);
+    if (chosen && chosen.note) { modelNotReady(chosen, failed && chosen.name === meetingModel); return; }
+    const named = chosen ? `${chosen.label}, the model chosen in Settings > Speech model`
+      : "the model chosen in Settings > Speech model";
+    confirmDialog({
+      title: "Transcribe again with the current model?",
+      body: `It uses ${named}. To use another model, change it there first. ` +
+        "A new transcript is made from the audio. Your edits stay with the current version, " +
+        "which is kept as an earlier version you can still open (read only); they are not copied " +
+        "into the new transcript.",
+      check: "I understand my edits stay with the earlier version.",
+      limits: false,
+      onConfirm: () => attempt(async () => {
+        await call("retranscribe", mid);
+        if (state.view === "meeting" && state.mid === mid) viewVersion(null);
+        say("Transcribing again. The previous version and its edits are kept.");
+        pollSoon();
+      }),
+    });
+  });
+}
+
+// The chosen speech model is not downloaded or is damaged: say so, with the
+// way to fix it (Manage downloads, when it offers the model) or to choose another.
+function modelNotReady(chosen, same) {
+  const dlg = $("model-dlg");
+  $("md-title").textContent = same ? `${chosen.label} is still not ready` : `${chosen.label} is not ready`;
+  $("md-body").textContent = (same ? "This meeting stopped because its speech model is not ready, and it is " +
+    "still the model chosen in Settings > Speech model. " : "") + chosen.note;
+  $("md-downloads").hidden = !chosen.offered;
+  dlg.returnValue = "";
+  dlg.onclose = () => {
+    if (dlg.returnValue === "downloads") show("downloads");
+    else if (dlg.returnValue === "settings") {
+      show("settings");
+      $("h-model").scrollIntoView({ block: "center" });   // the picker fills once Settings has loaded
+    }
+  };
+  dlg.showModal();
+}
+
 function confirmReviewed(d) {
   confirmDialog({
     title: "Confirm the transcript is reviewed",
@@ -1837,6 +1889,13 @@ function renderRepaired(r) {
   $("s-repaired").hidden = !text;
 }
 
+// A speech model in the Settings picker, marked as the Downloads page shows
+// its state (#244): Not downloaded, Damaged.
+const MODEL_STATE = { missing: " (not downloaded)", invalid: " (damaged)" };
+function modelChoice(c) {
+  return `${c.label}${c.recommended ? " (recommended)" : ""}${MODEL_STATE[c.state] || ""}`;
+}
+
 async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
@@ -1873,10 +1932,16 @@ async function renderSettings() {
   $("s-add-folder").disabled = $("s-include-existing").disabled = !allowed("AllowWatchedFolders");
   const sel = $("s-model");
   if (document.activeElement !== sel) {
-    sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name,
-      textContent: `${c.label}${c.recommended ? " (recommended)" : ""}` })));
+    sel.replaceChildren(...s.choices.map((c) => el("option", { value: c.name, textContent: modelChoice(c) })));
     sel.value = s.model;
   }
+  // A chosen model that is not ready says so beside the picker, and Manage
+  // downloads stands out when it can fix it (#244). The choice is still saved.
+  const chosen = s.choices.find((c) => c.name === s.model);
+  const note = (chosen && chosen.note) || "";
+  $("s-model-hint").hidden = !note;
+  $("s-model-hint").textContent = note;
+  $("s-downloads").classList.toggle("primary", !!note && chosen.offered);
   const setup = await call("setup_state");
   const speechReady = setup.cards.filter((c) => c.role === "speech" && c.state === "ready").length;
   const speakerReady = setup.cards.some((c) => c.role === "speakers" && c.state === "ready");
@@ -2521,20 +2586,8 @@ function wire() {
   $("names").addEventListener("close", stopAudio);
   $("n-undo").addEventListener("click", undoSpeakers);
   $("m-undo-speakers").addEventListener("click", undoSpeakers);
-  $("m-retranscribe").addEventListener("click", () => confirmDialog({
-    title: "Transcribe again with the current model?",
-    body: "A new transcript is made from the audio. Your edits stay with the current version, " +
-      "which is kept as an earlier version you can still open (read only); they are not copied " +
-      "into the new transcript.",
-    check: "I understand my edits stay with the earlier version.",
-    limits: false,
-    onConfirm: () => attempt(async () => {
-      await call("retranscribe", state.mid);
-      viewVersion(null);
-      say("Transcribing again. The previous version and its edits are kept.");
-      pollSoon();
-    }),
-  }));
+  $("m-retranscribe").addEventListener("click", () =>
+    transcribeAgain(state.mid, state.detail ? state.detail.model : null, !!(state.detail && state.detail.error)));
   $("m-rerun").addEventListener("click", () => {
     const v = $("m-count").value.trim();
     confirmDialog({

@@ -24,7 +24,7 @@ This guide covers the packaged workspace.
    - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Other models are under Other options.
    - **Speaker names** (optional): speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
    - **Microphone** (optional): turn on recording and test the microphone.
-   - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later.
+   - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later. Settings > **Speech model** marks a model that is not downloaded or is damaged.
 3. **Import a recording.** On the Meetings page, choose **Import a recording** or drop audio or video files anywhere on the window. You can also watch a folder (Settings > Watched folders, see [INTAKE.md](INTAKE.md)). Recordings on mapped network drives are refused: copy them to this computer first. OneDrive and other synced folders are fine. A file whose content does not match a supported type (for example AIFF audio renamed to .wav) is refused as unsupported.
 
 ## Recording with a microphone
@@ -66,6 +66,7 @@ How it handles problems:
 - **Skip speaker identification** when it is not needed, for example a recording of one or two people. Select **Skip speakers** on the meeting's row while it is working out who spoke (or paused there), or **Skip speaker identification** in the meeting's speaker panel (also before the text is ready). Any pass in progress, or about to start, stops at once and the meeting goes straight to review and hand off, with no speaker labels. Skip is not offered once speakers are identified. While the audio is kept you can still use **Identify again…** later, and Skip stops that too. Transcribing the meeting again keeps the choice.
 - **Name speakers.** **Name speakers** asks "Who's speaking?" and plays short examples for each detected speaker so you can name them. You can merge two labels that are the same person, or move a single passage to another speaker. Names stay with this meeting only.
 - **Transcribe again.** The **Versions** tab can transcribe again with another model. Your earlier version and its edits are kept, and you can still open them read-only.
+- **A meeting that stopped.** A meeting in **Needs attention** shows why it stopped. **Try again** retries with the same model, which suits a passing problem or a model you have since downloaded or repaired. **Transcribe with another model…** transcribes it again with the model now chosen in Settings > **Speech model**: choose the model there first. Parts already finished are kept as an earlier version. If the chosen model is not downloaded or is damaged, the app says so and offers **Manage downloads** instead.
 - **Shortcuts.** **Help and shortcuts** in the sidebar lists them all. Press ? (outside a text field) to open it.
 
 ## Handing off and cleaning up
@@ -142,6 +143,8 @@ The earlier version's workspace and models stay on the computer until they are d
 | Problem | What to do |
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > **Manage downloads** (the Downloads page) > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
+| Settings > Speech model marks a model "(not downloaded)" or "(damaged)" | It is not ready to use, and the note beside the picker says so. Your choice is saved: download or repair the model in **Manage downloads**, or choose a model that is ready. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
+| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > **Speech model** and select **Transcribe with another model…** on the meeting. Or download or repair the model in Settings > **Manage downloads**, then select **Try again**. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. |
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |

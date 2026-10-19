@@ -268,7 +268,7 @@ Failure reasons are stored without file paths.
 - **Settings:**
   - Quiet or Faster;
   - battery override;
-  - speech model;
+  - speech model: each choice is marked "(not downloaded)" or "(damaged)" from the same state the Downloads page shows (`setup.status`, kept with the Downloads cards for `DISPLAY_CACHE_S`). A model that is not ready may still be chosen; a note beside the picker says so, and Manage downloads is highlighted only when it can fix the model: it offers the model and managed policy allows downloads (`AllowModelDownloads`, K3). Otherwise the note names another model or the IT team (#244);
   - speaker identification on or off;
   - cleanup receipts.
 
@@ -278,6 +278,7 @@ Failure reasons are stored without file paths.
 
 - Edits are stored over the generated text. `edit_history` records each change and the text it replaced, so undo survives restart.
 - Transcribing again with a different model creates a new version. The previous version and its edits are kept, never overwritten, until transcript cleanup removes them.
+- A meeting that failed (phase `error`, still in the inbox) can be transcribed again too (#244). Try again retries the active version with its own model; Transcribe again (the Versions tab, or **Transcribe with another model…** on the failed meeting's row) makes a new version with the model now chosen in Settings and clears the error, so processing picks it up. `can_retranscribe` in the meeting list and detail is the one rule for both buttons: audio kept, review not confirmed, and not still being transcribed unless failed. Transcribe again refuses a model that is not ready before anything changes, with the note Settings shows, and the new version uses the model it checked (read once). A model whose files change in the cache window can still fail at load; the earlier version and its edits stay as they were (D1). The same model again on a failed meeting is refused with a pointer to Try again. `tools/workspace_ui_check.py` ("failed meeting") runs this in a real window: a synthetic meeting stops because its chosen model is not downloaded (an empty model folder, so nothing is loaded), the row offers **Transcribe with another model…**, the not-ready dialog shows for the same model, and after a ready model is chosen the confirmed Transcribe again takes it out of Needs attention with the failed version kept.
 - After the review confirmation, the text is locked. It is the text the snapshot was taken from. Playback and transcribing again are no longer available once the audio is removed, and the page explains why.
 
 ### Long transcripts
@@ -400,6 +401,7 @@ Failure reasons are stored without file paths.
 
 ### Pinned revisions
 - A meeting keeps the model revision it was started with. If an app update changes the pinned revision, its unfinished transcription stops with an explanation ("Transcribe again"), instead of silently mixing revisions.
+- A model that is missing or fails its checks when a worker loads it stops the meeting with a message that names Settings > Manage downloads (`workspace/engines.py`, `workspace/speaker_load.py`): a worker only loads models after Setup. A speech model the Downloads page does not offer (`engines.OFFERED_SPEECH`, kept equal to `setup.SPEECH` by a test) names another model or the IT team instead.
 
 ## Watched folders (#23) and cloud sources (#24)
 

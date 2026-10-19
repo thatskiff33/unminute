@@ -431,8 +431,9 @@
       <section class="set-card" aria-labelledby="h-model">
         <h2 id="h-model">Speech model</h2>
         <label class="field" for="s-model">Used for new recordings and Transcribe again
-          <select id="s-model"></select></label>
+          <select id="s-model" aria-describedby="s-model-hint"></select></label>
         <p id="s-models-line" class="set-line"></p>
+        <p id="s-model-hint" class="set-text bad" hidden></p>
         <button type="button" id="s-downloads" class="set-link-btn">Manage downloads</button>
       </section>
     </div>
@@ -660,6 +661,23 @@
     <div class="dlg-foot end">
       <button value="cancel" type="submit">Cancel</button>
       <button value="ok" type="submit" id="c-ok" class="primary" disabled>Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="model-dlg" class="confirm-dialog" aria-labelledby="md-title" aria-describedby="md-body">
+  <form method="dialog">
+    <div class="c-head">
+      <span class="c-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/></svg></span>
+      <h2 id="md-title"></h2>
+    </div>
+    <p id="md-body"></p>
+    <div class="dlg-foot">
+      <button value="cancel" type="submit">Cancel</button>
+      <span class="dlg-foot-right">
+        <button value="settings" type="submit">Choose another model</button>
+        <button value="downloads" type="submit" id="md-downloads" class="primary" autofocus>Manage downloads</button>
+      </span>
     </div>
   </form>
 </dialog>

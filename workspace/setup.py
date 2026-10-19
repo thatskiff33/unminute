@@ -442,6 +442,12 @@ def known(name):
     return name in asr_engines.MANAGED_MODELS or name == gpu.COMPONENT
 
 
+def offered(name):
+    """Whether the Downloads page (and Setup) has a card for this model, so a
+    user can download or repair it there."""
+    return any(c["name"] == name for c in CARDS)
+
+
 class Downloads:
     """One download at a time, in its own process; progress for the UI."""
 

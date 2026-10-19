@@ -108,7 +108,7 @@ Open a meeting to review it. The steps (Transcribe, Review, Hand off, Clean up) 
 - You can open a meeting while it is still transcribing. New passages are added to the end as they arrive, so scrolling, playing and correcting earlier passages stay smooth on long meetings.
 - **Name speakers** plays short examples for each detected speaker. You can merge two labels that are the same person, or move a passage to another speaker. Names stay with this meeting only.
 - **Skip speakers** (on the meeting's row) or **Skip speaker identification** (in its speaker panel) is for a recording of one or two people: the meeting goes straight to review and hand off without speaker labels. While the audio is kept, **Identify again…** still works later.
-- The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**.
+- The side panel's tabs show **Speakers**, **Versions** (Transcribe again with another model keeps your earlier version and its edits) and **Holds**. A meeting that stopped with an error can also be transcribed again, with the model now chosen in Settings.
 - **Help and shortcuts** in the sidebar lists every keyboard shortcut. Press ? (outside a text field) to open it.
 
 ![Naming speakers from short examples](docs/screenshots/workspace-names.png)
@@ -137,7 +137,7 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 ## Settings
 
 - **Processing:** Quiet (the default) leaves most of the computer free. Faster uses more of it. On battery, automatic work waits unless you allow it.
-- **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card component.
+- **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card component. A model that is not ready is marked "(not downloaded)" or "(damaged)", as on the Downloads page. Choosing one still saves the choice, and a note beside the picker says how to download or repair it.
 - **Recording and speakers:** microphone recording, naming speakers after transcription, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification (Faster mode only) and **Keep recording when the lid is closed**.
 - **Watched folders, Updates, Cleanup receipts.**
 
@@ -189,6 +189,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | Problem | What to do |
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > Manage downloads (the Downloads page) > Repair. The damaged copy is kept aside, not deleted. |
+| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > Speech model and select **Transcribe with another model…** on the meeting's row. Or download or repair the model in Settings > Manage downloads, then select **Try again**. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > Manage downloads, then use Identify again in the meeting's Speakers tab. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |

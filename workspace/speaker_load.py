@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from asr_engines import ModelLoadError
 
 LOAD_FAILED = ("The speaker identification model did not pass its safety checks and was "
-               "not loaded. Repair it in Setup.")
+               "not loaded. Repair it in Settings > Manage downloads.")
 
 ENUM_CHANGED = "checkpoint changed a shared Enum member"
 

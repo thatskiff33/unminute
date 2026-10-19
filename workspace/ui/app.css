@@ -1003,6 +1003,7 @@ body[data-view="setup"] .sidebar, body[data-view="setup"] .topbar { display: non
 .set-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .set-head button { font-size: 14px; }
 .set-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+.set-text.bad { color: var(--error); }
 .set-strong { margin: 0; font-size: 15px; font-weight: 700; }
 .set-line { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
 .set-line .tick { width: 20px; height: 20px; }
