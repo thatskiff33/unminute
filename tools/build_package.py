@@ -155,13 +155,50 @@ def fetch_runtime(cache):
     return target
 
 
+def system_folder():
+    """The Windows system folder, from GetSystemDirectoryW (never from PATH,
+    the current folder or an environment variable)."""
+    if os.name != "nt":
+        sys.exit("The signature check needs Windows.")
+    import ctypes
+    buf = ctypes.create_unicode_buffer(260)
+    n = ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260)
+    if not 0 < n < 260:
+        sys.exit("Could not find the Windows system folder.")
+    return buf.value
+
+
 def powershell(script, **paths):
-    """Run a PowerShell script with paths passed as environment variables
-    ($env:UNMINUTE_<NAME>), never inside the command text, so a quote in a
-    folder or user name cannot break it."""
-    env = dict(os.environ, **{f"UNMINUTE_{k.upper()}": str(v) for k, v in paths.items()})
-    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+    """Run a Windows PowerShell 5.1 script with paths passed as environment
+    variables ($env:UNMINUTE_<NAME>), never inside the command text, so a quote
+    in a folder or user name cannot break it.
+
+    The child is started by its absolute path in the system folder, so a
+    powershell.exe beside Python or in the current folder cannot stand in for
+    it. Its PSModulePath is pinned to the system folder's modules (5.1 adds
+    Program Files' modules; both need an administrator to change). Inherited,
+    the variable breaks the check when the build starts from PowerShell 7 (the
+    shell of GitHub's Windows runners): 7's module folders come first, and 5.1
+    then fails to load Microsoft.PowerShell.Security, which holds
+    Get-AuthenticodeSignature. Left unset, 5.1 would put the user's own
+    Documents modules folder first, which any program running as the user can
+    write to."""
+    home = os.path.join(system_folder(), "WindowsPowerShell", "v1.0")
+    exe = os.path.join(home, "powershell.exe")
+    if not os.path.isfile(exe):
+        sys.exit("Windows PowerShell 5.1 is missing from the system folder: " + exe)
+    env = {k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"}
+    env["PSModulePath"] = os.path.join(home, "Modules")
+    env.update({f"UNMINUTE_{k.upper()}": str(v) for k, v in paths.items()})
+    return subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
                           env=env, capture_output=True, text=True)
+
+
+def said(text, limit=500):
+    """A child's output on one line, cut to `limit` characters, for an error
+    message (the build's own scripts and paths only: nothing secret)."""
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 def check_signatures(runtime):
@@ -172,10 +209,13 @@ def check_signatures(runtime):
     for name in names:
         r = powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:UNMINUTE_FILE; "
                        "if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch "
-                       "'Python Software Foundation') { exit 1 }",
+                       "'Python Software Foundation') { "
+                       "'status ' + $s.Status + ', signer ' + $s.SignerCertificate.Subject; "
+                       "exit 1 }",
                        file=str(runtime / name).removeprefix("\\\\?\\"))
         if r.returncode:
-            sys.exit(f"The Python runtime's signature check failed ({name}).")
+            sys.exit(f"The Python runtime's signature check failed ({name}): "
+                     + (said(r.stdout + " " + r.stderr) or f"exit code {r.returncode}"))
 
 
 TARGET = ["--platform", "win_amd64", "--python-version", PYTHON_MINOR, "--implementation", "cp",
@@ -950,8 +990,12 @@ def signers(folder, paths):
             " ConvertTo-Json -InputObject @($r) -Compress | Set-Content -LiteralPath"
             " $env:UNMINUTE_OUT -Encoding UTF8", list=listed, out=out)
         if r.returncode or not out.is_file():
-            sys.exit("The signature check failed: " + (r.stderr or "").strip()[:500])
+            sys.exit("The signature check failed: "
+                     + (said(r.stderr) or f"exit code {r.returncode}"))
         rows = json.loads(out.read_text(encoding="utf-8-sig"))
+        # A cmdlet error is not fatal to the script, so it can exit 0 with
+        # empty results: keep what it said for the message below.
+        errors = said(r.stderr)
     if len(rows) != len(paths):
         sys.exit("The signature check did not return one result per binary.")
     result = dict(zip(paths, rows, strict=True))
@@ -960,7 +1004,8 @@ def signers(folder, paths):
     bad += [f"{p}: signature from this machine's catalog, not the file" for p, r
             in result.items() if r["status"] == "Valid" and r.get("type") == "Catalog"]
     if bad:
-        sys.exit("Binaries with a bad or unreadable signature:\n" + "\n".join(bad))
+        sys.exit("Binaries with a bad or unreadable signature:\n" + "\n".join(bad)
+                 + (f"\nPowerShell said: {errors}" if errors else ""))
     return result
 
 

@@ -345,6 +345,117 @@ class ReproducibleBuildTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "catalog"):
             bp.signers(self.root, ["runtime/msvcp140.dll"])
 
+    def test_windows_powershell_runs_from_the_system_folder_with_its_own_modules(self):
+        # GitHub's runners start the build from PowerShell 7, whose module path
+        # stops Windows PowerShell 5.1 loading Get-AuthenticodeSignature. The
+        # child is found by absolute path (never through PATH or the current
+        # folder) and its module path is pinned to the system folder's modules,
+        # so no user-writable folder (Documents) can supply the cmdlet.
+        system = self.root / "System32"
+        home = system / "WindowsPowerShell" / "v1.0"
+        home.mkdir(parents=True)
+        (home / "powershell.exe").write_bytes(b"")
+        seen = {}
+
+        def fake_run(argv, env, **kwargs):
+            seen["argv"], seen["env"] = argv, env
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules",
+                     "SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\System32"}
+        with mock.patch.dict(os.environ, inherited), \
+                mock.patch.object(bp, "system_folder", return_value=str(system)), \
+                mock.patch.object(bp.subprocess, "run", fake_run):
+            bp.powershell("Get-AuthenticodeSignature", file=r"C:\a b\python.exe")
+        self.assertEqual(seen["argv"][0], str(home / "powershell.exe"))
+        self.assertEqual(seen["argv"][1:4], ["-NoProfile", "-NonInteractive", "-Command"])
+        module_paths = [v for k, v in seen["env"].items() if k.upper() == "PSMODULEPATH"]
+        self.assertEqual(module_paths, [str(home / "Modules")])
+        self.assertEqual(seen["env"]["UNMINUTE_FILE"], r"C:\a b\python.exe")
+        self.assertEqual(seen["env"]["PATH"], r"C:\Windows\System32")    # the rest is kept
+
+    def test_a_missing_windows_powershell_stops_the_build(self):
+        ran = []
+        with mock.patch.object(bp, "system_folder", return_value=str(self.root)), \
+                mock.patch.object(bp.subprocess, "run", lambda *a, **k: ran.append(a)), \
+                self.assertRaisesRegex(SystemExit, "Windows PowerShell"):
+            bp.powershell("Get-AuthenticodeSignature", file=r"C:\python.exe")
+        self.assertEqual(ran, [])                     # nothing found by name instead
+
+    @unittest.skipUnless(sys.platform == "win32", "runs Windows PowerShell")
+    def test_an_inherited_module_path_cannot_supply_the_signature_cmdlet(self):
+        # A synthetic module named like the real one, first in the parent's
+        # module path (as a planted user module would be), must not load.
+        fake = self.root / "mods" / "Microsoft.PowerShell.Security"
+        fake.mkdir(parents=True)
+        (fake / "Microsoft.PowerShell.Security.psm1").write_text(
+            "function Get-AuthenticodeSignature { 'fake' }\n", encoding="utf-8")
+        system = bp.system_folder()
+        # Called, not just looked up: Get-Command names the real module even
+        # when a call would run the planted one.
+        with mock.patch.dict(os.environ, {"PSModulePath": str(self.root / "mods")}):
+            r = bp.powershell("$s = Get-AuthenticodeSignature -LiteralPath $env:ComSpec; "
+                              "$s.GetType().FullName; "
+                              "(Get-Module Microsoft.PowerShell.Security).ModuleBase; "
+                              "$env:PSModulePath")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        kind, base, module_path = r.stdout.strip().splitlines()[-3:]
+        self.assertEqual(kind, "System.Management.Automation.Signature")
+        self.assertTrue(base.lower().startswith(system.lower()), base)
+        self.assertNotIn(str(self.root).lower(), module_path.lower())
+        self.assertNotIn(os.path.expanduser("~").lower(), module_path.lower())
+
+    def test_a_failed_runtime_signature_check_says_why(self):
+        error = ("Get-AuthenticodeSignature : The 'Get-AuthenticodeSignature' command was\n"
+                 "found in the module 'Microsoft.PowerShell.Security', but the module could\n"
+                 "not be loaded. " + "x" * 2000)
+
+        def fake_powershell(script, **files):
+            return subprocess.CompletedProcess([], 1, "", error)
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                mock.patch.object(bp.os, "name", "nt"), \
+                self.assertRaises(SystemExit) as caught:
+            bp.check_signatures(self.root)
+        message = str(caught.exception.code)
+        self.assertIn("(python.exe): Get-AuthenticodeSignature : The "
+                      "'Get-AuthenticodeSignature' command was found in the module "
+                      "'Microsoft.PowerShell.Security', but the module could not be loaded.",
+                      message)
+        self.assertLess(len(message), 600)                                 # bounded
+
+        def bad_status(script, **files):
+            return subprocess.CompletedProcess([], 1, "status HashMismatch, signer \n", "")
+        with mock.patch.object(bp, "powershell", bad_status), \
+                mock.patch.object(bp.os, "name", "nt"), \
+                self.assertRaisesRegex(SystemExit, r"\(python\.exe\): status HashMismatch"):
+            bp.check_signatures(self.root)
+
+    def test_the_runtime_check_is_as_strict_as_before(self):
+        seen = []
+
+        def fake_powershell(script, **files):
+            seen.append((script, Path(files["file"]).name))
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                mock.patch.object(bp.os, "name", "nt"):
+            bp.check_signatures(self.root)
+        self.assertEqual([n for _, n in seen],
+                         ["python.exe", "pythonw.exe", f"python{bp.PYTHON_TAG}.dll"])
+        self.assertIn("if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch "
+                      "'Python Software Foundation') {", seen[0][0])
+        self.assertTrue(seen[0][0].rstrip().endswith("exit 1 }"))
+
+    def test_an_unreadable_signature_reports_what_powershell_said(self):
+        # A cmdlet error does not stop the script: it exits 0 with empty rows.
+        def fake_powershell(script, **files):
+            Path(files["out"]).write_text(json.dumps([
+                {"status": "", "signer": "", "thumbprint": "", "timestamped": False,
+                 "type": ""}]), encoding="utf-8-sig")
+            return subprocess.CompletedProcess([], 0, "", "module could not\n be loaded")
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                self.assertRaisesRegex(SystemExit, "(?s)python.exe: no result.*"
+                                       "PowerShell said: module could not be loaded"):
+            bp.signers(self.root, ["runtime/python.exe"])
+
     def test_the_inventory_records_facts_not_verdicts(self):
         folder = self.root / "pkg"
         (folder / "runtime").mkdir(parents=True)
