@@ -1699,7 +1699,11 @@ class HardeningTests(unittest.TestCase):
                 ("@'\nx\r'@ | Out-Null\nGet-Content '" + self.DATA + "\\a.json'\n"
                  "$z = \"\n'@ | Write-Output \"", "PowerShell"),
                 ("\x1c@'\nx' ; Get-Content '" + self.DATA + "\\a.json' ; $z = \"\n"
-                 "'@ | Write-Output \"", "PowerShell")),
+                 "'@ | Write-Output \"", "PowerShell"),
+                # Round 9: PowerShell has no heredocs, so a <<'EOF' span inside a
+                # here-string may hold its real closer; it is not dropped first.
+                ("@'\n<<'EOF'\n'@ | Out-Null\n$z = \"\nEOF\n\" ; Get-Content '" + self.DATA
+                 + "\\a.json' ; $w = \"\n'@ | Write-Output \"", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",

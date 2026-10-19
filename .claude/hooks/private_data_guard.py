@@ -147,7 +147,9 @@
 # holds | (the title is split there, as on main), or anything else in the same
 # command (a here-string is dropped as text only when the command is nothing but
 # it, alone or assigned, piped on its closing line to one program that takes
-# text), so give gh or git a here-string body as a command of its own;
+# text), so give gh or git a here-string body as a command of its own; such a
+# body naming the data that holds any non-ASCII character (an em dash, a
+# typographic apostrophe, a macron) is checked too;
 # local AppData named whole and piped into rg, ag or grep that reads the pipe (echo
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
@@ -1012,7 +1014,11 @@ def _drop_written(command, shell):
         literal = text.rstrip().endswith("'") or text.rstrip().endswith("'@")
         return " " if literal else _run_parts(text, shell)
 
-    command = HEREDOC.sub(heredoc, command)
+    # PowerShell has no heredocs: where a PowerShell command holds a here-string, a
+    # <<'EOF' span is text it may run, and dropping it first could hide the
+    # here-string's real closer (round 9). Elsewhere it is dropped as before.
+    if shell != "PowerShell" or not HERE_STRING.search(command):
+        command = HEREDOC.sub(heredoc, command)
     if shell == "PowerShell":
         lead_end = ALONE_LEAD.match(command).end()    # once per command (_alone)
         command = HERE_STRING.sub(here_string, command)
