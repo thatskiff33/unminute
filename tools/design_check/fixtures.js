@@ -142,7 +142,19 @@
   const GROW_STEP_MS = 4000;
   const GROW_LONG = 3000;          // passages before the measured window
   const grow = { added: 0, redraws: 0, rowsSent: 0, redrawSteps: [], editId: 5,
-                 editText: "Edited while transcribing (sample).", editHeld: null };
+                 editText: "Edited while transcribing (sample).", editHeld: null, editOnLoad: false };
+  // Start editing a passage from inside a transcript call, so the page's
+  // append is still waiting on that call when the edit begins: it must give up
+  // without drawing anything or fetching the whole list (a redraw it would
+  // throw away), and append the rows once the edit ends.
+  function growEdit() {
+    grow.editOnLoad = false;
+    const span = document.querySelector(`#transcript .text[data-id="${grow.editId}"]`);
+    span.click();
+    span.textContent = grow.editText;
+    span.dispatchEvent(new Event("input"));
+    grow.addedAtEdit = grow.added;
+  }
   const LABELS = ["SPEAKER_00", "SPEAKER_01"];
   function growRow(i, t, label = null) {
     return [t, t + 2.5, label, `Passage ${i} about the plan (sample).`, false, i];
@@ -181,12 +193,8 @@
       growProgress();
     },
     () => growMore(10),
-    () => {                          // an edit starts; transcription goes on
-      const span = document.querySelector(`#transcript .text[data-id="${grow.editId}"]`);
-      span.click();
-      span.textContent = grow.editText;
-      span.dispatchEvent(new Event("input"));
-      grow.addedAtEdit = grow.added;
+    () => {                          // more passages; an edit starts while the page loads them
+      grow.editOnLoad = true;
       growMore(10);
     },
     () => {                          // nothing was drawn under the edit; it ends
@@ -643,6 +651,7 @@
     transcript: (mid, start = 0, count = 500) => {
       const page = transcriptPage(mid, start, count);
       grow.rowsSent += page.items.length;
+      if (grow.editOnLoad) growEdit();
       return page;
     },
     search: (mid, q) => transcriptPage(mid, 0, 1000).items

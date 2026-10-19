@@ -473,11 +473,17 @@ async function renderMeeting() {
   if (sig !== state.signature && !state.editing) {
     // Only the progress moved (transcription went on): new passages normally
     // just extend the list, so append them (#127). Anything else, or an
-    // append that cannot be proved safe, redraws the whole list.
+    // append that cannot be proved safe, redraws the whole list. An append
+    // given up because an edit, another meeting or a newer draw started while
+    // it loaded draws nothing: a redraw then would be thrown away too. The
+    // signature goes back, unless something else has changed it since, so the
+    // next refresh tries the append again.
     const before = state.signature;
     const onlyProgress = before !== "" && before.slice(before.indexOf("|") + 1) === shape;
     state.signature = sig;
-    if (!(onlyProgress && await appendTranscript())) await renderTranscript();
+    const appended = onlyProgress ? await appendTranscript() : REDRAW;
+    if (appended === REDRAW) await renderTranscript();
+    else if (appended === ABANDONED && state.signature === sig) state.signature = before;
   }
 }
 
@@ -930,37 +936,39 @@ async function renderTranscript() {
 // instead of drawing every row again (#127). Fetched from the last row drawn
 // on, so it can be compared. Passages are only ever added to a version, never
 // removed or moved, so if that row is still at its place, unchanged, every row
-// drawn is still there in the same order and the rest are new. Returns false,
-// having changed nothing, when that cannot be shown: nothing drawn yet, an
-// earlier version shown, a search open (its matches would go stale), an
-// earlier passage added (a chunk done again), the speakers or totals not
-// lining up, an error, or an edit, a meeting or a newer draw that started
-// while this was loading. The caller then redraws the whole list.
+// drawn is still there in the same order and the rest are new. Returns
+// APPENDED, or, having changed nothing, REDRAW when that cannot be shown
+// (nothing drawn yet, an earlier version shown, a search open, as its matches
+// would go stale, an earlier passage added by a chunk done again, the speakers
+// or totals not lining up, an error), so the caller redraws the whole list; or
+// ABANDONED when an edit, another meeting or version, or a newer draw started
+// while this was loading, so anything drawn now would be stale or unwanted.
+const APPENDED = "appended", REDRAW = "redraw", ABANDONED = "abandoned";
 async function appendTranscript() {
   const mid = state.mid, base = state.items || [], n = base.length;
   if (!n || state.version !== null || state.drawnFor !== `${mid}|null` || $("m-search").value.trim())
-    return false;
+    return REDRAW;
   const fetched = [];
   let start = n - 1, total = null;
   try {
     do {
       const page = await call("transcript", mid, start, PAGE, null);
-      if (total !== null && page.total !== total) return false;   // it changed while paging
+      if (total !== null && page.total !== total) return REDRAW;  // it changed while paging
       total = page.total;
       fetched.push(...page.items);
       start += page.items.length;
       if (!page.items.length) break;
     } while (start < total);
   } catch {
-    return false;                      // the full redraw reports the error
+    return REDRAW;                     // the full redraw reports the error
   }
+  if (state.editing || state.mid !== mid || state.version !== null || state.items !== base)
+    return ABANDONED;
   const last = base[n - 1], first = fetched[0];
   if (total < n || fetched.length !== total - (n - 1) || !first || first.id !== last.id ||
-      first.label !== last.label || first.who !== last.who || first.overlap !== last.overlap)
-    return false;
-  if (state.editing || state.mid !== mid || state.version !== null || state.items !== base ||
+      first.label !== last.label || first.who !== last.who || first.overlap !== last.overlap ||
       $("m-search").value.trim())
-    return false;
+    return REDRAW;
   const added = fetched.slice(1);
   if (added.length) {
     const audio = state.detail && state.detail.audio_available;
@@ -974,7 +982,7 @@ async function appendTranscript() {
   }
   state.total = total;
   updatePlayer();
-  return true;
+  return APPENDED;
 }
 
 const EDIT_HINT = "Enter or Esc to finish · Shift+Enter for a new line · saves as you type";

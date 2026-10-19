@@ -32,9 +32,9 @@
     }
   },
   "ui_transcribing": {
-    "note": "What the page fetches and draws while a long meeting (3,000 passages) is open and being transcribed: 12 steps of 4 s page time, nine adding passages, with an earlier chunk done again, an edit, speakers identified and a search on the way (tools/ui_idle_check.py, transcribing mode of tools/design_check/fixtures.js). Counts, not times, so the same on any machine. Added by #127 on 19 Oct 2026: redrawing the whole list on every progress change took 44 transcript calls, 33,625 rows fetched and drawn and 11 full redraws; appending new passages takes 21 calls, 9,269 rows fetched, 9,255 drawn and 3 full redraws, the three the scenario requires (the earlier chunk, speakers, the search).",
+    "note": "What the page fetches and draws while a long meeting (3,000 passages) is open and being transcribed: 12 steps of 4 s page time, nine adding passages, with an earlier chunk done again, an edit started while the page was loading new passages, speakers identified and a search on the way (tools/ui_idle_check.py, transcribing mode of tools/design_check/fixtures.js). Counts, not times, so the same on any machine. Added by #127 on 19 Oct 2026: redrawing the whole list on every progress change took 48 transcript calls, 36,670 rows fetched, 33,625 drawn and 11 full redraws; appending new passages takes 22 calls, 9,280 rows fetched, 9,255 drawn and 3 full redraws, the three the scenario requires (the earlier chunk, speakers, the search). An append given up because the edit started while it loaded fetches 11 rows in one call and draws nothing; the next one after the edit draws them.",
     "ratchets": {
-      "transcribing": {"transcript_calls": 21, "rows_fetched": 9269,
+      "transcribing": {"transcript_calls": 22, "rows_fetched": 9280,
                        "rows_drawn": 9255, "full_redraws": 3}
     }
   }

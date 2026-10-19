@@ -115,13 +115,13 @@ class TranscribingTests(unittest.TestCase):
             self.assertIn(words, problems[0])
 
     def test_the_counts_are_held_to_their_ratchets(self):
-        ratchets = {"transcribing": {"rows_fetched": 9269, "full_redraws": 3}}
+        ratchets = {"transcribing": {"rows_fetched": 9280, "full_redraws": 3}}
         self.assertEqual([], ui_idle_check.compare(
-            {"transcribing": {"rows_fetched": 9269, "full_redraws": 3}}, ratchets))
-        self.assertEqual([("transcribing", "rows_fetched", 33625, 9269),
+            {"transcribing": {"rows_fetched": 9280, "full_redraws": 3}}, ratchets))
+        self.assertEqual([("transcribing", "rows_fetched", 36670, 9280),
                           ("transcribing", "full_redraws", 11, 3)],
                          ui_idle_check.compare(
-                             {"transcribing": {"rows_fetched": 33625, "full_redraws": 11}},
+                             {"transcribing": {"rows_fetched": 36670, "full_redraws": 11}},
                              ratchets))
 
 

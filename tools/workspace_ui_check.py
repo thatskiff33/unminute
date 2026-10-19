@@ -530,12 +530,16 @@ GROW_JS = WAIT + """
     const edited = () => document.querySelector(`#transcript .text[data-id="${g.id}"]`);"""
 
 
-def grow_update(window, expect, extra=""):
+def grow_update(window, expect, extra="", first=""):
     """Refresh the page after a chunk was committed and wait until it shows
     `expect` rows: how long that took, what it drew, and whether it redrew
-    the whole list. `extra` adds fields (JavaScript, `name: value, ...`)."""
+    the whole list. `extra` adds fields (JavaScript, `name: value, ...`).
+    `first` (JavaScript) runs after the starting counts are taken, so rows a
+    page poll draws during it still count towards this step."""
     return evaluate(window, GROW_JS + f"""
-        const added = g.added, redraws = g.redraws, t = performance.now();
+        const added = g.added, redraws = g.redraws;
+        {first}
+        const t = performance.now();
         await window.workspace.refresh();
         const ok = await until(() => rows().length === {expect});
         await frames();
@@ -604,10 +608,12 @@ def growing_checks(window, ws, grow_mid):
             await window.workspace.refresh(); await wait(1500);
             return {{rows: rows().length, held: rows().length === {shown} && g.added === added
                      && g.redraws === redraws && document.activeElement === g.span}};"""))
-        evaluate(window, GROW_JS + "g.span.blur(); await wait(1500);")
+        # The edit ends. A page poll may append the held-back rows during the
+        # wait, so the step's starting counts are taken before the blur.
         shown += GROW_MORE
         step("after_edit", grow_update(
-            window, shown, f"kept: edited().textContent === '{GROW_TEXT}'"))
+            window, shown, f"kept: edited().textContent === '{GROW_TEXT}'",
+            first="g.span.blur(); await wait(1500);"))
         out["edit_saved"] = real(grow_mid, 1, 1)["items"][0]["text"] == GROW_TEXT
         # Undo the edit, then more passages: the undone text stays.
         out["undone"] = evaluate(window, GROW_JS + """
