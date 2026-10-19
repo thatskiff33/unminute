@@ -75,8 +75,9 @@
 # and tests check the time). Not every shape is: each variable set and used later
 # rescans the rest of the command (300 take about 0.15 s), and so do a chain of
 # thousands of cd into ever deeper folders and thousands of heredocs or
-# here-strings that are never closed (many unclosed @' openers: about 5.8 s for a
-# 24 KB command in the #228 review, #236). So past 2,000 assignments or loops, 20
+# here-strings that are never closed (many unclosed @' openers: a 24 KB command
+# took 1.8 to 5.8 s in two measurements, and a 90 KB one runs past the 20 s limit
+# below, #236). So past 2,000 assignments or loops, 20
 # million characters rescanned, or values that grow the command past twice its
 # length plus a million characters (a=x; b=$a$a; c=$b$b ...), a command is blocked
 # as too complex to check; and a command over 20,000 characters, or one that its
