@@ -697,25 +697,26 @@ class MachineSpecTests(unittest.TestCase):
                                            "PNPDeviceID": "PCI\\SYNTH", "SystemName":
                                            SYNTHETIC_HOST}]}
         done = subprocess.CompletedProcess([], 0, stdout=json.dumps(rows).encode("utf-8"))
-        with mock.patch.object(perf_check, "_system_program", return_value="powershell.exe"), \
-                mock.patch.object(perf_check.subprocess, "run", return_value=done) as run:
+        # Windows PowerShell itself (full path, minimal environment) is
+        # tests/test_windows_powershell.py's.
+        ps = perf_check.windows_powershell
+        with mock.patch.object(ps, "run", return_value=done) as run:
             got = perf_check.WindowsProbe().cim()
         self.assertEqual({"Win32_Processor": [{"NumberOfCores": 4}],
                           "Win32_VideoController": [{"Name": "Synthetic GPU",
                                                      "DriverVersion": "1.2"}]}, got)
-        command = run.call_args.args[0]
-        self.assertEqual(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command"],
-                         command[:4])
-        self.assertIn("Select-Object NumberOfCores)", command[4])
-        self.assertIn("Select-Object Name,DriverVersion)", command[4])
+        script = run.call_args.args[0]
+        self.assertIs(run.call_args.kwargs["text"], False)
+        self.assertIn("Select-Object NumberOfCores)", script)
+        self.assertIn("Select-Object Name,DriverVersion)", script)
         for failed in (subprocess.CompletedProcess([], 1, stdout=b""),
                        subprocess.CompletedProcess([], 0, stdout=b"not json"),
                        subprocess.CompletedProcess([], 0, stdout=b"[1, 2]")):
             with self.subTest(failed=failed), \
-                    mock.patch.object(perf_check, "_system_program", return_value="ps.exe"), \
-                    mock.patch.object(perf_check.subprocess, "run", return_value=failed):
+                    mock.patch.object(ps, "run", return_value=failed):
                 self.assertIsNone(perf_check.WindowsProbe().cim())
-        with mock.patch.object(perf_check, "_system_program", return_value=None):
+        missing = FileNotFoundError("Windows PowerShell 5.1 is missing")
+        with mock.patch.object(ps, "run", side_effect=missing):
             self.assertIsNone(perf_check.WindowsProbe().cim())
 
     def test_the_cim_query_only_tries_the_output_encoding(self):
@@ -730,15 +731,11 @@ class MachineSpecTests(unittest.TestCase):
     def test_the_cim_query_answers_in_constrained_language_mode(self):
         # As on a laptop with WDAC or AppLocker script enforcement: the session
         # is switched to ConstrainedLanguage, then runs the probe's own query.
-        import os
-        exe = perf_check._system_program("WindowsPowerShell", "v1.0", "powershell.exe")
-        self.assertIsNotNone(exe)
         wrapper = ("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; "
                    "Invoke-Expression $env:UNMINUTE_TEST_CIM_SCRIPT")
-        r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", wrapper],
-                           capture_output=True, timeout=120,
-                           env={**os.environ, "UNMINUTE_TEST_CIM_SCRIPT": perf_check.cim_script()},
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        r = perf_check.windows_powershell.run(
+            wrapper, {"UNMINUTE_TEST_CIM_SCRIPT": perf_check.cim_script()}, text=False,
+            timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         # Only the exit code and the shape are checked; nothing read is printed.
         self.assertEqual(0, r.returncode, "the CIM query failed in ConstrainedLanguage mode")
         data = json.loads(r.stdout.decode("utf-8-sig", errors="replace"))

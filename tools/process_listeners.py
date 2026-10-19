@@ -2,16 +2,20 @@
 # The app's process tree and any network sockets it listens on. The window
 # checks use these to show the app opens no local listener (the page loads from
 # file://, so pywebview starts no HTTP server; workspace/shell.py). Windows only.
+# The importing tool puts tools/ on the import path (after the standard
+# library); this module leaves the path alone.
 
 import subprocess
+
+import windows_powershell
 
 
 def process_tree(root_pid):
     """PIDs of root and all its descendants (WebView2 runs child processes)."""
-    out = subprocess.run(["powershell", "-NoProfile", "-Command",
-                          "Get-CimInstance Win32_Process | ForEach-Object "
-                          "{ \"$($_.ProcessId) $($_.ParentProcessId) $($_.Name)\" }"],
-                         capture_output=True, text=True).stdout
+    # Windows PowerShell by full path, with a minimal environment (#237).
+    out = windows_powershell.run("Get-CimInstance Win32_Process | ForEach-Object "
+                                 "{ \"$($_.ProcessId) $($_.ParentProcessId) $($_.Name)\" }"
+                                 ).stdout
     rows = [line.split(" ", 2) for line in out.splitlines() if line.strip()]
     children, names = {}, {}
     for pid, ppid, name in rows:
