@@ -84,8 +84,8 @@ class WorkspaceError(ValueError):
 def _model_note(name, state, downloads_allowed=True):
     """What Settings says beside the picker about a speech model that is not
     ready, and why Transcribe again refuses it (#244); None when it is ready.
-    Manage downloads is named only when it can fix the model: it offers the
-    model and managed policy allows downloads (K3)."""
+    Manage downloads, which offers every speech model (#246), is named only
+    when managed policy allows downloads (K3)."""
     if state == "ready":
         return None
     label = asr_engines.label(name)
@@ -93,9 +93,6 @@ def _model_note(name, state, downloads_allowed=True):
     if not downloads_allowed:
         return (f"{label} is {what}, and downloads are turned off by your organisation. "
                 "Choose another speech model, or ask your IT team to install it.")
-    if not setup.offered(name):
-        return (f"{label} is {what}, and Manage downloads does not offer it. Choose another "
-                "speech model, or ask your IT team to install it.")
     if state == "invalid":
         return (f"{label} is damaged. Repair it in Settings > Manage downloads, or choose "
                 "another speech model.")
@@ -2101,15 +2098,10 @@ class Workspace:
     def _speech_states(self):
         """Each speech model's state ("ready", "missing" or "invalid"), worked
         out as the Downloads page does (setup.status) and kept as long as its
-        cards (DISPLAY_CACHE_S, or until a download, removal or check ends). A
-        model with no card there is checked on its own, as rarely (#244)."""
+        cards (DISPLAY_CACHE_S, or until a download, removal or check ends).
+        Every speech model has a card there (#246; a test keeps it so)."""
         cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
-        states = {c["name"]: c["state"] for c in cards if c["role"] == "speech"}
-        rest = tuple(n for n in SPEECH_MODELS if n not in states)
-        if rest:
-            states.update(self._display_value(
-                "speech_states", lambda: {n: setup.status(n, self.cache_dir)[0] for n in rest}))
-        return states
+        return {c["name"]: c["state"] for c in cards if c["role"] == "speech"}
 
     def get_settings(self):
         self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
@@ -2118,10 +2110,10 @@ class Workspace:
         choices = [{"name": n, "label": asr_engines.label(n),
                     "recommended": n == asr_engines.RECOMMENDED_PARAKEET,
                     # The page labels a model that is not ready and shows the
-                    # note beside the picker, with Manage downloads only if it
-                    # can fix the model there (#244, K3). The choice is still saved.
+                    # note beside the picker, with Manage downloads only if
+                    # policy allows downloads (#244, K3). The choice is still saved.
                     "state": states.get(n, "missing"),
-                    "offered": downloads and setup.offered(n),
+                    "offered": downloads,
                     "note": _model_note(n, states.get(n, "missing"), downloads)}
                    for n in SPEECH_MODELS]
         from workspace import update

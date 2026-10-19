@@ -403,7 +403,7 @@ Failure reasons are stored without file paths.
 
 ### Pinned revisions
 - A meeting keeps the model revision it was started with. If an app update changes the pinned revision, its unfinished transcription stops with an explanation ("Transcribe again"), instead of silently mixing revisions.
-- A model that is missing or fails its checks when a worker loads it stops the meeting with a message that names Settings > Manage downloads (`workspace/engines.py`, `workspace/speaker_load.py`): a worker only loads models after Setup. A speech model the Downloads page does not offer (`engines.OFFERED_SPEECH`, kept equal to `setup.SPEECH` by a test) names another model or the IT team instead.
+- A model that is missing or fails its checks when a worker loads it stops the meeting with a message that names Settings > Manage downloads (`workspace/engines.py`, `workspace/speaker_load.py`): a worker only loads models after Setup. The Downloads page offers every speech model Settings lists (`setup.SPEECH`; `tests/test_single_source.py` keeps them equal, #246), so the message can always name it. Settings names the IT team instead only when managed policy turns downloads off (K3).
 
 ## Watched folders (#23) and cloud sources (#24)
 

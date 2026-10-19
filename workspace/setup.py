@@ -45,6 +45,11 @@ SPEECH = [
     (asr_engines.PARAKEET_V3,
      "Newer multilingual version. In our tests it was less accurate for English."),
     (asr_engines.WHISPER_TURBO, "Alternative engine; slower on a processor."),
+    # #246 (owner's decision, 20 Oct 2026): offered so that a meeting set to it
+    # can run in a new install. Turbo stays the suggested Whisper model.
+    (asr_engines.WHISPER_LARGE,
+     "The most accurate Whisper model, though only slightly ahead of turbo in our tests. "
+     "The slowest on a processor."),
 ]
 CARDS = [
     *(_speech_card(name, name == asr_engines.RECOMMENDED_PARAKEET, about)
@@ -440,12 +445,6 @@ def _fetch(url, dest, expected_size):
 
 def known(name):
     return name in asr_engines.MANAGED_MODELS or name == gpu.COMPONENT
-
-
-def offered(name):
-    """Whether the Downloads page (and Setup) has a card for this model, so a
-    user can download or repair it there."""
-    return any(c["name"] == name for c in CARDS)
 
 
 class Downloads:

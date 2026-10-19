@@ -70,7 +70,7 @@ The earlier version's workspace and models stay on the computer until you delete
 The first start opens Setup, five short steps. Each model is a one-off download that the app checks before use.
 
 1. **Welcome:** how a meeting moves through the app.
-2. **Speech model:** Parakeet v2 is recommended (0.66 GB). Parakeet v3 and Whisper large-v3 turbo are under Other options.
+2. **Speech model:** Parakeet v2 is recommended (0.66 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options.
 3. **Speaker names (optional, 0.03 GB):** the speaker identification model's publisher asks you to accept its terms with a free Hugging Face account and a "Read" token, once. Setup links to each page. The token can be remembered in Windows Credential Manager and removed at any time. Downloaded models keep working without it.
 4. **Microphone (optional):** turn on recording and test the microphone.
 5. **Ready:** a summary of what is set up.
@@ -189,7 +189,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | Problem | What to do |
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > Manage downloads (the Downloads page) > Repair. The damaged copy is kept aside, not deleted. |
-| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > Speech model and select **Transcribe with another model…** on the meeting's row. Or download or repair the model in Settings > Manage downloads, then select **Try again**. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
+| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > Speech model and select **Transcribe with another model…** on the meeting's row. Or download or repair the model in Settings > Manage downloads, then select **Try again**. When your organisation has turned downloads off, any model has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > Manage downloads, then use Identify again in the meeting's Speakers tab. When your organisation has turned downloads off, the message says so: ask your IT team to install or repair the speaker model. |
 | A watched recording is not imported | Settings > Watched folders lists files still copying, cloud-only files and unreadable files. |
 | Nothing is processing on battery | Plug in, or allow processing on battery in Settings. |

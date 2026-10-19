@@ -193,24 +193,25 @@ class ModelNameTests(unittest.TestCase):
                  if re.search(r"\bin Setup\b", s)]
         self.assertEqual(found, [])
 
-    def test_a_model_manage_downloads_does_not_offer_is_never_sent_there(self):
-        # #244 review: Whisper large-v3 (the owner's case) has no card on the
-        # Downloads page, so its load errors name another model or IT instead.
-        from workspace import engines
+    def test_manage_downloads_offers_every_speech_model(self):
+        # #246: every speech model Settings lists has a card on the Downloads
+        # page and in Setup, so a model error can always send the user there.
+        # Whisper large-v3 (the owner's case) had none, which #244 worked
+        # around with a note naming IT; a new model without a card fails here.
+        from workspace import app, engines
+        speech = {*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS}
+        self.assertEqual({n for n, _ in setup.SPEECH}, speech)
+        self.assertEqual(set(app.SPEECH_MODELS), speech)
+        self.assertEqual({c["name"] for c in setup.CARDS if c["role"] == "speech"}, speech)
         with mock.patch.object(asr_engines, "find_verified", return_value=None), \
                 self.assertRaises(asr_engines.ModelLoadError) as caught:
             engines.load_engine(asr_engines.WHISPER_LARGE, ".", 1)
         self.assertEqual(str(caught.exception), "Whisper large-v3 is not installed or failed "
-                         "verification. Choose another speech model in Settings, or ask your "
-                         "IT team to install it.")
-        self.assertNotIn("Manage downloads",
-                         engines.fix_speech(asr_engines.WHISPER_LARGE, repair_only=True))
-        # The worker's list of offered models is the Downloads page's, without
-        # importing setup into the worker.
-        speech = (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS)
-        self.assertEqual(engines.OFFERED_SPEECH, {n for n in speech if setup.offered(n)})
-        self.assertEqual(engines.OFFERED_SPEECH, {n for n, _ in setup.SPEECH})
-        self.assertNotIn(asr_engines.WHISPER_LARGE, engines.OFFERED_SPEECH)
+                         "verification. Download or repair it in Settings > Manage "
+                         "downloads, or choose another speech model in Settings.")
+        self.assertEqual(engines.fix_speech(asr_engines.WHISPER_LARGE, repair_only=True),
+                         "Repair Whisper large-v3 in Settings > Manage downloads, or "
+                         "choose another speech model in Settings.")
 
     def test_model_errors_name_it_when_downloads_are_off(self):
         # #257: with downloads turned off by policy, the window process swaps
@@ -232,8 +233,16 @@ class ModelNameTests(unittest.TestCase):
                          "Whisper large-v3 turbo is not installed or failed verification. "
                          "Downloads are turned off by your organisation. Choose another speech "
                          "model in Settings, or ask your IT team to install it.")
-        # Every offered model, for a missing and a damaged copy.
-        for name in engines.OFFERED_SPEECH:
+        # #246: Whisper large-v3, now offered like turbo, gets the same wording
+        # from its real load error.
+        with mock.patch.object(asr_engines, "find_verified", return_value=None),                 self.assertRaises(asr_engines.ModelLoadError) as caught:
+            engines.load_engine(asr_engines.WHISPER_LARGE, ".", 1)
+        self.assertEqual(engines.advice_without_downloads(f"ModelLoadError: {caught.exception}"),
+                         "ModelLoadError: Whisper large-v3 is not installed or failed "
+                         "verification. Downloads are turned off by your organisation. Choose "
+                         "another speech model in Settings, or ask your IT team to install it.")
+        # Every speech model, for a missing and a damaged copy.
+        for name in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS):
             for repair_only in (False, True):
                 said = engines.advice_without_downloads(
                     f"Synthetic problem. {engines.fix_speech(name, repair_only)}")
@@ -288,10 +297,9 @@ class ModelNameTests(unittest.TestCase):
             # DOWNLOADS: fix_speech (twice) and SPEAKER_FIX only. PARAKEET_FIX:
             # ParakeetEngine.load's two errors only.
             self.assertEqual(len(uses), count, name)
-        # Advice that never names Manage downloads, and other errors, are kept.
-        for kept in (engines.fix_speech(asr_engines.WHISPER_LARGE),
-                     "Transcription failed: RuntimeError: synthetic"):
-            self.assertEqual(engines.advice_without_downloads(kept), kept)
+        # Other errors are kept.
+        kept = "Transcription failed: RuntimeError: synthetic"
+        self.assertEqual(engines.advice_without_downloads(kept), kept)
 
     def test_a_parakeet_engine_names_the_model_by_its_label(self):
         engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)

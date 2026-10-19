@@ -21,7 +21,7 @@ This guide covers the packaged workspace.
 
 1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.
 2. **Set up.** On first start, Setup takes you through five steps:
-   - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Other models are under Other options.
+   - **Speech model:** Parakeet v2 is recommended (about 0.7 GB). Parakeet v3, Whisper large-v3 turbo and Whisper large-v3 are under Other options. Whisper large-v3 is the largest download and the slowest on a processor.
    - **Speaker names** (optional): speaker identification needs a free Hugging Face account and token, once. Follow the steps on the screen. The token can be remembered in Windows Credential Manager and you can remove it at any time. Already-downloaded models keep working without it.
    - **Microphone** (optional): turn on recording and test the microphone.
    - You can skip the optional steps and turn them on later in Settings. Settings > **Manage downloads** adds or repairs models later. Settings > **Speech model** marks a model that is not downloaded or is damaged.
@@ -143,8 +143,8 @@ The earlier version's workspace and models stay on the computer until they are d
 | Problem | What to do |
 | --- | --- |
 | A model shows "Damaged" or "Needs attention" | Settings > **Manage downloads** (the Downloads page) > **Repair**. The damaged copy is kept aside, not deleted. **Check every file** re-checks a model that looks ready. |
-| Settings > Speech model marks a model "(not downloaded)" or "(damaged)" | It is not ready to use, and the note beside the picker says so. Your choice is saved: download or repair the model in **Manage downloads**, or choose a model that is ready. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
-| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > **Speech model** and select **Transcribe with another model…** on the meeting. Or download or repair the model in Settings > **Manage downloads**, then select **Try again**. A model that Manage downloads does not offer, or any model when your organisation has turned downloads off, has to be installed by your IT team. |
+| Settings > Speech model marks a model "(not downloaded)" or "(damaged)" | It is not ready to use, and the note beside the picker says so. Your choice is saved: download or repair the model in **Manage downloads**, or choose a model that is ready. When your organisation has turned downloads off, any model has to be installed by your IT team. |
+| A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > **Speech model** and select **Transcribe with another model…** on the meeting. Or download or repair the model in Settings > **Manage downloads**, then select **Try again**. When your organisation has turned downloads off, any model has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. When your organisation has turned downloads off, the message says so: ask your IT team to install or repair the speaker model. |
 | A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
@@ -190,7 +190,7 @@ These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
 - **Hardware:** the minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. So far it has only been tested on a faster laptop (#28).
-- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips. Whisper large-v3 has not been tested in the app's engine.
 - **Speaker identification:** pyannote community-1.
 
 **Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
