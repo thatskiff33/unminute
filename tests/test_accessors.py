@@ -525,7 +525,7 @@ class UiCheckVerdictTests(unittest.TestCase):
             "confirm": {"offered": True, "open": True, "not_ready_open": False,
                         "title": "Transcribe again with the current model?",
                         "body": "It uses the model chosen in Settings > Speech model.",
-                        "ok_disabled_until_ticked": True},
+                        "ok_disabled_until_ticked": True, "ok_enabled_after_tick": True},
             "after": {"stage": "review", "error": None, "model": ui.READY_MODEL,
                       "older_models": [ui.NOT_READY_MODEL], "passages": 12,
                       "row_found": True, "row_needs_attention": False}}
@@ -553,6 +553,9 @@ class UiCheckVerdictTests(unittest.TestCase):
             ("settings", "chosen", ui.NOT_READY_MODEL, "ready model was not chosen"),
             ("confirm", "not_ready_open", True, "Transcribe again confirmation"),
             ("confirm", "ok_disabled_until_ticked", False, "Transcribe again confirmation"),
+            # Ticking the box did not enable Confirm (or was not recorded).
+            ("confirm", "ok_enabled_after_tick", False, "Transcribe again confirmation"),
+            ("confirm", "ok_enabled_after_tick", None, "Transcribe again confirmation"),
             ("after", "stage", "inbox", "did not leave the error state"),
             ("after", "error", "The speech model is not ready", "did not leave the error"),
             ("after", "model", ui.NOT_READY_MODEL, "did not leave the error state"),

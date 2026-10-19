@@ -849,6 +849,8 @@ def failed_meeting_checks(window, ws, fail_mid):
         // A ready model, chosen as a person would (the picker's change event).
         // The picker lists only real models, so the check's synthetic one is
         // added first; the select keeps the focus, so a poll does not refill it.
+        // So transcribeAgain's "chosen model has a label" branch goes uncovered:
+        // a real ready model would need a download, and this check stays offline (N2).
         sel.focus();
         sel.append(new Option('Synthetic test model', {json.dumps(READY_MODEL)}));
         sel.value = {json.dumps(READY_MODEL)};
@@ -869,8 +871,11 @@ def failed_meeting_checks(window, ws, fail_mid):
                      title: document.getElementById('c-title').textContent,
                      body: document.getElementById('c-body').textContent,
                      ok_disabled_until_ticked: document.getElementById('c-ok').disabled};
+        // Tick, then confirm with the button itself, as a person would: a
+        // Confirm button that stays disabled confirms nothing.
         document.getElementById('c-check').click();
-        dlg.returnValue = 'ok'; dlg.close('ok'); await wait(1500);
+        out.ok_enabled_after_tick = document.getElementById('c-ok').disabled === false;
+        document.getElementById('c-ok').click(); await wait(1500);
         return out;""")
     end = time.time() + 180                     # the synthetic engine takes seconds
     while time.time() < end and ws.detail(fail_mid)["stage"] != "review":
@@ -911,7 +916,7 @@ def failed_meeting_problems(fm):
     c = fm.get("confirm") or {}
     if not (c.get("offered") and c.get("open") and not c.get("not_ready_open")
             and c.get("title") == "Transcribe again with the current model?"
-            and c.get("ok_disabled_until_ticked")):
+            and c.get("ok_disabled_until_ticked") and c.get("ok_enabled_after_tick") is True):
         bad.append("the Transcribe again confirmation")
     a = fm.get("after") or {}
     if not (a.get("stage") == "review" and a.get("error") is None
