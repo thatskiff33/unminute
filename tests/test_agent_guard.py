@@ -2075,9 +2075,11 @@ class SettingsTests(unittest.TestCase):
 
     def test_hook_header_and_t34_list_the_same_powershell_gaps(self):
         # The hook's header and docs/SECURITY_MODEL.md T34 both list the guard's
-        # known gaps and false positives. These shapes (#236, #242 review) must be
+        # known gaps and false positives. These shapes (#236, #242 reviews) must be
         # named in both, so neither copy understates a gap: every heredoc delimiter
-        # form, every quote a message value can open with, and the exact condition
+        # form (anchored to the span's own wording, since "<<EOF" appears elsewhere
+        # in the header), every quote a message value can open with and every gh
+        # field option, an opener the shell never starts, and the exact condition
         # for the non-ASCII false positive.
         header = []
         for line in HOOK.read_text(encoding="utf-8").splitlines():
@@ -2087,8 +2089,10 @@ class SettingsTests(unittest.TestCase):
         header = " ".join(header)
         security = (ROOT / "docs" / "SECURITY_MODEL.md").read_text(encoding="utf-8")
         t34 = next(line for line in security.splitlines() if line.startswith("| T34 |"))
-        for shape in ("<<EOF", "<<'EOF'", "<<-EOF", "quoted or not", '@"', "gh -f fields",
-                      "typographic quote", "line feeds", "alone or assigned"):
+        for shape in ("heredoc span (<<EOF", "<<'EOF'", "<<-EOF", "quoted or not", '@"',
+                      "gh -f, -F, --field and --raw-field fields", "typographic quote",
+                      "the shell never starts", "inside a quoted string or a comment",
+                      "line feeds", "alone or assigned"):
             with self.subTest(shape=shape):
                 self.assertTrue(shape in header, "not in the hook's header")
                 self.assertTrue(shape in t34.replace("`", ""), "not in T34")

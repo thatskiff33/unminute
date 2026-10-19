@@ -132,11 +132,17 @@
 #     layer, misses it too);
 #   - message text that PowerShell ends where the message pattern does not: a
 #     message option's quoted value or here-string (', ", @' or @"; also -Value
-#     and gh -f fields) closed by a typographic quote (for a here-string, one
-#     before the closing @), which the pattern reads on to a later plain quote,
-#     and a --message " inside a here-string body, which the pattern pairs with a
-#     quote after the here-string's closer; what lies between is dropped as text
-#     and not checked (#236; main's earlier check, the first layer, misses it too);
+#     and gh -f, -F, --field and --raw-field fields) closed by a typographic
+#     quote (for a here-string, one before the closing @), which the pattern
+#     reads on to a later plain quote, and a --message " inside a here-string
+#     body, which the pattern pairs with a quote after the here-string's closer;
+#     what lies between is dropped as text and not checked (#236; main's earlier
+#     check, the first layer, misses it too);
+#   - a message option or heredoc opener that the shell never starts, because it
+#     is inside a quoted string or a comment (Bash and PowerShell), which the
+#     patterns still pair with a later quote or closing line; what lies between
+#     is dropped as text and not checked (#242 review; main's earlier check, the
+#     first layer, misses it too);
 #   - a substitution that renames a folder in a variable's value
 #     (${APPDATA/Roaming/Local});
 #   - a cygpath, dirname or Split-Path nested more than eight levels deep (its
