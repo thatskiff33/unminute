@@ -141,13 +141,14 @@ def dialog_button(hwnd, text):
     return found[0] if found else 0
 
 
-PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "toggle-on", "enter-on")
+PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "toggle-on", "enter-on", "shift-on")
 
 
 def press(script, title, seen=None):
     """Act on the confirmation as a person would, through Windows messages
-    (the page has no way to): "click:<button>", "enter", "tab",
-    "enter-on:<button>", "space-on:<statement>", "toggle-on:<statement>",
+    (the page has no way to): "click:<button or text>", "enter", "tab",
+    "enter-on:<control>", "space-on:<statement>", "toggle-on:<statement>",
+    "shift-on:<control>" (a key that does nothing but count as a key press),
     "wait:1.3", "open?" (notes whether the window is still open).
 
     The statement is never ticked by a posted click. WinForms' CheckBox acts
@@ -190,8 +191,9 @@ def press(script, title, seen=None):
         if kind == "wait":
             time.sleep(float(arg))
         elif kind == "click":
-            # The mouse messages a real click sends, at the button's centre
-            # (BM_CLICK would use wherever the pointer happens to be).
+            # The mouse messages a real click sends, at the control's centre.
+            # (WinForms turns BM_CLICK into a Click with no mouse event, which
+            # would skip the app's mouse rule for the action, on MouseUp.)
             from ctypes import wintypes
             button = dialog_button(hwnd, arg)
             rect = wintypes.RECT()
@@ -217,6 +219,11 @@ def press(script, title, seen=None):
             control = dialog_button(hwnd, arg)
             user32.PostMessageW(control, 0x00F5, 0, 0)                        # BM_CLICK
             time.sleep(0.2)
+        elif kind == "shift-on":                                          # a key, no effect
+            control = dialog_button(hwnd, arg)
+            user32.PostMessageW(control, 0x0100, 0x10, 0)                     # WM_KEYDOWN Shift
+            user32.PostMessageW(control, 0x0101, 0x10, 0)
+            time.sleep(0.05)
         elif kind == "enter-on":                                          # Enter on that button
             button = dialog_button(hwnd, arg)
             user32.PostMessageW(button, 0x0100, 0x0D, 0)
@@ -227,8 +234,10 @@ def press(script, title, seen=None):
 
 def native_checks(window, ws, mid):
     """The app's own confirmation window: the action is ignored at first and
-    until a statement is ticked, Enter means Cancel, the bridge reports a
-    Cancel without acting, and the action works after the wait. The
+    until a statement is ticked, Enter means Cancel unless the action has held
+    the focus, a key or click before the action is available starts the wait
+    again, the bridge reports a Cancel without acting, and the action works
+    after the wait. The
     recording indicator changes the title and the taskbar overlay and
     restores them."""
     import ctypes
@@ -293,13 +302,42 @@ def native_checks(window, ws, mid):
     # action; Enter at once is ignored, Enter after holding the focus answers.
     # Space is posted to the statement, so it ticks whatever has the focus; the
     # Tab count matters because Enter is the action's only if it has the focus.
+    # The quick Enter comes long after the action was enabled (2.5 s after the
+    # tick) but just after it took the focus, so only the focus hold ignores it.
     keyed = dict(ticked, title="Workspace UI check: keyboard")
     seen_keys = []
     out["keyboard_after_hold"], out["pressed_5"] = run_with(
-        ["tab", "space-on:" + keyed["check"], "wait:1.3", "tab", "tab",
+        ["tab", "space-on:" + keyed["check"], "wait:2.5", "tab", "tab",
          "enter-on:Confirm", "open?", "wait:1.3", "enter-on:Confirm"], keyed["title"],
         lambda: shell.native_confirm(window, keyed), seen_keys)
     out["open_after_quick_enter"] = seen_keys
+    # A key press or a click on the dialog before the action is available
+    # starts the wait again (keys a person was typing as it appeared): pressed
+    # at 0.2, 0.6 and 1.0 s, the action is still ignored at 1.5 s, although
+    # without the restart it would have been enabled at 1.0 s.
+    keys = dict(plain, title="Workspace UI check: keys wait again")
+    seen_keys_restart = []
+    out["keys_restart_wait"], out["pressed_6"] = run_with(
+        ["wait:0.2", "shift-on:Cancel", "wait:0.35", "shift-on:Cancel", "wait:0.35",
+         "shift-on:Cancel", "wait:0.45", "click:Confirm", "open?", "wait:1.3",
+         "click:Confirm"], keys["title"],
+        lambda: shell.native_confirm(window, keys), seen_keys_restart)
+    out["open_after_keys"] = seen_keys_restart
+    clicks = dict(plain, title="Workspace UI check: clicks wait again")
+    seen_clicks = []
+    out["clicks_restart_wait"], out["pressed_7"] = run_with(
+        ["wait:0.2", "click:" + plain["body"], "wait:0.2", "click:" + plain["body"],
+         "wait:0.2", "click:" + plain["body"], "wait:0.3", "click:Confirm", "open?",
+         "wait:1.3", "click:Confirm"], clicks["title"],
+        lambda: shell.native_confirm(window, clicks), seen_clicks)
+    out["open_after_clicks"] = seen_clicks
+    # Enter means Cancel unless the action has the focus: Enter on the ticked
+    # statement, long after the action was enabled, cancels.
+    on_statement = dict(ticked, title="Workspace UI check: Enter on the statement")
+    out["enter_on_statement"], out["pressed_8"] = run_with(
+        ["tab", "space-on:" + on_statement["check"], "wait:2.5",
+         "enter-on:" + on_statement["check"]], on_statement["title"],
+        lambda: shell.native_confirm(window, on_statement))
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -691,8 +729,12 @@ def main():
             and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
             and nv.get("keyboard_after_hold") is True
             and nv.get("open_after_quick_enter") == [True]
+            and nv.get("keys_restart_wait") is True and nv.get("open_after_keys") == [True]
+            and nv.get("clicks_restart_wait") is True and nv.get("open_after_clicks") == [True]
+            and nv.get("enter_on_statement") is False
             and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")
-            and nv.get("pressed_4") and nv.get("pressed_5")):
+            and nv.get("pressed_4") and nv.get("pressed_5") and nv.get("pressed_6")
+            and nv.get("pressed_7") and nv.get("pressed_8")):
         bad.append("native confirmation")
     if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
             and nv.get("overlay_on") and nv.get("overlay_off")):

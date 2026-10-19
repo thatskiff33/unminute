@@ -833,6 +833,9 @@ class ToolTests(TempDir):
                 # BM_CLICK unticks it with no key or mouse event at all, so in
                 # the real check only CheckedChanged can restart the wait.
                 self.assertTrue(workspace_ui_check.press(["toggle-on:" + statement], title))
+                # Shift posted to the focused Cancel reaches the form as a key
+                # press (KeyPreview) and ticks nothing ("keys wait again").
+                self.assertTrue(workspace_ui_check.press(["shift-on:Cancel"], title))
                 # Uncovered, the same click acts (it ticks), so the click
                 # itself was sound and only the cover lost it.
                 user32.PostMessageW(ctypes.c_void_p(cover), 0x0010, 0, 0)     # WM_CLOSE
@@ -848,7 +851,7 @@ class ToolTests(TempDir):
                 self.assertIn("unknown step", said.getvalue())
             user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0)          # WM_CLOSE
             lines = [line.strip() for line in form.stdout]
-            self.assertEqual(["mouse", "key", "checked True", "checked False",
+            self.assertEqual(["mouse", "key", "checked True", "checked False", "key",
                               "mouse", "checked True", "done"], lines)
         finally:
             form.kill()
@@ -904,6 +907,37 @@ class ToolTests(TempDir):
         self.assertIn('"click:Confirm", "open?", "toggle-on:" + ticked["check"],\n'
                       '         "click:Confirm", "open?"', native)
         self.assertIn('["tab", "space-on:" + keyed["check"]', native)
+
+    def test_the_ui_check_guards_each_confirmation_rule(self):
+        # Each rule in workspace/shell.py's confirmation has a native script
+        # that only that rule can pass (round 2 review of #229).
+        source = self.source("workspace_ui_check.py")
+        native = source.split("\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
+        # The quick Enter comes long after the action was enabled, so only the
+        # focus hold (not "enabled for the wait") ignores it.
+        self.assertIn('"space-on:" + keyed["check"], "wait:2.5", "tab", "tab",\n'
+                      '         "enter-on:Confirm", "open?"', native)
+        # A key press before the action is available restarts the wait: keys at
+        # 0.2, 0.6 and 1.0 s, the action still ignored at 1.5 s.
+        self.assertIn('["wait:0.2", "shift-on:Cancel", "wait:0.35", "shift-on:Cancel", '
+                      '"wait:0.35",\n         "shift-on:Cancel", "wait:0.45", "click:Confirm", '
+                      '"open?"', native)
+        # So does a mouse press on the dialog (its text).
+        self.assertIn('["wait:0.2", "click:" + plain["body"], "wait:0.2", "click:" + '
+                      'plain["body"],\n         "wait:0.2", "click:" + plain["body"], '
+                      '"wait:0.3", "click:Confirm", "open?"', native)
+        # Enter on the ticked statement, long after the action was enabled,
+        # means Cancel (AcceptButton).
+        self.assertIn('["tab", "space-on:" + on_statement["check"], "wait:2.5",\n'
+                      '         "enter-on:" + on_statement["check"]]', native)
+        verdict = source.split('nv = report.get("native")', 1)[1].split("recording indicator", 1)[0]
+        for rule in ('nv.get("keys_restart_wait") is True', 'nv.get("open_after_keys") == [True]',
+                     'nv.get("clicks_restart_wait") is True',
+                     'nv.get("open_after_clicks") == [True]',
+                     'nv.get("enter_on_statement") is False', 'nv.get("pressed_6")',
+                     'nv.get("pressed_7")', 'nv.get("pressed_8")'):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, verdict)
 
     def test_a_confirmation_left_open_fails_the_ui_check_instead_of_hanging(self):
         source = self.source("workspace_ui_check.py")
