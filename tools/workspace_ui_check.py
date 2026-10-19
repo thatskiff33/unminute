@@ -141,26 +141,34 @@ def dialog_button(hwnd, text):
     return found[0] if found else 0
 
 
-PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "enter-on")
+PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "toggle-on", "enter-on")
 
 
 def press(script, title, seen=None):
     """Act on the confirmation as a person would, through Windows messages
     (the page has no way to): "click:<button>", "enter", "tab",
-    "enter-on:<button>", "space-on:<statement>", "wait:1.3", "open?" (notes
-    whether the window is still open).
+    "enter-on:<button>", "space-on:<statement>", "toggle-on:<statement>",
+    "wait:1.3", "open?" (notes whether the window is still open).
 
-    The statement is ticked with the keyboard (Tab to it, then Space), not a
-    posted click. WinForms' CheckBox acts on a mouse-up only if WindowFromPoint
-    at that point on screen is the check box itself. A check started from a
-    terminal usually cannot take the foreground (Windows' foreground lock), so
-    the window the user has in front covers the confirmation, the tick is lost
-    and the "tick first" confirmation stays open until it is closed as stuck.
+    The statement is never ticked by a posted click. WinForms' CheckBox acts
+    on a mouse-up only if WindowFromPoint at that point on screen is the check
+    box itself. A check started from a terminal usually cannot take the
+    foreground (Windows' foreground lock), so the window the user has in front
+    covers the confirmation, the tick is lost and the confirmation stays open
+    until it is closed as stuck. Instead:
+    - "space-on" posts Space to the check box itself, as a keyboard user's
+      Space would arrive. It ticks the box whatever has the focus, so it
+      proves nothing about the tab order: the keyboard script's Tab count,
+      which must leave the focus on the action, does that.
+    - "toggle-on" posts BM_CLICK, which WinForms turns into the check box's
+      Click with no key or mouse input. Only the tick itself (CheckedChanged)
+      can then restart the wait, so the "tick first" script shows that it does.
     The action button is not affected: the app answers its mouse-up from the
     button's own client rectangle (workspace/shell.py, mouse_up_on_action).
-    tests/test_evidence.py shows both on a stand-in form: a posted click
-    ticks the statement when nothing covers it and is lost when something
-    does (docs/DEVELOPER_NOTES.md)."""
+    tests/test_evidence.py shows all of this on a stand-in form: a posted
+    click ticks the statement when nothing covers it and is lost when
+    something does, and Space and BM_CLICK tick it while it is covered, BM_CLICK
+    with no key or mouse event (docs/DEVELOPER_NOTES.md)."""
     import ctypes
     # A step not listed here would do nothing, and the confirmation would only
     # show up later as stuck: refuse the script instead (the caller then closes
@@ -204,6 +212,10 @@ def press(script, title, seen=None):
             control = dialog_button(hwnd, arg)
             user32.PostMessageW(control, 0x0100, 0x20, 0)                     # WM_KEYDOWN Space
             user32.PostMessageW(control, 0x0101, 0x20, 0)
+            time.sleep(0.2)
+        elif kind == "toggle-on":                                         # tick, with no input
+            control = dialog_button(hwnd, arg)
+            user32.PostMessageW(control, 0x00F5, 0, 0)                        # BM_CLICK
             time.sleep(0.2)
         elif kind == "enter-on":                                          # Enter on that button
             button = dialog_button(hwnd, arg)
@@ -265,19 +277,22 @@ def native_checks(window, ws, mid):
     out["yes_after_delay"], out["pressed_3"] = run_with(
         ["wait:1.3", "click:Confirm"], title, lambda: shell.native_confirm(window, plain))
     # A statement to tick: the action is ignored until it is ticked, and for a
-    # moment after ticking; then it answers. Ticked with Tab and Space, which
-    # work behind a foreground window (see press()).
+    # moment after ticking; then it answers. Ticked with BM_CLICK, which works
+    # behind a foreground window and comes with no key or mouse input, so only
+    # the tick itself can have restarted the wait (see press()).
     ticked = dict(plain, title="Workspace UI check: tick first",
                   check="I have read this synthetic question.")
     seen = []
     out["tick_first"], out["pressed_4"] = run_with(
-        ["wait:1.3", "click:Confirm", "open?", "tab", "space-on:" + ticked["check"],
+        ["wait:1.3", "click:Confirm", "open?", "toggle-on:" + ticked["check"],
          "click:Confirm", "open?", "wait:1.3", "click:Confirm"], ticked["title"],
         lambda: shell.native_confirm(window, ticked), seen)
     out["open_until_ticked"] = seen
     # Keyboard (and Narrator or voice control): Tab from Cancel to the statement
     # (the disabled action is skipped), tick it with Space, wait, Tab to the
     # action; Enter at once is ignored, Enter after holding the focus answers.
+    # Space is posted to the statement, so it ticks whatever has the focus; the
+    # Tab count matters because Enter is the action's only if it has the focus.
     keyed = dict(ticked, title="Workspace UI check: keyboard")
     seen_keys = []
     out["keyboard_after_hold"], out["pressed_5"] = run_with(
