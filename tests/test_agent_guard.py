@@ -1600,12 +1600,77 @@ class HardeningTests(unittest.TestCase):
                 ('ls -R "${LOCALAPPDATA:-x}"', "Bash"),
                 ('cat "${LOCALAPPDATA:-}/Unminute/settings.json"', "Bash"),
                 ('rg -n x "${HOME%/}"', "Bash"),
-                ("ls ${LOCALAPPDATA%/}/Unminute/workspace", "Bash")),
+                ("ls ${LOCALAPPDATA%/}/Unminute/workspace", "Bash"),
+                # Round 2: suffix removal, substitution or a substring can climb from
+                # Temp or Roaming to the folder above (the dirname idiom); read both
+                # as the folder and as the folder above it.
+                ('grep -r decision "${TEMP%\\\\*}"', "Bash"),
+                ('rg -n decision "${TMP%\\\\*}"', "Bash"),
+                ('cp -r "${TEMP%\\\\*}" /tmp/x', "Bash"),
+                ('ls -R "${APPDATA%\\\\Roaming}"', "Bash"),
+                ('grep -r decision "${APPDATA%\\\\*}/Local"', "Bash"),
+                ('grep -r decision "${TEMP%%\\\\Temp}"', "Bash"),
+                ('rg -n x "${TEMP/\\\\Temp/}"', "Bash"),
+                ('ls -R "${TEMP:0:30}"', "Bash"),
+                ('cd "${TEMP%\\\\*}" && grep -r decision .', "Bash"),
+                ('cat "${LOCALAPPDATA%/}/Unminute/settings.json"', "Bash"),
+                ('cat "${TEMP%x}/../Unminute/settings.json"', "Bash")),
                 allowed=(
                 ('cd "$(dirname "$0")" && ls', "Bash"),
                 ("Get-ChildItem (Split-Path $env:TEMP) -Directory", "PowerShell"),
                 ('echo "${TEMP%/}"; ls "${HOME}/Local_Repos"', "Bash"),
-                ('rg -n x "$(dirname "$TEMP")/Temp/review"', "Bash")))
+                ('rg -n x "$(dirname "$TEMP")/Temp/review"', "Bash"),
+                ('ls "${HOME%/}/Local_Repos"', "Bash"),
+                ('rg -n x "${TEMP%/}/review"', "Bash"),
+                ('ls "${TEMP%\\\\*}"', "Bash")))
+
+    def test_quoted_words_are_not_the_heredocs_program(self):
+        # Round 2: the program that takes a heredoc was found anywhere on its line,
+        # including a quoted title, so a PR body that quotes a data path was checked
+        # as names whenever the title held Python, Bash, read or tar -T. A quoted
+        # program path and a string another shell runs are still seen.
+        body = (" --body-file - <<'EOF'\nThe guard now blocks `Get-Content "
+                "$env:LOCALAPPDATA\\Unminute\\workspace\\a.json`.\nEOF")
+        code = "\nprint(open(r'" + self.DATA + "\\a.json').read())\nEOF"
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                ('"C:/Program Files/Python314/python.exe" - <<\'EOF\'' + code, "Bash"),
+                ("bash -c \"python -\" <<'EOF'" + code, "Bash"),
+                ("\"python\" - <<'EOF'" + code, "Bash"),
+                ("sh -c 'xargs cat' <<'EOF'\n" + self.BASH_DATA + "/a.json\nEOF", "Bash"),
+                ("@'" + code[:-4] + "\n'@ | & \"C:\\Program Files\\Python314\\python.exe\" -",
+                 "PowerShell")),
+                allowed=tuple(
+                ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
+                    "Move to Python 3.14", "Bash and PowerShell guard",
+                    "Use python -I for the child", "Tests read synthetic files only",
+                    "Meeting content read and written only through the store's codec",
+                    "Guard: check tar -T heredocs", "Guard: --files-from heredocs",
+                    "Guard: zip -@ heredocs")) + (
+                ("@'\nBlocks " + self.DATA + "\n'@ | gh pr create --title \"Move to Python 3.14\""
+                 " --body-file -", "PowerShell"),))
+
+    def test_text_kept_in_a_variable_is_checked(self):
+        # Round 2: a here-string given to a program that takes text but also keeps
+        # it in a variable (Tee-Object -Variable, -OutVariable and the like) was
+        # dropped as written text, and the variable then read the data.
+        data = "@'\n" + self.DATA + "\n'@"
+        with profile_guard() as fresh:
+            self.check(fresh, blocked=(
+                (data + ' | Tee-Object -Variable p\nGet-Content "$p\\settings.json"', "PowerShell"),
+                (data + " | Tee-Object -Variable p | Out-Null; Get-ChildItem -Recurse $p",
+                 "PowerShell"),
+                (data + " | Write-Output -OutVariable p | Out-Null; gci -r $p", "PowerShell"),
+                (data + " | Write-Output -ov p | Out-Null; gci -r $p", "PowerShell"),
+                (data + " | Out-String -OutVariable p", "PowerShell"),
+                (data + " | Out-Null -OutVariable p", "PowerShell"),
+                (data + " | Write-Host -InformationVariable p", "PowerShell"),
+                (data + " | Tee-Object -va p", "PowerShell"),
+                ("Write-Output -InputObject " + data + " -OutVariable p", "PowerShell")),
+                allowed=(
+                ("@'\nBlocks " + self.DATA + "\n'@ | Tee-Object -FilePath notes.md", "PowerShell"),
+                ("@'\nBlocks " + self.DATA + "\n'@ | Set-Content -Path notes.md", "PowerShell"),
+                ("@'\nBlocks " + self.DATA + "\n'@ | git commit -v -F -", "PowerShell")))
 
     # A corpus of the plain and common ways to read, list, search or copy the data,
     # and of ordinary work, so that no later change regresses either silently.
@@ -1690,6 +1755,11 @@ class HardeningTests(unittest.TestCase):
         ('git commit -m "Guard: block \\`rg -n x ~/AppData/Local\\`"', "Bash"),
         ("@'\nGuard: block %LOCALAPPDATA%\\Unminute\\workspace\n'@ | git commit -F -",
          "PowerShell"),
+        # A title is not the program that takes the body (#221 round 2).
+        ("gh pr create --title \"Move to Python 3.14\" --body-file - <<'EOF'\n"
+         "The guard now blocks `cat $LOCALAPPDATA/Unminute/workspace/a.json`.\nEOF", "Bash"),
+        ("gh pr create --title \"Tests read synthetic files only\" --body-file - <<'EOF'\n"
+         "P2 blocks %LOCALAPPDATA%\\Unminute\\workspace\nEOF", "Bash"),
     )
 
     def test_common_phrasings_corpus(self):
@@ -1737,20 +1807,99 @@ class HookProcessTests(unittest.TestCase):
         result = self.run_hook(shell(command))
         self.assertEqual(2, result.returncode, result.stderr[-300:])
 
+    @staticmethod
+    def stdin(payload):
+        """Standard input holding the payload as Claude Code sends it: UTF-8 bytes."""
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return io.TextIOWrapper(io.BytesIO(data), encoding="cp1252")
+
     def test_an_error_while_checking_blocks_without_content(self):
         # Any error in the checks blocks the call (exit 2) and names only its type.
         command = "cat /c/Users/someone/private-name.json"
-        stdin = io.StringIO(json.dumps(shell(command)))
-        stderr = io.StringIO()
-        for error in (RecursionError, MemoryError, ValueError):
-            with self.subTest(error=error.__name__), \
-                    mock.patch.object(guard, "decide", side_effect=error("private-name")), \
-                    mock.patch.object(sys, "stdin", stdin), \
-                    contextlib.redirect_stderr(stderr):
-                stdin.seek(0)
-                self.assertEqual(2, guard.main())
-                self.assertIn(error.__name__, stderr.getvalue())
-                self.assertNotIn("private-name", stderr.getvalue())
+        long_command = command + " # " + "x" * (guard.CHILD_OVER + 10)
+        for error in (RecursionError, MemoryError, ValueError, UnicodeEncodeError):
+            made = (error("utf-8", "private-name", 0, 1, "private-name")
+                    if error is UnicodeEncodeError else error("private-name"))
+            # #221 round 2: also an error on the way to the child process, which
+            # escaped the check and exited 1 (a warning only).
+            for target, payload in (("decide", shell(command)),
+                                    ("_checked_in_child", shell(long_command))):
+                stderr = io.StringIO()
+                with self.subTest(error=error.__name__, target=target), \
+                        mock.patch.object(guard, target, side_effect=made), \
+                        mock.patch.object(sys, "stdin", self.stdin(payload)), \
+                        contextlib.redirect_stderr(stderr):
+                    self.assertEqual(2, guard.main())
+                    self.assertIn(error.__name__, stderr.getvalue())
+                    self.assertNotIn("private-name", stderr.getvalue())
+
+    def test_a_child_process_that_cannot_start_blocks(self):
+        # #221 round 2: checking a long call here instead would have no time limit.
+        payload = shell("git status # " + "x" * (guard.CHILD_OVER + 10))
+        with mock.patch("subprocess.run", side_effect=OSError("no process")):
+            code, reason = guard._decide_bounded(payload, b"{}", False)
+        self.assertEqual(2, code)
+        self.assertIn("could not start", reason)
+
+    def test_utf8_input_is_read_as_utf8(self):
+        # #221 round 2: standard input was read in the ANSI code page, so a Maori
+        # macron (UTF-8 C4 81 or C5 8D, bytes cp1252 lacks) became a lone surrogate.
+        # A long command then failed the encode for its child process with exit 1,
+        # which only warns, and ran unchecked. Sent as Claude Code sends it: UTF-8.
+        macrons = " M\u0101ori T\u014dku"
+        data_path = "cat /c/Users/someone/AppData/Local/Unminute/workspace/settings.json"
+        cases = ((data_path + " # " + "x" * 25000 + macrons, 2),
+                 (data_path + " #" + macrons, 2),
+                 ("cat <<'EOF' > notes.md\n" + ("T\u014dku M\u0101ori\n" * 3000) + "EOF", 0),
+                 ("git commit -m 'Kia ora" + macrons + "'", 0))
+        for command, expected in cases:
+            data = json.dumps(shell(command), ensure_ascii=False).encode("utf-8")
+            with self.subTest(length=len(command), expected=expected):
+                result = subprocess.run([sys.executable, str(HOOK)], input=data,
+                                        capture_output=True, timeout=60)
+                self.assertEqual(expected, result.returncode,
+                                 result.stderr.decode("utf-8", "replace")[-300:])
+            with self.subTest(in_process=True, length=len(command)), \
+                    mock.patch.object(sys, "stdin", self.stdin(shell(command))), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(expected, guard.main())
+
+    def test_a_command_its_variables_grow_is_checked_under_the_time_limit(self):
+        # #221 round 2: only a command over CHILD_OVER characters went to the child
+        # process, but variables can grow a short one to a megabyte, and some later
+        # scans are quadratic: an 8 KB command ran past Claude Code's 600 s hook
+        # limit, which lets the call through. A command that grows past CHILD_OVER is
+        # now checked in the child, under its time limit.
+        def run(payload, limit=None):
+            env = dict(os.environ)
+            if limit is not None:
+                env[guard.TIME_LIMIT_VARIABLE] = limit
+            return subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
+                                  capture_output=True, text=True, timeout=60, env=env)
+
+        crafted = ("a='" + "<<A\n" * 2000 + "'\necho " + "$a " * 100
+                   + "\ncat /c/Users/someone/AppData/Local/Unminute/workspace/a.json")
+        self.assertLess(len(crafted), guard.CHILD_OVER)
+        start = time.perf_counter()
+        result = run(shell(crafted), "1")
+        self.assertEqual(2, result.returncode)
+        self.assertLess(time.perf_counter() - start, 30)
+        # An ordinary short command whose variable is used often is checked in the
+        # child (with no time at all it is blocked, which shows the route) and
+        # allowed there with the usual limit.
+        ordinary = shell("t='" + "x" * 5000 + "'; echo \"$t\" \"$t\" \"$t\" \"$t\" \"$t\"")
+        self.assertLess(len(ordinary["tool_input"]["command"]), guard.CHILD_OVER)
+        result = run(ordinary, "0")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("took too long", result.stderr)
+        result = run(ordinary)
+        self.assertEqual((0, ""), (result.returncode, result.stderr))
+        # In the hook's own process the check stops as soon as the command grows
+        # past the limit; without one (the child), it is checked as before.
+        for payload in (shell(crafted), ordinary):
+            with self.assertRaises(guard.NeedsChild):
+                guard.decide(payload, grown_limit=guard.CHILD_OVER)
+        self.assertIsNone(guard.decide(ordinary))
 
     def test_a_long_command_is_checked_in_a_child_under_a_time_limit(self):
         # #221 round 1: Claude Code lets a call through when the hook runs past its
@@ -1808,6 +1957,19 @@ class HookProcessTests(unittest.TestCase):
             with self.subTest(command=payload["tool_input"]["command"]):
                 result = run(payload, ROOT)
                 self.assertEqual(expected, result.returncode, result.stderr)
+        # #221 round 2: UTF-8 input through PowerShell, with a Maori macron in a long
+        # command (the child process) and a short one.
+        for text in ("cat /c/Users/someone/AppData/Local/Unminute/workspace/a.json # "
+                     + "x" * 25000 + " M\u0101ori",
+                     "cat /c/Users/someone/AppData/Local/Unminute/workspace/a.json # M\u0101ori"):
+            data = json.dumps(shell(text), ensure_ascii=False).encode("utf-8")
+            with self.subTest(length=len(text)):
+                result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
+                                         command], input=data, capture_output=True,
+                                        timeout=60, env={**os.environ,
+                                                         "CLAUDE_PROJECT_DIR": str(ROOT)})
+                self.assertEqual(2, result.returncode,
+                                 result.stderr.decode("utf-8", "replace")[-300:])
         # A checkout from before the hook existed has no hook file. That must
         # allow, never block: exit 2 there would stop every tool call, including
         # the git command needed to get back.

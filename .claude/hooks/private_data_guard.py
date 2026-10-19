@@ -35,8 +35,11 @@
 # SystemDrive, USERNAME, PUBLIC, OneDrive, GetFolderPath('UserProfile'), and any
 # other whose value is a full path (windir, ProgramData), so a .. after one is seen
 # for what it reaches; bash's operators on them (${LOCALAPPDATA:-x}, ${HOME%/}) are
-# read as the variable. The folder a cygpath, realpath, Resolve-Path, dirname or
-# Split-Path gives is written out wherever it is used, up to eight levels deep. A
+# read as the variable, and the command is checked a second time with those that cut
+# or replace part of the value (${TEMP%\*}, ${APPDATA%\Roaming}, ${TEMP/x/y},
+# ${TEMP:0:30}) read as the folder above, as dirname gives (#221 round 2). The
+# folder a cygpath, realpath, Resolve-Path, dirname or Split-Path gives is written
+# out wherever it is used, up to eight levels deep. A
 # variable set earlier in the same command (also after then, do, { or declare,
 # typeset, readonly) is substituted where it is used, a $(...) or backtick value
 # whole; a value exported (export, declare -x, after set -a) or never used is also
@@ -47,10 +50,13 @@
 # notes and stash, any program's --body, --message or --title, -Value of
 # Set-Content, Add-Content, Out-File, sc or ac, quoted heredocs not fed to an
 # interpreter or a program that reads file names from its input (xargs, read,
-# cpio, tar -T, zip -@, --files-from, git --stdin-paths), here-strings taken only
-# by an assignment or a program that writes or sends text (git only as a message:
-# commit -F -), PowerShell text held in a variable) and the patterns given to text
-# searches are ignored, so rules can be quoted and searched for. In bash, a
+# cpio, tar -T, zip -@, --files-from, git --stdin-paths; quoted words that hold a
+# space, such as a title, are not taken for that program, unless a quoted path),
+# here-strings taken only by an assignment or a program that writes or sends text
+# and keeps no copy in a variable (git only as a message: commit -F -; not with
+# Tee-Object -Variable or -OutVariable), PowerShell text held in a variable) and
+# the patterns given to text searches are ignored, so rules can be quoted and
+# searched for. In bash, a
 # backtick escaped with a backslash in a message is text (a Markdown code span);
 # one that is not is run, and checked.
 # Two layers run on every call (#221). main's earlier check runs first, unchanged in
@@ -60,8 +66,9 @@
 # is only written: message options, -Value, quoted heredocs and here-strings, and
 # such text read back later in the same command, a known gap below).
 # The deeper checks described above follow. Any error while checking blocks the
-# call (exit 2), never only warns. Claude Code lets a call through when a hook runs
-# past its time limit, so time is bounded too (#221 round 1). The common shapes of a
+# call (exit 2), never only warns; the input is read as UTF-8, as Claude Code sends
+# it (#221 round 2). Claude Code lets a call through when a hook runs past its
+# time limit, so time is bounded too (#221 round 1). The common shapes of a
 # long command are read in linear time (a 500 KB heredoc, 40,000 backslashes, 3,000
 # message options, 50,000 closing brackets, 10,000 nested "$(, thousands of blank
 # lines: milliseconds to a few hundred; resolving paths on disk is the main cost,
@@ -70,9 +77,10 @@
 # thousands of cd into ever deeper folders and thousands of heredocs or
 # here-strings that are never closed. So past 2,000 assignments or loops, 20
 # million characters rescanned, or values that grow the command past twice its
-# length (a=x; b=$a$a; c=$b$b ...), a command is blocked as too complex to check;
-# and a command over 20,000 characters is checked in a child process, and blocked
-# if that takes more than 20 seconds.
+# length plus a million characters (a=x; b=$a$a; c=$b$b ...), a command is blocked
+# as too complex to check; and a command over 20,000 characters, or one that its
+# variables grow past 20,000 (#221 round 2), is checked in a child process, and
+# blocked if that takes more than 20 seconds or the child cannot start.
 # It is a guard rail, not a security boundary: a text heuristic over the command,
 # which cannot be complete. The target (owner, 19 Oct 2026): block the plain and
 # common ways to read, list, search, copy or stage the data, never block ordinary
@@ -107,8 +115,13 @@
 #     pwsh -c or Invoke-Expression, of a { } block, or after then, do or else (for
 #     example after a wrapper: time cd X): the folder is then not followed;
 #   - heredoc lines read by a loop the heredoc ends (while read f; do cat "$f";
-#     done <<'EOF'); one fed to xargs, read, cpio, tar -T, zip -@, --files-from or
-#     git --stdin-paths is checked;
+#     done <<'EOF'), or that become arguments through a substitution
+#     (cat $(cat <<'EOF' ...), f=$(cat <<'EOF' ...); cat "$f"), and a program
+#     named only inside quoted words that hold a space and that no shell or
+#     interpreter on the line runs (env -S "python -" <<'EOF'); one fed to xargs,
+#     read, cpio, tar -T, zip -@, --files-from or git --stdin-paths is checked;
+#   - a substitution that renames a folder in a variable's value
+#     (${APPDATA/Roaming/Local});
 #   - a cygpath, dirname or Split-Path nested more than eight levels deep (its
 #     folder is then unknown);
 #   - less common programs that walk a tree: attrib /s, icacls /t, takeown /r, fd,
@@ -136,8 +149,11 @@
 # after it (echo "rg -n x ~/AppData/Local" > notes.txt), which a quoted heredoc
 # or Set-Content writes instead; any use of local AppData followed by a variable
 # ($LOCALAPPDATA/$d), unless models follows; an operator on local AppData or a
-# folder above it that changes the value (${HOME:+x}, ${TEMP%/Temp}), read as the
-# folder itself; and a command too complex to check (above).
+# folder above it that changes the value (${HOME:+x}), read as the folder itself,
+# and one that cuts or replaces part of a value but leaves it as it was, read as
+# the folder above too (ls -R "${TEMP%/x}" lists local AppData's tree); a quoted
+# single word on a heredoc's line that names an interpreter or xargs (--title
+# "Python"); and a command too complex to check (above).
 # Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
@@ -337,12 +353,20 @@ HOME_FOLDER = re.compile(VARIABLE + r"(?:USERPROFILE|HOME)(?!\w)[}%]?"
                          r"|\[(?:System\.)?Environment\]::GetFolderPath\(\s*['\"]?UserProfile"
                          r"['\"]?\s*\)", re.IGNORECASE)
 # bash's operators on the variables above (${LOCALAPPDATA:-x}, ${TEMP%/}, ${HOME#x}),
-# read as the variable, which on Windows is always set: an operator that changes
-# the value only makes the check stricter. Bounded, so a brace never closed is linear.
+# read as the variable, which on Windows is always set. Bounded, so a brace never
+# closed is linear.
+FOLDER_VARIABLES = (r"(LOCALAPPDATA|TEMP|TMP|APPDATA|USERPROFILE|HOME|HOMEDRIVE|HOMEPATH"
+                    r"|SystemDrive|USERNAME|PUBLIC|OneDrive(?:Commercial|Consumer)?)")
 PARAMETER_OPERATOR = re.compile(
-    r"\$\{(LOCALAPPDATA|TEMP|TMP|APPDATA|USERPROFILE|HOME|HOMEDRIVE|HOMEPATH|SystemDrive"
-    r"|USERNAME|PUBLIC|OneDrive(?:Commercial|Consumer)?)"
+    r"\$\{" + FOLDER_VARIABLES +
     r"(?::?[-=+?]|##?|%%?|//?|\^\^?|,,?|:\s*-?\d)[^}\n]{0,256}\}", re.IGNORECASE)
+# The operators that cut the end off the value or replace part of it (suffix
+# removal, substitution, a substring), which can climb from the folder to one above
+# it: ${TEMP%\*} is local AppData. The command is also checked with these read as
+# the folder above (_readings; #221 round 2).
+PARENT_OPERATOR = re.compile(
+    r"\$\{" + FOLDER_VARIABLES +
+    r"(?:%%?|//?|:\s*\d|:\s+-\d)[^}\n]{0,256}\}", re.IGNORECASE)
 # Any other variable, written out when it holds a full path.
 ENV_VARIABLE = re.compile(VARIABLE + r"([A-Za-z_]\w*)(?!\w)[}%]?")
 FULL_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\)[^;\n]*$")
@@ -438,6 +462,27 @@ GROWTH_ALLOWANCE = 1_000_000
 
 class TooComplex(Exception):
     """The command is too complex for the guard to check in time: it is blocked."""
+
+
+class NeedsChild(Exception):
+    """The command grew too long to check in the hook's own process, which has no
+    time limit: main() checks it again in a child process that has one."""
+
+
+class _Growth:
+    """The lengths a command may grow to while its variables are written out:
+    twice its own plus GROWTH_ALLOWANCE (TooComplex past it) and, in the hook's
+    own process, grown_limit or its own length if longer (NeedsChild past it)."""
+
+    def __init__(self, command, grown_limit=None):
+        self.most = 2 * len(command) + GROWTH_ALLOWANCE
+        self.parent = None if grown_limit is None else max(grown_limit, len(command))
+
+    def check(self, length):
+        if self.parent is not None and length > self.parent:
+            raise NeedsChild
+        if length > self.most:
+            raise TooComplex
 
 
 TOKEN = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'[^']*'|\S+", re.DOTALL)
@@ -838,6 +883,37 @@ def _consumer(command, start, end):
     return before + " " + after
 
 
+# A quoted program path (a drive, a root, ~ or . at its start), which is kept.
+PROGRAM_PATH = re.compile(r"[\"'](?:[A-Za-z]:|[\\/~.])")
+
+
+def _unquoted(text):
+    """text without the closed quoted strings that hold a space: a title or other
+    words given as an argument (gh pr create --title "Move to Python 3.14"), which
+    are not the program that takes a heredoc (#221 round 2). A quoted single word
+    ("python", "--files-from=-") and a quoted program path ("C:/Program
+    Files/Python/python.exe") are kept, and so is everything from a quote left
+    open. One pass, so linear."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        char = text[i]
+        if char not in "\"'":
+            out.append(char)
+            i += 1
+            continue
+        j = i + 1
+        while j < n and text[j] != char:
+            j += 2 if char == '"' and text[j] in "\\`" else 1
+        if j >= n:                               # left open: the rest as written
+            out.append(text[i:])
+            break
+        quoted = text[i:j + 1]
+        spaced = any(c.isspace() for c in quoted)
+        out.append(" " if spaced and not PROGRAM_PATH.match(quoted) else quoted)
+        i = j + 1
+    return "".join(out)
+
+
 def _drop_written(command, shell):
     """command with heredocs, here-strings and message text dropped, unless an
     interpreter runs them, keeping the parts the shell runs first."""
@@ -845,8 +921,9 @@ def _drop_written(command, shell):
         # The rest of the heredoc's first line too: cat <<'EOF' | python -
         first_line = match.group(0).split("\n", 1)[0]
         piped = re.split(r"\|\||&&|;", first_line)[0]
-        consumer = (_consumer(command, match.start(), match.start() + len(first_line))
-                    + " " + piped)
+        # Quoted words (a title) are not the program that takes it (#221 round 2).
+        consumer = _unquoted(_consumer(command, match.start(),
+                                       match.start() + len(first_line)) + " " + piped)
         # Kept too when xargs, read, tar -T and the like read its lines as names of
         # files to read (#221).
         if INTERPRETER.search(consumer) or _reads_names(consumer):
@@ -858,7 +935,7 @@ def _drop_written(command, shell):
     def here_string(match):
         # Kept, as names to read, unless only an assignment or a program that takes
         # text takes it (#221: @'...'@ | Get-Content reads the files it names).
-        consumer = _consumer(command, match.start(), match.end())
+        consumer = _unquoted(_consumer(command, match.start(), match.end()))
         if INTERPRETER.search(consumer) or not _takes_text(consumer):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)
@@ -896,6 +973,12 @@ def _takes_text(consumer):
         words = _lead_words(part.lstrip(" \t({$\"'"))
         if not words or _program(words) not in TEXT_TAKERS:
             return False
+        # A program that also keeps the text in a variable (Tee-Object -Variable,
+        # -OutVariable and the other common parameters), which a later command can
+        # read as names (#221 round 2). gh, git and clip are not cmdlets (git -v).
+        if _program(words) not in ("gh", "git", "clip") and any(
+                _stores_variable(word) for word in words[1:]):
+            return False
         # git takes text from its input only as a message (commit -F -); other
         # subcommands read the files it names (hash-object --stdin-paths,
         # #221 round 1).
@@ -903,6 +986,25 @@ def _takes_text(consumer):
                                              and GIT_STDIN_MESSAGE.search(part)):
             return False
     return True
+
+
+# PowerShell's parameters that put a command's output or a stream in a variable,
+# with their aliases. Any unambiguous prefix names one (-OutV, -Var).
+VARIABLE_PARAMETERS = ("variable", "outvariable", "pipelinevariable", "informationvariable",
+                       "errorvariable", "warningvariable")
+VARIABLE_ALIASES = {"ov", "pv", "iv", "ev", "wv"}
+
+
+def _stores_variable(word):
+    """True when a PowerShell word is a parameter that stores the output, or a
+    stream holding the text, in a variable: -Variable, -OutVariable (-ov),
+    -PipelineVariable (-pv), -InformationVariable (-iv) and the like, by any
+    prefix that holds its v (-va, -outv), with or without a joined :value."""
+    if not word.startswith("-"):
+        return False
+    name = word[1:].split(":", 1)[0].lower()
+    return name in VARIABLE_ALIASES or (
+        "v" in name and any(full.startswith(name) for full in VARIABLE_PARAMETERS))
 
 
 def _reads_names(consumer):
@@ -924,13 +1026,14 @@ def _reads_names(consumer):
     return False
 
 
-def _substitute(command, shell):
+def _substitute(command, shell, grown_limit=None):
     """command with variables set in it written out where they are used later. A
     literal value (single quotes, a literal here-string), or PowerShell double-quoted
     text other than what it runs, is left only where used, when it is the whole of
     what is assigned and every later use is one written out here; otherwise it is
     also kept where it is set (R13b round 3 review: concatenation, $script:p and
-    Get-Variable p hid a path)."""
+    Get-Variable p hid a path). With grown_limit, NeedsChild once the command grows
+    past that many characters (or its own length, if longer)."""
     pattern = ASSIGNMENT.get(shell)
     if not pattern:
         return command
@@ -938,10 +1041,13 @@ def _substitute(command, shell):
     # than checked slowly (a hook that runs past its time limit lets the call
     # through): values that double at each step (a=x; b=$a$a; c=$b$b ...) grow
     # the command exponentially, and each used variable rescans the rest of it.
-    limit = 2 * len(command) + GROWTH_ALLOWANCE
+    # In the parent process, a command grown past grown_limit goes to the child
+    # process and its time limit instead: the later scans are not all linear, and
+    # a short command can grow to a megabyte (#221 round 2).
+    bound = _Growth(command, grown_limit)
     work, count = 0, 0
     if shell == "Bash":
-        command = _for_lists(command, limit)
+        command = _for_lists(command, bound)
     # bash's set -a (or set -o allexport) exports every variable set after it.
     exports_all = EXPORT_ALL.search(command)
     flags = re.IGNORECASE if shell == "PowerShell" else 0
@@ -952,8 +1058,9 @@ def _substitute(command, shell):
         if not match:
             break
         count += 1
-        if count > MAX_ASSIGNMENTS or work > MAX_WORK or len(command) > limit:
+        if count > MAX_ASSIGNMENTS or work > MAX_WORK:
             raise TooComplex
+        bound.check(len(command))
         start = match.start(2)
         end = _value_end(command, start, shell, match.end(2))
         position = max(end, match.end())
@@ -981,8 +1088,7 @@ def _substitute(command, shell):
         else:
             work += len(rest)
             uses = len(use.findall(rest))
-            if len(command) + uses * len(value) > limit:
-                raise TooComplex
+            bound.check(len(command) + uses * len(value))
             after = use.sub(lambda m, text=value: text, rest)
             hidden = whole and uses > 0 and len(mention.findall(rest)) == uses
         literal = value.startswith("'") or value.startswith("@'")
@@ -997,6 +1103,7 @@ def _substitute(command, shell):
         if after is not rest or middle != command[start:end]:
             command = command[:start] + middle + after
         position = start + len(middle)
+    bound.check(len(command))
     return command
 
 
@@ -1006,10 +1113,11 @@ FOR_LIST = re.compile(r"(?:^|(?<=[;&|\n(]))[ \t]*for\s+([A-Za-z_]\w*)\s+in(?=\s)
                       r"(?:;|\n|(?<=\s)do(?!\w))")
 
 
-def _for_lists(command, limit):
+def _for_lists(command, bound):
     """command with each $NAME after bash's for NAME in LIST written as the list, so
     a loop over local AppData named whole is seen for what it searches (R13b
-    round 5 review). TooComplex past MAX_ASSIGNMENTS loops or the limit's length."""
+    round 5 review). TooComplex past MAX_ASSIGNMENTS loops; the bound (_Growth) on
+    its length."""
     loops = list(FOR_LIST.finditer(command))
     if len(loops) > MAX_ASSIGNMENTS:
         raise TooComplex
@@ -1017,8 +1125,7 @@ def _for_lists(command, limit):
         name, values = match.group(1), match.group(2).strip()
         use = re.compile(r"\$\{?" + re.escape(name) + r"(?!\w)\}?")
         rest = command[match.end():]
-        if len(command) + len(use.findall(rest)) * len(values) > limit:
-            raise TooComplex
+        bound.check(len(command) + len(use.findall(rest)) * len(values))
         command = command[:match.end()] + use.sub(lambda m, text=values: text, rest)
     return command
 
@@ -1564,7 +1671,7 @@ def _nested(text, shell):
             yield words, inner, dialect
 
 
-def _check_shell(command, cwd="", shell="Bash"):
+def _check_shell(command, cwd="", shell="Bash", grown_limit=None):
     folder = _Folder(cwd)
     if _reaches_data(folder.here):
         return f"A command run in the live Unminute workspace is blocked. {ADVICE}"
@@ -1572,7 +1679,7 @@ def _check_shell(command, cwd="", shell="Bash"):
         # "$env:LOCALAPPDATA\..\" ends at its quote in PowerShell. Doubled, the
         # backslashes read that way below too (R13b round 5 review).
         command = PS_BACKSLASHES.sub(lambda m: m.group(0) * 2, command)
-    command = _drop_written(_substitute(command, shell), shell)
+    command = _drop_written(_substitute(command, shell, grown_limit), shell)
     # main's check first, on the text with only written text dropped (#221).
     plain = _plain_shell(command)
     if plain:
@@ -1664,8 +1771,10 @@ def _check_shell(command, cwd="", shell="Bash"):
     return None
 
 
-def decide(payload):
-    """The reason to block this tool call, or None to allow it."""
+def decide(payload, grown_limit=None):
+    """The reason to block this tool call, or None to allow it. With grown_limit,
+    NeedsChild when a shell command's variables grow it past that many characters
+    (main() then checks it in a child process under the time limit)."""
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or ""
@@ -1718,20 +1827,33 @@ def decide(payload):
         if not isinstance(command, str):
             return None
         for shell in SHELL_TOOLS[tool]:
-            try:
-                reason = _check_shell(command, cwd, shell)
-            except TooComplex:
-                return COMPLEX
-            if reason:
-                return reason
+            for reading in _readings(command):
+                try:
+                    reason = _check_shell(reading, cwd, shell, grown_limit)
+                except TooComplex:
+                    return COMPLEX
+                if reason:
+                    return reason
     return None
+
+
+def _readings(command):
+    """The command as written and, when it cuts or replaces part of a folder
+    variable's value (${TEMP%\\*}, ${APPDATA%\\Roaming}, ${TEMP/x/y}, ${TEMP:0:30}),
+    also with each such value read as the folder above the variable's, as dirname
+    gives (#221 round 2: suffix removal climbs from Temp to local AppData). Both
+    are checked, as the value may be the folder or one above it."""
+    yield command
+    if PARENT_OPERATOR.search(command):
+        yield PARENT_OPERATOR.sub(lambda m: "${" + m.group(1) + "}/..", command)
 
 
 # A long call is checked in a child process under a time limit (#221 round 1):
 # Claude Code lets a call through when its hook runs past the hook's own time
 # limit, and a text heuristic cannot promise linear time for every shape of a long
-# command. A short call cannot take long, so it is checked here, in one process.
-CHILD_OVER = 20_000                 # characters of hook input
+# command. A short call is checked here, in one process, unless its variables grow
+# it past the same length (NeedsChild, #221 round 2): then it goes to the child too.
+CHILD_OVER = 20_000                 # characters of a shell command
 TIME_LIMIT = 20.0                   # seconds
 # The variable may lower the limit (the tests do), never raise it.
 TIME_LIMIT_VARIABLE = "PRIVATE_DATA_GUARD_TIME_LIMIT"
@@ -1740,13 +1862,16 @@ TOO_SLOW = ("This command took too long for the private data guard to check, so 
             f"blocked. {SIMPLER}")
 
 
-def _verdict(payload):
+def _verdict(payload, grown_limit=None):
     """(exit code, reason) for the hook input. Any error while checking blocks the
     call: exit 1 would only warn, and let through a command the guard never finished
     reading (#221 round 1: a RecursionError did). The reason names the error's type
-    only, no content."""
+    only, no content. With grown_limit, NeedsChild when the command's variables grow
+    it past that many characters."""
     try:
-        reason = decide(payload)
+        reason = decide(payload, grown_limit)
+    except NeedsChild:
+        raise
     except Exception as error:                   # RecursionError and MemoryError too
         reason = (f"private_data_guard could not check this call ({type(error).__name__}), "
                   f"so it is blocked. {SIMPLER}")
@@ -1760,20 +1885,22 @@ def _time_limit():
         return TIME_LIMIT
 
 
-def _checked_in_child(text):
-    """(exit code, reason) from a child process that checks the hook input text,
-    blocked when it runs past the time limit or fails; None when no child process
-    can be started (the call is then checked in this one)."""
+def _checked_in_child(data):
+    """(exit code, reason) from a child process that checks the hook input (the
+    bytes as received), blocked when it runs past the time limit, fails or cannot
+    be started."""
     import subprocess                            # only for long calls
     try:
         child = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), CHILD_FLAG],
-                               input=text.encode("utf-8"), capture_output=True,
-                               timeout=_time_limit(),
+                               input=data, capture_output=True, timeout=_time_limit(),
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except subprocess.TimeoutExpired:
         return 2, TOO_SLOW
     except OSError:
-        return None
+        # #221 round 2: fail closed, as for any other error; a long call checked
+        # here instead would have no time limit.
+        return 2, (f"private_data_guard could not start its time-limited check, so this "
+                   f"call is blocked. {SIMPLER}")
     if child.returncode == 0:
         return 0, ""
     reason = child.stderr.decode("utf-8", "replace").strip()
@@ -1783,34 +1910,57 @@ def _checked_in_child(text):
     return 2, reason
 
 
+def _decoded(data):
+    """The hook input as text. Claude Code sends UTF-8; anything it cannot decode
+    becomes U+FFFD, so the text is always valid and can be encoded again (#221
+    round 2: reading stdin as text used the ANSI code page, and a Maori macron
+    left a lone surrogate that failed the child's encode, which only warned)."""
+    return data.decode("utf-8-sig", "replace")
+
+
 def main():
     child = sys.argv[1:] == [CHILD_FLAG]
     # Unreadable input means the hook is wired wrongly: say so with exit 1, which
     # Claude Code shows without blocking, rather than allowing silently or
     # blocking every tool call in every session.
     try:
-        text = sys.stdin.buffer.read().decode("utf-8", "replace") if child else sys.stdin.read()
-        payload = json.loads(text)
+        data = sys.stdin.buffer.read()
+        payload = json.loads(_decoded(data))
     except (ValueError, OSError):
         payload = None
     if not isinstance(payload, dict):
         print("private_data_guard: no readable hook input, so the guard is not active; "
               "check the hook command in .claude/settings.json", file=sys.stderr)
         return 1
+    try:
+        code, reason = _decide_bounded(payload, data, child)
+    except Exception as error:                   # anything after parsing blocks
+        code, reason = 2, (f"private_data_guard could not check this call "
+                           f"({type(error).__name__}), so it is blocked. {SIMPLER}")
+    if reason and child:
+        sys.stderr.buffer.write(reason.encode("utf-8", "replace"))
+    elif reason:
+        print(reason, file=sys.stderr)
+    return code
+
+
+def _decide_bounded(payload, data, child):
+    """(exit code, reason) for the parsed hook input, with its time bounded: a long
+    shell command, or one that its variables grow past CHILD_OVER characters, is
+    checked in a child process under the time limit (#221 rounds 1 and 2)."""
     # Only a shell command's checks can take long; a file tool's path is short work
     # however long the text it writes.
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    result = None
-    if not child and payload.get("tool_name") in SHELL_TOOLS and isinstance(command, str) \
-            and len(command) > CHILD_OVER:
-        result = _checked_in_child(text)
-    code, reason = result or _verdict(payload)
-    if reason and child:
-        sys.stderr.buffer.write(reason.encode("utf-8"))
-    elif reason:
-        print(reason, file=sys.stderr)
-    return code
+    shell = payload.get("tool_name") in SHELL_TOOLS and isinstance(command, str)
+    if child or not shell:
+        return _verdict(payload)
+    if len(command) > CHILD_OVER:
+        return _checked_in_child(data)
+    try:
+        return _verdict(payload, grown_limit=CHILD_OVER)
+    except NeedsChild:
+        return _checked_in_child(data)
 
 
 if __name__ == "__main__":
