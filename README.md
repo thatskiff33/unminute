@@ -12,7 +12,7 @@ The screenshots show a fictional sample meeting: they are the app's own screens,
 
 ## What it does
 
-- **Transcribes on your computer.** Uses NVIDIA Parakeet (recommended for English) or OpenAI Whisper, on the processor. Accepts mp3, m4a, wav, mp4, mov, mkv, flac, ogg, aac, wma, webm and avi.
+- **Transcribes on your computer.** Uses NVIDIA Parakeet (recommended for English) or OpenAI Whisper, on the processor, or Whisper on an NVIDIA graphics card if you add it. Accepts mp3, m4a, wav, mp4, mov, mkv, flac, ogg, aac, wma, webm and avi.
 - **Works out who said what.** Optional speaker identification with pyannote. You name the speakers after listening to short clips.
 - **Review against the audio.** Play the meeting from any passage, with the transcript following along. Correct text in place. Edits save automatically and can be undone, even after a restart.
 - **Hands off safely.** Copies a prompt and the reviewed transcript for your AI assistant, or saves Markdown. For the hand off only, you can replace names with Speaker 1, Speaker 2, leave out passages or redact words.
@@ -29,7 +29,7 @@ The screenshots show a fictional sample meeting: they are the app's own screens,
 - **Microsoft Edge WebView2 Runtime:** built into Windows 11 and present on most managed Windows 10 devices.
 - **Disk space:** about 6 GB free.
 - **Processor and memory:** the minimum is 4 cores and 8 GB of memory, and 8 cores and 16 GB are recommended. Below the minimum, the installer warns and asks before continuing (an unattended install records the warning and continues).
-- **Graphics card (optional):** an NVIDIA card with driver version 580 or later can speed up speaker identification. It is not needed.
+- **Graphics card (optional):** an NVIDIA card with driver version 580 or later can speed up speaker identification and Whisper transcription. It is not needed.
 
 You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own private runtime.
 
@@ -75,7 +75,7 @@ The first start opens Setup, five short steps. Each model is a one-off download 
 4. **Microphone (optional):** turn on recording and test the microphone.
 5. **Ready:** a summary of what is set up.
 
-You can skip the optional steps and turn them on later in Settings. **Graphics card acceleration** is offered only on computers with an NVIDIA card. It is a 2 GB download of the CUDA build of PyTorch, used for speaker identification only, and is in Settings > Manage downloads. That page also checks, repairs and removes downloaded models.
+You can skip the optional steps and turn them on later in Settings. Two graphics card components are offered only on computers with an NVIDIA card, in Settings > Manage downloads. **Graphics card acceleration** is a 2 GB download of the CUDA build of PyTorch, used for speaker identification. **Graphics card for Whisper** is a 0.57 GB download of NVIDIA's cuBLAS library, used to run Whisper on the card. Either one works on its own, and both are used only in Faster mode once "Use the graphics card" is on. That page also checks, repairs and removes downloaded models.
 
 ![Setup, step 2: downloading the recommended speech model](docs/screenshots/workspace-setup.png)
 
@@ -137,8 +137,8 @@ The full walkthrough is in the [user guide](docs/WORKSPACE_GUIDE.md).
 ## Settings
 
 - **Processing:** Quiet (the default) leaves most of the computer free. Faster uses more of it. On battery, automatic work waits unless you allow it.
-- **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card component. A model that is not ready is marked "(not downloaded)" or "(damaged)", as on the Downloads page. Choosing one still saves the choice, and a note beside the picker says how to download or repair it.
-- **Recording and speakers:** microphone recording, naming speakers after transcription, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification (Faster mode only) and **Keep recording when the lid is closed**.
+- **Speech model:** which model new meetings use, and **Manage downloads** for models and the graphics card components. A model that is not ready is marked "(not downloaded)" or "(damaged)", as on the Downloads page. Choosing one still saves the choice, and a note beside the picker says how to download or repair it.
+- **Recording and speakers:** microphone recording, naming speakers after transcription, the curve shown while recording (Flowing wave, Spectrum or Sound wave), the graphics card for speaker identification and Whisper (Faster mode only) and **Keep recording when the lid is closed**.
 - **Watched folders, Updates, Cleanup receipts.**
 
 On a managed computer, IT can set some of these by policy. Settings then says that some settings are managed by your organisation, and those controls cannot be changed.
@@ -155,7 +155,7 @@ The window follows Windows' light or dark mode.
 - **Recordings are decoded in a restricted process.** It runs at Windows' Low integrity level inside a Windows job, cannot write your files or start programs directly, and is limited to 2 GB of memory. It can still read files you can read, so a decoder flaw would mainly be a privacy risk.
 - **The page inside the window is held in.** It cannot show its own message boxes, ask for the microphone, camera or screen, or call anything in the app except a fixed list of checked actions. Recording starts only through the app's own confirmation. Python's remote debugging, which would let another program run code inside the app's Python processes, is switched off.
 - **No usage statistics are sent.** Before its libraries load, the app forces their telemetry switches off: Hugging Face, pyannote's usage metrics and OpenTelemetry. A setting in your environment cannot turn them back on. It also switches off ONNX Runtime's Windows telemetry events in the processes that use it.
-- **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face (huggingface.co and its download hosts under huggingface.co and hf.co) and the optional graphics card component from download-r2.pytorch.org. The download process can reach only those hosts and any proxy configured for you: every request and every redirect is checked, also through a proxy. Certificates are checked against the Windows certificate store, so downloads work behind a firm's TLS-inspecting proxy. A fixed proxy (set in Windows or with HTTPS_PROXY) is used; a proxy given only by an automatic configuration script (PAC or WPAD) is not, so IT may need to set a fixed one or pre-stage the models. Each file is checked against a published checksum.
+- **Downloads happen only in Setup or Manage downloads, when you choose.** Models come from Hugging Face (huggingface.co and its download hosts under huggingface.co and hf.co), the optional graphics card component for speaker identification from download-r2.pytorch.org, and the optional graphics card component for Whisper from files.pythonhosted.org, where NVIDIA publishes it (that download only may reach that host). The download process can reach only those hosts and any proxy configured for you: every request and every redirect is checked, also through a proxy. Certificates are checked against the Windows certificate store, so downloads work behind a firm's TLS-inspecting proxy. A fixed proxy (set in Windows or with HTTPS_PROXY) is used; a proxy given only by an automatic configuration script (PAC or WPAD) is not, so IT may need to set a fixed one or pre-stage the models. Each file is checked against a published checksum.
 - **The Hugging Face token** is used only for the speaker model download. It is passed to the download process privately, never on its command line or in its environment. A token set in your Windows environment is not used or passed on: paste it in Setup instead.
 - **A small local diagnostics log, with no content.** The app keeps content-free logs in the workspace's `logs` folder (about 1.5 MB for each of its processes): error types, where in the code they happened, timings and version numbers, never meeting text, titles, names or folders. Nothing is sent anywhere. An unexpected error shows a code, for example "Something went wrong (code U-1A2B3C)".
 - **Outside the app's control:** recordings in synced folders such as OneDrive are already in that service, and anything you paste or upload to an AI assistant is handled by its provider under your organisation's account and policies.
@@ -168,7 +168,7 @@ The threat model, the controls in place and the remaining risks are in [docs/SEC
 | --- | --- |
 | Program | `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` |
 | Workspace (meetings, edits, holds, settings) | `%LOCALAPPDATA%\Unminute\workspace` |
-| Models, and the optional graphics card component | `%LOCALAPPDATA%\Unminute\models` |
+| Models, and the optional graphics card components | `%LOCALAPPDATA%\Unminute\models` |
 | Diagnostics logs (no meeting content) | `%LOCALAPPDATA%\Unminute\workspace\logs` |
 | Hugging Face token (if remembered) | Windows Credential Manager |
 | Start menu shortcut | Unminute |
@@ -282,6 +282,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | onnx-asr | MIT | Verified 13 October 2026. |
 | ONNX Runtime | MIT | |
 | PyTorch CUDA 13.0 build (optional download) | BSD-3-Clause; bundled NVIDIA CUDA runtime and cuDNN under NVIDIA's licences | Downloaded by the user in Settings > Manage downloads from download-r2.pytorch.org, for speaker identification on an NVIDIA graphics card. Not redistributed here. Verified 14 October 2026. |
+| NVIDIA cuBLAS for CUDA 12 (`nvidia-cublas-cu12` 12.8.4.1, optional download) | NVIDIA CUDA Toolkit end user licence agreement (the wheel's `License.txt`, PyPI "NVIDIA Proprietary Software": 1.1.1 install and use; 2.1 for applications used in systems with NVIDIA GPUs; 1.2 no stand-alone redistribution; cuBLAS is listed as distributable in Attachment A) | Downloaded by the user in Settings > Manage downloads from files.pythonhosted.org (NVIDIA's own PyPI release), for Whisper on an NVIDIA graphics card. Not redistributed here. Checked 20 October 2026 (#248); to confirm with the adviser like the other licences. |
 | sounddevice | MIT | Optional microphone recording in Unminute. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
 | cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Ready for encryption at rest; nothing uses it yet. |

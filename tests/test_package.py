@@ -242,6 +242,8 @@ class ReproducibleBuildTests(unittest.TestCase):
         self.assertIn("bare 1.0\n  Licence: not stated in the metadata (see the texts)\n"
                       "  Texts: none shipped in the wheel", text)
         self.assertIn("PSF-2.0", text)
+        # The optional GPU components are named as downloads, not bundled (#248).
+        self.assertIn("NVIDIA's cuBLAS\nfor CUDA 12 (NVIDIA CUDA Toolkit licence)", text)
         # A text the notices name must be in the package.
         (site / "onnxruntime" / "LICENSE").unlink()
         with self.assertRaisesRegex(SystemExit, "onnxruntime/LICENSE"):

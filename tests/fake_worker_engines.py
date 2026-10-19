@@ -184,6 +184,54 @@ def diarizer_sleepy(audio, hint):
     return [], [], "cpu"
 
 
+# -- fake engines for the Whisper GPU worker (#248) --------------------------------
+# load_engine passes device="cuda" to a test factory only in the Whisper GPU
+# worker; on the processor it is called as factory(threads).
+
+def _whisper_like(fn, device):
+    e = _Engine(fn)
+    e.device, e.precision = ("cuda", "float16") if device == "cuda" else ("cpu", "int8")
+    return e
+
+
+def gpu_sentences(threads, device="cpu"):
+    """sentences, reporting the device and precision a Whisper model would."""
+    return _whisper_like(_sentences("sentence"), device)
+
+
+def gpu_oom_after_first(threads, device="cpu"):
+    """On the graphics card the first part works, then CUDA runs out of
+    memory, as CTranslate2 reports it. On the processor it always works."""
+    calls = []
+
+    def run(a):
+        calls.append(1)
+        if device == "cuda" and len(calls) > 1:
+            raise RuntimeError("CUDA failed with error out of memory")
+        return _sentences("sentence")(a)
+    return _whisper_like(run, device)
+
+
+def gpu_probe(threads, device="cpu"):
+    """Reports where cublas64_12.dll was loaded from in this worker, and the
+    first import path entry (the speaker component puts its folder there)."""
+    import ctypes
+    import json
+    import sys
+    path = None
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetModuleHandleW.restype = ctypes.c_void_p
+    k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+    k32.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    handle = k32.GetModuleHandleW("cublas64_12.dll")
+    if handle:
+        buf = ctypes.create_unicode_buffer(1024)
+        k32.GetModuleFileNameW(handle, buf, 1024)
+        path = buf.value
+    report = json.dumps({"cublas": path, "path0": sys.path[0], "pid": os.getpid()})
+    return _whisper_like(lambda a: [_seg(0.0, 0.5, "probe " + report)], device)
+
+
 def network(threads):
     def run(a):
         try:

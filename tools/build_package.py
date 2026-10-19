@@ -859,6 +859,14 @@ def notices(installed, site, folder, version, signed):
              "those are listed with their signers, and not all of their licence texts are",
              "included yet (to follow, #111). Models are not included: see",
              "model-manifest.json.", "",
+             # #248: the optional graphics card components are user downloads.
+             "The optional graphics card components are not included either. On a",
+             "computer with an NVIDIA card, the user may download them in Settings >",
+             "Manage downloads, from their publishers and under their licences: the",
+             "PyTorch CUDA 13 build (BSD-3-Clause, with NVIDIA's CUDA runtime and cuDNN",
+             "under NVIDIA's licences) for speaker identification, and NVIDIA's cuBLAS",
+             "for CUDA 12 (NVIDIA CUDA Toolkit licence) for Whisper. The README lists",
+             "where each comes from.", "",
              f"Python {PYTHON_VERSION} (CPython embeddable package)",
              "  Licence: PSF-2.0", "  Texts: runtime/LICENSE.txt", ""]
     named = ["runtime/LICENSE.txt"]

@@ -930,6 +930,15 @@ class Store:
         return self._all("SELECT * FROM attempts WHERE version_id = ? AND chunk_idx = ? "
                          "ORDER BY id", (vid, idx))
 
+    def ran_on(self, vid):
+        """Where a version's committed parts were transcribed: one row per
+        (backend, precision) the engines reported, with the number of parts,
+        in the order each was first used (#248: a fallback from the graphics
+        card to the processor shows as a second row)."""
+        return self._all("SELECT backend, precision, COUNT(*) AS parts, MIN(id) AS first "
+                         "FROM attempts WHERE version_id = ? AND result = 'committed' "
+                         "GROUP BY backend, precision ORDER BY first", (vid,))
+
     def commit_chunk(self, vid, idx, segments, *, epoch=None, attempt_id=None,
                      backend=None, precision=None):
         """Atomically store a chunk's segments and mark it done. Refused (returns

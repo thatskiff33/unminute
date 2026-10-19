@@ -193,12 +193,17 @@ These configurations have been tested:
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips. Whisper large-v3 has not been tested in the app's engine.
 - **Speaker identification:** pyannote community-1.
 
-**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
+**Graphics card (optional).** On a computer with an NVIDIA card, Settings > Manage downloads offers two components. You can download either or both:
 
-- **When it is used:** only in Faster mode. Transcription always runs on the processor.
+- **"Graphics card acceleration"** speeds up speaker identification. It is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site.
+- **"Graphics card for Whisper"** runs Whisper large-v3 turbo and Whisper large-v3 on the card. It is a one-time 0.57 GB download of NVIDIA's cuBLAS library, from NVIDIA's release on PyPI (files.pythonhosted.org). Parakeet stays on the processor: on the card it was slower.
+
+Each is checked against published checksums. Once one is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
+
+- **When it is used:** only in Faster mode.
 - **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.
-- **If the card cannot be used** (an old driver, too little graphics memory or a damaged component), that speaker pass runs on the processor instead, and the meeting says so.
-- **Each meeting shows** whether speaker identification ran on the graphics card.
+- **If the card cannot be used** (an old driver, too little graphics memory or a damaged component), that work runs on the processor instead, and the meeting says so. A transcript already part-done carries on on the processor with the same model; nothing finished is lost.
+- **Each meeting shows** whether speaker identification ran on the graphics card, and its **Versions** tab shows where each transcript was made and at what precision (for example "Graphics card, float16" or "Processor, int8").
 
 Detecting a graphics card does not enable anything on its own.
 

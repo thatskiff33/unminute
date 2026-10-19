@@ -59,7 +59,7 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 | Parakeet v3, Whisper large-v3 turbo | Tested only in the retired source app's engine (Parakeet v3 dropped speech on some clips) |
 | Whisper large-v3 | Offered in Setup and Manage downloads since #246. Not yet tested in the app's engine; an OpenVINO build was compared outside the app (docs/ENGINE_EVALUATION.md) |
 | pyannote community-1 speaker identification | Tested from source and from the package |
-| GPU acceleration | Optional, for speaker identification only (Setup component, Faster mode). Tested on an NVIDIA RTX 500 Ada laptop GPU (4 GB, driver 595.95). Transcription stays on the CPU. See below. |
+| GPU acceleration | Optional, two components (Manage downloads, Faster mode): speaker identification, and Whisper transcription (#248). Tested on an NVIDIA RTX 500 Ada laptop GPU (4 GB, driver 595.95). Parakeet stays on the CPU. Other NVIDIA cards are untested (#189). See below. |
 
 ## GPU for speaker identification
 
@@ -90,6 +90,47 @@ Other results:
 - **Fallback:** forcing a failure ran the pass on the CPU and labelled it.
 - **Multi-speaker agreement:** the synthetic audio was identified as one speaker; the public AMI meeting above (5 speakers found) agrees exactly between CPU and GPU. A real New Zealand business recording is still to test (#12, #25).
 
+## Whisper on the graphics card
+
+The optional "Graphics card for Whisper" component (#248) is NVIDIA's cuBLAS for CUDA 12, `nvidia-cublas-cu12` 12.8.4.1, from files.pythonhosted.org (`workspace/gpu.py`). It is pinned by SHA-256 and every file is checked against the wheel's RECORD, and only the Whisper GPU worker loads it.
+
+Why only cuBLAS: CTranslate2 4.8.0's Windows wheels are built with CUDA 12.8.1, `-DWITH_CUDNN=OFF` and `-DCUDA_DYNAMIC_LOADING=ON` (`python/tools/prepare_build_environment_windows.sh` at its v4.8.0 tag). Its `ctranslate2.dll` imports no CUDA library: the only CUDA names in it are `cublas64_12.dll` and the driver's `nvcuda.dll`, loaded at run time, and it names no cuDNN library (checked on 20 October 2026 by reading its import table and strings). The wheel's own `cudnn64_9.dll` is loaded by its `__init__.py` but not used by `ctranslate2.dll`. cuBLAS 12.8.4.1 is the cuBLAS of CUDA 12.8 Update 1, and `cublas64_12.dll` imports `cublasLt64_12.dll`, which is in the same wheel. `tests/test_consistency.py` fails when the CTranslate2 pin moves, so this is checked again then.
+
+Measured on 20 October 2026 on the development laptop: NVIDIA RTX 500 Ada Laptop GPU, 4 GB, driver 595.95. The desktop runs on the integrated graphics, so the NVIDIA card started each run with 0 MiB in use; a card that also drives the desktop has less memory free. CTranslate2 4.8.0, CPython 3.14.8, the component installed into a scratch model cache. Audio: the public AMI ES2004a headset mix (17.5 minutes, CC BY 4.0) and its first 5 minutes. Before every GPU run a gate checked that no installed copy of Unminute was running and the card had no other compute process.
+
+Standalone runs use the app's Whisper settings (`asr_engines.WhisperEngine`: English, voice detection, beam 5, word times), one call for the whole audio, outside the app's 45-second parts. The processor runs at int8 with 14 threads (Faster mode: all 16 logical processors but 2). GPU memory is from Windows' "GPU Process Memory" counters, sampled every second: dedicated is the card's own memory, and shared is what spilled into system memory (76 MiB was in shared use from the start of every run). Other sessions' test suites were running at times, so processor times are upper bounds; the times below are from runs with little else running, except where noted.
+
+| Model, device, precision | 5 minutes | 17.5 minutes | Peak dedicated GPU memory | Spilled to system memory | Word error rate against AMI (17.5 min) |
+| --- | --- | --- | --- | --- | --- |
+| Turbo, processor, int8 | 94.1 s | 365.8 s | | | 23.02% |
+| Turbo, GPU, float16 | 7.9 s (11.9x) | 47.4 s (7.7x) | 2,385 MiB | none | 20.75% |
+| Large-v3, processor, int8 | 176.3 s | 1,708.6 s and 1,843.2 s in two runs, both with other work running | | | 22.54% to 25.52% in three runs |
+| Large-v3, GPU, int8_float16 | 24.9 to 38.5 s in three runs (4.6x to 7.1x) | 173.0 s (9.9x to 10.7x) | 3,793 MiB | none | 21.27% and 21.35% in two runs |
+| Large-v3, GPU, float16 | 174.7 s | 680.9 s (first pass, not repeated) | 3,860 MiB (5 min) | 1,612 MiB (5 min) | not scored |
+
+Agreement, GPU against the processor (word differences on normalised text; start times of the words that align):
+
+- **Turbo, float16, full file:** 170 differences in 2,099 words (8.1%); 96.7% of aligned words start within 0.25 s of the processor's. On the 5-minute excerpt the processor left out a passage the GPU kept, in both of its runs (word error rate against AMI 41.2% and 39.6% on the processor, 20.7% on the GPU).
+- **Large-v3, int8_float16:** on the 5-minute excerpt, 3 to 10 differences in 324 words (0.9% to 3.1%) across three GPU runs, with 91.1% to 99.4% of starts within 0.25 s. On the full file, 210 differences in 2,173 words (9.7%), 93.5% of starts within 0.25 s, and a lower word error rate against AMI than the processor (21.3% against 22.5% to 25.5%).
+- **Run to run:** large-v3 is not exactly repeatable on either device. Identical full-file runs differed by 37 words in 2,215 on the GPU (two runs, word error rate 21.35% and 21.27%) and by 251 to 277 words on the processor (three runs, 23.02%, 22.54% and 25.52%). Turbo on the full file gave identical words in two runs on each device. So part of the difference between the devices is this ordinary variation.
+- **Word times** are close enough for speaker assignment: aligned words start within 0.25 s of AMI's own times as often on the GPU as on the processor (turbo 87.9% against 88.1%; large-v3 79.4% to 79.6% against 76.8% to 79.5%).
+
+A long file, the public AMI ES2004c headset mix (38.9 minutes, CC BY 4.0), in one call for the whole file on the GPU: turbo at float16 took 115.6 s with 2,385 MiB dedicated and nothing spilled (word error rate against AMI 18.04%); large-v3 at int8_float16 took 485.4 s with 3,825 MiB dedicated and nothing spilled (21.76%).
+
+Through the app (a headless `Workspace` from this branch, with its own download process, workers and 45-second parts; Faster mode, "Use the graphics card" on, speaker identification on, the speaker GPU component not installed, so speakers ran on the processor):
+
+- **Install:** the app's download process fetched the component from files.pythonhosted.org and installed it in 16.0 s; Check every file passed in 1.0 s.
+- **Turbo:** all 24 parts ran on the GPU at float16 (the meeting's details: "Graphics card, float16"), with no part failing. The transcript was finished 54.1 s after the import started, including starting the worker and loading the model. Peak 2,385 MiB dedicated, nothing spilled. Speaker identification then found 5 speakers and labelled all 246 segments; the card held 0 MiB during it, so the Whisper GPU worker had ended first. 762.8 s in all. Word error rate against AMI 22.74%.
+- **Large-v3:** all 24 parts on the GPU at int8_float16, no part failing, the transcript finished 142.2 s after the import started. Peak 2,385 MiB dedicated, nothing spilled: the app's bounded parts use much less than one call for the whole file. 5 speakers, all 204 segments labelled, 848.3 s in all. Word error rate against AMI 22.78%.
+- **Long file, large-v3:** ES2004c (38.9 minutes) through the app: all 51 parts on the GPU at int8_float16, no part failing, the transcript finished 301.3 s after the import started. Peak 2,705 MiB dedicated, nothing spilled. 4 speakers, all 565 segments labelled. Word error rate against AMI 20.02%. The worker's CUDA libraries, read while it ran, were the component's two cuBLAS DLLs and CTranslate2's `cudnn64_9.dll`.
+- **Libraries:** in the app's own Whisper GPU worker (`WorkerHandle.whisper_gpu_worker`, a separate process), after loading each model and transcribing 30 s, the CUDA libraries loaded were `cublas64_12.dll` and `cublasLt64_12.dll` from the component's folder, and CTranslate2's own `cudnn64_9.dll`. No PyTorch CUDA library and no CUDA 13 library was loaded; only the package's processor build of PyTorch (`torch_cpu.dll`), as in the processor's worker.
+
+Findings:
+
+- **Turbo** runs on the GPU at float16 in 2.4 GB, 8 to 12 times faster than on the processor here, and at least as accurate.
+- **Large-v3 runs on the GPU at int8_float16 only.** At float16 it filled the 4 GB card and Windows spilled 1.6 GB into system memory, which made it 4.5 times slower than at int8_float16. At int8_float16 it stayed within the card: 3.8 GB at peak in one call for the whole file, 2.4 GB in the app's parts. So it ships at that precision. On a 4 GB card that also drives the desktop it may still spill (slower, not wrong) or run out of memory, and then falls back to the processor. Other cards are to be validated in #189.
+- **Not tested on real hardware:** a real out-of-memory error or driver failure on the card. The fallback is covered by tests with fake engines (`tests/test_gpu.py`), not by a forced failure on this laptop. Windows' shared-memory spill makes a real out-of-memory error less likely than slowness.
+
 ## GPU trial (engines)
 
 `tools/gpu_trial.py` runs the same audio on the CPU and on the GPU, verifies which ONNX Runtime provider was really used, and compares the outputs. It loads the speaker model as the app does (the hash-checked bytes through `workspace/speaker_load.py`, weights only), so its speaker figures cover the app's own path. Results for 5 minutes of synthetic speech, CPU against an NVIDIA RTX 500 Ada laptop GPU (4 GB), measured on 14 October 2026:
@@ -105,7 +146,7 @@ Findings:
 - **Speaker identification gains most** from a GPU, then Whisper.
 - **Parakeet** really ran on CUDA, but it was slower than the CPU in this configuration, where it is already fast. GPU support would not help the recommended model as it stands.
 - **The GPU builds need different CUDA versions.** CTranslate2 4.8 (Whisper) needs CUDA 12 libraries, while ONNX Runtime 1.30 and torch 2.13 here use CUDA 13. Their cuDNN libraries share one folder and clash in a single environment. ONNX Runtime has to share torch's cuDNN; installing a separate cuDNN causes a version mismatch.
-- **A GPU-enabled package** therefore needs separate worker environments, or matched CUDA versions. That is future work. Detection alone never enables a GPU.
+- **A GPU-enabled package** therefore needs separate worker environments, or matched CUDA versions. Detection alone never enables a GPU. Since #248 each GPU use has its own component and worker: speaker identification (PyTorch CUDA 13, above) and Whisper (NVIDIA's cuBLAS for CUDA 12, see "Whisper on the graphics card"). Parakeet stays on the CPU.
 
 ## Publishing (when authorised)
 
