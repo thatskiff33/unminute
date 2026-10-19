@@ -1,2 +1,0 @@
-- **A meeting whose import never finished can be discarded.** After **Continue anyway** on a damaged workspace, a meeting left half imported used to stay listed, and Discard refused it as "still being imported". Discard now removes it, after the usual confirmation, once no import is running.
-- **A recovered recording is read again if Windows holds its record file for a moment.** When an antivirus scan or another program briefly had the file open, a recording recovered after a crash could be reported as unreadable. The app now tries again a few times (#148).

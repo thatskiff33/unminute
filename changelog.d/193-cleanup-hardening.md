@@ -1,3 +1,0 @@
-- **A retention hold now also protects an import that never finished.** At start-up, such a meeting used to be removed even if it had a hold. It now stays listed as **Import did not finish**, and Discard removes it once the hold is released (#193).
-- **Removing a meeting on a damaged workspace finishes.** After **Continue anyway**, removing a meeting deletes its text and audio, and the receipt says the database compaction is deferred until the workspace is repaired. The cleanup is no longer retried for ever (#198).
-- **Meeting folders are checked before use.** The app builds a meeting's folder path only from its own ids, so a damaged database can never point a removal outside the app's media folder (#194).

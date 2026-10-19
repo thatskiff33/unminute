@@ -1,1 +1,0 @@
-- **Pausing a watched folder stops its imports at once.** Recordings the app had already found in a folder still imported after you paused it, or after your organisation turned watched folders off. Now they wait and are imported when the folder is resumed (or allowed again). The one being copied in at that moment still finishes (#152).

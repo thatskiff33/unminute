@@ -108,4 +108,4 @@ Findings:
 
 ## Publishing (when authorised)
 
-Follow "Before cutting a release" and "Unminute package releases" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.
+Follow "Before cutting a release" and "Cutting a release" in [RELEASING.md](RELEASING.md). That is the only copy of the steps. If a release has to be withdrawn, the runbook is in the same file.

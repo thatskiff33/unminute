@@ -338,13 +338,13 @@
     card({ name: "pyannote/speaker-diarization-community-1", role: "speakers", recommended: true, size_gb: 0.03,
            needs_token: true, label: "Speaker identification", title: "Speaker identification (optional)",
            about: "Works out who spoke when. Downloading it needs a free Hugging Face account and token." }),
-    card({ name: "gpu-component", role: "gpu", size_gb: 1.92, state: "missing", status: "Not downloaded.",
+    card({ name: "gpu-component", role: "gpu", size_gb: 2, state: "missing", status: "Not downloaded.",
            removable: false, label: "Graphics card acceleration", title: "Graphics card acceleration (optional)",
            about: "Speeds up speaker identification on this computer's NVIDIA RTX 500. Used only in Faster mode." }),
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
-    model: "parakeet-tdt-0.6b-v2", onboarded: true,
+    model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true },
               { name: "parakeet-tdt-0.6b-v3", label: "Parakeet v3", recommended: false },
               { name: "large-v3-turbo", label: "Whisper large-v3 turbo", recommended: false }],
