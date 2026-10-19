@@ -476,14 +476,14 @@ async function renderMeeting() {
     // append that cannot be proved safe, redraws the whole list. An append
     // given up because an edit, another meeting or a newer draw started while
     // it loaded draws nothing: a redraw then would be thrown away too. The
-    // signature goes back, unless something else has changed it since, so the
-    // next refresh tries the append again.
-    const before = state.signature;
+    // signature goes back, unless another meeting is open or something else
+    // has changed it since, so the next refresh tries the append again.
+    const before = state.signature, mid = state.mid;
     const onlyProgress = before !== "" && before.slice(before.indexOf("|") + 1) === shape;
     state.signature = sig;
     const appended = onlyProgress ? await appendTranscript() : REDRAW;
     if (appended === REDRAW) await renderTranscript();
-    else if (appended === ABANDONED && state.signature === sig) state.signature = before;
+    else if (appended === ABANDONED && state.mid === mid && state.signature === sig) state.signature = before;
   }
 }
 
