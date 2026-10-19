@@ -143,6 +143,8 @@
 # local AppData named whole (cp -r dist ~); a search pattern holding ;, &, | or a
 # line break, which is split there like a command (grep -rn 'cd X; rg' tests reads
 # X as a folder searched), so search for part of the text or use the Grep tool;
+# a here-string naming the data and piped to gh or git with a quoted title that
+# holds | (the title is split there, as on main);
 # local AppData named whole and piped into rg, ag or grep that reads the pipe (echo
 # "$LOCALAPPDATA" | rg -o Local), which xargs would turn into a search of it; a
 # search program's name in quoted text that is not a search, with local AppData
@@ -883,6 +885,25 @@ def _consumer(command, start, end):
     return before + " " + after
 
 
+def _pipeline_lines(command, end):
+    """The lines a here-string's pipeline goes on to after its own line (#221
+    round 4): while a line ends in | or the next line starts with |, the next
+    line belongs to it. Each line is looked at once, so linear. Only for
+    here-strings: the lines after a heredoc's line are its body."""
+    out, pos = [], end
+    while True:
+        line_end = command.find("\n", pos)
+        if line_end < 0:
+            return " ".join(out)
+        next_end = command.find("\n", line_end + 1)
+        following = command[line_end + 1:next_end if next_end >= 0 else len(command)]
+        if not (command[pos:line_end].rstrip().endswith("|")
+                or following.lstrip().startswith("|")):
+            return " ".join(out)
+        out.append(following)
+        pos = line_end + 1
+
+
 # A quoted program path (a drive, a root, ~ or . at its start), which is kept.
 PROGRAM_PATH = re.compile(r"[\"'](?:[A-Za-z]:|[\\/~.])")
 
@@ -940,6 +961,10 @@ def _drop_written(command, shell):
         # hide the program that reads the lines (round 3 review). Quoted titles are
         # dropped only when looking for an interpreter ("Move to Python 3.14").
         consumer = _consumer(command, match.start(), match.end())
+        more = _pipeline_lines(command, match.end())
+        if more:
+            # A pipeline that goes on to the next lines (main blocks these).
+            consumer += " " + re.split(r"\|\||&&|;", more)[0]
         if INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)

@@ -1645,7 +1645,16 @@ class HardeningTests(unittest.TestCase):
                 ("@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output `\""
                  " | ForEach-Object { Get-Content $_ } # \"x y\"", "PowerShell"),
                 ("@'\n" + self.DATA + "\\settings.json\n'@ | Out-String -Stream <# \" #>"
-                 " | ForEach-Object { Get-Content $_ } <# \" #>", "PowerShell")),
+                 " | ForEach-Object { Get-Content $_ } <# \" #>", "PowerShell"),
+                # Round 4: a pipeline that goes on to the next line (main blocks these).
+                ("@'\n" + self.DATA + "\\settings.json\n'@ |\nForEach-Object { Get-Content $_ }",
+                 "PowerShell"),
+                ("@'\r\n" + self.DATA + "\\settings.json\r\n'@ |\r\n    Get-Content",
+                 "PowerShell"),
+                ("@'\n" + self.DATA + "\\settings.json\n'@\n| ForEach-Object { Get-Content $_ }",
+                 "PowerShell"),
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output |\n"
+                 "ForEach-Object { Get-Content $_ }", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",
@@ -1654,6 +1663,8 @@ class HardeningTests(unittest.TestCase):
                     "Guard: check tar -T heredocs", "Guard: --files-from heredocs",
                     "Guard: zip -@ heredocs")) + (
                 ("@'\nBlocks " + self.DATA + "\n'@ | gh pr create --title \"Move to Python 3.14\""
+                 " --body-file -", "PowerShell"),
+                ("@'\nBlocks " + self.DATA + "\n'@ |\n  gh pr create --title \"Notes\""
                  " --body-file -", "PowerShell"),))
 
     def test_text_kept_in_a_variable_is_checked(self):
