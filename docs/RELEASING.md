@@ -44,7 +44,7 @@ The Release workflow relies on these owner settings. They were read back on 17 O
 - **The owner's sign-in on machines where agents run.** An agent, or malware running as the user, could use a signed-in owner account to create release tags and approve the deployment. Recommended: sign the owner out of `gh` and Git Credential Manager on those machines, and tag and approve on GitHub's website with two-factor sign-in.
 - **Releases before v0.5.0** are not immutable, and their tags' `release.yml` still has a manual "Run workflow" route (with write access only; it has no signing rights).
 - **Immutable releases** (Settings > General > Releases): turned on by the owner on 16 Oct 2026. This could not be read back with a collaborator's access, so confirm it before the first signed release. Once on, a published release's files and tag cannot change.
-- **No rehearsal: v0.5.0-preview.1 is the first real run** (owner decision, 19 Oct 2026, on #111). The hosted-runner build, the attestations, the draft and the publish job had not run before it, so a full local build and check comes first (step 3). A failure after tagging burns that version: fix it and release as `-preview.2`.
+- **No rehearsal: v0.5.0-preview.1 is the first real run** (owner decision, 19 Oct 2026, on #111). The hosted-runner build, the attestations, the draft and the publish job had not run before it, so a local release build and check of the merged commit comes first ("Cutting a release", step 2). A failure after tagging burns that version: fix it and release as `-preview.2`.
 - **Moving the repository** to the Unlimit organisation changes the identity the attestations name. It happens after v0.5.0-preview.1, which is released from `thatskiff33/unminute` (owner decision, 19 Oct 2026, on #111), so that preview's signed provenance and the script's default repository name the current address. At the move: change the default `-Repository` in `tools/intune/Get-VerifiedRelease.ps1` (a test fails in CI until they agree) and the docs, check the branch ruleset, the tag ruleset and the `release` environment again, and verify a release's attestation against the new identity.
 
 ## Workflow supply-chain rules
@@ -69,7 +69,8 @@ The workflows run with the repository's token, so they are held to these rules. 
 CI proves the code parses, the unit tests pass and the pins resolve. It does not run the models or the packaged app.
 
 1. Check the release against [RELEASE_STANDARD.md](RELEASE_STANDARD.md). Part B lists each gate, where it runs and whether it is automated yet.
-2. The package is tested from its draft release, before anything is public ("Cutting a release", step 3).
+2. The merged commit is built and checked locally with `--release` before it is tagged ("Cutting a release", step 2).
+3. The package is tested from its draft release, before anything is public ("Cutting a release", step 3).
 
 ## Cutting a release
 
@@ -88,6 +89,21 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
      git diff <last release tag>..<commit> -- .github/workflows tools/build_package.py tools/evidence.py packaging requirements.txt requirements
      ```
 
+   - **Before tagging, build and check the merged commit locally** with the release path the Build job runs. Work in a scratch clone with no push remote, so the local tag cannot reach GitHub, and delete the clone afterwards. Use the pinned CPython (`PYTHON_VERSION` in `tools/build_package.py`), or a virtual environment made from it, as `python`. It takes about 5 minutes.
+
+     ```
+     git clone --no-hardlinks <your checkout> <scratch>\src
+     cd <scratch>\src
+     git remote remove origin
+     git checkout --detach <commit on main>
+     git tag -a vX.Y.Z -m "Local check only, never pushed" <commit on main>
+     python -I tools/build_package.py --release --out <scratch>\dist --cache <scratch>\cache
+     python -I tools/evidence.py names <scratch>\dist\Unminute-X.Y.Z.zip X.Y.Z <commit on main>
+     python -I tools/build_package.py --verify-precompiled <scratch>\dist\Unminute-X.Y.Z.zip
+     ```
+
+     Then extract the zip to an empty folder and, from its `Unminute-X.Y.Z\app` folder, run `..\runtime\python.exe -I -B -X disable-remote-debug -m workspace --self-test`. Every step must pass, and the self-test's last line must be `PASS`. A failure here costs no version number: fix it on a branch and check again.
+
 
    ```
    git tag -a vX.Y.Z -m "Unminute vX.Y.Z" <commit on main>
@@ -100,7 +116,7 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - **Draft** (Linux): a draft release, visible only to people with write access, holding the zip, its `.sha256`, the SBOM (`.cdx.json`) and the attestation bundle (`.attestations.jsonl`).
    - **Publish** (the protected `release` environment): waits for the owner's approval (step 4).
 
-   If the check or the build fails, nothing is drafted. A version number is never reused, and the tag ruleset stops a release tag being moved or deleted: fix the cause and release the next patch version.
+   If the check or the build fails, nothing is drafted. A version number is never reused, and the tag ruleset stops a release tag being moved or deleted: fix the cause and release the next version number (the next `-preview.N` for a preview, otherwise the next patch version).
 3. **Test the draft and attach the evidence.**
    - **Download and verify it.** In a new, empty folder, run `gh release download vX.Y.Z --repo <owner>/unminute --pattern "Unminute-X.Y.Z.*"`. Then run `gh attestation verify Unminute-X.Y.Z.zip --repo <owner>/unminute --bundle Unminute-X.Y.Z.attestations.jsonl --cert-identity https://github.com/<owner>/unminute/.github/workflows/release.yml@refs/tags/vX.Y.Z --source-digest <the tag's commit> --deny-self-hosted-runners`. `<owner>/unminute` is the repository, as in `tools/intune/Get-VerifiedRelease.ps1`, which checks published releases only.
    - **Rebuild it (recommended).** From a clean checkout of the tag, `python -I tools/build_package.py --release` should give the same SHA-256 ("Building the package locally" below), with the same Python, pip and zlib versions as the draft's SBOM records. Until #180 pins pip in the Release workflow, install that pip version first.
@@ -134,7 +150,7 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - both attestations verify against this repository's Release workflow, the tag and the tag's commit, on a GitHub-hosted runner;
    - the evidence is complete and names that zip and commit (`tools/evidence.py check --commit`).
 
-   Then it publishes, and checks that the published release holds exactly the files it checked, by name and by the digest GitHub records for each. It warns if the release is not immutable. With immutable releases on, the files and the tag can no longer change. If a check fails before publishing, fix the cause (for example, attach a missing report) and re-run the failed job, which asks for approval again. If the check after publishing says the files differ, someone changed the draft's files: withdraw the release ("Withdrawing a bad release") and release the next patch version. If it says it could not read them, compare by hand: `gh api repos/<owner>/unminute/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.digest)"'` against the SHA-256 of the files the job checked, which are the draft's files you downloaded.
+   Then it publishes, and checks that the published release holds exactly the files it checked, by name and by the digest GitHub records for each. It warns if the release is not immutable. With immutable releases on, the files and the tag can no longer change. If a check fails before publishing, fix the cause (for example, attach a missing report) and re-run the failed job, which asks for approval again. If the check after publishing says the files differ, someone changed the draft's files: withdraw the release ("Withdrawing a bad release") and release the next version number, as in step 2. If it says it could not read them, compare by hand: `gh api repos/<owner>/unminute/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.digest)"'` against the SHA-256 of the files the job checked, which are the draft's files you downloaded.
 5. **Release type.** A `vX.Y.Z` tag publishes a full release, which becomes Latest, the default download. A `vX.Y.Z-preview.N` tag publishes a pre-release that does not.
 
 ## Building the package locally
@@ -161,7 +177,7 @@ The Release workflow builds every published package. The same command builds it 
    - Rollback is refused if the bad version changed the storage format. In that case, fix forward instead.
    - The first release after the rename (#136) has no earlier version in its install folder to roll back to. To go back past it, uninstall it and install the earlier release again, which opens that release's own workspace.
 4. **Fix forward.**
-   - Release the next patch version through the normal process.
+   - Release the next version number through the normal process (the next `-preview.N` for a preview, otherwise the next patch version).
    - Its changelog entry says what was wrong and who was affected, without meeting content.
 5. **Record it.**
    - Open an issue with the timeline, the cause, why the gates did not catch it, and the gate added so it cannot happen again.
