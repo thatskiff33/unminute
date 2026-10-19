@@ -607,22 +607,63 @@ def install_model(spec, cache_dir, log=print, download=None, has_token=False):
     return _move_into_place(spec, target, staging, had_folder, log)
 
 
+# A folder cannot be renamed while any process has a file in it open, and
+# antivirus software (such as Microsoft Defender) opens newly written files for
+# a moment to scan them (#249, as the installer's #239). So a rename refused as
+# access denied (WinError 5) or in use (a sharing violation, WinError 32) is
+# tried again, with a short back-off, for up to LOCK_RETRY_SECONDS from its
+# first refusal; then its error stands. Any other error is not retried. The
+# clock and sleep are looked up at call time so tests can replace them.
+LOCK_RETRY_SECONDS = 30
+_LOCK_WINERRORS = (5, 32)
+_lock_clock = time.monotonic
+_lock_sleep = time.sleep
+
+
+def is_transient_lock(exc):
+    """True for an error Windows gives while a file in the folder is open."""
+    return isinstance(exc, OSError) and getattr(exc, "winerror", None) in _LOCK_WINERRORS
+
+
+def rename_with_retry(src, dst, limit=LOCK_RETRY_SECONDS):
+    """src.rename(dst), tried again while a file in src is in use for a moment.
+    The same src and dst every time: it never copies, deletes or picks another
+    folder."""
+    first_refusal = None
+    pause = 0.25
+    while True:
+        try:
+            return src.rename(dst)
+        except OSError as exc:
+            if not is_transient_lock(exc):
+                raise
+            now = _lock_clock()
+            if first_refusal is None:
+                first_refusal = now
+            left = limit - (now - first_refusal)
+            if left <= 0:
+                raise
+            _lock_sleep(min(pause, left))
+            pause = min(pause * 2, 4.0)
+
+
 def _move_into_place(spec, target, staging, had_folder, log):
-    """Swap a verified staging folder in, keeping any damaged copy aside."""
+    """Swap a verified staging folder in, keeping any damaged copy aside.
+    Each rename waits out a file in use for a moment (rename_with_retry)."""
     kept = None
     if had_folder:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         kept = target.with_name(f"{target.name}.invalid-{stamp}")
-        target.rename(kept)
+        rename_with_retry(target, kept)
         log(f"Kept the damaged copy for diagnosis: {kept}")
     try:
-        staging.rename(target)
+        rename_with_retry(staging, target)
     except OSError as exc:
-        # e.g. antivirus still scanning the new files. Put the old folder back
-        # so the model stays visible (and repairable); keep the verified
-        # download in place for the next attempt to pick up.
+        # e.g. antivirus still scanning the new files after the retries. Put
+        # the old folder back so the model stays visible (and repairable); keep
+        # the verified download in place for the next attempt to pick up.
         if kept is not None and not target.exists():
-            kept.rename(target)
+            rename_with_retry(kept, target)
         raise ModelLoadError(
             f"Could not move the verified {label(spec.name)} files into place ({exc}). "
             f"Wait a minute and try the download again.") from exc

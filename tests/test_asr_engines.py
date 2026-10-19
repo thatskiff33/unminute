@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import hashlib
 import io
+import itertools
 import json
 import os
 import sys
@@ -292,6 +293,201 @@ class ReviewFixTests(unittest.TestCase):
     def test_only_the_manifest_command_remains(self):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             ae._main(["ensure", "--present", "--cache", str(self.cache)])
+
+
+def lock_error(winerror):
+    """The error Windows gives a folder rename while a file in it is open:
+    access denied (5) or a sharing violation (32). The code is set by hand so
+    the test runs on any system."""
+    exc = PermissionError(13, "Access is denied")
+    exc.winerror = winerror
+    return exc
+
+
+class FakeClock:
+    """Stands in for the retry's clock and sleep. A pause moves the clock on
+    by its length but really waits at most 50 ms, so a test takes no 30 s and
+    a real virus scan of the test's own new files still has a moment to end."""
+
+    def __init__(self):
+        self.now, self.sleeps = 1000.0, []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        time.sleep(min(seconds, 0.05))
+
+
+class LockRetryTests(unittest.TestCase):
+    """#249: moving a verified model into place waits out a file in use for a
+    moment (antivirus scanning the new files), as the installer does (#239)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cache = Path(self.tmp.name)
+        self.spec = make_spec()
+        self.target = ae.model_dir(self.spec, self.cache)
+        self.staging = ae.staging_dir(self.spec, self.cache)
+        self.clock = FakeClock()
+        for name, value in (("_lock_clock", self.clock), ("_lock_sleep", self.clock.sleep)):
+            patcher = mock.patch.object(ae, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.calls = []
+        self.times = {}          # folder name: the fake clock at each attempt
+
+    def gaps(self, name):
+        """The pauses between attempts to rename the folder `name`."""
+        return [round(b - a, 6) for a, b in itertools.pairwise(self.times.get(name, []))]
+
+    def lock(self, refusals):
+        """Refuse renames of the folders named in `refusals` ({name: (error,
+        times)}, times None for always); every other rename is real."""
+        real = Path.rename
+        left = {name: times for name, (_, times) in refusals.items()}
+
+        def rename(path, dest):
+            name = Path(path).name
+            self.calls.append(name)
+            self.times.setdefault(name, []).append(self.clock.now)
+            if name in refusals and (left[name] is None or left[name] > 0):
+                if left[name] is not None:
+                    left[name] -= 1
+                raise refusals[name][0]
+            return real(path, dest)
+
+        patcher = mock.patch.object(Path, "rename", rename)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return patcher
+
+    def damaged_target(self):
+        write_files(self.target, {**GOOD, "weights.onnx": b"\x09\x09" * 500})
+
+    def kept(self):
+        return [p for p in self.target.parent.iterdir() if ".invalid-" in p.name]
+
+    def test_a_file_in_use_for_a_moment_is_waited_for(self):
+        self.damaged_target()
+        self.lock({self.target.name: (lock_error(5), 2),
+                   self.staging.name: (lock_error(32), 3)})
+        dl = FakeDownload()
+        self.assertEqual(ae.install_model(self.spec, self.cache, lambda m: None, dl), "repaired")
+        self.assertEqual(ae.check_files(self.spec, self.target, full=True), [])
+        self.assertEqual(len(self.kept()), 1)
+        self.assertEqual((self.kept()[0] / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
+        self.assertFalse(self.staging.exists())
+        # The same two folders each time: the damaged copy aside, then the
+        # download in. (A real scan of the new files can add an attempt.)
+        self.assertEqual(set(self.calls), {self.target.name, self.staging.name})
+        first_in = self.calls.index(self.staging.name)
+        self.assertNotIn(self.target.name, self.calls[first_in:])
+        self.assertEqual(self.gaps(self.target.name)[:2], [0.25, 0.5])
+        self.assertEqual(self.gaps(self.staging.name)[:3], [0.25, 0.5, 1.0])   # per rename
+
+    def test_a_file_still_in_use_fails_after_30_seconds_with_the_same_message(self):
+        self.damaged_target()
+        patcher = self.lock({self.staging.name: (lock_error(32), None)})
+        dl = FakeDownload()
+        with self.assertRaises(ae.ModelLoadError) as ctx:
+            ae.install_model(self.spec, self.cache, lambda m: None, dl)
+        self.assertIn("Could not move the verified", str(ctx.exception))
+        self.assertIn("Wait a minute and try the download again", str(ctx.exception))
+        self.assertIsInstance(ctx.exception.__cause__, PermissionError)
+        # Bounded: 30 seconds from the first refusal, pauses doubling to 4 s.
+        gaps = self.gaps(self.staging.name)
+        self.assertAlmostEqual(sum(gaps), ae.LOCK_RETRY_SECONDS)
+        self.assertEqual(gaps[:6], [0.25, 0.5, 1.0, 2.0, 4.0, 4.0])
+        self.assertLessEqual(max(gaps), 4.0)
+        # Today's handling: the damaged folder is put back, the download kept.
+        self.assertEqual((self.target / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
+        self.assertEqual(self.kept(), [])
+        self.assertEqual(ae.check_files(self.spec, self.staging, full=True), [])
+        patcher.stop()
+        self.assertEqual(ae.install_model(self.spec, self.cache, lambda m: None, dl), "repaired")
+        self.assertEqual(dl.calls, 1)                              # download reused
+
+    def test_the_damaged_copy_still_in_use_fails_after_30_seconds_as_today(self):
+        self.damaged_target()
+        self.lock({self.target.name: (lock_error(5), None)})
+        with self.assertRaises(PermissionError) as ctx:
+            ae.install_model(self.spec, self.cache, lambda m: None, FakeDownload())
+        self.assertEqual(ctx.exception.winerror, 5)
+        self.assertAlmostEqual(sum(self.gaps(self.target.name)), ae.LOCK_RETRY_SECONDS)
+        self.assertNotIn(self.staging.name, self.calls)            # never moved in
+        self.assertEqual((self.target / "weights.onnx").read_bytes(), b"\x09\x09" * 500)
+        self.assertEqual(self.kept(), [])
+
+    def test_any_other_error_fails_at_once(self):
+        errors = {"exists (183)": FileExistsError(17, "exists"),
+                  "no Windows code": PermissionError(13, "denied"),
+                  "not found (2)": FileNotFoundError(2, "gone"),
+                  "lock code on a plain value": ValueError("winerror 5")}
+        errors["exists (183)"].winerror = 183
+        errors["not found (2)"].winerror = 2
+        for label_, error in errors.items():
+            with self.subTest(label_):
+                self.calls.clear()
+                self.clock.sleeps.clear()
+                patcher = self.lock({"x": (error, None)})
+                src = self.cache / "x"
+                src.mkdir(exist_ok=True)
+                with self.assertRaises(type(error)):
+                    ae.rename_with_retry(src, self.cache / "y")
+                patcher.stop()
+                self.assertEqual(self.calls, ["x"])
+                self.assertEqual(self.clock.sleeps, [])
+                self.assertTrue(src.is_dir())
+
+    def test_any_other_error_moving_the_download_in_fails_at_once(self):
+        self.damaged_target()
+        error = FileExistsError(17, "exists")
+        error.winerror = 183
+        self.lock({self.staging.name: (error, None)})
+        with self.assertRaises(ae.ModelLoadError):
+            ae.install_model(self.spec, self.cache, lambda m: None, FakeDownload())
+        self.assertEqual(self.calls.count(self.staging.name), 1)
+        self.assertTrue(self.target.is_dir())                      # put back, as today
+
+    @unittest.skipUnless(os.name == "nt", "Windows file locking")
+    def test_a_real_open_file_is_waited_for(self):
+        # A file held open in the download stops Windows renaming the folder;
+        # the first pause closes it, as a finished virus scan would.
+        held = []
+        test = self
+
+        class Holding(FakeDownload):
+            def __call__(self, spec, dest):
+                super().__call__(spec, dest)
+                held.append(open(Path(dest) / "weights.onnx", "rb"))
+                test.addCleanup(held[0].close)
+
+        first_error = []
+        real_rename = Path.rename
+
+        def rename(path, dest):
+            try:
+                return real_rename(path, dest)
+            except OSError as exc:
+                first_error.append(exc)
+                raise
+
+        def release(seconds):
+            held[0].close()
+            self.clock.sleep(seconds)
+
+        with mock.patch.object(ae, "_lock_sleep", release), \
+                mock.patch.object(Path, "rename", rename):
+            self.assertEqual(ae.install_model(self.spec, self.cache, lambda m: None,
+                                              Holding()), "installed")
+        self.assertTrue(first_error)
+        self.assertIn(first_error[0].winerror, (5, 32))           # what Windows really says
+        self.assertEqual(self.clock.sleeps[0], 0.25)
+        self.assertEqual(ae.check_files(self.spec, self.target, full=True), [])
 
 
 class ParakeetStatusTests(unittest.TestCase):

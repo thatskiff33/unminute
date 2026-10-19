@@ -8,10 +8,12 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import itertools
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -22,7 +24,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))      # fake_worker_engi
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
+import asr_engines  # noqa: E402
 from workspace import gpu  # noqa: E402
+
+
+def lock_error(winerror):
+    """Windows' error for renaming a folder with a file in it open: access
+    denied (5) or in use (32). Set by hand so the test runs on any system."""
+    exc = PermissionError(13, "Access is denied")
+    exc.winerror = winerror
+    return exc
+
+
+class FakeClock:
+    """Stands in for the rename retry's clock and sleep. A pause moves the
+    clock on by its length but really waits at most 50 ms, so a test takes no
+    30 s and a real virus scan of the test's own new files can still end."""
+
+    def __init__(self):
+        self.now, self.sleeps = 1000.0, []
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+        time.sleep(min(seconds, 0.05))
 
 
 def make_wheel(name, version, files):
@@ -320,6 +348,55 @@ class InstallTests(unittest.TestCase):
         kept = list((self.cache / "gpu").glob(gpu.VERSION + ".invalid-*"))
         self.assertEqual(len(kept), 1)
         self.assertEqual(gpu.status(self.cache)[0], "ready")
+
+    def lock_component(self, error, times=None):
+        """Refuse renames of the download folder with `error`, `times` times
+        (None: always), on the retry's fake clock. Returns (clock, calls):
+        calls holds the fake clock's time at each attempt."""
+        clock = FakeClock()
+        calls = []
+        left = [times]
+        real = Path.rename
+        staging = gpu.staging_dir(self.cache).name
+
+        def rename(path, dest):
+            if Path(path).name == staging:
+                calls.append(clock.now)
+                if left[0] is None or left[0] > 0:
+                    if left[0] is not None:
+                        left[0] -= 1
+                    raise error
+            return real(path, dest)
+
+        for patcher in (mock.patch.object(Path, "rename", rename),
+                        mock.patch.object(asr_engines, "_lock_clock", clock),
+                        mock.patch.object(asr_engines, "_lock_sleep", clock.sleep)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return clock, calls
+
+    def test_a_component_folder_in_use_for_a_moment_is_waited_for(self):
+        # #249: the same wait as a model's move into place.
+        clock, calls = self.lock_component(lock_error(32), times=2)
+        gpu.install(self.cache, lambda m: None, self.fetch)
+        self.assertEqual(gpu.status(self.cache)[0], "ready")
+        # A real scan of the new files can add an attempt after the two refusals.
+        self.assertGreaterEqual(len(calls), 3)
+        self.assertEqual([b - a for a, b in itertools.pairwise(calls)][:2], [0.25, 0.5])
+
+    def test_a_component_folder_still_in_use_fails_after_30_seconds(self):
+        clock, calls = self.lock_component(lock_error(5))
+        with self.assertRaises(PermissionError):
+            gpu.install(self.cache, lambda m: None, self.fetch)
+        self.assertAlmostEqual(calls[-1] - calls[0], asr_engines.LOCK_RETRY_SECONDS)
+        self.assertEqual(gpu.status(self.cache)[0], "missing")
+
+    def test_any_other_rename_error_of_the_component_fails_at_once(self):
+        clock, calls = self.lock_component(PermissionError(13, "denied"))   # no Windows code
+        with self.assertRaises(PermissionError):
+            gpu.install(self.cache, lambda m: None, self.fetch)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(clock.sleeps, [])
 
     def test_redirects_leave_the_pinned_location_only_by_failing(self):
         from workspace import setup
