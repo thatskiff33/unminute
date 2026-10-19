@@ -2079,7 +2079,8 @@ class SettingsTests(unittest.TestCase):
         # named in both, so neither copy understates a gap: every heredoc delimiter
         # form (anchored to the span's own wording, since "<<EOF" appears elsewhere
         # in the header), every quote a message value can open with and every gh
-        # field option, an opener the shell never starts, and the exact condition
+        # field option, an opener the shell never starts (quoted, commented, or not
+        # a heredoc operator: an arithmetic shift, <<<, \<<), and the exact condition
         # for the non-ASCII false positive.
         header = []
         for line in HOOK.read_text(encoding="utf-8").splitlines():
@@ -2092,6 +2093,8 @@ class SettingsTests(unittest.TestCase):
         for shape in ("heredoc span (<<EOF", "<<'EOF'", "<<-EOF", "quoted or not", '@"',
                       "gh -f, -F, --field and --raw-field fields", "typographic quote",
                       "the shell never starts", "inside a quoted string or a comment",
+                      "not a heredoc operator at all", "a left shift in arithmetic",
+                      "$((1<<EOF))", "a here-string <<<", "an escaped \\<<",
                       "line feeds", "alone or assigned"):
             with self.subTest(shape=shape):
                 self.assertTrue(shape in header, "not in the hook's header")

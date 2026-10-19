@@ -139,10 +139,12 @@
 #     what lies between is dropped as text and not checked (#236; main's earlier
 #     check, the first layer, misses it too);
 #   - a message option or heredoc opener that the shell never starts, because it
-#     is inside a quoted string or a comment (Bash and PowerShell), which the
-#     patterns still pair with a later quote or closing line; what lies between
-#     is dropped as text and not checked (#242 review; main's earlier check, the
-#     first layer, misses it too);
+#     is inside a quoted string or a comment (Bash and PowerShell) or is not a
+#     heredoc operator at all (in Bash: a left shift in arithmetic, $((1<<EOF))
+#     or (( )), a here-string <<<, an escaped \<<), which the patterns still pair
+#     with a later quote or closing line; what lies between is dropped as text
+#     and not checked (#242 reviews; main's earlier check, the first layer,
+#     misses it too);
 #   - a substitution that renames a folder in a variable's value
 #     (${APPDATA/Roaming/Local});
 #   - a cygpath, dirname or Split-Path nested more than eight levels deep (its
