@@ -244,6 +244,51 @@ function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema =
 
 # -- install --------------------------------------------------------------------------
 
+# A folder cannot be renamed or removed while any process has a file in it open, and
+# antivirus software (such as Microsoft Defender) opens newly written .exe, .dll and
+# .pyd files for a moment to scan them (#239). So a rename or removal refused as access
+# denied or in use is tried again, with a short back-off, for up to $LockRetrySeconds
+# in all; then its error stands. Any other error is not retried. install.ps1 and
+# uninstall.ps1 have the same functions (tests/test_hardening.py keeps them equal).
+$LockRetrySeconds = 30
+
+function Test-TransientLock([Exception]$Exception) {
+    for ($e = $Exception; $e; $e = $e.InnerException) {
+        if ($e -is [UnauthorizedAccessException]) { return $true }
+        if ($e -isnot [IO.IOException]) { continue }
+        # Access denied (0x80070005) or in use, a sharing violation (0x80070020).
+        if (@(0x80070005, 0x80070020) -contains $e.HResult) { return $true }
+        # Windows PowerShell's folder rename reports access denied as a plain
+        # IOException without the Windows code (0x80131620, "Access to the path ... is
+        # denied"). Other failures of that rename carry their own code.
+        if ($e.GetType() -eq [IO.IOException] -and $e.HResult -eq 0x80131620) { return $true }
+    }
+    return $false
+}
+
+# Runs $Action (which must not use the names below) until it succeeds, it fails for
+# any reason but a file in use, or $LockRetrySeconds have passed.
+function Invoke-LockRetry([scriptblock]$Action) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $pause = 250
+    $said = $false
+    while ($true) {
+        try {
+            & $Action
+            return
+        } catch {
+            $left = $LockRetrySeconds * 1000 - $clock.ElapsedMilliseconds
+            if ($left -le 0 -or -not (Test-TransientLock $_.Exception)) { throw }
+            if (-not $said) {
+                Write-Step "A file in the folder is in use, perhaps by a virus scan. Trying again for up to $LockRetrySeconds seconds..."
+                $said = $true
+            }
+            Start-Sleep -Milliseconds ([Math]::Min($pause, $left))
+            $pause = [Math]::Min($pause * 2, 4000)
+        }
+    }
+}
+
 function Install-Version([string]$Root, [string]$Version) {
     $versions = Join-Path $Options.InstallDir "versions"
     $target = Join-Path $versions $Version
@@ -257,11 +302,12 @@ function Install-Version([string]$Root, [string]$Version) {
     Get-ChildItem -LiteralPath $staging -Recurse -File -Include *.exe, *.dll, *.pyd, *.ps1 |
         Unblock-File -ErrorAction SilentlyContinue
     # Same version again: move the live copy aside first, so a locked file can
-    # never leave a half-deleted version in use.
+    # never leave a half-deleted version in use. Both renames wait out a file held
+    # open for a moment, such as by a virus scan of the new files (#239).
     $old = "$target.old"
     if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
-    if (Test-Path -LiteralPath $target) { Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf) }
-    Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf)
+    if (Test-Path -LiteralPath $target) { Invoke-LockRetry { Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf) } }
+    Invoke-LockRetry { Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf) }
     if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     return $target

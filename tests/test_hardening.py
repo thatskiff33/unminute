@@ -1,7 +1,8 @@
 # Security hardening checks (#111 slice A2): the window shell's dispatch guard
 # and navigation rule, settings validation, test-only engines, the workspace
 # location, SQLite temporary storage, a token left in the environment,
-# nvidia-smi, and remote debugging (B4).
+# nvidia-smi, remote debugging (B4), and the installer's and uninstaller's
+# folder checks and their wait for a file in use (#239).
 #   python -m unittest discover -s tests -v
 
 import importlib
@@ -12,6 +13,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -922,6 +925,247 @@ class DataFolderOverlapTests(unittest.TestCase):
             return text[start:text.index("\n}\n", start) + 3]
         self.assertEqual(check("install.ps1"), check("uninstall.ps1"))
         self.assertIn("function Get-DataOverlap", check("uninstall.ps1"))
+
+
+# A hook for copies of install.ps1 and uninstall.ps1 (FolderInUseTests): at the named
+# step, the copy says it is ready, then waits until the test says go.
+WAIT_FOR_TEST = '''\
+function Wait-ForTest([string]$Stage) {
+    if ($env:UNMINUTE_TEST_WAIT -ne $Stage) { return }
+    New-Item -ItemType File -Path "$env:UNMINUTE_TEST_SYNC.ready" | Out-Null
+    while (-not (Test-Path -LiteralPath "$env:UNMINUTE_TEST_SYNC.go")) {
+        Start-Sleep -Milliseconds 20
+    }
+}
+'''
+WINDOWS_ONLY = unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
+
+
+class FolderInUseTests(unittest.TestCase):
+    """#239: a folder cannot be renamed or removed while a file in it is open, and
+    antivirus software opens newly written files for a moment to scan them. The
+    installer's two renames and the uninstaller's removal are tried again for up to
+    30 seconds when refused as access denied or in use, then fail with the message
+    they always gave; any other error fails at once. Copies of the scripts run for
+    real in temporary folders with a temporary LOCALAPPDATA (DataFolderOverlapTests);
+    the installer's copy runs only Install-Version, on a small synthetic package. A
+    hook pauses each copy just before the step while the test opens a file in the
+    folder, as a scanner might."""
+
+    PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
+                               DataFolderOverlapTests.TEST_KEY)
+    uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
+    BOUND = "$LockRetrySeconds = 30\n"
+    START = '$ErrorActionPreference = "Stop"\n'
+    MAIN = "    if ($Options.Rollback) { Invoke-Rollback }\n"
+    STAGING = "Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf)"
+    OLD = "Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf)"
+    REMOVE = 'foreach ($name in "versions", "current.json")'
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.local = self.root / "Local"
+        self.local.mkdir()
+        self.sync = self.root / "sync"
+        self.package = self.root / "package"
+        self.write_package(self.package, "new")
+        self.install = self.root / "Apps"
+        self.versions = self.install / "versions"
+
+    @staticmethod
+    def write_package(folder, label):
+        (folder / "app").mkdir(parents=True)
+        (folder / "app" / "held.txt").write_text(label)
+        (folder / "runtime").mkdir()
+        (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
+        (folder / "uninstall.ps1").write_text("# synthetic\n")
+
+    def with_hooks(self, text, steps, seconds=None):
+        """text with the hook, called just before the line holding each step, and
+        with the time limit set to seconds."""
+        self.assertEqual(text.count(self.START), 1)
+        text = text.replace(self.START, self.START + WAIT_FOR_TEST)
+        if seconds is not None:
+            self.assertEqual(text.count(self.BOUND), 1)
+            text = text.replace(self.BOUND, f"$LockRetrySeconds = {seconds}\n")
+        lines = text.split("\n")
+        for stage, step in steps.items():
+            at = [i for i, line in enumerate(lines) if step in line]
+            self.assertEqual(len(at), 1, step)
+            indent = lines[at[0]][:len(lines[at[0]]) - len(lines[at[0]].lstrip())]
+            lines.insert(at[0], f"{indent}Wait-ForTest '{stage}'")
+        return "\n".join(lines)
+
+    def installer(self, seconds=None):
+        """install.ps1, after its folder checks, running only Install-Version."""
+        text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        self.assertEqual(text.count(self.MAIN), 1)
+        text = text.replace(self.MAIN,
+                            '    $target = Install-Version $env:UNMINUTE_TEST_PACKAGE "1.0.0"\n'
+                            '    Write-Output "TARGET=$target"; exit 0\n')
+        copy = self.root / "install-copy.ps1"
+        copy.write_text(self.with_hooks(text, {"old": self.OLD, "staging": self.STAGING}, seconds),
+                        encoding="utf-8")
+        return copy
+
+    def uninstaller(self, seconds=None):
+        """The uninstaller's copy (DataFolderOverlapTests), and an install for it."""
+        copy, link = self.uninstaller_copy(self.root)
+        copy.write_text(self.with_hooks(copy.read_text(encoding="utf-8"),
+                                        {"remove": self.REMOVE}, seconds), encoding="utf-8")
+        link.write_text("shortcut")
+        self.write_package(self.versions / "0.5.0", "old")
+        (self.install / "current.json").write_text("{}")
+        shutil.copy(copy, self.install / "uninstall.ps1")
+        return copy, link
+
+    def hold(self, path, release_after=None):
+        """Opens path without letting it be deleted, as a scanner might, until
+        release_after seconds have passed or the test ends."""
+        held = open(path, "rb")
+        self.addCleanup(held.close)
+        if release_after is not None:
+            timer = threading.Timer(release_after, held.close)
+            timer.daemon = True
+            timer.start()
+            self.addCleanup(timer.cancel)
+
+    def run_copy(self, copy, stage, action, silent=True):
+        """Runs the copy; when it reaches stage, action() runs while the copy waits.
+        Returns the result and the seconds from then until the copy finished."""
+        ready, go = Path(f"{self.sync}.ready"), Path(f"{self.sync}.go")
+        ready.unlink(missing_ok=True)
+        go.unlink(missing_ok=True)
+        went, failed, stop = [], [], threading.Event()
+
+        def watch():
+            while not ready.exists():
+                if stop.wait(0.02):
+                    return
+            try:
+                action()
+            except Exception as e:                  # reported below; the copy goes on
+                failed.append(e)
+            went.append(time.monotonic())
+            go.write_text("")
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        call = f"& '{copy}' -InstallDir '{self.install}'" + (" -Silent" if silent else "")
+        env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_WAIT=stage,
+                   UNMINUTE_TEST_SYNC=str(self.sync), UNMINUTE_TEST_PACKAGE=str(self.package))
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-Command", f"{call}; exit $LASTEXITCODE"],
+                           capture_output=True, text=True, timeout=180, cwd=self.root, env=env)
+        done = time.monotonic()
+        stop.set()
+        watcher.join(10)
+        if failed:
+            raise failed[0]
+        self.assertTrue(went, "the copy never reached the step: " + r.stdout + r.stderr)
+        return r, done - went[0]
+
+    @WINDOWS_ONLY
+    def test_a_staging_folder_in_use_for_a_moment_is_renamed_once_it_is_free(self):
+        staging = self.versions / "1.0.0.partial"
+        r, waited = self.run_copy(self.installer(), "staging",
+                                  lambda: self.hold(staging / "app" / "held.txt", 3), silent=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"TARGET={self.versions / '1.0.0'}\n", r.stdout)
+        self.assertEqual((self.versions / "1.0.0" / "app" / "held.txt").read_text(), "new")
+        self.assertFalse(staging.exists())
+        self.assertGreater(waited, 2.5)              # refused until the file was free
+        self.assertEqual(r.stdout.count("Trying again for up to 30 seconds"), 1, r.stdout)
+
+    @WINDOWS_ONLY
+    def test_a_reinstall_waits_for_the_live_version_in_use_for_a_moment(self):
+        live = self.versions / "1.0.0"
+        self.write_package(live, "old")
+        r, waited = self.run_copy(self.installer(), "old",
+                                  lambda: self.hold(live / "app" / "held.txt", 3))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stderr, "")
+        self.assertEqual((live / "app" / "held.txt").read_text(), "new")
+        self.assertEqual(sorted(p.name for p in self.versions.iterdir()), ["1.0.0"])
+        self.assertGreater(waited, 2.5)
+
+    @WINDOWS_ONLY
+    def test_a_staging_folder_that_stays_in_use_fails_as_before(self):
+        # A 3-second limit for speed; the scripts' own is 30 seconds
+        # (test_both_scripts_wait_the_same_way).
+        staging = self.versions / "1.0.0.partial"
+        r, waited = self.run_copy(self.installer(seconds=3), "staging",
+                                  lambda: self.hold(staging / "app" / "held.txt"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stderr.startswith("Installation failed: "), r.stderr)
+        self.assertIn("1.0.0.partial", r.stderr)
+        self.assertTrue(staging.is_dir())            # the next run removes it
+        self.assertFalse((self.versions / "1.0.0").exists())
+        self.assertTrue(2.5 < waited < 20, waited)
+
+    @WINDOWS_ONLY
+    def test_a_live_version_that_stays_in_use_is_left_in_place(self):
+        live = self.versions / "1.0.0"
+        self.write_package(live, "old")
+        r, waited = self.run_copy(self.installer(seconds=3), "old",
+                                  lambda: self.hold(live / "app" / "held.txt"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stderr.startswith("Installation failed: "), r.stderr)
+        self.assertEqual((live / "app" / "held.txt").read_text(), "old")
+        self.assertFalse((self.versions / "1.0.0.old").exists())
+        self.assertTrue(2.5 < waited < 20, waited)
+
+    @WINDOWS_ONLY
+    def test_any_other_error_fails_at_once(self):
+        # With the scripts' own 30-second limit: no waiting for an error a retry
+        # cannot fix, such as a folder that is already there or one that is gone.
+        staging, target = self.versions / "1.0.0.partial", self.versions / "1.0.0"
+        for name, action in (("already there", lambda: (target / "app").mkdir(parents=True)),
+                             ("gone", lambda: shutil.rmtree(staging))):
+            with self.subTest(name):
+                shutil.rmtree(self.install, ignore_errors=True)
+                r, waited = self.run_copy(self.installer(), "staging", action)
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertTrue(r.stderr.startswith("Installation failed: "), r.stderr)
+                self.assertLess(waited, 10)
+
+    @WINDOWS_ONLY
+    def test_the_uninstaller_waits_for_a_file_in_use_for_a_moment(self):
+        copy, link = self.uninstaller()
+        held = self.versions / "0.5.0" / "app" / "held.txt"
+        r, waited = self.run_copy(copy, "remove", lambda: self.hold(held, 3))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.install.exists())
+        self.assertFalse(link.exists())
+        self.assertGreater(waited, 2.5)
+
+    @WINDOWS_ONLY
+    def test_the_uninstaller_fails_as_before_when_the_file_stays_in_use(self):
+        copy, link = self.uninstaller(seconds=3)
+        held = self.versions / "0.5.0" / "app" / "held.txt"
+        r, waited = self.run_copy(copy, "remove", lambda: self.hold(held))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertTrue(r.stderr.startswith("Removal failed: "), r.stderr)
+        # Still shows as installed: current.json, the shortcut and the held file stay.
+        self.assertTrue((self.install / "current.json").is_file())
+        self.assertTrue(held.is_file() and link.is_file())
+        self.assertTrue(2.5 < waited < 20, waited)
+
+    def test_both_scripts_wait_the_same_way(self):
+        def block(name):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            start = text.index("# A folder cannot be renamed or removed")
+            return text[start:text.index("\n}\n", text.index("function Invoke-LockRetry")) + 3]
+        self.assertEqual(block("install.ps1"), block("uninstall.ps1"))
+        self.assertIn(self.BOUND, block("install.ps1"))     # about 30 seconds in all (#239)
+        install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        for step in (self.STAGING, self.OLD):
+            self.assertIn("Invoke-LockRetry { " + step, install)
+        uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertIn("Invoke-LockRetry { Remove-Item -LiteralPath $path -Recurse -Force }",
+                      uninstall)
 
 
 STUB_APP = '''\
