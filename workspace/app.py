@@ -81,13 +81,18 @@ class WorkspaceError(ValueError):
     """A refused request. The message is safe to show in the UI."""
 
 
-def _model_note(name, state):
+def _model_note(name, state, downloads_allowed=True):
     """What Settings says beside the picker about a speech model that is not
-    ready, and why Transcribe again refuses it (#244); None when it is ready."""
+    ready, and why Transcribe again refuses it (#244); None when it is ready.
+    Manage downloads is named only when it can fix the model: it offers the
+    model and managed policy allows downloads (K3)."""
     if state == "ready":
         return None
     label = asr_engines.label(name)
     what = "damaged" if state == "invalid" else "not downloaded"
+    if not downloads_allowed:
+        return (f"{label} is {what}, and downloads are turned off by your organisation. "
+                "Choose another speech model, or ask your IT team to install it.")
     if not setup.offered(name):
         return (f"{label} is {what}, and Manage downloads does not offer it. Choose another "
                 "speech model, or ask your IT team to install it.")
@@ -1082,8 +1087,10 @@ class Workspace:
             if discard:
                 self._discard_import(m["id"])
 
-    def _new_version(self, mid, sid, plan):
-        model = self.settings["model"]
+    def _new_version(self, mid, sid, plan, model=None):
+        """The version for this source with the given model (by default the
+        one chosen in Settings)."""
+        model = model or self.settings["model"]
         spec = asr_engines.MANAGED_MODELS.get(model)
         return self.store.ensure_version(
             mid, sid, engine="parakeet" if asr_engines.is_parakeet(model) else "whisper",
@@ -1532,8 +1539,10 @@ class Workspace:
         its edits are kept (superseded), never overwritten. Also how a meeting
         that failed (phase "error") moves to the model now chosen in Settings
         (#244): its finished parts stay with the earlier version. A model that
-        is not ready is refused before anything changes, so a working version
-        is never superseded by one that cannot run."""
+        is not ready is refused before anything changes. Its state is the
+        Downloads page's (cached up to DISPLAY_CACHE_S), so files removed
+        outside the app in that window can still fail at load; the earlier
+        version and its edits stay as they were."""
         m = self._meeting(mid)
         if not self._audio_available(m):
             raise WorkspaceError("The audio has been removed, so the meeting cannot be "
@@ -1542,9 +1551,12 @@ class Workspace:
             raise WorkspaceError("The transcript review is confirmed; it cannot be replaced.")
         if self._busy and self._busy[0] == mid:
             raise WorkspaceError("Pause this meeting first.")
+        # Read once: the version made below uses this model, even if Settings
+        # changes while it is checked.
         model = self.settings["model"]
         if model in SPEECH_MODELS:            # test engines have no download state
-            note = _model_note(model, self._speech_states().get(model, "missing"))
+            note = _model_note(model, self._speech_states().get(model, "missing"),
+                               self._allowed("AllowModelDownloads"))
             if note:
                 raise WorkspaceError(note)
         v = self.store.active_version(mid)
@@ -1555,7 +1567,7 @@ class Workspace:
             plan = plan_chunks(reader, len(reader))
         finally:
             reader.close()
-        new = self._new_version(mid, source["id"], plan)
+        new = self._new_version(mid, source["id"], plan, model)
         if v is not None and new == v["id"]:
             if m["phase"] == "error":
                 raise WorkspaceError(f"This meeting already uses {asr_engines.label(model)}. "
@@ -2094,18 +2106,20 @@ class Workspace:
         return states
 
     def get_settings(self):
+        self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
         states = self._speech_states()
+        downloads = self._allowed("AllowModelDownloads")
         choices = [{"name": n, "label": asr_engines.label(n),
                     "recommended": n == asr_engines.RECOMMENDED_PARAKEET,
                     # The page labels a model that is not ready and shows the
-                    # note beside the picker, with Manage downloads if it is
-                    # offered there (#244). The choice is still saved.
-                    "state": states.get(n, "missing"), "offered": setup.offered(n),
-                    "note": _model_note(n, states.get(n, "missing"))}
+                    # note beside the picker, with Manage downloads only if it
+                    # can fix the model there (#244, K3). The choice is still saved.
+                    "state": states.get(n, "missing"),
+                    "offered": downloads and setup.offered(n),
+                    "note": _model_note(n, states.get(n, "missing"), downloads)}
                    for n in SPEECH_MODELS]
         from workspace import update
         info = gpu.detected()
-        self.policy.refresh()             # re-read on each poll while Settings or Downloads is open
         effective = dict(self.settings.values)
         if not self._allowed("AllowMicrophoneRecording"):
             effective["microphone"] = False

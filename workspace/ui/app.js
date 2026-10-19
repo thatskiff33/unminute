@@ -219,7 +219,7 @@ function attentionRow(m) {
     el("span", { class: "pill bad", textContent: "Needs attention" }),
     el("div", { class: "row-actions" },
       button("Try again", () => attempt(() => call("resume", m.id).then(refresh)), { primary: true }),
-      m.can_retranscribe ? linkButton("Transcribe with another model…", () => transcribeAgain(m.id, m.model),
+      m.can_retranscribe ? linkButton("Transcribe with another model…", () => transcribeAgain(m.id, m.model, !!m.error),
         "Uses the model chosen in Settings > Speech model. Finished parts are kept as an earlier version.")
         : null,
       discardLink(m)));
@@ -1238,12 +1238,13 @@ function confirmDialog({ title, body, check, onConfirm, limits = true, limitsTex
 // Transcribe again with the model chosen in Settings > Speech model, from the
 // Versions tab or a failed meeting's row (#244). A chosen model that is not
 // ready is not started: the dialog says so and offers Manage downloads.
-// meetingModel: the model the meeting's current version uses.
-function transcribeAgain(mid, meetingModel) {
+// meetingModel: the model the meeting's current version uses; failed: the
+// meeting stopped with an error (only then does "still not ready" apply).
+function transcribeAgain(mid, meetingModel, failed) {
   attempt(async () => {
     const s = await call("settings");
     const chosen = s.choices.find((c) => c.name === s.model);
-    if (chosen && chosen.note) { modelNotReady(chosen, chosen.name === meetingModel); return; }
+    if (chosen && chosen.note) { modelNotReady(chosen, failed && chosen.name === meetingModel); return; }
     const named = chosen ? `${chosen.label}, the model chosen in Settings > Speech model`
       : "the model chosen in Settings > Speech model";
     confirmDialog({
@@ -2586,7 +2587,7 @@ function wire() {
   $("n-undo").addEventListener("click", undoSpeakers);
   $("m-undo-speakers").addEventListener("click", undoSpeakers);
   $("m-retranscribe").addEventListener("click", () =>
-    transcribeAgain(state.mid, state.detail ? state.detail.model : null));
+    transcribeAgain(state.mid, state.detail ? state.detail.model : null, !!(state.detail && state.detail.error)));
   $("m-rerun").addEventListener("click", () => {
     const v = $("m-count").value.trim();
     confirmDialog({

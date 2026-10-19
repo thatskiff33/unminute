@@ -119,6 +119,34 @@ class SetupTests(unittest.TestCase):
             self.assertEqual((turbo["state"], turbo["note"]), ("ready", None))
             self.assertGreater(len(calls), checked)
 
+    def test_settings_never_send_to_manage_downloads_when_policy_turns_downloads_off(self):
+        # #244 review, K3: with AllowModelDownloads off, Manage downloads cannot
+        # fix a model, so the note names IT and the page is not offered.
+        from workspace import policy
+        values = {"AllowModelDownloads": False}
+        self.ws.policy = policy.PolicySource(reader=lambda: (values, ()))
+        self.ws._forget_display()
+        states = {asr_engines.PARAKEET_V2: "ready", asr_engines.PARAKEET_V3: "missing",
+                  asr_engines.WHISPER_TURBO: "invalid"}
+        with mock.patch.object(setup, "status",
+                               side_effect=lambda n, c: (states.get(n, "missing"), "x", "")):
+            choices = {c["name"]: c for c in self.ws.get_settings()["choices"]}
+            self.assertFalse(any(c["offered"] for c in choices.values()))
+            self.assertIsNone(choices[asr_engines.PARAKEET_V2]["note"])
+            self.assertEqual(choices[asr_engines.PARAKEET_V3]["note"],
+                             "Parakeet v3 is not downloaded, and downloads are turned off by "
+                             "your organisation. Choose another speech model, or ask your IT "
+                             "team to install it.")
+            self.assertTrue(choices[asr_engines.WHISPER_TURBO]["note"].startswith(
+                "Whisper large-v3 turbo is damaged, and downloads are turned off"))
+            for c in choices.values():
+                self.assertNotIn("Manage downloads", c["note"] or "")
+            # Policy is re-read on each poll: allowed again, the page offers it.
+            values["AllowModelDownloads"] = True
+            choices = {c["name"]: c for c in self.ws.get_settings()["choices"]}
+            self.assertTrue(choices[asr_engines.PARAKEET_V3]["offered"])
+            self.assertIn("Manage downloads", choices[asr_engines.PARAKEET_V3]["note"])
+
     def test_public_model_never_receives_a_token(self):
         self.vault["t"] = SECRET
         self.ws.download_model(asr_engines.RECOMMENDED_PARAKEET)

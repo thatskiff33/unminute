@@ -11,6 +11,7 @@ import types
 import unittest
 import wave
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -160,6 +161,22 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(older["model"], fake("load_fails"))
         self.assertGreater(ws.transcript(mid)["total"], 20)
 
+    def test_transcribe_again_uses_the_model_it_checked(self):
+        # #244 review: the model is read once, so a change to Settings while
+        # it is checked cannot slip an unchecked model into the new version.
+        ws = self.open(model="load_fails")
+        mid = self.imported(ws)
+        ws.set_settings({"model": fake("sentences")})
+        active = ws.store.active_version
+
+        def settings_change_meanwhile(m):
+            ws.settings.update(model=fake("sentences_v2"))
+            return active(m)
+        with mock.patch.object(ws.store, "active_version", side_effect=settings_change_meanwhile):
+            ws.retranscribe(mid)
+        self.assertTrue(ws.wait_idle(120))
+        self.assertEqual(ws.detail(mid)["model"], fake("sentences"))
+
     def test_a_failed_meeting_keeps_its_finished_parts_and_edits(self):
         # D1: what was finished (and corrected) before the failure stays as the
         # earlier version; the new model's text never overwrites it.
@@ -214,6 +231,13 @@ class WorkspaceTests(unittest.TestCase):
             ws.retranscribe(mid)
         self.assertEqual([v["id"] for v in ws.store.versions(mid)], before)
         self.assertEqual(ws.meetings()[0]["error"], "Synthetic failure")
+        # K3: with downloads turned off by policy, it names IT, not Manage downloads.
+        ws.policy = policy.PolicySource(reader=lambda: ({"AllowModelDownloads": False}, ()))
+        with self.assertRaisesRegex(WorkspaceError, "^Parakeet v2 is not downloaded, and "
+                                                    "downloads are turned off by your "
+                                                    "organisation. .*ask your IT team"):
+            ws.retranscribe(mid)
+        self.assertEqual([v["id"] for v in ws.store.versions(mid)], before)
 
     def test_search_finds_edited_text(self):
         ws = self.open()

@@ -13,10 +13,24 @@ from asr_engines import ModelLoadError
 
 TEST_PREFIX = "test:"      # "test:module:function" loads a test engine factory
 # Where a user downloads or repairs a model once Setup is done (#244). A worker
-# only loads models after Setup, so its messages always point here.
+# only loads models after Setup, so its messages point here, never to Setup.
 DOWNLOADS = "Settings > Manage downloads"
-FIX_SPEECH = (f"Download or repair it in {DOWNLOADS}, or choose another speech model in "
-              "Settings.")
+# The speech models Manage downloads has a card for (setup.SPEECH; a test keeps
+# the two equal). Kept here so a worker need not import setup. A model it does
+# not offer is never sent there.
+OFFERED_SPEECH = frozenset({asr_engines.PARAKEET_V2, asr_engines.PARAKEET_V3,
+                            asr_engines.WHISPER_TURBO})
+OTHER_SPEECH = "choose another speech model in Settings"
+
+
+def fix_speech(name, repair_only=False):
+    """How a user fixes a speech model that cannot load: in Manage downloads
+    when it offers the model, otherwise another model or IT (#244)."""
+    if name not in OFFERED_SPEECH:
+        return "Choose another speech model in Settings, or ask your IT team to install it."
+    if repair_only:
+        return f"Repair {asr_engines.label(name)} in {DOWNLOADS}, or {OTHER_SPEECH}."
+    return f"Download or repair it in {DOWNLOADS}, or {OTHER_SPEECH}."
 
 
 def _test_factory(name, allow_test):
@@ -36,7 +50,7 @@ def load_engine(name, cache_dir, threads, allow_test=False):
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
         if state != "ready":
-            raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {FIX_SPEECH} "
+            raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {fix_speech(name)} "
                                  f"({detail})")
         # No decoder: the worker passes decoded arrays. faster_whisper's
         # decoder would load faster_whisper, and CTranslate2 with it, into
@@ -48,14 +62,13 @@ def load_engine(name, cache_dir, threads, allow_test=False):
         folder = asr_engines.find_verified(spec, cache_dir)
         if folder is None:
             raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
-                                 f"verification. {FIX_SPEECH}")
+                                 f"verification. {fix_speech(name)}")
         from faster_whisper import WhisperModel
         model = WhisperModel(str(folder), device="cpu", compute_type="int8",
                              cpu_threads=threads)
         problem = asr_engines.feature_width_problem(model, spec)
         if problem:
-            raise ModelLoadError(f"{problem}. Repair {asr_engines.label(name)} in "
-                                 f"{DOWNLOADS}, or choose another speech model in Settings.")
+            raise ModelLoadError(f"{problem}. {fix_speech(name, repair_only=True)}")
         # Word times are required: chunk ownership is decided per word.
         return asr_engines.WhisperEngine(model, name, "int8", "en")
 
