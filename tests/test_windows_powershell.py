@@ -41,10 +41,22 @@ SYSTEM_PROGRAMS = r"(?:powershell|netstat|taskkill|cmd)(?:\.exe)?"
 BY_NAME = re.compile(r"""\[\s*[rRbBuU]?["']""" + SYSTEM_PROGRAMS + r"""["']"""
                      r"""|\b(?:run|Popen|call|check_call|check_output|system|popen)\(\s*"""
                      r"""[rRbBuUfF]?["']""" + SYSTEM_PROGRAMS + r"""[\s"']""", re.IGNORECASE)
-# The same in a PowerShell tool: Start-Process or the call operator with the
-# bare name (PowerShell finds it on PATH).
+# The same in a PowerShell tool, where PowerShell finds a bare name on PATH:
+# Start-Process or the call operator with the name, or the name as a command
+# of its own (at the start of a line, or after ; { ( | = && or ||).
 PS_BY_NAME = re.compile(r"""(?:\bStart-Process(?:\s+-FilePath)?|&)\s+["']?"""
-                        + SYSTEM_PROGRAMS + r"""(?=["'\s]|$)""", re.IGNORECASE | re.MULTILINE)
+                        + SYSTEM_PROGRAMS + r"""(?=["'\s]|$)"""
+                        r"""|(?:^|[;{(|=]|&&|\|\|)[ \t]*""" + SYSTEM_PROGRAMS
+                        + r"""(?=[\s;|)}]|$)""", re.IGNORECASE | re.MULTILINE)
+# PowerShell comments: <# #> help blocks, and # to the end of the line when the
+# # starts a word (so a string such as '#32770' stays).
+PS_COMMENTS = re.compile(r"<#.*?#>|(?:(?<=\s)|^)#[^\n]*", re.DOTALL | re.MULTILINE)
+
+
+def ps_starts_by_name(text):
+    """The starts of a system program by name in PowerShell source, comments
+    left out (a usage line such as `powershell -File x.ps1` is not a start)."""
+    return PS_BY_NAME.findall(PS_COMMENTS.sub("", text))
 
 
 def forbidden(names):
@@ -239,6 +251,25 @@ class WindowsPowerShellTests(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(win.calls, [])
 
+    def test_the_import_dialog_check_finds_taskkill_before_the_app_starts(self):
+        # As the two Python checks do: a missing taskkill.exe stops the check
+        # before the app or its throwaway profile exists, never in the finally
+        # block that should kill the app (#256). The script needs an installed
+        # package and opens windows, so its source order is checked here.
+        source = (ROOT / "tools" / "import_dialog_check.ps1").read_text(encoding="utf-8")
+        resolve = source.index("$taskkill = Join-Path ([Environment]::SystemDirectory) "
+                               "'taskkill.exe'")
+        check = source.index("if (-not (Test-Path -LiteralPath $taskkill -PathType Leaf))")
+        stop = source.index("throw 'taskkill.exe is missing from the system folder'")
+        profile = source.index("$profileDir = ")
+        app = source.index("$proc = Start-Process")
+        self.assertLess(resolve, check)
+        self.assertLess(check, stop)
+        self.assertLess(stop, profile)
+        self.assertLess(profile, app)
+        self.assertEqual(source.count("$taskkill = "), 1)
+        self.assertIn("Start-Process $taskkill -ArgumentList", source[app:])
+
     def test_the_by_name_pattern_finds_each_way_of_writing_a_start(self):
         # Each name is written <name> here and unwrapped below, so this file's
         # own source holds no start by name for the scan to find.
@@ -253,15 +284,29 @@ class WindowsPowerShellTests(unittest.TestCase):
                      'run(["<cmdkey>", "/list"])'):
             with self.subTest(text=text):
                 self.assertIsNone(BY_NAME.search(text.replace("<", "").replace(">", "")))
-        for text in ("Start-Process <taskkill> -ArgumentList '/F'", "& <cmd>.exe /c dir",
-                     "Start-Process -FilePath '<powershell>' -Wait", "x; & '<netstat>' -ano"):
+        # The PowerShell forms need no unwrapping: the Python scan does not
+        # look for them.
+        for text in ("Start-Process taskkill -ArgumentList '/F'", "& cmd.exe /c dir",
+                     "Start-Process -FilePath 'powershell' -Wait", "x; & 'netstat' -ano",
+                     # A bare statement: PowerShell runs it from PATH too (#256).
+                     "    taskkill /F /T /PID $proc.Id", "cmd /c dir", "x; NETSTAT.EXE -ano",
+                     "if ($x) { taskkill /F }", "$out = netstat -ano", "$(cmd /c ver)",
+                     "'a' | powershell -Command -", "x && cmd", "<#\n  x\n#>\ntaskkill /F",
+                     "Get-Date  # note\ncmd /c dir"):
             with self.subTest(text=text):
-                self.assertTrue(PS_BY_NAME.search(text.replace("<", "").replace(">", "")))
-        for text in ("Start-Process $<taskkill> -ArgumentList '/F'", "& $<cmd> /c dir",
-                     "#   <powershell> -File tools\\x.ps1", "Start-Process <cmdkey>",
-                     "& (Join-Path $Version 'runtime\\python.exe') -c $probe"):
+                self.assertTrue(ps_starts_by_name(text))
+        for text in ("Start-Process $taskkill -ArgumentList '/F'", "& $cmd /c dir",
+                     "#   powershell -File tools\\x.ps1", "Start-Process cmdkey",
+                     "& (Join-Path $Version 'runtime\\python.exe') -c $probe",
+                     # A help block, a trailing comment, another program, a
+                     # variable, part of a longer name, a string, and a # in a
+                     # string before a comment.
+                     "<#\n.EXAMPLE\n  powershell -NoProfile -File x.ps1\n#>",
+                     "Get-Date  # then taskkill /F", "cmdkey /list", "$cmd = 1",
+                     "Invoke-cmdlet", "Write-Output 'taskkill /F'",
+                     "New-Object X('#32770') # cmd /c"):
             with self.subTest(text=text):
-                self.assertIsNone(PS_BY_NAME.search(text.replace("<", "").replace(">", "")))
+                self.assertEqual(ps_starts_by_name(text), [])
 
     def test_no_tool_or_test_starts_a_system_program_by_name(self):
         # Every tool and test, so a start added later is caught too: Windows
@@ -279,9 +324,10 @@ class WindowsPowerShellTests(unittest.TestCase):
         # The PowerShell tools too, such as the import dialog check's taskkill.
         scripts = sorted((ROOT / "tools").rglob("*.ps1"))
         self.assertIn(ROOT / "tools" / "import_dialog_check.ps1", scripts)
+        self.assertIn(ROOT / "tools" / "intune" / "Get-VerifiedRelease.ps1", scripts)
         for path in scripts:
             with self.subTest(file=path.name):
-                found = PS_BY_NAME.findall(path.read_text(encoding="utf-8"))
+                found = ps_starts_by_name(path.read_text(encoding="utf-8"))
                 self.assertEqual(found, [])
         # The tools #237 moved never name powershell.exe on its own either.
         for tool in ("build_package.py", "packaged_check.py", "process_listeners.py",
