@@ -12,7 +12,9 @@
 #                 cleanup) and the last database check; used by installers and
 #                 updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
-#   --self-test   import every runtime dependency and check the offline guard
+#   --self-test   import every runtime dependency, check the offline guard, and
+#                 check that the speaker model loader refuses a code-running
+#                 checkpoint (a synthetic one, in memory)
 #   --health      for an Intune Remediation detection script run as the
 #                 signed-in user (R9b): JSON with the version, whether the
 #                 workspace opens, whether the app is running, how the last run
@@ -238,8 +240,9 @@ def restore_lid():
 
 
 def self_test():
-    """Import every dependency the app needs and prove the guard blocks the
-    network. Prints one line per check; exit code 0 only if all pass."""
+    """Import every dependency the app needs, prove the guard blocks the
+    network and that a code-running speaker checkpoint is refused. Prints one
+    line per check; exit code 0 only if all pass."""
     import importlib
     import socket
     ok = True
@@ -256,6 +259,17 @@ def self_test():
         except Exception as exc:              # report every failure, not just the first
             ok = False
             print(f"FAILED  import {name}: {type(exc).__name__}: {exc}")
+    # The speaker model loader must refuse a code-running checkpoint and one
+    # that changes a shared Enum member (#218): synthetic ones, built in
+    # memory, with harmless payloads.
+    try:
+        from workspace import speaker_load
+        checks = speaker_load.self_check()
+    except Exception as exc:
+        checks = [(False, f"speaker model loading checks could not run ({type(exc).__name__})")]
+    for passed, text in checks:
+        ok = ok and passed
+        print(f"{'ok     ' if passed else 'FAILED '} {text}")
     # The guard must stop each kind of attempt before it reaches Windows. The
     # target is 192.0.2.1 (TEST-NET-1, reserved for documentation): if the
     # guard ever failed, nothing real would be contacted and no DNS lookup

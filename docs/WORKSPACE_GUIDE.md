@@ -152,7 +152,7 @@ The earlier version's workspace and models stay on the computer until they are d
 
 For IT support:
 
-- `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency and confirms the network block. It does not check models: use Settings > Manage downloads for those.
+- `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency, confirms the network block and checks that the speaker model loader refuses a model file that would run code (a test file made in memory). It does not check your models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
 - The app keeps small content-free logs in `%LOCALAPPDATA%\Unminute\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.

@@ -220,14 +220,15 @@ WHISPER_MODELS = {
 }
 
 # pyannote speaker identification. Gated on Hugging Face (needs the user's
-# token to download, never to load). pyannote 4.0.4 loads both sub-models with
-# torch.load(weights_only=False), which can execute code from a tampered file,
-# so these hashes are what stands between the cache and code execution. The
-# workspace re-hashes every file in full before each load (engines.diarize_file):
-# a size-and-date marker is not enough here. Remaining gap: a process running
-# as the user could change a file between that check and torch.load (#111 B7
-# moves managed models to a folder users cannot write; B9 looks at loading
-# without full unpickling).
+# token to download, never to load). Left to itself, pyannote 4.0.4 reopens
+# these files by path and unpickles both sub-models in full
+# (torch.load(weights_only=False)), which can run code from a tampered file.
+# So the workspace reads every file once before each load, hashes those bytes
+# in full (read_verified) and builds the pipeline from the same bytes in
+# memory, with weights-only unpickling and fixed classes
+# (workspace/speaker_load.py, #111 B9, #218): no file is opened again after
+# its check. A new revision also needs the expected config and checkpoint
+# contents in speaker_load.py updated.
 SPEAKER_MODEL = ModelSpec(
     name="speaker-diarization-community-1",
     folder="speaker-diarization-community-1",
@@ -309,7 +310,14 @@ def _read_marker(path):
         return None
 
 
-def check_files(spec, folder, full=False, marker=None):
+def _read_pinned(path, size):
+    """A pinned file's bytes, read once. One byte more than expected is read,
+    so a file that grew since its size was checked fails its hash."""
+    with open(path, "rb") as f:
+        return f.read(size + 1)
+
+
+def check_files(spec, folder, full=False, marker=None, keep=None):
     """Return a list of problems with `folder` (empty when it is usable).
 
     Quick mode checks presence, exact sizes and (Whisper) the preprocessing
@@ -317,7 +325,11 @@ def check_files(spec, folder, full=False, marker=None):
     and the files are unchanged since hashing. full=True (or a missing/stale
     marker) hashes every file and records a fresh marker on success. `marker`
     defaults to a file inside `folder`; pass another path for folders we must
-    not write to (an existing Hugging Face cache)."""
+    not write to (an existing Hugging Face cache).
+
+    With `keep` (a dict), every file is read once into memory and hashed in
+    full, and `keep` maps each file name to the bytes that were hashed: a
+    caller that loads those bytes never opens the files again (read_verified)."""
     folder = Path(folder)
     marker = Path(marker) if marker else folder / VERIFIED_MARKER
     if not folder.is_dir():
@@ -332,14 +344,20 @@ def check_files(spec, folder, full=False, marker=None):
     # is still honoured (_recorded_failure): it can only refuse a copy.
     linked = is_link(marker.parent) or is_link(marker.parent.parent)
     recorded = None if linked else _read_marker(marker)
-    trusted = (not full and recorded is not None and recorded.get("ok", True)
+    trusted = (not full and keep is None and recorded is not None and recorded.get("ok", True)
                and recorded.get("revision") == spec.revision
                and recorded.get("files") == _fingerprint(folder, spec))
     if trusted:
         return []
 
     for f in spec.files:
-        if _sha256(folder / f.name) != f.sha256:
+        if keep is None:
+            digest = _sha256(folder / f.name)
+        else:
+            data = _read_pinned(folder / f.name, f.size)
+            digest = hashlib.sha256(data).hexdigest()
+            keep[f.name] = data
+        if digest != f.sha256:
             problems.append(f"{f.name} does not match the expected checksum")
     if linked:
         return problems
@@ -472,6 +490,20 @@ def find_verified(spec, cache_dir, full=False):
             continue
         if not check_files(spec, folder, full=full, marker=marker):
             return folder
+    return None
+
+
+def read_verified(spec, cache_dir):
+    """{file name: bytes} from the first candidate folder whose files all
+    verify, or None. Each pinned file is read once and its SHA-256 taken over
+    exactly the bytes returned, so loading them leaves no gap between the
+    check and the load (#111 B9). The record and link handling are those of
+    find_verified(full=True)."""
+    for folder in hub_candidates(spec, cache_dir):
+        blobs = {}
+        if not check_files(spec, folder, full=True,
+                           marker=_marker_for(spec, cache_dir, folder), keep=blobs):
+            return blobs
     return None
 
 

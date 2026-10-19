@@ -110,6 +110,25 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(rec["frames"][-1][::2], ["tests/test_diagnostics.py", "inner"])
         self.assertEqual(leaks(self.folder), [])
 
+    def test_an_incident_keeps_its_causes_type_not_its_text(self):
+        # A fixed-wording error raised from another (the speaker model's
+        # ModelLoadError) still records what failed underneath: a type name.
+        try:
+            try:
+                raise KeyError(f"{MARKER} said something private")
+            except KeyError as cause:
+                raise RuntimeError("Fixed wording.") from cause
+        except RuntimeError as exc:
+            self.log.incident("worker", exc, op="load")
+        try:
+            raise ValueError(MARKER)
+        except ValueError as exc:
+            self.log.incident("worker", exc, op="load")
+        chained, plain = records(self.folder)
+        self.assertEqual((chained["error"], chained["type"]), ("RuntimeError", "KeyError"))
+        self.assertNotIn("type", plain)
+        self.assertEqual(leaks(self.folder), [])
+
     def test_deep_tracebacks_keep_only_the_innermost_frames(self):
         def down(n):
             if n == 0:

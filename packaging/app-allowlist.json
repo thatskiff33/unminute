@@ -35,6 +35,7 @@
   "workspace/safe_paths.py",
   "workspace/setup.py",
   "workspace/shell.py",
+  "workspace/speaker_load.py",
   "workspace/speaker_names.py",
   "workspace/speakers.py",
   "workspace/store.py",

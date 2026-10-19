@@ -66,7 +66,7 @@ class GpuUnavailable(RuntimeError):
 def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allow_test=False):
     """Speaker separation over a meeting's decoded audio file (16 kHz float32).
     Returns (turns, exclusive_turns, device); turns are (start, end, label).
-    Offline only: loads the hash-verified pyannote folder by path."""
+    Offline only: builds pyannote from the hash-checked bytes in memory."""
     import numpy as np
     mm = np.memmap(audio_path, dtype="<f4", mode="r")
     audio = np.array(mm)            # pyannote needs the whole waveform anyway
@@ -80,12 +80,11 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
                                                  "GPU_LABEL", "cuda")
         return result
 
-    spec = asr_engines.SPEAKER_MODEL
-    # Full SHA-256 of every file (about 33 MB) before each load, not the
-    # size-and-date marker: pyannote unpickles its checkpoints and imports the
-    # class its config names, so a changed file must never reach torch.load.
-    folder = asr_engines.find_verified(spec, cache_dir, full=True)
-    if folder is None:
+    # Every file (about 33 MB) is read once and hashed in full before each
+    # load, not checked by size and date, and the pipeline is built from those
+    # same bytes: no model file is opened again after its check (#111 B9).
+    blobs = asr_engines.read_verified(asr_engines.SPEAKER_MODEL, cache_dir)
+    if blobs is None:
         raise ModelLoadError("The speaker identification model is not installed or failed "
                              "verification. Repair it in Setup.")
     import torch
@@ -98,8 +97,9 @@ def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allo
                                  f"{gpu.MIN_DRIVER_TEXT} or later and the graphics card "
                                  f"component)")
         label = f"cuda ({torch.cuda.get_device_name(0)})"[:80]
-    from pyannote.audio import Pipeline
-    pipeline = Pipeline.from_pretrained(str(folder))
+    from workspace import speaker_load
+    pipeline = speaker_load.build_pipeline(blobs)
+    del blobs
     if device == "cuda":
         pipeline.to(torch.device("cuda"))
     kwargs = {"num_speakers": int(hint)} if hint else {}

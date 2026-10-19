@@ -156,7 +156,7 @@ Details are in [docs/PACKAGING.md](docs/PACKAGING.md).
 | The installer says the app is running | Close Unminute and run it again. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 
-For IT support, `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder checks that the main dependencies load and that the network block works. `--status` prints counts only, never content.
+For IT support, `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder checks that the main dependencies load, that the network block works and that the speaker model loader refuses a model file that would run code. `--status` prints counts only, never content.
 
 ## Measured performance
 
