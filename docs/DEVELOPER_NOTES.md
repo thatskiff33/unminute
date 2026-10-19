@@ -90,6 +90,18 @@ real time, and remove it when the cause is fixed.
   sleep timeout. `powercfg /requests` shows the request while recording. On Intune-managed
   laptops the lid action can be set by policy (`SelectLidCloseAction*`); on one such laptop
   `powercfg /q` did not list the lid setting, though `PowerReadACValueIndex` still read it.
+- **Windows PowerShell 5.1 started under PowerShell 7 needs its own module path.** A `pwsh`
+  step (the default shell on GitHub's Windows runners) sets `PSModulePath` to PowerShell 7's
+  module folders. A `powershell.exe` that inherits it through another process, such as the
+  build's Python, cannot load its own `Microsoft.PowerShell.Security` ("the module could not
+  be loaded", `CouldNotAutoloadMatchingModule`), so `Get-AuthenticodeSignature` is missing.
+  That failed the first hosted release build (v0.5.0-preview.1, 19 Oct 2026) while the same
+  build passed from Windows PowerShell or Git Bash. `pwsh` repairs the variable only for a
+  `powershell.exe` it starts itself, so the error does not show when you try the command at a
+  `pwsh` prompt. `powershell()` in `tools/build_package.py` therefore leaves `PSModulePath`
+  out of the child's environment, and 5.1 builds its default. A child that is not
+  `-ErrorAction Stop` can also exit 0 after such an error, so read its stderr, not only its
+  exit code. To reproduce: from `pwsh` 7, start Python, and from Python start `powershell`.
 
 ## Claude Code hooks on Windows
 

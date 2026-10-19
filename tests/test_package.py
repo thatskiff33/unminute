@@ -345,6 +345,76 @@ class ReproducibleBuildTests(unittest.TestCase):
                 self.assertRaisesRegex(SystemExit, "catalog"):
             bp.signers(self.root, ["runtime/msvcp140.dll"])
 
+    def test_windows_powershell_builds_its_own_module_path(self):
+        # GitHub's runners start the build from PowerShell 7, whose module path
+        # stops Windows PowerShell 5.1 loading Get-AuthenticodeSignature.
+        seen = {}
+
+        def fake_run(argv, env, **kwargs):
+            seen["argv"], seen["env"] = argv, env
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        inherited = {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules",
+                     "SYSTEMROOT": r"C:\Windows", "PATH": r"C:\Windows\System32"}
+        with mock.patch.dict(os.environ, inherited), \
+                mock.patch.object(bp.subprocess, "run", fake_run):
+            bp.powershell("Get-AuthenticodeSignature", file="C:\\a b\\python.exe")
+        self.assertEqual(seen["argv"][0], "powershell")
+        self.assertNotIn("PSMODULEPATH", {k.upper() for k in seen["env"]})
+        self.assertEqual(seen["env"]["UNMINUTE_FILE"], "C:\\a b\\python.exe")
+        self.assertEqual(seen["env"]["PATH"], r"C:\Windows\System32")    # the rest is kept
+
+    def test_a_failed_runtime_signature_check_says_why(self):
+        error = ("Get-AuthenticodeSignature : The 'Get-AuthenticodeSignature' command was\n"
+                 "found in the module 'Microsoft.PowerShell.Security', but the module could\n"
+                 "not be loaded. " + "x" * 2000)
+
+        def fake_powershell(script, **files):
+            return subprocess.CompletedProcess([], 1, "", error)
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                mock.patch.object(bp.os, "name", "nt"), \
+                self.assertRaises(SystemExit) as caught:
+            bp.check_signatures(self.root)
+        message = str(caught.exception.code)
+        self.assertIn("(python.exe): Get-AuthenticodeSignature : The "
+                      "'Get-AuthenticodeSignature' command was found in the module "
+                      "'Microsoft.PowerShell.Security', but the module could not be loaded.",
+                      message)
+        self.assertLess(len(message), 600)                                 # bounded
+
+        def bad_status(script, **files):
+            return subprocess.CompletedProcess([], 1, "status HashMismatch, signer \n", "")
+        with mock.patch.object(bp, "powershell", bad_status), \
+                mock.patch.object(bp.os, "name", "nt"), \
+                self.assertRaisesRegex(SystemExit, r"\(python\.exe\): status HashMismatch"):
+            bp.check_signatures(self.root)
+
+    def test_the_runtime_check_is_as_strict_as_before(self):
+        seen = []
+
+        def fake_powershell(script, **files):
+            seen.append((script, Path(files["file"]).name))
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                mock.patch.object(bp.os, "name", "nt"):
+            bp.check_signatures(self.root)
+        self.assertEqual([n for _, n in seen],
+                         ["python.exe", "pythonw.exe", f"python{bp.PYTHON_TAG}.dll"])
+        self.assertIn("if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch "
+                      "'Python Software Foundation') {", seen[0][0])
+        self.assertTrue(seen[0][0].rstrip().endswith("exit 1 }"))
+
+    def test_an_unreadable_signature_reports_what_powershell_said(self):
+        # A cmdlet error does not stop the script: it exits 0 with empty rows.
+        def fake_powershell(script, **files):
+            Path(files["out"]).write_text(json.dumps([
+                {"status": "", "signer": "", "thumbprint": "", "timestamped": False,
+                 "type": ""}]), encoding="utf-8-sig")
+            return subprocess.CompletedProcess([], 0, "", "module could not\n be loaded")
+        with mock.patch.object(bp, "powershell", fake_powershell), \
+                self.assertRaisesRegex(SystemExit, "(?s)python.exe: no result.*"
+                                       "PowerShell said: module could not be loaded"):
+            bp.signers(self.root, ["runtime/python.exe"])
+
     def test_the_inventory_records_facts_not_verdicts(self):
         folder = self.root / "pkg"
         (folder / "runtime").mkdir(parents=True)
