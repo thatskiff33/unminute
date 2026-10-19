@@ -473,25 +473,35 @@ class SpeakerModelLoadTests(unittest.TestCase):
         original = dict(vars(member))
 
         def restore():
+            object.__setattr__(member, "__class__", Problem)
             vars(member).clear()
             vars(member).update(original)
         self.addCleanup(restore)
 
+        def swap_class():
+            # BUILD's slotstate is applied with setattr, so a pickle can set
+            # __class__ too; that change is outside the member's __dict__.
+            object.__setattr__(member, "__class__", Resolution)
+
         for label, at in (("the check's unpickling", 1), ("Lightning's unpickling", 2),
-                          ("an attribute added", 1)):
+                          ("an attribute added", 1), ("its class swapped", 1)):
             with self.subTest(label):
                 model = SyntheticModel(Path(self.tmp.name) / label, segmentation=archive(edit))
                 fake = model.libraries()
-                change = ({"added": True} if label == "an attribute added"
-                          else {"_value_": 99})
-                fake.on_load = lambda n, at=at, change=change: (
-                    vars(member).update(change) if n == at else None)
+                if label == "its class swapped":
+                    fake.on_load = lambda n, at=at: swap_class() if n == at else None
+                else:
+                    change = ({"added": True} if label == "an attribute added"
+                              else {"_value_": 99})
+                    fake.on_load = lambda n, at=at, change=change: (
+                        vars(member).update(change) if n == at else None)
                 try:
                     with self.assertRaises(asr_engines.ModelLoadError) as caught:
                         self.diarize(model, fake)
                     self.assertEqual(str(caught.exception), speaker_load.LOAD_FAILED)
                     self.assertEqual(fake.pipelines, [])
                     # The member is put back as it was, for the rest of the worker.
+                    self.assertIs(type(member), Problem)
                     self.assertEqual(vars(member), original)
                 finally:
                     restore()

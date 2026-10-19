@@ -385,15 +385,19 @@ def enums_unchanged(enums, load):
     """load(), refused if it changed any member of the given Enums. The
     weights-only unpickler may call an allowed Enum (giving the module's own
     member) and BUILD onto it, changing it for the whole worker; the checks
-    compare members by identity and would not notice. So every member's
-    attributes are compared, by identity, before and after; a changed member
-    is put back as it was and the load is refused."""
-    saved = {member: dict(vars(member)) for enum in enums for member in enum}
+    compare members by identity and would not notice. So every member's class
+    and attributes are compared, by identity, before and after (BUILD's
+    slotstate is applied with setattr, so it can set __class__ too); a changed
+    member is put back as it was and the load is refused."""
+    saved = {member: (enum, dict(vars(member))) for enum in enums for member in enum}
     try:
         return load()
     finally:
         changed = False
-        for member, attrs in saved.items():
+        for member, (enum, attrs) in saved.items():
+            if type(member) is not enum:
+                object.__setattr__(member, "__class__", enum)
+                changed = True
             now = vars(member)
             if now.keys() != attrs.keys() or any(now[k] is not v for k, v in attrs.items()):
                 now.clear()
