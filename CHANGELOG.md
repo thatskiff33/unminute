@@ -7,9 +7,9 @@ dated, `## vX.Y.Z (YYYY-MM-DD)`, and written by `tools/changelog.py`.
 Changes not yet released are in [`changelog.d/`](changelog.d/README.md), one file per pull request.
 `python tools/changelog.py vX.Y.Z` moves them into a new section here when a release is prepared.
 
-## v0.5.0-preview.1 (2026-10-19)
+## v0.5.0-preview.2 (2026-10-19)
 
-Preview for testing, built by GitHub Actions with signed build provenance. Not an update in place from 0.4.3 or earlier: finish with the earlier version and uninstall it first (see Updates in docs/PACKAGING.md).
+Preview for testing, built by GitHub Actions with signed build provenance. Replaces v0.5.0-preview.1, which was tagged but never published; its notes are included here. Not an update in place from 0.4.3 or earlier: finish with the earlier version and uninstall it first (see Updates in docs/PACKAGING.md).
 
 - **More words recognised.** Parakeet now ends a stretch of speech after a 1-second pause instead of a tenth of a second, so it hears each phrase with more of its context. On eight public meeting recordings its word error rate fell from 24.0% to 21.2% (by 1.4 points on four more that were not used to choose the setting), without more invented words overall, and it used less processor time. Whisper is not affected. Sentences can be a little longer, so a sentence that two people share is slightly more often given one speaker's label (#107).
 - **Setup wording.** The welcome heading now reads "Unlimit your meeting minutes", the app's tagline, and the side panel is headed "Setup".
@@ -119,6 +119,7 @@ Security hardening (#111, slice B2):
 Security hardening (#111, slice B3):
 
 - **Releases are built by GitHub, with signed build provenance.** Each package is built from the tagged code on GitHub's own servers, with a signed record of how it was built and a signed software bill of materials, and is published only after the owner approves it. The zip itself is still not code-signed. A release also has to pass the performance, crash, lifecycle, window and accessibility checks, run against that exact package. IT can check a download before packaging it with `tools/intune/Get-VerifiedRelease.ps1`.
+- **The release build no longer fails its signature check when started from PowerShell 7, as on GitHub's runners.** The check that the bundled Python is signed by the Python Software Foundation is as strict as before, and Windows PowerShell now runs only from the Windows system folder, with modules only from the folders an administrator controls.
 
 Security hardening (#111, slice B4):
 

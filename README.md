@@ -35,7 +35,7 @@ You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own
 
 ## Install
 
-1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [Releases page](https://github.com/thatskiff33/unminute/releases). The [latest release](https://github.com/thatskiff33/unminute/releases/latest) is the current full release. Previews, such as 0.5.0-preview.1, are marked Pre-release: they are for testing and never become the latest release.
+1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [Releases page](https://github.com/thatskiff33/unminute/releases). The [latest release](https://github.com/thatskiff33/unminute/releases/latest) is the current full release. Previews, such as 0.5.0-preview.2, are marked Pre-release: they are for testing and never become the latest release.
 2. Extract the zip.
 3. Double-click `install.cmd`.
 
