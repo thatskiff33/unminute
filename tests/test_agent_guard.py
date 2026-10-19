@@ -1690,7 +1690,16 @@ class HardeningTests(unittest.TestCase):
                 ("@'\n" + self.DATA + "\\settings.json\n'@ | Set-Content list.txt\r"
                  "$x = Get-Content list.txt\rGet-Content $x", "PowerShell"),
                 ("@'\n" + self.DATA + "\\settings.json\n'@ | Set-Content -Path \"list.txt\u201d ;"
-                 " Get-Content -Path (Get-Content list.txt) ; \"x\"", "PowerShell")),
+                 " Get-Content -Path (Get-Content list.txt) ; \"x\"", "PowerShell"),
+                # Round 8: PowerShell ends a here-string at a typographic quote or a
+                # lone carriage return before @, and reads U+001C as a word character,
+                # so the "body" runs as code; only plain ASCII commands may be dropped.
+                ("@'\nx\n\u2019@ | Out-Null\nGet-Content '" + self.DATA + "\\a.json'\n"
+                 "$z = \"\n'@ | Write-Output \"", "PowerShell"),
+                ("@'\nx\r'@ | Out-Null\nGet-Content '" + self.DATA + "\\a.json'\n"
+                 "$z = \"\n'@ | Write-Output \"", "PowerShell"),
+                ("\x1c@'\nx' ; Get-Content '" + self.DATA + "\\a.json' ; $z = \"\n"
+                 "'@ | Write-Output \"", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",

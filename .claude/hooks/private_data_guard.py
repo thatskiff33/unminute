@@ -889,7 +889,14 @@ def _consumer(command, start, end):
 
 
 # The start of a command that is only a here-string, or one assigned to a variable.
-ALONE_LEAD = re.compile(r"\s*(?:\$[\w:]+\s*=\s*)?")
+# Only ASCII white space: Python's \s also covers U+001C to U+001F, which
+# PowerShell reads as word characters (round 8).
+ALONE_LEAD = re.compile(r"[ \t\r\n]*(?:\$[A-Za-z0-9_:]+[ \t]*=[ \t]*)?")
+# A command that may hold a here-string dropped as text: printable ASCII, tabs and
+# line feeds, with a carriage return only before a line feed. PowerShell also ends
+# a here-string or a string at typographic quotes and a lone carriage return, so
+# any of those, or any other non-ASCII or control character, keeps it checked.
+PLAIN_COMMAND = re.compile(r"(?:[\t\n\x20-\x7e]|\r\n)*\Z")
 # Nothing but white space to the end of the command.
 ALONE_TAIL = re.compile(r"\s*\Z")
 # What may not follow a here-string on its closing line, outside quoted titles:
@@ -911,7 +918,7 @@ def _alone(command, start, end, lead_end):
     string there) after it keeps it checked (round 7). lead_end is where the
     command's lead (white space and an optional assignment) ends, found once per
     command, so this is linear: every here-string but one fails at once."""
-    if lead_end != start:
+    if lead_end != start or not PLAIN_COMMAND.match(command):
         return False
     line_end = command.find("\n", end)
     if line_end >= 0 and not ALONE_TAIL.match(command, line_end):
