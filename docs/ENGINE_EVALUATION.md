@@ -77,6 +77,26 @@ Benchmark of 19 October 2026 on public AMI meetings, reproduced by an independen
 - Processor time fell by 14% in this run, but varied by meeting (7% to 21% on the three meetings the reviewer reran).
 - Overlapped speech improved only a little: 43.9% of words spoken over another speaker were lost before, 41.5% after. One transcript cannot hold two speakers at once.
 - Word timing: the share of word starts within 0.5 s of the reference is unchanged (99.2%); within 0.25 s it fell from 97.7% to 97.2% (held out: 97.7% to 96.9%).
+- Chunk ownership (#14) is unchanged: the chunk plan and the rule that a word belongs to the chunk holding its start are not touched; the setting only changes how each chunk is split for the engine.
+
+Per meeting, before and with 1,000 ms (word error rate %, then substitutions / deletions / insertions as word counts; speed is audio length over wall time, Faster mode):
+
+| Meeting | Reference words | Before | 1,000 ms | Speed (x real time) |
+| --- | --- | --- | --- | --- |
+| EN2002a | 7,333 | 34.57 (542 / 1,925 / 68) | 31.09 (453 / 1,765 / 62) | 20.3 to 24.5 |
+| EN2002c | 10,271 | 29.08 (801 / 2,028 / 158) | 25.58 (630 / 1,844 / 153) | 20.4 to 24.7 |
+| ES2004a | 2,484 | 21.66 (137 / 384 / 17) | 17.39 (89 / 318 / 25) | 23.6 to 28.6 |
+| ES2004c | 6,689 | 18.63 (311 / 840 / 95) | 16.74 (219 / 795 / 106) | 20.7 to 24.9 |
+| IS1009a | 1,864 | 23.12 (97 / 285 / 49) | 22.37 (78 / 284 / 55) | 23.8 to 29.7 |
+| IS1009c | 4,029 | 13.70 (167 / 307 / 78) | 12.46 (157 / 276 / 69) | 21.8 to 25.4 |
+| TS3003a | 2,370 | 19.83 (222 / 228 / 20) | 16.41 (144 / 225 / 20) | 25.4 to 32.0 |
+| TS3003c | 4,060 | 15.59 (231 / 286 / 116) | 12.51 (150 / 273 / 85) | 23.8 to 28.7 |
+
+Insertions rose on three meetings (ES2004a, ES2004c and IS1009a, by 8, 11 and 6 words), fell on four and were unchanged on one; in total they fell from 601 to 575.
+
+**Checks before adopting (19 October 2026).** Run one at a time on the same laptop, on the code at 7d5061f with and without the change. The decoder change merged since (#220) does not affect these files, which are mono.
+- `tools/compare_engines.py` on the eight meetings. This tool gives the engine each whole meeting at once rather than in the app's 45 s chunks, so it is a second, independent path. Word error rate went from 24.10% to 20.99% in both Quiet mode (4 threads, the app's default) and Faster mode (14 threads), and fell on all eight meetings in both. The transcripts were identical in the two modes. Wall time: Quiet 609 s to 528 s, Faster 656 s to 435 s. Peak memory of the tool's process (peak working set): Quiet 1.48 GB to 1.49 GB, Faster 1.49 GB to 1.51 GB.
+- An end-to-end run of the app's processing path on ES2004a in Quiet mode, in a throwaway folder: import, the contained decoder, the chunk plan, transcription in the worker, speaker identification in the worker and the store's speaker attribution, with model files from the cache only. Both runs finished. Word error rate 21.66% to 17.39% (the same as the benchmark above). Speaker identification found the same speaker turns in both runs (5 labels; it does not depend on this setting). Sentences went from 372 (median 1.21 s) to 276 (median 1.82 s). With the best match of labels to AMI speakers, 87.85% of words in labelled sentences had the right speaker before and 87.56% after; counting every reference word, 78.62% were recognised and given the right speaker before and 83.01% after, because more words were recognised. Transcription took 59.4 s before and 40.1 s after; speaker identification 743.5 s and 686.5 s.
 
 **Why 1 second, not 0.6.** On the eight meetings 1,000 ms beat 600 ms by 0.41 points (interval 0.08 to 0.75). But those are the meetings the value was chosen on, and on the four held out the two tie (1.37 and 1.39 points better than before). 600 ms was fixed in advance from the #103 live trial; 1,000 ms was the best of four values tried. So the evidence for 1,000 ms over 600 ms is weak. The reviewer recommended 600 ms; the owner chose 1,000 ms on 19 October 2026, knowing this.
 
@@ -84,7 +104,7 @@ Benchmark of 19 October 2026 on public AMI meetings, reproduced by an independen
 - Speaker labels. The app gives each sentence one speaker, and longer pieces make sentences that span two speakers more common. The reviewer measured the best a perfect speaker model could do (the share of reference words in a sentence whose main speaker said them): ES2004a 90.2% before, 90.3% at 600 ms, 89.2% at 1,000 ms; IS1009a 86.6%, 86.1%, 85.2%; TS3003b 95.7%, 94.5%, 93.7%. 600 ms costs about half as much.
 - Longer pieces. In the reviewer's measurement, the share of audio in pieces of 15 s or more rose from 4.7% to 53% (33% at 600 ms). Parakeet occasionally drops a burst of clear speech within one piece (on TS3003b about 48 words in one minute), and a longer piece makes such a burst longer. Bursts happened about as often before.
 
-**Not tested.** Far-field (table microphone) and telephone audio; business recordings with long silences or hold music (#25); Parakeet v3, which uses the same setting; the graphics-card path in `tools/gpu_trial.py`; the 148 short public clips below, which were not re-run; and whether Parakeet was trained on AMI.
+**Not tested.** Far-field (table microphone) and telephone audio; business recordings with long silences or hold music (#25); Parakeet v3, which uses the same setting; the graphics-card path in `tools/gpu_trial.py`; the 148 short public clips below, which were not re-run; peak memory in the app's worker (only the benchmark tool's process was measured); the four held-out meetings in Quiet mode; and whether Parakeet was trained on AMI.
 
 ## Short clips (first screen)
 
