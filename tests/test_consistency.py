@@ -360,7 +360,9 @@ INVARIANT_GUARDS = {
            "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so",
                                  "test_whisper_gpu_failure_falls_back_to_the_cpu_and_says_so",
                                  "test_out_of_graphics_memory_falls_back_without_losing_"
-                                 "committed_parts"]},
+                                 "committed_parts",
+                                 "test_a_card_that_cannot_run_the_precision_falls_back_to_"
+                                 "the_processor"]},
     "C1": {"tests/test_cleanup.py": ["test_copy_or_export_alone_never_deletes",
                                     "test_intent_survives_a_crash_and_is_retried",
                                     "test_late_worker_result_cannot_recreate_content"]},

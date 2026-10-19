@@ -576,14 +576,34 @@ def activate(site):
         os.add_dll_directory(lib)
 
 
+# SetDefaultDllDirectories: the application's folder, System32 and folders
+# added with os.add_dll_directory only; never the current folder or PATH.
+LOAD_LIBRARY_SEARCH_DEFAULT_DIRS = 0x00001000
+
+
+def restrict_dll_search():
+    """Make every later load by bare name in this process search only the safe
+    folders. cuBLAS, cuDNN and CTranslate2 load some libraries by name at run
+    time (cuBLASLt names NVRTC), and a copy on PATH or in the current folder
+    must never be picked up (T25). Called only in the Whisper GPU worker: it
+    changes the whole process. Libraries loaded by full path are unaffected."""
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.SetDefaultDllDirectories.argtypes = [ctypes.c_uint32]
+    if not k32.SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS):
+        raise OSError(ctypes.get_last_error(), "could not restrict the DLL search order")
+
+
 def activate_whisper(site):
     """In a fresh Whisper GPU worker, BEFORE CTranslate2 first uses the card:
-    load the component's cuBLAS by full path. CTranslate2 asks Windows for
-    cublas64_12.dll by name, and Windows then uses the copy already loaded, so
-    a cuBLAS elsewhere on the computer (a CUDA toolkit on PATH) is never
-    picked up. Nothing goes on the import path: the component is libraries
-    only, and the PyTorch CUDA 13 component is never added here."""
+    restrict the DLL search order, then load the component's cuBLAS by full
+    path. CTranslate2 asks Windows for cublas64_12.dll by name, and Windows
+    then uses the copy already loaded, so a cuBLAS elsewhere on the computer
+    (a CUDA toolkit on PATH) is never picked up. Nothing goes on the import
+    path: the component is libraries only, and the PyTorch CUDA 13 component
+    is never added here."""
     import ctypes
+    restrict_dll_search()
     folder = os.path.join(str(site), *WHISPER_BIN.split("/"))
     os.add_dll_directory(folder)
     for name in WHISPER_DLLS:

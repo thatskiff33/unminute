@@ -212,6 +212,20 @@ def gpu_oom_after_first(threads, device="cpu"):
     return _whisper_like(run, device)
 
 
+# CTranslate2 4.8's own words when a card cannot run float16 (below compute
+# capability 7.0), raised by WhisperModel(device="cuda") at load.
+PRECISION_REFUSED = ("Requested float16 compute type, but the target device or backend do "
+                     "not support efficient float16 computation.")
+
+
+def gpu_precision_refused(threads, device="cpu"):
+    """A card CTranslate2 cannot run at the pinned precision: the load on the
+    card fails with CTranslate2's ValueError. On the processor it works."""
+    if device == "cuda":
+        raise ValueError(PRECISION_REFUSED)
+    return _whisper_like(_sentences("sentence"), device)
+
+
 def gpu_probe(threads, device="cpu"):
     """Reports where cublas64_12.dll was loaded from in this worker, and the
     first import path entry (the speaker component puts its folder there)."""

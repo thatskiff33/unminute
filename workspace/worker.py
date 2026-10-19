@@ -111,14 +111,14 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()
-        device = "cpu"
+        asr_device = "cpu"         # where this worker runs speech models; never rebound
         if gpu_site:
             from workspace import gpu
             if gpu_component == gpu.WHISPER_COMPONENT:
                 # The Whisper GPU worker (#248): the CUDA 12 cuBLAS component
                 # only, loaded by full path; never the PyTorch CUDA 13 folder.
                 gpu.activate_whisper(gpu_site)
-                device = "cuda"
+                asr_device = "cuda"
             else:
                 # The speaker GPU worker: the CUDA build of PyTorch must be
                 # first on the path before anything imports torch.
@@ -147,7 +147,8 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 if loaded != (name, threads):
                     engine, loaded = None, None      # a failed load leaves nothing stale
                     engine = load_engine(name, cache_dir, threads,
-                                         allow_test=allow_test_engines, device=device)
+                                         allow_test=allow_test_engines,
+                                         device=asr_device)
                     loaded = (name, threads)
                 conn.send(("ok", getattr(engine, "description", name),
                            getattr(engine, "device", None), getattr(engine, "precision", None)))
@@ -160,18 +161,18 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
             elif op == "diarize":
-                _, model, audio_path, hint, threads, device = msg
+                _, model, audio_path, hint, threads, wanted = msg
                 # One heavy model at a time: release the speech model first.
                 had_asr = engine is not None
                 engine, loaded = None, None
                 import gc
                 gc.collect()
                 from workspace.engines import diarize_file
-                turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
-                                                        threads, device=device,
+                turns, exclusive, ran_on = diarize_file(model, cache_dir, audio_path, hint,
+                                                        threads, device=wanted,
                                                         allow_test=allow_test_engines)
                 gc.collect()
-                conn.send(("ok", turns, exclusive, device, had_asr))
+                conn.send(("ok", turns, exclusive, ran_on, had_asr))
             elif op == "exit":
                 conn.send(("ok",))
                 return
@@ -555,6 +556,16 @@ def gpu_failure(exc):
         w in str(exc).lower() for w in GPU_FAILURE_WORDS)
 
 
+def gpu_load_failure(exc):
+    """A model that would not load on the graphics card. The Whisper GPU
+    worker checks the model's files before it touches the card and reports a
+    fault of theirs as ModelLoadError; any other load failure there (for
+    example CTranslate2 refusing a precision the card cannot run) is the
+    card's, so the processor is tried (D4)."""
+    return gpu_failure(exc) or (isinstance(exc, EngineUnavailable)
+                                and not str(exc).startswith("ModelLoadError:"))
+
+
 class GpuWhisperEngine:
     """Whisper on the graphics card in its own worker (#248), with the
     processor as the fallback (D4). A failure the card causes (the component
@@ -578,8 +589,10 @@ class GpuWhisperEngine:
 
     def transcribe(self, audio):
         if self.reason is None:
+            loading = True
             try:
                 info = self._gpu.load(self.name, self.threads)
+                loading = False
                 # A hung card gives up sooner, so the fallback is not delayed long.
                 timeout = max(GPU_TIMEOUT_FLOOR_S, GPU_TIMEOUT_FACTOR * len(audio) / SAMPLE_RATE)
                 result = self._gpu.transcribe(audio, timeout=timeout)
@@ -588,7 +601,7 @@ class GpuWhisperEngine:
             except WorkerStopped:
                 raise
             except (WorkerError, WorkerCrashed) as exc:
-                if not gpu_failure(exc):
+                if not (gpu_load_failure(exc) if loading else gpu_failure(exc)):
                     raise                     # not the graphics card's fault: no second run
                 self.reason = safe_message(exc).split(": ", 1)[-1][:120]
                 self.handle.release_gpu("whisper")    # stop it and free its memory

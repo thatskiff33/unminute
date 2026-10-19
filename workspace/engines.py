@@ -125,9 +125,23 @@ def _load_whisper_gpu(name, cache_dir, threads):
         raise GpuUnavailable(f"graphics card unavailable (needs NVIDIA driver "
                              f"{gpu.MIN_DRIVER_TEXT} or later and the graphics card "
                              f"component for Whisper)")
+    # A card CTranslate2 cannot run at the pinned precision (float16 needs
+    # compute capability 7.0 or later, so Pascal and older cannot) is the
+    # card's limit, not the model's: say so, and the processor takes over (D4).
+    if precision not in ctranslate2.get_supported_compute_types("cuda"):
+        raise GpuUnavailable(f"the graphics card cannot run {asr_engines.label(name)} at "
+                             f"{precision}")
     from faster_whisper import WhisperModel
-    model = WhisperModel(str(folder), device="cuda", compute_type=precision,
-                         cpu_threads=threads)
+    try:
+        model = WhisperModel(str(folder), device="cuda", compute_type=precision,
+                             cpu_threads=threads)
+    except (ValueError, RuntimeError, OSError) as exc:
+        # The model files were verified above, so a failure to load them onto
+        # the card is the card's (CTranslate2 refusing the precision, the
+        # driver, graphics memory). The processor then loads the same model
+        # and reports any fault of the model's own (D4).
+        raise GpuUnavailable(f"the graphics card could not load {asr_engines.label(name)}: "
+                             f"{exc}") from exc
     problem = asr_engines.feature_width_problem(model, spec)
     if problem:
         raise ModelLoadError(f"{problem}. {fix_speech(name, repair_only=True)}")

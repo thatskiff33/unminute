@@ -210,7 +210,7 @@ On an otherwise idle Intel Core Ultra 7 255H laptop (32 GB), with 5 minutes of s
 | Parakeet v2 | 12.2 s | 32.4 s (slower) |
 | Whisper large-v3 turbo | 199 s | 47.6 s |
 
-Word error rate on 148 public clips (21.5 minutes), measured before #107: Parakeet v2 15.9%, Whisper turbo 14.8%, Parakeet v3 18.9%. That is a small public sample, not New Zealand business audio. Parakeet v2 on the processor is the default. The graphics card is used for speaker identification only: on a 15-minute test recording it took 80 s instead of 435 s. Details are in issue #12 and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+Word error rate on 148 public clips (21.5 minutes), measured before #107: Parakeet v2 15.9%, Whisper turbo 14.8%, Parakeet v3 18.9%. That is a small public sample, not New Zealand business audio. Parakeet v2 on the processor is the default. The graphics card can speed up speaker identification and Whisper: speaker identification on a 15-minute test recording took 80 s instead of 435 s, and Whisper turbo on a 17.5-minute public meeting (AMI ES2004a) took 47.4 s instead of 365.8 s (#248). Details are in issue #12 and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error rate of 24.0% at 20 times real time, and 21.2% since its speech detection bridges pauses of up to 1 second (#107; on four meetings not used to choose that setting the gain was 1.4 points); Qwen3-ASR-1.7B, a candidate engine not yet in the app, had 19.4% at 3 times real time but needed about 11 GB of memory. The NPU on the test laptop could not run any engine reliably. Method and full results: [docs/ENGINE_EVALUATION.md](docs/ENGINE_EVALUATION.md).
 
@@ -223,7 +223,7 @@ Checks that need people, hardware or IT are tracked together in #189.
 - Transcription quality has been measured on public and synthetic audio only, not on representative business recordings.
 - Not yet tested with a screen reader, Windows contrast themes or pilot users.
 - Tested on one laptop only. The minimum and recommended hardware levels are untested.
-- Graphics card acceleration has been tested on one NVIDIA laptop GPU with synthetic audio. AMD and Intel graphics are not supported.
+- Graphics card acceleration has been tested on one NVIDIA laptop GPU (RTX 500 Ada): speaker identification with synthetic audio, Whisper with public meeting audio. Whisper on the card needs a card CTranslate2 can run at float16, which its documentation puts at compute capability 7.0 or later; on an older NVIDIA card Whisper runs on the processor and the meeting says why. AMD and Intel graphics are not supported.
 - Keeping the computer awake, and recording with the lid closed, follow Windows' documentation and have not yet been tested on a real laptop.
 - Recording with the window visible uses about 22% of one processor core; the target is 5% (#216).
 - The package does not yet include the licence texts of some bundled native libraries, or of the packages that ship none (#176).

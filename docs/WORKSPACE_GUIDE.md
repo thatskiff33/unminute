@@ -190,7 +190,7 @@ These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
 - **Hardware:** the minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. So far it has only been tested on a faster laptop (#28).
-- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips. Whisper large-v3 has not been tested in the app's engine.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Whisper large-v3 turbo and Whisper large-v3 were tested in the workspace on 20 October 2026, on the processor and on an NVIDIA graphics card, with public meeting recordings. Parakeet v3 was tested only in the retired source app's engine, where it dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
 **Graphics card (optional).** On a computer with an NVIDIA card, Settings > Manage downloads offers two components. You can download either or both:
@@ -201,8 +201,8 @@ These configurations have been tested:
 Each is checked against published checksums. Once one is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
 
 - **When it is used:** only in Faster mode.
-- **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.
-- **If the card cannot be used** (an old driver, too little graphics memory or a damaged component), that work runs on the processor instead, and the meeting says so. A transcript already part-done carries on on the processor with the same model; nothing finished is lost.
+- **What it needs:** an NVIDIA driver from version 580. For Whisper, the card must also run float16 (compute capability 7.0 or later, from 2017's Volta and later cards); an older card leaves Whisper on the processor. Nothing else is installed on the computer and drivers are never changed.
+- **If the card cannot be used** (an old driver or card, too little graphics memory or a damaged component), that work runs on the processor instead, and the meeting says so. A transcript already part-done carries on on the processor with the same model; nothing finished is lost.
 - **Each meeting shows** whether speaker identification ran on the graphics card, and its **Versions** tab shows where each transcript was made and at what precision (for example "Graphics card, float16" or "Processor, int8").
 
 Detecting a graphics card does not enable anything on its own.

@@ -730,13 +730,118 @@ class WhisperActivateTests(unittest.TestCase):
                                side_effect=lambda p: calls.append(("folder", p))), \
                 mock.patch("ctypes.WinDLL", create=True,
                            side_effect=lambda p: calls.append(("dll", p))), \
+                mock.patch.object(gpu, "restrict_dll_search",
+                                  side_effect=lambda: calls.append(("restrict",))), \
                 mock.patch.object(sys, "path", list(sys.path)):
             before = list(sys.path)
             gpu.activate_whisper(site)
             self.assertEqual(sys.path, before)
-        self.assertEqual(calls, [("folder", folder),
+        # The search order is restricted before anything is loaded (T25).
+        self.assertEqual(calls, [("restrict",), ("folder", folder),
                                  ("dll", os.path.join(folder, "cublasLt64_12.dll")),
                                  ("dll", os.path.join(folder, "cublas64_12.dll"))])
+
+
+    @unittest.skipUnless(os.name == "nt", "the Windows DLL search order")
+    def test_a_library_on_path_or_in_the_current_folder_is_never_loaded_by_name(self):
+        # cuBLASLt names nvrtc64_120_0.dll; a file of that kind on PATH or in
+        # the current folder must not load into the Whisper GPU worker once
+        # the search order is restricted (#263 review). The control run shows
+        # the probe would load without the restriction.
+        probe = ("import ctypes, sys\n"
+                 "sys.path.insert(0, sys.argv[1])\n"
+                 "from workspace import gpu\n"
+                 "if sys.argv[2] == 'restrict':\n"
+                 "    gpu.restrict_dll_search()\n"
+                 "k32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+                 "k32.LoadLibraryW.restype = ctypes.c_void_p\n"
+                 "k32.LoadLibraryW.argtypes = [ctypes.c_wchar_p]\n"
+                 "for name in sys.argv[3:]:\n"
+                 "    print(name, bool(k32.LoadLibraryW(name)))\n")
+        dll = loadable_dll()
+        repo = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            on_path, here = Path(tmp, "on-path"), Path(tmp, "current")
+            on_path.mkdir()
+            here.mkdir()
+            (on_path / "unminute_path_probe.dll").write_bytes(dll)
+            (here / "unminute_cwd_probe.dll").write_bytes(dll)
+            env = dict(os.environ, PATH=str(on_path) + os.pathsep + os.environ["PATH"])
+            results = {}
+            for mode in ("control", "restrict"):
+                out = subprocess.run(
+                    [sys.executable, "-I", "-B", "-c", probe, repo, mode,
+                     "unminute_path_probe.dll", "unminute_cwd_probe.dll"],
+                    cwd=here, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(out.returncode, 0, out.stderr[-500:])
+                results[mode] = out.stdout.split()
+        self.assertEqual(results["control"], ["unminute_path_probe.dll", "True",
+                                              "unminute_cwd_probe.dll", "True"])
+        self.assertEqual(results["restrict"], ["unminute_path_probe.dll", "False",
+                                               "unminute_cwd_probe.dll", "False"])
+
+
+class WhisperGpuLoadTests(unittest.TestCase):
+    """_load_whisper_gpu with CTranslate2 and faster_whisper stood in for, as
+    a card below compute capability 7.0 behaves (#263 review, D4)."""
+
+    def load(self, supported, refuse=None):
+        import types
+
+        from workspace import engines
+        made = []
+
+        def whisper_model(folder, device, compute_type, cpu_threads):
+            made.append((device, compute_type))
+            if refuse is not None:
+                raise refuse
+            return mock.Mock()
+
+        ct2 = types.SimpleNamespace(get_cuda_device_count=lambda: 1,
+                                    get_supported_compute_types=lambda d: set(supported))
+        fw = types.SimpleNamespace(WhisperModel=whisper_model)
+        with mock.patch.dict(sys.modules, {"ctranslate2": ct2, "faster_whisper": fw}), \
+                mock.patch.object(asr_engines, "find_verified", return_value=Path("m")), \
+                mock.patch.object(asr_engines, "feature_width_problem", return_value=None):
+            try:
+                engine = engines.load_engine(asr_engines.WHISPER_TURBO, "cache", 1,
+                                             device="cuda")
+            except Exception as exc:          # what the worker would send back
+                return exc, made
+        return engine, made
+
+    def worker_error(self, exc):
+        from workspace.worker import EngineUnavailable, safe_message
+        return EngineUnavailable(f"{type(exc).__name__}: {safe_message(exc)} (code ab12)")
+
+    def test_a_precision_the_card_cannot_run_falls_back_before_loading(self):
+        from fake_worker_engines import PRECISION_REFUSED
+
+        from workspace.engines import GpuUnavailable
+        from workspace.worker import gpu_failure
+        exc, made = self.load({"int8", "int8_float32", "float32"},
+                              refuse=ValueError(PRECISION_REFUSED))
+        self.assertIsInstance(exc, GpuUnavailable)
+        self.assertIn("cannot run Whisper", str(exc))
+        self.assertEqual(made, [])                            # never tried on the card
+        self.assertTrue(gpu_failure(self.worker_error(exc)))
+
+    def test_a_card_that_refuses_the_model_at_load_falls_back(self):
+        # The precision is listed, but CTranslate2 still refuses at load.
+        from fake_worker_engines import PRECISION_REFUSED
+
+        from workspace.engines import GpuUnavailable
+        from workspace.worker import gpu_failure
+        exc, made = self.load({"float16", "int8_float16"}, refuse=ValueError(PRECISION_REFUSED))
+        self.assertIsInstance(exc, GpuUnavailable)
+        self.assertIn(PRECISION_REFUSED, str(exc))
+        self.assertEqual(made, [("cuda", "float16")])
+        self.assertTrue(gpu_failure(self.worker_error(exc)))
+
+    def test_a_card_that_runs_the_precision_loads_on_it(self):
+        engine, made = self.load({"float16", "int8_float16", "int8"})
+        self.assertEqual((engine.device, engine.precision), ("cuda", "float16"))
+        self.assertEqual(made, [("cuda", "float16")])
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
@@ -777,6 +882,28 @@ class WhisperFallbackTests(unittest.TestCase):
         engine.transcribe(self.AUDIO)                             # the rest stays on the CPU
         self.assertEqual(companion.transcribe.call_count, 1)
         self.assertEqual(handle.transcribe.call_count, 2)
+
+    def test_any_load_failure_on_the_card_but_the_models_own_falls_back(self):
+        # CTranslate2's refusal names no CUDA word; it is still the card's (D4).
+        from fake_worker_engines import PRECISION_REFUSED
+
+        from workspace.worker import EngineUnavailable
+        engine, handle, companion = self.engine(lambda audio, timeout: (["card"], 1.0))
+        companion.load.side_effect = EngineUnavailable(f"ValueError: {PRECISION_REFUSED} "
+                                                       f"(code ab12)")
+        self.assertEqual(engine.transcribe(self.AUDIO), (["processor"], 1.0))
+        self.assertTrue(engine.device.startswith(
+            "cpu (graphics card not used: Requested float16 compute type"), engine.device)
+        handle.release_gpu.assert_called_once_with("whisper")
+
+    def test_a_model_that_fails_its_check_on_the_card_is_not_loaded_twice(self):
+        from workspace.worker import EngineUnavailable
+        engine, handle, companion = self.engine(lambda audio, timeout: (["card"], 1.0))
+        companion.load.side_effect = EngineUnavailable(
+            "ModelLoadError: Whisper large-v3 turbo is not installed or failed verification.")
+        with self.assertRaises(EngineUnavailable):
+            engine.transcribe(self.AUDIO)
+        handle.load.assert_not_called()
 
     def test_a_crashed_or_hung_card_worker_falls_back(self):
         from workspace.worker import WorkerCrashed
@@ -918,6 +1045,17 @@ class WorkspaceWhisperGpuTests(unittest.TestCase):
             {"where": "gpu", "precision": "float16", "parts": 1, "fallback": False},
             {"where": "cpu", "precision": "int8", "parts": len(chunks) - 1, "fallback": True}])
         self.assertIsNone(self.ws.handle._gpu_whisper)  # the failed GPU worker was stopped
+        self.assertEqual(self.ws.meetings()[0]["stage"], "review")
+
+    def test_a_card_that_cannot_run_the_precision_falls_back_to_the_processor(self):
+        # A real Whisper GPU worker whose load on the card fails with
+        # CTranslate2's ValueError (a card below compute capability 7.0).
+        install_cublas(self, self.ws.cache_dir, loadable_dll())
+        mid = self.transcribe("gpu_precision_refused")
+        chunks = self.ws.store.chunks(self.ws.store.active_version(mid)["id"])
+        self.assertTrue(all(c["status"] == "done" and c["failures"] == 0 for c in chunks))
+        self.assertEqual(self.ws.detail(mid)["ran_on"], [
+            {"where": "cpu", "precision": "int8", "parts": len(chunks), "fallback": True}])
         self.assertEqual(self.ws.meetings()[0]["stage"], "review")
 
     def test_the_whisper_worker_loads_only_its_own_cublas(self):
