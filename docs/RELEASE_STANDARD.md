@@ -46,7 +46,7 @@ Each budget covers CPU, memory, start-up time and the peak cost of heavy work. B
 **Check.** Measure the same way every time:
 - **CPU:** process CPU time (kernel plus user) for the whole process tree, over 300 s after a 60 s settle. Take the median of three runs and express it as a percentage of one logical core.
 - **Memory:** private bytes summed across the process tree, with private working set reported alongside. Never sum working sets, because shared pages are counted once per process.
-- **Conditions:** mains power and the Balanced power plan, with antivirus idle (for v0.5.0-preview.1 the owner chose the Performance plan, the one the firm's staff laptops use; 19 Oct 2026, #111). Record the machine's specification (processor, cores and logical processors, memory, operating system build, power plan, mains or battery, graphics adapters and drivers), the app version and the versions of embedded runtimes such as the browser engine. Record nothing that identifies the machine or its user.
+- **Conditions:** mains power and the Balanced power plan, with antivirus idle (for every v0.5.0 preview the owner chose the Performance plan, the one the firm's staff laptops use; 19 Oct 2026, #111). Record the machine's specification (processor, cores and logical processors, memory, operating system build, power plan, mains or battery, graphics adapters and drivers), the app version and the versions of embedded runtimes such as the browser engine. Record nothing that identifies the machine or its user.
 - **Setting a budget:** start at the measured baseline plus 20%. After each improvement, lower it to the new figure plus 15%.
 
 ### 3. Just-in-time loading
