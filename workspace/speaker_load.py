@@ -36,10 +36,12 @@
 # weights-only allowlist cannot run code, but a hostile pickle could still
 # build objects of the allowed classes. A new Specifications is checked
 # exactly, field by field. Problem and Resolution members are the module's
-# own singletons, which a pickle can reach and change (BUILD sets their
-# attributes) and which the identity checks would not notice, so every
-# unpickling compares each member's attributes before and after, restores a
-# changed member and refuses the load (enums_unchanged).
+# own singletons, which a pickle can reach and change (BUILD can change their
+# attributes or class: BUILD's slot state uses setattr) and which the identity
+# checks would not notice, so every unpickling compares each member's class
+# and attributes before and after, restores a changed member and refuses the
+# load (enums_unchanged). --self-test feeds both kinds of change through
+# load_model.
 # A new model revision needs the EXPECTED_* values below updated with its pins.
 #
 # Imports torch, pyannote, numpy and yaml only inside functions: the module is
@@ -493,19 +495,22 @@ class _Payload:
 
 
 class _EnumEdit:
-    """Pickles as the Enum member, then BUILD with an extra attribute: what a
-    checkpoint that changes a shared member does (only allowed globals)."""
-    def __init__(self, member):
-        self.member = member
+    """Pickles as the Enum member, then BUILD with the given state: what a
+    checkpoint that changes a shared member does (only allowed globals). A
+    dict state adds attributes; (None, {"__class__": other}) is slot state,
+    which BUILD applies with setattr, so it swaps the member's class."""
+    def __init__(self, member, state):
+        self.member, self.state = member, state
 
     def __reduce__(self):
-        return type(self.member), (self.member.value,), {"_self_test_edit": True}
+        return type(self.member), (self.member.value,), self.state
 
 
 def self_check():
     """[(ok, text)]: a synthetic code-running checkpoint is refused by the
     loader and by torch's weights-only unpickler, a checkpoint that changes a
-    shared Enum member is refused and the member restored, the allowlist ends
+    shared Enum member's attributes, or its class, is refused and the member
+    restored (so a broken check in enums_unchanged shows), the allowlist ends
     with its scope, and TORCH_FORCE_WEIGHTS_ONLY_LOAD overrides
     weights_only=False. Needs torch and pyannote; reads and writes no file."""
     import os
@@ -537,21 +542,32 @@ def self_check():
             lambda: load_model(hostile, SEGMENTATION, classes))
     refused("weights-only loading refuses a code-running checkpoint",
             lambda: weights_only_load(hostile, classes))
-    member = problem.MONO_LABEL_CLASSIFICATION
-    before = dict(vars(member))
-    try:
-        load_model(checkpoint(_EnumEdit(member)), SEGMENTATION, classes)
-        outcome = "loaded"
-    except Refused as exc:
-        outcome = str(exc)                     # fixed wording, never content
-    except Exception as exc:
-        outcome = type(exc).__name__
-    restored = vars(member) == before
-    vars(member).clear()
-    vars(member).update(before)
-    ok = outcome == ENUM_CHANGED and restored
-    results.append((ok, "speaker model loader refuses a checkpoint that changes an Enum "
-                        "member, and restores it" + ("" if ok else f" ({outcome})")))
+
+    def enum_edit(label, state):
+        # The loader must refuse the edit and put the member back as it was.
+        # Whatever happens, the member is restored here too, so a failed
+        # check leaves the rest of the self-test (and the process) unchanged.
+        member = problem.MONO_LABEL_CLASSIFICATION
+        before = dict(vars(member))
+        try:
+            load_model(checkpoint(_EnumEdit(member, state)), SEGMENTATION, classes)
+            outcome = "loaded"
+        except Refused as exc:
+            outcome = str(exc)                 # fixed wording, never content
+        except Exception as exc:
+            outcome = type(exc).__name__
+        finally:
+            restored = type(member) is problem and vars(member) == before
+            object.__setattr__(member, "__class__", problem)
+            vars(member).clear()
+            vars(member).update(before)
+        ok = outcome == ENUM_CHANGED and restored
+        results.append((ok, label + ("" if ok else f" ({outcome})")))
+
+    enum_edit("speaker model loader refuses a checkpoint that changes an Enum member's "
+              "attributes, and restores it", {"_self_test_edit": True})
+    enum_edit("speaker model loader refuses a checkpoint that changes an Enum member's "
+              "class, and restores it", (None, {"__class__": resolution}))
     try:
         loaded = weights_only_load(plain, classes)
         ok = type(loaded["pyannote.audio"]["specifications"]) is specifications

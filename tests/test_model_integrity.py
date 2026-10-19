@@ -607,6 +607,135 @@ class SpeakerModelLoadTests(unittest.TestCase):
                             for c in fake.loads))
 
 
+# --- --self-test, against a weights-only torch stand-in -----------------------
+
+class WeightsOnlyTorch:
+    """A torch stand-in for speaker_load.self_check (the packaged build runs it
+    against the real torch). save writes a torch-style archive with the
+    standard pickler, protocol 2 as torch.save uses. load reads it back the
+    way torch's weights-only unpickler does: it imports only
+    collections.OrderedDict and the classes allowed for that call
+    (safe_globals), and BUILD puts a dict state into the object's __dict__ and
+    applies slot state with setattr. weights_only=False is weights-only when
+    TORCH_FORCE_WEIGHTS_ONLY_LOAD is set, and is never unpickled in full here."""
+
+    def __init__(self):
+        import collections
+        self.allowed = ()
+        fake = self
+
+        @contextlib.contextmanager
+        def safe_globals(classes):
+            saved, fake.allowed = fake.allowed, tuple(classes)
+            try:
+                yield
+            finally:
+                fake.allowed = saved
+
+        class Unpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                for klass in (collections.OrderedDict, *fake.allowed):
+                    if (klass.__module__, klass.__qualname__) == (module, name):
+                        return klass
+                raise pickle.UnpicklingError("Unsupported global")
+
+        def save(obj, f):
+            f.write(archive(pickle.dumps(obj, protocol=2)))
+
+        def load(f, map_location=None, weights_only=None):
+            if not (weights_only or os.environ.get("TORCH_FORCE_WEIGHTS_ONLY_LOAD") == "1"):
+                raise AssertionError("a full unpickling in a test")
+            with zipfile.ZipFile(f) as z:
+                return Unpickler(io.BytesIO(z.read("archive/data.pkl"))).load()
+
+        self.module = types.ModuleType("torch")
+        self.module.__dict__.update(
+            Tensor=Tensor, zeros=lambda n: [0.0] * n, save=save, load=load,
+            serialization=types.SimpleNamespace(safe_globals=safe_globals))
+
+
+def attributes_only(enums, load):
+    """enums_unchanged without its class comparison: the bug --self-test must
+    show (#231)."""
+    saved = {member: dict(vars(member)) for enum_ in enums for member in enum_}
+    try:
+        return load()
+    finally:
+        changed = False
+        for member, attrs in saved.items():
+            if vars(member) != attrs:
+                vars(member).clear()
+                vars(member).update(attrs)
+                changed = True
+        if changed:
+            raise Refused(speaker_load.ENUM_CHANGED)
+
+
+def class_not_restored(enums, load):
+    """enums_unchanged that notices a swapped class and refuses the load, but
+    leaves the member in the other class: the self-test must check the class
+    is put back, not only that the load was refused (#231)."""
+    saved = {member: (enum_, dict(vars(member))) for enum_ in enums for member in enum_}
+    try:
+        return load()
+    finally:
+        changed = False
+        for member, (enum_, attrs) in saved.items():
+            if type(member) is not enum_:
+                changed = True
+            if vars(member) != attrs:
+                vars(member).clear()
+                vars(member).update(attrs)
+                changed = True
+        if changed:
+            raise Refused(speaker_load.ENUM_CHANGED)
+
+
+class SelfTestTests(unittest.TestCase):
+    ATTRIBUTES = "changes an Enum member's attributes"
+    CLASS = "changes an Enum member's class"
+
+    def self_check(self):
+        """speaker_load.self_check's [(ok, text)], run against the stand-ins
+        (named as pyannote's classes, so the pickle check accepts them). Every
+        run must leave the shared member as it was, whatever it reports."""
+        member = Problem.MONO_LABEL_CLASSIFICATION
+        original = dict(vars(member))
+        modules = {**FakeLibraries().modules, "torch": WeightsOnlyTorch().module}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(sys.modules, modules))
+            stack.enter_context(mock.patch.dict(os.environ))
+            for klass in CLASSES:
+                stack.enter_context(mock.patch.object(klass, "__module__",
+                                                      "pyannote.audio.core.task"))
+            results = speaker_load.self_check()
+        self.assertIs(type(member), Problem)
+        self.assertEqual(vars(member), original)
+        return results
+
+    def test_the_self_test_passes(self):
+        results = self.self_check()
+        self.assertEqual([text for ok, text in results if not ok], [])
+        for change in (self.ATTRIBUTES, self.CLASS):
+            self.assertEqual(sum(change in text for _, text in results), 1, change)
+
+    def test_the_self_test_shows_a_broken_enum_check(self):
+        # A packaged build's --self-test must catch a loader that lets a
+        # checkpoint change a shared member: each broken check fails its line,
+        # and the self-test still puts the member back (#231).
+        for label, broken, failing in (
+                ("class not compared", attributes_only, [self.CLASS]),
+                ("class refused but not restored", class_not_restored, [self.CLASS]),
+                ("nothing compared", lambda enums, load: load(),
+                 [self.ATTRIBUTES, self.CLASS])):
+            with self.subTest(label), mock.patch.object(speaker_load, "enums_unchanged", broken):
+                results = self.self_check()
+                failed = [text for ok, text in results if not ok]
+                self.assertEqual(len(failed), len(failing), failed)
+                for change, text in zip(failing, failed, strict=True):
+                    self.assertIn(change, text)
+
+
 class FailingImport(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     """Importing `name` raises `error`, as a native library failing to load does."""
 
