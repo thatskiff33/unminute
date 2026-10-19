@@ -259,9 +259,9 @@ def self_test():
         except Exception as exc:              # report every failure, not just the first
             ok = False
             print(f"FAILED  import {name}: {type(exc).__name__}: {exc}")
-    # The speaker model loader must refuse a code-running checkpoint and one
-    # that changes a shared Enum member (#218): synthetic ones, built in
-    # memory, with harmless payloads.
+    # The speaker model loader must refuse a code-running checkpoint and ones
+    # that change a shared Enum member's attributes or its class (#218, #231):
+    # synthetic ones, built in memory, with harmless payloads.
     try:
         from workspace import speaker_load
         checks = speaker_load.self_check()

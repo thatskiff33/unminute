@@ -671,6 +671,26 @@ def attributes_only(enums, load):
             raise Refused(speaker_load.ENUM_CHANGED)
 
 
+def class_not_restored(enums, load):
+    """enums_unchanged that notices a swapped class and refuses the load, but
+    leaves the member in the other class: the self-test must check the class
+    is put back, not only that the load was refused (#231)."""
+    saved = {member: (enum_, dict(vars(member))) for enum_ in enums for member in enum_}
+    try:
+        return load()
+    finally:
+        changed = False
+        for member, (enum_, attrs) in saved.items():
+            if type(member) is not enum_:
+                changed = True
+            if vars(member) != attrs:
+                vars(member).clear()
+                vars(member).update(attrs)
+                changed = True
+        if changed:
+            raise Refused(speaker_load.ENUM_CHANGED)
+
+
 class SelfTestTests(unittest.TestCase):
     ATTRIBUTES = "changes an Enum member's attributes"
     CLASS = "changes an Enum member's class"
@@ -705,6 +725,7 @@ class SelfTestTests(unittest.TestCase):
         # and the self-test still puts the member back (#231).
         for label, broken, failing in (
                 ("class not compared", attributes_only, [self.CLASS]),
+                ("class refused but not restored", class_not_restored, [self.CLASS]),
                 ("nothing compared", lambda enums, load: load(),
                  [self.ATTRIBUTES, self.CLASS])):
             with self.subTest(label), mock.patch.object(speaker_load, "enums_unchanged", broken):
