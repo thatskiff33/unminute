@@ -935,8 +935,12 @@ def _drop_written(command, shell):
     def here_string(match):
         # Kept, as names to read, unless only an assignment or a program that takes
         # text takes it (#221: @'...'@ | Get-Content reads the files it names).
-        consumer = _unquoted(_consumer(command, match.start(), match.end()))
-        if INTERPRETER.search(consumer) or not _takes_text(consumer):
+        # Which programs take the text is decided with the quotes kept, as on main:
+        # _unquoted pairs quotes naively, so an escaped quote or a comment could
+        # hide the program that reads the lines (round 3 review). Quoted titles are
+        # dropped only when looking for an interpreter ("Move to Python 3.14").
+        consumer = _consumer(command, match.start(), match.end())
+        if INTERPRETER.search(_unquoted(consumer)) or not _takes_text(consumer):
             return match.group(0)
         return " " if match.group(1) == "'" else _run_parts(match.group(0), shell)
 

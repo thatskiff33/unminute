@@ -1639,7 +1639,13 @@ class HardeningTests(unittest.TestCase):
                 ("\"python\" - <<'EOF'" + code, "Bash"),
                 ("sh -c 'xargs cat' <<'EOF'\n" + self.BASH_DATA + "/a.json\nEOF", "Bash"),
                 ("@'" + code[:-4] + "\n'@ | & \"C:\\Program Files\\Python314\\python.exe\" -",
-                 "PowerShell")),
+                 "PowerShell"),
+                # Round 3: an escaped quote or a comment must not hide the program
+                # that reads a here-string's lines (main blocks these).
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Write-Output `\""
+                 " | ForEach-Object { Get-Content $_ } # \"x y\"", "PowerShell"),
+                ("@'\n" + self.DATA + "\\settings.json\n'@ | Out-String -Stream <# \" #>"
+                 " | ForEach-Object { Get-Content $_ } <# \" #>", "PowerShell")),
                 allowed=tuple(
                 ("gh pr create --title \"" + title + "\"" + body, "Bash") for title in (
                     "Move to Python 3.14", "Bash and PowerShell guard",
