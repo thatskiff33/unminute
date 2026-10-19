@@ -66,7 +66,11 @@ import zipfile
 import zlib
 from pathlib import Path
 
-# tools/windows_powershell.py, also under -I; after the standard library.
+# tools/windows_powershell.py, also under -I; after the standard library. The
+# build runs as `python -I` (which ignores PYTHONDONTWRITEBYTECODE), so it
+# says itself that no import writes bytecode into the checkout: an ignored
+# tools/__pycache__ makes the checkout unclean for tools/evidence.py (#206).
+sys.dont_write_bytecode = True
 sys.path.append(str(Path(__file__).resolve().parent))
 import windows_powershell  # noqa: E402
 

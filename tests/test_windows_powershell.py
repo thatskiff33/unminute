@@ -155,6 +155,20 @@ class WindowsPowerShellTests(unittest.TestCase):
                 self.assertNotIn('["powershell"', source)
                 self.assertNotIn('"powershell.exe"', source)
 
+    def test_the_build_writes_no_bytecode_for_the_helper(self):
+        # The release build runs `python -I tools/build_package.py`, and -I
+        # ignores PYTHONDONTWRITEBYTECODE: importing the helper must still leave
+        # no tools/__pycache__ behind (tools/evidence.py counts it as unclean).
+        tools = self.root / "tools"
+        tools.mkdir()
+        for name in ("build_package.py", "windows_powershell.py"):
+            (tools / name).write_bytes((ROOT / "tools" / name).read_bytes())
+        env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONDONTWRITEBYTECODE"}
+        r = subprocess.run([sys.executable, "-I", str(tools / "build_package.py"), "--help"],
+                           capture_output=True, text=True, env=env, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr[-500:])
+        self.assertFalse((tools / "__pycache__").exists())
+
     @unittest.skipUnless(sys.platform == "win32", "runs Windows PowerShell")
     def test_a_real_child_sees_no_profiler_or_module_path_from_the_parent(self):
         planted = self.root / "mods"
