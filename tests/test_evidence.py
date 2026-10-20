@@ -1024,8 +1024,8 @@ class ToolTests(TempDir):
         # Cancel (CancelButton), and closes the window itself (#232).
         self.assertIn('["tab", "space-on:" + escaped["check"], "wait:2.5",\n'
                       '         "esc-on:" + escaped["check"], "wait:0.5", "open?"]', native)
-        # An Invoke without the focus, 0.3 s after the action is enabled, is
-        # ignored; 1.6 s after, it answers (act_clicked; mutant M13 of #229).
+        # An Invoke without the focus, about 0.3 s after the action is enabled,
+        # is ignored; about 1.8 s after, it answers (act_clicked; mutant M13 of #229).
         self.assertIn('["until-enabled:Confirm", "wait:0.3", "invoke-on:Confirm", "open?", '
                       '"wait:1.3",\n         "invoke-on:Confirm"]', native)
         # The verdict is native_problems (unit tests in tests/test_accessors.py),

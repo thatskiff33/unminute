@@ -383,8 +383,9 @@ def native_checks(window, ws, mid):
     out["open_after_esc"] = seen_esc
     # An Invoke without the focus (Cancel keeps it; BM_CLICK, as an assistive
     # tool's Invoke arrives) answers only once the action has been enabled for
-    # the wait (act_clicked): 0.3 s after it is enabled it is ignored, 1.6 s
-    # after it answers. No key or mouse input, so nothing restarts the wait.
+    # the wait (act_clicked, CONFIRM_DELAY_MS): about 0.3 s after it is enabled
+    # it is ignored; about 1.8 s after (0.3 + invoke-on's 0.2 + 1.3) it answers.
+    # No key or mouse input, so nothing restarts the wait.
     invoked = dict(plain, title="Workspace UI check: Invoke without the focus")
     seen_invoke = []
     out["invoke_after_enabled_wait"], out["pressed_10"] = run_with(
