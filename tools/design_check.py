@@ -48,6 +48,7 @@ CASES = [
     {"name": "meeting-edit", "app": "meeting-edit", "board": "Meeting-Edit.dc.html"},
     {"name": "meeting-reviewed", "app": "meeting-reviewed", "board": "Meeting-Reviewed.dc.html"},
     {"name": "meeting-earlier", "app": "meeting-earlier", "board": "Meeting-Earlier.dc.html"},
+    {"name": "meeting-versions", "app": "meeting-versions", "board": "Meeting-Versions.dc.html"},
     {"name": "meeting-panels", "board": "Meeting-Panels.dc.html", "app": "", "w": 1340},
     {"name": "names", "app": "names", "board": "Names.dc.html"},
     {"name": "confirm", "app": "confirm", "board": "Confirm.dc.html"},

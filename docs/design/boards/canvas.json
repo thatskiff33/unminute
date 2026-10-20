@@ -22,6 +22,7 @@
     "Meeting-Reviewed.dc.html": {"x": 3540, "y": 2700, "w": 1100, "h": 760, "title": "Reviewed: ready to hand off"},
     "Meeting-Earlier.dc.html": {"x": 4720, "y": 2700, "w": 1100, "h": 760, "title": "Earlier version (read only)"},
     "Meeting-Panels.dc.html": {"x": 5900, "y": 2700, "w": 1340, "h": 760, "title": "Side panel tabs and states"},
+    "Meeting-Versions.dc.html": {"x": 7320, "y": 2700, "w": 1100, "h": 760, "title": "Versions: where each was transcribed"},
 
     "Names.dc.html": {"x": 0, "y": 3840, "w": 1100, "h": 760, "title": "Name speakers"},
     "Confirm.dc.html": {"x": 1180, "y": 3840, "w": 1100, "h": 760, "title": "Confirmation dialog"},

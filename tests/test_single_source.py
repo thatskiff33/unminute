@@ -310,17 +310,7 @@ class ModelNameTests(unittest.TestCase):
         # #246 round 1 review: the design check's fake bridge showed turbo with
         # Parakeet's licence, source and revision, and the large-v3 card text
         # was copied by hand. Each speech card it serves says what the app's does.
-        text = (ROOT / "tools" / "design_check" / "fixtures.js").read_text(encoding="utf-8")
-        pairs = r'(\w+): "([^"]*)"'
-        defaults = dict(re.findall(pairs, re.search(r"const card = \(over\) => \(\{(.*?)\}\);",
-                                                     text, re.S).group(1)))
-        fixture = {}
-        for body in re.findall(r"card\(\{(.*?)\}\)", text, re.S):
-            fields = {**defaults, **dict(re.findall(pairs, body))}
-            size = re.search(r"size_gb: ([0-9.]+)", body)
-            fields["size_gb"] = float(size.group(1)) if size else None
-            if fields.get("role") == "speech":
-                fixture[fields["name"]] = fields
+        fixture, _ = self._fixture_cards("speech")
         with tempfile.TemporaryDirectory() as cache:
             real = {c["name"]: c for c in setup.cards(cache) if c["role"] == "speech"}
         self.assertEqual(set(fixture), set(real))
@@ -328,6 +318,76 @@ class ModelNameTests(unittest.TestCase):
             for key in ("label", "title", "about", "licence", "source", "revision", "size_gb"):
                 with self.subTest(model=name, field=key):
                     self.assertEqual(fixture[name][key], card[key])
+
+    @staticmethod
+    def _fixture_cards(role):
+        """The design fixture's cards with this role, by name, as card() fills them."""
+        text = (ROOT / "tools" / "design_check" / "fixtures.js").read_text(encoding="utf-8")
+        pairs = r'(\w+): "([^"]*)"'
+        defaults = dict(re.findall(pairs, re.search(r"const card = \(over\) => \(\{(.*?)\}\);",
+                                                     text, re.S).group(1)))
+        found = {}
+        for body in re.findall(r"card\(\{(.*?)\}\)", text, re.S):
+            fields = {**defaults, **dict(re.findall(pairs, body))}
+            size = re.search(r"size_gb: ([0-9.]+)", body)
+            fields["size_gb"] = float(size.group(1)) if size else None
+            if fields.get("role") == role:
+                found[fields["name"]] = fields
+        return found, text
+
+    def test_the_design_fixture_graphics_cards_match_the_app(self):
+        # #263 review: the fixture showed only the speaker component, under a
+        # name the app never used, with older text, and no "Graphics card for
+        # Whisper". Both cards it serves now say what the app's do on a
+        # computer with the fixture's card (NVIDIA RTX 500, driver new enough).
+        fixture, text = self._fixture_cards("gpu")
+        card_name = re.search(r'gpu: \{ card: "([^"]+)"', text).group(1)
+        info = {"name": card_name, "driver": "595.95", "memory_mb": 4096, "driver_ok": True}
+        with tempfile.TemporaryDirectory() as cache, \
+                mock.patch.object(gpu, "detected", return_value=info):
+            real = {c["name"]: c for c in setup.cards(cache) if c["role"] == "gpu"}
+        self.assertEqual(set(real), {gpu.COMPONENT, gpu.WHISPER_COMPONENT})
+        self.assertEqual(set(fixture), set(real))
+        for name, card in real.items():
+            for key in ("label", "title", "about", "licence", "source", "revision", "size_gb"):
+                with self.subTest(component=name, field=key):
+                    self.assertEqual(fixture[name][key], card[key])
+
+    def test_the_design_fixture_sends_what_the_app_sends_for_the_graphics_card(self):
+        # Settings' graphics card state and a version's ran_on (#248): the
+        # fixture's fields are the ones workspace/app.py sends, so the design
+        # check draws the note and the Versions line the app would.
+        text = (ROOT / "tools" / "design_check" / "fixtures.js").read_text(encoding="utf-8")
+        tree = ast.parse((ROOT / "workspace" / "app.py").read_text(encoding="utf-8"))
+
+        def dict_keys(node):
+            return {k.value for k in node.keys if isinstance(k, ast.Constant)}
+
+        gpu_keys = ran_on_keys = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Dict):
+                for k, v in zip(node.keys, node.values, strict=True):
+                    if isinstance(k, ast.Constant) and k.value == "gpu" and isinstance(v, ast.Dict):
+                        gpu_keys = dict_keys(v)
+            if isinstance(node, ast.FunctionDef) and node.name == "_ran_on":
+                comp = next(n for n in ast.walk(node) if isinstance(n, ast.ListComp))
+                ran_on_keys = dict_keys(comp.elt)
+        self.assertEqual(gpu_keys, {"card", "driver_ok", "min_driver", "component",
+                                    "whisper_component"})
+        self.assertEqual(ran_on_keys, {"where", "precision", "parts", "fallback"})
+        fixture_gpu = re.search(r"gpu: \{([^}]*)\}", text).group(1)
+        self.assertEqual(set(re.findall(r"(\w+):", fixture_gpu)), gpu_keys)
+        rows = re.findall(r"\{ where: [^}]*\}", text)
+        self.assertTrue(rows, "the fixture serves no ran_on rows")
+        for row in rows:
+            with self.subTest(row=row):
+                self.assertEqual(set(re.findall(r"(\w+):", row)), ran_on_keys)
+        # Only the values the app sends: "gpu" or "cpu", and a precision an
+        # engine reports (gpu.WHISPER_PRECISION on the card, int8 on the processor).
+        precisions = {*gpu.WHISPER_PRECISION.values(), "int8"}
+        for where, precision in re.findall(r'where: "(\w+)", precision: "(\w+)"', text):
+            self.assertIn(where, {"gpu", "cpu"})
+            self.assertIn(precision, precisions)
 
     def test_a_parakeet_engine_names_the_model_by_its_label(self):
         engine = asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, ".", 1)
