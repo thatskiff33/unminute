@@ -22,6 +22,10 @@ real time, and remove it when the cause is fixed.
   each worker re-runs it: one demo opened duplicate windows and leaked temporary folders.
 - **Run tests through `tools/run_tests.py`.** It puts `tests/` on the import path, which spawned
   workers need for `tests/fake_worker_engines.py`.
+- **Join workers before removing a test's folder.** A worker that is still ending holds its
+  `logs\worker.crash` open, and Windows will not delete an open file, so a tear-down that removes
+  the folder first fails with `WinError 32` (#278). After closing a `Workspace` or `WorkerHandle`,
+  call `join_workers(self)` from `tests/worker_exit.py`, then remove the folder.
 - **Tests pass the test key protector.** Since schema 2 (#111 C2b-2) a `Store` or `Workspace`
   built without `protector=keyprotect.TestProtector()` uses Windows Data Protection: it works
   on Windows but raises `KeyUnavailable` on Linux CI, and the two cannot open each other's
