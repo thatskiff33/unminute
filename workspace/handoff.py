@@ -205,9 +205,9 @@ class HandoffError(ValueError):
 
 TEMPLATES_FILE = "templates.sealed"     # sealed under the workspace key (#111 C2c)
 PLAIN_TEMPLATES_FILE = "templates.json"  # before C2c: converted at first use, then deleted
-MAX_TEMPLATES_BYTES = 8 * 1024 * 1024    # a larger file is treated as damaged, never read
-# A temporary file of a write cut short (Templates._write's name, either era).
-_LEFTOVER = re.compile(r"templates\.(sealed|json)\.[0-9]+\.[0-9]+\.tmp")
+# Never read past this: a larger templates.sealed counts as damaged; a larger
+# templates.json is left as it is, not converted.
+MAX_TEMPLATES_BYTES = 8 * 1024 * 1024
 
 
 def _saved_from(raw):
@@ -223,16 +223,6 @@ def _read_capped(path):
     with open(path, "rb") as f:
         data = f.read(MAX_TEMPLATES_BYTES + 1)
     return None if len(data) > MAX_TEMPLATES_BYTES else data
-
-
-def read_plain_templates(path):
-    """The saved templates of a plain templates.json (before C2c), by the
-    rules it was read with: anything damaged gives no saved templates."""
-    try:
-        data = _read_capped(path)
-        return {} if data is None else _saved_from(json.loads(data.decode("utf-8")))
-    except (OSError, ValueError):
-        return {}
 
 
 class Templates:
@@ -253,8 +243,6 @@ class Templates:
         self._lock = threading.Lock()
         self.saved = {}
         self.unreadable = False
-        for leftover in _leftovers(self.path.parent, "sealed"):
-            _remove(leftover)
         try:
             data = _read_capped(self.path)
         except FileNotFoundError:
@@ -348,14 +336,15 @@ class Templates:
                 self._write({k: v for k, v in self.saved.items() if k != tid})
 
 
-def _leftovers(folder, era):
-    """Temporary files of template writes cut short ("sealed" or "json")."""
+def _leftovers(path):
+    """The temporary files of writes of this file cut short (Templates._write
+    names them "<file name>.<process>.<thread>.tmp")."""
+    pattern = re.compile(re.escape(path.name) + r"\.[0-9]+\.[0-9]+\.tmp")
     try:
-        names = os.listdir(folder)
+        names = os.listdir(path.parent)
     except OSError:
         return []
-    return [Path(folder) / n for n in names
-            if (m := _LEFTOVER.fullmatch(n)) and m.group(1) == era]
+    return [path.parent / n for n in names if pattern.fullmatch(n)]
 
 
 def _remove(path):
@@ -371,22 +360,47 @@ def open_templates(folder, sealer):
     templates in a session, with the key available:
       1. templates.sealed exists: it is used; a templates.json beside it (a
          crash after the sealed copy was written) is deleted.
-      2. Else templates.json exists: read by its old rules (damaged gives no
-         saved templates), written sealed, then deleted. A write that fails
-         leaves templates.json in place for the next try.
-    Leftover temporary files of both are removed. Ordinary deletion: old
-    blocks of templates.json may remain on disk (BitLocker, ENCRYPTION.md)."""
+      2. Else templates.json exists and can be read: written sealed, then
+         deleted. If it does not decode or parse (damaged), that is no saved
+         templates, and unreadable is set so the app logs it.
+      3. A templates.json that cannot be read now (in use, access refused) or
+         is larger than MAX_TEMPLATES_BYTES, or whose sealed copy cannot be
+         written, is left exactly as it is for the next first use, and
+         unreadable is set: the built-ins only, this session.
+    Leftover temporary files of both files are removed first. Ordinary
+    deletion: old blocks of templates.json may remain on disk (BitLocker,
+    ENCRYPTION.md)."""
     folder = Path(folder)
     sealed, plain = folder / TEMPLATES_FILE, folder / PLAIN_TEMPLATES_FILE
+    for leftover in _leftovers(sealed) + _leftovers(plain):
+        _remove(leftover)
     had_sealed = sealed.is_file()
     templates = Templates(sealed, sealer)
     if not had_sealed and plain.is_file():
-        with templates._lock:
-            templates._write(read_plain_templates(plain))
+        try:
+            data = _read_capped(plain)
+        except OSError:
+            data = None
+        if data is None:                     # cannot be read now, or too large: kept
+            templates.unreadable = True
+            return templates
+        damaged = False
+        try:
+            raw = json.loads(data.decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not templates")
+            saved = _saved_from(raw)
+        except ValueError:
+            saved, damaged = {}, True
+        try:
+            with templates._lock:
+                templates._write(saved)
+        except (OSError, HandoffError):      # not written: kept for the next try
+            templates.unreadable = True
+            return templates
+        templates.unreadable = damaged
     if os.path.lexists(plain) and not plain.is_dir():
         _remove(plain)
-    for leftover in _leftovers(folder, "json"):
-        _remove(leftover)
     return templates
 
 
