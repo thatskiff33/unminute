@@ -77,16 +77,22 @@ def wav_frames(path):
 class RecordingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # A clean-up, not tearDown: clean-ups run last first, so every
+        # recording a test started is stopped before its folder is removed.
+        self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.holder = {}
 
-    def tearDown(self):
-        self.tmp.cleanup()
+    def started(self, rec):
+        # #269: stopped even when an assertion fails, so no recorder thread
+        # outlives the test (stop() is safe to call again after a test's own).
+        rec.start()
+        self.addCleanup(rec.stop)
+        return rec
 
     def start(self):
-        rec = recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
-                                 open_stream=opener(self.holder))
-        rec.start()
+        rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
+                                              open_stream=opener(self.holder)))
         return rec, self.holder["stream"]
 
     def test_every_frame_is_saved_in_durable_chunks(self):
@@ -227,10 +233,9 @@ class RecordingTests(unittest.TestCase):
 
     def start_ticking(self):
         self.asleep = [0.0]
-        rec = recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
-                                 open_stream=opener(self.holder),
-                                 tick=lambda: time.monotonic() + self.asleep[0])
-        rec.start()
+        rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
+                                              open_stream=opener(self.holder),
+                                              tick=lambda: time.monotonic() + self.asleep[0]))
         return rec, self.holder["stream"]
 
     def wait_stopped(self, rec, seconds=10):
@@ -240,28 +245,35 @@ class RecordingTests(unittest.TestCase):
 
     # #269: wait for what a background thread does, up to a bound, rather than
     # for a fixed time, so a slow runner does not fail a test that is right.
+    # Each wait fails the test if it runs out, so none passes without testing.
     def wait_for(self, condition, seconds=10):
         deadline = time.monotonic() + seconds
         while not condition() and time.monotonic() < deadline:
             time.sleep(0.02)
+        return condition()
 
     def wait_event(self, rec, kind, seconds=10):
-        self.wait_for(lambda: kind in [e["kind"] for e in rec.journal["events"]], seconds)
+        self.assertTrue(self.wait_for(
+            lambda: kind in [e["kind"] for e in rec.journal["events"]], seconds),
+            f"no {kind!r} event within {seconds} s")
 
     def wait_first_beat(self, rec, seconds=10):
         # The writer's first pass (its silence check) writes the heartbeat file.
-        self.wait_for(lambda: (rec.folder / "heartbeat").exists(), seconds)
+        self.assertTrue(self.wait_for(lambda: (rec.folder / "heartbeat").exists(), seconds),
+                        f"the writer made no first pass within {seconds} s")
 
     def wait_writer_check(self, rec, seconds=10):
         # The writer notes "last seen" just before each silence check, so a
-        # second new note means a whole check ran after this call.
+        # second new note means a whole check ran after this call. A recording
+        # that stopped has no more checks to run: the caller asserts on that.
         notes = [rec.journal["last_seen"]]
 
         def two_new_notes():
             if rec.journal["last_seen"] != notes[-1]:
                 notes.append(rec.journal["last_seen"])
-            return len(notes) > 2
-        self.wait_for(two_new_notes, seconds)
+            return len(notes) > 2 or rec.stopped
+        self.assertTrue(self.wait_for(two_new_notes, seconds),
+                        f"the writer ran no silence check within {seconds} s")
 
     def test_sleep_is_reported_as_sleep_not_a_lost_microphone(self):
         rec, s = self.start_ticking()
@@ -368,7 +380,7 @@ class RecordingTests(unittest.TestCase):
         # runner cannot reach it) and well below each 5 s jump of the clock.
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 2.0), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec.start()
+            self.started(rec)
             s = self.holder["stream"]
             for _ in range(10):
                 s.feed(0.2)
@@ -406,7 +418,7 @@ class RecordingTests(unittest.TestCase):
                                  clock=lambda: time.time() + offset[0])
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec.start()
+            self.started(rec)
             self.holder["stream"].feed(1)
             offset[0] -= 3600                    # an hour back; then the microphone goes
             self.wait_stopped(rec, 5)
@@ -421,17 +433,25 @@ class RecordingTests(unittest.TestCase):
                                  clock=lambda: time.time() + offset[0])
         with mock.patch.object(recorder, "MAX_HOURS", 1 / 3600), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
-            rec.start()
+            began = time.monotonic()
+            self.started(rec)
             offset[0] -= 3600                    # setting the time back does not extend it
             s = self.holder["stream"]
-            deadline = time.monotonic() + 10
+            deadline = began + 10
             while not rec.stopped and time.monotonic() < deadline:
                 s.feed(0.1)
                 time.sleep(0.1)
+            took = time.monotonic() - began
             stopped = rec.stopped
-            journal = rec.stop()                 # always let go of it, or clean-up fails
+            journal = rec.stop()
         self.assertTrue(stopped)
         self.assertIn("time_limit", [e["kind"] for e in journal["events"]])
+        # Not before the limit, and not much after it. Measured 0.1 s late on a
+        # quiet laptop and at most 0.3 s with every processor busy; the runner
+        # once overran 0.5 s. 3 s allows for that many times over, and a limit
+        # four times too long still fails.
+        self.assertGreaterEqual(took, 1.0)
+        self.assertLessEqual(took, 1.0 + 3.0, f"stopped after {took:.1f} s")
 
     def test_a_lid_closed_while_recording_is_noted_on_opening(self):
         # (#269: a 1 s note limit, so the brief closing below stays brief on a
@@ -538,7 +558,8 @@ class RecordingTests(unittest.TestCase):
             s.feed(1)
             time.sleep(0.3)
             self.asleep[0] += 4                  # held up 4 s; no beat follows
-            time.sleep(0.4)                      # several silence checks run
+            self.wait_writer_check(rec)          # a silence check runs (#269: waited for)
+            self.wait_writer_check(rec)          # and another
             self.assertFalse(rec.stopped)
             s.feed(1)
         journal = rec.stop()
