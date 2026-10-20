@@ -155,6 +155,33 @@ class NavigationTests(unittest.TestCase):
         copy = re.search(r'<button [^>]*\bid="ho-copy"[^>]*>', html).group(0)
         self.assertIn('class="primary wide-btn"', copy)
 
+    def test_every_hand_off_visit_starts_without_an_assistant(self):
+        # #109 review round 2: reopening Hand off kept the last preview's
+        # "Copy and open" name and host until the new preview arrived (and
+        # for good if it failed). openHandoff now lays the page out as before
+        # #109 before it waits for anything; the preview fills it in.
+        import re
+        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        body = re.search(r"\nasync function openHandoff\(\) \{\n(.*?)\n\}\n", script, re.S)
+        self.assertIsNotNone(body, "openHandoff not found")
+        self.assertIn("layoutHandoff(null);", body.group(1).split("await", 1)[0])
+
+    def test_the_hand_off_buttons_beneath_copy_and_open_stay_one_row(self):
+        # #109 review: the three ways out beneath Copy and open are one flex
+        # row (wrapping only where three cannot fit), not a grid with Copy
+        # prompt and transcript spanning a row of its own.
+        import re
+        css = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+        row = [(s.strip(), d) for s, d in rules
+               if re.search(r"\.ho-three|\.ho-pair|#ho-row|#ho-copy\b", s)]
+        self.assertTrue(any(s == ".ho-pair" and re.search(r"display\s*:\s*flex", d)
+                            for s, d in row), ".ho-pair must stay a flex row")
+        for selector, decls in row:
+            self.assertNotRegex(decls, r"display\s*:\s*(inline-)?grid", selector)
+            self.assertNotRegex(decls, r"grid-(column|row|area|template)", selector)
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):

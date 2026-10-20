@@ -1356,6 +1356,7 @@ async function openHandoff() {
   $("ho-left-out").textContent = "";
   $("ho-long").hidden = true;
   $("ho-apply").disabled = true;                  // until this meeting's options have loaded
+  layoutHandoff(null);                            // no assistant until this visit's preview says
   handoffState.loads = (handoffState.loads || 0) + 1;
   setHandoffButtons();
   handoffState.templates = await attempt(() => call("handoff_templates")) || [];
