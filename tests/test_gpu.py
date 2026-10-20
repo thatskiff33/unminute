@@ -785,7 +785,7 @@ class WhisperGpuLoadTests(unittest.TestCase):
     """_load_whisper_gpu with CTranslate2 and faster_whisper stood in for, as
     a card below compute capability 7.0 behaves (#263 review, D4)."""
 
-    def load(self, supported, refuse=None):
+    def load(self, supported, refuse=None, model=asr_engines.WHISPER_TURBO):
         import types
 
         from workspace import engines
@@ -804,7 +804,7 @@ class WhisperGpuLoadTests(unittest.TestCase):
                 mock.patch.object(asr_engines, "find_verified", return_value=Path("m")), \
                 mock.patch.object(asr_engines, "feature_width_problem", return_value=None):
             try:
-                engine = engines.load_engine(asr_engines.WHISPER_TURBO, "cache", 1,
+                engine = engines.load_engine(model, "cache", 1,
                                              device="cuda")
             except Exception as exc:          # what the worker would send back
                 return exc, made
@@ -842,6 +842,19 @@ class WhisperGpuLoadTests(unittest.TestCase):
         engine, made = self.load({"float16", "int8_float16", "int8"})
         self.assertEqual((engine.device, engine.precision), ("cuda", "float16"))
         self.assertEqual(made, [("cuda", "float16")])
+
+    # Large-v3's pinned precision on the card is int8_float16, not turbo's float16.
+    def test_large_v3_is_refused_on_a_card_without_int8_float16(self):
+        from workspace.engines import GpuUnavailable
+        exc, made = self.load({"float16", "int8", "float32"}, model=asr_engines.WHISPER_LARGE)
+        self.assertIsInstance(exc, GpuUnavailable)
+        self.assertEqual(made, [])                            # never tried on the card
+
+    def test_large_v3_loads_on_the_card_at_int8_float16(self):
+        engine, made = self.load({"float16", "int8_float16", "int8"},
+                                 model=asr_engines.WHISPER_LARGE)
+        self.assertEqual((engine.device, engine.precision), ("cuda", "int8_float16"))
+        self.assertEqual(made, [("cuda", "int8_float16")])
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
