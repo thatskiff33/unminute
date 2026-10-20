@@ -871,6 +871,81 @@ class ToolTests(TempDir):
             form.wait(10)
             form.stdout.close()
 
+    @unittest.skipUnless(os.name == "nt", "Windows windows")
+    def test_the_ui_check_posts_esc_and_an_unfocused_invoke(self):
+        # The steps behind the Esc and Invoke scripts (#232), on an off-screen
+        # stand-in form that is never activated, as the confirmation usually
+        # is not: "invoke-on" (BM_CLICK) does nothing on a disabled button and
+        # raises Click once it is enabled, without moving the focus there;
+        # "until-enabled" waits for the enabling and fails the script if it does
+        # not come in time; "esc-on" reaches the form's CancelButton. The
+        # stand-in sits where the tick test's does, so they take turns.
+        with one_run_at_a_time(TICK_TEST_MUTEX):
+            self.esc_and_invoke_on_a_stand_in()
+
+    def esc_and_invoke_on_a_stand_in(self):
+        import ctypes
+        import io
+
+        import workspace_ui_check
+        title = f"Unminute invoke test {os.getpid()}"
+        statement = "I have read this synthetic statement."
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "Add-Type -WarningAction SilentlyContinue -ReferencedAssemblies System.Windows.Forms "
+            "-TypeDefinition 'public class QuietForm : System.Windows.Forms.Form { protected "
+            "override bool ShowWithoutActivation { get { return true; } } }'; "
+            "function Say($line) { [Console]::Out.WriteLine($line); [Console]::Out.Flush() }; "
+            "$f = New-Object QuietForm; $f.Text = $env:UNMINUTE_TITLE; "
+            "$f.ShowInTaskbar = $false; $f.StartPosition = 'Manual'; "
+            "$f.Location = New-Object Drawing.Point(-32000, -32000); "
+            "$cancel = New-Object Windows.Forms.Button; $cancel.Text = 'Cancel'; "
+            "$cancel.add_Click({ Say 'cancel' }); "
+            "$ok = New-Object Windows.Forms.Button; $ok.Text = 'OK'; $ok.Left = 100; "
+            "$ok.Enabled = $false; $ok.add_Click({ Say ('invoke focused ' + $ok.Focused) }); "
+            "$check = New-Object Windows.Forms.CheckBox; $check.Text = $env:UNMINUTE_CHECK; "
+            "$check.AutoSize = $true; $check.Top = 40; "
+            "$check.add_CheckedChanged({ Say 'checked' }); "
+            "$f.CancelButton = $cancel; "
+            "$f.Controls.Add($cancel); $f.Controls.Add($ok); $f.Controls.Add($check); "
+            "$timer = New-Object Windows.Forms.Timer; $timer.Interval = 2000; "
+            "$timer.add_Tick({ $timer.Stop(); $ok.Enabled = $true; Say 'enabled' }); "
+            "$f.Show(); $cancel.Select(); $timer.Start(); Say 'shown'; "
+            "for ($i = 0; $i -lt 300 -and $f.Visible; $i++) { "
+            "[Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 50 }; "
+            "Say 'done'")
+        form = subprocess.Popen([windows_powershell.executable(), "-NoProfile",
+                                 "-NonInteractive", "-Command", script],
+                                stdout=subprocess.PIPE, text=True,
+                                env=dict(os.environ, UNMINUTE_TITLE=title,
+                                         UNMINUTE_CHECK=statement))
+        try:
+            self.assertEqual("shown", form.stdout.readline().strip())
+            user32 = ctypes.WinDLL("user32")
+            user32.FindWindowW.restype = ctypes.c_void_p
+            hwnd = user32.FindWindowW(None, title)
+            self.assertTrue(hwnd)
+            with mock.patch.object(workspace_ui_check, "find_dialog", return_value=hwnd):
+                # Disabled: BM_CLICK is ignored, and a short wait for the
+                # enabling fails the script rather than going on.
+                self.assertTrue(workspace_ui_check.press(["invoke-on:OK"], title))
+                with mock.patch.object(workspace_ui_check, "ENABLE_WAIT_S", 0.3), \
+                        contextlib.redirect_stderr(io.StringIO()) as said:
+                    self.assertFalse(workspace_ui_check.press(["until-enabled:OK"], title))
+                self.assertIn("was not enabled", said.getvalue())
+                # Once enabled, BM_CLICK raises Click with the focus elsewhere.
+                self.assertTrue(workspace_ui_check.press(["until-enabled:OK", "invoke-on:OK"],
+                                                         title))
+                # Esc posted to the statement clicks CancelButton, and ticks nothing.
+                self.assertTrue(workspace_ui_check.press(["esc-on:" + statement], title))
+            user32.PostMessageW(ctypes.c_void_p(hwnd), 0x0010, 0, 0)          # WM_CLOSE
+            lines = [line.strip() for line in form.stdout]
+            self.assertEqual(["enabled", "invoke focused False", "cancel", "done"], lines)
+        finally:
+            form.kill()
+            form.wait(10)
+            form.stdout.close()
+
     @unittest.skipUnless(os.name == "nt", "Windows mutex")
     def test_runs_take_turns_at_the_tick_test(self):
         # Another process holding the mutex keeps this run waiting; once it lets
@@ -922,8 +997,10 @@ class ToolTests(TempDir):
         self.assertIn('["tab", "space-on:" + keyed["check"]', native)
 
     def test_the_ui_check_guards_each_confirmation_rule(self):
-        # Each rule in workspace/shell.py's confirmation has a native script
-        # that only that rule can pass (round 2 review of #229).
+        # Each scripted rule of workspace/shell.py's confirmation has a native
+        # script that only that rule can pass (round 2 review of #229; Esc and
+        # an Invoke without the focus, #232). docs/DEVELOPER_NOTES.md lists the
+        # rules this check does not script.
         source = self.source("workspace_ui_check.py")
         native = source.split("\ndef native_checks(", 1)[1].split("\ndef ", 1)[0]
         # The quick Enter comes long after the action was enabled, so only the
@@ -943,12 +1020,28 @@ class ToolTests(TempDir):
         # means Cancel (AcceptButton).
         self.assertIn('["tab", "space-on:" + on_statement["check"], "wait:2.5",\n'
                       '         "enter-on:" + on_statement["check"]]', native)
-        verdict = source.split('nv = report.get("native")', 1)[1].split("recording indicator", 1)[0]
+        # Esc on the ticked statement, long after the action was enabled, means
+        # Cancel (CancelButton), and closes the window itself (#232).
+        self.assertIn('["tab", "space-on:" + escaped["check"], "wait:2.5",\n'
+                      '         "esc-on:" + escaped["check"], "wait:0.5", "open?"]', native)
+        # An Invoke without the focus, 0.3 s after the action is enabled, is
+        # ignored; 1.6 s after, it answers (act_clicked; mutant M13 of #229).
+        self.assertIn('["until-enabled:Confirm", "wait:0.3", "invoke-on:Confirm", "open?", '
+                      '"wait:1.3",\n         "invoke-on:Confirm"]', native)
+        # The verdict is native_problems (unit tests in tests/test_accessors.py),
+        # and main fails on what it finds.
+        verdict = source.split("\ndef native_problems(", 1)[1].split("\ndef ", 1)[0]
+        main = source.split('nv = report.get("native")', 1)[1].split("recording indicator", 1)[0]
+        self.assertIn("bad.extend(native_problems(nv))", main)
         for rule in ('nv.get("keys_restart_wait") is True', 'nv.get("open_after_keys") == [True]',
                      'nv.get("clicks_restart_wait") is True',
                      'nv.get("open_after_clicks") == [True]',
                      'nv.get("enter_on_statement") is False', 'nv.get("pressed_6")',
-                     'nv.get("pressed_7")', 'nv.get("pressed_8")'):
+                     'nv.get("pressed_7")', 'nv.get("pressed_8")',
+                     'nv.get("esc_on_statement") is False',
+                     'nv.get("open_after_esc") == [False]', 'nv.get("pressed_9")',
+                     'nv.get("invoke_after_enabled_wait") is True',
+                     'nv.get("open_after_quick_invoke") == [True]', 'nv.get("pressed_10")'):
             with self.subTest(rule=rule):
                 self.assertIn(rule, verdict)
 
@@ -962,7 +1055,7 @@ class ToolTests(TempDir):
         self.assertIn('if not find_dialog(title, timeout=0.2) and done["ok"]:', run_with)
         finder = source.split("def find_dialog(", 1)[1].split("\ndef ", 1)[0]
         self.assertIn("owner.value == pid", finder)
-        self.assertIn('if nv.get("stuck_dialogs"):', source)
+        self.assertIn('    if nv.get("stuck_dialogs"):\n        bad.append(', source)
 
     def test_package_checks_start_the_app_as_the_shortcut_does(self):
         flags = '"-I", "-B", "-X", "disable-remote-debug"'

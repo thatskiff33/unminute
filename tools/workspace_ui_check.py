@@ -151,14 +151,20 @@ def dialog_button(hwnd, text):
     return found[0] if found else 0
 
 
-PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "toggle-on", "enter-on", "shift-on")
+PRESS_STEPS = ("wait", "click", "enter", "tab", "space-on", "toggle-on", "enter-on", "shift-on",
+               "esc-on", "invoke-on", "until-enabled")
+ENABLE_WAIT_S = 5          # "until-enabled" gives up after this (the action needs about 1 s)
 
 
 def press(script, title, seen=None):
     """Act on the confirmation as a person would, through Windows messages
     (the page has no way to): "click:<button or text>", "enter", "tab",
-    "enter-on:<control>", "space-on:<statement>", "toggle-on:<statement>",
+    "enter-on:<control>", "esc-on:<control>", "space-on:<statement>",
+    "toggle-on:<statement>", "invoke-on:<button>" (BM_CLICK: a Click with no
+    key, mouse or focus, the path of an assistive tool's Invoke),
     "shift-on:<control>" (a key that does nothing but count as a key press),
+    "until-enabled:<button>" (waits until Windows shows the button enabled;
+    the script fails if it is not within ENABLE_WAIT_S),
     "wait:1.3", "open?" (notes whether the window is still open).
 
     The statement is never ticked by a posted click. WinForms' CheckBox acts
@@ -225,10 +231,24 @@ def press(script, title, seen=None):
             user32.PostMessageW(control, 0x0100, 0x20, 0)                     # WM_KEYDOWN Space
             user32.PostMessageW(control, 0x0101, 0x20, 0)
             time.sleep(0.2)
-        elif kind == "toggle-on":                                         # tick, with no input
+        elif kind in ("toggle-on", "invoke-on"):                          # Click, with no input
             control = dialog_button(hwnd, arg)
             user32.PostMessageW(control, 0x00F5, 0, 0)                        # BM_CLICK
             time.sleep(0.2)
+        elif kind == "esc-on":                                            # Esc on that control
+            control = dialog_button(hwnd, arg)
+            user32.PostMessageW(control, 0x0100, 0x1B, 0)                     # WM_KEYDOWN Esc
+            user32.PostMessageW(control, 0x0101, 0x1B, 0)
+            time.sleep(0.2)
+        elif kind == "until-enabled":                                     # the wait is over
+            control = dialog_button(hwnd, arg)
+            end = time.time() + ENABLE_WAIT_S
+            while not (control and user32.IsWindowEnabled(control)):
+                if time.time() >= end:
+                    print(f"press: {arg!r} was not enabled within {ENABLE_WAIT_S} s",
+                          file=sys.stderr)
+                    return False
+                time.sleep(0.05)
         elif kind == "shift-on":                                          # a key, no effect
             control = dialog_button(hwnd, arg)
             user32.PostMessageW(control, 0x0100, 0x10, 0)                     # WM_KEYDOWN Shift
@@ -243,13 +263,16 @@ def press(script, title, seen=None):
 
 
 def native_checks(window, ws, mid):
-    """The app's own confirmation window: the action is ignored at first and
-    until a statement is ticked, Enter means Cancel unless the action has held
-    the focus, a key or click before the action is available starts the wait
-    again, the bridge reports a Cancel without acting, and the action works
-    after the wait. The
-    recording indicator changes the title and the taskbar overlay and
-    restores them."""
+    """The app's own confirmation window, through the scripts below (each rule
+    is checked only as far as its script goes): a click on the action is
+    ignored at first and until a statement is ticked; Enter posted to Cancel,
+    and Enter or Esc posted to the ticked statement, mean Cancel; on the
+    action, Enter answers only after the action has held the focus for the
+    wait; an Invoke without the focus (BM_CLICK) answers only once the action
+    has been enabled for the wait; a key or click before the action is
+    available, and a tick, start the wait again; the bridge reports a Cancel without
+    acting; and a click on the action works after the wait. The recording
+    indicator changes the title and the taskbar overlay and restores them."""
     import ctypes
     import threading
 
@@ -348,6 +371,27 @@ def native_checks(window, ws, mid):
         ["tab", "space-on:" + on_statement["check"], "wait:2.5",
          "enter-on:" + on_statement["check"]], on_statement["title"],
         lambda: shell.native_confirm(window, on_statement))
+    # Esc means Cancel (CancelButton): Esc on the ticked statement, long after
+    # the action was enabled, closes the window with no answer. "open?" shows
+    # Esc closed it, not the stuck-window clean-up.
+    escaped = dict(ticked, title="Workspace UI check: Esc on the statement")
+    seen_esc = []
+    out["esc_on_statement"], out["pressed_9"] = run_with(
+        ["tab", "space-on:" + escaped["check"], "wait:2.5",
+         "esc-on:" + escaped["check"], "wait:0.5", "open?"], escaped["title"],
+        lambda: shell.native_confirm(window, escaped), seen_esc)
+    out["open_after_esc"] = seen_esc
+    # An Invoke without the focus (Cancel keeps it; BM_CLICK, as an assistive
+    # tool's Invoke arrives) answers only once the action has been enabled for
+    # the wait (act_clicked): 0.3 s after it is enabled it is ignored, 1.6 s
+    # after it answers. No key or mouse input, so nothing restarts the wait.
+    invoked = dict(plain, title="Workspace UI check: Invoke without the focus")
+    seen_invoke = []
+    out["invoke_after_enabled_wait"], out["pressed_10"] = run_with(
+        ["until-enabled:Confirm", "wait:0.3", "invoke-on:Confirm", "open?", "wait:1.3",
+         "invoke-on:Confirm"], invoked["title"],
+        lambda: shell.native_confirm(window, invoked), seen_invoke)
+    out["open_after_quick_invoke"] = seen_invoke
     form = window.native
     hwnd = form.Invoke(Func[IntPtr](lambda: form.Handle)).ToInt64()
 
@@ -363,6 +407,45 @@ def native_checks(window, ws, mid):
     time.sleep(0.5)
     out["title_restored"] = caption() == before
     return out
+
+
+def native_problems(nv):
+    """What the native confirmation scripts found wrong, one entry per rule
+    (an empty list: nothing). A script that could not press its window
+    ("pressed_N" false) fails its rule too."""
+    bad = []
+    if nv.get("stuck_dialogs"):
+        bad.append("a confirmation was left open (is the screen locked?)")
+    rules = (
+        ("an early click or Enter answered",
+         nv.get("early_yes_then_enter") is False and nv.get("pressed_1")),
+        ("a Cancel through the bridge acted",
+         nv.get("bridge_no") and nv.get("meeting_kept") and nv.get("pressed_2")),
+        ("a click after the wait did not answer",
+         nv.get("yes_after_delay") is True and nv.get("pressed_3")),
+        ("the action answered before, or just after, the tick",
+         nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
+         and nv.get("pressed_4")),
+        ("Enter answered before the action held the focus",
+         nv.get("keyboard_after_hold") is True and nv.get("open_after_quick_enter") == [True]
+         and nv.get("pressed_5")),
+        ("a key press did not start the wait again",
+         nv.get("keys_restart_wait") is True and nv.get("open_after_keys") == [True]
+         and nv.get("pressed_6")),
+        ("a click did not start the wait again",
+         nv.get("clicks_restart_wait") is True and nv.get("open_after_clicks") == [True]
+         and nv.get("pressed_7")),
+        ("Enter on the statement did not mean Cancel",
+         nv.get("enter_on_statement") is False and nv.get("pressed_8")),
+        ("Esc on the statement did not mean Cancel",
+         nv.get("esc_on_statement") is False and nv.get("open_after_esc") == [False]
+         and nv.get("pressed_9")),
+        ("an Invoke without the focus answered early, or not after the wait",
+         nv.get("invoke_after_enabled_wait") is True
+         and nv.get("open_after_quick_invoke") == [True] and nv.get("pressed_10")),
+    )
+    bad.extend("native confirmation: " + rule for rule, ok in rules if not ok)
+    return bad
 
 
 def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
@@ -1112,20 +1195,7 @@ def main():
             and h.get("copy_blocked_until_applied") and h.get("anonymised")):
         bad.append("handoff")
     nv = report.get("native") or {}
-    if nv.get("stuck_dialogs"):
-        bad.append("a confirmation was left open (is the screen locked?)")
-    if not (nv.get("early_yes_then_enter") is False and nv.get("yes_after_delay") is True
-            and nv.get("bridge_no") and nv.get("meeting_kept")
-            and nv.get("tick_first") is True and nv.get("open_until_ticked") == [True, True]
-            and nv.get("keyboard_after_hold") is True
-            and nv.get("open_after_quick_enter") == [True]
-            and nv.get("keys_restart_wait") is True and nv.get("open_after_keys") == [True]
-            and nv.get("clicks_restart_wait") is True and nv.get("open_after_clicks") == [True]
-            and nv.get("enter_on_statement") is False
-            and nv.get("pressed_1") and nv.get("pressed_2") and nv.get("pressed_3")
-            and nv.get("pressed_4") and nv.get("pressed_5") and nv.get("pressed_6")
-            and nv.get("pressed_7") and nv.get("pressed_8")):
-        bad.append("native confirmation")
+    bad.extend(native_problems(nv))
     if not (shell.RECORDING_MARK in nv.get("title_recording", "") and nv.get("title_restored")
             and nv.get("overlay_on") and nv.get("overlay_off")):
         bad.append("recording indicator")
