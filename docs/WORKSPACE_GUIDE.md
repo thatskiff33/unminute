@@ -14,7 +14,7 @@ This guide covers the packaged workspace.
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
 | **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`). This is not a synced folder. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
-| **Handoff to an AI assistant** | Only when you copy or save it. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
+| **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
 
 ## Getting started
@@ -81,7 +81,8 @@ Each meeting shows its steps:
    - The app then removes its own copy of the audio. It also removes the original recording, but only if you allowed that for the watched folder it came from.
    - Playback and editing are no longer available after this step.
 2. **Hand off.**
-   - **Hand off…** opens a page that shows exactly what will be copied, with three ways out: **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown…**.
+   - **Hand off…** opens a page that shows exactly what will be copied, with four ways out: **Copy and open ChatGPT** (the main button), **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown…**.
+   - **Copy and open ChatGPT** copies the prompt and transcript, then opens chatgpt.com in your default browser. Sign in with your organisation's business account, not a personal one (Unminute cannot see which account is signed in), paste with Ctrl+V, check it, then send. Unminute sends nothing, puts nothing from the meeting in the web address and does not type into the browser. If no browser appears, open chatgpt.com yourself and paste. Your IT team may have renamed the button for another assistant (for example "Copy and open Copilot"), or turned it off; Settings then says so.
    - Templates: Minutes and actions, Short summary, Action list, Board or directors' minutes, Client meeting file note, Follow-up email, and Team or WIP notes. **Edit template** and **New template** let you adjust them.
    - Each built-in template asks the assistant to:
      - gather what else it can about the meeting from its connected tools and the project it is in;

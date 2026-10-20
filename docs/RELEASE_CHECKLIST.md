@@ -45,6 +45,7 @@ Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNB
 - [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
 - [ ] **#27:** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
 - [ ] **#28:** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
+- [ ] **#109:** Copy and open on the installed package, with synthetic content (sitting logged in #189): one tab opens on the assistant's page with Edge as the default browser (then Chrome if installed), both with the browser already open and closed (a browser the app starts inherits its environment); paste works; Win+V history does not show the copy. Policy by registry: another name and address, an invalid address, only one of the two set, and `AllowHandoffAssistant` = 0 (button gone; Settings says why). Narrator and keyboard on the button and its messages.
 - [x] **#30:** unplug a USB microphone during a recording (runbook section 6). Done with a USB microphone; see the table above.
 - [x] **#20:** importing by dragging a recording onto the window. Done; see the table above.
 

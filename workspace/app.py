@@ -54,6 +54,10 @@ LID_RETRY_S = 60.0                  # a lid restore that failed is tried again t
 # and again at once after a download, removal, token or settings change (R7b).
 DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
+# Copy and open (#109): after one opening of the assistant's page, another is
+# refused for this long (a double click, or a page calling it in a loop). The
+# same 3 seconds as api.DECLINE_PAUSE_S.
+ASSISTANT_PAUSE_S = 3.0
 SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
 SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
@@ -256,7 +260,8 @@ class Settings:
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None, check_integrity=False, lid_switch=None, codec=None):
+                 policy_reader=None, check_integrity=False, lid_switch=None, codec=None,
+                 opener=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
@@ -265,7 +270,9 @@ class Workspace:
         the app last ended without closing, or the last check found damage.
         lid_switch: tests only; a power.LidSwitch with a fake power scheme.
         codec: how the store keeps content columns (store.PlainCodec unless
-        given; tests pass one that changes every value, #111 C2)."""
+        given; tests pass one that changes every value, #111 C2).
+        opener: tests and the UI check tools only; called with the assistant's
+        address instead of asking Windows to open it (copy_and_open_assistant)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
@@ -298,6 +305,9 @@ class Workspace:
         self._clipboard_clears = []       # (due, sequence) for ClipboardClearMinutes
         self._clipboard_lock = threading.Lock()
         self._policy_wake = threading.Event()   # a clear was scheduled, or closing
+        self._opener = opener
+        self._assistant_lock = threading.Lock()
+        self._assistant_opened_at = None  # when copy_and_open last opened (self._clock)
         self._clock = time.monotonic      # counts time asleep; tests use a fake
         self._display = {}                # Settings and Setup values (_display_value)
         self._display_gen = 0
@@ -576,7 +586,8 @@ class Workspace:
                  if policy.SPEC[name][0] == "bool"}
         return {**p.summary(), "allow": allow,
                 "clipboard_clear_minutes": p.get("ClipboardClearMinutes"),
-                "handoff_folder_set": bool(p.get("HandoffDefaultFolder"))}
+                "handoff_folder_set": bool(p.get("HandoffDefaultFolder")),
+                "assistant": self._assistant_setting(p)}
 
     def wait_idle(self, timeout=60.0):
         """Tests and tools: wait until no work is queued or running."""
@@ -2050,8 +2061,11 @@ class Workspace:
             settings.append(f"{key}={shown}")
         lines.append("Settings: " + ", ".join(settings))
         p = self.policy.current()
+        # A folder, name or address shows only as "set": its shape was
+        # checked, but it is still text IT typed, not one of a set of values.
         managed = [f"{name}=" + ("invalid" if name in p.invalid else "set"
-                                 if policy.SPEC[name][0] == "path" else str(p.get(name)))
+                                 if policy.SPEC[name][0] in ("path", "name", "url")
+                                 else str(p.get(name)))
                    for name in p.summary()["managed"] if name in policy.SPEC]
         lines.append("Managed policy: " + (", ".join(managed) if managed else "none")
                      + ("; unreadable" if p.unreadable else ""))
@@ -2279,7 +2293,8 @@ class Workspace:
         if self._allowed("HandoffFilenameIncludesTitle") and not anonymise:
             out = {**out, "filename": handoff.title_filename(self.store.meeting(mid)["title"],
                                                              out["filename"])}
-        return {**out, "options": handoff.options(self.store, mid)}
+        return {**out, "options": handoff.options(self.store, mid),
+                "assistant": self._assistant_shown(self._assistant())}
 
     def set_handoff_options(self, mid, omitted, redactions):
         m = self._meeting(mid)
@@ -2305,6 +2320,87 @@ class Workspace:
             self._schedule_clipboard_clear(sequence, minutes * 60)
         return {"chars": len(out[kind]), "long": out["long"] and kind == "combined",
                 "clears_in_minutes": minutes or None}
+
+    # -- copy and open the assistant (#109) ---------------------------------------------
+
+    def _assistant(self, p=None):
+        """(name, address) of the assistant Copy and open uses, or None when
+        policy turns it off or sets it badly. IT sets the name and address
+        together: one without the other, or either one invalid, withholds the
+        button rather than falling back to the default, so the app never opens
+        ChatGPT where IT meant something else. An unreadable policy withholds
+        it too (AllowHandoffAssistant is a permission)."""
+        p = p or self.policy.current()
+        if not p.get("AllowHandoffAssistant"):
+            return None
+        keys = ("HandoffAssistantName", "HandoffAssistantUrl")
+        if any(k in p.invalid for k in keys):
+            return None
+        name, url = (p.get(k) for k in keys)
+        if name is None and url is None:
+            return handoff.DEFAULT_ASSISTANT
+        if name is None or url is None:
+            return None
+        return name, url
+
+    @staticmethod
+    def _assistant_shown(assistant):
+        """What the page may show: the name and the host, never a path or query."""
+        if assistant is None:
+            return None
+        from urllib.parse import urlsplit
+        return {"name": assistant[0], "host": urlsplit(assistant[1]).hostname}
+
+    def _assistant_setting(self, p):
+        """For Settings: whether IT set the assistant, and what is in force."""
+        keys = ("AllowHandoffAssistant", "HandoffAssistantName", "HandoffAssistantUrl")
+        if not any(p.managed(k) for k in keys):
+            return None
+        assistant = self._assistant(p)
+        if assistant is not None:
+            return {"state": "set", **self._assistant_shown(assistant)}
+        off = p.values.get("AllowHandoffAssistant") is False
+        return {"state": "off" if off else "invalid"}
+
+    def _open_address(self, url):
+        """Ask Windows to open a validated https address in the user's default
+        browser. The app process makes no connection itself (N2)."""
+        if self._opener is not None:
+            self._opener(url)
+        else:
+            os.startfile(url)              # Windows only: checked before anything is copied
+
+    def copy_and_open_assistant(self, mid, tid, expected, anonymise=False):
+        """Copy the prompt and transcript exactly as previewed, then open the
+        assistant's fixed address (policy, or the ChatGPT default) in the
+        user's browser. The page supplies no address or name, and nothing is
+        added to the address: the user pastes, checks and sends. The policy is
+        read again first, so a change IT made applies at this click."""
+        if self._opener is None and not hasattr(os, "startfile"):
+            raise WorkspaceError("Opening the browser works only on Windows.")
+        assistant = self._assistant(self.policy.refresh())
+        if assistant is None:
+            raise WorkspaceError("Your organisation has turned this off. Use Copy prompt and "
+                                 "transcript instead.")
+        name, url = assistant
+        with self._assistant_lock:
+            last, now = self._assistant_opened_at, self._clock()
+            if last is not None and now - last < ASSISTANT_PAUSE_S:
+                raise WorkspaceError("Already opening. Wait a moment and try again.")
+            self._assistant_opened_at = now
+        try:
+            copied = self.copy_handoff(mid, tid, "combined", expected, anonymise)
+        except BaseException:
+            with self._assistant_lock:     # nothing opened: the next click may try again
+                if self._assistant_opened_at == now:
+                    self._assistant_opened_at = last
+            raise
+        try:
+            self._open_address(url)
+            opened = True
+        except OSError:
+            opened = False                 # the copy stays; the page says to open it by hand
+        return {**copied, "opened": opened, **self._assistant_shown(assistant)}
 
     def _schedule_clipboard_clear(self, sequence, delay_s):
         """Clear the app's own copy later (policy), unless something else was

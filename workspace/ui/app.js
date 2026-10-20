@@ -1337,6 +1337,8 @@ function confirmFinal(d) {
 // preview is exactly what Copy or Save produces. Nothing is sent anywhere by
 // the app: the user pastes or attaches it in their approved assistant.
 // "Replace names" applies to this handoff only and is not stored.
+// Copy and open (#109) copies, then the app opens the assistant's address
+// (policy, or ChatGPT): the page only shows the name and host it is given.
 const handoffState = { template: "minutes", templates: [], preview: null, generation: 0,
                        dirty: false, anonymise: false, total: 0 };
 
@@ -1385,7 +1387,7 @@ function renderTemplateSelect() {
 
 function setHandoffButtons() {
   const ready = !!handoffState.preview && !handoffState.dirty;
-  for (const id of ["ho-copy", "ho-copy-prompt", "ho-save"]) $(id).disabled = !ready;
+  for (const id of ["ho-open", "ho-copy", "ho-copy-prompt", "ho-save"]) $(id).disabled = !ready;
   $("ho-dirty").hidden = !handoffState.dirty;
 }
 
@@ -1403,6 +1405,7 @@ async function renderHandoffPreview() {
   }
   if (generation !== handoffState.generation) return;
   handoffState.preview = p;
+  layoutHandoff(p.assistant);
   setHandoffButtons();
   $("ho-preview").textContent = p.combined;
   const total = handoffState.total;
@@ -1464,6 +1467,30 @@ async function applyHandoffOptions() {
   });
 }
 
+// With an assistant (the default), Copy and open is the main button and Copy
+// prompt and transcript joins the row beneath it. Turned off by policy, the
+// page is laid out as before #109: Copy prompt and transcript is the main button.
+function layoutHandoff(a) {
+  const copy = $("ho-copy"), row = $("ho-row");
+  $("ho-open").hidden = $("ho-open-note").hidden = !a;
+  if (a) {
+    $("ho-open-name").textContent = a.name;
+    $("ho-open-host").textContent = a.host;
+    if (copy.parentNode !== row) row.prepend(copy);
+  } else if (copy.parentNode === row) {
+    row.before(copy);
+  }
+  copy.classList.toggle("primary", !a);
+  copy.classList.toggle("wide-btn", !a);
+  row.classList.toggle("ho-three", !!a);
+}
+
+function clearsSentence(r) {
+  return r.clears_in_minutes
+    ? ` Your organisation clears it from the clipboard after ${r.clears_in_minutes} minute${r.clears_in_minutes === 1 ? "" : "s"} or when you close the app.`
+    : "";
+}
+
 function handoffSaid(message) {
   $("ho-status").textContent = message;   // the last result, kept on the page
   say(message);                           // announced once, by the toast
@@ -1475,13 +1502,27 @@ async function copyHandoff(kind) {
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_handoff", state.mid, handoffState.template, kind, p.digests[kind], handoffState.anonymise); }
   catch (err) { handoffSaid(String(err.message || err)); return; }
-  const clears = r.clears_in_minutes
-    ? ` Your organisation clears it from the clipboard after ${r.clears_in_minutes} minute${r.clears_in_minutes === 1 ? "" : "s"} or when you close the app.`
-    : "";
+  const clears = clearsSentence(r);
   handoffSaid((kind === "combined"
     ? `Copied the prompt and transcript (${r.chars.toLocaleString("en-NZ")} characters). Paste it into your organisation's approved AI assistant.` +
       (r.long ? " It is long: if the assistant cuts it off, use Save Markdown and Copy prompt only instead." : "")
     : "Copied the prompt only. Attach the saved Markdown file in your approved AI assistant, then paste the prompt.") + clears);
+}
+
+// The app copies first and opens the browser only if the copy worked. It
+// cannot tell whether a browser appeared, so the message says what to do if not.
+async function copyAndOpen() {
+  let r;
+  const p = handoffState.preview;
+  if (!p || handoffState.dirty) return;
+  try { r = await call("copy_and_open_assistant", state.mid, handoffState.template, p.digests.combined, handoffState.anonymise); }
+  catch (err) { handoffSaid(String(err.message || err)); return; }
+  const chars = r.chars.toLocaleString("en-NZ");
+  const long = r.long ? ` It is long: if ${r.name} cuts it off, use Save Markdown and Copy prompt only instead.` : "";
+  handoffSaid((r.opened
+    ? `Copied the prompt and transcript (${chars} characters) and opened ${r.name} in your browser. Sign in with your organisation's business account, paste with Ctrl+V, check it, then send. If no browser appears, open ${r.host} yourself.`
+    : `Copied the prompt and transcript (${chars} characters), but Unminute could not open your browser. Open ${r.host} yourself, sign in with your organisation's business account and paste.`)
+    + long + clearsSentence(r));
 }
 
 async function saveHandoff() {
@@ -1550,6 +1591,7 @@ function wireHandoff() {
   $("ho-redactions").addEventListener("input", markDirty);
   $("ho-anon").addEventListener("change", markDirty);
   $("ho-passages").addEventListener("change", () => { countLeftOut(); markDirty(); });
+  $("ho-open").addEventListener("click", copyAndOpen);
   $("ho-copy").addEventListener("click", () => copyHandoff("combined"));
   $("ho-copy-prompt").addEventListener("click", () => copyHandoff("prompt_only"));
   $("ho-save").addEventListener("click", saveHandoff);
@@ -1909,6 +1951,17 @@ function renderRepaired(r) {
   $("s-repaired").hidden = !text;
 }
 
+// Hand off's Copy and open (#109), when the organisation's policy sets it:
+// the name and host in force, or why there is no button.
+function renderAssistantSetting(a) {
+  const text = !a ? ""
+    : a.state === "set" ? `Hand off assistant: ${a.name}, ${a.host} (set by your organisation).`
+    : a.state === "off" ? "Hand off assistant: turned off by your organisation."
+    : "Hand off assistant: set by your organisation but not valid. Ask your IT team.";
+  $("s-assistant").textContent = text;
+  $("s-assistant").hidden = !text;
+}
+
 // A speech model in the Settings picker, marked as the Downloads page shows
 // its state (#244): Not downloaded, Damaged.
 const MODEL_STATE = { missing: " (not downloaded)", invalid: " (damaged)" };
@@ -1920,6 +1973,7 @@ async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
   $("s-managed").hidden = !(s.managed && s.managed.managed.length);
+  renderAssistantSetting(s.managed && s.managed.assistant);
   renderRepaired(s.repaired);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
   for (const r of document.querySelectorAll('input[name="recdisplay"]')) r.checked = r.value === s.recording_display;

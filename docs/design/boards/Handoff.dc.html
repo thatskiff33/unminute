@@ -76,12 +76,14 @@ body{margin:0}
           <div style="display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 800">
             <span style="width: 26px; height: 26px; box-sizing: border-box; border-radius: 50%; font-size: 13px; display: inline-flex; align-items: center; justify-content: center; border: 2px solid rgba(20,41,102,0.2); color: #566591">3</span>Copy or save
           </div>
-          <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; border: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #142966; color: #FFFFFF">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>Copy prompt and transcript
+          <button aria-describedby="b-open-note" style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; border: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #142966; color: #FFFFFF">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>Copy and open ChatGPT<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
           </button>
-          <div style="display: flex; gap: 8px">
-            <button style="font: inherit; flex: 1; font-size: 14px; font-weight: 600; min-height: 40px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Copy prompt only</button>
-            <button style="font: inherit; flex: 1; font-size: 14px; font-weight: 600; min-height: 40px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Save Markdown…</button>
+          <p id="b-open-note" style="margin: -4px 0 0; font-size: 13px; line-height: 1.4; color: #566591">Opens chatgpt.com in your browser. Paste only into your organisation's business account, not a personal one.</p>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px">
+            <button style="font: inherit; grid-column: 1 / -1; font-size: 14px; font-weight: 600; min-height: 40px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Copy prompt and transcript</button>
+            <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Copy prompt only</button>
+            <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Save Markdown…</button>
           </div>
         </li>
       </ol>

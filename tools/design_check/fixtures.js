@@ -390,7 +390,8 @@
     return { combined, prompt_only: "[prompt]", markdown: "[markdown]", chars: combined.length, long: false,
              omitted: opts.omitted.length, redactions: opts.redactions.length, anonymised: anonymise,
              digests: { combined: "a", prompt_only: "b", markdown: "c" },
-             template: { id: "minutes", title: TEMPLATE.title, version: 1 }, filename: "x.md", options: opts };
+             template: { id: "minutes", title: TEMPLATE.title, version: 1 }, filename: "x.md", options: opts,
+             assistant: { name: "ChatGPT", host: "chatgpt.com" } };   // the default when IT sets none (#109)
   }
   // Silence of a given length, as the bridge's audio clips are data URLs.
   function silence(seconds) {

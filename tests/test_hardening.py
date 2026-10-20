@@ -121,6 +121,24 @@ class NavigationTests(unittest.TestCase):
             cancelled[name] = args.Cancel
         self.assertEqual(cancelled, {"index.html#x": False, "other.html": True})
 
+    def test_the_page_opens_no_link_itself(self):
+        # #109: Copy and open asks the app to open the assistant; the page has
+        # no link, window.open, location change or form that submits anywhere
+        # (its forms are method="dialog"). Only its two stylesheets use href.
+        import re
+        ui = ROOT / "workspace" / "ui"
+        html = (ui / "index.html").read_text(encoding="utf-8")
+        script = (ui / "app.js").read_text(encoding="utf-8").replace(
+            '"http://www.w3.org/2000/svg"', "SVG_NAMESPACE")            # a name, not an address
+        self.assertEqual(re.findall(r"\bhref\s*=\s*\"([^\"]*)\"", html), ["tokens.css", "app.css"])
+        for source in (html, script):
+            for pattern in (r"window\.open\b", r"\blocation\b", r"\.href\b", r"\bsrcdoc\b",
+                            r"\bhttps?://", r"[\"']a[\"']", r"[\"']iframe[\"']"):
+                self.assertIsNone(re.search(pattern, source), pattern)
+        for pattern in (r"<a\b", r"<iframe\b", r"<form(?![^>]*method=\"dialog\")",
+                        r"<[^>]*\s(?:action|formaction|target)\s*="):         # markup only
+            self.assertIsNone(re.search(pattern, html), pattern)
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):

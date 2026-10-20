@@ -118,5 +118,32 @@
               maxLength="400" />
       </elements>
     </policy>
+    <policy name="AllowHandoffAssistant" class="Machine"
+            displayName="$(string.AllowHandoffAssistant)"
+            explainText="$(string.AllowHandoffAssistant_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowHandoffAssistant">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+    <policy name="HandoffAssistantName" class="Machine" displayName="$(string.HandoffAssistantName)"
+            explainText="$(string.HandoffAssistantName_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.HandoffAssistantName)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <text id="HandoffAssistantName" valueName="HandoffAssistantName" maxLength="30" />
+      </elements>
+    </policy>
+    <policy name="HandoffAssistantUrl" class="Machine" displayName="$(string.HandoffAssistantUrl)"
+            explainText="$(string.HandoffAssistantUrl_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.HandoffAssistantUrl)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <text id="HandoffAssistantUrl" valueName="HandoffAssistantUrl" maxLength="300" />
+      </elements>
+    </policy>
   </policies>
 </policyDefinitions>

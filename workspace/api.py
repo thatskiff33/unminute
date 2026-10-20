@@ -33,7 +33,8 @@ API_METHODS = frozenset({
     "set_settings", "import_dialog", "clear_import_errors", "pywebviewEventHandler",
     "speakers", "speaker_examples", "rename_speaker", "merge_speakers", "assign_speaker",
     "undo_speakers", "speaker_panel", "handoff_templates", "save_template", "reset_template",
-    "handoff_preview", "set_handoff_options", "copy_handoff", "save_handoff",
+    "handoff_preview", "set_handoff_options", "copy_handoff", "copy_and_open_assistant",
+    "save_handoff",
     "setup_state", "download_model", "remove_token", "finish_setup", "open_help",
     "verify_model", "cancel_download", "watched_folders", "add_folder_dialog",
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
@@ -258,6 +259,11 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def copy_handoff(self, mid, tid, kind, expected=None, anonymise=False):
         return _safe(ws.copy_handoff, mid, tid, kind, expected, anonymise)
 
+    def copy_and_open_assistant(self, mid, tid, expected=None, anonymise=False):
+        # The page names no address: the app opens the one policy (or its
+        # default) sets, after the copy, at most once every 3 seconds (#109).
+        return _safe(ws.copy_and_open_assistant, mid, tid, expected, anonymise)
+
     def save_handoff(self, mid, tid, expected=None, anonymise=False):
         def run():
             import webview
@@ -455,7 +461,8 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  handoff_templates=handoff_templates,
                  save_template=save_template, reset_template=reset_template,
                  handoff_preview=handoff_preview, set_handoff_options=set_handoff_options,
-                 copy_handoff=copy_handoff, save_handoff=save_handoff,
+                 copy_handoff=copy_handoff, copy_and_open_assistant=copy_and_open_assistant,
+                 save_handoff=save_handoff,
                  setup_state=setup_state, download_model=download_model,
                  remove_token=remove_token, finish_setup=finish_setup, open_help=open_help,
                  verify_model=verify_model, cancel_download=cancel_download,

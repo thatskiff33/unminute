@@ -251,7 +251,7 @@ Failure reasons are stored without file paths.
 - **Console output, summarised.** Console output (the app's own under `pythonw`, the workers', the download process's) is free text that could hold content (P3), so it is never written. Only the error and warning type names in the two places Python writes them are counted (an exception's last line, a warning line: `UserWarning`, `ImportError`), the user's choice of 17 Oct 2026.
 - **Start-up timings.** Imports, opening the workspace, and the page first loaded, in seconds.
 - **Page errors.** The page's `error` and `unhandledrejection` events call `report_ui_error(kind, line, column)`: a fixed kind and two numbers, never a message (which could quote meeting text). At most 20 a run and one a second are recorded. The first error before the bridge is ready (in setting up the page, say) is kept and sent once it is.
-- **Copy diagnostics** (Help, started by the user): versions, the install type, setting values (each only if it is one of that setting's known values), which policy keys are managed and their values (a folder shows as "set", a bad value as "invalid"), workspace counts, model states, the graphics card's driver state, crashes in the last 7 days, and the newest 40 log records. The records come from the app's own logs only (`app`, `worker`, `gpu-worker`, `setup`), reading no more of each than a log can hold, and pass the field rules again: only the fields the app writes are kept, each to its rule, numbers within range and nothing shaped like a token. That keeps a record to the shapes the app writes; it cannot tell them from the same shapes written by another program that can already write to the user's logs folder. Never the raw crash files. Copied like any copy the app makes (kept out of clipboard history and cloud sync).
+- **Copy diagnostics** (Help, started by the user): versions, the install type, setting values (each only if it is one of that setting's known values), which policy keys are managed and their values (a folder, or the Hand off assistant's name or address, shows as "set", a bad value as "invalid"), workspace counts, model states, the graphics card's driver state, crashes in the last 7 days, and the newest 40 log records. The records come from the app's own logs only (`app`, `worker`, `gpu-worker`, `setup`), reading no more of each than a log can hold, and pass the field rules again: only the fields the app writes are kept, each to its rule, numbers within range and nothing shaped like a token. That keeps a record to the shapes the app writes; it cannot tell them from the same shapes written by another program that can already write to the user's logs folder. Never the raw crash files. Copied like any copy the app makes (kept out of clipboard history and cloud sync).
 - **`--health`** for device management: see `docs/PACKAGING.md`.
 - **Checked by** `tests/test_diagnostics.py`: the whole lifecycle, with marker words with and without spaces in titles, file names, transcript text, speaker names, a token and error messages (at the bridge, in imports and in the worker), leaves none of them, and none of this computer's folders or the user's name, in any log, in the import errors shown, or in the Copy diagnostics text.
 
@@ -334,11 +334,12 @@ Failure reasons are stored without file paths.
 
 ### How the handoff leaves the app
 - After the review confirmation, Hand off opens a dialog with an exact preview of what is copied or saved.
-- Three ways out:
+- Four ways out:
+  - **Copy and open ChatGPT** (#109), the main button: `copy_and_open_assistant` copies the combined text exactly as **Copy prompt and transcript** does (same digest check, clipboard marks and `ClipboardClearMinutes` clear), then, only if the copy worked, asks Windows to open the assistant's fixed address in the default browser (`os.startfile`). The page passes no address or name: the app takes them from policy (`AllowHandoffAssistant`, `HandoffAssistantName`, `HandoffAssistantUrl`, `docs/PACKAGING.md`) or its default, ChatGPT at `https://chatgpt.com/` (`handoff.DEFAULT_ASSISTANT`). It reads the policy again at the click, refuses a second opening within 3 seconds (`app.ASSISTANT_PAUSE_S`), and adds nothing to the address. The address is a lower-case `https://` host name (no IP address, user name, password or fragment), checked by `policy.valid_url`; a name and address set only partly, or badly, withhold the button rather than fall back to ChatGPT. A note under the button names the host and asks the user to paste only into the organisation's business account, as does the success message (the owner's decisions, 17 and 20 Oct 2026); the app cannot tell which account is signed in, or whether a browser appeared, so the message says what to do if none does. With the button turned off, the page is laid out as before (Copy prompt and transcript is the main button), and Settings says why.
   - **Copy prompt and transcript.**
   - **Copy prompt only:** for attaching the Markdown file instead of pasting.
   - **Save Markdown:** uses the native save dialog. The app keeps no record of the file.
-- There is no API integration and nothing is sent anywhere. The user pastes or attaches the output in their organisation's approved assistant.
+- There is no API integration and nothing is sent anywhere. The user pastes or attaches the output in their organisation's approved assistant. Copy and open only opens a web page; the user pastes, checks and sends.
 - Copying is done by Python through the Windows clipboard API, so it does not depend on browser clipboard permissions.
 
 ### Templates
@@ -407,7 +408,7 @@ Failure reasons are stored without file paths.
 - Check every file re-verifies an installed model against its SHA-256 manifest. For a graphics card component a failure is remembered for the rest of the app session: the component is not used, and shows as damaged, until Check every file passes or Repair replaces it, and the work it would have done runs on the processor with the reason recorded (#153).
 
 ### Help pages
-- Help links (sign-up, model terms, tokens) are a fixed allowlist, opened in the user's own browser.
+- Help links (sign-up, model terms and tokens on Hugging Face, and the user guide's recovery steps on GitHub, `setup.HELP_LINKS`) are a fixed allowlist, opened in the user's own browser.
 
 ### Pinned revisions
 - A meeting keeps the model revision it was started with. If an app update changes the pinned revision, its unfinished transcription stops with an explanation ("Transcribe again"), instead of silently mixing revisions.

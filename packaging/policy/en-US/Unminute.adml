@@ -65,6 +65,21 @@ Disabled, not configured or 0: the app never clears the clipboard.</string>
       <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Use a full path that starts with a drive letter; a mapped drive is fine, but \\server\share paths are not accepted. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
 
 Not configured, or a folder that does not exist: the dialog starts in its usual place.</string>
+
+      <string id="AllowHandoffAssistant">Allow "Copy and open" on the Hand off page</string>
+      <string id="AllowHandoffAssistant_Help">Enabled or not configured: the Hand off page's main button copies the prompt and transcript, then asks Windows to open the assistant's web address in the user's default browser. By default it is "Copy and open ChatGPT", opening https://chatgpt.com/; set "Hand off assistant name" and "Hand off assistant address" to use another. The user signs in, pastes, checks and sends: Unminute sends nothing, never puts transcript text in the address and never types into the browser. The page reminds users to paste only into the organisation's business account; Unminute cannot check which account is signed in.
+
+Disabled: the button is not shown, and the page offers Copy prompt and transcript, Copy prompt only and Save Markdown as before. A value that is not 0 or 1, or a policy key that cannot be read, also turns it off.</string>
+
+      <string id="HandoffAssistantName">Hand off assistant name</string>
+      <string id="HandoffAssistantName_Help">The name shown on the button, as "Copy and open [name]", and in its messages, for example Copilot. 1 to 30 characters: letters, digits, single spaces and . - &amp; ' ( ) +.
+
+Set this together with "Hand off assistant address". If only one of the two is set, or either is not valid, the button is not shown: Unminute does not fall back to ChatGPT. Not configured (both): ChatGPT at https://chatgpt.com/. Setting this policy to Disabled is expected to remove the value, which counts as not configured.</string>
+
+      <string id="HandoffAssistantUrl">Hand off assistant address</string>
+      <string id="HandoffAssistantUrl_Help">The web address opened after copying, for example https://assistant.example.org/chat (an illustration, not a real service). It must start with https:// in lower case, followed by a host name in lower case (not an IP address, and no user name or password), with an optional path and query. At most 300 characters, with no spaces, quotes or #. Internationalised host names must be written in their xn-- form. Users see the host name under the button.
+
+Set this together with "Hand off assistant name". If only one of the two is set, or either is not valid, the button is not shown: Unminute does not fall back to ChatGPT. Not configured (both): ChatGPT at https://chatgpt.com/. Setting this policy to Disabled is expected to remove the value, which counts as not configured.</string>
     </stringTable>
     <presentationTable>
       <presentation id="ClipboardClearMinutes">
@@ -73,6 +88,16 @@ Not configured, or a folder that does not exist: the dialog starts in its usual 
       <presentation id="HandoffDefaultFolder">
         <textBox refId="HandoffDefaultFolder">
           <label>Folder</label>
+        </textBox>
+      </presentation>
+      <presentation id="HandoffAssistantName">
+        <textBox refId="HandoffAssistantName">
+          <label>Name</label>
+        </textBox>
+      </presentation>
+      <presentation id="HandoffAssistantUrl">
+        <textBox refId="HandoffAssistantUrl">
+          <label>Address (https://)</label>
         </textBox>
       </presentation>
     </presentationTable>

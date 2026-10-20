@@ -77,8 +77,63 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class AssistantValueTests(unittest.TestCase):
+    """The Hand off assistant's name and address (#109): only a plain https
+    address with a host name reaches Windows' "open", never another kind of
+    link that Windows would hand to some other program."""
+
+    def test_addresses_accepted(self):
+        for url in ("https://chatgpt.com/", "https://chatgpt.com", "https://claude.ai/new",
+                    "https://m365.cloud.microsoft/chat?auth=2", "https://chatgpt.com:443/",
+                    "https://xn--mori-qsa.nz/", "https://a-b.example.org/x/y_z~1.2-3",
+                    "https://example.org/?q=%20ok", "https://1.2.3.4.example.org/"):
+            self.assertTrue(policy.valid_url(url), url)
+
+    def test_addresses_refused(self):
+        for url in ("javascript:alert(1)", "file:///C:/Windows/notepad.exe", "ms-settings:",
+                    "\\\\server\\share\\x", "http://chatgpt.com/", "HTTPS://chatgpt.com/",
+                    "https://ChatGPT.com/", "https://user@chatgpt.com/",
+                    "https://user:pw@chatgpt.com/", "https://127.0.0.1/", "https://[::1]/",
+                    "https://localhost/", "https://chatgpt.com:8443/", "https://chatgpt.com:/",
+                    "https://chatgpt.com:x/", "https://chаtgpt.com/",   # Cyrillic a
+                    "https://chatgpt.com/\nx", "https://chatgpt.com/\tx", " https://chatgpt.com/",
+                    "https://chatgpt.com/ ", "https://chatgpt.com/a b", 'https://chatgpt.com/"x',
+                    "https://chatgpt.com/'x", "https://chatgpt.com/<x>", "https://chatgpt.com/a\\b",
+                    "https://chatgpt.com/%00", "https://chatgpt.com/%1f", "https://chatgpt.com/%7F",
+                    "https://chatgpt.com/%", "https://chatgpt.com/#frag", "https://chatgpt.com.",
+                    "https://-bad.com/", "https://chatgpt.com/\x7f", "https:///chatgpt.com",
+                    "https:chatgpt.com", "https://chatgpt.com?", "https://chatgpt.com/" + "a" * 281,
+                    "", None, 5, b"https://chatgpt.com/"):
+            self.assertFalse(policy.valid_url(url), repr(url))
+        self.assertTrue(policy.valid_url("https://chatgpt.com/" + "a" * 280))   # 300 exactly
+
+    def test_names(self):
+        for name in ("ChatGPT", "Copilot", "Microsoft 365 Copilot", "Kōrero AI", "R&D (internal)",
+                     "Claude", "A.I. Helper+", "O'Brien-2", "x" * 30):
+            self.assertTrue(policy.valid_name(name), name)
+        for name in ("", " ChatGPT", "ChatGPT ", "Chat  GPT", "Chat\nGPT", "Chat\tGPT",
+                     "Chat\u200bGPT", "Chat\u202eGPT", "Chat<b>", "Chat\"GPT", "Chat/GPT",
+                     "Ko\u0304rero", "x" * 31, None, 5):
+            self.assertFalse(policy.valid_name(name), repr(name))
+
+
 @unittest.skipUnless(sys.platform == "win32", "Windows registry types")
 class ParseTests(unittest.TestCase):
+    def test_assistant_values_are_plain_text_values_only(self):
+        import winreg
+        self.assertEqual(policy._parse("HandoffAssistantUrl", "https://claude.ai/",
+                                       winreg.REG_SZ), "https://claude.ai/")
+        self.assertEqual(policy._parse("HandoffAssistantName", "Claude", winreg.REG_SZ), "Claude")
+        for name, value, kind in (("HandoffAssistantUrl", "https://claude.ai/",
+                                   winreg.REG_EXPAND_SZ),
+                                  ("HandoffAssistantUrl", "file:///C:/x", winreg.REG_SZ),
+                                  ("HandoffAssistantUrl", 1, winreg.REG_DWORD),
+                                  ("HandoffAssistantName", "Claude", winreg.REG_EXPAND_SZ),
+                                  ("HandoffAssistantName", "Chat\u202eGPT", winreg.REG_SZ),
+                                  ("AllowHandoffAssistant", 2, winreg.REG_DWORD)):
+            with self.assertRaises(ValueError, msg=(name, value)):
+                policy._parse(name, value, kind)
+
     def test_types_and_ranges(self):
         import winreg
         self.assertIs(policy._parse("AllowWatchedFolders", 0, winreg.REG_DWORD), False)
@@ -487,6 +542,143 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.assertEqual(handoff.title_filename("Notes\u202egnp.exe\x7f\x85", "x"),
                          "Notes gnp.exe - transcript.md")
         self.assertEqual(ws.handoff_folder(), tempfile.gettempdir())
+
+    # -- Copy and open the assistant (#109) ------------------------------------------
+
+    def test_assistant_default_policy_and_fail_closed(self):
+        from workspace import handoff
+        url, name = "HandoffAssistantUrl", "HandoffAssistantName"
+        cases = (({}, handoff.DEFAULT_ASSISTANT, None),
+                 ({name: "Copilot", url: "https://copilot.example.org/chat"},
+                  ("Copilot", "https://copilot.example.org/chat"),
+                  {"state": "set", "name": "Copilot", "host": "copilot.example.org"}),
+                 ({"AllowHandoffAssistant": False}, None, {"state": "off"}),
+                 # One of the two alone: withheld, never the ChatGPT default.
+                 ({name: "Copilot"}, None, {"state": "invalid"}),
+                 ({url: "https://copilot.example.org/"}, None, {"state": "invalid"}))
+        ws = self.open()
+        for values, expected, setting in cases:
+            ws.policy = policy.PolicySource(reader=lambda values=values: (values, ()))
+            self.assertEqual(ws._assistant(), expected, values)
+            self.assertEqual(ws.managed()["assistant"], setting, values)
+        # A bad value in any of the three withholds it; so does an unreadable key.
+        both = {name: "Copilot", url: "https://copilot.example.org/"}
+        for values, invalid in (({name: "Copilot"}, (url,)), ({url: both[url]}, (name,)),
+                                (both, ("AllowHandoffAssistant",)), ({}, policy.UNREADABLE)):
+            p = policy.Policy(values, invalid)
+            self.assertIsNone(ws._assistant(p), invalid)
+            self.assertEqual(ws._assistant_setting(p), {"state": "invalid"}, invalid)
+
+    def copy_and_open(self, ws, **kw):
+        from workspace import clipboard
+        out = {"combined": "MARKER-TRANSCRIPT text", "long": False, **kw.pop("out", {})}
+        with mock.patch.object(ws, "_checked", return_value=out) as checked, \
+                mock.patch.object(clipboard, "copy_text", **kw) as copy:
+            try:
+                return ws.copy_and_open_assistant("m" * 32, "minutes", "digest"), copy, checked
+            except Exception as exc:
+                return exc, copy, checked
+
+    def test_copy_then_open_the_fixed_address(self):
+        ws = self.open(ClipboardClearMinutes=5)
+        events = []
+        ws._opener = lambda u: events.append(("open", u))
+        r, copy, checked = self.copy_and_open(
+            ws, side_effect=lambda text: events.append(("copy", text)) or 7)
+        self.assertEqual(events, [("copy", "MARKER-TRANSCRIPT text"),
+                                  ("open", "https://chatgpt.com/")])     # copy first, address as is
+        checked.assert_called_once_with("m" * 32, "minutes", "combined", "digest", False)
+        self.assertEqual(r, {"chars": 22, "long": False, "clears_in_minutes": 5, "opened": True,
+                             "name": "ChatGPT", "host": "chatgpt.com"})
+        self.assertEqual(ws._clipboard_clears[0][1], 7)                   # the clear still applies
+
+    def test_nothing_opens_without_a_good_copy(self):
+        from workspace.app import WorkspaceError
+        from workspace import clipboard
+        ws = self.open()
+        opened = []
+        ws._opener = opened.append
+        with mock.patch.object(ws, "_checked", side_effect=WorkspaceError("changed")):
+            self.assertIn("changed", self.refused(ws.copy_and_open_assistant, "m" * 32, "t", "x"))
+        r, copy, _ = self.copy_and_open(ws, side_effect=clipboard.ClipboardError("busy"))
+        self.assertIn("busy", str(r))
+        self.assertEqual(opened, [])
+        # A refused copy did not use up the 3 seconds: the next click works.
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertEqual(opened, ["https://chatgpt.com/"])
+
+    def test_policy_is_read_again_at_the_click(self):
+        values = {"HandoffAssistantName": "Copilot",
+                  "HandoffAssistantUrl": "https://copilot.example.org/"}
+        ws = self.open()
+        ws.policy = policy.PolicySource(reader=lambda: (dict(values), ()))
+        self.assertEqual(ws._assistant()[0], "Copilot")                   # cached for 15 minutes
+        opened = []
+        ws._opener = opened.append
+        values["AllowHandoffAssistant"] = False                          # IT turns it off since
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertIn("turned this off", str(r))
+        copy.assert_not_called()
+        del values["AllowHandoffAssistant"]
+        values["HandoffAssistantUrl"] = "https://other.example.org/"     # or points it elsewhere
+        r, _, _ = self.copy_and_open(ws, return_value=1)
+        self.assertEqual(opened, ["https://other.example.org/"])
+        ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
+        ws._assistant_opened_at = None
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertIn("turned this off", str(r))                          # unreadable: nothing
+        copy.assert_not_called()
+        self.assertEqual(len(opened), 1)
+
+    def test_one_opening_every_three_seconds(self):
+        from workspace import app as app_module
+        ws = self.open()
+        now = [100.0]
+        ws._clock = lambda: now[0]
+        opened = []
+        ws._opener = opened.append
+        self.copy_and_open(ws, return_value=1)
+        now[0] += app_module.ASSISTANT_PAUSE_S - 0.1
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertIn("Already opening", str(r))
+        copy.assert_not_called()
+        now[0] += 0.1
+        self.copy_and_open(ws, return_value=1)
+        self.assertEqual(len(opened), 2)
+
+    def test_a_browser_that_cannot_open_keeps_the_copy(self):
+        ws = self.open()
+
+        def fail(url):
+            raise OSError("no association")
+        ws._opener = fail
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        copy.assert_called_once()
+        self.assertFalse(r["opened"])
+
+    def test_without_an_opener_only_windows_opens(self):
+        import types
+        ws = self.open()
+        windows = types.SimpleNamespace(startfile=mock.Mock())
+        with mock.patch("workspace.app.os", windows):
+            self.copy_and_open(ws, return_value=1)
+        windows.startfile.assert_called_once_with("https://chatgpt.com/")
+        ws._assistant_opened_at = None
+        with mock.patch("workspace.app.os", types.SimpleNamespace()):    # no startfile
+            r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertIn("only on Windows", str(r))
+        copy.assert_not_called()
+
+    def test_diagnostics_show_assistant_values_only_as_set(self):
+        ws = self.open(HandoffAssistantName="Markername", AllowHandoffAssistant=True,
+                       HandoffAssistantUrl="https://markerhost.example.org/markerpath")
+        text = ws.diagnostics()
+        self.assertIn("HandoffAssistantName=set", text)
+        self.assertIn("HandoffAssistantUrl=set", text)
+        self.assertIn("AllowHandoffAssistant=True", text)
+        self.assertNotIn("marker", text.lower())
+        preview = ws._assistant_shown(ws._assistant())
+        self.assertEqual(preview, {"name": "Markername", "host": "markerhost.example.org"})
 
     def test_network_sources_only_by_policy(self):
         from workspace import app as app_module

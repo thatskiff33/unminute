@@ -807,6 +807,13 @@ dialog h2 { margin: 0; }
 button.small { align-self: flex-start; min-height: 36px; padding: 0 14px; border-radius: var(--r-sm); font-size: 14px; }
 .ho-pair { display: flex; gap: 8px; }
 .ho-pair button { flex: 1; font-size: 14px; }
+/* Copy and open (#109): the note under the main button, then the other three
+   ways out; Copy prompt and transcript spans the row above the pair. */
+.ho-open-note { margin: -4px 0 0; font-size: 13px; line-height: 1.4; color: var(--muted); }
+.ho-three { display: grid; grid-template-columns: 1fr 1fr; }
+.ho-three #ho-copy { grid-column: 1 / -1; }
+.ho-pair .ho-copy-icon { display: none; }
+#ho-open > span { min-width: 0; }
 .ho-preview-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .ho-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .ho-preview-head h2 { margin: 0; font-size: 15px; font-weight: 700; }
