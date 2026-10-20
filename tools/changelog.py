@@ -24,8 +24,15 @@
 # first, as one list; then each group, under one copy of its line. Both are in
 # file-name order (a leading number sorts as a number). changelog.d/README.md
 # explains the format and is not a fragment. Stdlib only.
+#
+# Phase C (#111) ships as one release: while workspace/keystore.py says
+# PHASE_C_COMPLETE = False, no release can be prepared (release() refuses;
+# --preview and --check still work). The constant is read by parsing the file,
+# never by importing the app. tests/test_consistency.py also pins VERSION to
+# PHASE_C_FROZEN_VERSION meanwhile, so a hand-written release-prep fails CI.
 
 import argparse
+import ast
 import datetime
 import re
 import sys
@@ -40,6 +47,8 @@ NOT_FRAGMENTS = {"readme.md"}
 # The tags the Release workflow accepts (.github/workflows/release.yml), ASCII
 # digits only as there.
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-preview\.[0-9]+)?")
+KEYSTORE = "workspace/keystore.py"
+PHASE_C_REFUSAL = "Phase C (#111) is not complete: no release can be prepared from this commit."
 BULLET = re.compile(r"[-*] ")
 # A "#" or "##" heading would end the Release workflow's section early (its awk
 # stops at the next line starting "## ").
@@ -226,6 +235,21 @@ def _check_summary(summary):
     return text
 
 
+def phase_c_complete(root=ROOT):
+    """PHASE_C_COMPLETE in workspace/keystore.py, read with ast (the app is
+    not imported). False when the file or the constant cannot be read: a
+    release is then refused rather than guessed at."""
+    try:
+        tree = ast.parse((Path(root) / KEYSTORE).read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        return False
+    found = [node.value for node in tree.body if isinstance(node, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "PHASE_C_COMPLETE"
+                     for t in node.targets)]
+    return (len(found) == 1 and isinstance(found[0], ast.Constant)
+            and found[0].value is True)
+
+
 def is_heading(line, version):
     """Is this line the changelog heading for version? Headings are
     "## vX.Y.Z (YYYY-MM-DD)"; releases before #131 have no date."""
@@ -239,6 +263,8 @@ def release(version, summary=None, root=ROOT, date=None):
     default. Returns the section."""
     if not VERSION.fullmatch(version):
         raise ChangelogError(f"'{version}' is not vX.Y.Z or vX.Y.Z-preview.N")
+    if not phase_c_complete(root):
+        raise ChangelogError(PHASE_C_REFUSAL)
     if date is None:
         date = datetime.date.today().isoformat()
     try:
