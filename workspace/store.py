@@ -390,6 +390,34 @@ class KeyMissing(DamagedContent):
 CARRY_OVER = ("receipts", "watched_folders", "intake_content", "intake_meta",
               "intake_seen", "crypto_meta")
 
+PLAIN_IN_SEALED = "A migration would copy a plain value into a sealed column."
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _plain_in_sealed(rows, carried):
+    """Whether rows made from schema 1 (keystore.transform_from_1) would put
+    anything but a sealed value in a sealed column, or anything but a
+    fingerprint in a fingerprint column ("fp" or a name ending "_fp"). A
+    fingerprint equal to a value schema 1 held (a plain SHA-256 copied
+    across) counts as plain."""
+    plain = {v for _cols, data in carried.values() for r in data for v in r
+             if isinstance(v, str)}
+    for table, entries in rows.items():
+        sealed = SEALED_COLUMNS.get(table, frozenset())
+        for entry in entries:
+            for column, value in entry.items():
+                if value is None:
+                    continue
+                if column in sealed:
+                    if not (isinstance(value, bytes) and len(value) >= vault.OVERHEAD
+                            and value[0] == vault.VERSION):
+                        return True
+                elif column == "fp" or column.endswith("_fp"):
+                    if not (isinstance(value, str) and _FINGERPRINT.match(value)) \
+                            or value in plain:
+                        return True
+    return False
+
 
 def _statements(script):
     """Split a schema script into single statements (for use in a transaction)."""
@@ -641,15 +669,17 @@ def _damaged(exc):
 
 
 def under_workspace_root(path):
-    """Whether path is inside the real workspace folder (default_root()),
-    compared as Windows does (ntpath, so Linux CI agrees). False when the
-    real folder cannot be determined (no LOCALAPPDATA, as on Linux CI): there
-    is no real workspace to protect then."""
+    """Whether path is inside the real workspace folder,
+    %LOCALAPPDATA%\\Unminute\\workspace, compared as Windows does (ntpath,
+    so Linux CI agrees). False only when LOCALAPPDATA is not set, as on
+    Linux CI: there is no real workspace to protect then. A folder that
+    default_root() refuses (in OneDrive, on a network drive, redirected or a
+    broken link) still counts: a real workspace may be there on disk."""
     import ntpath
-    try:
-        root = default_root()
-    except StoreError:
+    base = os.environ.get("LOCALAPPDATA", "")
+    if not base:
         return False
+    root = Path(base) / "Unminute" / "workspace"      # the names of _workspace_folder (K1)
     a = ntpath.normcase(os.path.realpath(path))
     b = ntpath.normcase(os.path.realpath(root))
     try:
@@ -786,7 +816,7 @@ class Store:
         # A test protector holds the root key in effect in clear text: never
         # for the real workspace (checked before anything is touched).
         if not self.protector.allows(self.path) or (
-                self.protector.name != keystore.DpapiProtector.name
+                self.protector.name != keystore.APP_PROTECTOR
                 and under_workspace_root(self.path)):
             raise StoreError(PROTECTOR_REFUSED)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -970,11 +1000,13 @@ class Store:
             blob = self._protect(root)           # before BEGIN: nothing written if it fails
             keyring = vault.Keyring(root)
             rows = keystore.transform_from_1(carried, keyring)
-            transformed = set(carried)
+            # Before anything is written: every sealed or fingerprinted value
+            # must be one, never a plain value from schema 1.
+            if _plain_in_sealed(rows, carried):
+                raise StoreError(PLAIN_IN_SEALED)
         else:
             rows = {t: [dict(zip(cols, r, strict=True)) for r in data]
                     for t, (cols, data) in carried.items()}
-            transformed = set()
         # A crash after the commit still compacts at the next sound start.
         marked = mark_compaction_owed(self.path)
         # One transaction: SQLite DDL is transactional, so a crash part-way
@@ -994,12 +1026,6 @@ class Store:
                 keep = {r[1] for r in db.execute(f'PRAGMA table_info("{t}")')}
                 for entry in entries:
                     names = [c for c in entry if c in keep]
-                    if current < 2 and t not in transformed and any(
-                            c.endswith(("_sealed", "_fp")) for c in names):
-                        # Only a transform may fill a sealed or fingerprinted
-                        # column from schema 1: never a plain value by name.
-                        raise StoreError("A migration would copy a plain value into a sealed "
-                                         "column.")
                     if not names:
                         continue
                     db.execute(f'INSERT OR IGNORE INTO "{t}" ({", ".join(names)}) VALUES '
@@ -1219,7 +1245,8 @@ class Store:
     def same_fingerprint(self, purpose, sha256_hex, fp):
         """Whether a SHA-256 (hex) has the stored fingerprint fp."""
         import hmac
-        return isinstance(fp, str) and hmac.compare_digest(
+        # compare_digest refuses a str that is not ASCII (a changed stored value).
+        return isinstance(fp, str) and fp.isascii() and hmac.compare_digest(
             self.fingerprint(purpose, sha256_hex), fp)
 
     @contextmanager
@@ -1894,7 +1921,9 @@ class Store:
 
     def current_run(self, vid):
         """The latest finished speaker run of a version (the last 'done' run
-        in speaker_runs() order), or None. Opens that run's error only."""
+        in speaker_runs() order), or None. Opens that run's error only, which
+        a finished run never has (end_speaker_run writes it for a failed or
+        interrupted run)."""
         with self._lock:
             r = self._one("SELECT r.*, v.meeting_id AS mid FROM speaker_runs r "
                           "JOIN versions v ON v.id = r.version_id WHERE r.version_id = ? AND "
@@ -1962,7 +1991,9 @@ class Store:
         open is refused (DamagedContent): an edit that cannot be read is never
         replaced (D1)."""
         with self.tx() as db, self.strict():
-            seg = db.execute(self._PASSAGES + "WHERE s.id = ?", (segment_id,)).fetchone()
+            # The text only: the word timings are not needed, so a damaged
+            # one does not refuse an edit of readable text.
+            seg = db.execute(self._PASSAGES_TEXT + "WHERE s.id = ?", (segment_id,)).fetchone()
             if seg is None:
                 raise StoreError("That passage no longer exists.")
             passage = self._passage(seg)
@@ -1997,15 +2028,22 @@ class Store:
         entry that does not open (changed, or moved to another passage) is
         refused (DamagedContent) and nothing changes."""
         with self.tx() as db, self.strict():
-            last = db.execute("SELECT h.id, h.segment_id, h.before_sealed, "
+            last = db.execute("SELECT h.id, h.segment_id, h.before_sealed, h.after_sealed, "
                               "v.meeting_id AS mid FROM edit_history h "
                               "JOIN segments s ON s.id = h.segment_id "
                               "JOIN versions v ON v.id = s.version_id WHERE s.version_id = ? "
                               "ORDER BY h.id DESC LIMIT 1", (vid,)).fetchone()
             if last is None:
                 return None
-            before = self._unseal(last["mid"], "edit_history", "before",
-                                  (last["id"], last["segment_id"]), last["before_sealed"])
+            # Both sides are opened, so the entry is bound to its passage even
+            # when one side is empty (a first edit has no "before"). save_edit
+            # never records an entry with neither.
+            if last["before_sealed"] is None and last["after_sealed"] is None:
+                raise DamagedContent()
+            where = (last["id"], last["segment_id"])
+            before = self._unseal(last["mid"], "edit_history", "before", where,
+                                  last["before_sealed"])
+            self._unseal(last["mid"], "edit_history", "after", where, last["after_sealed"])
             self._set_edit(db, last["mid"], last["segment_id"], before)
             db.execute("DELETE FROM edit_history WHERE id = ?", (last["id"],))
             return last["segment_id"]
@@ -2033,6 +2071,7 @@ class Store:
                                "JOIN versions v ON v.id = s.version_id "
                                "LEFT JOIN edits e ON e.segment_id = s.id " + self._IN_ORDER,
                                (vid,)):
+                place = ("edits", "text") if r["edit"] is not None else ("segments", "text")
                 try:
                     if r["edit"] is not None:
                         text = self._unseal(r["mid"], "edits", "text", (r["id"],), r["edit"])
@@ -2040,7 +2079,7 @@ class Store:
                         text = self._unseal(r["mid"], "segments", "text", (r["id"], r["vid"]),
                                             r["generated"])
                 except DamagedContent:
-                    self._note_damage("segments", "text")
+                    self._note_damage(*place)
                     continue
                 if needle in text.casefold():
                     out.append(r["id"])

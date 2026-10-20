@@ -118,6 +118,9 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
             # The meeting's key or text does not open: not this chunk's fault,
             # so it does not count towards MAX_ATTEMPTS. The phase becomes
             # "error", so the app does not pick the meeting up again by itself.
+            # A note sealed under a key that will not open cannot be stored
+            # (set_phase leaves it out): the app shows DAMAGED_NOTE then
+            # (Workspace._error_note), and nothing is stored plain.
             _finish(store, attempt, "stopped", engine)
             _note_error(store, mid, DAMAGED_NOTE)
             return RunResult.STORE_ERROR

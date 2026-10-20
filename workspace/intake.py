@@ -34,11 +34,11 @@
 # scan computes becomes a fingerprint at once (store.fingerprint).
 
 import hmac
-import ntpath
 import os
 import time
 from pathlib import Path
 
+from workspace import keystore
 from workspace.safe_paths import (CloudPlaceholderError, UnsafePathError, check_raw,
                                   validate_input_file)
 from workspace.store import SALT_RESTARTED_NOTE
@@ -66,9 +66,10 @@ def folder_identity(path):
     names resolved), compared as Windows does (ntpath, so Linux CI agrees),
     with no trailing separator. C:\\Rec, c:\\rec\\ and a junction to it are
     the same folder. A drive root cannot reach this (_broad refuses it).
-    store.add_folder keeps the fingerprint of the same identity of the path
-    add_folder gives it (already resolved)."""
-    return ntpath.normcase(os.path.realpath(path)).rstrip("\\/")
+    One definition: keystore.stored_folder_identity of the resolved path,
+    which store.add_folder fingerprints (add_folder gives it that path) and
+    the schema 1 to 2 migration uses for paths resolved when added."""
+    return keystore.stored_folder_identity(os.path.realpath(path))
 
 
 def _key(salt, path):
@@ -217,12 +218,40 @@ def remember_content(store, content_fp, now=None):
 def import_finished(store, fid, key, content_fp, ok, now=None):
     """Called by the app after an import from a watched folder. Content is
     suppressed only once it was really imported; a failed import is shown and
-    tried again if the file changes."""
+    tried again if the file changes. A successful import ends the folder's
+    restart note (store.intake_salt)."""
     with store.tx() as db:
         db.execute("UPDATE intake_seen SET state = ?, content_fp = NULL WHERE folder_id = ? "
                    "AND key = ?", ("imported" if ok else "failed", fid, key))
+        if ok:
+            row = db.execute("SELECT last_error FROM watched_folders WHERE id = ?",
+                             (fid,)).fetchone()
+            if row is not None and _has_restart_note(row[0]):
+                rest = row[0][:-len(SALT_RESTARTED_NOTE)].strip() or None
+                db.execute("UPDATE watched_folders SET last_error = ? WHERE id = ?",
+                           (rest, fid))
     if ok:
         remember_content(store, content_fp, now)
+
+
+def _has_restart_note(note):
+    return isinstance(note, str) and note.endswith(SALT_RESTARTED_NOTE)
+
+
+def _set_note(db, fid, now, note, done=False):
+    """A folder's note after a scan. The restart note (store.intake_salt)
+    stays until the folder's next successful import (import_finished), so a
+    later scan never clears it: any other note comes first, then it. done:
+    the walk was complete, so the baseline is done too."""
+    row = db.execute("SELECT last_error FROM watched_folders WHERE id = ?", (fid,)).fetchone()
+    if row is not None and _has_restart_note(row[0]):
+        note = SALT_RESTARTED_NOTE if note is None else f"{note} {SALT_RESTARTED_NOTE}"
+    if done:
+        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ?, "
+                   "baseline_done = 1 WHERE id = ?", (now, note, fid))
+    else:
+        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ? WHERE id = ?",
+                   (now, note, fid))
 
 
 def watching(store, fid):
@@ -276,7 +305,8 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
     hasher(path) returns the file's SHA-256 (hex). Returns {"queued",
     "waiting", "duplicates", "cloud", "errors"}, and "notice" (fixed text)
     when the record of the files seen had to be started again
-    (store.intake_salt): each folder's note says so too."""
+    (store.intake_salt): each folder's note says so too, until that folder's
+    next successful import (import_finished)."""
     from workspace.media import sha256_file
     hasher = hasher or sha256_file
     now = now or time.time()
@@ -435,12 +465,9 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 gone = [k for k in seen if k not in present]
                 db.executemany("DELETE FROM intake_seen WHERE folder_id = ? AND key = ?",
                                [(f["id"], k) for k in gone])
-            if not complete:
-                note = "Part of the folder could not be read; it will be checked again."
-            else:
-                note = SALT_RESTARTED_NOTE if restarted else None
-            db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ?, "
-                       "baseline_done = 1 WHERE id = ?", (now, note, f["id"]))
+            note = (None if complete
+                    else "Part of the folder could not be read; it will be checked again.")
+            _set_note(db, f["id"], now, note, done=True)    # keeps a restart note
     purge(store, now)
     return stats
 
@@ -487,8 +514,7 @@ def _commit(store, fid, writes):
 
 def _folder_note(store, fid, now, message):
     with store.tx() as db:
-        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ? WHERE id = ?",
-                   (now, message, fid))
+        _set_note(db, fid, now, message)
 
 
 def summary(store):

@@ -277,9 +277,14 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual("windows", caught.exception.reason)
         self.assertEqual([], list(self.db.parent.iterdir()))
 
+    def local(self):
+        """LOCALAPPDATA in the temporary folder: (environment, its workspace)."""
+        base = Path(self.tmp.name) / "LocalAppData"
+        return {"LOCALAPPDATA": str(base)}, base / "Unminute" / "workspace"
+
     def test_the_test_protector_is_refused_for_the_real_workspace(self):
-        real = Path(self.tmp.name) / "LocalAppData" / "Unminute" / "workspace"
-        with mock.patch.object(store, "default_root", return_value=real):
+        env, real = self.local()
+        with mock.patch.dict(os.environ, env):
             for protector in (keyprotect.TestProtector(), OtherProtector()):
                 with self.subTest(protector=protector.name):
                     with self.assertRaises(StoreError) as caught:
@@ -295,7 +300,7 @@ class OpeningTests(unittest.TestCase):
             open_store(self.db).close()
 
     def test_a_protector_named_dpapi_is_the_only_one_for_the_real_workspace(self):
-        real = Path(self.tmp.name) / "LocalAppData" / "Unminute" / "workspace"
+        env, real = self.local()
 
         class Named(keyprotect.TestProtector):
             __test__ = False
@@ -303,8 +308,42 @@ class OpeningTests(unittest.TestCase):
 
             def allows(self, path):
                 return True
-        with mock.patch.object(store, "default_root", return_value=real):
+        with mock.patch.dict(os.environ, env):
             Store(real / "workspace.db", protector=Named()).close()   # the name check passes
+
+    def test_the_real_workspace_is_guarded_wherever_its_folder_is_refused(self):
+        # default_root() refuses a redirected, synced, network or broken
+        # folder, but a real workspace may still be there on disk: only a
+        # missing LOCALAPPDATA (Linux CI) lets the test protector through.
+        env, real = self.local()
+        refused = StoreError(store.REDIRECTED["onedrive"])
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(store, "default_root", side_effect=refused):
+            self.assertTrue(store.under_workspace_root(real / "workspace.db"))
+            with self.assertRaises(StoreError) as caught:
+                Store(real / "workspace.db", protector=keyprotect.TestProtector())
+            self.assertEqual(store.PROTECTOR_REFUSED, str(caught.exception))
+        self.assertFalse(real.exists())
+        without = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
+        with mock.patch.dict(os.environ, without, clear=True):
+            self.assertFalse(store.under_workspace_root(real / "workspace.db"))
+
+    def test_replacing_the_default_protector_does_not_open_the_real_workspace(self):
+        # The store's own check compares with a constant, not with the
+        # default protector class, which a test may replace.
+        env, real = self.local()
+
+        class Permissive(keyprotect.TestProtector):
+            __test__ = False
+
+            def allows(self, path):
+                return True
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(keystore, "DpapiProtector", Permissive):
+            with self.assertRaises(StoreError) as caught:
+                Store(real / "workspace.db", protector=None)       # the (replaced) default
+            self.assertEqual(store.PROTECTOR_REFUSED, str(caught.exception))
+        self.assertFalse(real.exists())
 
     @unittest.skipUnless(sys.platform == "win32", "Windows Data Protection")
     def test_windows_data_protection_round_trip(self):
@@ -367,6 +406,32 @@ class SealingTests(unittest.TestCase):
         self.raw("UPDATE edit_history SET segment_id = ? WHERE id = ?", (a, hid))
         self.raw("PRAGMA foreign_keys=ON")
         before = self.s.transcript(vid)
+        with self.assertRaises(DamagedContent):
+            self.s.undo_edit(vid)
+        self.assertEqual(before, self.s.transcript(vid))
+
+    def test_a_first_edits_history_opens_only_for_its_own_passage(self):
+        # A passage's first edit has no "before": its entry is still bound to
+        # its passage, so moved to another one, undo refuses and the other
+        # passage's edit stays (D1).
+        mid, _, vid = meeting_with_text(self.s, texts=("alpha", "beta"))
+        a, b = (r["id"] for r in self.s.transcript(vid))
+        self.s.save_edit(a, "edited alpha")
+        self.s.save_edit(b, "edited beta")              # its entry: before NULL
+        hid = self.s._one("SELECT MAX(id) FROM edit_history")[0]
+        self.assertIsNone(self.s._one("SELECT before_sealed FROM edit_history WHERE id = ?",
+                                      (hid,))[0])
+        self.raw("PRAGMA foreign_keys=OFF")
+        self.raw("UPDATE edit_history SET segment_id = ? WHERE id = ?", (a, hid))
+        self.raw("PRAGMA foreign_keys=ON")
+        before = self.s.transcript(vid)
+        with self.assertRaises(DamagedContent):
+            self.s.undo_edit(vid)
+        self.assertEqual(before, self.s.transcript(vid))
+        self.assertEqual("edited alpha", self.s.passage(a)["text"])
+        # An entry with neither side cannot be bound to anything: refused too.
+        self.raw("UPDATE edit_history SET segment_id = ?, after_sealed = NULL WHERE id = ?",
+                 (b, hid))
         with self.assertRaises(DamagedContent):
             self.s.undo_edit(vid)
         self.assertEqual(before, self.s.transcript(vid))
@@ -542,6 +607,37 @@ class DamagedValueTests(unittest.TestCase):
             handoff.build(self.s, mid, template)
         self.assertEqual([b], self.s.search(vid, "second"))
         self.assertEqual([], self.s.search(vid, "edited"))  # a damaged passage is skipped
+        # Search names the value it tried: the edit, not the generated text.
+        noted = {(e["table"], e["column"]) for e in self.events()
+                 if e["kind"] == "damaged_value"}
+        self.assertIn(("edits", "text"), noted)
+        self.assertNotIn(("segments", "text"), noted)
+
+    def test_only_what_goes_out_is_strict(self):
+        # Word timings, a meeting's note and other notes the app writes never
+        # go out: damaged, they do not refuse an edit or the handoff.
+        mid, _, vid = meeting_with_text(self.s)
+        a, _b = self.s.passage_ids(vid)
+        self.s.set_phase(mid, "transcribed", "synthetic note")
+        self.damage("segments", "words_sealed")
+        self.damage("meetings", "last_error_sealed")
+        self.assertTrue(self.s.save_edit(a, "edited by hand"))
+        self.assertEqual("edited by hand", self.s.passage(a)["text"])
+        with self.s.tx() as db:                               # reviewed: a plain column
+            db.execute("UPDATE meetings SET reviewed_at = 1")
+        template = {"id": "t", "title": "T", "prompt": "Summarise.", "version": 1}
+        built = handoff.build(self.s, mid, template)
+        self.assertIn("edited by hand", json.dumps(built))
+        # The title does go out: damaged, the handoff is refused.
+        self.damage("meetings", "title_sealed")
+        with self.assertRaises(DamagedContent):
+            handoff.build(self.s, mid, template)
+
+    def test_a_changed_fingerprint_is_no_match(self):
+        self.assertFalse(self.s.same_fingerprint("original", H, "é" * 64))
+        self.assertFalse(self.s.same_fingerprint("original", H, None))
+        self.assertTrue(self.s.same_fingerprint("original", H,
+                                                self.s.fingerprint("original", H)))
 
     def test_speaker_names_built_on_a_damaged_name_are_refused(self):
         mid, _, vid = meeting_with_text(self.s)
@@ -619,18 +715,31 @@ class DamagedValueTests(unittest.TestCase):
         self.assertEqual(0, self.s._one("SELECT COUNT(*) FROM segments")[0])   # rolled back
         self.assertEqual({"stopped"}, {r[0] for r in self.s._all("SELECT result FROM attempts")})
         self.assertEqual(0, self.s.chunks(vid)[0]["failures"])
-        # The note cannot be sealed under that key: the phase is still saved.
-        self.assertIsNone(self.s._one("SELECT last_error_sealed FROM meetings")[0])
-        # With a key that opens, the note is the fixed text.
-        _, _, vid2 = meeting_with_text(self.s, title="synthetic two")
-        mid2 = self.s.version(vid2)["meeting_id"]
-        with self.s.tx() as db:
-            db.execute("UPDATE chunks SET status = 'pending' WHERE version_id = ?", (vid2,))
-        with mock.patch.object(self.s, "commit_chunk", side_effect=DamagedContent()):
-            self.assertEqual(runner.RunResult.STORE_ERROR,
-                             runner.run_version(self.s, mid2, vid2, Reader(), Engine()))
-        self.assertEqual(("error", runner.DAMAGED_NOTE),
-                         (self.s.meeting(mid2)["phase"], self.s.meeting(mid2)["last_error"]))
+        # The note cannot be sealed under that key: the phase is still saved,
+        # with no note, and nothing is stored plain or under another key.
+        self.assertEqual(runner.RunResult.STORE_ERROR,
+                         runner.run_version(self.s, mid, vid, Reader(), Engine()))
+        self.assertEqual(("error", None), tuple(self.s._one(
+            "SELECT phase, last_error_sealed FROM meetings WHERE id = ?", (mid,))))
+        # A meeting in error with no note, whose key will not open, shows the
+        # fixed wording, worked out when it is shown.
+        other, _, _ = meeting_with_text(self.s, title="synthetic fine")
+        self.s.set_phase(other, "error")                   # no note, key opens
+        self.s.close()
+        from workspace.app import Workspace
+        ws = Workspace(self.root, self.root / "models", start=False, allow_test_engines=True,
+                       battery=False, policy_reader=lambda: ({}, ()),
+                       protector=keyprotect.TestProtector())
+        try:
+            shown = {m["id"]: m["error"] for m in ws.meetings()}
+            self.assertEqual({mid: runner.DAMAGED_NOTE, other: None}, shown)
+            self.assertEqual(runner.DAMAGED_NOTE, ws.detail(mid)["error"])
+            self.assertIsNone(ws.detail(other)["error"])
+        finally:
+            ws.close()
+        self.s = open_store(self.root / "workspace.db")
+        self.assertIsNone(self.s._one("SELECT last_error_sealed FROM meetings WHERE id = ?",
+                                      (mid,))[0])
 
     def test_a_lost_intake_record_starts_again_without_importing_anything(self):
         folder = self.root / "Recordings"
@@ -655,8 +764,29 @@ class DamagedValueTests(unittest.TestCase):
                 self.assertEqual({"baseline"}, {r[0] for r in self.s._all(
                     "SELECT state FROM intake_seen")})
                 self.assertEqual([], queued)
-                later = intake.scan(self.s, (".wav",), 1 << 30, enqueue)
-                self.assertNotIn("notice", later)
+                for _ in range(2):              # later scans keep the folder's note
+                    later = intake.scan(self.s, (".wav",), 1 << 30, enqueue)
+                    self.assertNotIn("notice", later)
+                    self.assertEqual(store.SALT_RESTARTED_NOTE,
+                                     self.s.folders()[0]["last_error"])
+                # Another note comes first, and the restart note stays after it.
+                folder.rename(self.root / "away")             # offline for a scan
+                intake.scan(self.s, (".wav",), 1 << 30, enqueue)
+                note = self.s.folders()[0]["last_error"]
+                self.assertTrue(note.startswith("The folder is not available"), note)
+                self.assertTrue(note.endswith(store.SALT_RESTARTED_NOTE), note)
+                (self.root / "away").rename(folder)
+                intake.scan(self.s, (".wav",), 1 << 30, enqueue)
+                self.assertEqual(store.SALT_RESTARTED_NOTE, self.s.folders()[0]["last_error"])
+                # A failed import keeps it; the folder's next successful one ends it.
+                key = self.s._one("SELECT key FROM intake_seen LIMIT 1")[0]
+                intake.import_finished(self.s, "f1", key, "c" * 64, ok=False)
+                self.assertEqual(store.SALT_RESTARTED_NOTE, self.s.folders()[0]["last_error"])
+                fp = self.s.fingerprint("original", "c" * 64)
+                intake.import_finished(self.s, "f1", key, fp, ok=True)
+                self.assertIsNone(self.s.folders()[0]["last_error"])
+                intake.scan(self.s, (".wav",), 1 << 30, enqueue)
+                self.assertIsNone(self.s.folders()[0]["last_error"])
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")

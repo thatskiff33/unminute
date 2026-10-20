@@ -26,8 +26,11 @@ real time, and remove it when the cause is fixed.
   built without `protector=keyprotect.TestProtector()` uses Windows Data Protection: it works
   on Windows but raises `KeyUnavailable` on Linux CI, and the two cannot open each other's
   workspaces. The test protector is refused under the real workspace folder. Never use it in
-  `workspace/` or `tools/` (`tests/test_content_access.py` checks). A raw SQL write to a
-  content column in a test needs the sealed name and a value from `store._seal`.
+  `workspace/` or `tools/` (`tests/test_content_access.py` checks). That test also fails on a
+  `Store(...)` or `Workspace(...)` in `tests/` without `protector=` (or `**kw` after
+  `kw.setdefault("protector", ...)`), apart from the tests in `REAL_PROTECTOR_TESTS`: a test
+  that leaves it out passes on Windows through real DPAPI, which hides the gap. A raw SQL
+  write to a content column in a test needs the sealed name and a value from `store._seal`.
 - **Stale bytecode.** An edit and restore of the same size within one second can leave a stale
   `.pyc` that Python keeps using. Use `python -B`, or delete `__pycache__` with Python.
   `tools/run_tests.py` writes no bytecode, passes that on to every process a test starts

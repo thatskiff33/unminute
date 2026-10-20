@@ -9,7 +9,9 @@
 #     (store.plain_condition). Only store.py names the key tables
 #     (store.KEY_TABLES) in SQL; nothing in workspace/ passes protector= but
 #     the Workspace handing its own to the Store, and nothing in workspace/ or
-#     tools/ names the test key protector (tests/keyprotect.py).
+#     tools/ names the test key protector (tests/keyprotect.py). Every Store
+#     and Workspace built in tests/ has the test protector, apart from the
+#     named tests that use the app's own (REAL_PROTECTOR_TESTS).
 #   - With the real codec and the test protector, a whole meeting's life
 #     leaves no content readable in the database file or its log, every
 #     content column is sealed, and everything the app shows is still right.
@@ -386,6 +388,67 @@ def protector_keywords(paths):
                                k.value.id if isinstance(k.value, ast.Name) else ast.dump(k.value))
 
 
+# Tests that build a Store or Workspace with the app's own protector (Windows
+# Data Protection) on purpose, by (file, test). Every other construction in
+# tests/ names protector=, or passes **name where the same function sets
+# name.setdefault("protector", ...) (keyprotect.open_store and its kind): on
+# Linux CI the default protector refuses, and on Windows a test that leaves
+# it out would use the real one without meaning to (#111 C2b-2).
+REAL_PROTECTOR_TESTS = {
+    # The default workspace under a patched LOCALAPPDATA, where the test
+    # protector is refused (Windows only).
+    ("test_cloud_intake.py",
+     "SyncedSourceTests.test_a_recording_in_onedrive_still_imports_and_is_watched"),
+    # No plain path: the default protector failing leaves no workspace.
+    ("test_schema2.py", "OpeningTests.test_there_is_no_plain_path"),
+    # The real protector's round trip (Windows only).
+    ("test_schema2.py", "OpeningTests.test_windows_data_protection_round_trip"),
+}
+
+
+def _sets_protector(function):
+    """The names n for which function calls n.setdefault("protector", ...)."""
+    out = set()
+    for node in ast.walk(function):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "setdefault" and isinstance(node.func.value, ast.Name)
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "protector"):
+            out.add(node.func.value.id)
+    return out
+
+
+def constructions_without_protector(source, filename):
+    """(filename, enclosing function, line) for each Store(...) or
+    Workspace(...) call that neither names protector= nor passes **name
+    where its function sets name.setdefault("protector", ...)."""
+    found = []
+
+    def visit(node, scope, given):
+        for child in ast.iter_child_nodes(node):
+            inner, sets = scope, given
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = scope + [child.name]
+                if not isinstance(child, ast.ClassDef):
+                    sets = given | _sets_protector(child)
+            if isinstance(child, ast.Call):
+                f = child.func
+                name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+                if name in ("Store", "Workspace"):
+                    named = any(k.arg == "protector" for k in child.keywords)
+                    spread = any(k.arg is None and isinstance(k.value, ast.Name)
+                                 and k.value.id in sets for k in child.keywords)
+                    if not (named or spread):
+                        found.append((filename, ".".join(scope), child.lineno))
+            visit(child, inner, sets)
+    visit(ast.parse(source), [], frozenset())
+    return found
+
+
+def test_modules():
+    return sorted((ROOT / "tests").glob("*.py"))
+
+
 def tool_modules():
     return sorted((ROOT / "tools").rglob("*.py"))
 
@@ -434,6 +497,31 @@ class StaticTests(unittest.TestCase):
                  for p in workspace_modules() + tool_modules() + [ROOT / "workspace" / "store.py"]
                  if re.search(r"keyprotect|TestProtector", p.read_text(encoding="utf-8"))]
         self.assertEqual([], named)
+
+    def test_every_test_store_and_workspace_has_the_test_protector(self):
+        # Only the named tests use the app's own protector, and each still does.
+        found = [c for p in test_modules()
+                 for c in constructions_without_protector(p.read_text(encoding="utf-8"),
+                                                          p.name)]
+        self.assertEqual([], [c for c in found if c[:2] not in REAL_PROTECTOR_TESTS])
+        self.assertEqual(REAL_PROTECTOR_TESTS, {c[:2] for c in found})
+
+    def test_the_protector_check_sees_a_missing_protector(self):
+        source = (
+            "class T:\n"
+            "    def setUp(self):\n"
+            "        self.kw = dict(battery=False)\n"
+            "    def a(self):\n"
+            "        return Workspace(root, start=False, **self.kw)\n"     # not seen to set it
+            "    def b(self, **kw):\n"
+            "        return store.Store(path, **kw)\n"                     # no setdefault
+            "    def c(self, **kw):\n"
+            "        kw.setdefault('protector', keyprotect.TestProtector())\n"
+            "        return Store(path, **kw)\n"                           # passes
+            "    def d(self):\n"
+            "        return Store(path, protector=keyprotect.TestProtector())\n")  # passes
+        self.assertEqual([("x.py", "T.a", 5), ("x.py", "T.b", 7)],
+                         constructions_without_protector(source, "x.py"))
 
     def test_the_comment_gap_takes_linear_time(self):
         # Many comments and no match: the gap must not try every way of

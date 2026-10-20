@@ -735,6 +735,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws = self.make()
 
     def make(self, **kw):
+        kw.setdefault("protector", keyprotect.TestProtector())
         ws = Workspace(self.root / "ws", self.root / "models", start=False,
                        allow_test_engines=True, battery=False, **kw)
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)

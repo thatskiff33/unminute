@@ -574,6 +574,37 @@ class SchemaOneMigrationTests(unittest.TestCase):
         s = self.open()                       # and it migrates once the crash is gone
         s.close()
 
+    def test_a_transform_that_leaves_a_value_plain_is_refused(self):
+        # Only the transform fills sealed and fingerprint columns from schema
+        # 1, and its rows are checked before anything is written: a plain
+        # path, a plain salt, a plain SHA-256 kept as the "fingerprint", or
+        # anything that is not one, refuses the migration.
+        path = self.schema_1()
+        before = self.plain()
+        real = keystore.transform_from_1
+
+        def change(table, column, value):
+            def transform(carried, keyring):
+                out = real(carried, keyring)
+                out[table][0][column] = value(out[table][0][column])
+                return out
+            return transform
+        for name, mutated in (
+                ("plain path", change("watched_folders", "path_sealed", lambda v: path)),
+                ("plain bytes", change("watched_folders", "path_sealed",
+                                       lambda v: path.encode())),
+                ("plain salt", change("intake_meta", "v_sealed", lambda v: self.salt)),
+                ("plain hash", change("intake_content", "fp", lambda v: H_A)),
+                ("not a fingerprint", change("watched_folders", "path_fp", lambda v: path))):
+            with self.subTest(name), mock.patch.object(keystore, "transform_from_1", mutated):
+                with self.assertRaises(store.StoreError) as caught:
+                    self.open()
+                self.assertEqual(store.PLAIN_IN_SEALED, str(caught.exception))
+                self.assertEqual(before, self.plain())
+                self.assertFalse((self.db.parent / "compact.pending").exists())
+        s = self.open()                       # the real transform passes
+        s.close()
+
     def test_a_key_that_cannot_be_protected_leaves_schema_1(self):
         self.schema_1()
         before = self.plain()

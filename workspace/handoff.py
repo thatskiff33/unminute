@@ -412,7 +412,10 @@ def build(store, mid, template, anonymise=False):
 
 
 def _build(store, mid, template, anonymise):
-    m = store.meeting(mid)
+    # The title only: the meeting's note is the app's own and never goes out,
+    # so a damaged one does not refuse the handoff.
+    found = store.meetings("id = ?", (mid,), content=("title",))
+    m = found[0] if found else None
     if m is None:
         raise HandoffError("Meeting not found.")
     if not m["reviewed_at"]:

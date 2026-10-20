@@ -1475,6 +1475,22 @@ class Workspace:
             raise WorkspaceError("Meeting not found.")
         return m
 
+    def _error_note(self, m, damaged=None):
+        """The note shown for a meeting, from its phase and stored note. A
+        meeting whose text key will not open has no stored note: it could
+        only be sealed under that key (#111 C2b-2), so the runner's fixed
+        wording is shown instead, worked out here and never stored.
+        damaged: the meeting's columns that did not open (store.meeting),
+        read here when not given and only when needed."""
+        if m["phase"] != "error":
+            return None
+        if m["last_error"] is not None:
+            return m["last_error"]
+        if damaged is None:
+            full = self.store.meeting(m["id"])
+            damaged = full.get("damaged", ()) if full else ()
+        return runner.DAMAGED_NOTE if "title" in damaged else None
+
     def pause(self, mid):
         """Acknowledged at once; takes effect at the next safe point. Speaker
         identification works on the whole meeting at once and has no safe point
@@ -1889,8 +1905,7 @@ class Workspace:
                         "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
                                      "note": j["error"]} for j in jobs.get(row["id"], [])],
                         "progress": round(100 * done / total) if total else 0,
-                        "paused": bool(m["paused"]), "error": m["last_error"]
-                        if m["phase"] == "error" else None,
+                        "paused": bool(m["paused"]), "error": self._error_note(m),
                         "busy": busy or None, "stage": stage,
                         # No version and no import running: an import that did
                         # not finish (kept by a hold, or after Continue anyway).
@@ -1990,7 +2005,7 @@ class Workspace:
         return {
             "id": mid, "title": m["title"], "created_at": m["created_at"],
             "stage": stage, "paused": bool(m["paused"]),
-            "error": m["last_error"] if m["phase"] == "error" else None,
+            "error": self._error_note(m, m.get("damaged", ())),
             "busy": (self._busy[1] if self._busy and self._busy[0] == mid else None),
             "progress": round(100 * done / total) if total else 0,
             "audio_available": self._audio_available(m),

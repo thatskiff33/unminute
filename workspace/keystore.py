@@ -32,11 +32,15 @@ PHASE_C_FROZEN_VERSION = "0.5.0-preview.3"
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 
+# The only protector name the store accepts for the real workspace. A
+# constant, so replacing DpapiProtector (as a test may) cannot change it.
+APP_PROTECTOR = "dpapi"
+
 
 class DpapiProtector:
     """The root key protected by Windows Data Protection for this user
     (workspace/dpapi.py, with vault.ROOT_ENTROPY)."""
-    name = "dpapi"
+    name = APP_PROTECTOR
 
     def allows(self, db_path):
         return True
@@ -130,10 +134,11 @@ MERGED_NOTE = ("This folder was listed twice (with different capitals) and has b
 
 
 def stored_folder_identity(path):
-    """A schema-1 folder path's identity: the path was resolved with
-    os.path.realpath when it was added, and the migration does not resolve it
-    again (the folder may be offline). intake.folder_identity is the same
-    for a folder added from now on."""
+    """The identity of a folder path already resolved with os.path.realpath,
+    compared as Windows does, with no trailing separator. The one
+    definition: intake.folder_identity resolves a path and then uses this,
+    and the migration uses it as is (a schema-1 path was resolved when it
+    was added, and the folder may now be offline)."""
     return ntpath.normcase(path).rstrip("\\/")
 
 
@@ -141,8 +146,10 @@ def transform_from_1(carried, keyring):
     """Schema 2's rows for the configuration a schema-1 workspace carries
     over. carried: {table: (column names, rows as tuples)}. Returns {table:
     [row dict]} whose keys are schema 2's column names. Sealed and
-    fingerprinted values come only from here (the store refuses a copied
-    "_sealed" or "_fp" column from schema 1)."""
+    fingerprinted values come only from here, and before writing anything
+    the store refuses rows that hold anything else in those columns: a
+    plain value, or a fingerprint equal to a schema-1 value
+    (store._plain_in_sealed)."""
     codec = VaultCodec(keyring, None)
     rows = {t: [dict(zip(cols, r, strict=True)) for r in data]
             for t, (cols, data) in carried.items()}

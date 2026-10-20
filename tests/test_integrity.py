@@ -282,6 +282,7 @@ class IntegrityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def open(self, **kw):
+        kw.setdefault("protector", keyprotect.TestProtector())
         self.ws = Workspace(self.root, Path(self.tmp.name) / "models", start=False,
                             allow_test_engines=True, battery=False,
                             policy_reader=lambda: ({}, ()), **kw)
@@ -686,7 +687,6 @@ class HoldTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
         self.rec = write_wav(self.base / "synthetic-standup.wav", 20)
-        self.kw = dict(allow_test_engines=True, battery=False, policy_reader=lambda: ({}, ()))
         self.ws = None
 
     def tearDown(self):
@@ -694,15 +694,20 @@ class HoldTests(unittest.TestCase):
             self.ws.close()
         self.tmp.cleanup()
 
+    def workspace(self, **kw):
+        """The workspace, with the test protector unless the caller gives one."""
+        kw.setdefault("protector", keyprotect.TestProtector())
+        return Workspace(self.base / "ws", self.base / "models", allow_test_engines=True,
+                         battery=False, policy_reader=lambda: ({}, ()), **kw)
+
     def reopen_held(self):
         with mock.patch("workspace.app.quick_check_file", return_value=False):
-            ws = self.ws = Workspace(self.base / "ws", self.base / "models", start=False,
-                                     check_integrity=True, **self.kw)
+            ws = self.ws = self.workspace(start=False, check_integrity=True)
         ws._integrity_ok = WatchedEvent()
         return ws
 
     def test_transcription_and_imports_wait_until_continue(self):
-        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        first = self.workspace(start=False)
         first.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         first._import_one(self.rec)
         first.log.open_run()                    # ends without closing
@@ -722,13 +727,13 @@ class HoldTests(unittest.TestCase):
         self.assertEqual([m["progress"] for m in ws.meetings()], [100, 100])
 
     def test_cleanup_waits_too(self):
-        ws = Workspace(self.base / "ws", self.base / "models", **self.kw)
+        ws = self.workspace()
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         ws._import_one(self.rec)
         self.assertTrue(ws.wait_idle(120))
         mid = ws.meetings()[0]["id"]
         ws.close()
-        ws = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        ws = self.workspace(start=False)
         ws.confirm_reviewed(mid)                # lined up; nothing runs it yet
         ws.log.open_run()                       # then the app ends without closing
         ws.close()
@@ -741,7 +746,7 @@ class HoldTests(unittest.TestCase):
         self.assertFalse(ws.detail(mid)["audio_available"])   # removed once released
 
     def test_closing_while_held_does_not_wait_for_the_hold(self):
-        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        first = self.workspace(start=False)
         first.log.open_run()
         first.close()
         ws = self.reopen_held()
