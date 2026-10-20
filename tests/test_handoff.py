@@ -396,15 +396,19 @@ def converted():
              "builtin": False, "edited": True, "version": 1})
 
 
-def plain_read_refused():
-    """handoff._read_capped refusing templates.json only (in use: error 32)."""
+def read_refused(name):
+    """handoff._read_capped refusing one file (in use: error 32)."""
     real = handoff._read_capped
 
     def refused(path):
-        if Path(path).name == "templates.json":
+        if Path(path).name == name:
             raise PermissionError(32, "in use")
         return real(path)
     return mock.patch.object(handoff, "_read_capped", refused)
+
+
+def plain_read_refused():
+    return read_refused("templates.json")
 
 
 class CountingSealer:
@@ -547,6 +551,71 @@ class SealedTemplatesTests(unittest.TestCase):
         with mock.patch.object(handoff, "MAX_TEMPLATES_BYTES", len(before)):
             t = self.open()
             self.assert_plain_kept(plain, before, t, handoff.PENDING_TOO_LARGE)
+
+    def test_a_sealed_file_that_cannot_be_read_is_kept_and_nothing_replaced(self):
+        # In use or access refused for a moment: not damaged (round 3).
+        t = self.open()
+        tid = t.save(None, "Kept", f"Kept {MARKER}")
+        plain = plain_file(self.root)                       # beside it: not deleted either
+        sealed_before, plain_before = self.sealed_bytes(), plain.read_bytes()
+        with read_refused("templates.sealed"):
+            busy = self.open()
+            with self.assertRaises(HandoffError):
+                busy.save(None, "New", "New")
+            with self.assertRaises(HandoffError):
+                busy.reset(tid)
+            self.assertTrue(busy.unreadable)
+            self.assertEqual(handoff.PENDING_RETRY, busy.pending)
+        self.assertEqual(sealed_before, self.sealed_bytes())
+        self.assertEqual(plain_before, plain.read_bytes())
+        again = self.open()                                  # the next first use reads it
+        self.assertEqual(("Kept", f"Kept {MARKER}"),
+                         (again.get(tid)["title"], again.get(tid)["prompt"]))
+        self.assertFalse(again.unreadable)
+        self.assertFalse(plain.exists())                     # the sealed file wins, as before
+
+    def test_an_unopenable_sealed_file_gives_way_to_a_readable_plain_one(self):
+        other = Store(Path(self.tmp.name) / "other.db", protector=keyprotect.TestProtector())
+        try:
+            from_other = other.file_sealer(handoff.TEMPLATES_FILE).seal(b"{}")
+        finally:
+            other.close()
+        changed = bytearray(self.sealer().seal(b"{}"))
+        changed[-1] ^= 1
+        cases = {"another workspace": (from_other, None),
+                 "a changed byte": (bytes(changed), None),
+                 "over the limit": (b"x" * 3000, 2000)}
+        for case, (blob, limit) in cases.items():
+            with self.subTest(case):
+                (self.root / "templates.sealed").write_bytes(blob)
+                plain = plain_file(self.root)
+                with mock.patch.object(handoff, "MAX_TEMPLATES_BYTES",
+                                       limit or handoff.MAX_TEMPLATES_BYTES):
+                    t = self.open()
+                self.assertEqual(["custom-1"], [x["id"] for x in t.all() if not x["builtin"]])
+                self.assertEqual(converted(), (t.get("minutes"), t.get("custom-1")))
+                self.assertTrue(t.unreadable)               # the unopenable file is logged
+                self.assertIsNone(t.pending)
+                self.assertFalse(plain.exists())
+                again = self.open()
+                self.assertEqual(converted(), (again.get("minutes"), again.get("custom-1")))
+
+    def test_a_damaged_sealed_file_and_an_unreadable_plain_one_are_kept(self):
+        changed = bytearray(self.sealer().seal(b"{}"))
+        changed[-1] ^= 1
+        (self.root / "templates.sealed").write_bytes(bytes(changed))
+        plain = plain_file(self.root)
+        sealed_before, plain_before = self.sealed_bytes(), plain.read_bytes()
+        with plain_read_refused():
+            t = self.open()
+            with self.assertRaises(HandoffError):
+                t.save(None, "New", "New")
+            self.assertEqual(handoff.PENDING_RETRY, t.pending)
+        self.assertEqual(plain_before, plain.read_bytes())
+        self.assertEqual(sealed_before, self.sealed_bytes())
+        again = self.open()                                  # then converted, nothing lost
+        self.assertEqual(converted(), (again.get("minutes"), again.get("custom-1")))
+        self.assertFalse(plain.exists())
 
     def test_absurdly_nested_plain_json_is_damaged(self):
         plain = self.root / "templates.json"

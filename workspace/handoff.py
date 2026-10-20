@@ -250,15 +250,20 @@ class Templates:
         self._lock = threading.Lock()
         self.saved = {}
         self.unreadable = False
-        # A templates.json kept unconverted (open_templates): PENDING_RETRY or
-        # PENDING_TOO_LARGE, and every save or reset is refused with it.
+        # A file that could not be read for a moment, or a templates.json kept
+        # unconverted (open_templates): PENDING_RETRY or PENDING_TOO_LARGE,
+        # and every save or reset is refused with it, so nothing is replaced.
         self.pending = None
+        # What reading the file found: "absent", "opened", "damaged" (it does
+        # not open or parse, or is too large: the next save replaces it) or
+        # "busy" (it could not be read just now: kept, tried next time).
+        self.state = "absent"
         try:
             data = _read_capped(self.path)
         except FileNotFoundError:
             return
-        except OSError:
-            self.unreadable = True
+        except OSError:                      # in use or refused: not damaged
+            self.state, self.unreadable, self.pending = "busy", True, PENDING_RETRY
             return
         try:
             if data is None:
@@ -267,8 +272,9 @@ class Templates:
             if not isinstance(raw, dict):
                 raise ValueError("not templates")
             self.saved = _saved_from(raw)
+            self.state = "opened"
         except (DamagedContent, ValueError, RecursionError):
-            self.unreadable = True
+            self.state, self.unreadable = "damaged", True
 
     def _write(self, saved=None):
         """Seal and save the templates (self.saved, or saved, which replaces
@@ -374,17 +380,22 @@ def open_templates(folder, sealer):
     """The workspace's Templates, converting a plain templates.json left by
     an earlier version (#111 C2c) on the way. Called at the first use of
     templates in a session, with the key available:
-      1. templates.sealed exists: it is used; a templates.json beside it (a
-         crash after the sealed copy was written) is deleted.
-      2. Else templates.json exists and can be read: written sealed, then
-         deleted. If it does not decode or parse (damaged), that is no saved
-         templates, and unreadable is set so the app logs it.
-      3. A templates.json that cannot be read now (in use, access refused) or
-         whose sealed copy cannot be written is left exactly as it is for the
-         next first use; one larger than MAX_TEMPLATES_BYTES (or whose sealed
-         copy would be) is left too, and never converts. Either way unreadable
-         is set (the built-ins only, this session) and pending refuses every
-         save and reset, so no templates.sealed is written to win over it.
+      1. templates.sealed opens: it is used, and a templates.json beside it
+         (a crash after the sealed copy was written) is deleted.
+      2. templates.sealed could not be read just now (in use, access
+         refused): nothing is written or deleted, a templates.json beside it
+         included, and pending refuses every save and reset until a later
+         first use reads it.
+      3. Otherwise (no templates.sealed, or one that does not open: damaged,
+         another workspace's, too large) a templates.json that can be read
+         is written sealed, replacing it, and only then deleted. One that
+         does not decode or parse (damaged) gives no saved templates.
+      4. A templates.json that cannot be read now, or whose sealed copy
+         cannot be written, is left exactly as it is for the next first use;
+         one larger than MAX_TEMPLATES_BYTES (or whose sealed copy would be)
+         is left too, and never converts. pending refuses every save and
+         reset meanwhile, so no templates.sealed is written to win over it.
+    unreadable is set whenever something could not be used (the app logs it).
     Leftover temporary files of both files are removed first. Ordinary
     deletion: old blocks of templates.json may remain on disk (BitLocker,
     ENCRYPTION.md)."""
@@ -392,16 +403,17 @@ def open_templates(folder, sealer):
     sealed, plain = folder / TEMPLATES_FILE, folder / PLAIN_TEMPLATES_FILE
     for leftover in _leftovers(sealed) + _leftovers(plain):
         _remove(leftover)
-    had_sealed = sealed.is_file()
     templates = Templates(sealed, sealer)
-    if not had_sealed and plain.is_file():
+    if templates.state == "busy":
+        return templates
+    if templates.state != "opened" and plain.is_file():
         try:
             data = _read_capped(plain)
         except OSError:                      # in use or refused: kept, tried next time
             return _kept(templates, PENDING_RETRY)
         if data is None:                     # too large ever to convert: kept
             return _kept(templates, PENDING_TOO_LARGE)
-        damaged = False
+        damaged = templates.state == "damaged"
         try:
             raw = json.loads(data.decode("utf-8"))
             if not isinstance(raw, dict):
