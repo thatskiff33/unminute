@@ -987,6 +987,31 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertTrue((self.root / "handoff.md").exists())  # the user's file is theirs
 
+    def test_copy_and_open_copies_the_preview_and_opens_only_the_fixed_address(self):
+        # #109: the exact previewed text goes to the clipboard, then the fixed
+        # address opens; no transcript word ever reaches the address.
+        from workspace import clipboard, handoff
+        ws = self.open()
+        mid = self.imported(ws)
+        ws.rename(mid, "MARKERTITLE meeting")
+        ws.confirm_reviewed(mid)
+        self.assertTrue(ws.wait_idle(60))
+        opened, copied = [], []
+        ws._opener = opened.append
+        preview = ws.handoff_preview(mid, "minutes", True)
+        self.assertEqual(preview["assistant"], {"name": "ChatGPT", "host": "chatgpt.com"})
+        with mock.patch.object(clipboard, "copy_text", side_effect=copied.append):
+            with self.assertRaisesRegex(WorkspaceError, "changed since the preview"):
+                ws.copy_and_open_assistant(mid, "minutes", "0" * 64, True)
+            self.assertEqual(opened, [])
+            r = ws.copy_and_open_assistant(mid, "minutes", preview["digests"]["combined"], True)
+        self.assertEqual(copied, [preview["combined"]])
+        self.assertEqual(opened, [handoff.DEFAULT_ASSISTANT[1]])
+        self.assertTrue(r["opened"])
+        self.assertNotIn("MARKERTITLE", opened[0])            # the address as is, nothing added
+        ws.confirm_final_saved(mid)
+        self.assertTrue(ws.wait_idle(60))
+
     # -- intake ---------------------------------------------------------------------
 
     def test_refused_imports_explain_without_paths(self):
@@ -1052,6 +1077,19 @@ class ApiTests(unittest.TestCase):
         public = {n for n in dir(type(self.api)) if not n.startswith("_")}
         self.assertEqual(public | {"pywebviewEventHandler"}, api.API_METHODS)
         self.assertFalse(hasattr(self.api, "__dict__"))
+
+    def test_copy_and_open_takes_no_address_from_the_page(self):
+        # #109: the page names the meeting, template, digest and anonymise flag
+        # only; the shell's guard refuses any other argument before the call.
+        import inspect
+        params = list(inspect.signature(type(self.api).copy_and_open_assistant).parameters)
+        self.assertEqual(params, ["self", "mid", "tid", "expected", "anonymise"])
+        opened = []
+        self.ws._opener = opened.append
+        r = self.api.copy_and_open_assistant(self.mid, "minutes", "x")   # not reviewed yet
+        self.assertFalse(r["ok"])
+        self.assertNotIn("Traceback", str(r))
+        self.assertEqual(opened, [])
 
     def test_errors_are_plain_results(self):
         r = self.api.detail("x" * 32)

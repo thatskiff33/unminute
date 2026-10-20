@@ -37,6 +37,11 @@ body{margin:0}
 
   <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 20px">
     <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Settings</h1>
+    <!-- #109: IT set the Hand off assistant ("set"); also off, invalid or unreadable, worded in app.js renderAssistantSetting. -->
+    <sc-if value="{{assistantSet}}" hint-placeholder-val="{{ false }}">
+      <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Some settings are managed by your organisation. Ask your IT team if you need one changed.</p>
+      <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Hand off assistant: Copilot, copilot.example.org (set by your organisation).</p>
+    </sc-if>
 
     <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px">
       <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
@@ -145,12 +150,13 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":1320}}'>
+<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"$preview":{"width":1100,"height":1320}}'>
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
     const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.24)' });
     return {
+      assistantSet: (this.props.assistant ?? 'none') === 'set',
       toggles: [
         on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
         on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),

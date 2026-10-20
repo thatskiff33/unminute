@@ -121,6 +121,67 @@ class NavigationTests(unittest.TestCase):
             cancelled[name] = args.Cancel
         self.assertEqual(cancelled, {"index.html#x": False, "other.html": True})
 
+    def test_the_page_opens_no_link_itself(self):
+        # #109: Copy and open asks the app to open the assistant; the page has
+        # no link, window.open, location change or form that submits anywhere
+        # (its forms are method="dialog"). Only its two stylesheets use href.
+        import re
+        ui = ROOT / "workspace" / "ui"
+        html = (ui / "index.html").read_text(encoding="utf-8")
+        script = (ui / "app.js").read_text(encoding="utf-8").replace(
+            '"http://www.w3.org/2000/svg"', "SVG_NAMESPACE")            # a name, not an address
+        self.assertEqual(re.findall(r"\bhref\s*=\s*\"([^\"]*)\"", html), ["tokens.css", "app.css"])
+        for source in (html, script):
+            for pattern in (r"window\.open\b", r"\blocation\b", r"\.href\b", r"\bsrcdoc\b",
+                            r"\bhttps?://", r"[\"']a[\"']", r"[\"']iframe[\"']"):
+                self.assertIsNone(re.search(pattern, source), pattern)
+        for pattern in (r"<a\b", r"<iframe\b", r"<form(?![^>]*method=\"dialog\")",
+                        r"<[^>]*\s(?:action|formaction|target)\s*="):         # markup only
+            self.assertIsNone(re.search(pattern, html), pattern)
+
+    def test_the_page_names_no_assistant_until_the_app_does(self):
+        # #109 review: before the preview arrived (or if it failed), the page
+        # showed "Copy and open ChatGPT" even where IT had turned it off or
+        # named another assistant. Copy and open and its note now start hidden
+        # and empty, Copy prompt and transcript is the main button until then,
+        # and the preview's name and host fill them (app.js layoutHandoff).
+        import re
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        for tag_id in ("ho-open", "ho-open-note"):
+            tag = re.search(r'<[a-z]+ [^>]*\bid="' + tag_id + r'"[^>]*>', html).group(0)
+            self.assertRegex(tag, r"\shidden[\s>]", tag_id)
+        for span in ("ho-open-name", "ho-open-host"):
+            self.assertIn(f'<span id="{span}"></span>', html)
+        copy = re.search(r'<button [^>]*\bid="ho-copy"[^>]*>', html).group(0)
+        self.assertIn('class="primary wide-btn"', copy)
+
+    def test_every_hand_off_visit_starts_without_an_assistant(self):
+        # #109 review round 2: reopening Hand off kept the last preview's
+        # "Copy and open" name and host until the new preview arrived (and
+        # for good if it failed). openHandoff now lays the page out as before
+        # #109 before it waits for anything; the preview fills it in.
+        import re
+        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        body = re.search(r"\nasync function openHandoff\(\) \{\n(.*?)\n\}\n", script, re.S)
+        self.assertIsNotNone(body, "openHandoff not found")
+        self.assertIn("layoutHandoff(null);", body.group(1).split("await", 1)[0])
+
+    def test_the_hand_off_buttons_beneath_copy_and_open_stay_one_row(self):
+        # #109 review: the three ways out beneath Copy and open are one flex
+        # row (wrapping only where three cannot fit), not a grid with Copy
+        # prompt and transcript spanning a row of its own.
+        import re
+        css = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+        rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+        row = [(s.strip(), d) for s, d in rules
+               if re.search(r"\.ho-three|\.ho-pair|#ho-row|#ho-copy\b", s)]
+        self.assertTrue(any(s == ".ho-pair" and re.search(r"display\s*:\s*flex", d)
+                            for s, d in row), ".ho-pair must stay a flex row")
+        for selector, decls in row:
+            self.assertNotRegex(decls, r"display\s*:\s*(inline-)?grid", selector)
+            self.assertNotRegex(decls, r"grid-(column|row|area|template)", selector)
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):

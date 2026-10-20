@@ -51,6 +51,7 @@ NOT_READY_MODEL = asr_engines.RECOMMENDED_PARAKEET
 READY_MODEL = FAKE + "sentences"
 ANOTHER_MODEL = "Transcribe with another model…"
 VAULT = {}          # stands in for Windows Credential Manager during the check
+OPENED = []         # addresses Copy and open (#109) asked to open: no browser starts
 HOSTILE = '<img src=x onerror="window.__pwned=1"> and <script>window.__pwned=2</script>'
 SR = 16000
 # A confirmation still open this long after its script has finished (a lost
@@ -648,6 +649,10 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
             document.getElementById('ho-copy').click(); await wait(1500);
             const status = document.getElementById('ho-status').textContent
                 || document.getElementById('status').textContent;
+            const open_label = document.getElementById('ho-open').textContent.trim();
+            const open_hidden = document.getElementById('ho-open').hidden;
+            document.getElementById('ho-open').click(); await wait(1500);
+            const open_status = document.getElementById('ho-status').textContent;
             document.getElementById('ho-close').click();
             return {has_markers: before.includes('\\nBEGIN TRANSCRIPT '),
                     named_before: before.includes('Aroha'), named_after: after.includes('Aroha'),
@@ -656,7 +661,8 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
                     edited_prompt: edited.startsWith('Our own minutes prompt.'),
                     copy_blocked_until_applied,
                     anonymised: anonymised.includes('Speaker 1:') && !anonymised.includes('Aroha'),
-                    template_label: tpl, copy_status: status};""")
+                    template_label: tpl, copy_status: status,
+                    open_label, open_hidden, open_status};""")
         t0 = time.perf_counter()
         report["long_transcript"] = evaluate(window, WAIT + f"""
             const t = performance.now();
@@ -1104,7 +1110,7 @@ def main():
         root = Path(tmp)
         ws = Workspace(root / "ws", root / "models", start=False,
                        allow_test_engines=True, battery=False,
-                       speaker_model=FAKE + "fake_diarizer")
+                       speaker_model=FAKE + "fake_diarizer", opener=OPENED.append)
         ws.settings.update(model=FAKE + "sentences", speakers=True)
         ws.start()
         ws.import_paths([str(write_wav(root / "synthetic-standup.wav", 120))])
@@ -1135,6 +1141,7 @@ def main():
                   storage_path=storage)
         report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
+    report["handoff_opened"] = OPENED
     report["growing_problems"] = growing_problems(report.get("growing") or {})
     report["failed_meeting_problems"] = failed_meeting_problems(
         report.get("failed_meeting") or {})
@@ -1193,7 +1200,10 @@ def main():
     h = report.get("handoff") or {}
     if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")
             and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")
-            and h.get("copy_blocked_until_applied") and h.get("anonymised")):
+            and h.get("copy_blocked_until_applied") and h.get("anonymised")
+            and h.get("open_label") == "Copy and open ChatGPT" and h.get("open_hidden") is False
+            and "opened ChatGPT in your browser" in h.get("open_status", "")
+            and report.get("handoff_opened") == ["https://chatgpt.com/"]):
         bad.append("handoff")
     nv = report.get("native") or {}
     bad.extend(native_problems(nv))

@@ -16,16 +16,20 @@
 # Stdlib only (winreg).
 
 import os
+import re
 import sys
 import threading
 import time
+import unicodedata
+from urllib.parse import urlsplit, urlunsplit
 
 POLICY_KEY = r"SOFTWARE\Policies\Unminute"
 REFRESH_S = 900.0
 UNREADABLE_RETRY_S = 30.0       # an unreadable key is often mid-rewrite: read again soon
 
 # name -> (kind, app default, permission or not). kind "bool" is a DWORD 0/1,
-# "int" a DWORD in range, "path" a REG_SZ or REG_EXPAND_SZ folder.
+# "int" a DWORD in range, "path" a REG_SZ or REG_EXPAND_SZ folder, "name" and
+# "url" a REG_SZ checked by valid_name and valid_url.
 SPEC = {
     # Setup: downloading or repairing models in the app.
     "AllowModelDownloads": ("bool", True, True),
@@ -50,6 +54,12 @@ SPEC = {
     # name may include the meeting title.
     "HandoffDefaultFolder": ("path", None, False),
     "HandoffFilenameIncludesTitle": ("bool", False, True),
+    # Hand off "Copy and open <name>" (#109): copy the handoff, then open this
+    # https address in the user's browser. Name and address are set together
+    # (see app.Workspace._assistant); the app's default is ChatGPT.
+    "AllowHandoffAssistant": ("bool", True, True),
+    "HandoffAssistantName": ("name", None, False),
+    "HandoffAssistantUrl": ("url", None, False),
 }
 INT_RANGES = {"ClipboardClearMinutes": (0, 1440)}
 ERROR_NO_MORE_ITEMS = 259
@@ -89,9 +99,72 @@ class Policy:
                 "invalid": sorted(self.invalid)}
 
 
+NAME_MAX = 30
+URL_MAX = 300
+NAME_PUNCTUATION = frozenset(" .-&'()+")
+# A host name of ASCII labels (an internationalised name in its xn-- form),
+# at least two of them, the last not all digits: never an IP address.
+_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+# Characters a web address never needs here: quotes, angle brackets, a
+# backslash (Windows reads it as a path), and the rest of RFC 3986's unsafe set.
+_URL_REFUSED = frozenset("\"'<>\\^`{|}")
+
+
+def valid_name(value):
+    """The assistant's name as shown on the button: 1 to NAME_MAX letters
+    (any script, macrons included), digits, single spaces and . - & ' ( ) +.
+    Nothing invisible, no line breaks, no leading or trailing space."""
+    if not isinstance(value, str) or not 1 <= len(value) <= NAME_MAX:
+        return False
+    if value != value.strip(" ") or "  " in value or value != unicodedata.normalize("NFC", value):
+        return False
+    return all(ch in NAME_PUNCTUATION or unicodedata.category(ch)[0] == "L"
+               or unicodedata.category(ch) == "Nd" for ch in value)
+
+
+def valid_url(value):
+    """A web address the app may hand to Windows to open in the browser:
+    https only, a host name (no IP address, user name or password), port 443
+    or none, ASCII with no spaces, quotes or control characters, no fragment,
+    at most URL_MAX characters. Parsed and rebuilt, it must equal the value
+    exactly, so nothing urlsplit quietly drops (tabs, line breaks, leading or
+    trailing spaces) gets through. Anything else (javascript:, file:,
+    ms-settings:, a \\\\server\\share path) would be handed by Windows to
+    another program, so it is refused."""
+    if not isinstance(value, str) or not 1 <= len(value) <= URL_MAX or not value.isascii():
+        return False
+    if any(ch <= " " or ch == "\x7f" or ch in _URL_REFUSED for ch in value):
+        return False
+    if not value.startswith("https://") or "#" in value or "@" in value:
+        return False
+    # A percent-encoded control character (%00 to %1F, %7F) is refused too.
+    if re.search(r"%(?![0-9A-Fa-f]{2})|%[01][0-9A-Fa-f]|%7[Ff]", value):
+        return False
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        return False
+    host = parts.hostname or ""
+    if parts.scheme != "https" or port not in (None, 443):
+        return False
+    if parts.netloc not in (host, host + ":443") or len(host) > 253:
+        return False
+    labels = host.split(".")
+    if len(labels) < 2 or labels[-1].isdigit() or not all(_LABEL.fullmatch(x) for x in labels):
+        return False
+    return urlunsplit(parts) == value
+
+
 def _parse(name, value, regtype):
     import winreg
     kind = SPEC[name][0]
+    if kind in ("name", "url"):
+        # REG_SZ only: an expandable value could change with the user's environment.
+        check = valid_name if kind == "name" else valid_url
+        if regtype != winreg.REG_SZ or not check(value):
+            raise ValueError(name)
+        return value
     if kind in ("bool", "int"):
         if regtype != winreg.REG_DWORD or not isinstance(value, int):
             raise ValueError(name)

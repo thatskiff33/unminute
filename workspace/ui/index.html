@@ -416,6 +416,7 @@
   <section id="view-settings" class="view page settings-page" aria-labelledby="h-settings" hidden>
     <h1 id="h-settings">Settings</h1>
     <p id="s-managed" class="set-text" hidden>Some settings are managed by your organisation. Ask your IT team if you need one changed.</p>
+    <p id="s-assistant" class="set-text" hidden></p>
     <p id="s-repaired" class="set-text" hidden></p>
     <div class="set-grid two">
       <section class="set-card" aria-labelledby="h-processing">
@@ -550,12 +551,19 @@
           </div>
           <button type="button" id="ho-apply" class="small">Apply</button>
         </li>
-        <li class="ho-step">
+        <li id="ho-out" class="ho-step">
           <h2 class="ho-step-title"><span class="ho-n" aria-hidden="true">3</span>Copy or save</h2>
-          <button type="button" id="ho-copy" class="primary wide-btn">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>Copy prompt and transcript
+          <!-- Copy and open (#109): the app copies, then opens the address
+               policy sets (ChatGPT by default). The page never names it.
+               Hidden until the preview says which assistant, if any, policy
+               allows; app.js layoutHandoff then makes it the main button and
+               puts Copy prompt and transcript in the row of three beneath. -->
+          <button type="button" id="ho-open" class="primary wide-btn" aria-describedby="ho-open-note" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg><span>Copy and open <span id="ho-open-name"></span></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>
           </button>
-          <div class="ho-pair">
+          <p id="ho-open-note" class="ho-open-note" hidden>Opens <span id="ho-open-host"></span> in your browser. Paste only into your organisation's business account, not a personal one.</p>
+          <button type="button" id="ho-copy" class="primary wide-btn"><svg class="ho-copy-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>Copy prompt and transcript</button>
+          <div id="ho-row" class="ho-pair">
             <button type="button" id="ho-copy-prompt">Copy prompt only</button>
             <button type="button" id="ho-save">Save Markdown…</button>
           </div>

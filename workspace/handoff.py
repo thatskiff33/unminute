@@ -28,6 +28,10 @@ from pathlib import Path
 from workspace.speaker_names import given_names, resolve
 
 LONG_CHARS = 50_000          # above this, recommend file handoff (no truncation ever)
+# Copy and open (#109): the assistant opened after copying when IT sets no
+# name and address (policy HandoffAssistantName and HandoffAssistantUrl).
+# Only this fixed address is opened: nothing is ever added to it.
+DEFAULT_ASSISTANT = ("ChatGPT", "https://chatgpt.com/")
 MAX_PROMPT_CHARS = 20_000
 MAX_TITLE_CHARS = 120
 MAX_REDACTIONS = 200

@@ -390,7 +390,9 @@
     return { combined, prompt_only: "[prompt]", markdown: "[markdown]", chars: combined.length, long: false,
              omitted: opts.omitted.length, redactions: opts.redactions.length, anonymised: anonymise,
              digests: { combined: "a", prompt_only: "b", markdown: "c" },
-             template: { id: "minutes", title: TEMPLATE.title, version: 1 }, filename: "x.md", options: opts };
+             template: { id: "minutes", title: TEMPLATE.title, version: 1 }, filename: "x.md", options: opts,
+             // The default when IT sets none (#109); null when policy withholds it.
+             assistant: "assistant" in data ? data.assistant : { name: "ChatGPT", host: "chatgpt.com" } };
   }
   // Silence of a given length, as the bridge's audio clips are data URLs.
   function silence(seconds) {
@@ -587,6 +589,13 @@
               () => document.getElementById("ho-anon").click(),
               () => document.getElementById("ho-apply").click(), wait(500)],
     },
+    // #109: policy turns Copy and open off; the page is laid out as before it.
+    "handoff-off": {
+      change: (d) => { reviewed(d); d.assistant = null; },
+      steps: [openGarden, () => document.getElementById("m-primary").click(), wait(800),
+              () => document.getElementById("ho-anon").click(),
+              () => document.getElementById("ho-apply").click(), wait(500)],
+    },
     "handoff-template": {
       change: reviewed,
       steps: [openGarden, () => document.getElementById("m-primary").click(), wait(800),
@@ -616,6 +625,16 @@
                        imported: 4, fetch_cloud: true, delete_originals: false }];
         d.receipts = [{ completed_at: at(9, 0) - DAY, result: "Audio and transcript removed (meeting 1)" },
                       { completed_at: at(9, 0) - 2 * DAY, result: "Audio removed after review (meeting 2)" }];
+      },
+      steps: [show("settings")],
+    },
+    // #109: IT set the Hand off assistant, so Settings says which is in force.
+    "settings-assistant": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.settings = { ...d.settings, managed: {
+          managed: ["HandoffAssistantName", "HandoffAssistantUrl"], invalid: [],
+          allow: {}, assistant: { state: "set", name: "Copilot", host: "copilot.example.org" } } };
       },
       steps: [show("settings")],
     },

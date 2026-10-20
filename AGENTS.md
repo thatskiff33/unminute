@@ -43,7 +43,11 @@ Network, secrets and integrity
   `setup.DOWNLOAD_HOSTS` (and files.pythonhosted.org for the Whisper GPU component's download
   only, `setup.download_hosts`; the user's decision, 20 October 2026, #248), every request
   and redirect checked. No background calls, update
-  checks, telemetry or remote transcription. Guard: `tests/test_download_process.py`.
+  checks, telemetry or remote transcription. Opening a fixed or IT-set web address in the
+  user's own browser when the user clicks (the help links; Copy and open) is the browser's
+  network use, not Unminute's, and is allowed: Unminute itself sends nothing, and handoff
+  text goes by the clipboard, never in the address (the user's decision, 20 October 2026,
+  #109). Guard: `tests/test_download_process.py`.
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work
   without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`.
