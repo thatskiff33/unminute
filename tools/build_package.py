@@ -744,9 +744,12 @@ def same_as_commit(sha, path, here=None):
 
 
 def loaded_as_committed(sha):
-    """The windows_powershell module this build runs is the one beside this
-    script, compiled from commit `sha`'s bytes (#268): it starts the Windows
-    PowerShell that checks the runtime's and every binary's signature."""
+    """The windows_powershell module this build runs was compiled from commit
+    `sha`'s bytes (#268): it starts the Windows PowerShell that checks the
+    runtime's and every binary's signature. The byte comparison is the check;
+    the path test only catches a module swapped in after loading. Both run
+    after the helper has loaded, so they catch drift, not a hostile edit,
+    which only a fresh checkout guards against (docs/SECURITY_MODEL.md T14)."""
     if Path(windows_powershell.__file__) != TOOLS / "windows_powershell.py":
         sys.exit("The Windows PowerShell helper this build loaded is not "
                  "tools/windows_powershell.py beside it: " + str(windows_powershell.__file__))

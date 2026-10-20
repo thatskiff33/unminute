@@ -96,6 +96,25 @@ class WorkflowTests(unittest.TestCase):
                      "requirements/ci-audit.txt", "python tools/audit.py", "notes.md"):
             self.assertIn(step, check)
 
+    def test_the_owners_pre_tag_diff_covers_the_release_machinery(self):
+        # Every tools/ script a release job runs, and every module the build
+        # loads by path (tools/windows_powershell.py, #268), is in the diff the
+        # owner reviews before tagging (docs/RELEASING.md).
+        steps = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in read(WORKFLOW).splitlines())
+        machinery = set(re.findall(r"tools/[\w/.-]+\.(?:py|ps1)", steps))
+        machinery |= {"tools/" + name for name in re.findall(
+            r'TOOLS / "([\w.]+\.py)"', read(ROOT / "tools" / "build_package.py"))}
+        self.assertIn("tools/windows_powershell.py", machinery)
+        self.assertIn("tools/audit.py", machinery)
+        command = re.search(r"git diff <last release tag>\.\.<commit> -- (.+)",
+                            read(ROOT / "docs" / "RELEASING.md"))
+        self.assertIsNotNone(command, "the owner's pre-tag diff in docs/RELEASING.md")
+        reviewed = command.group(1).split()
+        for path in sorted(machinery):
+            covered = any(path == r or path.startswith(r.rstrip("/") + "/") for r in reviewed)
+            self.assertTrue(covered,
+                            f"{path} runs in a release but is not in the owner's pre-tag diff")
+
     def test_publishing_checks_the_draft_attestations_and_evidence(self):
         publish = jobs()["publish"]
         for kind in evidence.KINDS:

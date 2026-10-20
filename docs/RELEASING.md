@@ -87,8 +87,10 @@ The Release workflow (`.github/workflows/release.yml`, #111 B3) builds, signs an
    - **Before tagging, the owner reviews what changed in the release machinery since the last release.** An attestation proves where and from which commit a package was built, not that the code is benign, and agents merge their own pull requests:
 
      ```
-     git diff <last release tag>..<commit> -- .github/workflows tools/build_package.py tools/evidence.py packaging requirements.txt requirements
+     git diff <last release tag>..<commit> -- .github/workflows tools/build_package.py tools/windows_powershell.py tools/evidence.py tools/audit.py packaging requirements.txt requirements
      ```
+
+     The list holds every `tools/` script the Release workflow runs and every module the build loads (`tools/windows_powershell.py` starts the Windows PowerShell that checks signatures); `tests/test_release_workflow.py` fails if one is missing.
 
    - **Before tagging, build and check the merged commit locally** with the release path the Build job runs. Work in a scratch clone with no push remote, so the local tag cannot reach GitHub, and delete the clone afterwards. Use the pinned CPython (`PYTHON_VERSION` in `tools/build_package.py`), or a virtual environment made from it, as `python`. Fetch first, so your checkout holds the merged commit. `<commit on main>` is its full 40-character SHA, not a short one: `tools/evidence.py names` compares all 40 characters (after fetching, `git rev-parse <short SHA>` prints it). Allow about 15 minutes: the check of v0.5.0-preview.2 (19 Oct 2026) took that long, with 5 minutes for the build from a warm cache, about 3 for `--verify-precompiled` and about 1 for the self-test. A first run with an empty `--cache` folder downloads the embeddable Python and every pinned wheel and takes longer; keep `<scratch>\cache` between checks to reuse it.
 
