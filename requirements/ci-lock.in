@@ -1,3 +1,4 @@
 # uv, for tools/lock.py. Adopt a new version only after it has been public
-# for at least 7 days.
+# for at least 7 days. 0.13.4 was taken earlier, as a security exception
+# (GHSA-hq85-5cpj-mr62), recorded in requirements/ci-lock.txt.
 uv==0.13.4
