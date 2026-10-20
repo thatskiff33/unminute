@@ -709,23 +709,43 @@ async function playExample(label) {
   if (it) play(it.start, it.end, true);
 }
 
+// Where a version was transcribed and at what precision (#248), from what
+// each committed part recorded: "Processor, int8", "Graphics card, float16", or
+// both in the order used, with a note when the graphics card was given up.
+function ranOnWord(ranOn) {
+  if (!ranOn || !ranOn.length) return "";
+  const where = (r) => (r.where === "gpu" ? "graphics card" : "processor");
+  // Rows that read the same are said once; the format follows the rows left.
+  const seen = [];
+  for (const r of ranOn) {
+    if (!seen.some((s) => where(s) === where(r) && s.precision === r.precision)) seen.push(r);
+  }
+  const parts = seen.map((r) => (seen.length === 1 ? `${where(r)}, ${r.precision}`
+                                                   : `${where(r)} (${r.precision})`));
+  const text = parts.join(", then ");
+  const said = text.charAt(0).toUpperCase() + text.slice(1);
+  return ranOn.some((r) => r.fallback) ? `${said} · the graphics card could not be used` : said;
+}
+
 function renderVersions(d) {
   const viewing = state.version !== null;
-  const card = (eyebrow, model, edits, open) => {
+  const card = (eyebrow, model, edits, open, ranOn) => {
     const kids = [el("span", { class: "ver-eyebrow", textContent: eyebrow }),
                   el("span", { class: "ver-model", textContent: model }),
                   el("span", { class: "ver-edits", textContent: edits })];
+    const ran = ranOnWord(ranOn);
+    if (ran) kids.push(el("span", { class: "ver-edits", textContent: ran }));
     return open ? el("button", { type: "button", class: "ver-card", on: { click: open } }, ...kids)
       : el("div", { class: "ver-card now" }, ...kids);
   };
   const items = [el("li", {}, card("Current", d.model_label || "No model yet", plural(d.edits, "edited passage"),
-    viewing ? () => viewVersion(null) : null))];
+    viewing ? () => viewVersion(null) : null, d.ran_on))];
   for (const v of d.older_versions) {
     const mine = state.version === v.index;
     items.push(el("li", {}, card(mine ? "Earlier · viewing" : "Earlier · read only",
       `${v.model_label} (${dateWord(v.created_at)})`,
       mine ? plural(v.edits, "edited passage") : `${plural(v.edits, "edited passage")} · Open`,
-      mine ? null : () => viewVersion(v.index))));
+      mine ? null : () => viewVersion(v.index), v.ran_on)));
   }
   $("m-versions").replaceChildren(...items);
 }
@@ -1875,7 +1895,7 @@ const MODE_NOTE = {
 const SETTING_NAMES = {
   mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
   battery_override: "Process on battery power", onboarded: "Guided setup",
-  microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card for speakers",
+  microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card",
   recording_display: "Recording display",
 };
 function renderRepaired(r) {
@@ -1906,21 +1926,25 @@ async function renderSettings() {
   $("s-mode-note").textContent = MODE_NOTE[s.mode] || "";
   $("s-battery").checked = s.battery_override;
   $("s-speakers").checked = s.speakers;
-  // Graphics card (speaker identification only): shown when an NVIDIA card is present.
+  // Graphics card: shown when an NVIDIA card is present. One switch for both
+  // components: speaker names, and Whisper transcription (#248).
   $("s-gpu-box").hidden = !s.gpu.card;
   $("s-gpu").checked = !!s.gpu_speakers;
-  // Always possible to turn off; turning on needs the component and driver.
+  const gpuUses = [s.gpu.component === "ready" ? "speaker names" : null,
+    s.gpu.whisper_component === "ready" ? "Whisper transcription" : null]
+    .filter(Boolean);
+  // Always possible to turn off; turning on needs a component and the driver.
   $("s-gpu").disabled = !allowed("AllowGpuComponent")
-    || (!s.gpu_speakers && (s.gpu.component !== "ready" || !s.gpu.driver_ok));
+    || (!s.gpu_speakers && (!gpuUses.length || !s.gpu.driver_ok));
   $("s-gpu-note").textContent = !s.gpu.card ? "" : !allowed("AllowGpuComponent") ? MANAGED_NOTE : !s.gpu.driver_ok
     ? `${s.gpu.card}: the NVIDIA driver is too old (${s.gpu.min_driver} or later is needed). Ask IT to update it.`
-    : s.gpu.component !== "ready"
+    : !gpuUses.length
       ? (s.gpu_speakers
-        ? "The graphics card component needs repair in Downloads; until then speaker names are worked out on the processor."
-        : `${s.gpu.card} found. Download "Graphics card acceleration" in Downloads to use it.`)
+        ? "The graphics card component needs repair in Downloads; until then the processor is used."
+        : `${s.gpu.card} found. Download "Graphics card acceleration" or "Graphics card for Whisper" in Downloads to use it.`)
       : s.mode !== "faster" && s.gpu_speakers
         ? "Used only in Faster mode (Processing, above)."
-        : `${s.gpu.card}. Speeds up speaker names in Faster mode only.`;
+        : `${s.gpu.card}. Speeds up ${gpuUses.join(" and ")} in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
   // The lid (#172): "Do nothing" while recording, put back afterwards.

@@ -241,6 +241,39 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn(SECRET, os.environ.get("HF_TOKEN", ""))
         self.assertTrue(self.ws.setup_state()["token_remembered"])
 
+    def test_whisper_gpu_component_downloads_without_a_token_and_stops_only_its_worker(self):
+        # #248: a public download; replacing it stops only the Whisper GPU
+        # worker (before_gpu_install gets the component's name).
+        from workspace import gpu
+        self.vault["t"] = SECRET
+        hooks = []
+        self.ws.downloads.before_gpu_install = hooks.append
+        self.ws.downloads.before_install = lambda: hooks.append("models")
+        self.ws.download_model(gpu.WHISPER_COMPONENT)
+        st = wait_for(self.ws.downloads, gpu.WHISPER_COMPONENT)
+        self.assertEqual(st["state"], "ready")
+        self.assertFalse(st["result"]["token_received"])
+        self.assertEqual(hooks, [gpu.WHISPER_COMPONENT])
+
+    def test_whisper_gpu_component_progress_and_check(self):
+        from unittest import mock
+
+        from workspace import gpu
+        d = self.ws.downloads
+        d.state[gpu.WHISPER_COMPONENT] = {"state": "running", "message": "x", "log": []}
+        wheels = gpu.WHISPER.staging_dir(d.cache_dir) / "wheels"
+        wheels.mkdir(parents=True)
+        self.assertIsNone(d.percent(gpu.WHISPER_COMPONENT))             # none started yet
+        (wheels / (gpu.WHISPER_WHEELS[0]["name"] + ".whl")).write_bytes(b"x")
+        with mock.patch.object(setup, "_file_size",
+                               return_value=gpu.WHISPER_DOWNLOAD_BYTES // 2):
+            self.assertEqual(d.percent(gpu.WHISPER_COMPONENT), 50)
+        d.state.clear()
+        self.assertTrue(setup.known(gpu.WHISPER_COMPONENT))
+        self.assertFalse(setup.known(gpu.WHISPER_COMPONENT + "x"))
+        self.ws.verify_model(gpu.WHISPER_COMPONENT)                     # Check every file
+        self.assertEqual(wait_for(d, gpu.WHISPER_COMPONENT)["state"], "failed")  # not installed
+
     def test_child_gets_the_token_but_not_on_argv_or_env(self):
         result = {}
         real = fake_worker_engines.fake_download

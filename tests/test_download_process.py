@@ -96,6 +96,59 @@ class RequestCheckTests(unittest.TestCase):
         self.assertEqual(sent[0][0], "error")
         self.assertNotIn("truststore", sent[0][1])
 
+    def test_the_pypi_host_is_allowed_only_for_the_whisper_component(self):
+        # #248: the owner allowed files.pythonhosted.org for this one component.
+        import asr_engines
+        from workspace import gpu
+        wheel = "https://files.pythonhosted.org/packages/70/61/x/nvidia_cublas_cu12.whl"
+        for name in (*asr_engines.MANAGED_MODELS, gpu.COMPONENT):
+            self.assertEqual(self.setup.download_hosts(name), self.setup.DOWNLOAD_HOSTS, name)
+        with self.assertRaises(og.NetworkBlockedError):
+            self.setup._check_request(FakeRequest(wheel))          # the default process
+        self.assertEqual(self.setup.download_hosts(gpu.WHISPER_COMPONENT),
+                         (*self.setup.DOWNLOAD_HOSTS, "files.pythonhosted.org"))
+        with mock.patch("urllib.request.getproxies", return_value={}):
+            og.allow_hosts(self.setup.download_hosts(gpu.WHISPER_COMPONENT))
+        self.setup._check_request(FakeRequest(wheel))
+        for url in ("https://pypi.org/simple/", "http://files.pythonhosted.org/packages/x",
+                    "https://files.pythonhosted.org.evil.example/x"):
+            with self.assertRaises(og.NetworkBlockedError, msg=url):
+                self.setup._check_request(FakeRequest(url))
+
+    def test_each_download_process_sets_up_its_own_hosts(self):
+        from workspace import gpu
+        seen = []
+
+        class Pipe:
+            def send(self, message):
+                pass
+
+        def prepare(hosts):
+            seen.append(hosts)
+            raise ImportError("stop here")
+        with mock.patch.object(self.setup, "prepare_download_process", side_effect=prepare):
+            for name in ("parakeet-tdt-0.6b-v2", gpu.COMPONENT, gpu.WHISPER_COMPONENT):
+                self.setup._download_main(Pipe(), name, ".")
+        self.assertEqual(seen, [self.setup.DOWNLOAD_HOSTS, self.setup.DOWNLOAD_HOSTS,
+                                self.setup.download_hosts(gpu.WHISPER_COMPONENT)])
+
+    def test_a_component_download_stays_on_its_own_location(self):
+        from workspace import gpu
+        whisper = self.setup._fetcher(gpu.WHISPER_DOWNLOAD_HOST)
+        for fetch, url in ((whisper, "https://download-r2.pytorch.org/whl/cu130/torch.whl"),
+                           (whisper, "https://files.pythonhosted.org/simple/x.whl"),
+                           (self.setup._fetch, gpu.WHISPER_WHEELS[0]["url"]),
+                           (self.setup._fetcher("http://files.pythonhosted.org/packages/"),
+                            "http://files.pythonhosted.org/packages/x.whl")):
+            with self.assertRaises(self.setup.SetupError, msg=url):
+                fetch(url, "unused", 1)
+        redirect = self.setup._SameHost(gpu.WHISPER_DOWNLOAD_HOST)
+        for target in ("https://files.pythonhosted.org.evil.example/packages/x",
+                       "http://files.pythonhosted.org/packages/x",
+                       "https://download-r2.pytorch.org/whl/cu130/x.whl"):
+            with self.assertRaises(self.setup.SetupError, msg=target):
+                redirect.redirect_request(None, None, 302, "Found", {}, target)
+
     def test_host_names_must_be_plain_ascii(self):
         for host in (b"huggingface.co\xff", "huggingface.co\x85", "hugging\u212aface.co",
                      "huggingface.co%x.evil.example"):
@@ -107,7 +160,10 @@ CHILD = r"""
 import json, ssl, sys
 sys.path.insert(0, sys.argv[1])
 from workspace import setup
-setup.prepare_download_process()
+if len(sys.argv) > 2:          # one component's own process (#248)
+    setup.prepare_download_process(setup.download_hosts(sys.argv[2]))
+else:
+    setup.prepare_download_process()
 import httpx
 import offline_guard
 from huggingface_hub import constants
@@ -174,6 +230,17 @@ class PrepareDownloadProcessTests(unittest.TestCase):
         self.assertFalse(got["xet_loaded"])
         self.assertTrue(got["truststore"].startswith("truststore"), got["truststore"])
         self.assertIn("_check_request", got["hooks"])
+        self.assertEqual(got["redirect"], "refused")
+
+    def test_the_whisper_component_process_adds_only_its_own_host(self):
+        from workspace import gpu
+        r = subprocess.run([sys.executable, "-c", CHILD, str(ROOT), gpu.WHISPER_COMPONENT],
+                           capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertTrue(got["guard"])
+        self.assertEqual(got["allowed"], ["huggingface.co", "hf.co", "download-r2.pytorch.org",
+                                          "files.pythonhosted.org"])
         self.assertEqual(got["redirect"], "refused")
 
 

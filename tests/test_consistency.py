@@ -80,6 +80,16 @@ class DependencyPinTests(unittest.TestCase):
                              f"workspace/gpu.py ships {wheel['name']} {wheel['version']} "
                              f"but requirements.txt pins {pinned}")
 
+    def test_whisper_gpu_component_matches_the_ctranslate2_pin(self):
+        # #248: the cuBLAS component is the one CTranslate2's Windows build
+        # loads. Upgrading CTranslate2 means checking that again (its DLL's
+        # imports and its build's CUDA version) and re-validating on a GPU.
+        from workspace import gpu
+        pinned = one(r"^ctranslate2==(\S+)", read("requirements.txt"), "ctranslate2 pin")
+        self.assertEqual(pinned, gpu.WHISPER_CTRANSLATE2,
+                         "requirements.txt moved CTranslate2: check the cuBLAS it loads and "
+                         "update workspace/gpu.py's Whisper component with it")
+
 
 class VersionTests(unittest.TestCase):
     def test_version_file_matches_the_newest_changelog_heading(self):
@@ -347,7 +357,12 @@ INVARIANT_GUARDS = {
     "D4": {"tests/test_workers.py": ["test_one_model_at_a_time_in_the_same_worker",
                                     "test_idle_worker_unloads"],
            "tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],
-           "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so"]},
+           "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so",
+                                 "test_whisper_gpu_failure_falls_back_to_the_cpu_and_says_so",
+                                 "test_out_of_graphics_memory_falls_back_without_losing_"
+                                 "committed_parts",
+                                 "test_a_card_that_cannot_run_the_precision_falls_back_to_"
+                                 "the_processor"]},
     "C1": {"tests/test_cleanup.py": ["test_copy_or_export_alone_never_deletes",
                                     "test_intent_survives_a_crash_and_is_retried",
                                     "test_late_worker_result_cannot_recreate_content"]},

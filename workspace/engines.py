@@ -62,10 +62,19 @@ def _test_factory(name, allow_test):
     return getattr(importlib.import_module(module), func)
 
 
-def load_engine(name, cache_dir, threads, allow_test=False):
-    """Return a loaded engine with transcribe(waveform) -> (segments, duration)."""
+def load_engine(name, cache_dir, threads, allow_test=False, device="cpu"):
+    """Return a loaded engine with transcribe(waveform) -> (segments, duration).
+    device="cuda" only in the Whisper GPU worker (#248): a Whisper model on
+    the graphics card at its pinned precision (gpu.WHISPER_PRECISION).
+    Anything that stops that raises GpuUnavailable or CTranslate2's own CUDA
+    error, and the caller falls back to the processor."""
     if name.startswith(TEST_PREFIX):
-        return _test_factory(name, allow_test)(threads)
+        factory = _test_factory(name, allow_test)
+        # Test factories used on the graphics card take the device.
+        return factory(threads, device="cuda") if device == "cuda" else factory(threads)
+
+    if device == "cuda":
+        return _load_whisper_gpu(name, cache_dir, threads)
 
     if asr_engines.is_parakeet(name):
         state, detail = asr_engines.parakeet_status(name, cache_dir)
@@ -95,11 +104,53 @@ def load_engine(name, cache_dir, threads, allow_test=False):
     raise ModelLoadError(f"Unknown model: {asr_engines.label(name)}")
 
 
-SPEAKER_MODEL = "pyannote"
-
-
 class GpuUnavailable(RuntimeError):
     """The CUDA build or a usable NVIDIA card/driver is not available."""
+
+
+def _load_whisper_gpu(name, cache_dir, threads):
+    """A Whisper model on the graphics card, in the Whisper GPU worker, whose
+    cuBLAS the worker loaded by full path before this (gpu.activate_whisper)."""
+    from workspace import gpu
+    precision = gpu.WHISPER_PRECISION.get(name)
+    if precision is None:
+        raise GpuUnavailable(f"{asr_engines.label(name)} is not offered on the graphics card")
+    spec = asr_engines.WHISPER_MODELS[name]
+    folder = asr_engines.find_verified(spec, cache_dir)
+    if folder is None:
+        raise ModelLoadError(f"{asr_engines.label(name)} is not installed or failed "
+                             f"verification. {fix_speech(name)}")
+    import ctranslate2
+    if ctranslate2.get_cuda_device_count() < 1:
+        raise GpuUnavailable(f"graphics card unavailable (needs NVIDIA driver "
+                             f"{gpu.MIN_DRIVER_TEXT} or later and the graphics card "
+                             f"component for Whisper)")
+    # A card CTranslate2 cannot run at the pinned precision (float16 needs
+    # compute capability 7.0 or later, so Pascal and older cannot) is the
+    # card's limit, not the model's: say so, and the processor takes over (D4).
+    if precision not in ctranslate2.get_supported_compute_types("cuda"):
+        raise GpuUnavailable(f"the graphics card cannot run {asr_engines.label(name)} at "
+                             f"{precision}")
+    from faster_whisper import WhisperModel
+    try:
+        model = WhisperModel(str(folder), device="cuda", compute_type=precision,
+                             cpu_threads=threads)
+    except (ValueError, RuntimeError, OSError) as exc:
+        # The model files were verified above, so a failure to load them onto
+        # the card is the card's (CTranslate2 refusing the precision, the
+        # driver, graphics memory). The processor then loads the same model
+        # and reports any fault of the model's own (D4).
+        raise GpuUnavailable(f"the graphics card could not load {asr_engines.label(name)}: "
+                             f"{exc}") from exc
+    problem = asr_engines.feature_width_problem(model, spec)
+    if problem:
+        raise ModelLoadError(f"{problem}. {fix_speech(name, repair_only=True)}")
+    engine = asr_engines.WhisperEngine(model, name, precision, "en")
+    engine.device = "cuda"
+    return engine
+
+
+SPEAKER_MODEL = "pyannote"
 
 
 def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allow_test=False):

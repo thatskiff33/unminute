@@ -242,6 +242,16 @@ class WorkspacePolicyTests(unittest.TestCase):
             self.assertEqual(ws._speaker_device(), ("cpu", None))
         self.assertFalse(ws.get_settings()["gpu_speakers"])     # shown as off
 
+    def test_gpu_component_off_covers_whisper_on_the_card(self):
+        # #248: the same policy governs the Whisper component and its use.
+        from workspace import gpu
+        ws = self.open(AllowGpuComponent=False)
+        self.assertIn("graphics card", self.refused(ws.download_model, gpu.WHISPER_COMPONENT))
+        ws.settings.update(gpu_speakers=True, mode="faster")
+        with mock.patch.object(gpu.WHISPER, "status", return_value=("ready", "")), \
+                mock.patch.object(gpu.WHISPER, "verified_for_use", return_value=True):
+            self.assertEqual(ws._whisper_device("large-v3-turbo"), ("cpu", None))
+
     def test_microphone_off(self):
         ws = self.open(AllowMicrophoneRecording=False)
         ws.settings.update(microphone=True)                      # saved before the policy

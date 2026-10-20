@@ -16,10 +16,10 @@
 
 Disabled: the app refuses downloads and shows "Ask your IT team". Use this when IT installs the models, so the app never needs the network (a models package for Intune is planned).</string>
 
-      <string id="AllowGpuComponent">Allow the graphics card component</string>
-      <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card component (about 2 GB of PyTorch and CUDA libraries into their profile) and use it for speaker identification.
+      <string id="AllowGpuComponent">Allow the graphics card components</string>
+      <string id="AllowGpuComponent_Help">Enabled or not configured: on computers with a supported NVIDIA card, users can download the graphics card components into their profile and use them: "Graphics card acceleration" (about 2 GB of PyTorch and CUDA libraries, from download-r2.pytorch.org) for speaker identification, and "Graphics card for Whisper" (about 0.6 GB of NVIDIA's cuBLAS library, from files.pythonhosted.org) for Whisper transcription.
 
-Disabled: the component cannot be downloaded or used; speaker identification runs on the processor.</string>
+Disabled: neither component can be downloaded or used; speaker identification and transcription run on the processor.</string>
 
       <string id="AllowMicrophoneRecording">Allow microphone recording</string>
       <string id="AllowMicrophoneRecording_Help">Enabled or not configured: users can turn on microphone recording in Settings.

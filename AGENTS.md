@@ -40,7 +40,9 @@ Network, secrets and integrity
 - **N1** Processing never uses the network; dependency telemetry is off before heavy imports.
   Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`.
 - **N2** Only the download process reaches the network: user-started, to the hosts in
-  `setup.DOWNLOAD_HOSTS`, every request and redirect checked. No background calls, update
+  `setup.DOWNLOAD_HOSTS` (and files.pythonhosted.org for the Whisper GPU component's download
+  only, `setup.download_hosts`; the user's decision, 20 October 2026, #248), every request
+  and redirect checked. No background calls, update
   checks, telemetry or remote transcription. Guard: `tests/test_download_process.py`.
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work

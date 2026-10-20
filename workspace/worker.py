@@ -83,7 +83,7 @@ def safe_message(exc):
 
 
 def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False,
-                 log_dir=None, log_name="worker"):
+                 log_dir=None, log_name="worker", gpu_component=None):
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker. What they write is free text,
     # which can include meeting content (P3), so it is never kept: with a log,
@@ -111,11 +111,18 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()
+        asr_device = "cpu"         # where this worker runs speech models; never rebound
         if gpu_site:
-            # The GPU worker (speaker identification only): the CUDA build of
-            # PyTorch must be first on the path before anything imports torch.
             from workspace import gpu
-            gpu.activate(gpu_site)
+            if gpu_component == gpu.WHISPER_COMPONENT:
+                # The Whisper GPU worker (#248): the CUDA 12 cuBLAS component
+                # only, loaded by full path; never the PyTorch CUDA 13 folder.
+                gpu.activate_whisper(gpu_site)
+                asr_device = "cuda"
+            else:
+                # The speaker GPU worker: the CUDA build of PyTorch must be
+                # first on the path before anything imports torch.
+                gpu.activate(gpu_site)
         if quiet:
             from workspace.resources import set_priority
             set_priority()
@@ -140,7 +147,8 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 if loaded != (name, threads):
                     engine, loaded = None, None      # a failed load leaves nothing stale
                     engine = load_engine(name, cache_dir, threads,
-                                         allow_test=allow_test_engines)
+                                         allow_test=allow_test_engines,
+                                         device=asr_device)
                     loaded = (name, threads)
                 conn.send(("ok", getattr(engine, "description", name),
                            getattr(engine, "device", None), getattr(engine, "precision", None)))
@@ -153,18 +161,18 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
             elif op == "diarize":
-                _, model, audio_path, hint, threads, device = msg
+                _, model, audio_path, hint, threads, wanted = msg
                 # One heavy model at a time: release the speech model first.
                 had_asr = engine is not None
                 engine, loaded = None, None
                 import gc
                 gc.collect()
                 from workspace.engines import diarize_file
-                turns, exclusive, device = diarize_file(model, cache_dir, audio_path, hint,
-                                                        threads, device=device,
+                turns, exclusive, ran_on = diarize_file(model, cache_dir, audio_path, hint,
+                                                        threads, device=wanted,
                                                         allow_test=allow_test_engines)
                 gc.collect()
-                conn.send(("ok", turns, exclusive, device, had_asr))
+                conn.send(("ok", turns, exclusive, ran_on, had_asr))
             elif op == "exit":
                 conn.send(("ok",))
                 return
@@ -182,15 +190,21 @@ class WorkerHandle:
     """Owned by the state-owning process. One meeting at a time uses it."""
 
     def __init__(self, cache_dir, quiet=True, idle_unload_s=IDLE_UNLOAD_S, gpu_site=None,
-                 allow_test_engines=False, log=None):
+                 allow_test_engines=False, log=None, gpu_component=None):
         self.cache_dir, self.quiet, self.idle_unload_s = str(cache_dir), quiet, idle_unload_s
         self.gpu_site = gpu_site
+        # Which component a GPU worker loads: None (speaker identification,
+        # PyTorch CUDA 13) or gpu.WHISPER_COMPONENT (Whisper, cuBLAS 12).
+        self.gpu_component = gpu_component
         # The app's diagnostics log (workspace.diag.Log): the worker writes its
         # own log beside it, and a worker that dies is recorded here.
         self.log = log
+        # Both GPU workers write gpu-worker.log (diag.LOG_NAME): they never run
+        # at the same time, since each starts only after the other is shut down.
         self._log_name = "gpu-worker" if gpu_site else "worker"
         self.allow_test_engines = bool(allow_test_engines)   # tests only (engines.TEST_PREFIX)
         self._gpu = None             # companion GPU worker (speaker identification only)
+        self._gpu_whisper = None     # companion GPU worker (Whisper only, #248)
         self._ctx = mp.get_context("spawn")
         self._proc = self._conn = None
         self._loaded = None          # what the CURRENT worker process has loaded
@@ -221,7 +235,8 @@ class WorkerHandle:
         log_dir = str(self.log.folder) if self.log is not None else None
         self._proc = self._ctx.Process(target=_worker_main,
                                        args=(child, self.cache_dir, self.quiet, self.gpu_site,
-                                             self.allow_test_engines, log_dir, self._log_name),
+                                             self.allow_test_engines, log_dir, self._log_name,
+                                             self.gpu_component),
                                        daemon=True, name="unminute-gpu-worker" if self.gpu_site
                                        else "unminute-worker")
         self._proc.start()
@@ -261,30 +276,71 @@ class WorkerHandle:
     def gpu_worker(self, site):
         """The companion worker that loads the CUDA build of PyTorch. It is
         stopped, shut down and closed together with this one."""
-        if self._gpu is None or self._gpu.gpu_site != str(site):
-            if self._gpu is not None:
-                self._gpu.close()
-            self._gpu = WorkerHandle(self.cache_dir, quiet=self.quiet,
-                                     idle_unload_s=self.idle_unload_s, gpu_site=str(site),
-                                     allow_test_engines=self.allow_test_engines, log=self.log)
-        self._gpu.quiet = self.quiet
+        return self._companion("_gpu", site, None)
+
+    def whisper_gpu_worker(self, site, component):
+        """The companion worker that runs Whisper on the graphics card with
+        the cuBLAS component (component: gpu.WHISPER_COMPONENT). It is
+        stopped, shut down and closed together with this one."""
+        return self._companion("_gpu_whisper", site, component)
+
+    def _companion(self, attr, site, component):
+        current = getattr(self, attr)
+        if current is None or current.gpu_site != str(site):
+            if current is not None:
+                current.close()
+            current = WorkerHandle(self.cache_dir, quiet=self.quiet,
+                                   idle_unload_s=self.idle_unload_s, gpu_site=str(site),
+                                   allow_test_engines=self.allow_test_engines, log=self.log,
+                                   gpu_component=component)
+            setattr(self, attr, current)
+        current.quiet = self.quiet
         # Clear the companion's old stop first, then carry over a stop that is
         # in force now, so a stop that lands meanwhile is never lost.
-        self._gpu.begin_run()
+        current.begin_run()
         if self._stop_requested.is_set():
-            self._gpu._stop_requested.set()
-        return self._gpu
+            current._stop_requested.set()
+        return current
 
-    def release_gpu(self):
-        """Stop the GPU worker and free its graphics memory (after a GPU failure)."""
-        companion, self._gpu = self._gpu, None
-        if companion is not None:
-            companion.close()
+    def _companions(self):
+        return [c for c in (self._gpu, self._gpu_whisper) if c is not None]
 
-    def shutdown(self):
-        companion = self._gpu            # read once: release_gpu may clear it
+    def release_gpu(self, which=None):
+        """Stop a GPU worker and free its graphics memory (after a GPU
+        failure, or before its component is replaced or removed). which:
+        "speakers", "whisper", or None for both."""
+        if which in (None, "speakers"):
+            companion, self._gpu = self._gpu, None
+            if companion is not None:
+                companion.close()
+        if which in (None, "whisper"):
+            companion, self._gpu_whisper = self._gpu_whisper, None
+            if companion is not None:
+                companion.close()
+
+    def shutdown_whisper_gpu(self):
+        """End the Whisper GPU worker's process (it restarts when next used),
+        so its model leaves graphics and main memory before another heavy
+        model loads (D4: one heavy model at a time)."""
+        companion = self._gpu_whisper
         if companion is not None:
             companion.shutdown()
+
+    def shutdown_for_whisper_gpu(self):
+        """Before Whisper loads on the graphics card: end this worker and the
+        speaker GPU worker, so their models leave memory (D4), and keep the
+        Whisper GPU worker and the model it may already hold."""
+        companion = self._gpu
+        if companion is not None:
+            companion.shutdown()
+        self._shutdown_own()
+
+    def shutdown(self):
+        for companion in self._companions():   # read once: release_gpu may clear them
+            companion.shutdown()
+        self._shutdown_own()
+
+    def _shutdown_own(self):
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
                 try:
@@ -296,8 +352,7 @@ class WorkerHandle:
             self._kill()
 
     def close(self):
-        companion = self._gpu
-        if companion is not None:
+        for companion in self._companions():
             companion.close()
         self._closed = True
         self._wake.set()
@@ -312,8 +367,7 @@ class WorkerHandle:
         cleans up and raises WorkerStopped, otherwise cleanup happens here.
         The stop stays in force until begin_run()."""
         self._stop_requested.set()
-        companion = self._gpu
-        if companion is not None:
+        for companion in self._companions():
             companion.stop_now()
         proc = self._proc
         if proc is not None and proc.is_alive():
@@ -446,6 +500,9 @@ def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=Non
     from pathlib import Path
     seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
     timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
+    # One heavy model at a time: Whisper on the graphics card holds its model
+    # in its own worker until that worker ends (#248).
+    handle.shutdown_whisper_gpu()
     if device == "cuda":
         # A hung GPU gives up sooner, so the CPU fallback is not delayed for
         # long (15 minutes of audio took 80 s on a 4 GB laptop GPU).
@@ -470,13 +527,91 @@ def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=Non
 class WorkerEngine:
     """Adapter so workspace.runner can drive a worker like an in-process engine.
     device/precision report what the worker's engine actually uses. Creating
-    one starts a new run (clears any earlier Stop)."""
+    one starts a new run (clears any earlier Stop). note: recorded as the
+    device instead of the worker's "cpu" when the graphics card was wanted but
+    refused before the run ("cpu (graphics card not used: why)", #153)."""
 
-    def __init__(self, handle, name, threads):
-        self.handle, self.name, self.threads = handle, name, threads
+    def __init__(self, handle, name, threads, note=None):
+        self.handle, self.name, self.threads, self.note = handle, name, threads, note
         self.description = self.device = self.precision = None
         handle.begin_run()
+        # One heavy model at a time: Whisper on the graphics card lets go of
+        # its model before this worker loads one (#248).
+        handle.shutdown_whisper_gpu()
 
     def transcribe(self, audio):
-        self.description, self.device, self.precision = self.handle.load(self.name, self.threads)
+        self.description, device, self.precision = self.handle.load(self.name, self.threads)
+        self.device = self.note or device
         return self.handle.transcribe(audio)
+
+
+GPU_FAILURE_WORDS = ("gpuunavailable", "cuda", "cudnn", "cublas", "out of memory",
+                     "outofmemory")
+
+
+def gpu_failure(exc):
+    """A failure the graphics card caused: the GPU worker crashed or hung, or
+    the error names CUDA, cuDNN, cuBLAS or graphics memory."""
+    return isinstance(exc, WorkerCrashed) or any(
+        w in str(exc).lower() for w in GPU_FAILURE_WORDS)
+
+
+def gpu_load_failure(exc):
+    """A model that would not load on the graphics card. The Whisper GPU
+    worker checks the model's files before it touches the card and reports a
+    fault of theirs as ModelLoadError; any other load failure there (for
+    example CTranslate2 refusing a precision the card cannot run) is the
+    card's, so the processor is tried (D4)."""
+    return gpu_failure(exc) or (isinstance(exc, EngineUnavailable)
+                                and not str(exc).startswith("ModelLoadError:"))
+
+
+class GpuWhisperEngine:
+    """Whisper on the graphics card in its own worker (#248), with the
+    processor as the fallback (D4). A failure the card causes (the component
+    missing or damaged, the driver, out of graphics memory, a crashed or hung
+    GPU worker) moves the rest of this run to the processor: the chunk in hand
+    is transcribed again there, and nothing from the failed attempt was
+    committed (D1). device then records why ("cpu (graphics card not used:
+    ...)") and precision what the processor used, so the meeting says so; the
+    model never changes. A deliberate stop is never retried, and an error that
+    is not the card's is raised as it is."""
+
+    def __init__(self, handle, name, threads, site, component):
+        self.handle, self.name, self.threads = handle, name, threads
+        self.description = self.device = self.precision = None
+        self.reason = None                    # why the card was given up, once it was
+        handle.begin_run()
+        # One heavy model at a time: the processor's worker and the speaker
+        # GPU worker let go of their models before Whisper loads on the card.
+        handle.shutdown_for_whisper_gpu()
+        self._gpu = handle.whisper_gpu_worker(site, component)
+
+    def transcribe(self, audio):
+        if self.reason is None:
+            loading = True
+            try:
+                info = self._gpu.load(self.name, self.threads)
+                loading = False
+                # A hung card gives up sooner, so the fallback is not delayed long.
+                timeout = max(GPU_TIMEOUT_FLOOR_S, GPU_TIMEOUT_FACTOR * len(audio) / SAMPLE_RATE)
+                result = self._gpu.transcribe(audio, timeout=timeout)
+                self.description, self.device, self.precision = info
+                return result
+            except WorkerStopped:
+                raise
+            except (WorkerError, WorkerCrashed) as exc:
+                if not (gpu_load_failure(exc) if loading else gpu_failure(exc)):
+                    raise                     # not the graphics card's fault: no second run
+                self.reason = safe_message(exc).split(": ", 1)[-1][:120]
+                self.handle.release_gpu("whisper")    # stop it and free its memory
+        try:
+            self.description, _, self.precision = self.handle.load(self.name, self.threads)
+            result = self.handle.transcribe(audio)
+        except (WorkerError, WorkerCrashed) as exc:
+            # The worker's own error types (EngineUnavailable among them) keep
+            # their type, so the runner treats the failure as it would anyway.
+            raise type(exc)(f"{exc} (after the graphics card could not be used: "
+                            f"{self.reason})") from exc
+        self.device = f"cpu (graphics card not used: {self.reason})"[:200]
+        return result

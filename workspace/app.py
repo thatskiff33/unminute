@@ -32,7 +32,7 @@ from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import Store, StoreError, default_root, quick_check_file
-from workspace.worker import WorkerEngine, WorkerHandle, safe_message
+from workspace.worker import GpuWhisperEngine, WorkerEngine, WorkerHandle, safe_message
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
                     ".ogg", ".aac", ".wma", ".webm", ".avi")
@@ -311,7 +311,7 @@ class Workspace:
                                    allow_test_engines=allow_test_engines, log=self.log, **kw)
         # Downloads replace model files: the inference worker is unloaded first.
         self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
-                                         before_gpu_install=self.handle.release_gpu)
+                                         before_gpu_install=self._release_gpu_worker)
         self.downloads.after = self._after_download
         self.downloads.log_dir = str(self.log.folder)
         self._wake = threading.Event()
@@ -326,6 +326,7 @@ class Workspace:
         self._reruns = {}                 # meeting id -> known speaker count (or None)
         self._rerun_count = None          # the count of the rerun now running
         self._gpu_pass = False            # a speaker pass on the graphics card is running
+        self._gpu_whisper_run = False     # Whisper is transcribing on the graphics card
         self._removing = None             # a model being removed: no job starts meanwhile
         self._scan_wake = threading.Event()     # Check now (scan_now), or closing
         self.last_scan = None
@@ -1346,12 +1347,20 @@ class Workspace:
                 return
             self._status = "Transcribing"
             reader = media.AudioReader(media.audio_path(self.media, mid))
+            model = version["model"]
+            device, site = self._choose_whisper_device(model)
             try:
-                engine = WorkerEngine(self.handle, self.store.version(ref)["model"], threads)
+                if device == "cuda":
+                    engine = GpuWhisperEngine(self.handle, model, threads, site,
+                                              gpu.WHISPER_COMPONENT)
+                else:
+                    engine = WorkerEngine(self.handle, model, threads,
+                                          note=device if device != "cpu" else None)
                 result = runner.run_version(self.store, mid, ref, reader, engine,
                                             downloads_allowed=downloads)
             finally:
                 reader.close()               # release the handle before any cleanup
+                self._gpu_whisper_run = False
             if result == runner.RunResult.STOPPED and not self._closing.is_set() \
                     and not self._yielded:
                 self.store.set_paused(mid, True)    # Stop now = paused until resumed
@@ -1386,10 +1395,44 @@ class Workspace:
             return "cpu", None
         if gpu.verified_for_use(self.cache_dir):
             return "cuda", str(gpu.site_dir(self.cache_dir))
-        why = ("the graphics card component is not downloaded"
-               if gpu.status(self.cache_dir)[0] == "missing" else
+        missing = gpu.status(self.cache_dir)[0] == "missing"
+        if missing and gpu.WHISPER.status(self.cache_dir)[0] != "missing":
+            return "cpu", None          # the card is on for Whisper only (#248)
+        why = ("the graphics card component is not downloaded" if missing else
                "the graphics card component failed its check; repair it in Downloads")
         return f"cpu (graphics card not used: {why})", None
+
+    def _choose_whisper_device(self, model):
+        """Choose the device for a transcription run and mark a GPU run in one
+        step, under the lock a GPU component download or removal also takes."""
+        with self._lock:
+            device, site = self._whisper_device(model)
+            self._gpu_whisper_run = device == "cuda"
+        return device, site
+
+    def _whisper_device(self, model):
+        """Whisper on the graphics card (#248) only when the user turned the
+        card on, in Faster mode, for a model offered there
+        (gpu.WHISPER_PRECISION), with its own component verified. Otherwise the
+        processor. A component that is there but failed its check is recorded
+        as the reason (#153), and the meeting says so; one never downloaded is
+        not: the setting may be on for speaker identification only."""
+        if not (model in gpu.WHISPER_PRECISION and self.settings["gpu_speakers"]
+                and self.settings["mode"] == resources.FASTER
+                and self._allowed("AllowGpuComponent")
+                and self.downloads._running != gpu.WHISPER_COMPONENT):   # not while replaced
+            return "cpu", None
+        if gpu.WHISPER.status(self.cache_dir)[0] == "missing":
+            return "cpu", None
+        if gpu.WHISPER.verified_for_use(self.cache_dir):
+            return "cuda", str(gpu.WHISPER.site_dir(self.cache_dir))
+        return ("cpu (graphics card not used: the graphics card component for Whisper failed "
+                "its check; repair it in Downloads)"), None
+
+    def _release_gpu_worker(self, name):
+        """Before a graphics card component is replaced: stop the one worker
+        that loads it, and leave the other running."""
+        self.handle.release_gpu("whisper" if name == gpu.WHISPER_COMPONENT else "speakers")
 
     # -- controls -------------------------------------------------------------------------
 
@@ -1842,6 +1885,16 @@ class Workspace:
                 "speaker_count": count, "model": v["model"],
                 "model_label": asr_engines.label(v["model"])}
 
+    def _ran_on(self, vid):
+        """Where a version was transcribed, for its details (#248): the
+        processor or the graphics card, the precision, the number of parts,
+        and whether the card was given up for the processor. Only those
+        facts: the recorded reason stays in the database."""
+        return [{"where": "gpu" if (r["backend"] or "").startswith("cuda") else "cpu",
+                 "precision": r["precision"], "parts": r["parts"],
+                 "fallback": "graphics card not used" in (r["backend"] or "")}
+                for r in self.store.ran_on(vid)]
+
     def _speaker_count(self, vid, run, log):
         """Speakers in the current identification (run), kept per version
         until the run or its corrections change. log is the whole (small)
@@ -1910,12 +1963,14 @@ class Workspace:
             "audio_removed_at": m["audio_removed_at"],
             "reviewed_at": m["reviewed_at"], "final_saved_at": m["final_saved_at"],
             **self._facts(v),
+            "ran_on": self._ran_on(v["id"]) if v else [],
             "edits": self.store.edit_count(v["id"]) if v else 0,
             "can_undo": bool(v) and not m["reviewed_at"] and self.store.can_undo(v["id"]),
             "older_versions": [{"index": i, "model": x["model"],
                                 "model_label": asr_engines.label(x["model"]),
                                 "created_at": x["created_at"],
-                                "edits": self.store.edit_count(x["id"])}
+                                "edits": self.store.edit_count(x["id"]),
+                                "ran_on": self._ran_on(x["id"])}
                                for i, x in enumerate(older)],
             "can_skip": bool(v) and self._can_skip(m, runs),
             "can_retranscribe": bool(v) and self._can_retranscribe(m, stage),
@@ -2137,7 +2192,11 @@ class Workspace:
                         "min_driver": gpu.MIN_DRIVER_TEXT,
                         "component": self._display_value(
                             "gpu", lambda: gpu.status(self.cache_dir))[0] if info
-                        else "missing"},
+                        else "missing",
+                        # Whisper on the graphics card (#248): its own component.
+                        "whisper_component": self._display_value(
+                            "gpu-whisper", lambda: gpu.WHISPER.status(self.cache_dir))[0]
+                        if info else "missing"},
                 "deployment": update.deployment(),
                 # Counts from the database and the recordings folder: read
                 # again whenever either changes.
@@ -2164,8 +2223,9 @@ class Workspace:
             if info is None or not info["driver_ok"]:
                 raise WorkspaceError("This computer has no NVIDIA graphics card with a recent "
                                      f"enough driver ({gpu.MIN_DRIVER_TEXT} or later).")
-            if gpu.status(self.cache_dir)[0] != "ready":
-                raise WorkspaceError("Download the graphics card component in Settings > "
+            if "ready" not in (gpu.status(self.cache_dir)[0],
+                               gpu.WHISPER.status(self.cache_dir)[0]):
+                raise WorkspaceError("Download a graphics card component in Settings > "
                                      "Manage downloads first.")
         if changes.get("microphone") is False and self._recording is not None:
             raise WorkspaceError("Stop the recording before turning the microphone off.")
@@ -2384,9 +2444,9 @@ class Workspace:
         if not self._allowed("AllowModelDownloads"):
             raise WorkspaceError("Downloads are turned off by your organisation. Ask your IT "
                                  "team to install the models.")
-        if name == gpu.COMPONENT and not self._allowed("AllowGpuComponent"):
+        gpu_only = gpu.component(name) is not None   # used by no work unless a GPU run
+        if gpu_only and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
-        gpu_only = name == gpu.COMPONENT     # used by no running work unless a GPU pass
         if token is not None and not isinstance(token, str):
             raise WorkspaceError("Expected a token.")
         on_success = None
@@ -2409,7 +2469,7 @@ class Workspace:
             token = None                       # public models never receive a token
         with self._lock:                       # atomic with the processing thread's start
             if self._busy and self._busy[1] != "cleanup" and not (
-                    gpu_only and not self._gpu_in_use()):
+                    gpu_only and not self._gpu_in_use(name)):
                 raise WorkspaceError("Pause processing first: models cannot be replaced "
                                      "while a meeting is being processed.")
             try:
@@ -2430,9 +2490,12 @@ class Workspace:
             self._check_removable(name)
             self._removing = name             # no job starts until removal ends
         try:
-            if name == gpu.COMPONENT:
-                self.handle.release_gpu()
-                if self.settings["gpu_speakers"]:
+            if gpu.component(name) is not None:
+                self._release_gpu_worker(name)
+                # The setting goes off with the last graphics card component.
+                others = [c for c in gpu.COMPONENTS.values() if c.key != name]
+                if self.settings["gpu_speakers"] and not any(
+                        c.status(self.cache_dir)[0] == "ready" for c in others):
                     self.settings.update(gpu_speakers=False)
             else:
                 self.handle.shutdown()         # the worker may still hold it loaded
@@ -2452,10 +2515,11 @@ class Workspace:
 
     def _check_removable(self, name):
         """Refuse removal while the model is still needed (under the lock)."""
-        if name == gpu.COMPONENT:
-            if self._gpu_in_use():
-                raise WorkspaceError("Speaker identification is using the graphics card. "
-                                     "Pause it first.")
+        if gpu.component(name) is not None:
+            if self._gpu_in_use(name):
+                what = ("Transcription" if name == gpu.WHISPER_COMPONENT
+                        else "Speaker identification")
+                raise WorkspaceError(f"{what} is using the graphics card. Pause it first.")
         else:
             spec = asr_engines.MANAGED_MODELS[name]
             if name == self.settings["model"]:
@@ -2477,17 +2541,18 @@ class Workspace:
             if self._busy and self._busy[1] != "cleanup":
                 raise WorkspaceError("Pause processing first.")
 
-    def _gpu_in_use(self):
-        """A speaker pass is running on the graphics card right now (set before
-        its worker starts, so there is no gap)."""
-        return self._gpu_pass
+    def _gpu_in_use(self, name=gpu.COMPONENT):
+        """The worker that loads this graphics card component is running now: a
+        speaker pass, or Whisper transcribing, on the card (each set before its
+        worker starts, so there is no gap)."""
+        return self._gpu_whisper_run if name == gpu.WHISPER_COMPONENT else self._gpu_pass
 
     def verify_model(self, name):
         if not isinstance(name, str):
             raise WorkspaceError("Unknown model.")
         with self._lock:
             if self._busy and self._busy[1] != "cleanup" and not (
-                    name == gpu.COMPONENT and not self._gpu_in_use()):
+                    gpu.component(name) is not None and not self._gpu_in_use(name)):
                 raise WorkspaceError("Pause processing first.")
             try:
                 self.downloads.verify(name)

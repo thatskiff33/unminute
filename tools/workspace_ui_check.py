@@ -1093,9 +1093,10 @@ def main():
             and c.get("final_offered")):
         bad.append("review confirmation")
     st = report.get("setup") or {}
-    from workspace import gpu          # the graphics card component card needs NVIDIA
-    # Four speech models (Parakeet v2, Parakeet v3, turbo, large-v3) and the speaker model.
-    if not (st.get("cards") == 5 + (gpu.detected() is not None)
+    from workspace import gpu          # the graphics card component cards need NVIDIA
+    # Four speech models (Parakeet v2, Parakeet v3, turbo, large-v3) and the speaker model,
+    # plus two graphics card components (speakers, Whisper) on an NVIDIA machine.
+    if not (st.get("cards") == 5 + 2 * (gpu.detected() is not None)
             and st.get("token_field_type") == "password"
             and st.get("token_cleared") and not st.get("token_in_page")
             and st.get("remove_visible") and report.get("setup_vault") == ["token"]):

@@ -134,7 +134,7 @@ The installer explains what it is waiting for, and so does Settings > Updates in
 1. In the earlier version: hand off or copy anything you still need, confirm the cleanup of finished meetings, check any holds with whoever manages them, and remove the Hugging Face token (in 0.4, Settings > Manage downloads > Remove the remembered token; in 0.2 or 0.3, Setup > Remove the remembered token). Settings, handoff templates and watched folders do not carry over either, so note your settings and watched folders (including which ones may delete originals), and copy the text of any handoff template you edited or wrote.
 2. Uninstall the earlier version in Settings > Apps.
 3. Install the new version.
-4. In the new version's Setup, download the models again and enter the token again. Then set up your settings, handoff templates and watched folders again. When you add a watched folder again, leave "Also import recordings already in it" unticked, so recordings you finished in the earlier version are not imported again. If you used the graphics card, download "Graphics card acceleration" again in Settings > Manage downloads and turn "Use the graphics card" back on.
+4. In the new version's Setup, download the models again and enter the token again. Then set up your settings, handoff templates and watched folders again. When you add a watched folder again, leave "Also import recordings already in it" unticked, so recordings you finished in the earlier version are not imported again. If you used the graphics card, download the components you used ("Graphics card acceleration", "Graphics card for Whisper" or both) again in Settings > Manage downloads and turn "Use the graphics card" back on.
 
 The earlier version's workspace and models stay on the computer until they are deleted. [PACKAGING.md](PACKAGING.md) ("Updates") says where they are, and what to do if you installed in the other order.
 
@@ -190,15 +190,21 @@ These configurations have been tested:
 
 - **Windows:** 64-bit Windows 11 on an x64 processor, CPU processing (Quiet and Faster), with the Edge WebView2 Runtime.
 - **Hardware:** the minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. So far it has only been tested on a faster laptop (#28).
-- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Parakeet v3 and Whisper large-v3 turbo were tested only in the retired source app's engine; in that comparison Parakeet v3 dropped speech on some clips. Whisper large-v3 has not been tested in the app's engine.
+- **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Whisper large-v3 turbo and Whisper large-v3 were tested in the workspace on 20 October 2026, on the processor and on an NVIDIA graphics card, with public meeting recordings. Parakeet v3 was tested only in the retired source app's engine, where it dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
 
-**Graphics card (optional, speaker identification only).** On a computer with an NVIDIA card, Settings > Manage downloads offers "Graphics card acceleration". This is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site, checked against published checksums. Once it is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
+**Graphics card (optional).** On a computer with an NVIDIA card, Settings > Manage downloads offers two components. You can download either or both:
 
-- **When it is used:** only in Faster mode. Transcription always runs on the processor.
-- **What it needs:** an NVIDIA driver from version 580. Nothing else is installed on the computer and drivers are never changed.
-- **If the card cannot be used** (an old driver, too little graphics memory or a damaged component), that speaker pass runs on the processor instead, and the meeting says so.
-- **Each meeting shows** whether speaker identification ran on the graphics card.
+- **"Graphics card acceleration"** speeds up speaker identification. It is a one-time 2 GB download of the CUDA build of PyTorch from the PyTorch download site.
+- **"Graphics card for Whisper"** runs Whisper large-v3 turbo and Whisper large-v3 on the card. It is a one-time 0.57 GB download of NVIDIA's cuBLAS library, from NVIDIA's release on PyPI (files.pythonhosted.org). Parakeet stays on the processor: on the card it was slower.
+
+Each is checked against published checksums. Once one is downloaded, turn on Settings > Recording and speakers > "Use the graphics card".
+
+- **When it is used:** only in Faster mode.
+- **What it needs:** an NVIDIA driver from version 580. For Whisper, the card must also run float16 (compute capability 7.0 or later, from 2017's Volta and later cards); an older card leaves Whisper on the processor. Nothing else is installed on the computer and drivers are never changed.
+- **If the card cannot be used** (an old driver or card, too little graphics memory or a damaged component), that work runs on the processor instead, and the meeting says so. A transcript already part-done carries on on the processor with the same model; nothing finished is lost.
+- **Large-v3 on the card can give slightly different text** from large-v3 on the processor. On the card it runs at int8_float16 to fit in the card's memory, and large-v3's text also varies a little from run to run. On a 39-minute public meeting (AMI ES2004c), 11.8% of words differed, and the word error rate was 21.76% on the card in one direct run and 20.02% through the app, against 19.75% on the processor. Turbo was within 0.3 points on the same meeting.
+- **Each meeting shows** whether speaker identification ran on the graphics card, and its **Versions** tab shows where each transcript was made and at what precision (for example "Graphics card, float16" or "Processor, int8").
 
 Detecting a graphics card does not enable anything on its own.
 

@@ -16,7 +16,8 @@ from pathlib import Path
 
 from workspace.store import SPEAKER_RESTART_NOTE as RESTART_NOTE
 from workspace.store import StoreError
-from workspace.worker import WorkerStopped
+from workspace.worker import GPU_FAILURE_WORDS as _GPU_FAILURE_WORDS
+from workspace.worker import WorkerStopped, gpu_failure
 from workspace.worker import diarize as worker_diarize
 
 MAX_HINT = 20
@@ -99,16 +100,9 @@ def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
     return turns, exclusive, f"cpu (graphics card not used: {reason})"[:200], had
 
 
-GPU_FAILURE_WORDS = ("gpuunavailable", "cuda", "cudnn", "cublas", "out of memory",
-                     "outofmemory")
-
-
-def _gpu_failure(exc):
-    """A failure the graphics card caused: the GPU worker crashed or hung, or
-    the error names CUDA, cuDNN, cuBLAS or graphics memory."""
-    from workspace.worker import WorkerCrashed
-    return isinstance(exc, WorkerCrashed) or any(
-        w in str(exc).lower() for w in GPU_FAILURE_WORDS)
+# One definition for speakers and for Whisper on the graphics card (#248).
+GPU_FAILURE_WORDS = _GPU_FAILURE_WORDS
+_gpu_failure = gpu_failure
 
 
 def _end(store, rid, status, message):

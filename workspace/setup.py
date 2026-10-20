@@ -85,24 +85,50 @@ def status(name, cache_dir):
     return state, plain, detail
 
 
+def _old_driver(info):
+    return (f" The NVIDIA driver ({info['driver']}) is too old: version "
+            f"{gpu.MIN_DRIVER_TEXT} or later is needed. Ask IT to update it.")
+
+
 def gpu_card(cache_dir):
-    """The optional graphics card component, offered only with an NVIDIA card."""
+    """The optional graphics card component for speaker identification,
+    offered only with an NVIDIA card."""
     info = gpu.detected()
     if info is None:
         return None
     state, plain = gpu.status(cache_dir)
     about = (f"Speeds up speaker identification on this computer's {info['name']}. "
-             "Used only in Faster mode, once turned on in Settings. Transcription stays "
-             "on the processor.")
+             "Used only in Faster mode, once turned on in Settings.")
     if not info["driver_ok"]:
-        about += (f" The NVIDIA driver ({info['driver']}) is too old: version "
-                  f"{gpu.MIN_DRIVER_TEXT} or later is needed. Ask IT to update it.")
+        about += _old_driver(info)
     return {"name": gpu.COMPONENT, "role": "gpu", "recommended": False,
             "label": "Graphics card acceleration",
             "title": "Graphics card acceleration (optional)", "about": about,
             "state": state, "status": plain, "licence": gpu.LICENCE[0],
             "source": gpu.LICENCE[1], "size_gb": round(gpu.DOWNLOAD_BYTES / 1e9, 2),
             "revision": gpu.VERSION, "needs_token": False}
+
+
+def whisper_gpu_card(cache_dir):
+    """The optional graphics card component for Whisper (#248), offered only
+    with an NVIDIA card."""
+    info = gpu.detected()
+    if info is None:
+        return None
+    state, plain = gpu.WHISPER.status(cache_dir)
+    models = " and ".join(asr_engines.label(n) for n in gpu.WHISPER_PRECISION)
+    about = (f"Runs {models} on this computer's {info['name']}, several times faster "
+             "than on the processor. Used only in Faster mode, once the graphics card is "
+             "turned on in Settings. Parakeet stays on the processor.")
+    if not info["driver_ok"]:
+        about += _old_driver(info)
+    return {"name": gpu.WHISPER_COMPONENT, "role": "gpu", "recommended": False,
+            "label": "Graphics card for Whisper",
+            "title": "Graphics card for Whisper (optional)", "about": about,
+            "state": state, "status": plain, "licence": gpu.WHISPER_LICENCE[0],
+            "source": gpu.WHISPER_LICENCE[1],
+            "size_gb": round(gpu.WHISPER_DOWNLOAD_BYTES / 1e9, 2),
+            "revision": gpu.WHISPER_VERSION, "needs_token": False}
 
 
 def cards(cache_dir):
@@ -114,9 +140,9 @@ def cards(cache_dir):
         out.append({**c, "state": state, "status": plain, "licence": lic, "source": source,
                     "size_gb": round(_size(c["name"]) / 1e9, 2), "revision": spec.revision[:7],
                     "needs_token": spec.gated})
-    card = gpu_card(cache_dir)
-    if card is not None:
-        out.append(card)
+    for card in (gpu_card(cache_dir), whisper_gpu_card(cache_dir)):
+        if card is not None:
+            out.append(card)
     for c in out:
         # Remove is offered whenever something is on disk, including leftover
         # damaged or unfinished copies of a model that is not installed.
@@ -189,6 +215,16 @@ def _friendly(exc):
 # request and redirect is checked against this list (_check_request), which
 # also holds behind a proxy; the network guard checks DNS lookups as well.
 DOWNLOAD_HOSTS = ("huggingface.co", "hf.co", "download-r2.pytorch.org")
+# Hosts added for one download only. NVIDIA publishes the Whisper GPU
+# component's cuBLAS on PyPI, whose files are served from
+# files.pythonhosted.org: the owner allowed that host for this component only
+# (#248, 20 October 2026). No other download's process can reach it.
+COMPONENT_HOSTS = {gpu.WHISPER_COMPONENT: ("files.pythonhosted.org",)}
+
+
+def download_hosts(name):
+    """The hosts the download process for this model or component may reach."""
+    return DOWNLOAD_HOSTS + COMPONENT_HOSTS.get(name, ())
 
 
 def _check_request(request):
@@ -203,12 +239,12 @@ def _check_request(request):
             13, f"Download address not allowed: {request.url.host}")
 
 
-def prepare_download_process():
+def prepare_download_process(hosts=DOWNLOAD_HOSTS):
     """Set up the download process. Must run before huggingface_hub is
     imported anywhere in it:
       - telemetry off, and the native Xet downloader off (it would bypass the
         guard and Python's TLS and proxy handling);
-      - the network guard with the DOWNLOAD_HOSTS allowlist;
+      - the network guard with the hosts allowlist (download_hosts(name));
       - certificates checked against the Windows certificate store, so
         downloads work behind a firm's TLS-inspecting proxy;
       - every HTTP request and redirect checked against the allowlist."""
@@ -222,7 +258,7 @@ def prepare_download_process():
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     os.environ["HF_HUB_DISABLE_XET"] = "1"
     offline_guard.install()
-    offline_guard.allow_hosts(DOWNLOAD_HOSTS)
+    offline_guard.allow_hosts(hosts)
     import truststore
     truststore.inject_into_ssl()
     import huggingface_hub
@@ -272,12 +308,12 @@ def _download_entry(target, conn, name, cache_dir, log_dir):
 
 def _download_main(conn, name, cache_dir):
     """Runs in the download process. Network is allowed here only, and only
-    to DOWNLOAD_HOSTS."""
+    to download_hosts(name)."""
     import sys
     if sys.stderr is None or sys.stdout is None:   # pythonw, and no log: no console
         sys.stdout = sys.stderr = open(os.devnull, "w")
     try:
-        prepare_download_process()
+        prepare_download_process(download_hosts(name))
     except Exception:
         conn.send(("error", "Downloads could not be set up safely on this computer. "
                             "Ask your IT team."))
@@ -290,8 +326,9 @@ def _download_main(conn, name, cache_dir):
     def log(message):
         conn.send(("log", safe_message(message)[:300]))
     try:
-        if name == gpu.COMPONENT:
-            conn.send(("done", gpu.install(cache_dir, log, _fetch)))
+        comp = gpu.component(name)
+        if comp is not None:
+            conn.send(("done", comp.install(cache_dir, log, _fetcher(comp.host))))
             return
         if asr_engines.MANAGED_MODELS[name].gated and not token:
             raise SetupError("The speaker model needs your Hugging Face token to download.")
@@ -344,9 +381,10 @@ def removal_targets(name, cache_dir):
     detector shared by the Parakeet models goes only with the last of them."""
     from pathlib import Path
     cache = Path(cache_dir)
-    if name == gpu.COMPONENT:
-        base = gpu.component_dir(cache)
-        return [p for p in base.parent.glob(gpu.VERSION + "*") if p.is_dir()]
+    comp = gpu.component(name)
+    if comp is not None:
+        base = comp.component_dir(cache)
+        return [p for p in base.parent.glob(comp.version + "*") if p.is_dir()]
     spec = asr_engines.MANAGED_MODELS[name]
     folder = asr_engines.model_dir(spec, cache)
     out = [folder] if folder.is_dir() else []
@@ -389,7 +427,7 @@ def remove(name, cache_dir):
     # The check records' folder and the family folder above it too: matching
     # records are deleted through them, also for a Hugging Face cache copy,
     # whose own parents are not inside the family folder.
-    marks = (None if name == gpu.COMPONENT
+    marks = (None if gpu.component(name) is not None
              else Path(cache_dir) / asr_engines.MANAGED_MODELS[name].family / ".verified")
     if marks is not None and (asr_engines.is_link(marks) or asr_engines.is_link(marks.parent)):
         raise RemovalRefused("A model folder is a link to somewhere else, so nothing was "
@@ -419,19 +457,29 @@ def remove(name, cache_dir):
 class _SameHost(urllib.request.HTTPRedirectHandler):
     """Follow a redirect only within the pinned HTTPS location."""
 
+    def __init__(self, prefix=gpu.DOWNLOAD_HOST):
+        super().__init__()
+        self.prefix = prefix
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not newurl.startswith(gpu.DOWNLOAD_HOST):
+        if not newurl.startswith(self.prefix):
             raise SetupError("The download site redirected elsewhere. Nothing was installed.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _fetch(url, dest, expected_size):
+def _fetcher(prefix):
+    """fetch(url, dest, expected_size) for a component pinned to one HTTPS
+    location: the address, and every redirect, must start with prefix."""
+    return lambda url, dest, expected_size: _fetch(url, dest, expected_size, prefix)
+
+
+def _fetch(url, dest, expected_size, prefix=gpu.DOWNLOAD_HOST):
     """Stream one file to disk (download process only); the caller checks the
-    SHA-256. Only the pinned PyTorch download host is accepted."""
+    SHA-256. Only the component's pinned HTTPS download location is accepted."""
     import urllib.request
-    if not url.startswith(gpu.DOWNLOAD_HOST):
+    if not prefix.startswith("https://") or not url.startswith(prefix):
         raise SetupError("Unexpected download address.")
-    opener = urllib.request.build_opener(_SameHost)
+    opener = urllib.request.build_opener(_SameHost(prefix))
     req = urllib.request.Request(url, headers={"User-Agent": "Unminute"})
     done = 0
     with opener.open(req, timeout=120) as r, open(dest, "wb") as out:
@@ -445,7 +493,7 @@ def _fetch(url, dest, expected_size):
 
 
 def known(name):
-    return name in asr_engines.MANAGED_MODELS or name == gpu.COMPONENT
+    return name in asr_engines.MANAGED_MODELS or gpu.component(name) is not None
 
 
 class Downloads:
@@ -456,8 +504,9 @@ class Downloads:
         self.target = target or _download_main   # tests: a fake download process
         self.after = None                        # called when a download or check ends
         self.before_install = before_install     # e.g. unload the inference worker
-        # The graphics card component is used only by the GPU worker: replacing
-        # it stops that worker and leaves transcription running.
+        # A graphics card component is used only by its own GPU worker:
+        # replacing it stops that worker (before_gpu_install(name)) and leaves
+        # other work running.
         self.before_gpu_install = before_gpu_install
         self.state = {}                          # name -> {"state", "message", "log"}
         self.log_dir = None                      # the app's logs folder (R9), set by the app
@@ -508,8 +557,9 @@ class Downloads:
         entry, final = self.state[name], {"state": "failed",
                                           "message": "The check could not be completed."}
         try:
-            if name == gpu.COMPONENT:
-                ok = not gpu.full_check(self.cache_dir)      # remembered: #153
+            comp = gpu.component(name)
+            if comp is not None:
+                ok = not comp.full_check(self.cache_dir)     # remembered: #153
                 spec = None
             else:
                 spec = asr_engines.MANAGED_MODELS[name]
@@ -541,9 +591,11 @@ class Downloads:
         final = {"state": "failed", "message": "The download stopped unexpectedly. Try again."}
         proc = None
         try:
-            hook = self.before_gpu_install if name == gpu.COMPONENT else self.before_install
-            if hook:
-                hook()
+            if gpu.component(name) is not None:
+                if self.before_gpu_install:
+                    self.before_gpu_install(name)
+            elif self.before_install:
+                self.before_install()
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
             started = ctx.Process(target=_download_entry,
@@ -616,19 +668,20 @@ class Downloads:
             return None
         since = entry.get("started")
         cache = Path(self.cache_dir)
-        if name == gpu.COMPONENT:
+        comp = gpu.component(name)
+        if comp is not None:
             # One wheel at a time, each deleted once it is unpacked: the ones
             # before it count at their pinned size.
-            wheels = gpu.staging_dir(cache) / "wheels"
+            wheels = comp.staging_dir(cache) / "wheels"
             done = 0
-            for w in gpu.WHEELS:
+            for w in comp.wheels:
                 current = wheels / (w["name"] + ".whl")
                 if not _not_followed(current):
                     if since is not None and _file_size(current, since) == 0 \
                             and _file_size(current):
                         return None                  # left by a cancelled attempt
                     return min(100, round(100 * (done + _file_size(current, since))
-                                          / gpu.DOWNLOAD_BYTES))
+                                          / comp.download_bytes))
                 done += w["size"]
             return None
         if name in asr_engines.MANAGED_MODELS:
