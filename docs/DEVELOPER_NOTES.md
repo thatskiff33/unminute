@@ -29,8 +29,8 @@ real time, and remove it when the cause is fixed.
   fails when a run left a new or changed `.pyc` in the checkout, naming the files without
   deleting them (#206). `tools/evidence.py --zip` refuses a checkout whose `tools/`, `tests/`
   or `docs/` hold them.
-- **Dead-code report.** `python -m vulture workspace asr_engines.py offline_guard.py
-  tools/vulture_whitelist.py --min-confidence 60` runs what CI's report runs (install vulture
+- **Dead-code report.** `python -m vulture workspace tools/vulture_whitelist.py
+  --min-confidence 60` runs what CI's report runs (install vulture
   from `requirements/ci-vulture.txt`). Most hits are .NET or ctypes attributes set by name;
   add one to the whitelist only with its reason. Remove anything that is really unused.
 - **`time.monotonic()` counts from boot.** Never start a "last run" timer at 0.0, or a check

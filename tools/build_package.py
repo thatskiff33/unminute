@@ -24,7 +24,7 @@
 #   Unminute-<version>/
 #     runtime/      private CPython 3.14 (official embeddable package, hash-pinned
 #                   and Authenticode-checked) with the pinned wheels installed
-#     app/          asr_engines.py, offline_guard.py, workspace/ (no tests)
+#     app/          workspace/ (no tests), README, CHANGELOG, LICENSE, icon
 #     install.ps1, uninstall.ps1   per-user installer (see docs/PACKAGING.md)
 #     version.json, package-manifest.json (SHA-256 of every file)
 #     sbom.cdx.json           CycloneDX software bill of materials (also beside the zip)
@@ -87,8 +87,7 @@ EMBED_SHA256 = "a93abe456ab01bd96d7a085b3cdb6566b3063f4241360d114142fbdb07f0a310
 PYTHON_MINOR = ".".join(PYTHON_VERSION.split(".")[:2])
 PYTHON_TAG = PYTHON_MINOR.replace(".", "")
 
-APP_FILES = ["asr_engines.py", "offline_guard.py", "LICENSE", "README.md", "CHANGELOG.md",
-             "unminute.ico"]
+APP_FILES = ["LICENSE", "README.md", "CHANGELOG.md", "unminute.ico"]
 # Windows PowerShell 5.1 and many tools stop at 260-character paths. With the
 # default install folder (68 characters plus the user name, with a 16-character
 # version) every path
@@ -899,7 +898,7 @@ def signer_name(signed, path):
 
 def model_manifest(source):
     """The pinned model files, for IT to verify a pre-staged copy (#111 B7), from
-    the asr_engines.py being packaged. Compiled in memory: an import would write
+    the workspace/asr_engines.py being packaged. Compiled in memory: an import would write
     a .pyc beside it, into the package, stamped with the file's time."""
     import types
     ae = types.ModuleType("_packaged_asr_engines")
@@ -1129,7 +1128,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
             "features": ["gate", "restore-lid"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         (folder / "model-manifest.json").write_text(
-            json.dumps(model_manifest(folder / "app" / "asr_engines.py"), indent=1),
+            json.dumps(model_manifest(folder / "app" / "workspace" / "asr_engines.py"), indent=1),
             encoding="utf-8")
         found = binaries(folder)
         signed = signers(folder, found)

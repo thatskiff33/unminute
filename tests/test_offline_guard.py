@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import offline_guard as og  # noqa: E402
+from workspace import offline_guard as og  # noqa: E402
 
 TEST_NET = "192.0.2.1"   # RFC 5737 documentation address, never routable
 

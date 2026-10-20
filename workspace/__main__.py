@@ -41,7 +41,7 @@ _STARTED = time.perf_counter()        # start-up timings (R9): from here, not in
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import offline_guard  # noqa: E402
+from workspace import offline_guard  # noqa: E402
 
 offline_guard.disable_telemetry()
 offline_guard.install()
@@ -252,7 +252,7 @@ def self_test():
                  "webview.platforms.edgechromium", "clr_loader",
                  "sounddevice",                    # loads PortAudio (microphone, #30)
                  "truststore",                     # Windows certificates for downloads
-                 "workspace.app", "workspace.api", "asr_engines"):
+                 "workspace.app", "workspace.api", "workspace.asr_engines"):
         try:
             importlib.import_module(name)
             print(f"ok      import {name}")

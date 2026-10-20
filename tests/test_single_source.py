@@ -22,7 +22,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from workspace import gpu, setup  # noqa: E402
 
 # Junctions are made with cmd.exe from the system folder, never by name, and
@@ -43,7 +43,7 @@ def mklink_junction(link, target, **kwargs):
 
 APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
 # Shipped code a person could edit a fact into (tests and tools are not shipped).
-SHIPPED = [ROOT / "asr_engines.py", *sorted((ROOT / "workspace").glob("*.py")),
+SHIPPED = [*sorted((ROOT / "workspace").glob("*.py")),
            *sorted((ROOT / "workspace" / "ui").glob("*.js")),
            *sorted((ROOT / "workspace" / "ui").glob("*.html"))]
 
@@ -151,7 +151,7 @@ class ModelNameTests(unittest.TestCase):
         # No message in asr_engines or engines puts a model's raw name in
         # front of the user: each goes through label(). An engine's own
         # .label stays the model id (tools store it as a version's model).
-        for path in (ROOT / "asr_engines.py", ROOT / "workspace" / "engines.py"):
+        for path in (ROOT / "workspace" / "asr_engines.py", ROOT / "workspace" / "engines.py"):
             source = path.read_text(encoding="utf-8")
             raw = re.findall(r"\{(?:spec\.name|name)\}", source)
             self.assertEqual(raw, [], path.name)
@@ -287,7 +287,7 @@ class ModelNameTests(unittest.TestCase):
         # be added to advice_without_downloads, and to this test.
         for path, expected in ((ROOT / "workspace" / "engines.py", ["Settings > Manage downloads"]),
                                (ROOT / "workspace" / "speaker_load.py", [speaker_load.LOAD_FAILED]),
-                               (ROOT / "asr_engines.py", [asr_engines.PARAKEET_FIX])):
+                               (ROOT / "workspace" / "asr_engines.py", [asr_engines.PARAKEET_FIX])):
             tree = ast.parse(path.read_text(encoding="utf-8"))
             docs = {id(node.value) for node in ast.walk(tree) if isinstance(node, ast.Expr)}
             named = [node.value for node in ast.walk(tree) if isinstance(node, ast.Constant)
@@ -295,7 +295,7 @@ class ModelNameTests(unittest.TestCase):
                      and id(node) not in docs]
             self.assertEqual(named, expected, path.name)
         for path, name, count in (("workspace/engines.py", "DOWNLOADS", 3),
-                                  ("asr_engines.py", "PARAKEET_FIX", 2)):
+                                  ("workspace/asr_engines.py", "PARAKEET_FIX", 2)):
             tree = ast.parse((ROOT / path).read_text(encoding="utf-8"))
             uses = [node for node in ast.walk(tree) if isinstance(node, ast.Name)
                     and node.id == name and isinstance(node.ctx, ast.Load)]
@@ -794,7 +794,7 @@ onnxruntime = types.ModuleType("onnxruntime")
 onnxruntime.disable_telemetry_events = lambda: None
 onnxruntime.SessionOptions = Options
 sys.modules.update(onnx_asr=onnx_asr, onnxruntime=onnxruntime)
-import asr_engines
+from workspace import asr_engines
 from workspace import engines, worker
 with mock.patch.object(asr_engines, "parakeet_status", return_value=("ready", "")), \
         mock.patch.object(asr_engines, "check_files", return_value=[]):

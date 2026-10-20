@@ -62,8 +62,7 @@ jobs:
       - name: Report unused code
         run: |
           set +e
-          python -m vulture workspace asr_engines.py offline_guard.py \
-            tools/vulture_whitelist.py --min-confidence 60 > vulture.txt
+          python -m vulture workspace tools/vulture_whitelist.py --min-confidence 60 > vulture.txt
           code=$?
           set -e
           # vulture exits 3 when it finds something: reported, not failed.
@@ -120,7 +119,7 @@ jobs:
             --require-hashes --no-deps -r requirements/ci-coverage.txt
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Unit tests under coverage
-        run: python -m coverage run --source=workspace,asr_engines,offline_guard tools/run_tests.py
+        run: python -m coverage run --source=workspace tools/run_tests.py
       - name: Coverage report
         shell: pwsh
         run: |

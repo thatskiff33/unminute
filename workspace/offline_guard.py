@@ -1,4 +1,4 @@
-# offline_guard.py
+# workspace/offline_guard.py
 # Keeps the transcriber offline: no usage statistics, no network calls.
 #
 # Two layers, applied before any speech library loads (workspace/__main__.py,

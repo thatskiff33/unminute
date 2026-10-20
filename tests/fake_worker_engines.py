@@ -4,7 +4,7 @@ import os
 import socket
 import time
 
-from asr_engines import Segment
+from workspace.asr_engines import Segment
 
 SR = 16000
 
@@ -126,7 +126,7 @@ def speech_not_ready(threads):
     "not ready" error and its advice (#257)."""
     import tempfile
 
-    import asr_engines
+    from workspace import asr_engines
     from workspace.engines import load_engine
     with tempfile.TemporaryDirectory() as empty:
         return load_engine(asr_engines.PARAKEET_V2, empty, threads)
@@ -137,7 +137,7 @@ def speech_cannot_be_used(threads):
     error and advice, as a copy that fails its full hash check gets (#260)."""
     import tempfile
 
-    import asr_engines
+    from workspace import asr_engines
     with tempfile.TemporaryDirectory() as empty:
         return asr_engines.ParakeetEngine(asr_engines.PARAKEET_V2, empty, threads).load()
 

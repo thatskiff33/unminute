@@ -256,10 +256,10 @@ class ReproducibleBuildTests(unittest.TestCase):
             bp.wheel_files(site, "numpy")
 
     def test_the_model_manifest_has_every_pinned_file(self):
-        import asr_engines as ae
-        packaged = self.root / "app" / "asr_engines.py"            # the file being packaged
-        packaged.parent.mkdir()
-        packaged.write_bytes((bp.ROOT / "asr_engines.py").read_bytes())
+        from workspace import asr_engines as ae
+        packaged = self.root / "app" / "workspace" / "asr_engines.py"   # the file being packaged
+        packaged.parent.mkdir(parents=True)
+        packaged.write_bytes((bp.ROOT / "workspace" / "asr_engines.py").read_bytes())
         m = bp.model_manifest(packaged)
         # Nothing is written beside it: a .pyc would ship, with the time it was made.
         self.assertEqual([p.name for p in packaged.parent.iterdir()], ["asr_engines.py"])
@@ -570,7 +570,8 @@ class ReproducibleBuildTests(unittest.TestCase):
             bp.source_date_epoch()
 
     def test_a_release_builds_only_the_tagged_commit_from_a_clean_tree(self):
-        def fake(status="", head="f" * 40, tag="f" * 40, flags="H asr_engines.py\nH VERSION"):
+        def fake(status="", head="f" * 40, tag="f" * 40,
+                 flags="H workspace/asr_engines.py\nH VERSION"):
             answers = {("status", "--porcelain", "--untracked-files=all"): status,
                        ("ls-files", "-v"): flags, ("rev-parse", "HEAD"): head,
                        ("rev-parse", "--verify", "--quiet", "refs/tags/v0.5.0^{commit}"): tag}
@@ -579,8 +580,8 @@ class ReproducibleBuildTests(unittest.TestCase):
         stored = mock.patch.object(bp, "committed", return_value=b"0.5.0\r\n")
         with mock.patch.object(bp, "git", fake()), stored:
             self.assertEqual(bp.release_guard("0.5.0"), "f" * 40)          # the commit
-        for bad in (dict(status="?? workspace/stray.py"), dict(status=" M asr_engines.py"),
-                    dict(tag=None), dict(head="0" * 40),
+        for bad in (dict(status="?? workspace/stray.py"),
+                    dict(status=" M workspace/asr_engines.py"), dict(tag=None), dict(head="0" * 40),
                     dict(flags="h requirements.txt"),                       # assume-unchanged
                     dict(flags="S packaging/binary-allowlist.json")):       # skip-worktree
             with mock.patch.object(bp, "git", fake(**bad)), stored, \

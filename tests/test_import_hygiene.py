@@ -20,10 +20,10 @@ BUDGETS = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8
 # guard and drops a token left in the environment, which are start-up actions,
 # not imports.
 UI_MODULES = ("workspace.app", "workspace.api", "workspace.shell", "workspace.worker",
-              "asr_engines")
+              "workspace.asr_engines")
 
 # The only non-standard-library top-level packages the window process may import.
-ALLOWED = {"workspace", "asr_engines", "offline_guard", "numpy"}
+ALLOWED = {"workspace", "numpy"}
 
 # Named in failures, and checked against sys.modules in case a .pth file loads one.
 HEAVY = ("torch", "torchaudio", "torchcodec", "onnxruntime", "onnx_asr", "ctranslate2",

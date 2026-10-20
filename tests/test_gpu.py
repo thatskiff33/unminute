@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))      # fake_worker_engi
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from workspace import gpu  # noqa: E402
 
 
@@ -651,7 +651,7 @@ class WhisperPinTests(unittest.TestCase):
         self.assertIsNone(gpu.component(None))
 
     def test_only_whisper_models_run_on_the_card_at_a_measured_precision(self):
-        import asr_engines
+        from workspace import asr_engines
         self.assertTrue(set(gpu.WHISPER_PRECISION) <= set(asr_engines.WHISPER_MODELS))
         self.assertTrue(set(gpu.WHISPER_PRECISION.values()) <= {"float16", "int8_float16"})
         self.assertFalse(any(asr_engines.is_parakeet(n) for n in gpu.WHISPER_PRECISION))

@@ -988,7 +988,7 @@ def child(args):
     app = Path(args.app) if args.app else ROOT
     evidence.add_app(app)                     # as the package's own runtime has it, if so
     sys.path.append(str(ROOT / "tests"))      # fake engines, after the standard library
-    import offline_guard                   # as the app itself starts (workspace/__main__.py)
+    from workspace import offline_guard     # as the app itself starts (workspace/__main__.py)
     offline_guard.disable_telemetry()
     offline_guard.install()
     import wave

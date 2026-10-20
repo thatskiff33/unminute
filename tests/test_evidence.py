@@ -669,9 +669,9 @@ class PrepareTests(TempDir):
         _, folder = make_package(self.root)
         ap, args = self.parse("--app", str(folder / "app"))
         patches = self.package_python(folder)
-        patches.append(mock.patch.dict(sys.modules, {"asr_engines": types.SimpleNamespace(
-            __file__=str(self.root / "checkout" / "asr_engines.py"))}))
-        with self.assertRaisesRegex(SystemExit, "asr_engines was imported from"):
+        patches.append(mock.patch.dict(sys.modules, {"workspace.asr_engines": types.SimpleNamespace(
+            __file__=str(self.root / "checkout" / "workspace" / "asr_engines.py"))}))
+        with self.assertRaisesRegex(SystemExit, "workspace.asr_engines was imported from"):
             self.run_prepare(patches, ap, args, folder / "app")
 
     def test_a_wrong_zip_or_a_changed_folder_stops_before_the_check(self):
@@ -1040,7 +1040,7 @@ class ToolTests(TempDir):
         # workspace before the package's.
         code = ("import sys; sys.path.append(sys.argv[1]); before = list(sys.path); "
                 "import process_listeners; print(sys.path == before, "
-                "any(m.split('.')[0] in ('workspace', 'asr_engines', 'offline_guard') "
+                "any(m.split('.')[0] == 'workspace' "
                 "for m in sys.modules))")
         r = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT / "tools")],
                            capture_output=True, text=True, cwd=self.root)

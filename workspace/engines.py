@@ -8,8 +8,8 @@
 
 import importlib
 
-import asr_engines
-from asr_engines import ModelLoadError
+from workspace import asr_engines
+from workspace.asr_engines import ModelLoadError
 
 TEST_PREFIX = "test:"      # "test:module:function" loads a test engine factory
 # Where a user downloads or repairs a model once Setup is done (#244). A worker

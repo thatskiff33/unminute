@@ -21,7 +21,7 @@ SR = 16000
 if HAVE_DEPS:
     import numpy as np
 
-    import asr_engines
+    from workspace import asr_engines
     from workspace import holds, speaker_names
     from workspace.app import Workspace
 

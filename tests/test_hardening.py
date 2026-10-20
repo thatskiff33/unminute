@@ -805,7 +805,7 @@ class SettingsAndTestEngineTests(unittest.TestCase):
             self.assertEqual(Settings(self.path).values, DEFAULT_SETTINGS)
 
     def test_engine_loader_refuses_test_engines_without_the_flag(self):
-        from asr_engines import ModelLoadError
+        from workspace.asr_engines import ModelLoadError
         from workspace import engines
         with self.assertRaises(ModelLoadError):
             engines.load_engine("test:os:getcwd", self.tmp.name, 1)

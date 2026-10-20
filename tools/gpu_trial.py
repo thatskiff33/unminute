@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from compare_engines import edit_distance, normalise  # noqa: E402
 
 SR = 16000
@@ -143,7 +143,7 @@ def main():
     # separate environments.
     engines = set((sys.argv[4] if len(sys.argv) > 4 else "parakeet,whisper,pyannote").split(","))
     add_cuda_dll_dirs()
-    import offline_guard
+    from workspace import offline_guard
     offline_guard.disable_telemetry()
     offline_guard.install()
     from faster_whisper.audio import decode_audio

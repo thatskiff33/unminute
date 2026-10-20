@@ -103,7 +103,7 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
     diag.quiet_crashes()                 # no Windows Error Reporting dialog (T21)
     try:
         # Before importing any model library: no telemetry, no network.
-        import offline_guard
+        from workspace import offline_guard
         offline_guard.disable_telemetry()
         offline_guard.install()
         os.environ.update(WEIGHTS_ONLY)
@@ -472,7 +472,7 @@ class WorkerHandle:
             return self._info
 
     def transcribe(self, audio, timeout=None):
-        from asr_engines import Segment
+        from workspace.asr_engines import Segment
         audio = np.asarray(audio, dtype=np.float32)
         if len(audio) > MAX_REQUEST_SECONDS * SAMPLE_RATE:
             raise ValueError("Audio request too long for one worker call.")

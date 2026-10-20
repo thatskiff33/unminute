@@ -17,7 +17,7 @@ SR = 16000
 if HAVE_NUMPY:
     import numpy as np
 
-    from asr_engines import Segment
+    from workspace.asr_engines import Segment
     from workspace import speakers
     from workspace.speakers import SpeakerResult
     from workspace.store import Store

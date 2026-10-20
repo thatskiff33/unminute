@@ -1,7 +1,7 @@
 # Model integrity manifest
 
-Generated from the manifests in `asr_engines.py` by
-`python asr_engines.py manifest --out docs/MODEL_MANIFEST.md`;
+Generated from the manifests in `workspace/asr_engines.py` by
+`python -m workspace.asr_engines manifest --out docs/MODEL_MANIFEST.md`;
 a unit test fails if this file and the code disagree.
 Every file must match its size and SHA-256 before a model counts as
 installed. Large-file hashes match Hugging Face's published LFS SHA-256;

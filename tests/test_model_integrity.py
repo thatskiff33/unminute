@@ -31,7 +31,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from workspace import speaker_load  # noqa: E402
 from workspace.speaker_load import Refused  # noqa: E402
 

@@ -168,7 +168,7 @@ class InstallIdentityTests(unittest.TestCase):
                          r"|whisper-(?:gpu-)?worker|WHISPER_TEST_MARKER", re.IGNORECASE)
         # Everything the package ships (APP_FILES, the app, the installer), and the
         # changelog fragments that become its CHANGELOG.md.
-        files = [ROOT / "asr_engines.py", ROOT / "offline_guard.py", ROOT / "README.md",
+        files = [ROOT / "README.md",
                  ROOT / "CHANGELOG.md", ROOT / "LICENSE", ROOT / "tools" / "build_package.py",
                  *(p for p in (ROOT / "workspace").rglob("*")
                    if p.suffix in (".py", ".js", ".html", ".css")),

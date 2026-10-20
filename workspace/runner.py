@@ -16,7 +16,7 @@
 # The engine is anything with transcribe(waveform) -> (segments, duration)
 # (asr_engines.WhisperEngine / ParakeetEngine). #15 runs it in a worker process.
 
-from asr_engines import Segment
+from workspace.asr_engines import Segment
 from workspace import chunking
 from workspace.store import StoreError
 
