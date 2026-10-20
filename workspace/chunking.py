@@ -11,7 +11,7 @@
 
 import numpy as np
 
-from asr_engines import Segment, join_tokens
+from workspace.asr_engines import Segment, join_tokens
 
 SAMPLE_RATE = 16000
 TARGET_S = 45.0

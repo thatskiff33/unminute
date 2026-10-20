@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-import asr_engines
+from workspace import asr_engines
 from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, handoff, holds,
                        intake,
                        media, policy, power, recorder,

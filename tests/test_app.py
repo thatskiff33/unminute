@@ -21,7 +21,7 @@ SR = 16000
 if HAVE_DEPS:
     import numpy as np
 
-    import asr_engines
+    from workspace import asr_engines
     from workspace import api, engines, media, policy
     from workspace.app import Workspace, WorkspaceError
     from workspace.store import new_id
@@ -517,7 +517,7 @@ class WorkspaceTests(unittest.TestCase):
                          ["audio removed", "transcript removed"])
 
     def test_models_can_be_removed_unless_still_needed(self):
-        import asr_engines
+        from workspace import asr_engines
         from workspace import gpu
         ws = self.open(start=False)
         cache = ws.cache_dir
@@ -558,7 +558,7 @@ class WorkspaceTests(unittest.TestCase):
     def test_removal_never_follows_links_or_matches_other_models(self):
         import _winapi
 
-        import asr_engines
+        from workspace import asr_engines
         ws = self.open(start=False)
         cache = Path(ws.cache_dir)
         outside = self.root / "outside"
@@ -584,7 +584,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertFalse(large_mark.exists())
 
     def test_a_model_still_transcribing_a_meeting_is_not_removed(self):
-        import asr_engines
+        from workspace import asr_engines
         ws = self.open(start=False)
         ws.settings.update(model="parakeet-tdt-0.6b-v3")
         ws._import_one(str(self.rec))                       # pending chunks, v3 version

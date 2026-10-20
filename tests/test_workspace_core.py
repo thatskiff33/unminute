@@ -22,7 +22,7 @@ SR = 16000
 if HAVE_NUMPY:
     import numpy as np
 
-    from asr_engines import Segment
+    from workspace.asr_engines import Segment
     from workspace import chunking, runner
     from workspace.store import SchemaTooNew, Store, StoreError
 
@@ -184,7 +184,7 @@ class CoreTests(unittest.TestCase):
 
     def test_parakeet_words_follow_tokens_not_shared_timestamps(self):
         # Review case: TDT gave "it", "." and "The" the same timestamp.
-        from asr_engines import split_sentences
+        from workspace.asr_engines import split_sentences
         tokens = [" We", " did", " it", ".", " The", " end", "."]
         times = [0, .4, .8, .8, .8, 1.2, 1.5]
         a, b = split_sentences(10.0, 12.0, tokens, times, "We did it. The end.")

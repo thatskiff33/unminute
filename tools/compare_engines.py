@@ -152,7 +152,7 @@ def peak_memory_gb():
 def cmd_run(args):
     sys.path.insert(0, str(Path(args.repo).resolve()))
     # As the worker does: no telemetry and no network before any model library.
-    import offline_guard
+    from workspace import offline_guard
     offline_guard.disable_telemetry()
     offline_guard.install()
     offline_guard.disable_onnxruntime_telemetry()

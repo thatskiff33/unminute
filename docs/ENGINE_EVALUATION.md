@@ -54,7 +54,7 @@ Benchmark of 19 October 2026 on public AMI meetings, reproduced by an independen
 
 **Finding.** Parakeet hears each stretch of speech that the speech detector (Silero VAD, through onnx-asr) passes it, with no surrounding context. onnx-asr's default ends a stretch after 100 ms of silence. That cut the eight meetings into 5,324 pieces: median 1.4 s, 67% under 2 s. The full pass was losing words mainly through these short pieces, not through quiet speech the detector missed: a lower detection threshold gave no consistent gain, and only 0.7% of reference words lay wholly outside any piece.
 
-**Change.** Since #107 a piece ends only after 1 second of silence (`VAD_MIN_SILENCE_MS` in `asr_engines.py`, passed as onnx-asr's `min_silence_duration_ms`). Every other speech-detection setting is onnx-asr's default, and no piece is longer than 20 s (`MAX_SEGMENT_SECONDS`), as before. Whisper uses faster-whisper's own speech detection and is not affected.
+**Change.** Since #107 a piece ends only after 1 second of silence (`VAD_MIN_SILENCE_MS` in `workspace/asr_engines.py`, passed as onnx-asr's `min_silence_duration_ms`). Every other speech-detection setting is onnx-asr's default, and no piece is longer than 20 s (`MAX_SEGMENT_SECONDS`), as before. Whisper uses faster-whisper's own speech detection and is not affected.
 
 **Method.**
 - Twelve AMI meetings, headset mix, scored as in the whole-meeting test above. The eight above (39,100 reference words) were used to choose the setting. Four more (EN2002b, ES2004b, IS1009b, TS3003b; 140 minutes, 22,386 words) were held out and scored only for the settings already chosen.

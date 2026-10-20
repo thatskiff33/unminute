@@ -1,0 +1,1 @@
+- **Package layout.** The speech-engine and offline-guard modules now sit inside the app's `workspace` folder (`app\workspace\asr_engines.py` and `app\workspace\offline_guard.py`) instead of at the top of `app\`. Nothing changes in how the app works; IT tools that list or check the package's files by path see the new locations.

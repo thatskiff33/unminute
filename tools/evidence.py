@@ -66,7 +66,7 @@ PERF_MACHINE = {
         and (g["driver"] is None or _text(g["driver"])) for g in v),
     "webview2": lambda v: _text(v),                    # the WebView2 Runtime's version
 }
-APP_MODULES = ("workspace", "asr_engines", "offline_guard")     # the app folder's own
+APP_MODULES = ("workspace", "workspace.asr_engines", "workspace.offline_guard")   # the app's own
 CHECKER_PATHS = ("tools", "tests", "docs")    # the checks, their helpers and the budgets
 APP_FLAGS = "-I -B -X disable-remote-debug"   # as the Start menu shortcut starts the app
 MAX_LISTED = 20          # differences listed in a report; the count is always given

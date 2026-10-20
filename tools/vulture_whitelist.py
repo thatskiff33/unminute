@@ -57,7 +57,7 @@ _.SimpleReasonString    # REASON_CONTEXT (workspace/power.py)
 _.before_load           # pywebview window event (workspace/shell.py)
 _.dragover              # pywebview DOM events (workspace/api.py)
 _.drop
-_.intra_op_num_threads  # onnxruntime SessionOptions (asr_engines.py)
+_.intra_op_num_threads  # onnxruntime SessionOptions (workspace/asr_engines.py)
 _.inter_op_num_threads
 _.row_factory           # sqlite3 connection (workspace/store.py)
 _.encoding              # a text stream's protocol (workspace/diag.py)
@@ -72,4 +72,4 @@ _.wait_idle             # workspace/app.py
 _.idle_wakeups          # workspace/worker.py
 get_priority            # workspace/resources.py
 resume_pending          # workspace/cleanup.py
-uninstall               # offline_guard.py
+uninstall               # workspace/offline_guard.py

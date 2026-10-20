@@ -263,7 +263,7 @@ class OpenedValueTests(unittest.TestCase):
             device, precision = "cpu", "int8"
 
             def transcribe(self, audio):
-                from asr_engines import Segment
+                from workspace.asr_engines import Segment
                 return [Segment(1.0, 2.0, "synthetic words", ())], len(audio) / SR
 
         got = self.opened(runner.run_version, self.store, mid, vid, Reader(), Engine())
@@ -485,7 +485,7 @@ def ui_check_parts(*names):
     """Top-level functions and constants of tools/workspace_ui_check.py, by
     name, taken by ast without importing the tool (which opens windows), with
     this file's write_wav."""
-    import asr_engines
+    from workspace import asr_engines
     tool = ast.parse((ROOT / "tools" / "workspace_ui_check.py").read_text(encoding="utf-8"))
     wanted = [n for n in tool.body
               if (isinstance(n, ast.FunctionDef) and n.name in names)

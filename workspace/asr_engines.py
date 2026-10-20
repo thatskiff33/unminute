@@ -1,4 +1,4 @@
-# asr_engines.py
+# workspace/asr_engines.py
 # Speech-recognition engines behind one timed-segment interface (issue #13).
 #
 # Every engine yields Segment(start, end, text) in seconds from the start of
@@ -22,7 +22,7 @@
 # separate download process (workspace/setup.py), with its host checks and the
 # token it was given. There is no other downloader and no environment token.
 #
-# CLI: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md
+# CLI: python -m workspace.asr_engines manifest --out docs/MODEL_MANIFEST.md
 
 import hashlib
 import json
@@ -711,8 +711,8 @@ def manifest_markdown():
     lines = [
         "# Model integrity manifest",
         "",
-        "Generated from the manifests in `asr_engines.py` by",
-        "`python asr_engines.py manifest --out docs/MODEL_MANIFEST.md`;",
+        "Generated from the manifests in `workspace/asr_engines.py` by",
+        "`python -m workspace.asr_engines manifest --out docs/MODEL_MANIFEST.md`;",
         "a unit test fails if this file and the code disagree.",
         "Every file must match its size and SHA-256 before a model counts as",
         "installed. Large-file hashes match Hugging Face's published LFS SHA-256;",

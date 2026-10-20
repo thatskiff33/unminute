@@ -15,7 +15,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import offline_guard as og  # noqa: E402
+from workspace import offline_guard as og  # noqa: E402
 
 HAVE_DOWNLOAD_LIBS = all(importlib.util.find_spec(m) for m in ("huggingface_hub", "truststore",
                                                                  "httpx"))
@@ -98,7 +98,7 @@ class RequestCheckTests(unittest.TestCase):
 
     def test_the_pypi_host_is_allowed_only_for_the_whisper_component(self):
         # #248: the owner allowed files.pythonhosted.org for this one component.
-        import asr_engines
+        from workspace import asr_engines
         from workspace import gpu
         wheel = "https://files.pythonhosted.org/packages/70/61/x/nvidia_cublas_cu12.whl"
         for name in (*asr_engines.MANAGED_MODELS, gpu.COMPONENT):
@@ -165,7 +165,7 @@ if len(sys.argv) > 2:          # one component's own process (#248)
 else:
     setup.prepare_download_process()
 import httpx
-import offline_guard
+from workspace import offline_guard
 from huggingface_hub import constants
 from huggingface_hub.utils import _http
 
@@ -200,7 +200,7 @@ class ModelDownloaderTests(unittest.TestCase):
     def test_gated_gets_the_given_token_public_never_and_none_is_never_implicit(self):
         import types
 
-        import asr_engines
+        from workspace import asr_engines
         from workspace import setup
         calls = []
         fake = types.ModuleType("huggingface_hub")

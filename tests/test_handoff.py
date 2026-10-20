@@ -15,7 +15,7 @@ HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
 
 if HAVE_NUMPY:
-    from asr_engines import Segment
+    from workspace.asr_engines import Segment
     from workspace import handoff, speaker_names
     from workspace.handoff import HandoffError, Templates
     from workspace.store import Store

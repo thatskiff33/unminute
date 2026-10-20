@@ -234,7 +234,7 @@ def main():
 
     try:
         level = lower_integrity()
-        import offline_guard
+        from workspace import offline_guard
         offline_guard.disable_telemetry()
         offline_guard.install()
         import av  # noqa: F401  (loaded now, at Low integrity, before the file)

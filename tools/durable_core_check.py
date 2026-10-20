@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from workspace import chunking, media, runner  # noqa: E402
 from workspace.store import Store  # noqa: E402
 

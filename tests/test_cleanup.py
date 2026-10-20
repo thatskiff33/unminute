@@ -18,7 +18,7 @@ MARKER = "zebracrossing"   # distinctive transcript text to search for after cle
 if HAVE_NUMPY:
     import numpy as np
 
-    from asr_engines import Segment
+    from workspace.asr_engines import Segment
     from workspace import cleanup
     from workspace.cleanup import CleanupError, JobResult
     from workspace.media import sha256_file

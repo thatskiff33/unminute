@@ -690,7 +690,8 @@ class NativeCrashTests(unittest.TestCase):
             folder = Path(tmp) / "logs"
             folder.mkdir()
             script = ("import sys; sys.path.insert(0, sys.argv[1]); from unittest import mock; "
-                      "import offline_guard; from workspace.worker import _worker_main; "
+                      "from workspace import offline_guard; "
+                      "from workspace.worker import _worker_main; "
                       "mock.patch.object(offline_guard, 'install', side_effect=OSError("
                       f"'{MARKER} C:/Users/{MARKER}')).start(); "
                       "_worker_main(None, sys.argv[2], False, None, False, sys.argv[2], 'worker')")

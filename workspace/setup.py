@@ -19,7 +19,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-import asr_engines
+from workspace import asr_engines
 from workspace import gpu
 
 HELP_LINKS = {   # fixed pages the user can open in their own browser (allowlist)
@@ -158,7 +158,7 @@ BLOCKED_MESSAGE = ("The download site sent the download to an address this app d
 
 def _blocked(exc):
     """True if this error, or one it was raised from, is the network guard."""
-    import offline_guard
+    from workspace import offline_guard
     seen = set()
     while exc is not None and id(exc) not in seen:
         if isinstance(exc, offline_guard.NetworkBlockedError):
@@ -232,7 +232,7 @@ def _check_request(request):
     redirect it follows. Behind a proxy this computer never looks up the
     target name (the proxy does), so the guard's DNS check alone would not see
     a redirect to another host: this check does."""
-    import offline_guard
+    from workspace import offline_guard
     host = request.url.raw_host       # the exact name sent (httpx decodes xn-- in .host)
     if request.url.scheme != "https" or not offline_guard.host_allowed(host):
         raise offline_guard.NetworkBlockedError(
@@ -252,7 +252,7 @@ def prepare_download_process(hosts=DOWNLOAD_HOSTS):
     if "huggingface_hub" in sys.modules:
         raise RuntimeError("huggingface_hub was imported before the download process was "
                            "set up")
-    import offline_guard
+    from workspace import offline_guard
     offline_guard.disable_telemetry()
     os.environ["HF_HUB_OFFLINE"] = "0"          # this process exists to download
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"

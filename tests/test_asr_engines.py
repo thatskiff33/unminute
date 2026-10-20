@@ -20,7 +20,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import asr_engines as ae  # noqa: E402
+from workspace import asr_engines as ae  # noqa: E402
 
 GOOD = {"config.json": b'{"model_type": "fake"}', "weights.onnx": b"\x01\x02" * 500}
 
@@ -805,7 +805,8 @@ class SpeakerModelAndManifestDocTests(unittest.TestCase):
         doc = Path(__file__).resolve().parents[1] / "docs" / "MODEL_MANIFEST.md"
         self.assertEqual(doc.read_text(encoding="utf-8").replace("\r\n", "\n"),
                          ae.manifest_markdown(),
-                         "Regenerate: python asr_engines.py manifest --out docs/MODEL_MANIFEST.md")
+                         "Regenerate: python -m workspace.asr_engines manifest "
+                         "--out docs/MODEL_MANIFEST.md")
 
     def test_gated_repair_without_token_says_so_and_downloads_nothing(self):
         # A token in the environment is never used: the caller says it has one.

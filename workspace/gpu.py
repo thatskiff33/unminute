@@ -34,7 +34,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-import asr_engines
+from workspace import asr_engines
 
 COMPONENT = "gpu-speakers"
 VERSION = "torch-2.14.1-cu130"

@@ -41,7 +41,7 @@ jobs:
       # Byte-compile every Python file. Catches syntax errors without importing
       # torch or faster-whisper.
       - name: Compile Python sources
-        run: python -m compileall -q -f *.py tests tools workspace
+        run: python -m compileall -q -f .claude/hooks tests tools workspace
 
       # Model-free tests. numpy, PyAV and cryptography (at their pinned
       # versions) let the workspace core and encryption tests run here;

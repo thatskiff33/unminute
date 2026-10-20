@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
 if HAVE_DEPS:
-    import asr_engines
+    from workspace import asr_engines
     import fake_worker_engines
     from workspace import credentials, setup
     from workspace.app import Workspace, WorkspaceError

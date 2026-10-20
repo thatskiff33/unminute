@@ -69,7 +69,7 @@ def main():
     from compare_engines import edit_distance, normalise
     from faster_whisper.audio import decode_audio
 
-    import asr_engines
+    from workspace import asr_engines
     eng = asr_engines.ParakeetEngine(model, cache, resources.worker_threads(), decode_audio).load()
     segs, dur = eng.transcribe(decode_audio(str(src), sampling_rate=16000))
     whole = normalise(" ".join(s.text for s in segs))

@@ -38,7 +38,7 @@ APP = evidence.app_folder(TOOLS.parent)
 evidence.add_app(APP)
 from process_listeners import listeners, process_tree  # noqa: E402
 
-import asr_engines  # noqa: E402
+from workspace import asr_engines  # noqa: E402
 from workspace import api, shell  # noqa: E402
 from workspace.app import Workspace  # noqa: E402
 

@@ -279,7 +279,7 @@ CHILD = r'''
 # the worker is started with multiprocessing "spawn", which re-imports this file.
 import hashlib, json, sys, time
 sys.path.insert(0, ".")
-import offline_guard
+from workspace import offline_guard
 offline_guard.disable_telemetry(); offline_guard.install()
 
 
