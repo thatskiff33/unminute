@@ -31,7 +31,8 @@ from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, hand
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
-from workspace.store import Store, StoreError, default_root, quick_check_file
+from workspace.store import (DAMAGED_REFUSAL, DamagedContent, Store, StoreError, default_root,
+                             quick_check_file)
 from workspace.worker import GpuWhisperEngine, WorkerEngine, WorkerHandle, safe_message
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
@@ -270,8 +271,8 @@ class Settings:
 class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
-                 policy_reader=None, check_integrity=False, lid_switch=None, codec=None,
-                 opener=None):
+                 policy_reader=None, check_integrity=False, lid_switch=None, protector=None,
+                 on_unavailable="raise", opener=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
@@ -279,8 +280,10 @@ class Workspace:
         check_integrity: the app's own start (R11): check the database when
         the app last ended without closing, or the last check found damage.
         lid_switch: tests only; a power.LidSwitch with a fake power scheme.
-        codec: how the store keeps content columns (store.PlainCodec unless
-        given; tests pass one that changes every value, #111 C2).
+        protector, on_unavailable: passed to the Store (#111 C2b-2): the key
+        protector (Windows Data Protection unless given; tests give their
+        own, which the store refuses for the real workspace) and what
+        happens when the key cannot be used ("raise" until C4a).
         opener: tests and the UI check tools only; called with the assistant's
         address instead of asking Windows to open it (copy_and_open_assistant)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
@@ -307,7 +310,9 @@ class Workspace:
             self._integrity_ok.set()
         # A damaged database opens without marking interrupted work, and the
         # start-up upkeep below waits too: on damaged pages it could delete.
-        self.store = Store(self.root / "workspace.db", housekeeping=not held, codec=codec)
+        self.store = Store(self.root / "workspace.db", housekeeping=not held,
+                           protector=protector, on_unavailable=on_unavailable)
+        self.store.log = self.log         # damaged values are recorded here (content-free)
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         self.templates = handoff.Templates(self.root / "templates.json")
@@ -1712,6 +1717,8 @@ class Workspace:
             return fn(*args)
         except speaker_names.NamingError as exc:
             raise WorkspaceError(str(exc)) from exc
+        except DamagedContent:
+            raise WorkspaceError(DAMAGED_REFUSAL) from None
 
     def speakers(self, mid):
         self._meeting(mid)
@@ -1759,7 +1766,7 @@ class Workspace:
 
     def undo_speakers(self, mid):
         vid = self._naming_version(mid)
-        return speaker_names.undo(self.store, vid)
+        return self._naming(speaker_names.undo, self.store, vid)
 
     def search(self, mid, query, version=None):
         """Ids of matching passages (ids, not positions, so highlights stay
@@ -1782,7 +1789,10 @@ class Workspace:
                 or self.store._one("SELECT 1 FROM segments WHERE id = ? AND version_id = ?",
                                    (segment_id, v["id"])) is None):
             raise WorkspaceError("That passage is not in the current transcript.")
-        self.store.save_edit(segment_id, _clean_text(text, MAX_EDIT_CHARS))
+        try:
+            self.store.save_edit(segment_id, _clean_text(text, MAX_EDIT_CHARS))
+        except DamagedContent:
+            raise WorkspaceError(DAMAGED_REFUSAL) from None   # D1: an unreadable edit stays
         return self._segment(segment_id)
 
     def undo(self, mid):
@@ -1791,7 +1801,10 @@ class Workspace:
             raise WorkspaceError("The transcript review is confirmed, so it can no longer be "
                                  "edited.")
         v = self.store.active_version(mid)
-        sid = self.store.undo_edit(v["id"]) if v else None
+        try:
+            sid = self.store.undo_edit(v["id"]) if v else None
+        except DamagedContent:
+            raise WorkspaceError(DAMAGED_REFUSAL) from None
         return self._segment(sid) if sid else None
 
     def _segment(self, sid):
@@ -2275,6 +2288,10 @@ class Workspace:
             return fn(*args)
         except (handoff.HandoffError, clipboard.ClipboardError) as exc:
             raise WorkspaceError(str(exc)) from exc
+        except DamagedContent:
+            # Part of the meeting cannot be read (#111 C2b-2): no preview, so
+            # nothing is copied or saved either (_checked builds it first).
+            raise WorkspaceError(DAMAGED_REFUSAL) from None
 
     def handoff_templates(self):
         return self.templates.all()

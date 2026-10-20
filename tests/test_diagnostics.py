@@ -22,6 +22,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import diag  # noqa: E402
 
@@ -327,7 +328,8 @@ class SharingTests(unittest.TestCase):
         self.values, self.invalid = {}, ()
         self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
                             allow_test_engines=True,
-                            policy_reader=lambda: (self.values, self.invalid))
+                            policy_reader=lambda: (self.values, self.invalid),
+                            protector=keyprotect.TestProtector())
         self.now = [100.0]
         self.ws._clock = lambda: self.now[0]
 
@@ -513,7 +515,8 @@ class SharingTests(unittest.TestCase):
             self.assertEqual((report["workspace"], report["schema"], report["healthy"]),
                              ("none", None, True))
             hashed = Workspace(Path(tmp) / "a#b" / "ws", Path(tmp) / "models", start=False,
-                               battery=False)           # # in a folder name (SQLite's URI)
+                               battery=False,
+                               protector=keyprotect.TestProtector())   # '#' in a folder name
             try:
                 self.assertEqual(main.health(hashed.root)["workspace"], "ok")
             finally:
@@ -730,7 +733,7 @@ class LifecycleTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
                             allow_test_engines=True, speaker_model=fake("fake_diarizer"),
-                            battery=False)
+                            battery=False, protector=keyprotect.TestProtector())
         diag.set_current(self.ws.log)
 
     def tearDown(self):
@@ -853,7 +856,8 @@ class LifecycleTests(unittest.TestCase):
         api.make_api(self.ws)
         self.ws.close()
         other = Workspace(self.root / "ws2", self.root / "models", start=False,
-                          allow_test_engines=True, battery=False)
+                          allow_test_engines=True, battery=False,
+                          protector=keyprotect.TestProtector())
         try:
             page = api.make_api(other)
             with mock.patch.object(other, "meetings", side_effect=RuntimeError("x")):
@@ -865,7 +869,8 @@ class LifecycleTests(unittest.TestCase):
         finally:
             other.close()
             self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
-                                allow_test_engines=True, battery=False)
+                                allow_test_engines=True, battery=False,
+                                protector=keyprotect.TestProtector())
 
 
 if __name__ == "__main__":

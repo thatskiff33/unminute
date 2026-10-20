@@ -12,9 +12,11 @@
 #                 cleanup) and the last database check; used by installers and
 #                 updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
-#   --self-test   import every runtime dependency, check the offline guard, and
+#   --self-test   import every runtime dependency, check the offline guard,
 #                 check that the speaker model loader refuses a code-running
-#                 checkpoint (a synthetic one, in memory)
+#                 checkpoint (a synthetic one, in memory), and on Windows that
+#                 Windows Data Protection protects and unlocks a random key
+#                 (the workspace's root key is kept that way, #111 C2b-2)
 #   --health      for an Intune Remediation detection script run as the
 #                 signed-in user (R9b): JSON with the version, whether the
 #                 workspace opens, whether the app is running, how the last run
@@ -270,6 +272,10 @@ def self_test():
     for passed, text in checks:
         ok = ok and passed
         print(f"{'ok     ' if passed else 'FAILED '} {text}")
+    if sys.platform == "win32":
+        passed, text = dpapi_round_trip()
+        ok = ok and passed
+        print(f"{'ok     ' if passed else 'FAILED '} {text}")
     # The guard must stop each kind of attempt before it reaches Windows. The
     # target is 192.0.2.1 (TEST-NET-1, reserved for documentation): if the
     # guard ever failed, nothing real would be contacted and no DNS lookup
@@ -314,6 +320,21 @@ def self_test():
         print("ok      remote debugging off")
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def dpapi_round_trip():
+    """(passed, line): Windows Data Protection protects 32 random bytes for
+    this user and unlocks the same bytes (vault.seal_root and open_root, with
+    the workspace key's entropy). The line names the Windows error code only."""
+    import os
+    try:
+        from workspace import vault
+        data = os.urandom(vault.KEY_BYTES)
+        if vault.open_root(vault.seal_root(data)) != data:
+            return False, "dpapi round trip: different bytes came back"
+        return True, "dpapi round trip"
+    except Exception as exc:
+        return False, f"dpapi round trip: {getattr(exc, 'code', type(exc).__name__)}"
 
 
 def main():
@@ -513,17 +534,26 @@ def _single_instance(name=MUTEX_NAME):
 
 
 def _open_failed(exc):
-    """The message when the workspace will not open. A damaged database is
-    said so, with a code, and kept for --status and --health (R11); anything
-    else gives the store's own message."""
+    """The message when the workspace will not open. A key Windows will not
+    unlock is said so, with a code (#111 C2b-2); a damaged database is said
+    so, with a code, and kept for --status and --health (R11); anything else
+    gives the store's own message."""
     from workspace import diag
-    from workspace.store import StoreError, default_root, quick_check_file
+    from workspace.store import KeyUnavailable, StoreError, default_root, quick_check_file
     try:
         root = default_root()
     except StoreError:
         return str(exc)
     db, logs = root / "workspace.db", root / "logs"
     log = diag.Log(logs, "app")
+    if isinstance(exc, KeyUnavailable):
+        # The record holds the reason and the Windows error number only.
+        code = diag.new_code()
+        log.write("key_unavailable", code=code, reason=exc.reason, winerror=exc.code)
+        return (f"Windows could not unlock Unminute's encryption key (code {code}), so the "
+                f"workspace cannot open. Your meetings are kept and have not been changed. "
+                f"Ask your IT team: the steps are in the Unminute user guide, under \"If "
+                f"Unminute cannot unlock its workspace\".")
     if db.exists() and quick_check_file(db) is False:
         last = diag.integrity_state(logs)
         if last and last["result"] == "failed" and last["code"]:

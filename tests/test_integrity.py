@@ -18,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import diag, store  # noqa: E402
 from workspace.app import DEFAULT_SETTINGS, SETTINGS_VERSION, Settings, Workspace  # noqa: E402
@@ -410,14 +411,14 @@ class IntegrityTests(unittest.TestCase):
 
     def test_no_migration_while_the_check_holds_work(self):
         db = Path(self.tmp.name) / "older.db"
-        Store(db).close()
+        Store(db, protector=keyprotect.TestProtector()).close()
         con = sqlite3.connect(db)
         con.execute("DELETE FROM schema_version")
         con.execute("INSERT INTO schema_version VALUES (?)", (store.SCHEMA_VERSION - 1,))
         con.commit()
         con.close()
         with self.assertRaisesRegex(store.MigrationBlocked, "found damage"):
-            Store(db, housekeeping=False)
+            Store(db, housekeeping=False, protector=keyprotect.TestProtector())
 
     def test_a_database_error_never_discards_an_import(self):
         ws = self.open()
@@ -446,7 +447,7 @@ class IntegrityTests(unittest.TestCase):
 
     def test_only_damage_codes_count_as_damage(self):
         good = Path(self.tmp.name) / "fine.db"
-        Store(good).close()
+        Store(good, protector=keyprotect.TestProtector()).close()
         self.assertTrue(quick_check_file(good))
         junk = Path(self.tmp.name) / "junk.db"
         junk.write_bytes(b"\x00" * 4096 + b"not a database" * 100)
@@ -466,7 +467,7 @@ class IntegrityTests(unittest.TestCase):
 
     def test_an_io_error_is_tried_once_more_before_it_counts(self):
         good = Path(self.tmp.name) / "fine.db"
-        Store(good).close()
+        Store(good, protector=keyprotect.TestProtector()).close()
         real = sqlite3.connect
         calls = []
 
@@ -544,7 +545,8 @@ class IntegrityTests(unittest.TestCase):
             self.assertIn(code, main._open_failed(StoreError("again")))   # the same code
         self.assertEqual([r["result"] for r in self.checks()], ["failed"])   # recorded once
         db.unlink()
-        Store(db).close()                                    # sound: the store's own message
+        Store(db,
+              protector=keyprotect.TestProtector()).close()   # sound: the store's own message
         with mock.patch("workspace.store.default_root", return_value=self.root):
             self.assertEqual(main._open_failed(StoreError("Newer schema")), "Newer schema")
             with mock.patch("workspace.store.quick_check_file", return_value=None):

@@ -25,6 +25,7 @@
   "workspace/holds.py",
   "workspace/intake.py",
   "workspace/jobs.py",
+  "workspace/keystore.py",
   "workspace/media.py",
   "workspace/offline_guard.py",
   "workspace/policy.py",

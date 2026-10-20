@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
@@ -221,7 +222,7 @@ class WorkerTests(unittest.TestCase):
 class RunnerWithWorkerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.tmp.name) / "db.sqlite")
+        self.store = Store(Path(self.tmp.name) / "db.sqlite", protector=keyprotect.TestProtector())
         self.h = WorkerHandle(self.tmp.name, allow_test_engines=True)
 
     def tearDown(self):
@@ -232,7 +233,7 @@ class RunnerWithWorkerTests(unittest.TestCase):
     def meeting(self, seconds=100):
         mid = self.store.create_meeting("t")
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
-                                    original_size=1, original_mtime_ns=0, audio_sha256="b" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_id="b" * 64,
                                     samples=seconds * SR, sample_rate=SR)
         plan = [(a, min(a + 20 * SR, seconds * SR), a, min(a + 20 * SR, seconds * SR))
                 for a in range(0, seconds * SR, 20 * SR)]
@@ -289,7 +290,8 @@ class RunnerWithWorkerTests(unittest.TestCase):
         def pause():
             self.store_pause_conn.set_paused(mid, True)
             self.h.stop_now()
-        self.store_pause_conn = Store(Path(self.tmp.name) / "db.sqlite")   # UI thread's handle
+        self.store_pause_conn = Store(Path(self.tmp.name) / "db.sqlite",
+                                      protector=keyprotect.TestProtector())   # UI thread's handle
         try:
             threading.Timer(1.0, pause).start()
             t = time.monotonic()

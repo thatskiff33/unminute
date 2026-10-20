@@ -21,6 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import credentials, shell  # noqa: E402
 
@@ -924,7 +925,8 @@ class RedirectedDataFolderTests(unittest.TestCase):
         self.junction("Unminute", target)
         with mock.patch.dict(os.environ, self.env(), clear=True):
             with self.assertRaises(StoreError) as caught:
-                app.Workspace(cache_dir=self.tmp / "models", start=False, battery=False)
+                app.Workspace(cache_dir=self.tmp / "models", start=False, battery=False,
+                              protector=keyprotect.TestProtector())
         self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
         self.assertEqual(list(target.iterdir()), [])                 # no workspace.db there
 
@@ -998,7 +1000,7 @@ class StoreTempTests(unittest.TestCase):
     def test_temporary_data_stays_in_memory(self):
         from workspace.store import Store
         with tempfile.TemporaryDirectory() as tmp:
-            s = Store(Path(tmp) / "workspace.db")
+            s = Store(Path(tmp) / "workspace.db", protector=keyprotect.TestProtector())
             try:
                 self.assertEqual(s.db.execute("PRAGMA temp_store").fetchone()[0], 2)
             finally:
@@ -1050,7 +1052,8 @@ class SettingsAndTestEngineTests(unittest.TestCase):
         from workspace.app import Workspace
         with self.assertRaises(ValueError):
             Workspace(Path(self.tmp.name) / "ws", Path(self.tmp.name) / "m", start=False,
-                      speaker_model="test:fake_worker_engines:fake_diarizer")
+                      speaker_model="test:fake_worker_engines:fake_diarizer",
+                      protector=keyprotect.TestProtector())
 
 
 class EnvironmentTokenTests(unittest.TestCase):

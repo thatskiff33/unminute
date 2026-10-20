@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 from workspace import policy  # noqa: E402
 
@@ -282,7 +283,8 @@ class WorkspacePolicyTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                            allow_test_engines=True, policy_reader=lambda: (values, ()))
+                            allow_test_engines=True, policy_reader=lambda: (values, ()),
+                            protector=keyprotect.TestProtector())
         return self.ws
 
     def tearDown(self):
@@ -401,7 +403,7 @@ class WorkspacePolicyTests(unittest.TestCase):
         ws = self.open(AllowDeleteOriginals=False)
         mid = ws.store.create_meeting("Watched")
         sid = ws.store.add_source(mid, original_path="C:\\rec\\a.wav", original_sha256="0" * 64,
-                                  original_size=1, original_mtime_ns=1, audio_sha256="0" * 64,
+                                  original_size=1, original_mtime_ns=1, audio_id="0" * 64,
                                   samples=16000, sample_rate=16000)
         with mock.patch.object(media, "import_recording", return_value=(mid, sid)), \
                 mock.patch("workspace.intake.authority_for", return_value=True), \
@@ -443,8 +445,8 @@ class WorkspacePolicyTests(unittest.TestCase):
         path = str(folder / "lined up.wav")
         with ws.store.tx() as db:                                  # its row, as a scan left it
             db.execute("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
-                       "first_seen, last_seen, content) VALUES (?, ?, 1, 1, 0, 'importing', 0, "
-                       "0, ?)", (fid, "k" * 64, "c" * 64))
+                       "first_seen, last_seen, content_fp) VALUES (?, ?, 1, 1, 0, 'importing', "
+                       "0, 0, ?)", (fid, "k" * 64, "c" * 64))
 
         def drain(*items):
             for item in (*items, None):
@@ -458,8 +460,9 @@ class WorkspacePolicyTests(unittest.TestCase):
         imported, held = drain((path, fid, "k" * 64, "c" * 64))
         imported.assert_not_called()
         held.assert_called_once_with(ws.store, fid, "k" * 64)
-        row = ws.store._one("SELECT state, content FROM intake_seen WHERE key = ?", ("k" * 64,))
-        self.assertEqual((row["state"], row["content"]), ("waiting", None))   # for the resume
+        row = ws.store._one("SELECT state, content_fp FROM intake_seen WHERE key = ?",
+                            ("k" * 64,))
+        self.assertEqual((row["state"], row["content_fp"]), ("waiting", None))   # for the resume
         intake.set_active(ws.store, fid, True)
         values["AllowWatchedFolders"] = False                      # IT turns it off
         ws.policy.refresh()

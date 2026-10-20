@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 EXT = (".wav", ".mp3", ".m4a")
@@ -46,7 +47,7 @@ class IntakeTests(unittest.TestCase):
         self.folder = self.root / "Recordings"
         self.folder.mkdir()
         self.db = self.root / "ws" / "workspace.db"
-        self.store = Store(self.db)
+        self.store = Store(self.db, protector=keyprotect.TestProtector())
         self.queued = []
         self.now = time.time()
         self.saved_recent = intake.STABLE_RECENT_S
@@ -149,7 +150,7 @@ class IntakeTests(unittest.TestCase):
         self.settle()
         self.store.close()
         wav(self.folder / "while-closed.wav", seed=5)             # app not running
-        self.store = Store(self.db)
+        self.store = Store(self.db, protector=keyprotect.TestProtector())
         self.settle()
         self.assertEqual([p.name for p in self.queued], ["while-closed.wav"])
 
@@ -169,10 +170,10 @@ class IntakeTests(unittest.TestCase):
         self.store.close()
         raw = b"".join(f.read_bytes() for f in self.db.parent.glob("workspace.db*"))
         self.assertNotIn(b"Client X", raw)
-        self.store = Store(self.db)
+        self.store = Store(self.db, protector=keyprotect.TestProtector())
         self.assertEqual(len(self.store._all("SELECT * FROM intake_content")), 1)
-        self.assertIsNone(self.store._one("SELECT content FROM intake_seen "
-                                          "WHERE content IS NOT NULL"))
+        self.assertIsNone(self.store._one("SELECT content_fp FROM intake_seen "
+                                          "WHERE content_fp IS NOT NULL"))
         intake.purge(self.store, now=time.time() + (intake.SUPPRESS_DAYS + 1) * 86400)
         self.assertEqual(self.store._all("SELECT * FROM intake_content"), [])
 
@@ -351,8 +352,8 @@ class IntakeTests(unittest.TestCase):
         self.settle()
         wav(self.folder / "new.wav", seed=39)
         self.settle()
-        row = self.store._one("SELECT state, content FROM intake_seen")
-        self.assertEqual((row["state"], row["content"]), ("imported", None))
+        row = self.store._one("SELECT state, content_fp FROM intake_seen")
+        self.assertEqual((row["state"], row["content_fp"]), ("imported", None))
 
     def test_a_file_gone_since_the_walk_does_not_stop_the_scan(self):
         from workspace.media import sha256_file
@@ -455,8 +456,8 @@ class IntakeTests(unittest.TestCase):
         intake.scan(self.store, EXT, BIG, lambda *a: queued.append(a), now=self.now)
         [(_, _, key, _)] = queued                                   # lined up, not yet imported
         intake.import_held(self.store, fid, key)                    # the folder was paused
-        row = self.store._one("SELECT state, content FROM intake_seen WHERE key = ?", (key,))
-        self.assertEqual((row["state"], row["content"]), ("waiting", None))
+        row = self.store._one("SELECT state, content_fp FROM intake_seen WHERE key = ?", (key,))
+        self.assertEqual((row["state"], row["content_fp"]), ("waiting", None))
         self.scan()
         self.assertEqual([p.name for p in self.queued], ["lined up.wav"])
 
@@ -536,7 +537,8 @@ class WorkspaceIntakeTests(unittest.TestCase):
             saved = (intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S)
             intake.SCAN_INTERVAL_S, intake.STABLE_S, intake.STABLE_RECENT_S = 1, 0, 0
             ws = app.Workspace(root / "ws", root / "models", start=False,
-                               allow_test_engines=True, battery=False)
+                               allow_test_engines=True, battery=False,
+                               protector=keyprotect.TestProtector())
             try:
                 ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
                 ws.add_watched_folder(str(folder), False)

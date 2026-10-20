@@ -1,8 +1,9 @@
 # The store's state accessors, transcript paging and deletions (#111 C2b-1).
-#   - With a codec that counts what it opens, state checks open nothing, a
-#     transcript page opens only its own passages, search opens each passage's
-#     text once, and nothing that needs only the text opens the word timings.
-#     C2b seals every value, so each one opened costs a decryption.
+#   - With the store's codec counting what it opens, state checks open
+#     nothing, a transcript page opens only its own passages, search opens
+#     each passage's text once, and nothing that needs only the text opens the
+#     word timings. Every value is sealed (C2b-2), so each one opened costs a
+#     decryption.
 #   - Paging in SQL returns exactly what slicing the whole transcript did, and
 #     search returns the same passages as before, by id.
 #   - Every deletion of a meeting's rows goes through the store: an active hold
@@ -30,6 +31,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -41,17 +43,24 @@ if HAVE_DEPS:
 
 
 class Counting:
-    """A plain codec that counts the values it opens, by (table, column)."""
+    """Wraps a store's codec and counts the values it opens, by (table,
+    logical column)."""
 
     def __init__(self):
         self.opened = collections.Counter()
+        self.codec = None
 
-    def seal(self, meeting, table, column, row, value):
-        return value
+    def attach(self, s):
+        self.codec, s.codec = s.codec, self
+        return self
+
+    def seal(self, *args):
+        return self.codec.seal(*args)
 
     def unseal(self, meeting, table, column, row, value):
-        self.opened[(table, column)] += 1
-        return value
+        logical = {p: n for n, p in store.CONTENT_COLUMNS[table].items()}[column]
+        self.opened[(table, logical)] += 1
+        return self.codec.unseal(meeting, table, column, row, value)
 
 
 def passage(start, end, text, words=()):
@@ -65,7 +74,7 @@ def long_meeting(s, n=N, title="synthetic standup"):
     mid = s.create_meeting(title)
     total = int((n + 1) * 3.0 * SR)
     sid = s.add_source(mid, original_path=None, original_sha256="a" * 64, original_size=1,
-                       original_mtime_ns=0, audio_sha256="b" * 64, samples=total,
+                       original_mtime_ns=0, audio_id="b" * 64, samples=total,
                        sample_rate=SR)
     vid = s.ensure_version(mid, sid, engine="fake", model="fake", model_revision="1",
                            precision="int8", config={}, chunk_plan=[(0, total, 0, total)])
@@ -97,7 +106,7 @@ class StoreAccessorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.store = Store(Path(cls.tmp.name) / "w.db")
+        cls.store = Store(Path(cls.tmp.name) / "w.db", protector=keyprotect.TestProtector())
         cls.mid, cls.vid = long_meeting(cls.store)
 
     @classmethod
@@ -155,10 +164,11 @@ class StoreAccessorTests(unittest.TestCase):
         self.assertEqual(old, s.current_run(vid))
 
     def test_the_intake_salt_is_made_once(self):
-        first = self.store.intake_salt()
+        first, restarted = self.store.intake_salt()
         self.assertIsInstance(first, bytes)
         self.assertEqual(32, len(first))
-        self.assertEqual(first, self.store.intake_salt())
+        self.assertFalse(restarted)
+        self.assertEqual((first, False), self.store.intake_salt())
         self.assertEqual(1, self.store._one("SELECT COUNT(*) FROM intake_meta")[0])
 
 
@@ -169,8 +179,8 @@ class OpenedValueTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.codec = Counting()
-        self.store = Store(Path(self.tmp.name) / "w.db", codec=self.codec)
+        self.store = Store(Path(self.tmp.name) / "w.db", protector=keyprotect.TestProtector())
+        self.codec = Counting().attach(self.store)
         self.mid, self.vid = long_meeting(self.store)
         self.codec.opened.clear()
 
@@ -244,7 +254,7 @@ class OpenedValueTests(unittest.TestCase):
         total = 4 * SR * 10
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
                                     original_size=1, original_mtime_ns=0,
-                                    audio_sha256="b" * 64, samples=total, sample_rate=SR)
+                                    audio_id="b" * 64, samples=total, sample_rate=SR)
         plan = [(i * 10 * SR, (i + 1) * 10 * SR, i * 10 * SR, (i + 1) * 10 * SR)
                 for i in range(4)]
         vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
@@ -279,9 +289,9 @@ class AppOpenedValueTests(unittest.TestCase):
         from workspace.app import Workspace
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.codec = Counting()
         self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                            allow_test_engines=True, codec=self.codec)
+                            allow_test_engines=True, protector=keyprotect.TestProtector())
+        self.codec = Counting().attach(self.ws.store)
 
     def tearDown(self):
         self.ws.close()
@@ -325,7 +335,7 @@ class DeletionTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.store = Store(Path(self.tmp.name) / "w.db")
+        self.store = Store(Path(self.tmp.name) / "w.db", protector=keyprotect.TestProtector())
 
     def tearDown(self):
         self.store.close()
@@ -408,7 +418,7 @@ class DeletionTests(unittest.TestCase):
     def test_an_unfinished_import_is_removed_in_one_transaction(self):
         mid = self.store.create_meeting("synthetic unfinished")
         self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
-                              original_size=1, original_mtime_ns=0, audio_sha256="b" * 64,
+                              original_size=1, original_mtime_ns=0, audio_id="b" * 64,
                               samples=SR, sample_rate=SR)
         calls = []
 
@@ -446,7 +456,7 @@ class FailedImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                           allow_test_engines=True)
+                           allow_test_engines=True, protector=keyprotect.TestProtector())
             try:
                 rec = write_wav(root / "synthetic.wav", 5)
                 seen = {}
@@ -461,6 +471,9 @@ class FailedImportTests(unittest.TestCase):
                 self.assertEqual({"source": True, "folder": True}, seen)
                 self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM meetings")[0])
                 self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM sources")[0])
+                # Its keys and any recording source go with it (#111 C2b-2).
+                self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM content_keys")[0])
+                self.assertEqual(0, ws.store._one("SELECT COUNT(*) FROM recording_sources")[0])
                 self.assertEqual([], list(ws.media.iterdir()) if ws.media.exists() else [])
             finally:
                 ws.close()
@@ -654,7 +667,7 @@ class UiCheckSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                           allow_test_engines=True)
+                           allow_test_engines=True, protector=keyprotect.TestProtector())
             try:
                 offered, plan = [], ws._plan_version
 
@@ -685,7 +698,7 @@ class UiCheckSetupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                           allow_test_engines=True)
+                           allow_test_engines=True, protector=keyprotect.TestProtector())
             try:
                 ws.settings.update(model=ui.READY_MODEL, speakers=False)
                 ws.start()
@@ -732,7 +745,7 @@ class CrashCheckInspectTests(unittest.TestCase):
         inspect = child_inspect()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            s = Store(root / "workspace.db")
+            s = Store(root / "workspace.db", protector=keyprotect.TestProtector())
             try:
                 mid, vid = long_meeting(s, n=30)
                 generated = [r["generated"] for r in s.transcript(vid)]
@@ -742,7 +755,12 @@ class CrashCheckInspectTests(unittest.TestCase):
                 s.set_phase(mid, "error", "synthetic note")
             finally:
                 s.close()
-            out = inspect(root, marker)
+            # The tool's child opens the workspace with the app's own (Windows)
+            # protector; this one was made with the test protector.
+            from workspace import keystore
+            patch = mock.patch.object(keystore, "DpapiProtector", keyprotect.TestProtector)
+            with patch:
+                out = inspect(root, marker)
             self.assertEqual(1, out["meetings"])
             self.assertEqual(["error"], out["phases"])
             self.assertEqual(["synthetic note"], out["errors"])
@@ -751,10 +769,12 @@ class CrashCheckInspectTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(" ".join(generated).encode()).hexdigest(),
                              out["text_sha256"])
             self.assertTrue(out["marker_in_edits"])
-            self.assertFalse(inspect(root, "not" + marker)["marker_in_edits"])
+            with patch:
+                self.assertFalse(inspect(root, "not" + marker)["marker_in_edits"])
             # Opening did not mark the running attempt interrupted (housekeeping off).
             self.assertEqual({"running": 1}, out["attempts"])
-            s = Store(root / "workspace.db", housekeeping=False)
+            s = Store(root / "workspace.db", housekeeping=False,
+                      protector=keyprotect.TestProtector())
             try:
                 self.assertEqual("running", s._one("SELECT result FROM attempts WHERE id = ?",
                                                    (running,))[0])

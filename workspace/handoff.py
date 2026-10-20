@@ -403,7 +403,15 @@ def _name_replacer(names, pseudo):
 
 def build(store, mid, template, anonymise=False):
     """The exact handoff texts for a reviewed meeting. anonymise replaces
-    speaker names, in the labels and in the text, with Speaker 1, Speaker 2."""
+    speaker names, in the labels and in the text, with Speaker 1, Speaker 2.
+    If any part of the meeting cannot be read (#111 C2b-2), nothing is
+    produced: the store raises DamagedContent (store.strict), so no preview,
+    copy or saved file can hold a placeholder in place of the text."""
+    with store.strict():
+        return _build(store, mid, template, anonymise)
+
+
+def _build(store, mid, template, anonymise):
     m = store.meeting(mid)
     if m is None:
         raise HandoffError("Meeting not found.")

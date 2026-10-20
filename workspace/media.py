@@ -339,7 +339,7 @@ def import_recording(store, media_root, src_path, title=None):
         sid = store.add_source(mid, original_path=str(src), original_sha256=original_sha,
                                original_size=before.st_size,
                                original_mtime_ns=before.st_mtime_ns,
-                               audio_sha256=audio_sha, samples=samples,
+                               audio_id=audio_sha, samples=samples,
                                sample_rate=SAMPLE_RATE)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)

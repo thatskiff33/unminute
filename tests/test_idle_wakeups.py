@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
@@ -55,7 +56,8 @@ class WakeupTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                            allow_test_engines=True, policy_reader=lambda: ({}, ()))
+                            allow_test_engines=True, policy_reader=lambda: ({}, ()),
+                            protector=keyprotect.TestProtector())
 
     def tearDown(self):
         self.ws.close()

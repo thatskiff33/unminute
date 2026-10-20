@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -33,7 +34,7 @@ class CloudTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.folder = self.root / "OneDrive - Org" / "Recordings"
         self.folder.mkdir(parents=True)
-        self.store = Store(self.root / "ws" / "workspace.db")
+        self.store = Store(self.root / "ws" / "workspace.db", protector=keyprotect.TestProtector())
         self.fid = intake.add_folder(self.store, str(self.folder))
         self.queued, self.now = [], time.time()
         self.saved_recent = intake.STABLE_RECENT_S
@@ -118,7 +119,8 @@ class AuthorityFlowTests(unittest.TestCase):
         folder = root / "Recordings"
         folder.mkdir()
         ws = app.Workspace(root / "ws", root / "models", start=False,
-                           allow_test_engines=True, battery=False)
+                           allow_test_engines=True, battery=False,
+                           protector=keyprotect.TestProtector())
         try:
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             fid = ws.add_watched_folder(str(folder), False)
@@ -158,7 +160,8 @@ class AuthorityFlowTests(unittest.TestCase):
         child = parent / "Board"
         child.mkdir(parents=True)
         ws = app.Workspace(root / "ws", root / "models", start=False,
-                           allow_test_engines=True, battery=False)
+                           allow_test_engines=True, battery=False,
+                           protector=keyprotect.TestProtector())
         try:
             ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
             pid = ws.add_watched_folder(str(parent), False)
@@ -167,7 +170,7 @@ class AuthorityFlowTests(unittest.TestCase):
             original = wav(child / "Board.wav", seconds=6, seed=23)
             ws._import_one(original, cid)                           # came from the child
             mid = ws.meetings()[0]["id"]
-            src = ws.store._one("SELECT * FROM sources WHERE meeting_id = ?", (mid,))
+            [src] = ws.store.sources(mid)
             self.assertIsNone(src["original_path"])                 # not even recorded
             ws.start()
             self.assertTrue(ws.wait_idle(60))
@@ -209,6 +212,8 @@ class SyncedSourceTests(unittest.TestCase):
             ws = None
             try:
                 with mock.patch.dict(os.environ, env):
+                    # The default workspace, with the app's own protector
+                    # (Windows Data Protection): the test one is refused there.
                     ws = app.Workspace(cache_dir=root / "models", start=False,
                                        allow_test_engines=True, battery=False)
                     self.assertEqual(ws.root, local / "Unminute" / "workspace")
