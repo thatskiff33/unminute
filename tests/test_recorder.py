@@ -238,6 +238,31 @@ class RecordingTests(unittest.TestCase):
         while not rec.stopped and time.time() < deadline:
             time.sleep(0.05)
 
+    # #269: wait for what a background thread does, up to a bound, rather than
+    # for a fixed time, so a slow runner does not fail a test that is right.
+    def wait_for(self, condition, seconds=10):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+    def wait_event(self, rec, kind, seconds=10):
+        self.wait_for(lambda: kind in [e["kind"] for e in rec.journal["events"]], seconds)
+
+    def wait_first_beat(self, rec, seconds=10):
+        # The writer's first pass (its silence check) writes the heartbeat file.
+        self.wait_for(lambda: (rec.folder / "heartbeat").exists(), seconds)
+
+    def wait_writer_check(self, rec, seconds=10):
+        # The writer notes "last seen" just before each silence check, so a
+        # second new note means a whole check ran after this call.
+        notes = [rec.journal["last_seen"]]
+
+        def two_new_notes():
+            if rec.journal["last_seen"] != notes[-1]:
+                notes.append(rec.journal["last_seen"])
+            return len(notes) > 2
+        self.wait_for(two_new_notes, seconds)
+
     def test_sleep_is_reported_as_sleep_not_a_lost_microphone(self):
         rec, s = self.start_ticking()
         s.feed(2)
@@ -339,7 +364,9 @@ class RecordingTests(unittest.TestCase):
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
                                  clock=lambda: time.time() + offset[0])
         self.assertIs(rec._tick, time.monotonic)          # the default the app relies on
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        # #269: a silence limit well above the real 0.2 s between feeds (a slow
+        # runner cannot reach it) and well below each 5 s jump of the clock.
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 2.0), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
             rec.start()
             s = self.holder["stream"]
@@ -355,18 +382,22 @@ class RecordingTests(unittest.TestCase):
     def test_a_microphone_that_stalls_is_not_sleep(self):
         # No audio for longer than the limit while the app keeps running (a
         # Bluetooth headset reconnecting), and it comes back before the next
-        # silence check: never "slept".
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        # silence check: never "slept". (#269: a 1.5 s limit, so a watchdog
+        # beat that a busy runner delays is not taken for a stall.)
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 30):
             rec, s = self.start()
             s.feed(1)
-            time.sleep(1.2)
+            quiet_from = time.monotonic()
+            self.wait_first_beat(rec)            # the only silence check for 30 s
+            time.sleep(2.5)
+            quiet = time.monotonic() - quiet_from    # #269: as long as it really was
             s.feed(1)                            # it comes back
             time.sleep(0.3)
             self.assertFalse(rec.stopped)
         journal = rec.stop()
         self.assertEqual([e["kind"] for e in journal["events"]], ["gap"])   # reported, not sleep
-        self.assertAlmostEqual(journal["events"][0]["seconds"], 1.2, delta=0.4)
+        self.assertAlmostEqual(journal["events"][0]["seconds"], quiet, delta=0.4)
         self.assertEqual(journal["state"], "stopped")
 
     def test_setting_the_clock_back_does_not_pause_the_silence_check(self):
@@ -382,6 +413,9 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(rec.stop()["state"], "device_lost")
 
     def test_the_time_limit_follows_the_monotonic_clock(self):
+        # #269: a one-second limit, waited for up to 10 s while audio keeps
+        # coming (so only the limit can stop it), not for a fixed 1.5 s. On the
+        # wall clock, set back an hour, the limit would never be reached.
         offset = [0.0]
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
                                  clock=lambda: time.time() + offset[0])
@@ -390,20 +424,25 @@ class RecordingTests(unittest.TestCase):
             rec.start()
             offset[0] -= 3600                    # setting the time back does not extend it
             s = self.holder["stream"]
-            for _ in range(15):
+            deadline = time.monotonic() + 10
+            while not rec.stopped and time.monotonic() < deadline:
                 s.feed(0.1)
                 time.sleep(0.1)
-            self.assertTrue(rec.stopped)
-        self.assertIn("time_limit", [e["kind"] for e in rec.stop()["events"]])
+            stopped = rec.stopped
+            journal = rec.stop()                 # always let go of it, or clean-up fails
+        self.assertTrue(stopped)
+        self.assertIn("time_limit", [e["kind"] for e in journal["events"]])
 
     def test_a_lid_closed_while_recording_is_noted_on_opening(self):
-        with mock.patch.object(recorder, "LID_NOTE_S", 0.2), \
+        # (#269: a 1 s note limit, so the brief closing below stays brief on a
+        # slow runner.)
+        with mock.patch.object(recorder, "LID_NOTE_S", 1.0), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 30):
             rec, s = self.start()
             s.feed(1)
             rec.lid_changed(False)
             rec.lid_changed(False)               # repeated: the first closing counts
-            time.sleep(0.4)
+            time.sleep(1.2)
             s.feed(0.5)
             rec.lid_changed(True)
             rec.lid_changed(True)                # repeated opening: noted once
@@ -412,7 +451,7 @@ class RecordingTests(unittest.TestCase):
         journal = rec.stop()
         lids = [e for e in journal["events"] if e["kind"] == "lid"]
         self.assertEqual(len(lids), 1)
-        self.assertGreaterEqual(lids[0]["seconds"], 0.35)
+        self.assertGreaterEqual(lids[0]["seconds"], 1.15)
         self.assertEqual(journal["state"], "stopped")    # the recording carried on
 
     def test_a_lid_closed_while_paused_is_noted_too(self):
@@ -454,26 +493,34 @@ class RecordingTests(unittest.TestCase):
         with mock.patch.object(recorder, "HEARTBEAT_S", 30):
             rec, s = self.start_ticking()
             s.feed(1)
-            time.sleep(0.3)                      # the writer's first (silence-checking) pass
+            self.wait_first_beat(rec)            # the writer's first (silence-checking) pass
+            beat_before = rec._alive             # the watchdog's latest beat, before the hold-up
             self.asleep[0] += 5                  # the monotonic clock moved 5 s at once
             s.feed(1)                            # audio straight after: not "slept"
-            time.sleep(0.5)                      # the watchdog's next beat
+            self.wait_event(rec, "stall")        # the watchdog's next beat
+            seen = time.monotonic()
             self.assertFalse(rec.stopped)
         journal = rec.stop()
         self.assertEqual(journal["state"], "stopped")
         self.assertEqual([e["kind"] for e in journal["events"]], ["stall"])
-        self.assertAlmostEqual(journal["events"][0]["seconds"], 5.0, delta=0.5)
+        # #269: the stall is the 5 s hold-up plus the real time since the
+        # watchdog's previous beat (about ALIVE_S; longer on a busy runner).
+        stall = journal["events"][0]["seconds"]
+        self.assertGreaterEqual(stall, 5.0 - 0.01)
+        self.assertLessEqual(stall, 5.0 + (seen - beat_before) + 0.01)
 
     def test_after_a_hold_up_audio_gets_a_full_silence_period(self):
         # The writer's silence check can run before the first audio after a
         # hold-up: it waits while the beat is late, then counts from the stall.
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        # (#269: a 1.5 s limit leaves a slow runner room between the steps.)
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.05):
             rec, s = self.start_ticking()
             s.feed(1)
             time.sleep(0.3)
-            self.asleep[0] += 2                  # held up 2 s: more than the 0.6 s limit
-            time.sleep(0.3)                      # the writer checks; the watchdog beats
+            self.asleep[0] += 4                  # held up 4 s: more than the 1.5 s limit
+            self.wait_event(rec, "stall")        # the watchdog beats
+            self.wait_writer_check(rec)          # then the writer checks for silence
             s.feed(1)                            # audio within one silence period
             time.sleep(0.2)
             self.assertFalse(rec.stopped)
@@ -484,13 +531,13 @@ class RecordingTests(unittest.TestCase):
     def test_the_silence_check_waits_while_the_beat_is_late(self):
         # The same, with the writer certain to check before the watchdog beats
         # (the watchdog is held off): it must not call the microphone lost.
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.05), \
                 mock.patch.object(recorder, "ALIVE_S", 30):
             rec, s = self.start_ticking()
             s.feed(1)
             time.sleep(0.3)
-            self.asleep[0] += 2                  # held up 2 s; no beat follows
+            self.asleep[0] += 4                  # held up 4 s; no beat follows
             time.sleep(0.4)                      # several silence checks run
             self.assertFalse(rec.stopped)
             s.feed(1)
@@ -498,13 +545,13 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(journal["state"], "stopped")
 
     def test_a_microphone_lost_after_a_stall_is_a_lost_microphone(self):
-        with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
+        with mock.patch.object(recorder, "SILENT_DEVICE_S", 1.5), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 30):
             rec, s = self.start_ticking()
             s.feed(1)
-            time.sleep(0.3)
-            self.asleep[0] += 2                  # a stall, not a sleep
-            time.sleep(0.4)                      # the watchdog notes it
+            self.wait_first_beat(rec)
+            self.asleep[0] += 4                  # a stall, not a sleep
+            self.wait_event(rec, "stall")        # the watchdog notes it
             s.finished()                         # then the microphone goes
         journal = rec.stop()
         self.assertEqual(journal["state"], "device_lost")
