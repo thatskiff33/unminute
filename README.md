@@ -174,7 +174,7 @@ The threat model, the controls in place and the remaining risks are in [docs/SEC
 | Start menu shortcut | Unminute |
 | Version 0.4.3 or earlier, if it was installed | Its own folders, kept until you delete them (see "Updates" in [docs/PACKAGING.md](docs/PACKAGING.md)) |
 
-`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it. Only its `models` folder may be redirected elsewhere; Unminute will not open a workspace that a junction or link puts in OneDrive or on a network drive, or one whose junction or link points to a folder that no longer exists; it says so and asks the user to contact IT.
+`%LOCALAPPDATA%` is per user, needs no administrator rights and is not synced by OneDrive. All of Unminute's data is under `%LOCALAPPDATA%\Unminute`: uninstalling keeps it, and the install folder must not overlap it. Only its `models` folder may be redirected elsewhere; Unminute will not open a workspace that a junction or link puts in OneDrive or on a network drive, or one whose junction or link points to a folder that cannot be reached; it says so and asks the user to contact IT.
 
 ## Updates, rollback and uninstall
 

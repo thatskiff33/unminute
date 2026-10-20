@@ -427,11 +427,12 @@ REDIRECTED = {
 }
 
 # The workspace refused because Unminute, or Unminute\workspace, is a junction
-# or link whose target no longer exists (#266). Opening it could only fail in
-# mkdir, and the app closed without a message. No path in it (P3).
-BROKEN_LINK = ("Unminute's workspace folder is linked to a folder that no longer exists, "
-               "so Unminute cannot open it. Ask your IT team: the link needs removing, "
-               "or the folder it points to restoring.")
+# or link whose target cannot be reached: removed, or on a drive that is not
+# connected (#266). Opening it could only fail in mkdir, and the app closed
+# without a message. No path in it (P3).
+BROKEN_LINK = ("Unminute's workspace folder is linked to a folder that cannot be reached: "
+               "it may have been removed, or be on a drive that is not connected. Ask your "
+               "IT team to restore the folder or its drive, or to remove the link.")
 
 
 def _broken_link(path):

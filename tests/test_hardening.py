@@ -627,9 +627,10 @@ class RedirectedDataFolderTests(unittest.TestCase):
         return link
 
     def spelt(self, folder, how):
-        """folder as a junction stores it: "drive" (C:\\...), "\\\\?\\" (the
-        long-path prefix before the drive) or "volume GUID" (the volume's own
-        name, \\\\?\\Volume{...}\\..., which realpath keeps as written)."""
+        """folder as given to mklink /J: "drive" (C:\\...), "\\\\?\\" (the
+        long-path prefix before the drive; see BROKEN_SHAPES for what mklink
+        stores) or "volume GUID" (the volume's own name,
+        \\\\?\\Volume{...}\\..., which realpath keeps as written)."""
         if how == "drive":
             return str(folder)
         if how == "\\\\?\\":
@@ -642,7 +643,12 @@ class RedirectedDataFolderTests(unittest.TestCase):
         return buffer.value + rest.lstrip("\\")
 
     # Ways a data folder junction's target can be missing (#266, from the
-    # #265 reviews): name -> how it is made, under base.
+    # #265 reviews), each made under base by broken(). Of the spellings, only
+    # "volume GUID" stores a valid target spelt differently from "drive"
+    # (\??\Volume{...}\... against \??\C:\...). "\\?\ prefix" is not a second
+    # valid spelling: given \\?\C:\x, mklink /J stores \??\C:\?\C:\x (seen on
+    # Windows 11 26200: os.readlink shows it, and os.stat fails with WinError
+    # 123, not 2 as for "drive"). It is kept as one more unreachable target.
     BROKEN_SHAPES = ("missing", "link to a broken link", "inside a broken link",
                      "volume GUID", "\\\\?\\ prefix")
 
@@ -687,9 +693,11 @@ class RedirectedDataFolderTests(unittest.TestCase):
                     self.assertFalse(os.path.lexists(gone))      # nothing made there
 
     def test_a_missing_onedrive_target_spelt_another_way_is_refused(self):
-        # The #265 round 2 shapes: a chain of junctions, or a volume GUID or
-        # \\?\ spelling, hid that the missing target was inside OneDrive. Each
-        # is refused, by either message, and nothing is created in OneDrive.
+        # The #265 round 2 shapes: a target inside a broken junction, or spelt
+        # with the volume's GUID name, hid that the missing target was inside
+        # OneDrive (before #266 these two at either level were not refused).
+        # Every shape is refused, by either message, and nothing is created
+        # in OneDrive.
         from workspace import store
         from workspace.store import StoreError
         for at in ("Unminute", "Unminute\\workspace"):
@@ -703,6 +711,24 @@ class RedirectedDataFolderTests(unittest.TestCase):
                                   (store.BROKEN_LINK, store.REDIRECTED["onedrive"]))
                     self.assert_path_free(str(caught.exception))
                     self.assertFalse(os.path.lexists(gone))      # nothing made in OneDrive
+
+    def test_a_junction_this_account_may_not_open_is_not_called_broken(self):
+        # _broken_link's documented rule: a target refused for access is not
+        # missing, so it keeps its own outcome rather than BROKEN_LINK.
+        real_stat = os.stat
+        for at in ("Unminute", "Unminute\\workspace"):
+            with self.subTest(at=at):
+                self.fresh_local()
+                link = self.junction(at, self.tmp / "Elsewhere" / f"Locked {self.cases}")
+                key = os.path.normcase(str(link))
+
+                def stat(path, *args, _key=key, **kwargs):
+                    if os.path.normcase(os.fspath(path)) == _key:
+                        raise PermissionError(13, "Access is denied")
+                    return real_stat(path, *args, **kwargs)
+                with mock.patch("os.stat", stat):
+                    self.assertEqual(self.default_root(self.env()),
+                                     self.local / "Unminute" / "workspace")
 
     def test_a_working_data_folder_junction_is_not_called_broken(self):
         # A junction to a local folder that exists is still allowed (#219
