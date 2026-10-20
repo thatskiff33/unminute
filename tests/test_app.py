@@ -456,6 +456,50 @@ class WorkspaceTests(unittest.TestCase):
         [m] = ws.meetings()
         self.assertIn("missing", m["error"])
 
+    def test_a_missing_audio_key_is_missing_audio_and_no_key_is_made(self):
+        # #111 C3a: the audio file is encrypted under the meeting's audio key;
+        # without the key it cannot be read, and a new key is never made.
+        from workspace import app as app_module
+        ws = self.open(start=False, speakers=True)
+        ws._import_one(self.rec)
+        mid = ws.meetings()[0]["id"]
+        with ws.store.tx() as db:
+            ws.store.destroy_keys(db, mid, ("audio",))
+        self.assertTrue(media.audio_path(ws.media, mid).is_file())
+        ws.start()
+        self.assertTrue(ws.wait_idle(30))
+        self.assertEqual(ws.store.meeting(mid)["last_error"], app_module.AUDIO_MISSING)
+        self.assertEqual(ws.store.passage_count(ws.store.active_version(mid)["id"]), 0)
+        self.assertEqual(ws.store._all("SELECT purpose FROM content_keys WHERE meeting_id = ? "
+                                       "AND purpose = 'audio'", (mid,)), [])
+        with self.assertRaises(WorkspaceError) as ctx:          # playback says so too
+            ws.clip(mid, 0, 1)
+        self.assertEqual(str(ctx.exception), app_module.AUDIO_UNREADABLE)
+
+    def test_damaged_audio_stops_playback_and_transcription_with_fixed_wording(self):
+        from workspace import app as app_module
+        from workspace import runner
+        ws = self.open(start=False, speakers=False)
+        ws._import_one(self.rec)
+        mid = ws.meetings()[0]["id"]
+        path = media.audio_path(ws.media, mid)
+        data = bytearray(path.read_bytes())
+        data[100] ^= 1                                       # inside the first block
+        path.write_bytes(bytes(data))
+        with self.assertRaises(WorkspaceError) as ctx:
+            ws.clip(mid, 0, 1)
+        self.assertEqual(str(ctx.exception), app_module.AUDIO_UNREADABLE)
+        self.assertNotIn(str(self.root), str(ctx.exception))
+        ws.start()
+        self.assertTrue(ws.wait_idle(30))
+        m = ws.store.meeting(mid)
+        self.assertEqual(m["phase"], "error")
+        # The original's location is kept only with deletion authority (#24).
+        self.assertEqual(m["last_error"], runner.AUDIO_DAMAGED_KEPT)
+        vid = ws.store.active_version(mid)["id"]
+        self.assertEqual([c["failures"] for c in ws.store.chunks(vid)],
+                         [0] * len(ws.store.chunks(vid)))
+
     def test_discard_stops_work_and_removes_the_meeting_securely(self):
         import time as _time
         ws = self.open(start=False, model="sleepy")         # transcription in progress

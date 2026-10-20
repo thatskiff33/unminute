@@ -519,7 +519,9 @@ class SealingTests(unittest.TestCase):
                  "snapshot": lambda: self.s.snapshot(mid), "folders": self.s.folders,
                  "search": lambda: self.s.search(vid, "first"),
                  "recording_info": lambda: self.s.recording_info(mid),
-                 "intake_salt": self.s.intake_salt}
+                 "intake_salt": self.s.intake_salt,
+                 # Fetched and unwrapped under one hold (#111 C3a reads audio with it).
+                 "meeting_key": lambda: self.s.meeting_key(mid, "audio")}
         for name, call in calls.items():
             with self.subTest(accessor=name):
                 before = self.s._lock.acquisitions

@@ -169,7 +169,7 @@ def weights_only_env(threads):
     return _Engine(lambda a: [_seg(0.0, 0.1, f"env {seen}")])
 
 
-# -- fake diarizers: diarize_file("test:fake_worker_engines:<name>", ...) --------
+# -- fake diarizers: diarize_audio("test:fake_worker_engines:<name>", ...) -------
 
 def fake_diarizer(audio, hint):
     """Speakers alternate every 10 s (A, B, A, ...); with a hint of 3 they
@@ -190,13 +190,10 @@ def speaker_not_ready(audio, hint):
     """The real speaker identification load from an empty model folder: the
     worker's own error and its advice (#257)."""
     import tempfile
-    from pathlib import Path
 
-    from workspace.engines import diarize_file
+    from workspace.engines import diarize_audio
     with tempfile.TemporaryDirectory() as empty:
-        path = Path(empty) / "audio.f32"
-        audio.astype("<f4").tofile(path)
-        return diarize_file("pyannote", empty, path, hint, 1)
+        return diarize_audio("pyannote", empty, audio, hint, 1)
 
 
 def diarizer_sleepy(audio, hint):

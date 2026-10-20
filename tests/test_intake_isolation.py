@@ -83,11 +83,18 @@ class DecoderTests(unittest.TestCase):
     def test_a_normal_recording_decodes_in_the_contained_process(self):
         from workspace import media
         src = tone_wav(self.root / "tone.wav")
-        dest = self.root / "audio.f32"
-        samples, digest = media.decode_to_file(src, dest)
+        dest = self.root / "audio.uma"
+        key, context = bytes(range(32)), ("decoded", "m")
+        samples, file_id = media.decode_to_file(src, dest, key, context)
         self.assertEqual(samples, 16000)
-        self.assertEqual(dest.stat().st_size, 16000 * 4)
-        self.assertEqual(media.sha256_file(dest), digest)
+        reader = media.AudioReader(dest, key, context)       # written encrypted (#111 C3a)
+        try:
+            self.assertEqual((len(reader), reader.file_id), (16000, file_id))
+            plain = io.BytesIO()
+            media.decode(src, plain)
+            self.assertEqual(reader.read(0, 16000).astype("<f4").tobytes(), plain.getvalue())
+        finally:
+            reader.close()
         self.assertFalse(dest.with_suffix(".partial").exists())
         if WINDOWS:
             self.assertEqual(media.last_decoder_integrity, 0x1000)       # Low
@@ -104,7 +111,7 @@ class DecoderTests(unittest.TestCase):
         for ext, (fmt, codec, *video) in cases.items():
             src = encode(self.root / f"in{ext}", fmt, codec, video=bool(video),
                          rate=44100 if ext == ".wma" else 16000)
-            samples, _ = media.decode_to_file(src, self.root / f"out{ext}.f32")
+            samples = media.decode(src, io.BytesIO())
             self.assertGreater(samples, 12000, ext)
 
     def test_files_only_the_demuxer_allowlist_refuses(self):
@@ -118,7 +125,7 @@ class DecoderTests(unittest.TestCase):
         aiff = encode(self.root / "aiff.wav", "aiff", "pcm_s16be")
         for src in (concat, aiff):
             with self.assertRaises(media.DecodeError, msg=src.name) as ctx:
-                media.decode_to_file(src, self.root / f"{src.name}.f32")
+                media.decode(src, io.BytesIO())
             self.assertNotIn(str(self.root), str(ctx.exception))
 
     def test_network_playlists_and_stream_descriptions_are_refused(self):
@@ -131,7 +138,7 @@ class DecoderTests(unittest.TestCase):
             src = self.root / name
             src.write_text(text, encoding="utf-8")
             with self.assertRaises(media.DecodeError, msg=name):
-                media.decode_to_file(src, self.root / f"{name}.f32")
+                media.decode(src, io.BytesIO())
 
     def test_allowlist_names_no_risky_demuxer(self):
         from workspace import decode_child
@@ -214,9 +221,9 @@ class EqualDownmixTests(unittest.TestCase):
         """Decode in the contained process, as an import does."""
         import numpy as np
         from workspace import media
-        dest = self.root / f"{Path(src).name}.f32"
-        samples, _ = media.decode_to_file(src, dest)
-        audio = np.fromfile(dest, dtype="<f4")
+        out = io.BytesIO()
+        samples = media.decode(src, out)
+        audio = np.frombuffer(out.getvalue(), dtype="<f4")
         self.assertEqual(len(audio), samples)
         return audio
 
@@ -342,12 +349,11 @@ class ProtocolTests(unittest.TestCase):
         result = media._collect(lambda: reader.next(5), out, **kw)
         return result, out.getvalue()
 
-    def test_audio_frames_are_written_and_hashed_here(self):
-        import hashlib
+    def test_audio_frames_are_written_here(self):
+        # No hash any more (#111 C3a): the file is encrypted and authenticated.
         audio = struct.pack("<4f", 0.1, 0.2, 0.3, 0.4)
-        (samples, digest), written = self.collect(frames((b"A", audio), (b"D", b"")))
+        samples, written = self.collect(frames((b"A", audio), (b"D", b"")))
         self.assertEqual((samples, written), (4, audio))
-        self.assertEqual(digest, hashlib.sha256(audio).hexdigest())
 
     def test_broken_or_hostile_replies_are_refused(self):
         import pickle
@@ -449,7 +455,7 @@ class ContainmentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             src = tone_wav(Path(tmp) / "tone.wav")
             with mock.patch.object(jobs, "contain", checking_contain):
-                media.decode_to_file(src, Path(tmp) / "audio.f32")
+                media.decode(src, io.BytesIO(), folder=Path(tmp))
         self.assertEqual(seen, {"inside": True, "memory": media.DECODER_MEMORY})
 
 
@@ -500,7 +506,8 @@ class StandInDecoderTests(unittest.TestCase):
                 mock.patch.object(subprocess, "Popen", popen), \
                 mock.patch.multiple(media, **patches) if patches else mock.MagicMock():
             with self.assertRaises(media.DecodeError) as ctx:
-                media.decode_to_file(self.src, self.root / "audio.f32")
+                media.decode_to_file(self.src, self.root / "audio.uma", bytes(32),
+                                     ("decoded", "m"))
         return str(ctx.exception), time.monotonic() - start
 
     def assert_decoder_gone(self):

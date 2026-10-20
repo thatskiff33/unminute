@@ -17,9 +17,10 @@
 #   python tools/compare_engines.py score v2.jsonl v3.jsonl turbo.jsonl --side-by-side sbs.md
 #
 # Each clip is decoded by the app's own decoder in its contained process
-# (workspace.media.decode_to_file, from the --repo checkout; contained since
-# A3, #119), so the measured process loads only what the app's worker loads:
-# no faster_whisper or CTranslate2 for Parakeet (#187).
+# (workspace.media.decode, from the --repo checkout; contained since A3,
+# #119), into memory: no decoded copy is written to disk. So the measured
+# process loads only what the app's worker loads: no faster_whisper or
+# CTranslate2 for Parakeet (#187).
 # Manifest paths are not checked as the app checks imports (workspace.safe_paths):
 # list local files on this computer only.
 #
@@ -28,6 +29,7 @@
 
 import argparse
 import ctypes
+import io
 import json
 import re
 import sys
@@ -179,14 +181,14 @@ def cmd_run(args):
         out.write(json.dumps({"engine": args.engine, "description": engine.description,
                               "threads": threads, "load_s": round(load_s, 2)}) + "\n")
         for i, clip in enumerate(clips, 1):
-            raw = Path(tmp) / f"{i}.f32"
+            raw = io.BytesIO()
             try:
-                samples, _ = media.decode_to_file(clip["wav"], raw)   # 16 kHz mono float32
+                samples = media.decode(clip["wav"], raw, folder=Path(tmp))  # 16 kHz mono float32
             except media.DecodeError as exc:
                 # The set is incomplete without it, so stop; name the clip, not its path.
                 sys.exit(f"Clip {clip.get('set')}/{clip.get('id')} could not be decoded: {exc}")
-            wav = np.fromfile(raw, dtype="<f4")
-            raw.unlink()
+            wav = np.frombuffer(raw.getbuffer(), dtype="<f4").copy()
+            raw.close()
             if len(wav) != samples:
                 sys.exit(f"Clip {clip.get('set')}/{clip.get('id')}: the decoded file is "
                          f"{len(wav)} samples, not {samples}.")

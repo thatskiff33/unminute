@@ -156,11 +156,11 @@ class CleanupHardeningTests(unittest.TestCase):
         ws = self.open()
         mid = ws.store.create_meeting("synthetic unfinished")
         (ws.media / mid).mkdir(parents=True)
-        (ws.media / mid / "audio.f32").write_bytes(b"synthetic")
+        (ws.media / mid / "audio.uma").write_bytes(b"synthetic")
         with mock.patch("shutil.rmtree", side_effect=PermissionError("locked")):
             self.assertFalse(ws._discard_import(mid))
         self.assertIsNotNone(ws.store.meeting(mid))      # rolled back: listed, retried
-        self.assertTrue((ws.media / mid / "audio.f32").exists())
+        self.assertTrue((ws.media / mid / "audio.uma").exists())
         self.assertTrue(ws._discard_import(mid))         # unlocked later
         self.assertIsNone(ws.store.meeting(mid))
         self.assertFalse((ws.media / mid).exists())

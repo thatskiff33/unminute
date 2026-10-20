@@ -531,7 +531,7 @@ class AgentInstructionTests(unittest.TestCase):
                           if isinstance(node, ast.Assign)
                           and any(getattr(t, "id", None) == "AUDIO_EXTENSIONS"
                                   for t in node.targets))
-        media = [f for f in files if f.lower().endswith((*extensions, ".f32"))]
+        media = [f for f in files if f.lower().endswith((*extensions, ".f32", ".uma"))]
         self.assertEqual([], media, "recordings stay out of the repo (AGENTS.md, P1); "
                                     "a synthetic fixture needs an agreed exception here")
 

@@ -42,7 +42,7 @@ def peak_gb():
 def transcribe(root, src, engine, crash_at=None):
     store = Store(root / "workspace.db")
     mid, sid = media.import_recording(store, root / "media", src, "Check")
-    reader = media.AudioReader(media.audio_path(root / "media", mid))
+    reader = media.open_audio(store, root / "media", mid)
     plan = chunking.plan_chunks(reader, len(reader))
     vid = store.ensure_version(mid, sid, engine="parakeet", model=engine.label,
                                model_revision=engine.spec.revision, precision="int8",

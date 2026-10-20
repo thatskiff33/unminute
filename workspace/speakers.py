@@ -28,9 +28,11 @@ class SpeakerResult:
         "done", "failed", "stopped", "no_audio", "not_transcribed", "bad_hint", "skipped")
 
 
-def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, model="pyannote",
+def run_speakers(store, mid, vid, handle, audio, *, threads, hint=None, model="pyannote",
                  device="cpu", gpu_site=None, skips_seen=None, downloads_allowed=True):
     """Separate speakers for an already-transcribed version. Returns a SpeakerResult.
+    audio: the meeting's media.AudioRef (the encrypted file, its key and
+    context; the key reaches the worker only in the diarize request).
     skips_seen: the version's skip count when this pass was chosen; a skip
     since then means nothing starts (SKIPPED). downloads_allowed=False
     (managed policy, read by the caller) gives a speaker model that is not
@@ -38,7 +40,7 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
     if hint is not None and (isinstance(hint, bool) or not isinstance(hint, int)
                              or not 1 <= hint <= MAX_HINT):
         return SpeakerResult.BAD_HINT
-    if not Path(audio_path).is_file():
+    if audio is None or not Path(audio.path).is_file():
         return SpeakerResult.NO_AUDIO       # cleaned up (#17): nothing to analyse
     if store.chunks(vid, status="pending"):
         return SpeakerResult.NOT_TRANSCRIBED
@@ -47,7 +49,7 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
     if rid is None:
         return SpeakerResult.SKIPPED      # the user skipped after this pass was chosen
     try:
-        turns, exclusive, device, _ = _diarize(handle, model, audio_path, hint, threads,
+        turns, exclusive, device, _ = _diarize(handle, model, audio, hint, threads,
                                                device, gpu_site)
     except WorkerStopped:
         _end(store, rid, "interrupted", RESTART_NOTE)
@@ -70,18 +72,18 @@ def run_speakers(store, mid, vid, handle, audio_path, *, threads, hint=None, mod
     return SpeakerResult.DONE
 
 
-def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
+def _diarize(handle, model, audio, hint, threads, device, gpu_site):
     """GPU first when asked; any GPU failure (driver, missing libraries, out of
     graphics memory, a crashed GPU worker) falls back to the CPU for this pass,
     and the result says so. A deliberate stop is never retried."""
     if device != "cuda":
         # "cpu", or "cpu (graphics card not used: why)" when the card was
         # wanted but refused before the pass (#153): recorded as it is.
-        turns, exclusive, ran, had = worker_diarize(handle, model, audio_path, hint, threads)
+        turns, exclusive, ran, had = worker_diarize(handle, model, audio, hint, threads)
         return turns, exclusive, device if device.startswith("cpu (") else ran, had
     from workspace.worker import WorkerCrashed, WorkerError, safe_message
     try:
-        return worker_diarize(handle, model, audio_path, hint, threads, device="cuda",
+        return worker_diarize(handle, model, audio, hint, threads, device="cuda",
                               gpu_site=gpu_site)
     except WorkerStopped:
         raise
@@ -91,7 +93,7 @@ def _diarize(handle, model, audio_path, hint, threads, device, gpu_site):
         reason = safe_message(exc).split(": ", 1)[-1][:120]
         handle.release_gpu()           # stop the failed GPU worker and free its memory
     try:
-        turns, exclusive, _, had = worker_diarize(handle, model, audio_path, hint, threads)
+        turns, exclusive, _, had = worker_diarize(handle, model, audio, hint, threads)
     except WorkerStopped:
         raise
     except Exception as exc:

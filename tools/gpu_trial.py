@@ -115,7 +115,7 @@ def force_weights_only():
 
 
 def pyannote(cache, audio, device):
-    # The app's own loader (engines.diarize_file): the hash-checked bytes,
+    # The app's own loader (engines.diarize_audio): the hash-checked bytes,
     # built in memory with weights-only unpickling, then moved to the device.
     # Never pyannote's Pipeline.from_pretrained, which reopens the files by
     # path and unpickles them in full (#111 B9, #218).

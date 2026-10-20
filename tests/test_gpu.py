@@ -577,9 +577,12 @@ class WorkspaceGpuTests(unittest.TestCase):
     def test_gpu_worker_runs_and_reports_the_device(self):
         import numpy as np
 
+        from workspace import audiocrypt, media
         from workspace.worker import diarize
-        audio = Path(self.tmp.name) / "a.f32"
-        np.zeros(16000 * 3, dtype="<f4").tofile(audio)
+        path, key, context = Path(self.tmp.name) / "a.uma", bytes(range(32)), ("decoded", "m")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, 16000) as w:
+            w.write(np.zeros(16000 * 3, dtype=np.float32))
+        audio = media.AudioRef(path, key, context, 16000 * 3)
         turns, _, device, _ = diarize(self.ws.handle, "test:fake_worker_engines:fake_diarizer",
                                       audio, None, 2, device="cuda",
                                       gpu_site=str(Path(self.tmp.name) / "gpu-site"))
@@ -951,10 +954,10 @@ class WhisperFallbackTests(unittest.TestCase):
 
     def test_speaker_identification_first_ends_whisper_on_the_card(self):
         # One heavy model at a time: the Whisper GPU worker holds its model.
+        from workspace import media
         from workspace.worker import diarize
         with tempfile.TemporaryDirectory() as tmp:
-            audio = Path(tmp, "a.f32")
-            audio.write_bytes(b"\x00" * 64000)
+            audio = media.AudioRef(Path(tmp, "a.uma"), bytes(32), ("decoded", "m"), 16000)
             handle = mock.MagicMock()
             handle._request.return_value = ("ok", [], [], "cpu", False)
             diarize(handle, "pyannote", audio, None, 2)

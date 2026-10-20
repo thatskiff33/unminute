@@ -31,8 +31,8 @@ from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, hand
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
-from workspace.store import (DAMAGED_REFUSAL, DamagedContent, Store, StoreError, default_root,
-                             quick_check_file)
+from workspace.store import (DAMAGED_REFUSAL, DamagedContent, KeyMissing, Store, StoreError,
+                             default_root, quick_check_file)
 from workspace.worker import GpuWhisperEngine, WorkerEngine, WorkerHandle, safe_message
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
@@ -44,6 +44,9 @@ MAX_TITLE_CHARS = 200
 FAILED_RETRY_S = 60.0               # a failed cleanup is retried at most this often
 RECEIPT_PURGE_S = 3600.0
 SR = 16000
+# The meeting's audio cannot be used (#111 C3a). Fixed texts (P3).
+AUDIO_MISSING = "The meeting audio is missing from the workspace. Import the recording again."
+AUDIO_UNREADABLE = "The meeting audio could not be read. It may be damaged."
 # Background threads wait for work rather than waking every second (R7). A
 # wait does not count time asleep on Windows, so long waits are capped: the
 # clock is checked again within the cap after the computer wakes.
@@ -1057,7 +1060,7 @@ class Workspace:
         return False
 
     def _plan_version(self, mid, sid):
-        reader = media.AudioReader(media.audio_path(self.media, mid))
+        reader = media.open_audio(self.store, self.media, mid)
         try:
             plan = plan_chunks(reader, len(reader))
         finally:
@@ -1333,8 +1336,7 @@ class Workspace:
         if not self._audio_available(m):
             # Missing audio (e.g. quarantined or deleted outside the app): stop
             # here with an explanation instead of retrying.
-            self.store.set_phase(mid, "error", "The meeting audio is missing from the "
-                                               "workspace. Import the recording again.")
+            self.store.set_phase(mid, "error", AUDIO_MISSING)
             return
         threads = resources.worker_threads(self.settings["mode"])
         self.handle.quiet = self.settings["mode"] == resources.QUIET
@@ -1348,10 +1350,12 @@ class Workspace:
                 self._reruns.pop(mid, None)
                 self._rerun_count = count
             self._status = "Identifying speakers"
+            audio = self._processing_audio(mid, media.audio_ref)
+            if audio is None:
+                return
             device, site = self._choose_speaker_device()
             try:
-                result = speakers.run_speakers(self.store, mid, vid, self.handle,
-                                               media.audio_path(self.media, mid),
+                result = speakers.run_speakers(self.store, mid, vid, self.handle, audio,
                                                threads=threads, hint=count,
                                                model=self.speaker_model, device=device,
                                                gpu_site=site, skips_seen=skips,
@@ -1375,7 +1379,9 @@ class Workspace:
                                      "meeting started. Use Transcribe again to continue.")
                 return
             self._status = "Transcribing"
-            reader = media.AudioReader(media.audio_path(self.media, mid))
+            reader = self._processing_audio(mid, media.open_audio, version["source_id"])
+            if reader is None:
+                return
             model = version["model"]
             device, site = self._choose_whisper_device(model)
             try:
@@ -1395,15 +1401,53 @@ class Workspace:
                 self.store.set_paused(mid, True)    # Stop now = paused until resumed
             return
         self._status = "Identifying speakers"
+        audio = self._processing_audio(mid, media.audio_ref)
+        if audio is None:
+            return
         device, site = self._choose_speaker_device()
         try:
             # Chosen only with no skip recorded (_speakers_due): one since stops it.
-            speakers.run_speakers(self.store, mid, ref, self.handle,
-                                  media.audio_path(self.media, mid), threads=threads,
+            speakers.run_speakers(self.store, mid, ref, self.handle, audio, threads=threads,
                                   model=self.speaker_model, device=device, gpu_site=site,
                                   skips_seen=0, downloads_allowed=downloads)
         finally:
             self._gpu_pass = False
+
+    def _processing_audio(self, mid, opener, source_id=None):
+        """The meeting's audio for the processing thread (opener:
+        media.open_audio for transcription, media.audio_ref for speakers), or
+        None after the meeting's note says why (#111 C3a). A missing key or
+        file is missing audio (a key that will not open is also recorded as
+        an incident, by type only); audio that is damaged or not this
+        meeting's gets the damaged-audio note, chosen by source for
+        transcription. Fixed texts only (P3)."""
+        try:
+            return opener(self.store, self.media, mid)
+        except DamagedContent as exc:             # KeyMissing included
+            if not isinstance(exc, KeyMissing):
+                self.log.incident("audio_key", exc)
+            note = AUDIO_MISSING
+        except FileNotFoundError:
+            note = AUDIO_MISSING
+        except Exception as exc:
+            if not media.damaged_audio(exc):
+                raise
+            note = (runner.damaged_audio_note(self.store.source(source_id))
+                    if source_id is not None else runner.AUDIO_DAMAGED_KEPT)
+        self.store.set_phase(mid, "error", note)
+        return None
+
+    def _user_audio(self, mid):
+        """The meeting's audio for something the user asked for (playback,
+        transcribe again), or WorkspaceError with fixed wording."""
+        try:
+            return media.open_audio(self.store, self.media, mid)
+        except (DamagedContent, OSError):         # KeyMissing included
+            raise WorkspaceError(AUDIO_UNREADABLE) from None
+        except Exception as exc:
+            if media.damaged_audio(exc):
+                raise WorkspaceError(AUDIO_UNREADABLE) from None
+            raise
 
     def _choose_speaker_device(self):
         """Choose the device and mark a GPU pass in one step, under the lock
@@ -1653,9 +1697,13 @@ class Workspace:
         v = self.store.active_version(mid)
         source = self.store._one("SELECT id FROM sources WHERE meeting_id = ? "
                                  "ORDER BY created_at DESC LIMIT 1", (mid,))
-        reader = media.AudioReader(media.audio_path(self.media, mid))
+        reader = self._user_audio(mid)
         try:
             plan = plan_chunks(reader, len(reader))
+        except Exception as exc:
+            if media.damaged_audio(exc):
+                raise WorkspaceError(AUDIO_UNREADABLE) from None
+            raise
         finally:
             reader.close()
         new = self._new_version(mid, source["id"], plan, model)
@@ -1842,9 +1890,13 @@ class Workspace:
                 raise WorkspaceError("Expected a time in seconds.")
         if end <= start or end - start > MAX_CLIP_S:
             raise WorkspaceError(f"Clips are limited to {MAX_CLIP_S:.0f} seconds.")
-        reader = media.AudioReader(media.audio_path(self.media, mid))
+        reader = self._user_audio(mid)
         try:
             samples = reader.read(int(start * SR), int(end * SR))
+        except Exception as exc:
+            if media.damaged_audio(exc):
+                raise WorkspaceError(AUDIO_UNREADABLE) from None
+            raise
         finally:
             reader.close()               # never keep the audio open (cleanup, #17)
         if not len(samples):

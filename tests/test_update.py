@@ -716,13 +716,32 @@ class SchemaTwoGateTests(unittest.TestCase):
         audio.mkdir(parents=True)
         (self.db.parent / "media" / store.new_id()).mkdir()       # empty: nothing to keep
         self.assertEqual(set(), self.kinds())
-        (audio / "audio.f32").write_bytes(b"\0" * 64)
-        found = update.blockers(self.db)
-        self.assertEqual([("media", 1, "Meeting audio files are still in the workspace.")],
-                         [(b["kind"], b["count"], b["message"]) for b in found])
+        (audio / "audio.uma").write_bytes(b"\0" * 64)
+        [found] = update.blockers(self.db)
+        self.assertEqual(("media", 1), (found["kind"], found["count"]))
+        # A folder with no meeting: the app never removes it, so the message
+        # names IT's next step (#111 C3a), and still nothing is deleted (C4).
+        self.assertTrue(found["message"].startswith(
+            "Meeting audio files are still in the workspace. 1 of these folders belongs to "
+            "no meeting"), found["message"])
+        self.assertIn("IT can delete them", found["message"])
+        self.assertNotIn(audio.name, found["message"])
         g = update.gate(self.db, store.SCHEMA_VERSION + 1)
         self.assertEqual(update.WAIT, g["code"])
-        self.assertTrue((audio / "audio.f32").exists())           # never deleted
+        self.assertTrue((audio / "audio.uma").exists())           # never deleted
+        # A meeting's own audio: the meeting's message gives the next step.
+        mid = s.create_meeting("synthetic")
+        own = self.db.parent / "media" / mid
+        own.mkdir()
+        (own / "audio.uma").write_bytes(b"\0" * 64)
+        found = {b["kind"]: b for b in update.blockers(self.db)}
+        self.assertEqual(found["media"]["count"], 2)
+        self.assertIn("1 of these folders belongs to no meeting", found["media"]["message"])
+        (audio / "audio.uma").rename(own / "other.uma")          # the leftover is now empty
+        found = {b["kind"]: b for b in update.blockers(self.db)}
+        self.assertEqual((found["media"]["count"], found["media"]["message"]),
+                         (1, "Meeting audio files are still in the workspace."))
+        self.assertIn("meetings", found)
 
 
 class DeploymentTests(unittest.TestCase):

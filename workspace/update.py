@@ -204,12 +204,23 @@ def blockers(db_path):
                         "not been imported yet. Open the app so it can import or discard "
                         "them."})
         # Meeting audio left in the workspace (media\<id>), with or without
-        # its meeting: plain data the tables do not show (#111 C2b-2). The
-        # update waits; nothing here deletes it.
-        audio = _filled_folders(Path(db_path).parent / "media")
-        if audio:
-            out.append({"kind": "media", "count": audio, "message":
-                        "Meeting audio files are still in the workspace."})
+        # its meeting: data the tables do not show (#111 C2b-2). The update
+        # waits; nothing here deletes it (C4). The app never removes a folder
+        # that has no meeting (for example one an earlier version left), so
+        # the message names IT's next step for those (#111 C3a).
+        ids = ({r[0].lower() for r in con.execute("SELECT id FROM meetings")
+                if isinstance(r[0], str)} if "meetings" in tables else set())
+        folders = _filled_folders(Path(db_path).parent / "media")
+        if folders:
+            orphans = sum(1 for name in folders if name.lower() not in ids)
+            message = "Meeting audio files are still in the workspace."
+            if orphans:
+                message += (f" {orphans} of these folders belong{'s' if orphans == 1 else ''} "
+                            "to no meeting, and Unminute never deletes such a folder by "
+                            "itself. If nothing requires keeping them (no retention hold or "
+                            "other reason applies), IT can delete them from the workspace's "
+                            "media folder, then run the update again.")
+            out.append({"kind": "media", "count": len(folders), "message": message})
         known = {"holds", "meetings", "cleanup_jobs"} | NON_CONTENT
         leftover = sum(count(t) for t in tables if t not in known)
         if leftover and not meetings:
@@ -222,18 +233,18 @@ def blockers(db_path):
 
 
 def _filled_folders(folder):
-    """Subfolders of folder that hold anything. One that cannot be read
-    counts as filled: the update waits rather than guess."""
+    """The names of folder's subfolders that hold anything. One that cannot
+    be read counts as filled: the update waits rather than guess."""
     if not folder.is_dir():
-        return 0
-    count = 0
+        return []
+    names = []
     for p in folder.iterdir():
         try:
             if p.is_dir() and next(p.iterdir(), None) is not None:
-                count += 1
+                names.append(p.name)
         except OSError:
-            count += 1
-    return count
+            names.append(p.name)
+    return names
 
 
 def gate(db_path, new_schema):

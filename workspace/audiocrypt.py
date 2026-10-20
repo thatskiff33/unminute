@@ -133,6 +133,11 @@ class AudioWriter:
         self._index = 0
         self.frames = 0
 
+    @property
+    def file_id(self):
+        """The file's random 32-byte id (in its header, not secret)."""
+        return self._layout.file_id
+
     def _seal(self, data, last):
         L = self._layout
         index = self._index
@@ -230,6 +235,11 @@ class AudioReader:
             raise
         self._lock = threading.Lock()
         self._cached = (-1, b"")
+
+    @property
+    def file_id(self):
+        """The file's random 32-byte id (in its header, not secret)."""
+        return self._layout.file_id
 
     def _open(self, key, context, allow_incomplete):
         from cryptography.exceptions import InvalidTag
