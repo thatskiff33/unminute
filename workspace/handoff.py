@@ -6,8 +6,10 @@
 # integration: copy and save are the only ways out, and nothing is sent
 # anywhere by the app.
 #
-#   - Templates are editable and versioned (configuration, kept in
-#     templates.json beside the database; no meeting content).
+#   - Templates are editable and versioned (configuration, no meeting
+#     content, but they may name people), kept in templates.sealed beside the
+#     database, sealed under the workspace key (#111 C2c). A plain
+#     templates.json from an earlier version is converted at first use.
 #   - Omitted passages and redacted words affect the handoff only; the
 #     reviewed transcript is not changed. They are meeting content, stored in
 #     handoff_options and removed with the transcript at cleanup.
@@ -26,6 +28,7 @@ import unicodedata
 from pathlib import Path
 
 from workspace.speaker_names import given_names, resolve
+from workspace.store import DamagedContent
 
 LONG_CHARS = 50_000          # above this, recommend file handoff (no truncation ever)
 # Copy and open (#109): the assistant opened after copying when IT sets no
@@ -200,26 +203,95 @@ class HandoffError(ValueError):
 
 # -- templates (configuration) ------------------------------------------------------
 
+TEMPLATES_FILE = "templates.sealed"     # sealed under the workspace key (#111 C2c)
+PLAIN_TEMPLATES_FILE = "templates.json"  # before C2c: converted at first use, then deleted
+MAX_TEMPLATES_BYTES = 8 * 1024 * 1024    # a larger file is treated as damaged, never read
+# A temporary file of a write cut short (Templates._write's name, either era).
+_LEFTOVER = re.compile(r"templates\.(sealed|json)\.[0-9]+\.[0-9]+\.tmp")
+
+
+def _saved_from(raw):
+    """The valid saved templates in parsed JSON: a damaged file must not break handoff."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and _valid(v)}
+
+
+def _read_capped(path):
+    """A file's bytes, or None if it holds more than MAX_TEMPLATES_BYTES
+    (read no further than that). OSError if it cannot be read."""
+    with open(path, "rb") as f:
+        data = f.read(MAX_TEMPLATES_BYTES + 1)
+    return None if len(data) > MAX_TEMPLATES_BYTES else data
+
+
+def read_plain_templates(path):
+    """The saved templates of a plain templates.json (before C2c), by the
+    rules it was read with: anything damaged gives no saved templates."""
+    try:
+        data = _read_capped(path)
+        return {} if data is None else _saved_from(json.loads(data.decode("utf-8")))
+    except (OSError, ValueError):
+        return {}
+
+
 class Templates:
     """Editable, versioned prompts. Every save of a template, and restoring a
     built-in's original wording, gives a new version number (they never go
-    back), so "version 3" always means one wording."""
+    back), so "version 3" always means one wording.
 
-    def __init__(self, path):
+    Kept in templates.sealed, sealed under the workspace key (#111 C2c):
+    sealer is the store's file_sealer("templates.sealed"). A file that does
+    not open or parse (changed, cut short, from another workspace, too large)
+    leaves the built-ins only, with unreadable True; the file stays until the
+    next save replaces it. KeyUnavailable from the sealer is not caught: no
+    templates are read or written without the key."""
+
+    def __init__(self, path, sealer):
         self.path = Path(path)
+        self._sealer = sealer
         self._lock = threading.Lock()
         self.saved = {}
+        self.unreadable = False
+        for leftover in _leftovers(self.path.parent, "sealed"):
+            _remove(leftover)
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        if isinstance(raw, dict):            # a damaged file must not break handoff
-            self.saved = {k: v for k, v in raw.items() if isinstance(k, str) and _valid(v)}
+            data = _read_capped(self.path)
+        except FileNotFoundError:
+            return
+        except OSError:
+            self.unreadable = True
+            return
+        try:
+            if data is None:
+                raise ValueError("too large")
+            raw = json.loads(self._sealer.open(data).decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not templates")
+            self.saved = _saved_from(raw)
+        except (DamagedContent, ValueError):
+            self.unreadable = True
 
-    def _write(self):
+    def _write(self, saved=None):
+        """Seal and save the templates (self.saved, or saved, which replaces
+        it once written): flushed to disk before the swap, so a power cut
+        leaves the old file or the new one."""
+        saved = self.saved if saved is None else saved
+        blob = self._sealer.seal(json.dumps(saved, separators=(",", ":")).encode("utf-8"))
+        if len(blob) > MAX_TEMPLATES_BYTES:      # it could not be read back
+            raise HandoffError("There are too many saved templates. Delete one first.")
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(self.saved, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        try:
+            with open(tmp, "wb") as f:
+                f.write(blob)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(self.path)
+        except BaseException:
+            _remove(tmp)
+            raise
+        self.saved = saved
+        self.unreadable = False
 
     def all(self):
         out = []
@@ -244,9 +316,8 @@ class Templates:
 
     def _put(self, tid, title, prompt):
         current = self.get(tid)["version"] if (tid in BUILTIN or tid in self.saved) else 0
-        self.saved[tid] = {"title": title, "prompt": prompt, "version": current + 1,
-                           "saved_at": time.time()}
-        self._write()
+        self._write({**self.saved, tid: {"title": title, "prompt": prompt,
+                                         "version": current + 1, "saved_at": time.time()}})
 
     def save(self, tid, title, prompt):
         """Save an edited template (new version) or, with tid None, a new one."""
@@ -274,8 +345,49 @@ class Templates:
                 if tid in self.saved:
                     self._put(tid, BUILTIN[tid]["title"], BUILTIN[tid]["prompt"])
             elif tid in self.saved:
-                del self.saved[tid]
-                self._write()
+                self._write({k: v for k, v in self.saved.items() if k != tid})
+
+
+def _leftovers(folder, era):
+    """Temporary files of template writes cut short ("sealed" or "json")."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    return [Path(folder) / n for n in names
+            if (m := _LEFTOVER.fullmatch(n)) and m.group(1) == era]
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass                 # tried again at the next first use
+
+
+def open_templates(folder, sealer):
+    """The workspace's Templates, converting a plain templates.json left by
+    an earlier version (#111 C2c) on the way. Called at the first use of
+    templates in a session, with the key available:
+      1. templates.sealed exists: it is used; a templates.json beside it (a
+         crash after the sealed copy was written) is deleted.
+      2. Else templates.json exists: read by its old rules (damaged gives no
+         saved templates), written sealed, then deleted. A write that fails
+         leaves templates.json in place for the next try.
+    Leftover temporary files of both are removed. Ordinary deletion: old
+    blocks of templates.json may remain on disk (BitLocker, ENCRYPTION.md)."""
+    folder = Path(folder)
+    sealed, plain = folder / TEMPLATES_FILE, folder / PLAIN_TEMPLATES_FILE
+    had_sealed = sealed.is_file()
+    templates = Templates(sealed, sealer)
+    if not had_sealed and plain.is_file():
+        with templates._lock:
+            templates._write(read_plain_templates(plain))
+    if os.path.lexists(plain) and not plain.is_dir():
+        _remove(plain)
+    for leftover in _leftovers(folder, "json"):
+        _remove(leftover)
+    return templates
 
 
 def _valid(entry):

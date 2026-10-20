@@ -2,12 +2,14 @@
 #   python -m unittest discover -s tests -v
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
@@ -19,7 +21,7 @@ if HAVE_NUMPY:
     from workspace.asr_engines import Segment
     from workspace import handoff, speaker_names
     from workspace.handoff import HandoffError, Templates
-    from workspace.store import Store
+    from workspace.store import KeyUnavailable, Store
 
 
 def transcript_mark(markdown):
@@ -59,11 +61,15 @@ class HandoffTests(unittest.TestCase):
         self.store.finish_speaker_run(rid, turns, turns)
         speaker_names.rename(self.store, self.vid, "SPEAKER_00", "Aroha Smith")
         self.ids = [r["id"] for r in self.store.transcript(self.vid)]
-        self.templates = Templates(self.root / "templates.json")
+        self.templates = self.open_templates()
 
     def tearDown(self):
         self.store.close()
         self.tmp.cleanup()
+
+    def open_templates(self):
+        return Templates(self.root / "templates.sealed",
+                         self.store.file_sealer("templates.sealed"))
 
     def review(self):
         with self.store.tx() as db:
@@ -206,8 +212,9 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(handoff.options(self.store, self.mid)["omitted"], [self.ids[0]])
 
     def test_damaged_templates_file_falls_back_to_built_ins(self):
+        # A plain file from before #111 C2c, read by its old rules at conversion.
         (self.root / "templates.json").write_text('{"minutes": "x", "custom-1": {"title": 1}}')
-        t = Templates(self.root / "templates.json")
+        t = handoff.open_templates(self.root, self.store.file_sealer("templates.sealed"))
         self.assertEqual([x["id"] for x in t.all()], ["minutes", "summary", "actions", "board",
                                                       "file_note", "email", "team"])
         self.assertFalse(t.get("minutes")["edited"])
@@ -324,7 +331,7 @@ class HandoffTests(unittest.TestCase):
         original = self.templates.get(tid)["prompt"]
         self.templates.save(tid, "Minutes (ours)", "Our prompt")
         self.templates.save(tid, "Minutes (ours)", "Our prompt v2")
-        again = Templates(self.root / "templates.json")          # survives restart
+        again = self.open_templates()                             # survives restart
         t = again.get(tid)
         self.assertEqual((t["title"], t["prompt"], t["version"], t["edited"]),
                          ("Minutes (ours)", "Our prompt v2", 4, True))   # built-in is v2
@@ -362,6 +369,332 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(clipboard.read_text(), text)
         finally:
             clipboard.copy_text(previous or "")       # put the user's text back
+
+
+MARKER = "MARKER-TEMPLATE"
+LEFTOVERS = ("templates.sealed.12.34.tmp", "templates.json.56.78.tmp")
+KEPT = ("templates.sealed.bak", "templates.sealed.1.2.tmp.keep", "other.12.34.tmp")
+
+
+def plain_file(folder):
+    """A templates.json as an earlier version wrote it: an edited built-in
+    (version 3) and a custom template, both naming the marker."""
+    data = {"minutes": {"title": f"Minutes {MARKER}", "prompt": f"Ours {MARKER}",
+                        "version": 3, "saved_at": 1.0},
+            "custom-1": {"title": "Board paper", "prompt": f"Write it, {MARKER}.",
+                         "version": 1, "saved_at": 2.0}}
+    path = Path(folder) / "templates.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path
+
+
+def converted():
+    """What a converted plain_file must read as."""
+    return ({"id": "minutes", "title": f"Minutes {MARKER}", "prompt": f"Ours {MARKER}",
+             "builtin": True, "version": 3, "edited": True},
+            {"id": "custom-1", "title": "Board paper", "prompt": f"Write it, {MARKER}.",
+             "builtin": False, "edited": True, "version": 1})
+
+
+class CountingSealer:
+    """A file sealer that counts its calls (and passes them on)."""
+
+    def __init__(self, inner):
+        self.inner, self.seals, self.opens = inner, 0, 0
+
+    def seal(self, data):
+        self.seals += 1
+        return self.inner.seal(data)
+
+    def open(self, blob):
+        self.opens += 1
+        return self.inner.open(blob)
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class SealedTemplatesTests(unittest.TestCase):
+    """templates.sealed: the handoff templates sealed under the workspace key
+    (#111 C2c), and the conversion of a plain templates.json."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "ws"
+        self.root.mkdir()
+        self.store = Store(self.root / "workspace.db", protector=keyprotect.TestProtector())
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def sealer(self):
+        return self.store.file_sealer(handoff.TEMPLATES_FILE)
+
+    def open(self, sealer=None):
+        return handoff.open_templates(self.root, sealer or self.sealer())
+
+    def sealed_bytes(self):
+        return (self.root / "templates.sealed").read_bytes()
+
+    def test_a_saved_template_is_sealed_and_reads_back_after_a_restart(self):
+        t = self.open()
+        tid = t.save(None, f"Ours {MARKER}", f"Summarise it for {MARKER}.")
+        t.save("minutes", "Minutes", f"Just minutes, {MARKER}.")
+        self.assertNotIn(MARKER.encode(), self.sealed_bytes())
+        self.assertFalse((self.root / "templates.json").exists())
+        self.assertEqual(["templates.sealed"],
+                         [p.name for p in self.root.iterdir() if p.name.startswith("templates")])
+        self.store.close()
+        self.store = Store(self.root / "workspace.db", protector=keyprotect.TestProtector())
+        again = self.open()
+        self.assertFalse(again.unreadable)
+        self.assertEqual((f"Ours {MARKER}", f"Summarise it for {MARKER}.", 1),
+                         tuple(again.get(tid)[k] for k in ("title", "prompt", "version")))
+        self.assertEqual((f"Just minutes, {MARKER}.", 3),
+                         (again.get("minutes")["prompt"], again.get("minutes")["version"]))
+
+    def test_a_plain_file_is_converted_at_first_use_and_deleted(self):
+        plain_file(self.root)
+        t = self.open()
+        self.assertEqual(converted(), (t.get("minutes"), t.get("custom-1")))
+        self.assertFalse((self.root / "templates.json").exists())
+        self.assertNotIn(MARKER.encode(), self.sealed_bytes())
+        again = self.open()                                  # the sealed copy is the record
+        self.assertEqual(converted(), (again.get("minutes"), again.get("custom-1")))
+        # Saving continues the converted versions.
+        again.save("minutes", "Minutes", "Newer")
+        self.assertEqual(4, again.get("minutes")["version"])
+
+    def test_with_both_files_the_sealed_one_wins_and_the_plain_one_is_deleted(self):
+        t = self.open()
+        t.save("summary", "Summary (sealed)", "From the sealed file.")
+        plain_file(self.root)                     # as if a crash came before its deletion
+        again = self.open()
+        self.assertEqual("Summary (sealed)", again.get("summary")["title"])
+        self.assertFalse(again.get("minutes")["edited"])
+        with self.assertRaises(HandoffError):
+            again.get("custom-1")
+        self.assertFalse((self.root / "templates.json").exists())
+
+    def test_a_conversion_that_cannot_write_keeps_the_plain_file(self):
+        plain = plain_file(self.root)
+        before = plain.read_bytes()
+        with mock.patch.object(handoff.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.open()
+        self.assertEqual(before, plain.read_bytes())
+        self.assertEqual(["templates.json"],
+                         [p.name for p in self.root.iterdir() if p.name.startswith("templates")])
+        t = self.open()                                       # the next use converts it
+        self.assertEqual(converted(), (t.get("minutes"), t.get("custom-1")))
+        self.assertFalse(plain.exists())
+
+    def test_a_file_that_does_not_open_gives_the_built_ins(self):
+        other = Store(Path(self.tmp.name) / "other.db", protector=keyprotect.TestProtector())
+        try:
+            from_other = other.file_sealer(handoff.TEMPLATES_FILE).seal(b"{}")
+        finally:
+            other.close()
+        good = self.sealer().seal(json.dumps(
+            {"custom-1": {"title": "x", "prompt": MARKER, "version": 1}}).encode())
+        changed = bytearray(good)
+        changed[-1] ^= 1
+        cases = {
+            "another workspace": from_other,
+            "another file": self.store.file_sealer("settings.sealed").seal(b"{}"),
+            "a changed byte": bytes(changed),
+            "cut short": good[:40],
+            "empty": b"",
+            "not JSON": self.sealer().seal(b"not json"),
+            "not text": self.sealer().seal(b"\xff\xfe"),
+            "not a dictionary": self.sealer().seal(b"[1, 2]"),
+        }
+        for case, blob in cases.items():
+            with self.subTest(case):
+                (self.root / "templates.sealed").write_bytes(blob)
+                t = self.open()
+                self.assertTrue(t.unreadable)
+                self.assertEqual(7, len(t.all()))
+                self.assertFalse(any(x["edited"] for x in t.all()))
+                self.assertEqual(blob, self.sealed_bytes())      # left until the next save
+        t.save(None, "Mine", "Mine")                             # which replaces it
+        self.assertFalse(t.unreadable)
+        self.assertFalse(self.open().unreadable)
+
+    def test_a_valid_file_with_bad_entries_keeps_the_good_ones(self):
+        good = {"title": "Ours", "prompt": "Ours", "version": 2}
+        (self.root / "templates.sealed").write_bytes(self.sealer().seal(json.dumps(
+            {"minutes": good, "custom-1": {"title": 1}, "custom-2": "x"}).encode()))
+        t = self.open()
+        self.assertFalse(t.unreadable)
+        self.assertEqual(("Ours", 2), (t.get("minutes")["title"], t.get("minutes")["version"]))
+        self.assertEqual(7, len(t.all()))
+
+    def test_a_file_over_the_limit_is_not_read(self):
+        path = self.root / "templates.sealed"
+        with open(path, "wb") as f:
+            f.truncate(handoff.MAX_TEMPLATES_BYTES + 1)
+        sealer = CountingSealer(self.sealer())
+        t = self.open(sealer)
+        self.assertTrue(t.unreadable)
+        self.assertEqual(0, sealer.opens)
+        self.assertEqual(handoff.MAX_TEMPLATES_BYTES + 1, path.stat().st_size)
+
+    def test_a_save_too_large_to_read_back_is_refused_and_changes_nothing(self):
+        t = self.open()
+        t.save(None, "Kept", "Kept")
+        before = self.sealed_bytes()
+        with mock.patch.object(handoff, "MAX_TEMPLATES_BYTES", len(before) + 10):
+            with self.assertRaises(HandoffError):
+                t.save(None, "Too much", "y" * 1000)
+        self.assertEqual(before, self.sealed_bytes())
+        self.assertEqual(["Kept"], [x["title"] for x in t.all() if not x["builtin"]])
+
+    def test_a_failed_write_keeps_the_old_file_and_leaves_no_temporary_file(self):
+        t = self.open()
+        t.save(None, "Kept", "Kept")
+        before = self.sealed_bytes()
+        with mock.patch.object(handoff.os, "fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                t.save(None, "Lost", "Lost")
+        self.assertEqual(before, self.sealed_bytes())
+        self.assertEqual(["Kept"], [x["title"] for x in t.all() if not x["builtin"]])
+        self.assertEqual(["templates.sealed"],
+                         [p.name for p in self.root.iterdir() if p.name.startswith("templates")])
+
+    def test_leftover_temporary_files_are_removed(self):
+        for name in LEFTOVERS + KEPT:
+            (self.root / name).write_text(f"plain {MARKER}", encoding="utf-8")
+        self.open()
+        names = {p.name for p in self.root.iterdir()}
+        self.assertEqual(set(), names & set(LEFTOVERS))
+        self.assertEqual(set(KEPT), names & set(KEPT))
+
+    def test_the_file_context_is_the_documented_one(self):
+        # Known answer from the raw primitives (docs/ENCRYPTION.md): the
+        # workspace key, label "cell", context ("workspace", "file", name).
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from workspace import vault
+        blob = self.store.db.execute("SELECT root FROM crypto_meta").fetchone()[0]
+        root = blob[len(keyprotect.PREFIX):]
+        key = vault.derive(root, "workspace")
+        nonce = bytes(range(12))
+        head = bytes([vault.VERSION])
+        aad = head + vault.encode("cell", ("workspace", "file", "templates.sealed"))
+        made = head + nonce + AESGCM(key).encrypt(nonce, b'{"a": 1}', aad)
+        self.assertEqual(b'{"a": 1}', self.sealer().open(made))
+        self.assertNotEqual(b'{"a": 1}', self.sealer().seal(b'{"a": 1}')[13:-16])
+        self.assertEqual("<FileSealer>", repr(self.sealer()))
+
+    def test_no_file_sealer_while_locked(self):
+        self.store.close()
+        self.store = Store(self.root / "workspace.db", on_unavailable="lock",
+                           protector=keyprotect.TestProtector(fail=True))
+        with self.assertRaises(KeyUnavailable):
+            self.store.file_sealer(handoff.TEMPLATES_FILE)
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class WorkspaceTemplatesTests(unittest.TestCase):
+    """The app builds its templates at their first use, never while locked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "ws"
+        self.made = []
+
+    def tearDown(self):
+        for ws in self.made:
+            ws.close()
+        self.tmp.cleanup()
+
+    def workspace(self, **kw):
+        from workspace.app import Workspace
+        ws = Workspace(self.root, Path(self.tmp.name) / "models", start=False, battery=False,
+                       protector=kw.pop("protector", keyprotect.TestProtector()), **kw)
+        self.made.append(ws)
+        return ws
+
+    def events(self, ws):
+        path = ws.log.path
+        return path.read_text("ascii") if path.exists() else ""
+
+    def test_templates_are_built_at_first_use_not_at_start(self):
+        calls = []
+        real = Store.file_sealer
+
+        def counting(store, name):
+            calls.append(name)
+            return real(store, name)
+        with mock.patch.object(Store, "file_sealer", counting):
+            ws = self.workspace()
+            self.assertEqual([], calls)
+            self.assertFalse((self.root / "templates.sealed").exists())
+            self.assertEqual(7, len(ws.handoff_templates()))
+            ws.handoff_templates()
+            self.assertEqual(["templates.sealed"], calls)          # once a session
+
+    def test_the_app_converts_a_plain_file_at_first_use(self):
+        self.workspace().close()
+        self.made.clear()
+        plain_file(self.root)
+        ws = self.workspace()
+        self.assertTrue((self.root / "templates.json").exists())   # not at start
+        items = {t["id"]: t for t in ws.handoff_templates()}
+        self.assertEqual(converted(), (items["minutes"], items["custom-1"]))
+        self.assertFalse((self.root / "templates.json").exists())
+        self.assertNotIn(MARKER.encode(), (self.root / "templates.sealed").read_bytes())
+        ws.save_template("minutes", "Minutes", f"Changed {MARKER}")
+        ws.reset_template("custom-1")
+        self.assertNotIn(MARKER.encode(), (self.root / "templates.sealed").read_bytes())
+        self.assertNotIn("templates_unreadable", self.events(ws))
+
+    def test_an_unreadable_file_is_logged_once_without_content(self):
+        ws = self.workspace()
+        blob = bytearray(ws.store.file_sealer("templates.sealed").seal(json.dumps(
+            {"custom-1": {"title": MARKER, "prompt": MARKER, "version": 1}}).encode()))
+        blob[-1] ^= 1
+        (self.root / "templates.sealed").write_bytes(bytes(blob))
+        self.assertEqual(7, len(ws.handoff_templates()))
+        ws.handoff_templates()
+        log = self.events(ws)
+        self.assertEqual(1, log.count('"kind":"templates_unreadable"'))
+        self.assertNotIn(MARKER, log)
+
+    def test_a_locked_start_reads_converts_and_logs_nothing(self):
+        self.workspace().close()
+        self.made.clear()
+        for present in ("templates.json", "templates.sealed"):
+            with self.subTest(present):
+                for name in ("templates.json", "templates.sealed"):
+                    (self.root / name).unlink(missing_ok=True)
+                if present == "templates.json":
+                    path = plain_file(self.root)
+                else:
+                    ws = self.workspace()
+                    ws.save_template(None, "Ours", f"Ours {MARKER}")
+                    ws.close()
+                    self.made.clear()
+                    path = self.root / "templates.sealed"
+                before = path.read_bytes()
+                # Until C4a holds the start-up work while locked, the upkeep
+                # (which writes, and so raises) is left out here.
+                from workspace.app import Workspace
+                with mock.patch.object(Workspace, "_upkeep"):
+                    ws = self.workspace(protector=keyprotect.TestProtector(fail=True),
+                                        on_unavailable="lock")
+                self.assertIsNotNone(ws.store.locked)
+                with self.assertRaises(KeyUnavailable):
+                    ws.handoff_templates()
+                with self.assertRaises(KeyUnavailable):
+                    _ = ws.templates
+                with self.assertRaises(KeyUnavailable):
+                    ws.save_template(None, "x", "y")
+                ws.close()
+                self.made.clear()
+                self.assertEqual(before, path.read_bytes())
+                self.assertEqual([path.name], [p.name for p in self.root.iterdir()
+                                               if p.name.startswith("templates")])
+                self.assertNotIn("templates_unreadable", self.events(ws))
 
 
 if __name__ == "__main__":

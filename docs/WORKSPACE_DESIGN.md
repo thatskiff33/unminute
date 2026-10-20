@@ -369,7 +369,12 @@ Failure reasons are stored without file paths.
 - Copying is done by Python through the Windows clipboard API, so it does not depend on browser clipboard permissions.
 
 ### Templates
-- Templates live in `templates.json`. They hold configuration only, no meeting content.
+- Templates live in `templates.sealed` beside the database, sealed under the workspace key (#111 C2c; `docs/ENCRYPTION.md`, "Templates file"). They hold configuration only, no meeting content, though a template can name people.
+  - They are built at their first use in a session (`Workspace.templates`), not at start, and never while the store is locked.
+  - A plain `templates.json` from an earlier version is converted at that first use (same titles, prompts and versions) and then deleted; if both exist, the sealed one wins.
+  - A file that does not open or parse, or is larger than 8 MB, leaves the built-ins only and logs a content-free `templates_unreadable` event; it stays until the next save replaces it.
+  - Saves are written to a temporary file, flushed and swapped in; leftovers are removed at the next first use.
+  - Templates are configuration: an empty-workspace update keeps them and they never block one.
 - They are editable and versioned:
   - each save of a template creates a new version;
   - built-in templates can be restored to their original wording;
