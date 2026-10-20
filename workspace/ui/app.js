@@ -715,11 +715,13 @@ async function playExample(label) {
 function ranOnWord(ranOn) {
   if (!ranOn || !ranOn.length) return "";
   const where = (r) => (r.where === "gpu" ? "graphics card" : "processor");
-  const parts = [];
+  // Rows that read the same are said once; the format follows the rows left.
+  const seen = [];
   for (const r of ranOn) {
-    const part = ranOn.length === 1 ? `${where(r)}, ${r.precision}` : `${where(r)} (${r.precision})`;
-    if (!parts.includes(part)) parts.push(part);
+    if (!seen.some((s) => where(s) === where(r) && s.precision === r.precision)) seen.push(r);
   }
+  const parts = seen.map((r) => (seen.length === 1 ? `${where(r)}, ${r.precision}`
+                                                   : `${where(r)} (${r.precision})`));
   const text = parts.join(", then ");
   const said = text.charAt(0).toUpperCase() + text.slice(1);
   return ranOn.some((r) => r.fallback) ? `${said} · the graphics card could not be used` : said;
