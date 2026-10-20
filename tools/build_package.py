@@ -6,7 +6,8 @@
 #
 # The version comes from the VERSION file (#131); --version, if given, must match it.
 # --release refuses a working tree with any change, untracked file or file
-# hidden from git status, and a HEAD that is not the commit of tag vX.Y.Z. It
+# hidden from git status, an ignored file under tools/ (such as a cached .pyc),
+# and a HEAD that is not the commit of tag vX.Y.Z. It
 # resolves that commit once and reads everything it packages or obeys (the app
 # files, the lock, VERSION and the binary allowlist) from it as stored, with no
 # git filters, attributes or line-ending settings applied; .cmd and .ps1 get
@@ -59,6 +60,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import urllib.parse
 import urllib.request
 import uuid
@@ -66,15 +68,34 @@ import zipfile
 import zlib
 from pathlib import Path
 
-# tools/windows_powershell.py, also under -I; after the standard library. The
-# build runs as `python -I` (which ignores PYTHONDONTWRITEBYTECODE), so it
+# The build runs as `python -I` (which ignores PYTHONDONTWRITEBYTECODE), so it
 # says itself that no import writes bytecode into the checkout: an ignored
-# tools/__pycache__ makes the checkout unclean for tools/evidence.py (#206).
+# tools/__pycache__ makes the checkout unclean for tools/evidence.py (#206) and
+# stops a release build (#268).
 sys.dont_write_bytecode = True
-sys.path.append(str(Path(__file__).resolve().parent))
-import windows_powershell  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
+TOOLS = Path(__file__).resolve().parent
+ROOT = TOOLS.parent
+
+
+def load_windows_powershell():
+    """tools/windows_powershell.py, which starts the Windows PowerShell that
+    checks signatures, and the bytes it was compiled from (#268). Loaded by its
+    path beside this script, never through sys.path, where a module of that
+    name in the build Python's site-packages (or one already imported) would
+    win. Compiled from the source read here, never from a cached .pyc, which
+    Python would run in place of the source when the source size and time it
+    records match. Not added to sys.modules. A release checks the bytes
+    against the tagged commit (loaded_as_committed)."""
+    path = TOOLS / "windows_powershell.py"
+    source = path.read_bytes()
+    module = types.ModuleType("windows_powershell")
+    module.__file__ = str(path)
+    exec(compile(source, str(path), "exec", dont_inherit=True), module.__dict__)
+    return module, source
+
+
+windows_powershell, WINDOWS_POWERSHELL_SOURCE = load_windows_powershell()
 
 PYTHON_VERSION = "3.14.8"
 EMBED_URL = (f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
@@ -681,6 +702,17 @@ def release_guard(version):
     if hidden:
         sys.exit("--release refuses files hidden from git status (assume-unchanged or "
                  "skip-worktree):\n" + "\n".join(hidden))
+    # Ignored files too, under tools/ (plain git status leaves them out): a
+    # tools/__pycache__ .pyc whose recorded source size and time match would
+    # run instead of its source, as tools/evidence.py also refuses (#268).
+    ignored = git("status", "--porcelain", "--untracked-files=all", "--ignored", "--",
+                  "tools")
+    if ignored is None:
+        sys.exit("--release needs git, to check the working tree and the tag.")
+    if ignored:
+        sys.exit("--release refuses ignored files under tools/, such as tools/__pycache__ "
+                 "(see what `git clean -ndX -- tools` would remove, then run "
+                 "`git clean -fdX -- tools`):\n" + ignored)
     head = git("rev-parse", "HEAD")
     tagged = git("rev-parse", "--verify", "--quiet", f"refs/tags/v{version}^{{commit}}")
     if not tagged or head != tagged:
@@ -700,13 +732,28 @@ def unchanged_since(version, sha):
         sys.exit("HEAD or the tree changed during the build; nothing was written.")
 
 
-def same_as_commit(sha, path):
-    """A file this build runs or trusts from the working folder must match the
-    commit (line endings aside, for text)."""
-    here = (ROOT / path).read_bytes()
+def same_as_commit(sha, path, here=None):
+    """A file this build runs or trusts from the working folder (or `here`, the
+    bytes it read from it) must match the commit (line endings aside, for
+    text)."""
+    if here is None:
+        here = (ROOT / path).read_bytes()
     stored = committed(sha, path)
     if here != stored and here.replace(b"\r\n", b"\n") != stored.replace(b"\r\n", b"\n"):
         sys.exit(f"{path} differs from commit {sha}.")
+
+
+def loaded_as_committed(sha):
+    """The windows_powershell module this build runs was compiled from commit
+    `sha`'s bytes (#268): it starts the Windows PowerShell that checks the
+    runtime's and every binary's signature. The byte comparison is the check;
+    the path test only catches a module swapped in after loading. Both run
+    after the helper has loaded, so they catch drift, not a hostile edit,
+    which only a fresh checkout guards against (docs/SECURITY_MODEL.md T14)."""
+    if Path(windows_powershell.__file__) != TOOLS / "windows_powershell.py":
+        sys.exit("The Windows PowerShell helper this build loaded is not "
+                 "tools/windows_powershell.py beside it: " + str(windows_powershell.__file__))
+    same_as_commit(sha, "tools/windows_powershell.py", WINDOWS_POWERSHELL_SOURCE)
 
 
 def source_date_epoch(commit="HEAD"):
@@ -1088,9 +1135,10 @@ def build(version, out, cache, release=False, update_allowlist=False):
             app_list = work / "app-allowlist.json"
             app_list.write_bytes(committed(sha, "packaging/app-allowlist.json"))
             budgets = committed(sha, BUDGETS).decode("utf-8")
-            for path in ("tools/build_package.py",
+            for path in ("tools/build_package.py", "tools/windows_powershell.py",
                          *(f"packaging/wheels/{w}" for w in VENDORED)):
                 same_as_commit(sha, path)
+            loaded_as_committed(sha)
         embed = fetch_runtime(cache)
         with zipfile.ZipFile(embed) as z:
             z.extractall(runtime)

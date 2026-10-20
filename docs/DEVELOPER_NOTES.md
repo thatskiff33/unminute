@@ -130,7 +130,10 @@ real time, and remove it when the cause is fixed.
   checks), `tools/packaged_check.py`, `tools/process_listeners.py` and `tools/perf_check.py`
   use it, as do the tests that start Windows PowerShell themselves (`tests/test_evidence.py`,
   `tests/test_hardening.py`; `tests/test_agent_guard.py` finds it as Claude Code does, on
-  purpose). Other system programs are started the same way, through
+  purpose). `tools/build_package.py` loads its own copy by path, compiled from the source
+  (#268), so a test that patches the helper for the build patches
+  `build_package.windows_powershell`, not the module `import windows_powershell` gives.
+  Other system programs are started the same way, through
   `windows_powershell.system_program(...)` with `windows_powershell.environment()`:
   `netstat` in `process_listeners.listeners()`, `taskkill` in `tools/packaged_check.py` and
   `tools/packaged_crash_check.py`, and `cmd` for `mklink /J` in the tests that make
