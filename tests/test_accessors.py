@@ -576,6 +576,71 @@ class UiCheckVerdictTests(unittest.TestCase):
         self.assertEqual(1, len(ui.failed_meeting_problems(report)))
 
 
+class UiCheckNativeVerdictTests(unittest.TestCase):
+    """tools/workspace_ui_check.py's verdict on its native confirmation
+    scripts (native_problems): a report of every rule holding passes, and each
+    rule that does not, including Esc and an Invoke without the focus (#232),
+    is named on its own."""
+
+    def setUp(self):
+        self.ui = ui_check_parts("native_problems")
+
+    @staticmethod
+    def good():
+        report = {"early_yes_then_enter": False, "bridge_no": True, "meeting_kept": True,
+                  "yes_after_delay": True, "tick_first": True,
+                  "open_until_ticked": [True, True], "keyboard_after_hold": True,
+                  "open_after_quick_enter": [True], "keys_restart_wait": True,
+                  "open_after_keys": [True], "clicks_restart_wait": True,
+                  "open_after_clicks": [True], "enter_on_statement": False,
+                  "esc_on_statement": False, "open_after_esc": [False],
+                  "invoke_after_enabled_wait": True, "open_after_quick_invoke": [True]}
+        report.update({f"pressed_{n}": True for n in range(1, 11)})
+        return report
+
+    def test_every_rule_holding_passes(self):
+        self.assertEqual([], self.ui.native_problems(self.good()))
+
+    def test_an_empty_report_fails_on_every_rule(self):
+        # The window check stopped early (an error): nothing passes by default.
+        self.assertEqual(10, len(self.ui.native_problems({})))
+
+    def test_each_problem_is_named(self):
+        cases = [
+            ("early_yes_then_enter", True, "early click or Enter"),
+            ("meeting_kept", False, "through the bridge"),
+            ("yes_after_delay", False, "after the wait did not answer"),
+            ("open_until_ticked", [True, False], "before, or just after, the tick"),
+            ("open_after_quick_enter", [False], "held the focus"),
+            ("open_after_keys", [False], "key press"),
+            ("open_after_clicks", [False], "a click did not"),
+            ("enter_on_statement", True, "Enter on the statement"),
+            # Esc did nothing: the window was still open after it (and closed
+            # later as stuck, so the answer alone is no proof).
+            ("open_after_esc", [True], "Esc on the statement"),
+            # Esc answered as the action would.
+            ("esc_on_statement", True, "Esc on the statement"),
+            # The quick Invoke answered (mutant M13 of #229).
+            ("open_after_quick_invoke", [False], "Invoke without the focus"),
+            # The Invoke after the wait was ignored.
+            ("invoke_after_enabled_wait", False, "Invoke without the focus"),
+            ("pressed_9", False, "Esc on the statement"),
+            ("pressed_10", False, "Invoke without the focus"),
+        ]
+        for key, value, problem in cases:
+            with self.subTest(key=key, value=value):
+                report = self.good()
+                report[key] = value
+                found = self.ui.native_problems(report)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(problem, found[0])
+
+    def test_a_window_left_open_is_named_as_well(self):
+        report = self.good()
+        report["stuck_dialogs"] = ["Workspace UI check: Esc on the statement"]
+        self.assertIn("left open", self.ui.native_problems(report)[0])
+
+
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class UiCheckSetupTests(unittest.TestCase):
 

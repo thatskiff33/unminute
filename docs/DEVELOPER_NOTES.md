@@ -81,14 +81,25 @@ real time, and remove it when the cause is fixed.
   covered, `BM_CLICK` with no mouse or key event. That test holds a named mutex
   (`Local\UnminuteTickTest`), because concurrent suites on one machine would put their
   stand-ins at the same place on screen and cover each other.
-- **Each confirmation rule has a native script only it can pass.** In
+- **The scripted confirmation rules each have a native script only they can pass.** In
   `tools/workspace_ui_check.py`, keys (Shift posted to the focused Cancel) and clicks on the
   text before the action is available must restart the wait ("keys wait again", "clicks wait
   again"); Enter on the ticked statement, long after the action was enabled, must cancel
-  (`AcceptButton` is Cancel); and the keyboard script's quick Enter comes 2.5 s after the tick
-  but just after the action took the focus, so only the focus hold can ignore it. A script
-  that several rules could pass (for example an Enter posted while Cancel has the focus, which
-  WinForms gives to Cancel whatever `AcceptButton` is) proves none of them.
+  (`AcceptButton` is Cancel); Esc on the ticked statement, long after the action was enabled,
+  must close the window with no answer (`CancelButton` is Cancel), and the script checks that
+  the window was already closed about 0.7 s later, so the stuck-window clean-up cannot pass
+  it; the keyboard script's quick Enter comes 2.5 s after the tick but just after the action
+  took the focus, so only the focus hold can ignore it; and an Invoke without the focus
+  (`BM_CLICK` while Cancel keeps it, the path of an assistive tool's Invoke, above) must be
+  ignored about 0.3 s after the action is enabled and answer about 1.8 s after (`act_clicked`),
+  so an Invoke that skipped the wait fails. A script that several rules could pass (for example
+  an Enter posted while Cancel has the focus, which WinForms gives to Cancel whatever
+  `AcceptButton` is) proves none of them. Not scripted by this check: Space, or an
+  Invoke, on the focused action; the wait restarting when the window returns to the front;
+  buttons having no keyboard shortcut; high contrast; and restoring a minimised app first.
+  One question at a time is a unit test (`tests/test_app.py`). `tests/test_evidence.py` checks
+  the Esc, Invoke and "until enabled" steps on an off-screen stand-in form, and
+  `tests/test_accessors.py` the verdict (`native_problems`), which names each rule that failed.
 - **Power requests do not survive a closed lid.** `PowerSetRequest` keeps a computer awake only
   against the idle timer: Windows ends it when the user closes the lid (action Sleep), presses
   the power button or chooses Sleep, and on Modern Standby on battery five minutes after the
