@@ -353,7 +353,9 @@ INVARIANT_GUARDS = {
     "D2": {"tests/test_workspace_core.py": ["test_explicit_pause_survives_restart"]},
     "D3": {"tests/test_hardening.py": ["test_only_one_copy_holds_the_workspace",
                                       "test_location_inside_onedrive_is_refused",
-                                      "test_a_data_folder_junction_into_onedrive_is_refused"]},
+                                      "test_a_data_folder_junction_into_onedrive_is_refused",
+                                      "test_a_missing_onedrive_target_spelt_another_way_"
+                                      "is_refused"]},
     "D4": {"tests/test_workers.py": ["test_one_model_at_a_time_in_the_same_worker",
                                     "test_idle_worker_unloads"],
            "tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],

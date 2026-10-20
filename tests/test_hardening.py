@@ -610,17 +610,111 @@ class RedirectedDataFolderTests(unittest.TestCase):
         self.local = self.tmp / f"Local {self.cases}"
         self.local.mkdir()
 
-    def junction(self, at, target):
+    def junction(self, at, target, how="drive"):
         """LOCALAPPDATA\\<at> made a junction to target (created first)."""
-        link = self.local / at
+        return self.make_junction(self.local / at, target, how)
+
+    def make_junction(self, link, target, how="drive"):
+        """link made a junction to target (created first), the target spelt
+        as how says (see spelt)."""
         link.parent.mkdir(parents=True, exist_ok=True)
         target.mkdir(parents=True, exist_ok=True)
-        r = mklink_junction(link, target, capture_output=True, text=True)
+        r = mklink_junction(link, self.spelt(target, how), capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         # Removes the junction only, never its target, and before the
         # temporary folder goes (cleanups run last in, first out).
         self.addCleanup(lambda: os.path.isjunction(link) and os.rmdir(link))
         return link
+
+    def spelt(self, folder, how):
+        """folder as a junction stores it: "drive" (C:\\...), "\\\\?\\" (the
+        long-path prefix before the drive) or "volume GUID" (the volume's own
+        name, \\\\?\\Volume{...}\\..., which realpath keeps as written)."""
+        if how == "drive":
+            return str(folder)
+        if how == "\\\\?\\":
+            return "\\\\?\\" + str(folder)
+        import ctypes
+        drive, rest = os.path.splitdrive(str(folder))
+        buffer = ctypes.create_unicode_buffer(64)
+        made = ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(drive + "\\", buffer, 64)
+        self.assertTrue(made and buffer.value.startswith("\\\\?\\Volume{"), how)
+        return buffer.value + rest.lstrip("\\")
+
+    # Ways a data folder junction's target can be missing (#266, from the
+    # #265 reviews): name -> how it is made, under base.
+    BROKEN_SHAPES = ("missing", "link to a broken link", "inside a broken link",
+                     "volume GUID", "\\\\?\\ prefix")
+
+    def broken(self, at, shape, base):
+        """LOCALAPPDATA\\<at> made a junction whose target, under base, is
+        missing in the given shape. Returns what must stay uncreated."""
+        n = self.cases
+        gone = base / f"Gone {n}"
+        hop = self.tmp / f"Hop {n}"
+        if shape in ("missing", "volume GUID", "\\\\?\\ prefix"):
+            how = {"volume GUID": "volume GUID", "\\\\?\\ prefix": "\\\\?\\"}.get(shape, "drive")
+            link = self.junction(at, gone, how)
+            os.rmdir(gone)
+        elif shape == "link to a broken link":      # Unminute -> Hop -> (Gone, removed)
+            self.make_junction(hop, gone)
+            link = self.junction(at, hop)
+            os.rmdir(gone)
+        else:                                       # Unminute -> Hop\Moved; Hop -> (Gone, removed)
+            (gone / "Moved").mkdir(parents=True)
+            self.make_junction(hop, gone)
+            link = self.junction(at, hop / "Moved")
+            os.rmdir(gone / "Moved")
+            os.rmdir(gone)
+        self.assertTrue(os.path.lexists(link), shape)
+        self.assertFalse(os.path.exists(link), shape)    # its target is missing
+        return gone
+
+    def test_a_data_folder_junction_whose_target_is_missing_is_refused(self):
+        # #266: the app closed without its message (Workspace() failed in
+        # mkdir). Now refused with a path-free message that names IT.
+        from workspace import store
+        from workspace.store import StoreError
+        for at in ("Unminute", "Unminute\\workspace"):
+            for shape in self.BROKEN_SHAPES:
+                with self.subTest(at=at, shape=shape):
+                    self.fresh_local()
+                    gone = self.broken(at, shape, self.tmp / "Elsewhere")
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env())
+                    self.assertEqual(str(caught.exception), store.BROKEN_LINK)
+                    self.assert_path_free(str(caught.exception))
+                    self.assertFalse(os.path.lexists(gone))      # nothing made there
+
+    def test_a_missing_onedrive_target_spelt_another_way_is_refused(self):
+        # The #265 round 2 shapes: a chain of junctions, or a volume GUID or
+        # \\?\ spelling, hid that the missing target was inside OneDrive. Each
+        # is refused, by either message, and nothing is created in OneDrive.
+        from workspace import store
+        from workspace.store import StoreError
+        for at in ("Unminute", "Unminute\\workspace"):
+            for shape in self.BROKEN_SHAPES:
+                with self.subTest(at=at, shape=shape):
+                    self.fresh_local()
+                    gone = self.broken(at, shape, self.synced)
+                    with self.assertRaises(StoreError) as caught:
+                        self.default_root(self.env())
+                    self.assertIn(str(caught.exception),
+                                  (store.BROKEN_LINK, store.REDIRECTED["onedrive"]))
+                    self.assert_path_free(str(caught.exception))
+                    self.assertFalse(os.path.lexists(gone))      # nothing made in OneDrive
+
+    def test_a_working_data_folder_junction_is_not_called_broken(self):
+        # A junction to a local folder that exists is still allowed (#219
+        # refuses only OneDrive and network drives), and so is a data folder
+        # not created yet.
+        self.assertEqual(self.default_root(self.env()), self.local / "Unminute" / "workspace")
+        for at in ("Unminute", "Unminute\\workspace"):
+            with self.subTest(at=at):
+                self.fresh_local()
+                self.junction(at, self.tmp / "Elsewhere" / f"Here {self.cases}")
+                self.assertEqual(self.default_root(self.env()),
+                                 self.local / "Unminute" / "workspace")
 
     def env(self, var="OneDriveCommercial"):
         return {"LOCALAPPDATA": str(self.local), var: str(self.synced)}
@@ -741,22 +835,69 @@ class RedirectedDataFolderTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), store.REDIRECTED["onedrive"])
         self.assertEqual(list(target.iterdir()), [])                 # no workspace.db there
 
+    def run_main(self, flag, before=""):
+        """The app's own start in a child process (importing workspace.__main__
+        installs the network guard), with this test's folders."""
+        return subprocess.run([sys.executable, "-c",
+                               f"import json, sys; sys.argv = ['x', {flag!r}]; "
+                               f"import workspace.__main__ as m; {before}sys.exit(m.main())"],
+                              cwd=ROOT, env=self.child_env(), capture_output=True,
+                              text=True, timeout=120)
+
     def test_status_and_health_report_it_without_a_path(self):
         self.junction("Unminute", self.synced / "Unminute")
-
-        def run(flag):
-            return subprocess.run([sys.executable, "-c",
-                                   f"import sys; sys.argv = ['x', {flag!r}]; "
-                                   "import workspace.__main__ as m; sys.exit(m.main())"],
-                                  cwd=ROOT, env=self.child_env(), capture_output=True,
-                                  text=True, timeout=120)
-        status = run("--status")
+        status = self.run_main("--status")
         self.assertEqual(status.returncode, 1, status.stderr)
         self.assert_path_free(status.stdout)
         self.assertIn("redirected into OneDrive", json.loads(status.stdout)["error"])
-        health = run("--health")
+        health = self.run_main("--health")
         self.assertEqual(json.loads(health.stdout.strip().splitlines()[-1])["workspace"],
                          "location", health.stderr)
+
+    def test_status_health_and_gate_report_a_broken_link_without_a_path(self):
+        # #266 (P3): the same message as at start, and no folder in either.
+        from workspace import store
+        for at in ("Unminute", "Unminute\\workspace"):
+            with self.subTest(at=at):
+                self.fresh_local()
+                self.broken(at, "missing", self.tmp / "Elsewhere")
+                status = self.run_main("--status")
+                self.assertEqual((status.returncode, status.stderr), (1, ""))
+                self.assert_path_free(status.stdout)
+                self.assertEqual(json.loads(status.stdout)["error"], store.BROKEN_LINK)
+                health = self.run_main("--health")
+                self.assertEqual((health.returncode, health.stderr), (1, ""))
+                for part in (str(self.tmp), self.tmp.name, "Elsewhere", "Gone"):
+                    self.assertNotIn(part, health.stdout)        # states only
+                result = json.loads(health.stdout.strip().splitlines()[-1])
+                self.assertEqual((result["workspace"], result["healthy"]), ("location", False))
+                # The installer's workspace check stops with the same message.
+                gate = self.run_main("--gate")
+                self.assertEqual((gate.returncode, gate.stderr), (6, ""))
+                result = json.loads(gate.stdout.strip().splitlines()[-1])
+                self.assertEqual((result["kind"], result["message"]),
+                                 ("location", store.BROKEN_LINK))
+
+    @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+    def test_the_app_names_a_broken_link_at_start(self):
+        # #266: the message box, not a silent exit with a traceback. The box
+        # is replaced by a print, and the single-instance check by a stand-in
+        # (an installed copy may be open). Should the workspace ever open,
+        # the start stops before any window (diag.install comes first).
+        from workspace import store
+        stand_ins = ("m._single_instance = lambda name=None: True; "
+                     "m._message = lambda text: print(json.dumps(text)); "
+                     "import workspace.diag as d; "
+                     "d.install = lambda *a, **k: sys.exit(9); ")
+        for at in ("Unminute", "Unminute\\workspace"):
+            with self.subTest(at=at):
+                self.fresh_local()
+                gone = self.broken(at, "missing", self.tmp / "Elsewhere")
+                r = self.run_main("--start", stand_ins)
+                self.assertEqual((r.returncode, r.stderr), (1, ""))
+                self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]),
+                                 store.BROKEN_LINK)
+                self.assertFalse(os.path.lexists(gone))          # nothing made there
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
