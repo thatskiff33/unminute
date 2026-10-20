@@ -2,7 +2,9 @@
 # installation are exercised by tools/build_package.py on a build machine.
 #   python -m unittest discover -s tests -v
 
+import importlib.util
 import json
+import marshal
 import os
 import shutil
 import subprocess
@@ -571,8 +573,10 @@ class ReproducibleBuildTests(unittest.TestCase):
 
     def test_a_release_builds_only_the_tagged_commit_from_a_clean_tree(self):
         def fake(status="", head="f" * 40, tag="f" * 40,
-                 flags="H workspace/asr_engines.py\nH VERSION"):
+                 flags="H workspace/asr_engines.py\nH VERSION", ignored=""):
             answers = {("status", "--porcelain", "--untracked-files=all"): status,
+                       ("status", "--porcelain", "--untracked-files=all", "--ignored", "--",
+                        "tools"): ignored,
                        ("ls-files", "-v"): flags, ("rev-parse", "HEAD"): head,
                        ("rev-parse", "--verify", "--quiet", "refs/tags/v0.5.0^{commit}"): tag}
             # Any other question (a branch named v0.5.0, say) has no answer.
@@ -583,7 +587,9 @@ class ReproducibleBuildTests(unittest.TestCase):
         for bad in (dict(status="?? workspace/stray.py"),
                     dict(status=" M workspace/asr_engines.py"), dict(tag=None), dict(head="0" * 40),
                     dict(flags="h requirements.txt"),                       # assume-unchanged
-                    dict(flags="S packaging/binary-allowlist.json")):       # skip-worktree
+                    dict(flags="S packaging/binary-allowlist.json"),        # skip-worktree
+                    dict(ignored="!! tools/__pycache__/"),                  # ignored, #268
+                    dict(ignored=None)):                                    # git cannot tell
             with mock.patch.object(bp, "git", fake(**bad)), stored, \
                     self.assertRaises(SystemExit):
                 bp.release_guard("0.5.0")
@@ -623,7 +629,112 @@ class ReproducibleBuildTests(unittest.TestCase):
         body = source[source.index("def build("):source.index("def release_version")]
         self.assertLess(body.index("unchanged_since(version, sha)"), body.index("write_zip("))
         self.assertLess(body.index('same_as_commit(sha, path)'), body.index("install_wheels("))
-        self.assertIn('for path in ("tools/build_package.py",', body)
+        self.assertIn('for path in ("tools/build_package.py", "tools/windows_powershell.py",',
+                      body)
+        # The PowerShell helper the build ran, before it checks a signature (#268).
+        self.assertLess(body.index("loaded_as_committed(sha)"), body.index("check_signatures("))
+
+    def test_a_release_refuses_ignored_files_under_tools(self):
+        # #268: a .pyc in an ignored tools/__pycache__ whose recorded source size
+        # and time match runs instead of its source, and plain git status does
+        # not show it. A real repository, so the git question itself is tested.
+        repo = self.root / "tagged"
+        files = {"VERSION": "0.5.0\n", "tools/build_package.py": "x = 1\n",
+                 "tools/windows_powershell.py": "y = 1\n",
+                 ".gitignore": "__pycache__/\n*.pyc\ndist/\n"}
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_bytes(text.encode())
+        empty = self.root / "gitconfig"
+        empty.write_text("")
+        with mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(empty),
+                                          "GIT_CONFIG_NOSYSTEM": "1"}):
+            git(repo, "init", "-q")
+            git(repo, "add", "-A")
+            git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                "commit", "-q", "-m", "fixture")
+            git(repo, "tag", "v0.5.0")
+            sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                                 capture_output=True, text=True).stdout.strip()
+            with mock.patch.object(bp, "ROOT", repo):
+                self.assertEqual(bp.release_guard("0.5.0"), sha)
+                # An ignored file elsewhere, such as in the default --out folder, is not.
+                (repo / "dist").mkdir()
+                (repo / "dist" / "Unminute-0.5.0.zip").write_bytes(b"")
+                self.assertEqual(bp.release_guard("0.5.0"), sha)
+                cache = repo / "tools" / "__pycache__"
+                cache.mkdir()
+                (cache / "windows_powershell.cpython-314.pyc").write_bytes(b"synthetic")
+                with self.assertRaisesRegex(SystemExit, "ignored files under tools/"):
+                    bp.release_guard("0.5.0")
+                with self.assertRaisesRegex(SystemExit, "ignored files under tools/"):
+                    bp.unchanged_since("0.5.0", sha)        # and again before the zip
+                shutil.rmtree(cache)
+                self.assertEqual(bp.release_guard("0.5.0"), sha)
+
+    def test_a_release_checks_the_powershell_helper_it_ran_against_the_commit(self):
+        # #268: the bytes the helper was compiled from, not only the file in the
+        # folder now, must be the tagged commit's (line endings aside).
+        ran = bp.WINDOWS_POWERSHELL_SOURCE
+        self.assertEqual(ran, (bp.TOOLS / "windows_powershell.py").read_bytes())
+        sha = "f" * 40
+        with mock.patch.object(bp, "committed",
+                               return_value=ran.replace(b"\r\n", b"\n")) as stored:
+            bp.loaded_as_committed(sha)
+        stored.assert_called_once_with(sha, "tools/windows_powershell.py")
+        with mock.patch.object(bp, "committed", return_value=ran + b"x = 1\n"), \
+                self.assertRaisesRegex(SystemExit, "tools/windows_powershell.py differs"):
+            bp.loaded_as_committed(sha)
+        # A module from anywhere else is refused, even with the commit's bytes.
+        with mock.patch.object(bp, "committed", return_value=ran), \
+                mock.patch.object(bp.windows_powershell, "__file__",
+                                  str(self.root / "site-packages" / "windows_powershell.py")), \
+                self.assertRaisesRegex(SystemExit, "not tools/windows_powershell.py beside"):
+            bp.loaded_as_committed(sha)
+
+    def test_the_build_runs_the_powershell_helper_beside_it_from_its_source(self):
+        # #268: the module that starts the Windows PowerShell for the signature
+        # checks is the source beside the build script. Not a module of the same
+        # name earlier on sys.path (such as one in the build Python's
+        # site-packages), and not a cached .pyc whose recorded source size and
+        # time match, which Python would otherwise run instead of the source.
+        tools = self.root / "tools"
+        tools.mkdir()
+        for name in ("build_package.py", "windows_powershell.py"):
+            (tools / name).write_bytes((Path(bp.__file__).parent / name).read_bytes())
+        helper = tools / "windows_powershell.py"
+        st = helper.stat()
+        pyc = Path(importlib.util.cache_from_source(str(helper)))
+        pyc.parent.mkdir()
+        code = compile('PLANTED = "pyc"\n', str(helper), "exec")
+        pyc.write_bytes(importlib.util.MAGIC_NUMBER + (0).to_bytes(4, "little")
+                        + (int(st.st_mtime) & 0xFFFFFFFF).to_bytes(4, "little")
+                        + (st.st_size & 0xFFFFFFFF).to_bytes(4, "little")
+                        + marshal.dumps(code))
+        shadow = self.root / "site-packages"
+        shadow.mkdir()
+        (shadow / "windows_powershell.py").write_text('PLANTED = "sys.path"\n')
+        probe = ("import importlib.util, sys\n"
+                 "if sys.argv[2]: sys.path.insert(0, sys.argv[2])\n"
+                 "spec = importlib.util.spec_from_file_location('bp_probe', sys.argv[1])\n"
+                 "m = importlib.util.module_from_spec(spec)\n"
+                 "spec.loader.exec_module(m)\n"
+                 "w = m.windows_powershell\n"
+                 "print(w.__file__)\n"
+                 "print(getattr(w, 'PLANTED', 'none'))\n"
+                 "print(getattr(m, 'WINDOWS_POWERSHELL_SOURCE', None)"
+                 " == open(w.__file__, 'rb').read())\n")
+        for case, first in (("pyc", ""), ("sys.path", str(shadow))):
+            with self.subTest(planted=case):
+                r = subprocess.run([sys.executable, "-I", "-B", "-c", probe,
+                                    str(tools / "build_package.py"), first],
+                                   capture_output=True, text=True, timeout=120)
+                self.assertEqual(r.returncode, 0, r.stderr[-500:])
+                where, planted, same = r.stdout.splitlines()
+                self.assertEqual(planted, "none")
+                self.assertEqual(Path(where), helper.resolve())    # its long name
+                self.assertEqual(same, "True")
+        self.assertTrue(pyc.exists())                   # still there: it was never used
 
     def test_a_release_cannot_rewrite_the_allowlist(self):
         argv = ["build_package.py", "--release", "--update-binary-allowlist"]

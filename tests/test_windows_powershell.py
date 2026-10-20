@@ -84,9 +84,11 @@ class FakeWindows:
         out = "" if kwargs.get("text") else b""
         return subprocess.CompletedProcess(argv, 0, out, out)
 
-    def patches(self):
-        return (mock.patch.object(wps, "system_folder", return_value=str(self.system)),
-                mock.patch.object(wps.subprocess, "run", self.run))
+    def patches(self, module=wps):
+        # tools/build_package.py loads its own copy of the helper by path
+        # (#268), so its sites pass build_package.windows_powershell.
+        return (mock.patch.object(module, "system_folder", return_value=str(self.system)),
+                mock.patch.object(module.subprocess, "run", self.run))
 
 
 class WindowsPowerShellTests(unittest.TestCase):
@@ -151,18 +153,19 @@ class WindowsPowerShellTests(unittest.TestCase):
         # window checks' process tree and the performance check's machine
         # probe: each reaches the full path with the clean environment.
         sites = {
-            "build_package.powershell": lambda: build_package.powershell("Get-Date",
-                                                                         file="x"),
-            "packaged_check.tree": lambda: packaged_check.tree(1),
-            "process_listeners.process_tree": lambda: process_listeners.process_tree(1),
-            "perf_check.WindowsProbe.cim": lambda: perf_check.WindowsProbe().cim(),
+            "build_package.powershell": (lambda: build_package.powershell("Get-Date",
+                                                                          file="x"),
+                                         build_package.windows_powershell),
+            "packaged_check.tree": (lambda: packaged_check.tree(1), wps),
+            "process_listeners.process_tree": (lambda: process_listeners.process_tree(1), wps),
+            "perf_check.WindowsProbe.cim": (lambda: perf_check.WindowsProbe().cim(), wps),
         }
-        for name, call in sites.items():
+        for name, (call, module) in sites.items():
             with self.subTest(site=name):
                 # patches() replaces subprocess.run itself, so a tool that
                 # still called it directly would be recorded too.
                 win = FakeWindows(self.root / name)
-                first, second = win.patches()
+                first, second = win.patches(module)
                 with first, second, mock.patch.dict(os.environ, POISON):
                     call()
                 self.assertEqual(len(win.calls), 1)
