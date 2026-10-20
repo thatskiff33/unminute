@@ -1,0 +1,169 @@
+{
+ "schema": 1,
+ "components": [
+  {
+   "id": "flatbuffers",
+   "name": "FlatBuffers",
+   "version": "25.12.19",
+   "licence": "Apache-2.0 (package metadata)",
+   "wheel": "flatbuffers",
+   "wheel_version": "25.12.19",
+   "covers": [],
+   "source": {
+    "repository": "https://github.com/google/flatbuffers",
+    "ref": "v25.12.19",
+    "commit": "7e163021e59cca4f8e1e35a7c828b5c6b7915953"
+   },
+   "files": [
+    {
+     "path": "flatbuffers-25.12.19/LICENSE",
+     "url": "https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE",
+     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    }
+   ]
+  },
+  {
+   "id": "primepy",
+   "name": "primePy",
+   "version": "1.3",
+   "licence": "MIT (classifier; the metadata licence field says UNKNOWN)",
+   "wheel": "primePy",
+   "wheel_version": "1.3",
+   "covers": [],
+   "source": {
+    "repository": "https://github.com/janaindrajit/primePy",
+    "ref": "no tag: the commit that added LICENSE, before the 1.3 upload (29 May 2018)",
+    "commit": "7a4dcd1c8870f06fb34cba4bbadb2198a3a169e4"
+   },
+   "files": [
+    {
+     "path": "primepy-1.3/LICENSE",
+     "url": "https://raw.githubusercontent.com/janaindrajit/primePy/7a4dcd1c8870f06fb34cba4bbadb2198a3a169e4/LICENSE",
+     "sha256": "1a06a1576544095ade4508462bc6c795c874a499e2abe12d21557e85a3741d9e"
+    }
+   ]
+  },
+  {
+   "id": "proxy-tools",
+   "name": "proxy_tools",
+   "version": "0.1.0",
+   "licence": "MIT (package metadata); the file is headed 'The BSD License' (label to confirm, #176 L6)",
+   "wheel": "proxy_tools",
+   "wheel_version": "0.1.0",
+   "covers": [],
+   "source": {
+    "repository": "https://github.com/jtushman/proxy_tools",
+    "ref": "no tag: the last commit before the 0.1.0 upload",
+    "commit": "f82ae43524fd6d9917b0e9490c7d0394dff8d155"
+   },
+   "files": [
+    {
+     "path": "proxy-tools-0.1.0/LICENSE.txt",
+     "url": "https://raw.githubusercontent.com/jtushman/proxy_tools/f82ae43524fd6d9917b0e9490c7d0394dff8d155/LICENSE.txt",
+     "sha256": "a428fb8a2e762af3eb0a6edbbb88e9b42ccfee80fd9b423958bcacf9b9abbfe4"
+    }
+   ]
+  },
+  {
+   "id": "intel-openmp",
+   "name": "Intel OpenMP runtime",
+   "version": "2026.1.1",
+   "licence": "Intel End User License Agreement for Developer Tools, as shipped in the intel-openmp wheel (redistribution terms: #176 L4)",
+   "wheel": "torch",
+   "wheel_version": "2.14.1",
+   "covers": [
+    "torch/lib/libiomp5md.dll",
+    "torch/lib/libiompstubs5md.dll"
+   ],
+   "source": {
+    "repository": "https://pypi.org/project/intel-openmp/2026.1.1/",
+    "ref": "2026.1.1"
+   },
+   "note": "Both DLLs are byte-identical to Library/bin in the intel-openmp 2026.1.1 wheel (SHA-256 compared 21 Oct 2026). The archive hash is PyPI's published SHA-256.",
+   "files": [
+    {
+     "path": "intel-openmp-2026.1.1/LICENSE.txt",
+     "archive": {
+      "url": "https://files.pythonhosted.org/packages/d2/0c/7303ee63001ee8155b056eb3a3e2e692e257f505d96efabe0cff69f4d85f/intel_openmp-2026.1.1-py2.py3-none-win_amd64.whl",
+      "sha256": "6d2a4e8de14a59ad630069cd5e9d28a5d914ad9a2a43b9fb38aeba31dec69c8a",
+      "member": "intel_openmp-2026.1.1.dist-info/LICENSE.txt"
+     },
+     "sha256": "febfb69a5b058f55892dc7f341108a9ca29d50e9fe85723a57eebbb826436958"
+    },
+    {
+     "path": "intel-openmp-2026.1.1/third-party-programs.txt",
+     "archive": {
+      "url": "https://files.pythonhosted.org/packages/d2/0c/7303ee63001ee8155b056eb3a3e2e692e257f505d96efabe0cff69f4d85f/intel_openmp-2026.1.1-py2.py3-none-win_amd64.whl",
+      "sha256": "6d2a4e8de14a59ad630069cd5e9d28a5d914ad9a2a43b9fb38aeba31dec69c8a",
+      "member": "intel_openmp-2026.1.1.data/data/share/doc/compiler/licensing/openmp/third-party-programs.txt"
+     },
+     "sha256": "f8ce918fe7311ce279e68380a2e233f8a42b1cd3dda8f4c48d6de97a0255c1d7"
+    }
+   ]
+  },
+  {
+   "id": "portaudio",
+   "name": "PortAudio",
+   "version": "19.7.0",
+   "licence": "PortAudio licence (LICENSE.txt)",
+   "wheel": "sounddevice",
+   "wheel_version": "0.5.6",
+   "covers": [
+    "_sounddevice_data/portaudio-binaries/libportaudio64bit.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/PortAudio/portaudio",
+    "ref": "v19.7.0",
+    "commit": "147dd722548358763a8b649b3e4b41dfffbcfbb6"
+   },
+   "note": "sounddevice 0.5.6 bundles spatialaudio/portaudio-binaries at bf2681cd2c6c88c2ad83341049b2420d805d5353, whose .github/workflows/build-libs.yml builds PortAudio tag v19.7.0.",
+   "files": [
+    {
+     "path": "portaudio-19.7.0/LICENSE.txt",
+     "url": "https://raw.githubusercontent.com/PortAudio/portaudio/147dd722548358763a8b649b3e4b41dfffbcfbb6/LICENSE.txt",
+     "sha256": "ec52a1952d701f94e5135719a47376da4ee0b4a0201f1cafb49f61db6480ac3d"
+    }
+   ]
+  },
+  {
+   "id": "webview2-sdk",
+   "name": "Microsoft Edge WebView2 SDK",
+   "version": "1.0.3856.49",
+   "licence": "Microsoft's WebView2 SDK licence and notices (LICENSE.txt and NOTICE.txt in the NuGet package)",
+   "wheel": "pywebview",
+   "wheel_version": "6.2.1",
+   "covers": [
+    "webview/lib/Microsoft.Web.WebView2.Core.dll",
+    "webview/lib/Microsoft.Web.WebView2.WinForms.dll",
+    "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
+    "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
+    "webview/lib/runtimes/win-x86/native/WebView2Loader.dll"
+   ],
+   "source": {
+    "repository": "https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3856.49",
+    "ref": "1.0.3856.49"
+   },
+   "note": "All five DLLs are byte-identical to the NuGet package Microsoft.Web.WebView2 1.0.3856.49 (SHA-256 compared 21 Oct 2026). NuGet publishes a SHA-512 package hash; the SHA-256 here was computed from the package on 19 and 21 Oct 2026 and matched both times.",
+   "files": [
+    {
+     "path": "webview2-sdk-1.0.3856.49/LICENSE.txt",
+     "archive": {
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3856.49/microsoft.web.webview2.1.0.3856.49.nupkg",
+      "sha256": "bc0f76eb911b569838dc4aa8f8d325269b966bedb592863d26211aef3a099f1a",
+      "member": "LICENSE.txt"
+     },
+     "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55"
+    },
+    {
+     "path": "webview2-sdk-1.0.3856.49/NOTICE.txt",
+     "archive": {
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3856.49/microsoft.web.webview2.1.0.3856.49.nupkg",
+      "sha256": "bc0f76eb911b569838dc4aa8f8d325269b966bedb592863d26211aef3a099f1a",
+      "member": "NOTICE.txt"
+     },
+     "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90"
+    }
+   ]
+  }
+ ]
+}

@@ -9,8 +9,8 @@
 # hidden from git status, an ignored file under tools/ (such as a cached .pyc),
 # and a HEAD that is not the commit of tag vX.Y.Z. It
 # resolves that commit once and reads everything it packages or obeys (the app
-# files, the lock, VERSION and the binary allowlist) from it as stored, with no
-# git filters, attributes or line-ending settings applied; .cmd and .ps1 get
+# files, the lock, VERSION, the binary allowlist and the licence texts) from it
+# as stored, with no git filters, attributes or line-ending settings applied; .cmd and .ps1 get
 # CRLF, as .gitattributes says (#111 B2). A development build packages the
 # working folder's tracked and untracked files (never ignored ones) and says so
 # in version.json.
@@ -30,6 +30,8 @@
 #     version.json, package-manifest.json (SHA-256 of every file)
 #     sbom.cdx.json           CycloneDX software bill of materials (also beside the zip)
 #     THIRD_PARTY_NOTICES.txt every bundled component, its licence and licence texts
+#     licences/               licence texts collected from upstream for components
+#                             whose wheels ship none (#176; packaging/licences/)
 #     binary-inventory.json   every executable file with its SHA-256 and signer
 #     model-manifest.json     the pinned model files (models are not in the package)
 #
@@ -134,6 +136,23 @@ SIGNATURE_OK = ("Valid", "NotSigned")
 ALLOWLIST = PACKAGING / "binary-allowlist.json"
 APP_ALLOWLIST = PACKAGING / "app-allowlist.json"     # the app folder's source files (#136)
 BUDGETS = "tests/budgets.json"
+# Licence texts collected from each project's own source release (#176), for
+# the wheels that ship none and the libraries bundled inside wheels. They are
+# committed under packaging/licences/ (stored byte for byte: .gitattributes
+# "-text"), each pinned by SHA-256 in its manifest, and copied to the package's
+# top-level licences/ folder. tools/collect_licences.py (a developer tool, never
+# run by the build or the app) fetches them; the build only checks them.
+LICENCES = PACKAGING / "licences"
+LICENCES_DIR = "packaging/licences"
+LICENCE_MANIFEST = "manifest.json"
+# Where the collector may fetch from; a manifest URL on any other host is refused.
+LICENCE_HOSTS = ("raw.githubusercontent.com", "gitlab.com", "code.videolan.org",
+                 "bitbucket.org", "api.nuget.org", "files.pythonhosted.org", "ftp.gnu.org",
+                 "deb.debian.org", "static.crates.io", "ffmpeg.org")
+# #176: False until the re-lock PR (#180) has collected a text for every wheel
+# that ships none and every bundled DLL; then a gap fails the build. Hashes,
+# versions, unlisted files and stale patterns fail it already.
+LICENCE_COVERAGE_REQUIRED = False
 # Left out after installing (#111 B2). An import trace of the window process,
 # transcription and speaker identification on CPython 3.14 (17 October 2026)
 # loaded none of these. Each must still be there to remove, so a dependency
@@ -911,17 +930,298 @@ def native_libraries(site, name):
     return [f for f in wheel_files(site, name) if f.lower().endswith(".dll")]
 
 
-def notices(installed, site, folder, version, signed):
+# -- Licence texts collected from upstream (#176) ---------------------------------------
+# packaging/licences/manifest.json: {"schema": 1, "components": [...]}, one entry per
+# component and version. "covers" is empty for texts of the wheel's own code, or
+# names the DLLs in that wheel the texts are for (paths under runtime/lib).
+# docs/PACKAGING.md, "Licence texts", describes every field.
+
+LICENCE_KEYS = {"id", "name", "version", "licence", "wheel", "wheel_version", "covers",
+                "source", "files", "note", "in_wheel"}
+LICENCE_OPTIONAL = {"note", "in_wheel", "source"}
+_LICENCE_ID = re.compile(r"[a-z0-9][a-z0-9.+_-]*")
+_LICENCE_VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+_-]*")
+_LICENCE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,59}")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_HEX40 = re.compile(r"[0-9a-f]{40}")
+# A covered DLL: literal folders, and a file name with at most one "*", after at
+# least three literal characters, so no pattern can pass a whole folder unseen.
+_LICENCE_COVERS = re.compile(
+    r"(?:[A-Za-z0-9_+-][A-Za-z0-9._+-]*/)*[A-Za-z0-9_+-][A-Za-z0-9._+-]{2,}"
+    r"(?:\*[A-Za-z0-9._+-]*)?\.dll")
+MAX_LICENCE_PATH = 100        # under licences/ in the package (MAX_RELATIVE_PATH holds)
+
+
+def licence_pattern(pattern):
+    """The regular expression for a "covers" entry, or None if it is not allowed."""
+    if not isinstance(pattern, str) or not _LICENCE_COVERS.fullmatch(pattern):
+        return None
+    if any(part in (".", "..") or part.startswith("..") for part in pattern.split("/")):
+        return None
+    return re.compile(re.escape(pattern).replace(r"\*", "[^/]*"))
+
+
+def licence_url_problem(url, commit):
+    """Why a source URL is not allowed, or None: https on a collector host, no
+    credentials, port, query or fragment, and a GitHub raw URL at the commit."""
+    if not isinstance(url, str):
+        return "is not a string"
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in LICENCE_HOSTS:
+        return f"is not https on a collector host ({url})"
+    if parts.username or parts.password or parts.port or parts.query or parts.fragment:
+        return f"has credentials, a port, a query or a fragment ({url})"
+    if parts.hostname == "raw.githubusercontent.com":
+        segments = parts.path.split("/")
+        if len(segments) < 5 or segments[3] != commit:
+            return f"must name the source commit, not a tag or branch ({url})"
+    return None
+
+
+def licence_component_problems(c, ids, paths):
+    """Every problem with one manifest entry. ids and paths collect what earlier
+    entries used (casefolded paths: Windows would merge two that differ by case)."""
+    if not isinstance(c, dict):
+        return ["an entry is not an object"]
+    label = c.get("id") if isinstance(c.get("id"), str) else "an entry"
+    problems = [f"{label}: unknown field {k}" for k in sorted(set(c) - LICENCE_KEYS)]
+    problems += [f"{label}: missing field {k}"
+                 for k in sorted(LICENCE_KEYS - LICENCE_OPTIONAL - set(c))]
+    if problems:
+        return problems
+    for key in ("name", "licence", "wheel"):
+        if not isinstance(c[key], str) or not c[key].strip():
+            problems.append(f"{label}: {key} must be text")
+    if "note" in c and (not isinstance(c["note"], str) or not c["note"].strip()):
+        problems.append(f"{label}: note must be text")
+    # in_wheel: the wheel's own texts already cover these DLLs (its own code, or
+    # a library its texts name); the entry records that answer, with no files.
+    in_wheel = c.get("in_wheel", False)
+    if in_wheel not in (True, False):
+        problems.append(f"{label}: in_wheel must be true or false")
+    elif in_wheel and (c["files"] != [] or not c["covers"]):
+        problems.append(f"{label}: an in_wheel entry names DLLs in covers and has no files")
+    elif not in_wheel and "source" not in c:
+        problems.append(f"{label}: missing field source")
+    if not isinstance(c["id"], str) or not _LICENCE_ID.fullmatch(c["id"]):
+        problems.append(f"{label}: id must be lower case letters, digits and . + _ -")
+    elif c["id"] in ids:
+        problems.append(f"{label}: id used twice")
+    ids.add(c["id"])
+    for key in ("version", "wheel_version"):
+        if not isinstance(c[key], str) or not _LICENCE_VERSION.fullmatch(c[key]):
+            problems.append(f"{label}: {key} is not a version")
+    if not isinstance(c["covers"], list):
+        problems.append(f"{label}: covers must be a list")
+    else:
+        problems += [f"{label}: covers entry {p!r} is not an anchored .dll path"
+                     for p in c["covers"] if licence_pattern(p) is None]
+        if len(set(c["covers"])) != len(c["covers"]):
+            problems.append(f"{label}: a covers entry is listed twice")
+    source = c.get("source", {"repository": "https://pypi.org/", "ref": c["wheel_version"]})
+    commit = None
+    if (not isinstance(source, dict) or not {"repository", "ref"} <= set(source)
+            or set(source) - {"repository", "ref", "commit"}):
+        problems.append(f"{label}: source must hold repository, ref and optionally commit")
+    else:
+        commit = source.get("commit")
+        if commit is not None and not (isinstance(commit, str) and _HEX40.fullmatch(commit)):
+            problems.append(f"{label}: source commit must be a full 40-character SHA")
+        if (not isinstance(source["repository"], str)
+                or not source["repository"].startswith("https://")):
+            problems.append(f"{label}: source repository must be an https URL")
+        if not isinstance(source["ref"], str) or not source["ref"].strip():
+            problems.append(f"{label}: source ref must be text")
+    if not isinstance(c["files"], list) or (not c["files"] and not in_wheel):
+        return problems + [f"{label}: files must list at least one text"]
+    folder = f"{c['id']}-{c['version']}"
+    for f in c["files"]:
+        if not isinstance(f, dict) or not isinstance(f.get("path"), str):
+            problems.append(f"{label}: a file entry has no path")
+            continue
+        path = f["path"]
+        allowed = ({"path", "sha256", "url"} if "url" in f
+                   else {"path", "sha256", "archive"})
+        if set(f) != allowed:
+            problems.append(f"{label}: {path} must have path, sha256 and url or archive")
+            continue
+        folder_part, _, name = path.partition("/")
+        if (folder_part != folder or not _LICENCE_FILE.fullmatch(name)
+                or len(path) > MAX_LICENCE_PATH):
+            problems.append(f"{label}: {path} must be {folder}/<file name>")
+        elif path.casefold() in paths:
+            problems.append(f"{label}: {path} is listed twice")
+        paths.add(path.casefold())
+        if not isinstance(f["sha256"], str) or not _HEX64.fullmatch(f["sha256"]):
+            problems.append(f"{label}: {path} needs its SHA-256 (64 lower-case hex digits)")
+        if "url" in f:
+            why = licence_url_problem(f["url"], commit)
+            if why:
+                problems.append(f"{label}: {path}: the URL {why}")
+            continue
+        archive = f["archive"]
+        if (not isinstance(archive, dict) or set(archive) != {"url", "sha256", "member"}):
+            problems.append(f"{label}: {path}: archive must hold url, sha256 and member")
+            continue
+        why = licence_url_problem(archive["url"], commit)
+        if why:
+            problems.append(f"{label}: {path}: the archive URL {why}")
+        if not isinstance(archive["sha256"], str) or not _HEX64.fullmatch(archive["sha256"]):
+            problems.append(f"{label}: {path}: the archive needs its published SHA-256")
+        member = archive["member"]
+        if (not isinstance(member, str) or not member or member.startswith("/")
+                or "\\" in member or ".." in member.split("/")):
+            problems.append(f"{label}: {path}: the archive member must be a plain relative path")
+    return problems
+
+
+def licence_manifest(text):
+    """The components in packaging/licences/manifest.json. Any problem stops the build."""
+    where = f"{LICENCES_DIR}/{LICENCE_MANIFEST}"
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        sys.exit(f"{where} is not JSON ({exc}).")
+    if (not isinstance(data, dict) or set(data) != {"schema", "components"}
+            or data["schema"] != 1 or not isinstance(data["components"], list)):
+        sys.exit(f'{where} must be {{"schema": 1, "components": [...]}}.')
+    ids, paths, problems = set(), set(), []
+    for c in data["components"]:
+        problems += licence_component_problems(c, ids, paths)
+    if problems:
+        sys.exit(f"{where} has problems:\n" + "\n".join(problems))
+    return data["components"]
+
+
+def licence_file_problems(components, files):
+    """files: {path under packaging/licences: bytes}, the manifest left out. Every
+    text must be listed, present and have its SHA-256: a text cannot change, go
+    missing or be added without the manifest saying so."""
+    listed = {f["path"]: f["sha256"] for c in components for f in c["files"]}
+    return ([f"not in the manifest: {p}" for p in sorted(set(files) - set(listed))]
+            + [f"missing: {p}" for p in sorted(set(listed) - set(files))]
+            + [f"SHA-256 differs from the manifest: {p}"
+               for p in sorted(set(listed) & set(files))
+               if hashlib.sha256(files[p]).hexdigest() != listed[p]])
+
+
+def licence_version_problems(components, installed):
+    """installed: {canonical wheel name: version} in the package. Texts are for
+    one version: a re-lock that moves the wheel must check them again (#180)."""
+    problems = []
+    for c in components:
+        have = installed.get(canonical(c["wheel"]))
+        if have is None:
+            problems.append(f"{c['id']}: {c['wheel']} is not in the package; remove its entry.")
+        elif have != c["wheel_version"]:
+            problems.append(f"{c['id']}: the texts were checked for {c['wheel']} "
+                            f"{c['wheel_version']}, and the package has {have}. Check what "
+                            "it bundles again, then collect with tools/collect_licences.py.")
+    return problems
+
+
+def licence_coverage(components, libraries):
+    """libraries: {canonical wheel name: [DLL paths under runtime/lib]}. Returns
+    ({DLL path: [components covering it]}, stale): a pattern that matches no
+    DLL in its wheel is stale, and stops the build."""
+    covered, stale = {}, []
+    for c in components:
+        dlls = libraries.get(canonical(c["wheel"]), [])
+        for pattern in c["covers"]:
+            hits = [d for d in dlls if licence_pattern(pattern).fullmatch(d)]
+            if not hits:
+                stale.append(f"{c['id']}: {pattern} matches no DLL in {c['wheel']}")
+            for d in hits:
+                covered.setdefault(d, []).append(c)
+    return covered, stale
+
+
+def licence_texts(sha=None):
+    """(components, {path: bytes}) from packaging/licences: as stored in commit
+    `sha` for a release, else from the working folder. Stops the build on any
+    difference between the texts and the manifest."""
+    if sha:
+        files = {name[len(LICENCES_DIR) + 1:]: data
+                 for name, data in committed_tree(sha, [LICENCES_DIR]).items()}
+    else:
+        files = {p.relative_to(LICENCES).as_posix(): p.read_bytes()
+                 for p in sorted(LICENCES.rglob("*")) if p.is_file()}
+    manifest_bytes = files.pop(LICENCE_MANIFEST, None)
+    if manifest_bytes is None:
+        sys.exit(f"{LICENCES_DIR}/{LICENCE_MANIFEST} is missing.")
+    components = licence_manifest(manifest_bytes.decode("utf-8"))
+    problems = licence_file_problems(components, files)
+    if problems:
+        sys.exit(f"The licence texts in {LICENCES_DIR} differ from its manifest:\n"
+                 + "\n".join(problems))
+    return components, files
+
+
+def copy_licences(folder, files):
+    """The collected texts, byte for byte, in the package's licences/ folder."""
+    for path, data in sorted(files.items()):
+        target = folder / "licences" / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+
+def notices(installed, site, folder, version, signed, licences=(),
+            required=LICENCE_COVERAGE_REQUIRED):
     """THIRD_PARTY_NOTICES.txt: every bundled component, its licence, where
     its licence texts are in the package, and the native libraries it bundles
-    with their signers. Every path named must be in the package."""
+    with their signers and, where collected (#176), their licence texts. Every
+    path named must be in the package. `licences` are the manifest's components;
+    with `required`, a wheel or DLL without a text stops the build."""
+    rows = packages(installed)
+    libraries = {canonical(name): native_libraries(site, name) for name, *_ in rows}
+    covered, stale = licence_coverage(licences, libraries)
+    if stale:
+        sys.exit(f"A licence-text pattern in {LICENCES_DIR}/{LICENCE_MANIFEST} is stale:\n"
+                 + "\n".join(stale))
+    own = {}
+    for c in licences:
+        if not c["covers"]:
+            own.setdefault(canonical(c["wheel"]), []).append(c)
+    gaps, body = [], [f"Python {PYTHON_VERSION} (CPython embeddable package)",
+                      "  Licence: PSF-2.0", "  Texts: runtime/LICENSE.txt", ""]
+    named = ["runtime/LICENSE.txt"]
+    for name, ver, (_, licence), _, _ in rows:
+        texts = licence_files(site, name)
+        collected = [f"licences/{f['path']}" for c in own.get(canonical(name), [])
+                     for f in c["files"]]
+        named += texts + collected
+        if not texts and not collected:
+            gaps.append(f"{name} {ver}: the wheel ships no licence text")
+        body += [f"{name} {ver}",
+                 f"  Licence: {licence or 'not stated in the metadata (see the texts)'}",
+                 "  Texts: " + (", ".join(texts + collected) or "none shipped in the wheel")]
+        libs = libraries[canonical(name)]
+        if libs:
+            body.append("  Native libraries:")
+        for f in libs:
+            body.append(f"    runtime/{SITE}/{f} ({signer_name(signed, f'runtime/{SITE}/{f}')})")
+            if not covered.get(f):
+                gaps.append(f"runtime/{SITE}/{f}: no licence text recorded")
+            for c in covered.get(f, []):
+                files = [f"licences/{x['path']}" for x in c["files"]]
+                named += files
+                body.append(f"      {c['name']} {c['version']} ({c['licence']}): "
+                            + (", ".join(files) or f"the {name} texts above"))
+        body.append("")
+    if gaps and required:
+        sys.exit(f"Licence texts are missing ({LICENCES_DIR}, #176):\n" + "\n".join(gaps))
+    missing = [p for p in named if not (folder / p).is_file()]
+    if missing:
+        sys.exit("The notices name files that are not in the package:\n" + "\n".join(missing))
+    native = ("those are listed with their signers, and not all of their licence texts are",
+              "included yet (to follow, #176). Models are not included: see") if gaps else (
+              "those are listed with their signers and their licence texts, collected in",
+              "licences/ from each project's own release. Models are not included: see")
     lines = [f"Unminute {version}: third-party software", "",
              "Unminute includes the software below, each under its own licence. The",
              "licence texts are in the files named for each component (paths are inside",
              "the package). Some components bundle native libraries from other projects;",
-             "those are listed with their signers, and not all of their licence texts are",
-             "included yet (to follow, #111). Models are not included: see",
-             "model-manifest.json.", "",
+             *native, "model-manifest.json.", "",
              # #248: the optional graphics card components are user downloads.
              "The optional graphics card components are not included either. On a",
              "computer with an NVIDIA card, the user may download them in Settings >",
@@ -929,26 +1229,8 @@ def notices(installed, site, folder, version, signed):
              "PyTorch CUDA 13 build (BSD-3-Clause, with NVIDIA's CUDA runtime and cuDNN",
              "under NVIDIA's licences) for speaker identification, and NVIDIA's cuBLAS",
              "for CUDA 12 (NVIDIA CUDA Toolkit licence) for Whisper. The README lists",
-             "where each comes from.", "",
-             f"Python {PYTHON_VERSION} (CPython embeddable package)",
-             "  Licence: PSF-2.0", "  Texts: runtime/LICENSE.txt", ""]
-    named = ["runtime/LICENSE.txt"]
-    for name, ver, (_, licence), _, _ in packages(installed):
-        texts = licence_files(site, name)
-        named += texts
-        lines += [f"{name} {ver}",
-                  f"  Licence: {licence or 'not stated in the metadata (see the texts)'}",
-                  "  Texts: " + (", ".join(texts) if texts else "none shipped in the wheel")]
-        libs = native_libraries(site, name)
-        if libs:
-            lines.append("  Native libraries:")
-            lines += [f"    runtime/{SITE}/{f} ({signer_name(signed, f'runtime/{SITE}/{f}')})"
-                      for f in libs]
-        lines.append("")
-    missing = [p for p in named if not (folder / p).is_file()]
-    if missing:
-        sys.exit("The notices name files that are not in the package:\n" + "\n".join(missing))
-    return "\n".join(lines)
+             "where each comes from.", ""]
+    return "\n".join(lines + body)
 
 
 def signer_name(signed, path):
@@ -1170,6 +1452,14 @@ def build(version, out, cache, release=False, update_allowlist=False):
         installed = [i for i in installed
                      if canonical(i["metadata"]["name"]) not in map(canonical, removed)]
         sync_records(site)
+        # #176: the collected licence texts, checked against their manifest and
+        # against the versions installed (from the commit for a release).
+        licences, licence_data = licence_texts(sha)
+        problems = licence_version_problems(licences, {
+            canonical(i["metadata"]["name"]): i["metadata"]["version"] for i in installed})
+        if problems:
+            sys.exit("Licence texts do not match the lock (#176):\n" + "\n".join(problems))
+        copy_licences(folder, licence_data)
         if release:
             export_app(folder / "app", sha)
         else:
@@ -1210,7 +1500,7 @@ def build(version, out, cache, release=False, update_allowlist=False):
         (folder / "binary-inventory.json").write_text(
             json.dumps(binary_inventory(folder, signed), indent=1), encoding="utf-8")
         (folder / "THIRD_PARTY_NOTICES.txt").write_text(
-            notices(installed, site, folder, version, signed), encoding="utf-8")
+            notices(installed, site, folder, version, signed, licences), encoding="utf-8")
         bom = sbom(installed, info["name"], version, commit, epoch, sha256(embed), release,
                    build_tools(), removed)
         (folder / "sbom.cdx.json").write_text(json.dumps(bom, indent=1), encoding="utf-8")

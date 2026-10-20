@@ -178,7 +178,7 @@ changes; or GitHub owner settings.
 | Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
 | Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
 | Store, jobs, workers, speakers, cleanup, holds, the audit log, updates | `docs/WORKSPACE_DESIGN.md` |
-| Installer, package, install identity, policy | `docs/PACKAGING.md`; `docs/IT_DEPLOYMENT.md` (IT's view, with its policy list tested against the ADMX) |
+| Installer, package, install identity, policy, licence texts (`packaging/licences/`, `tools/collect_licences.py`) | `docs/PACKAGING.md`; `docs/IT_DEPLOYMENT.md` (IT's view, with its policy list tested against the ADMX) |
 | Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
 | UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
