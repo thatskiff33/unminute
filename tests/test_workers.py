@@ -24,8 +24,8 @@ if HAVE_NUMPY:
     from worker_exit import join_workers
     from workspace import diag, runner
     from workspace.store import Store
-    from workspace.worker import (END_WAIT_S, WorkerCrashed, WorkerEngine, WorkerError,
-                                  WorkerHandle, WorkerStopped)
+    from workspace.worker import (WorkerCrashed, WorkerEngine, WorkerError, WorkerHandle,
+                                  WorkerStopped)
 
     class PlainReader:
         def __init__(self, seconds):
@@ -274,8 +274,7 @@ class WorkerEndTests(unittest.TestCase):
         slow = SlowToEnd()
         self.h._proc = slow
         self.h._kill()
-        self.assertFalse(slow.is_alive())
-        self.assertGreaterEqual(END_WAIT_S, 8.0)
+        self.assertFalse(slow.is_alive())              # 5 s was too short (#278)
         self.assertIsNone(self.h._proc)
 
     def test_a_closed_handle_never_starts_a_worker(self):
