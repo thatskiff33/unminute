@@ -91,9 +91,9 @@ real time, and remove it when the cause is fixed.
   it; the keyboard script's quick Enter comes 2.5 s after the tick but just after the action
   took the focus, so only the focus hold can ignore it; and an Invoke without the focus
   (`BM_CLICK` while Cancel keeps it, the path of an assistive tool's Invoke, above) must be
-  ignored about 0.3 s after the action is enabled and answer about 1.8 s after
-  (`act_clicked`), so an Invoke that skipped the wait fails. A script that several rules could pass (for example an
-  Enter posted while Cancel has the focus, which WinForms gives to Cancel whatever
+  ignored about 0.3 s after the action is enabled and answer about 1.8 s after (`act_clicked`),
+  so an Invoke that skipped the wait fails. A script that several rules could pass (for example
+  an Enter posted while Cancel has the focus, which WinForms gives to Cancel whatever
   `AcceptButton` is) proves none of them. Not scripted by this check: Space, or an
   Invoke, on the focused action; the wait restarting when the window returns to the front;
   buttons having no keyboard shortcut; high contrast; and restoring a minimised app first.
