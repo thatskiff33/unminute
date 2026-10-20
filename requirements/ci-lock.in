@@ -1,3 +1,3 @@
 # uv, for tools/lock.py. Adopt a new version only after it has been public
 # for at least 7 days.
-uv==0.13.0
+uv==0.13.4
