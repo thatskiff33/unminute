@@ -15,19 +15,13 @@ TEST_PREFIX = "test:"      # "test:module:function" loads a test engine factory
 # Where a user downloads or repairs a model once Setup is done (#244). A worker
 # only loads models after Setup, so its messages point here, never to Setup.
 DOWNLOADS = "Settings > Manage downloads"
-# The speech models Manage downloads has a card for (setup.SPEECH; a test keeps
-# the two equal). Kept here so a worker need not import setup. A model it does
-# not offer is never sent there.
-OFFERED_SPEECH = frozenset({asr_engines.PARAKEET_V2, asr_engines.PARAKEET_V3,
-                            asr_engines.WHISPER_TURBO})
 OTHER_SPEECH = "choose another speech model in Settings"
 
 
 def fix_speech(name, repair_only=False):
-    """How a user fixes a speech model that cannot load: in Manage downloads
-    when it offers the model, otherwise another model or IT (#244)."""
-    if name not in OFFERED_SPEECH:
-        return "Choose another speech model in Settings, or ask your IT team to install it."
+    """How a user fixes a speech model that cannot load: in Manage downloads,
+    which offers every speech model (#246; a test keeps it so), or another
+    model (#244)."""
     if repair_only:
         return f"Repair {asr_engines.label(name)} in {DOWNLOADS}, or {OTHER_SPEECH}."
     return f"Download or repair it in {DOWNLOADS}, or {OTHER_SPEECH}."
@@ -50,8 +44,9 @@ def advice_without_downloads(message):
     """A worker's model error with the Manage downloads advice replaced by the
     IT wording, for when managed policy turns downloads off (#257). Only the
     fixed advice written here, in asr_engines and in speaker_load is replaced;
-    the rest of the message is kept as it was."""
-    for name in sorted(OFFERED_SPEECH):
+    the rest of the message is kept as it was. Every speech model gets the
+    same wording (#246: Manage downloads offers them all)."""
+    for name in (*asr_engines.PARAKEET_MODELS, *asr_engines.WHISPER_MODELS):
         for repair_only in (False, True):
             message = message.replace(fix_speech(name, repair_only), MANAGED_SPEECH_FIX)
     message = message.replace(asr_engines.PARAKEET_FIX, MANAGED_SPEECH_FIX)

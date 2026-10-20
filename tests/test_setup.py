@@ -71,6 +71,59 @@ class SetupTests(unittest.TestCase):
         self.assertFalse(s["speech_ready"])
         self.assertFalse(s["onboarded"])
 
+    def test_whisper_large_v3_is_offered_like_turbo(self):
+        # #246 (owner's decision, 20 Oct 2026): Setup's other options and
+        # Manage downloads offer Whisper large-v3, sized from its pinned files.
+        # Turbo stays the suggested Whisper model and Parakeet v2 the
+        # recommended one. It downloads, checks, repairs and removes as turbo does.
+        spec = asr_engines.WHISPER_MODELS[asr_engines.WHISPER_LARGE]
+        cards = self.ws.setup_state()["cards"]
+        speech = [c["name"] for c in cards if c["role"] == "speech"]
+        large = next(c for c in cards if c["name"] == asr_engines.WHISPER_LARGE)
+        self.assertEqual(large["size_gb"], round(spec.download_bytes / 1e9, 2))
+        self.assertEqual(large["size_gb"], 3.09)
+        self.assertEqual((large["role"], large["label"], large["state"], large["licence"],
+                          large["revision"], large["needs_token"], large["recommended"]),
+                         ("speech", "Whisper large-v3", "missing", "MIT", "edaa852", False,
+                          False))
+        # Round 1 review: the card says what docs/ENGINE_EVALUATION.md found
+        # (no more accurate than turbo), never that it was ahead of turbo;
+        # "most accurate" is OpenAI's claim, attributed. Round 3: those tests
+        # ran on Intel Arc graphics, so the card says so and drops the memory
+        # figure; speed on a processor is reasoned from size, not measured.
+        self.assertEqual(large["about"],
+                         "OpenAI's most accurate Whisper model. In our tests on Intel Arc "
+                         "graphics it was no more accurate than turbo. It is the largest "
+                         "model, so expect it to be the slowest on a processor.")
+        self.assertNotIn("ahead of turbo", large["about"])
+        self.assertLess(speech.index(asr_engines.WHISPER_TURBO),
+                        speech.index(asr_engines.WHISPER_LARGE))
+        self.assertEqual([c["name"] for c in cards if c["role"] == "speech" and c["recommended"]],
+                         [asr_engines.RECOMMENDED_PARAKEET])
+        for name in (asr_engines.WHISPER_TURBO, asr_engines.WHISPER_LARGE):
+            with self.subTest(name=name):
+                self.ws.download_model(name)                       # Download (the fake)
+                self.assertEqual(wait_for(self.ws.downloads, name)["state"], "ready")
+                self.ws.verify_model(name)                         # Check every file
+                st = wait_for(self.ws.downloads, name)
+                self.assertEqual(st["state"], "failed")            # nothing really installed
+                self.assertIn("Repair", st["message"])
+                # A damaged copy (synthetic): the card says so, and offers Remove.
+                folder = asr_engines.model_dir(asr_engines.WHISPER_MODELS[name],
+                                               self.ws.cache_dir)
+                folder.mkdir(parents=True)
+                (folder / "model.bin").write_bytes(b"not a model")
+                self.ws._forget_display()
+                card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
+                self.assertEqual((card["state"], card["removable"]), ("invalid", True))
+                self.ws.download_model(name)                       # Repair: download again
+                self.assertEqual(wait_for(self.ws.downloads, name)["state"], "ready")
+                self.ws.remove_model(name)                         # Remove...
+                self.assertFalse(folder.exists())
+                self.ws._forget_display()
+                card = next(c for c in self.ws.setup_state()["cards"] if c["name"] == name)
+                self.assertEqual((card["state"], card["removable"]), ("missing", False))
+
     def test_settings_mark_speech_models_as_the_downloads_page_does(self):
         # #244: each choice carries the state the Downloads page shows, and a
         # model that is not ready carries the note shown beside the picker.
@@ -101,10 +154,13 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(choices[asr_engines.WHISPER_TURBO]["note"],
                              "Whisper large-v3 turbo is not downloaded. Download it in Settings > "
                              "Manage downloads, or choose another speech model.")
-            # A model the Downloads page does not offer is never sent there.
+            # #246: Whisper large-v3 is offered too, so its note names Manage
+            # downloads like any other model, never IT.
             large = choices[asr_engines.WHISPER_LARGE]
-            self.assertFalse(large["offered"])
-            self.assertIn("Manage downloads does not offer it", large["note"])
+            self.assertTrue(large["offered"])
+            self.assertEqual(large["note"],
+                             "Whisper large-v3 is not downloaded. Download it in Settings > "
+                             "Manage downloads, or choose another speech model.")
 
             # Settings is polled while open: the files are checked at most once
             # a minute, and again at once after a download or check ends.
@@ -127,7 +183,7 @@ class SetupTests(unittest.TestCase):
         self.ws.policy = policy.PolicySource(reader=lambda: (values, ()))
         self.ws._forget_display()
         states = {asr_engines.PARAKEET_V2: "ready", asr_engines.PARAKEET_V3: "missing",
-                  asr_engines.WHISPER_TURBO: "invalid"}
+                  asr_engines.WHISPER_TURBO: "invalid", asr_engines.WHISPER_LARGE: "missing"}
         with mock.patch.object(setup, "status",
                                side_effect=lambda n, c: (states.get(n, "missing"), "x", "")):
             choices = {c["name"]: c for c in self.ws.get_settings()["choices"]}
@@ -139,6 +195,11 @@ class SetupTests(unittest.TestCase):
                              "team to install it.")
             self.assertTrue(choices[asr_engines.WHISPER_TURBO]["note"].startswith(
                 "Whisper large-v3 turbo is damaged, and downloads are turned off"))
+            # #246: large-v3 is offered now, but policy still wins (K3).
+            self.assertEqual(choices[asr_engines.WHISPER_LARGE]["note"],
+                             "Whisper large-v3 is not downloaded, and downloads are turned off "
+                             "by your organisation. Choose another speech model, or ask your "
+                             "IT team to install it.")
             for c in choices.values():
                 self.assertNotIn("Manage downloads", c["note"] or "")
             # Policy is re-read on each poll: allowed again, the page offers it.

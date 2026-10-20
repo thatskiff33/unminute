@@ -1266,7 +1266,7 @@ function transcribeAgain(mid, meetingModel, failed) {
 }
 
 // The chosen speech model is not downloaded or is damaged: say so, with the
-// way to fix it (Manage downloads, when it offers the model) or to choose another.
+// way to fix it (Manage downloads, unless policy turns downloads off) or to choose another.
 function modelNotReady(chosen, same) {
   const dlg = $("model-dlg");
   $("md-title").textContent = same ? `${chosen.label} is still not ready` : `${chosen.label} is not ready`;
