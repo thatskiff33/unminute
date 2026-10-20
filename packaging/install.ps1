@@ -28,7 +28,9 @@
   Exit codes: 0 installed, 1 failed, 2 prerequisites missing,
   3 the app is running, 4 the package failed verification,
   5 the update waits for the workspace (see the message), 6 this version cannot
-  open the existing workspace (it was created by a newer version).
+  open the existing workspace (it was created by a newer version) or its
+  location is refused (missing, synced, on a network drive, or a data folder
+  link that cannot be reached; #219, #266).
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1

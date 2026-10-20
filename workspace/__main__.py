@@ -137,7 +137,7 @@ def _health(out, root):
     try:
         root = Path(root or default_root())
     except StoreError:
-        out["workspace"] = "location"           # missing, synced or redirected data folder (#219)
+        out["workspace"] = "location"           # missing, synced, redirected or broken (#219, #266)
         return
     logs = root / "logs"
     marker = logs / "app.running"
@@ -329,7 +329,7 @@ def main():
     if "--status" in sys.argv:
         try:
             print(json.dumps(status()))
-        except StoreError as exc:           # e.g. missing, synced or redirected data folder (#219)
+        except StoreError as exc:           # missing, synced, redirected or broken (#219, #266)
             print(json.dumps({"error": str(exc)}))
             return 1
         return 0

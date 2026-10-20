@@ -426,6 +426,31 @@ REDIRECTED = {
                  "folder may be moved."),
 }
 
+# The workspace refused because Unminute, or Unminute\workspace, is a junction
+# or link whose target cannot be reached: removed, or on a drive that is not
+# connected (#266). Opening it could only fail in mkdir, and the app closed
+# without a message. No path in it (P3).
+BROKEN_LINK = ("Unminute's workspace folder is linked to a folder that cannot be reached: "
+               "it may have been removed, or be on a drive that is not connected. Ask your "
+               "IT team to restore the folder or its drive, or to remove the link.")
+
+
+def _broken_link(path):
+    """True if path is a junction or symbolic link whose target cannot be
+    reached (#266): missing, on a volume that is gone (a volume GUID or
+    \\\\?\\ spelling), or itself a broken link (os.stat follows the whole
+    chain). Not a folder that does not exist yet, and not a target this
+    account may not open: those keep their own outcome."""
+    if not (os.path.islink(path) or os.path.isjunction(path)):   # neither follows the link
+        return False
+    try:
+        os.stat(path)
+    except PermissionError:
+        return False
+    except OSError:
+        return True
+    return False
+
 
 def _workspace_folder():
     # K1: the data folder's name is pinned (tests/test_consistency.py reads this line).
@@ -437,14 +462,19 @@ def default_root():
     checks %LOCALAPPDATA% itself, but a junction or link at Unminute, or at
     Unminute\\workspace, could still take the workspace into OneDrive or onto
     a network drive. So the real location of each is checked too, and the
-    workspace is refused there (#219, D3). Only Unminute\\models may be
-    redirected: it holds no meeting content, and the model cache
+    workspace is refused there (#219, D3). Either one being a junction or
+    link whose target cannot be reached (a removed folder, or a drive that
+    is not connected) is refused too, with its own message, BROKEN_LINK
+    (#266): the workspace could not be created there. Only Unminute\\models
+    may be redirected: it holds no meeting content, and the model cache
     (__main__.model_cache) does not come through here."""
     root = _workspace_folder()
     for folder in (root.parent, root):
-        where = _synced_or_network(folder)
+        where = _synced_or_network(folder)      # first: a missing target in OneDrive says so
         if where:
             raise StoreError(REDIRECTED[where])
+        if _broken_link(folder):
+            raise StoreError(BROKEN_LINK)
     return root
 
 
