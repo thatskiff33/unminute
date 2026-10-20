@@ -175,7 +175,7 @@ changes; or GitHub owner settings.
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
 | UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
 | Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it); `SECURITY.md` |
-| Encryption and keys (`workspace/vault.py`, `workspace/audiocrypt.py`, `workspace/dpapi.py`); meeting content in the database (`store.CONTENT_COLUMNS`: only `workspace/store.py` names them in SQL, through its codec) | `docs/ENCRYPTION.md`; `docs/WORKSPACE_DESIGN.md` "Content columns"; `docs/SECURITY_MODEL.md` T6 to T8; `tests/test_content_access.py` |
+| Encryption and keys (`workspace/vault.py`, `workspace/audiocrypt.py`, `workspace/dpapi.py`, `workspace/keystore.py`); meeting content in the database (`store.CONTENT_COLUMNS`, sealed since schema 2: only `workspace/store.py` names them, or the key tables, in SQL, through its codec) | `docs/ENCRYPTION.md`; `docs/WORKSPACE_DESIGN.md` "Content columns"; `docs/SECURITY_MODEL.md` T6 to T8; `tests/test_content_access.py`; `tests/test_schema2.py` |
 | Tooling traps, flaky checks, Windows and WebView2 quirks | `docs/DEVELOPER_NOTES.md` |
 
 ## Checks

@@ -22,6 +22,12 @@ real time, and remove it when the cause is fixed.
   each worker re-runs it: one demo opened duplicate windows and leaked temporary folders.
 - **Run tests through `tools/run_tests.py`.** It puts `tests/` on the import path, which spawned
   workers need for `tests/fake_worker_engines.py`.
+- **Tests pass the test key protector.** Since schema 2 (#111 C2b-2) a `Store` or `Workspace`
+  built without `protector=keyprotect.TestProtector()` uses Windows Data Protection: it works
+  on Windows but raises `KeyUnavailable` on Linux CI, and the two cannot open each other's
+  workspaces. The test protector is refused under the real workspace folder. Never use it in
+  `workspace/` or `tools/` (`tests/test_content_access.py` checks). A raw SQL write to a
+  content column in a test needs the sealed name and a value from `store._seal`.
 - **Stale bytecode.** An edit and restore of the same size within one second can leave a stale
   `.pyc` that Python keeps using. Use `python -B`, or delete `__pycache__` with Python.
   `tools/run_tests.py` writes no bytecode, passes that on to every process a test starts

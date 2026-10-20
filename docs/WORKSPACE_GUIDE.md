@@ -12,7 +12,7 @@ This guide covers the packaged workspace.
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`). This is not a synced folder. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer. This is not a synced folder. The app's working copy of the audio is not encrypted yet. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
@@ -148,7 +148,9 @@ The earlier version's workspace and models stay on the computer until they are d
 | Settings > Speech model marks a model "(not downloaded)" or "(damaged)" | It is not ready to use, and the note beside the picker says so. Your choice is saved: download or repair the model in **Manage downloads**, or choose a model that is ready. When your organisation has turned downloads off, any model has to be installed by your IT team. |
 | A meeting stopped because its speech model is not ready | Choose a downloaded model in Settings > **Speech model** and select **Transcribe with another model…** on the meeting. Or download or repair the model in Settings > **Manage downloads**, then select **Try again**. When your organisation has turned downloads off, any model has to be installed by your IT team. |
 | Speaker identification did not work | The transcript is still usable. Check the speaker model in Settings > **Manage downloads**, then use **Identify again…** in the meeting's Speakers tab. When your organisation has turned downloads off, the message says so: ask your IT team to install or repair the speaker model. |
-| A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. |
+| A watched recording is not imported | Look at the folder in Settings > Watched folders. It shows whether the folder is paused (select **Resume**), and files waiting for copying to finish, cloud-only files and unreadable files. Your organisation may also have turned watched folders off. If the folder's note says Unminute started a new record of the files in it, recordings added since the folder was last checked may not have been imported: use **Import** to add any that are missing. |
+| A title, passage, name or note shows "[Could not be read]" | That part of the workspace is damaged, or was changed outside Unminute. The rest of the meeting is shown, and you can still discard it or finish it. Anything made from it is refused, so nothing is produced with the gap in it: the handoff (preview, copy and save), confirming the transcript review, editing that passage and changing speaker names. The marker itself is ordinary text you could select and copy by hand. Tell your IT team. |
+| A message says Windows could not unlock Unminute's encryption key | See [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace) below. |
 | The app says the computer is on battery | Plug in, or allow processing on battery in Settings. |
 | An update is waiting | Settings > Updates lists what it is waiting for. |
 | Settings says some settings are on their defaults | A saved setting could not be used: the settings file was damaged, or a newer version of Unminute saved a value this one does not know (after going back to an earlier version). Check the settings it names. A newer version's value you leave alone is kept and comes back when you update again; one you set again here replaces it. A settings file that could not be read at all is kept aside as `settings.unreadable.json` the first time a setting is saved. |
@@ -159,12 +161,26 @@ The earlier version's workspace and models stay on the computer until they are d
 
 For IT support:
 
-- `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency, confirms the network block and checks that the speaker model loader refuses a model file that would run code (a test file made in memory). It does not check your models: use Settings > Manage downloads for those.
+- `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency, confirms the network block, checks that the speaker model loader refuses a model file that would run code (a test file made in memory) and that Windows can protect and unlock a key for this account (`dpapi round trip`). It does not check your models: use Settings > Manage downloads for those.
 - `--status` prints counts only (meetings, holds, pending cleanup), never content.
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
 - The app keeps small content-free logs in `%LOCALAPPDATA%\Unminute\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
+
+## If Unminute cannot unlock its workspace
+
+Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute says so with a code when it starts, and closes. It does not open the workspace, change it, make a new key over it or show anything unencrypted. Your meetings are kept as they were.
+
+Windows can refuse when the workspace was made by another Windows account or on another computer, after an administrator reset your password without the old one, or when your Windows profile is damaged. Settings, the model downloads and the Hugging Face token are not affected.
+
+For IT support:
+
+1. Ask for the code in the message. **Copy diagnostics** cannot be reached while the app will not open; the record with that code, in `%LOCALAPPDATA%\Unminute\workspace\logs\app.log`, holds the reason and the Windows error number only.
+2. `runtime\python.exe -m workspace --status` and the installer's check (`--gate`) still work: they read counts only and need no key.
+3. Whether Windows can still unlock the key (for example after a password reset) depends on how the laptop and account are set up, which is being checked (validation tracker #189). If it cannot, the meetings in this workspace cannot be read by anyone: rename the workspace folder (as in step 3 of [If Unminute finds damage](#if-unminute-finds-damage)) so Unminute can start a new one, and delete the renamed folder once no hold applies to anything in it.
+
+A later version shows a locked screen in place of the message, with these steps.
 
 ## If Unminute finds damage
 
