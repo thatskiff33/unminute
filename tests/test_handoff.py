@@ -617,6 +617,24 @@ class SealedTemplatesTests(unittest.TestCase):
         self.assertEqual(converted(), (again.get("minutes"), again.get("custom-1")))
         self.assertFalse(plain.exists())
 
+    def test_a_damaged_sealed_file_and_a_damaged_plain_one_are_left_until_a_save(self):
+        # Nothing to convert: nothing is written without a save (round 4).
+        changed = bytearray(self.sealer().seal(b"{}"))
+        changed[-1] ^= 1
+        (self.root / "templates.sealed").write_bytes(bytes(changed))
+        plain = self.root / "templates.json"
+        plain.write_text(f'{{"custom-1": "{MARKER}', encoding="utf-8")
+        sealed_before, plain_before = self.sealed_bytes(), plain.read_bytes()
+        t = self.open()
+        self.assertEqual(sealed_before, self.sealed_bytes())
+        self.assertEqual(plain_before, plain.read_bytes())
+        self.assertTrue(t.unreadable)
+        self.assertIsNone(t.pending)                          # the next save replaces it
+        tid = t.save(None, "Mine", "Mine")
+        again = self.open()
+        self.assertEqual("Mine", again.get(tid)["title"])
+        self.assertFalse(plain.exists())                      # the sealed file now wins
+
     def test_absurdly_nested_plain_json_is_damaged(self):
         plain = self.root / "templates.json"
         plain.write_text('{"a":' * 200_000 + "1" + "}" * 200_000, encoding="utf-8")

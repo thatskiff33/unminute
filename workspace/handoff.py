@@ -211,8 +211,8 @@ MAX_TEMPLATES_BYTES = 8 * 1024 * 1024
 # While a templates.json is kept unconverted, nothing is saved (a sealed file
 # would win at the next start and the kept one would be deleted unconverted).
 # Fixed wording: no path, no content.
-PENDING_RETRY = ("Your saved templates are still being moved to encrypted storage, so "
-                 "templates cannot be changed yet. Restart Unminute, then try again.")
+PENDING_RETRY = ("Your saved templates cannot be opened right now. Restart Unminute to try "
+                 "again; if this keeps happening, ask your IT team.")
 PENDING_TOO_LARGE = ("Your saved templates are too large to move to encrypted storage, so "
                      "templates cannot be changed. Ask your IT team for help.")
 
@@ -238,11 +238,18 @@ class Templates:
     back), so "version 3" always means one wording.
 
     Kept in templates.sealed, sealed under the workspace key (#111 C2c):
-    sealer is the store's file_sealer("templates.sealed"). A file that does
-    not open or parse (changed, cut short, from another workspace, too large)
-    leaves the built-ins only, with unreadable True; the file stays until the
-    next save replaces it. KeyUnavailable from the sealer is not caught: no
-    templates are read or written without the key."""
+    sealer is the store's file_sealer("templates.sealed"). unreadable is set
+    (and the app logs templates_unreadable once a session) in every case
+    where something could not be used, always with the built-ins only:
+      - templates.sealed does not open or parse (changed, cut short, from
+        another workspace, too large): damaged; it stays until the next save
+        replaces it;
+      - templates.sealed cannot be read at that moment (in use, access
+        refused): busy; pending refuses every save and reset, nothing is
+        written, and the next first use reads it again;
+      - a templates.json is kept unconverted, or was damaged (open_templates).
+    KeyUnavailable from the sealer is not caught: no templates are read or
+    written without the key."""
 
     def __init__(self, path, sealer):
         self.path = Path(path)
@@ -389,7 +396,11 @@ def open_templates(folder, sealer):
       3. Otherwise (no templates.sealed, or one that does not open: damaged,
          another workspace's, too large) a templates.json that can be read
          is written sealed, replacing it, and only then deleted. One that
-         does not decode or parse (damaged) gives no saved templates.
+         does not decode or parse (damaged) gives no saved templates: with no
+         templates.sealed, an empty one is written and the plain file
+         deleted; beside a damaged templates.sealed, nothing is written and
+         both stay until the user's next save replaces the sealed one (the
+         plain file is then deleted at the next start, as in 1).
       4. A templates.json that cannot be read now, or whose sealed copy
          cannot be written, is left exactly as it is for the next first use;
          one larger than MAX_TEMPLATES_BYTES (or whose sealed copy would be)
@@ -420,6 +431,11 @@ def open_templates(folder, sealer):
                 raise ValueError("not templates")
             saved = _saved_from(raw)
         except (ValueError, RecursionError):  # damaged (RecursionError: absurd nesting)
+            if templates.state == "damaged":
+                # Nothing to convert, and nothing is written without a save:
+                # both files stay; the user's next save replaces the sealed one.
+                templates.unreadable = True
+                return templates
             saved, damaged = {}, True
         try:
             with templates._lock:

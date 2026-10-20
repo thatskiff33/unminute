@@ -60,7 +60,8 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # #111 C2b-2: a sealed value that did not open (table, column, count),
          # and a workspace key Windows would not unlock (reason, Windows error)
          "damaged_value", "key_unavailable",
-         # #111 C2c: templates.sealed did not open or parse (no fields)
+         # #111 C2c (no fields): templates.sealed damaged or busy, or a
+         # templates.json kept unconverted or damaged (handoff.Templates)
          "templates_unreadable"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 # The number and true/false fields the app writes (FIELDS has the text ones).
