@@ -486,25 +486,40 @@ class SealedTemplatesTests(unittest.TestCase):
             again.get("custom-1")
         self.assertFalse((self.root / "templates.json").exists())
 
-    def assert_plain_kept(self, plain, before, t):
-        """Not converted: templates.json byte for byte, no sealed copy, the
-        built-ins only (unreadable), and the next first use converts it."""
+    def assert_plain_kept(self, plain, before, t, pending):
+        """Not converted: the built-ins only (unreadable), every save and
+        reset refused with the fixed wording, templates.json byte for byte,
+        and no sealed copy to win over it at the next start."""
         self.assertTrue(t.unreadable)
+        self.assertEqual(pending, t.pending)
         self.assertEqual(7, len(t.all()))
+        for change in (lambda: t.save(None, "New", "New"),
+                       lambda: t.save("minutes", "Minutes", "Changed"),
+                       lambda: t.reset("minutes"), lambda: t.reset("custom-1")):
+            with self.assertRaises(HandoffError) as caught:
+                change()
+            self.assertEqual(pending, str(caught.exception))
+        for part in (".json", ".sealed", "\\", "/"):        # no file name or path
+            self.assertNotIn(part, pending)
         self.assertEqual(before, plain.read_bytes())
         self.assertEqual(["templates.json"],
                          [p.name for p in self.root.iterdir() if p.name.startswith("templates")])
+
+    def assert_converted_later(self, plain):
         again = self.open()
         self.assertFalse(again.unreadable)
+        self.assertIsNone(again.pending)
         self.assertEqual(converted(), (again.get("minutes"), again.get("custom-1")))
         self.assertFalse(plain.exists())
+        again.save(None, "Now", "Saved")                     # and saves work again
 
     def test_a_conversion_that_cannot_write_keeps_the_plain_file(self):
         plain = plain_file(self.root)
         before = plain.read_bytes()
         with mock.patch.object(handoff.os, "fsync", side_effect=OSError("disk full")):
             t = self.open()
-        self.assert_plain_kept(plain, before, t)
+            self.assert_plain_kept(plain, before, t, handoff.PENDING_RETRY)
+        self.assert_converted_later(plain)
 
     def test_a_plain_file_that_cannot_be_read_is_kept(self):
         # In use (antivirus, an indexer) or access refused: never "no templates".
@@ -512,14 +527,35 @@ class SealedTemplatesTests(unittest.TestCase):
         before = plain.read_bytes()
         with plain_read_refused():
             t = self.open()
-        self.assert_plain_kept(plain, before, t)
+            self.assert_plain_kept(plain, before, t, handoff.PENDING_RETRY)
+        self.assert_converted_later(plain)
 
-    def test_a_plain_file_over_the_limit_is_kept(self):
+    def test_a_plain_file_over_the_limit_is_kept_and_never_converted(self):
         plain = plain_file(self.root)
         before = plain.read_bytes()
         with mock.patch.object(handoff, "MAX_TEMPLATES_BYTES", len(before) - 1):
+            for _ in range(2):                                # a later first use too
+                t = self.open()
+                self.assert_plain_kept(plain, before, t, handoff.PENDING_TOO_LARGE)
+
+    def test_a_plain_file_whose_sealed_copy_would_be_over_the_limit_is_kept(self):
+        # Within the limit as UTF-8, over it once sealed (non-ASCII is escaped).
+        data = {"custom-1": {"title": "Kept", "prompt": chr(0x101) * 400, "version": 1}}
+        plain = self.root / "templates.json"
+        plain.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        before = plain.read_bytes()
+        with mock.patch.object(handoff, "MAX_TEMPLATES_BYTES", len(before)):
             t = self.open()
-        self.assert_plain_kept(plain, before, t)
+            self.assert_plain_kept(plain, before, t, handoff.PENDING_TOO_LARGE)
+
+    def test_absurdly_nested_plain_json_is_damaged(self):
+        plain = self.root / "templates.json"
+        plain.write_text('{"a":' * 200_000 + "1" + "}" * 200_000, encoding="utf-8")
+        t = self.open()
+        self.assertTrue(t.unreadable)
+        self.assertIsNone(t.pending)
+        self.assertEqual(7, len(t.all()))
+        self.assertFalse(plain.exists())
 
     def test_a_damaged_plain_file_converts_to_no_saved_templates(self):
         for case, text in (("not JSON", f'{{"minutes": "{MARKER}'), ("not a dictionary", "[1]")):
@@ -719,6 +755,7 @@ class WorkspaceTemplatesTests(unittest.TestCase):
         self.assertFalse((self.root / "templates.json").exists())
 
     def test_a_plain_file_that_cannot_be_read_is_kept_and_logged(self):
+        from workspace.app import WorkspaceError
         self.workspace().close()
         self.made.clear()
         plain = plain_file(self.root)
@@ -726,6 +763,11 @@ class WorkspaceTemplatesTests(unittest.TestCase):
         ws = self.workspace()
         with plain_read_refused():
             self.assertEqual(7, len(ws.handoff_templates()))       # handled, not an error
+        with self.assertRaises(WorkspaceError) as caught:
+            ws.save_template(None, "New", "New")
+        self.assertEqual(handoff.PENDING_RETRY, str(caught.exception))
+        with self.assertRaises(WorkspaceError):
+            ws.reset_template("minutes")
         self.assertEqual(before, plain.read_bytes())
         self.assertFalse((self.root / "templates.sealed").exists())
         self.assertEqual(1, self.events(ws).count('"kind":"templates_unreadable"'))
