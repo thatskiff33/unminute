@@ -345,9 +345,18 @@
     card({ name: "pyannote/speaker-diarization-community-1", role: "speakers", recommended: true, size_gb: 0.03,
            needs_token: true, label: "Speaker identification", title: "Speaker identification (optional)",
            about: "Works out who spoke when. Downloading it needs a free Hugging Face account and token." }),
-    card({ name: "gpu-component", role: "gpu", size_gb: 2, state: "missing", status: "Not downloaded.",
-           removable: false, label: "Graphics card acceleration", title: "Graphics card acceleration (optional)",
-           about: "Speeds up speaker identification on this computer's NVIDIA RTX 500. Used only in Faster mode." }),
+    // The two graphics card components (#248), as workspace/setup.py describes
+    // them on a computer with an NVIDIA RTX 500 (tests/test_single_source.py).
+    card({ name: "gpu-speakers", role: "gpu", size_gb: 2.0, state: "missing", status: "Not downloaded yet.",
+           removable: false, licence: "PyTorch BSD-3-Clause; NVIDIA CUDA runtime and cuDNN under NVIDIA's licences",
+           source: "PyTorch CUDA 13.0 build from download-r2.pytorch.org", revision: "torch-2.14.1-cu130",
+           label: "Graphics card acceleration", title: "Graphics card acceleration (optional)",
+           about: "Speeds up speaker identification on this computer's NVIDIA RTX 500. Used only in Faster mode, once turned on in Settings." }),
+    card({ name: "gpu-whisper", role: "gpu", size_gb: 0.57, state: "missing", status: "Not downloaded yet.",
+           removable: false, licence: "NVIDIA CUDA Toolkit licence (cuBLAS), published by NVIDIA on PyPI",
+           source: "NVIDIA cuBLAS 12.8.4.1 for CUDA 12 from files.pythonhosted.org", revision: "cublas-12.8.4.1-cu12",
+           label: "Graphics card for Whisper", title: "Graphics card for Whisper (optional)",
+           about: "Runs Whisper large-v3 turbo and Whisper large-v3 on this computer's NVIDIA RTX 500, several times faster than on the processor. Used only in Faster mode, once the graphics card is turned on in Settings. Parakeet stays on the processor." }),
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
@@ -363,7 +372,8 @@
               { name: "large-v3", label: "Whisper large-v3", recommended: false,
                 state: "missing", offered: true,
                 note: "Whisper large-v3 is not downloaded. Download it in Settings > Manage downloads, or choose another speech model." }],
-    gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: "580", component: "ready" },
+    // Both components ready: Settings' note names both uses (#248).
+    gpu: { card: "NVIDIA RTX 500", driver_ok: true, min_driver: "580", component: "ready", whisper_component: "ready" },
     deployment: { mode: "self-service", version: "0.3.0" },
     update_blockers: ["Community garden planning (sample): in review", "Team catch-up (sample): transcribing"],
     repaired: { keys: [], all: false },
@@ -402,6 +412,8 @@
       stage: "review", paused: false, error: null, busy: null, progress: 100,
       audio_available: true, audio_removed_at: null, reviewed_at: null, final_saved_at: null,
       model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2", edits: 1, can_undo: true, older_versions: [],
+      // Where the version was transcribed (#248): Parakeet always on the processor.
+      ran_on: [{ where: "cpu", precision: "int8", parts: 25, fallback: false }],
       speakers: { status: "done", error: null, device: "cpu", count: null, started_at: at(2, 5) },
       holds: [], cleanup: [], limits: LIMITS, duration_s: 1085, speaker_count: 2, mode: "quiet",
       ...over,
@@ -629,11 +641,27 @@
       change: (d) => {
         d.detail["m-garden"] = meeting({ older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v3",
                                                             model_label: "Parakeet v3",
-                                                            created_at: at(1, 20), edits: 2 }] });
+                                                            created_at: at(1, 20), edits: 2,
+                                                            ran_on: [{ where: "cpu", precision: "int8", parts: 25, fallback: false }] }] });
       },
       steps: [...openAndPlay(), () => document.querySelector('[role=tab][data-tab="versions"]').click(),
               () => document.querySelector("#m-versions button.ver-card").click(), wait(400),
               () => document.querySelector('.wide-tabs [role=tab][data-tab="speakers"]').click()],
+    },
+    // The Versions tab (#248): the current version, Whisper large-v3 turbo,
+    // began on the graphics card and finished on the processor after the card
+    // could not be used; the earlier one is Parakeet v2 on the processor.
+    "meeting-versions": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({
+          model: "large-v3-turbo", model_label: "Whisper large-v3 turbo",
+          ran_on: [{ where: "gpu", precision: "float16", parts: 9, fallback: false },
+                   { where: "cpu", precision: "int8", parts: 16, fallback: true }],
+          older_versions: [{ index: 0, model: "parakeet-tdt-0.6b-v2", model_label: "Parakeet v2",
+                             created_at: at(1, 20), edits: 1,
+                             ran_on: [{ where: "cpu", precision: "int8", parts: 25, fallback: false }] }] });
+      },
+      steps: [...openAndPlay(), () => document.querySelector('.wide-tabs [role=tab][data-tab="versions"]').click()],
     },
   };
   function firstRun(d) {

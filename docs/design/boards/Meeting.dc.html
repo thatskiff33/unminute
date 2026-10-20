@@ -144,8 +144,8 @@ body{margin:0}
 
       <aside aria-label="Meeting tools" style="width: 288px; flex: none; display: flex; flex-direction: column; gap: 14px; overflow: hidden">
         <div role="tablist" aria-label="Meeting tools" style="display: flex; padding: 4px; border-radius: 12px; background: {{t.tabsBg}}">
-          <button role="tab" aria-selected="true" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 700; background: {{t.card}}; color: {{t.text}}; box-shadow: 0 1px 3px rgba(20,41,102,0.16)">Speakers</button>
-          <button role="tab" aria-selected="false" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 600; background: transparent; color: {{t.muted}}">Versions</button>
+          <button role="tab" aria-selected="{{tabs.speakers.sel}}" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: {{tabs.speakers.weight}}; background: {{tabs.speakers.bg}}; color: {{tabs.speakers.fg}}; box-shadow: {{tabs.speakers.shadow}}">Speakers</button>
+          <button role="tab" aria-selected="{{tabs.versions.sel}}" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: {{tabs.versions.weight}}; background: {{tabs.versions.bg}}; color: {{tabs.versions.fg}}; box-shadow: {{tabs.versions.shadow}}">Versions</button>
           <button role="tab" aria-selected="false" style="font: inherit; flex: 1; min-height: 36px; border: 0; border-radius: 9px; font-size: 14px; font-weight: 600; background: transparent; color: {{t.muted}}">Holds</button>
         </div>
         <sc-if value="{{p.speakersReady}}" hint-placeholder-val="{{ true }}">
@@ -175,6 +175,20 @@ body{margin:0}
               <a href="#" style="font-weight: 600; color: {{t.link}}">Identify again…</a>
             </div>
           </sc-if>
+        </sc-if>
+        <sc-if value="{{p.versions}}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; gap: 10px">
+            <sc-for list="{{versions}}" as="v" hint-placeholder-count="2">
+              <div style="border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 4px; background: {{t.card}}; border: {{v.border}}">
+                <span style="font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: {{t.muted}}">{{v.eyebrow}}</span>
+                <span style="font-size: 15px; font-weight: 700">{{v.model}}</span>
+                <span style="font-size: 14px; color: {{t.muted}}">{{v.edits}}</span>
+                <span style="font-size: 14px; color: {{t.muted}}">{{v.ranOn}}</span>
+              </div>
+            </sc-for>
+          </div>
+          <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; border-radius: 10px; background: {{t.secBg}}; color: {{t.secFg}}; border: 1px solid {{t.secBorder}}">Transcribe again with the current model…</button>
+          <p style="margin: 0; font-size: 13px; line-height: 1.5; color: {{t.muted}}">Your edits stay with the current version, which is kept as an earlier version.</p>
         </sc-if>
         <sc-if value="{{p.transcribing}}" hint-placeholder-val="{{ false }}">
           <div style="border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 6px; background: {{t.tabsBg}}">
@@ -213,7 +227,7 @@ body{margin:0}
   </sc-if>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"phase":{"editor":"enum","options":["review","transcribing","edit","handoff","earlier"],"default":"review"},"$preview":{"width":1100,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"phase":{"editor":"enum","options":["review","transcribing","edit","handoff","earlier","versions"],"default":"review"},"$preview":{"width":1100,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     const base = { card: '#FFFFFF', link: '#2B61BF', inputBg: '#FFFFFF', page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)', hi: '#EEF7FD', tabsBg: '#EEF7FD', track: 'rgba(20,41,102,0.12)', fill: '#2B61BF', done: '#00A275', doneFg: '#FFFFFF', current: '#E56600', upcoming: 'rgba(20,41,102,0.16)', hit: '#FDCAEA' };
@@ -243,9 +257,10 @@ class Component extends DCLogic {
       transcribing: { primary: false, transcribing: true, progress: true, toolbar: true, player: true, speakersReady: false, hint: 'Transcribing. You can play and correct the finished parts now.', stepAt: 1 },
       edit: { primary: true, primaryLabel: 'Transcript reviewed…', primaryIcon: check, toolbar: true, player: true, speakersReady: true, canName: true, searching: true, search: 'budget', hits: '2 of 3', toast: true, hint: 'Play passages and correct any words. Select text to edit it. Changes save as you go.', stepAt: 2 },
       handoff: { primary: true, primaryLabel: 'Hand off…', primaryIcon: arrow, toolbar: false, player: false, noPlayer: true, speakersReady: true, canName: false, banner: true, bannerBg: '#EEF7FD', bannerFg: '#142966', bannerIcon: lock, bannerText: 'Reviewed and locked. The audio was removed after the transcript review was confirmed, so playback and transcribing again are no longer available.', stepAt: 3 },
+      versions: { primary: true, primaryLabel: 'Transcript reviewed…', primaryIcon: check, toolbar: true, player: true, speakersReady: false, versions: true, hint: 'Play passages and correct any words. Select text to edit it. Changes save as you go.', stepAt: 2 },
       earlier: { primary: false, toolbar: false, player: true, speakersReady: true, canName: false, banner: true, bannerBg: '#FDCAEA', bannerFg: '#440638', bannerIcon: clock, bannerText: 'You are viewing an earlier version (read only). Its edits are kept as they were.', bannerLink: 'Back to the current version', stepAt: 2 }
     };
-    const p = { primary: false, transcribing: false, progress: false, toolbar: false, player: false, noPlayer: false, speakersReady: false, canName: false, searching: false, search: '', hits: '', toast: false, banner: false, bannerLink: '', searchBorder: t.secBorder, ...P[phase] };
+    const p = { primary: false, transcribing: false, progress: false, toolbar: false, player: false, noPlayer: false, speakersReady: false, versions: false, canName: false, searching: false, search: '', hits: '', toast: false, banner: false, bannerLink: '', searchBorder: t.secBorder, ...P[phase] };
     if (p.searching) p.searchBorder = t.primaryBg;
 
     const step = (label, n) => {
@@ -298,9 +313,18 @@ class Component extends DCLogic {
     const metas = {
       transcribing: 'Imported today, 1:57 am · 18 min · Parakeet v2',
       handoff: 'Reviewed today, 3:12 pm · 18 min · 2 speakers · Parakeet v2',
-      earlier: 'Earlier version: Parakeet v3 (15/10/2026) · 2 edited passages'
+      earlier: 'Earlier version: Parakeet v3 (15/10/2026) · 2 edited passages',
+      versions: 'Imported today, 1:57 am · 18 min · 2 speakers · Whisper large-v3 turbo'
     };
-    return { t, p, steps, rows, speakers, meta: metas[phase] || 'Imported today, 1:57 am · 18 min · 2 speakers · Parakeet v2' };
+    // Tabs: Speakers is selected except in the versions phase.
+    const tab = (on) => ({ sel: on ? 'true' : 'false', weight: on ? 700 : 600, bg: on ? t.card : 'transparent', fg: on ? t.text : t.muted, shadow: on ? '0 1px 3px rgba(20,41,102,0.16)' : 'none' });
+    const tabs = { speakers: tab(phase !== 'versions'), versions: tab(phase === 'versions') };
+    // Versions (#248): where each was transcribed, as the app words it (ranOnWord).
+    const versions = [
+      { eyebrow: 'Current', model: 'Whisper large-v3 turbo', edits: '1 edited passage', ranOn: 'Graphics card (float16), then processor (int8) · the graphics card could not be used', border: `2px solid ${t.text}` },
+      { eyebrow: 'Earlier · read only', model: 'Parakeet v2 (15/10/2026)', edits: '1 edited passage · Open', ranOn: 'Processor, int8', border: `1px solid ${t.line}` }
+    ];
+    return { t, p, steps, rows, speakers, tabs, versions, meta: metas[phase] || 'Imported today, 1:57 am · 18 min · 2 speakers · Parakeet v2' };
   }
 }
 </script>

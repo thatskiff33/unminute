@@ -45,7 +45,7 @@ body{margin:0}
     </div>
 
     <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border-radius: 16px; border: 1px solid rgba(20,41,102,0.14)">
-      <sc-for list="{{models}}" as="m" hint-placeholder-count="5">
+      <sc-for list="{{models}}" as="m" hint-placeholder-count="7">
         <li style="display: flex; flex-direction: column; gap: 8px; padding: 16px 20px; border-bottom: 1px solid rgba(20,41,102,0.08)">
           <div style="display: flex; align-items: center; gap: 14px">
             <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px">
@@ -72,12 +72,13 @@ class Component extends DCLogic {
     const missing = { status: 'Not downloaded', pillBg: 'rgba(20,41,102,0.10)', pillFg: '#142966', btnBg: '#142966', btnFg: '#FFFFFF', btnBorder: '#142966', btnWeight: 700, more: '' };
     return {
       models: [
-        { ...ready, name: 'Parakeet v2', tag: 'Recommended · in use', desc: 'Speech to text. Fast and accurate for English. 0.66 GB.' },
-        { ...ready, name: 'Parakeet v3', tag: '', desc: 'Speech to text. Multilingual; less accurate for English in our tests. 0.67 GB.' },
-        { ...missing, action: 'Download (1.62 GB)', name: 'Whisper large-v3 turbo', tag: '', desc: 'Speech to text. Alternative engine; slower on a processor.' },
-        { ...missing, action: 'Download (3.09 GB)', name: 'Whisper large-v3', tag: '', desc: "Speech to text. OpenAI's most accurate Whisper model. In our tests on Intel Arc graphics it was no more accurate than turbo. It is the largest model, so expect it to be the slowest on a processor." },
+        { ...ready, name: 'Parakeet v2', tag: 'Recommended · in use', desc: "Speech to text. Fast and accurate for English. Runs on this computer's processor. 0.66 GB." },
+        { ...ready, name: 'Parakeet v3', tag: '', desc: 'Speech to text. Newer multilingual version. In our tests it was less accurate for English. 0.67 GB.' },
+        { ...missing, action: 'Download (1.62 GB)', name: 'Whisper large-v3 turbo', tag: '', desc: 'Speech to text. Alternative engine; slower on a processor. 1.62 GB.' },
+        { ...missing, action: 'Download (3.09 GB)', name: 'Whisper large-v3', tag: '', desc: "Speech to text. OpenAI's most accurate Whisper model. In our tests on Intel Arc graphics it was no more accurate than turbo. It is the largest model, so expect it to be the slowest on a processor. 3.09 GB." },
         { ...ready, name: 'Speaker identification', tag: 'Optional', desc: 'Works out who spoke when. 0.03 GB.' },
-        { ...missing, action: 'Download (2 GB)', name: 'Graphics card acceleration', tag: 'Optional', desc: 'NVIDIA RTX 500. Speeds up speaker identification in Faster mode.' }
+        { ...missing, action: 'Download (2 GB)', name: 'Graphics card acceleration', tag: 'Optional', desc: "Speeds up speaker identification on this computer's NVIDIA RTX 500. 2 GB." },
+        { ...missing, action: 'Download (0.57 GB)', name: 'Graphics card for Whisper', tag: 'Optional', desc: "Runs Whisper large-v3 turbo and Whisper large-v3 on this computer's NVIDIA RTX 500, several times faster than on the processor. 0.57 GB." }
       ]
     };
   }
