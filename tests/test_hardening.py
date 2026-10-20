@@ -645,10 +645,12 @@ class RedirectedDataFolderTests(unittest.TestCase):
     # Ways a data folder junction's target can be missing (#266, from the
     # #265 reviews), each made under base by broken(). Of the spellings, only
     # "volume GUID" stores a valid target spelt differently from "drive"
-    # (\??\Volume{...}\... against \??\C:\...). "\\?\ prefix" is not a second
-    # valid spelling: given \\?\C:\x, mklink /J stores \??\C:\?\C:\x (seen on
-    # Windows 11 26200: os.readlink shows it, and os.stat fails with WinError
-    # 123, not 2 as for "drive"). It is kept as one more unreachable target.
+    # (\??\Volume{...}\... against \??\C:\...). What "\\?\ prefix" stores
+    # depends on how mklink is called. Through mklink_junction (as here),
+    # given \\?\C:\x it stores \??\C:\?\C:\x: os.readlink shows it, and
+    # os.stat fails with WinError 123, not 2 as for "drive" (seen on Windows
+    # 11 builds 26200 and 26300). Run from PowerShell, mklink /J stored a
+    # valid spelling (build 26300). Here it is one more unreachable target.
     BROKEN_SHAPES = ("missing", "link to a broken link", "inside a broken link",
                      "volume GUID", "\\\\?\\ prefix")
 
@@ -722,13 +724,17 @@ class RedirectedDataFolderTests(unittest.TestCase):
                 link = self.junction(at, self.tmp / "Elsewhere" / f"Locked {self.cases}")
                 key = os.path.normcase(str(link))
 
-                def stat(path, *args, _key=key, **kwargs):
+                refused = []
+
+                def stat(path, *args, _key=key, _refused=refused, **kwargs):
                     if os.path.normcase(os.fspath(path)) == _key:
+                        _refused.append(path)
                         raise PermissionError(13, "Access is denied")
                     return real_stat(path, *args, **kwargs)
                 with mock.patch("os.stat", stat):
                     self.assertEqual(self.default_root(self.env()),
                                      self.local / "Unminute" / "workspace")
+                self.assertTrue(refused, "the patched stat never saw the junction")
 
     def test_a_working_data_folder_junction_is_not_called_broken(self):
         # A junction to a local folder that exists is still allowed (#219

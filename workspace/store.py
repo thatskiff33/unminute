@@ -463,7 +463,8 @@ def default_root():
     Unminute\\workspace, could still take the workspace into OneDrive or onto
     a network drive. So the real location of each is checked too, and the
     workspace is refused there (#219, D3). Either one being a junction or
-    link whose target is missing is refused too, with its own message
+    link whose target cannot be reached (a removed folder, or a drive that
+    is not connected) is refused too, with its own message, BROKEN_LINK
     (#266): the workspace could not be created there. Only Unminute\\models
     may be redirected: it holds no meeting content, and the model cache
     (__main__.model_cache) does not come through here."""
