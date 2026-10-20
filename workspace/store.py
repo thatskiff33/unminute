@@ -21,7 +21,9 @@
 # went around the codec fails with "no such column". The root key is kept in
 # crypto_meta, protected by Windows for this user; meeting keys in
 # content_keys and recording keys in recording_keys, wrapped. Hashes that
-# could confirm a known file are HMAC fingerprints ("_fp").
+# could confirm a known file are HMAC fingerprints ("_fp"). Files the app
+# keeps beside the database (the handoff templates, #111 C2c) are sealed
+# under the workspace key through file_sealer, never with the store's codec.
 
 import hashlib
 import json
@@ -740,6 +742,33 @@ class _OwnedLock:
         self.release()
 
 
+class _FileSealer:
+    """Seals and opens one workspace file's bytes (Store.file_sealer), with
+    its own AES-GCM object under its own lock. A file that does not open
+    (changed, cut short, renamed from another file, or from another
+    workspace) raises DamagedContent, with no value in the message."""
+
+    def __init__(self, key, name):
+        self._sealer = vault.Sealer(key)
+        self._context = ("workspace", "file", name)
+        self._lock = threading.Lock()
+
+    def __repr__(self):
+        return "<FileSealer>"                  # never the key
+
+    def seal(self, data):
+        with self._lock:
+            return self._sealer.seal(data, self._context)
+
+    def open(self, blob):
+        with self._lock:
+            try:
+                return self._sealer.unseal(blob, self._context)
+            except vault.VaultError:
+                pass                # raised below, so no exception is chained to it
+        raise DamagedContent()
+
+
 class _TxKeys:
     """Key changes inside one transaction, applied to the key cache only once
     it commits: keys made (by create_meeting) and meetings whose keys were
@@ -1241,6 +1270,19 @@ class Store:
             if self.locked is not None:
                 raise self.locked
             return keystore.fingerprint(self.keyring, purpose, sha256_hex)
+
+    def file_sealer(self, name):
+        """A sealer for one of the workspace's own files (#111 C2c: name is
+        "templates.sealed"), under the workspace key with the context
+        ("workspace", "file", name). It has its own vault.Sealer and lock, so
+        it is never shared with the store's (N4), and the key's bytes are not
+        handed out. KeyUnavailable while locked."""
+        if not isinstance(name, str) or not name:
+            raise ValueError("file_sealer takes a file name")
+        with self._lock:
+            if self.locked is not None:
+                raise self.locked
+            return _FileSealer(self.keyring.workspace_key, name)
 
     def same_fingerprint(self, purpose, sha256_hex, fp):
         """Whether a SHA-256 (hex) has the stored fingerprint fp."""

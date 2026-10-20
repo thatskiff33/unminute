@@ -6,8 +6,10 @@
 # integration: copy and save are the only ways out, and nothing is sent
 # anywhere by the app.
 #
-#   - Templates are editable and versioned (configuration, kept in
-#     templates.json beside the database; no meeting content).
+#   - Templates are editable and versioned (configuration, no meeting
+#     content, but they may name people), kept in templates.sealed beside the
+#     database, sealed under the workspace key (#111 C2c). A plain
+#     templates.json from an earlier version is converted at first use.
 #   - Omitted passages and redacted words affect the handoff only; the
 #     reviewed transcript is not changed. They are meeting content, stored in
 #     handoff_options and removed with the transcript at cleanup.
@@ -26,6 +28,7 @@ import unicodedata
 from pathlib import Path
 
 from workspace.speaker_names import given_names, resolve
+from workspace.store import DamagedContent
 
 LONG_CHARS = 50_000          # above this, recommend file handoff (no truncation ever)
 # Copy and open (#109): the assistant opened after copying when IT sets no
@@ -200,26 +203,108 @@ class HandoffError(ValueError):
 
 # -- templates (configuration) ------------------------------------------------------
 
+TEMPLATES_FILE = "templates.sealed"     # sealed under the workspace key (#111 C2c)
+PLAIN_TEMPLATES_FILE = "templates.json"  # before C2c: converted at first use, then deleted
+# Never read past this: a larger templates.sealed counts as damaged; a larger
+# templates.json is left as it is, not converted.
+MAX_TEMPLATES_BYTES = 8 * 1024 * 1024
+# While a templates.json is kept unconverted, nothing is saved (a sealed file
+# would win at the next start and the kept one would be deleted unconverted).
+# Fixed wording: no path, no content.
+PENDING_RETRY = ("Your saved templates cannot be opened right now. Restart Unminute to try "
+                 "again; if this keeps happening, ask your IT team.")
+PENDING_TOO_LARGE = ("Your saved templates are too large to move to encrypted storage, so "
+                     "templates cannot be changed. Ask your IT team for help.")
+
+
+def _saved_from(raw):
+    """The valid saved templates in parsed JSON: a damaged file must not break handoff."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and _valid(v)}
+
+
+def _read_capped(path):
+    """A file's bytes, or None if it holds more than MAX_TEMPLATES_BYTES
+    (read no further than that). OSError if it cannot be read."""
+    with open(path, "rb") as f:
+        data = f.read(MAX_TEMPLATES_BYTES + 1)
+    return None if len(data) > MAX_TEMPLATES_BYTES else data
+
+
 class Templates:
     """Editable, versioned prompts. Every save of a template, and restoring a
     built-in's original wording, gives a new version number (they never go
-    back), so "version 3" always means one wording."""
+    back), so "version 3" always means one wording.
 
-    def __init__(self, path):
+    Kept in templates.sealed, sealed under the workspace key (#111 C2c):
+    sealer is the store's file_sealer("templates.sealed"). unreadable is set
+    (and the app logs templates_unreadable once a session) in every case
+    where something could not be used, always with the built-ins only:
+      - templates.sealed does not open or parse (changed, cut short, from
+        another workspace, too large): damaged; it stays until the next save
+        replaces it;
+      - templates.sealed cannot be read at that moment (in use, access
+        refused): busy; pending refuses every save and reset, nothing is
+        written, and the next first use reads it again;
+      - a templates.json is kept unconverted, or was damaged (open_templates).
+    KeyUnavailable from the sealer is not caught: no templates are read or
+    written without the key."""
+
+    def __init__(self, path, sealer):
         self.path = Path(path)
+        self._sealer = sealer
         self._lock = threading.Lock()
         self.saved = {}
+        self.unreadable = False
+        # A file that could not be read for a moment, or a templates.json kept
+        # unconverted (open_templates): PENDING_RETRY or PENDING_TOO_LARGE,
+        # and every save or reset is refused with it, so nothing is replaced.
+        self.pending = None
+        # What reading the file found: "absent", "opened", "damaged" (it does
+        # not open or parse, or is too large: the next save replaces it) or
+        # "busy" (it could not be read just now: kept, tried next time).
+        self.state = "absent"
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        if isinstance(raw, dict):            # a damaged file must not break handoff
-            self.saved = {k: v for k, v in raw.items() if isinstance(k, str) and _valid(v)}
+            data = _read_capped(self.path)
+        except FileNotFoundError:
+            return
+        except OSError:                      # in use or refused: not damaged
+            self.state, self.unreadable, self.pending = "busy", True, PENDING_RETRY
+            return
+        try:
+            if data is None:
+                raise ValueError("too large")
+            raw = json.loads(self._sealer.open(data).decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not templates")
+            self.saved = _saved_from(raw)
+            self.state = "opened"
+        except (DamagedContent, ValueError, RecursionError):
+            self.state, self.unreadable = "damaged", True
 
-    def _write(self):
+    def _write(self, saved=None):
+        """Seal and save the templates (self.saved, or saved, which replaces
+        it once written): flushed to disk before the swap, so a power cut
+        leaves the old file or the new one."""
+        if self.pending:
+            raise HandoffError(self.pending)
+        saved = self.saved if saved is None else saved
+        blob = self._sealer.seal(json.dumps(saved, separators=(",", ":")).encode("utf-8"))
+        if len(blob) > MAX_TEMPLATES_BYTES:      # it could not be read back
+            raise HandoffError("There are too many saved templates. Delete one first.")
         tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp.write_text(json.dumps(self.saved, indent=2), encoding="utf-8")
-        tmp.replace(self.path)
+        try:
+            with open(tmp, "wb") as f:
+                f.write(blob)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(self.path)
+        except BaseException:
+            _remove(tmp)
+            raise
+        self.saved = saved
+        self.unreadable = False
 
     def all(self):
         out = []
@@ -244,9 +329,8 @@ class Templates:
 
     def _put(self, tid, title, prompt):
         current = self.get(tid)["version"] if (tid in BUILTIN or tid in self.saved) else 0
-        self.saved[tid] = {"title": title, "prompt": prompt, "version": current + 1,
-                           "saved_at": time.time()}
-        self._write()
+        self._write({**self.saved, tid: {"title": title, "prompt": prompt,
+                                         "version": current + 1, "saved_at": time.time()}})
 
     def save(self, tid, title, prompt):
         """Save an edited template (new version) or, with tid None, a new one."""
@@ -257,6 +341,8 @@ class Templates:
         if len(prompt) > MAX_PROMPT_CHARS:
             raise HandoffError(f"The prompt is too long (limit {MAX_PROMPT_CHARS} characters).")
         with self._lock:
+            if self.pending:
+                raise HandoffError(self.pending)
             if tid is None:
                 n = 1
                 while f"custom-{n}" in self.saved:
@@ -270,12 +356,106 @@ class Templates:
     def reset(self, tid):
         """Built-in: back to the original wording (as a new version). Custom: delete."""
         with self._lock:
+            if self.pending:
+                raise HandoffError(self.pending)
             if tid in BUILTIN:
                 if tid in self.saved:
                     self._put(tid, BUILTIN[tid]["title"], BUILTIN[tid]["prompt"])
             elif tid in self.saved:
-                del self.saved[tid]
-                self._write()
+                self._write({k: v for k, v in self.saved.items() if k != tid})
+
+
+def _leftovers(path):
+    """The temporary files of writes of this file cut short (Templates._write
+    names them "<file name>.<process>.<thread>.tmp")."""
+    pattern = re.compile(re.escape(path.name) + r"\.[0-9]+\.[0-9]+\.tmp")
+    try:
+        names = os.listdir(path.parent)
+    except OSError:
+        return []
+    return [path.parent / n for n in names if pattern.fullmatch(n)]
+
+
+def _remove(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass                 # tried again at the next first use
+
+
+def open_templates(folder, sealer):
+    """The workspace's Templates, converting a plain templates.json left by
+    an earlier version (#111 C2c) on the way. Called at the first use of
+    templates in a session, with the key available:
+      1. templates.sealed opens: it is used, and a templates.json beside it
+         (a crash after the sealed copy was written) is deleted.
+      2. templates.sealed could not be read just now (in use, access
+         refused): nothing is written or deleted, a templates.json beside it
+         included, and pending refuses every save and reset until a later
+         first use reads it.
+      3. Otherwise (no templates.sealed, or one that does not open: damaged,
+         another workspace's, too large) a templates.json that can be read
+         is written sealed, replacing it, and only then deleted. One that
+         does not decode or parse (damaged) gives no saved templates: with no
+         templates.sealed, an empty one is written and the plain file
+         deleted; beside a damaged templates.sealed, nothing is written and
+         both stay until the user's next save replaces the sealed one (the
+         plain file is then deleted at the next start, as in 1).
+      4. A templates.json that cannot be read now, or whose sealed copy
+         cannot be written, is left exactly as it is for the next first use;
+         one larger than MAX_TEMPLATES_BYTES (or whose sealed copy would be)
+         is left too, and never converts. pending refuses every save and
+         reset meanwhile, so no templates.sealed is written to win over it.
+    unreadable is set whenever something could not be used (the app logs it).
+    Leftover temporary files of both files are removed first. Ordinary
+    deletion: old blocks of templates.json may remain on disk (BitLocker,
+    ENCRYPTION.md)."""
+    folder = Path(folder)
+    sealed, plain = folder / TEMPLATES_FILE, folder / PLAIN_TEMPLATES_FILE
+    for leftover in _leftovers(sealed) + _leftovers(plain):
+        _remove(leftover)
+    templates = Templates(sealed, sealer)
+    if templates.state == "busy":
+        return templates
+    if templates.state != "opened" and plain.is_file():
+        try:
+            data = _read_capped(plain)
+        except OSError:                      # in use or refused: kept, tried next time
+            return _kept(templates, PENDING_RETRY)
+        if data is None:                     # too large ever to convert: kept
+            return _kept(templates, PENDING_TOO_LARGE)
+        damaged = templates.state == "damaged"
+        try:
+            raw = json.loads(data.decode("utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("not templates")
+            saved = _saved_from(raw)
+        except (ValueError, RecursionError):  # damaged (RecursionError: absurd nesting)
+            if templates.state == "damaged":
+                # Nothing to convert, and nothing is written without a save:
+                # both files stay; the user's next save replaces the sealed one.
+                templates.unreadable = True
+                return templates
+            saved, damaged = {}, True
+        try:
+            with templates._lock:
+                templates._write(saved)
+        except OSError:                      # not written: kept, tried next time
+            return _kept(templates, PENDING_RETRY)
+        except HandoffError:                 # its sealed copy would be over the limit
+            return _kept(templates, PENDING_TOO_LARGE)
+        templates.unreadable = damaged
+    if os.path.lexists(plain) and not plain.is_dir():
+        _remove(plain)
+    return templates
+
+
+def _kept(templates, pending):
+    """A templates.json left unconverted: the built-ins only, logged as
+    unreadable, and no save or reset until a later first use converts it."""
+    templates.unreadable = True
+    templates.pending = pending
+    return templates
 
 
 def _valid(entry):

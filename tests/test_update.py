@@ -349,6 +349,27 @@ class MigrationTests(unittest.TestCase):
         finally:
             s.close()
 
+    def test_handoff_templates_never_block_an_update_and_survive_it(self):
+        # Templates are configuration (#111 C2c, C4): they never make an update
+        # wait, and the root key carried in crypto_meta still opens them.
+        from workspace import handoff
+        s = Store(self.db, protector=keyprotect.TestProtector())
+        t = handoff.open_templates(self.db.parent, s.file_sealer(handoff.TEMPLATES_FILE))
+        tid = t.save(None, "Ours", "Our prompt")
+        s.close()
+        g = update.gate(self.db, self.saved + 1)
+        self.assertEqual((g["code"], g["blockers"]), (update.ALLOWED, []))
+        store.SCHEMA_VERSION = self.saved + 1
+        s = Store(self.db, protector=keyprotect.TestProtector())
+        try:
+            again = handoff.open_templates(self.db.parent,
+                                           s.file_sealer(handoff.TEMPLATES_FILE))
+            self.assertFalse(again.unreadable)
+            self.assertEqual(("Ours", "Our prompt"),
+                             (again.get(tid)["title"], again.get(tid)["prompt"]))
+        finally:
+            s.close()
+
     def test_interrupted_migration_leaves_the_old_workspace_intact(self):
         s = Store(self.db, protector=keyprotect.TestProtector())
         with s.tx() as db:

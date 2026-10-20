@@ -315,7 +315,10 @@ class Workspace:
         self.store.log = self.log         # damaged values are recorded here (content-free)
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
-        self.templates = handoff.Templates(self.root / "templates.json")
+        # Handoff templates are built at their first use, not here (#111 C2c):
+        # nothing is read, converted or logged while the key is unavailable.
+        self._templates = None
+        self._templates_lock = threading.Lock()
         self.policy = policy.PolicySource(reader=policy_reader or policy.read_registry)
         self._clipboard_clears = []       # (due, sequence) for ClipboardClearMinutes
         self._clipboard_lock = threading.Lock()
@@ -2308,6 +2311,24 @@ class Workspace:
             # nothing is copied or saved either (_checked builds it first).
             raise WorkspaceError(DAMAGED_REFUSAL) from None
 
+    @property
+    def templates(self):
+        """The handoff templates (templates.sealed, sealed under the workspace
+        key; #111 C2c), built at their first use in a session, when a plain
+        templates.json from an earlier version is converted. While the store
+        is locked nothing is built, read, converted or logged: its
+        KeyUnavailable is raised (C4a's bridge gate refuses first)."""
+        with self._templates_lock:
+            if self._templates is None:
+                if self.store.locked is not None:
+                    raise self.store.locked
+                sealer = self.store.file_sealer(handoff.TEMPLATES_FILE)
+                templates = handoff.open_templates(self.root, sealer)
+                if templates.unreadable:
+                    self.log.write("templates_unreadable")      # content-free (P3)
+                self._templates = templates
+            return self._templates
+
     def handoff_templates(self):
         return self.templates.all()
 
@@ -2321,7 +2342,7 @@ class Workspace:
     def reset_template(self, tid):
         if not isinstance(tid, str):
             raise WorkspaceError("That template no longer exists.")
-        self.templates.reset(tid)
+        self._handoff(self.templates.reset, tid)
 
     def handoff_preview(self, mid, tid, anonymise=False):
         """Exactly what Copy and Save will produce, plus the options in use.
