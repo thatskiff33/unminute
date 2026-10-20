@@ -21,6 +21,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import asr_engines  # noqa: E402
 from workspace import gpu, setup  # noqa: E402
@@ -117,12 +118,12 @@ class ModelNameTests(unittest.TestCase):
         from workspace.app import Workspace
         with tempfile.TemporaryDirectory() as tmp:
             ws = Workspace(Path(tmp) / "ws", Path(tmp) / "models", start=False, battery=False,
-                           policy_reader=lambda: ({}, ()))
+                           policy_reader=lambda: ({}, ()), protector=keyprotect.TestProtector())
             try:
                 mid = ws.store.create_meeting("Synthetic meeting")
                 sid = ws.store.add_source(mid, original_path=None, original_sha256="0" * 64,
                                           original_size=1, original_mtime_ns=1,
-                                          audio_sha256="0" * 64, samples=16000,
+                                          audio_id="0" * 64, samples=16000,
                                           sample_rate=16000)
                 for model in (asr_engines.PARAKEET_V3, asr_engines.PARAKEET_V2):
                     ws.store.ensure_version(mid, sid, engine="parakeet", model=model,
@@ -751,7 +752,8 @@ class ProgressTests(unittest.TestCase):
     def test_setup_state_sends_the_number(self):
         from workspace.app import Workspace
         ws = Workspace(Path(self.tmp.name) / "ws", Path(self.tmp.name) / "models", start=False,
-                       battery=False, policy_reader=lambda: ({}, ()))
+                       battery=False, policy_reader=lambda: ({}, ()),
+                       protector=keyprotect.TestProtector())
         try:
             name = asr_engines.RECOMMENDED_PARAKEET
             ws.downloads.state[name] = {"state": "running", "message": "Starting", "log": []}

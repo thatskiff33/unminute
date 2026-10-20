@@ -11,14 +11,16 @@
 #     chunks; reported progress comes from committed chunks only;
 #   - the decoded audio is checked against its recorded identity before a
 #     run, so changed audio is never transcribed into an existing version;
-#   - a database error (e.g. disk full) rolls the chunk back and stops the run.
+#   - a database error (e.g. disk full) rolls the chunk back and stops the run;
+#   - a meeting whose key or text cannot be read (DamagedContent, #111 C2b-2)
+#     rolls the chunk back and stops the run without counting a failure.
 #
 # The engine is anything with transcribe(waveform) -> (segments, duration)
 # (asr_engines.WhisperEngine / ParakeetEngine). #15 runs it in a worker process.
 
 from workspace.asr_engines import Segment
 from workspace import chunking
-from workspace.store import StoreError
+from workspace.store import DamagedContent, StoreError
 
 SAMPLE_RATE = 16000
 
@@ -31,6 +33,9 @@ class RunResult:
 # A chunk that has failed this many times stops the run instead of being
 # retried forever (e.g. a worker that crashes on the same audio every time).
 MAX_ATTEMPTS = 3
+
+DAMAGED_NOTE = ("This meeting's text could not be saved because part of it could not be "
+                "read. Nothing was changed.")
 
 
 def _note_error(store, mid, message):
@@ -109,6 +114,16 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
                 vid, idx, mine, epoch=epoch, attempt_id=attempt,
                 backend=getattr(engine, "device", None),
                 precision=getattr(engine, "precision", None))
+        except DamagedContent:
+            # The meeting's key or text does not open: not this chunk's fault,
+            # so it does not count towards MAX_ATTEMPTS. The phase becomes
+            # "error", so the app does not pick the meeting up again by itself.
+            # A note sealed under a key that will not open cannot be stored
+            # (set_phase leaves it out): the app shows DAMAGED_NOTE then
+            # (Workspace._error_note), and nothing is stored plain.
+            _finish(store, attempt, "stopped", engine)
+            _note_error(store, mid, DAMAGED_NOTE)
+            return RunResult.STORE_ERROR
         except StoreError as exc:
             _finish(store, attempt, "failed", engine)
             _note_error(store, mid, f"Could not save progress: {exc}")
@@ -152,11 +167,12 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
 
 
 def _audio_matches(reader, source):
-    """Length always; full SHA-256 when the reader is backed by a file."""
+    """Length always; full SHA-256 when the reader is backed by a file
+    (sources.audio_id holds the decoded audio's SHA-256 until C3a)."""
     if len(reader) != source["samples"]:
         return False
     path = getattr(reader, "path", None)
     if path is None:
         return True
     from workspace.media import sha256_file
-    return sha256_file(path) == source["audio_sha256"]
+    return sha256_file(path) == source["audio_id"]

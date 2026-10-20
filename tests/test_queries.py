@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -101,7 +102,8 @@ class MeetingListTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
         ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
-                       speaker_model=fake("fake_diarizer"), battery=False)
+                       speaker_model=fake("fake_diarizer"), battery=False,
+                       protector=keyprotect.TestProtector())
         ws.settings.update(model=fake("sentences"), speakers=True)
         ws.start()
         paths = [str(write_wav(root / f"Synthetic {i}.wav", 30, seed=i)) for i in range(6)]
@@ -207,8 +209,9 @@ class MeetingListTests(unittest.TestCase):
         try:
             self.assertEqual(self.statements(), six)
         finally:
-            with self.ws.store.tx() as db:
-                db.executemany("DELETE FROM meetings WHERE id = ?", [(m,) for m in mids])
+            with self.ws.store.tx() as db:            # with their keys (#111 C2b-2)
+                for m in mids:
+                    self.ws.store.delete_meeting_row(db, m)
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
@@ -217,7 +220,8 @@ class DisplayCacheTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
-                            allow_test_engines=True, policy_reader=lambda: ({}, ()))
+                            allow_test_engines=True, policy_reader=lambda: ({}, ()),
+                            protector=keyprotect.TestProtector())
         self.now = [100.0]
         self.ws._clock = lambda: self.now[0]
 

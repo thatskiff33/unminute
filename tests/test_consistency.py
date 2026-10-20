@@ -103,6 +103,16 @@ class VersionTests(unittest.TestCase):
                          "VERSION and the newest changelog heading differ; tools/changelog.py "
                          "sets both when a release is prepared")
 
+    def test_no_release_is_prepared_until_phase_c_is_complete(self):
+        # #111 C2b-2: Phase C ships as one release. Until C4b sets
+        # PHASE_C_COMPLETE, VERSION stays what it was when C2b-2 merged, so a
+        # release-prep written by hand (not by tools/changelog.py, which
+        # refuses) fails here.
+        from workspace import keystore
+        if not keystore.PHASE_C_COMPLETE:
+            self.assertEqual(read("VERSION").strip(), keystore.PHASE_C_FROZEN_VERSION,
+                             "no release can be prepared while Phase C (#111) is not complete")
+
 
 class InstallIdentityTests(unittest.TestCase):
     """Names and codes shared by the app, the build and the installer scripts."""

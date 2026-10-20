@@ -56,12 +56,16 @@ FRAME_FILE = re.compile(r"(<[A-Za-z0-9_.-]{1,60}>|([A-Za-z0-9_.-]{1,60}/){0,7}"
                         r"[A-Za-z0-9_.-]{1,60}\.pyx?)")
 SECRET = re.compile(r"hf_[A-Za-z0-9]{20,}")          # never kept, whatever the field
 KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_error",
-         "output", "integrity"}
+         "output", "integrity",
+         # #111 C2b-2: a sealed value that did not open (table, column, count),
+         # and a workspace key Windows would not unlock (reason, Windows error)
+         "damaged_value", "key_unavailable"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 # The number and true/false fields the app writes (FIELDS has the text ones).
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
-           "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s"}
+           "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
+           "winerror"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|setup)(\.[0-9])?")   # a log file's stem
 BIG = 10 ** 12                  # no number the app writes is this large
 INCIDENT_REPEATS = 3            # the same incident is written this often a run,
@@ -104,6 +108,15 @@ FIELDS = {
     "stream": _set("stdout", "stderr"),
     "event": _set("error", "rejection"),  # a page error (report_ui_error)
     "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)
+    # #111 C2b-2: why the workspace key could not be used (store.KeyUnavailable),
+    # and where a sealed value did not open (store.CONTENT_COLUMNS, logical names)
+    "reason": _set("windows", "key", "protector", "missing"),
+    "table": _set("meetings", "reviewed_snapshots", "sources", "segments", "edits",
+                  "edit_history", "speaker_runs", "speaker_corrections", "handoff_options",
+                  "holds", "recording_sources", "watched_folders", "intake_meta"),
+    "column": _set("title", "last_error", "text", "original_path", "words_json", "before",
+                   "after", "error", "value", "omitted", "redactions", "reason", "info",
+                   "path", "v"),
     "version": _pattern(re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-preview\.[0-9]{1,4})?"
                                    r"(\+source)?|source")),
     "python": _pattern(re.compile(r"[0-9]{1,2}\.[0-9]{1,3}\.[0-9]{1,3}")),

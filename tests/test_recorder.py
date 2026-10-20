@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # fake_worker_engines
 
 from workspace import consent  # noqa: E402  (stdlib only)
@@ -734,6 +735,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.ws = self.make()
 
     def make(self, **kw):
+        kw.setdefault("protector", keyprotect.TestProtector())
         ws = Workspace(self.root / "ws", self.root / "models", start=False,
                        allow_test_engines=True, battery=False, **kw)
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
@@ -943,7 +945,8 @@ class WorkspaceRecordingTests(unittest.TestCase):
         sw.override()                                    # the app died here
         with mock.patch("workspace.app.Store", side_effect=RuntimeError("damaged")):
             with self.assertRaises(RuntimeError):        # even a start that fails later
-                Workspace(root, self.root / "models", start=False, lid_switch=sw)
+                Workspace(root, self.root / "models", start=False, lid_switch=sw,
+                          protector=keyprotect.TestProtector())
         self.assertEqual(scheme.values, {True: 1, False: 2})
         self.assertFalse((root / "power_restore.json").exists())
 
@@ -1009,7 +1012,8 @@ class WorkspaceRecordingTests(unittest.TestCase):
         (root / "power_restore.json").write_text("{damaged", encoding="utf-8")
         scheme = FakeScheme(ac=0, dc=0)
         sw = power.LidSwitch(root / "power_restore.json", api=scheme, managed=lambda: False)
-        ws = Workspace(root, self.root / "models", start=False, lid_switch=sw)
+        ws = Workspace(root, self.root / "models", start=False, lid_switch=sw,
+                       protector=keyprotect.TestProtector())
         try:
             ws._policy_tick()
             lids = [r for r in ws.recording_status()["reports"] if r.get("lid")]

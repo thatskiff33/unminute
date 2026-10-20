@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
@@ -33,13 +34,13 @@ class SpeakerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
-        self.store = Store(root / "db.sqlite")
+        self.store = Store(root / "db.sqlite", protector=keyprotect.TestProtector())
         self.handle = WorkerHandle(root, allow_test_engines=True)
         self.audio = root / "audio.f32"
         np.zeros(60 * SR, dtype="<f4").tofile(self.audio)
         mid = self.store.create_meeting("t")
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
-                                    original_size=1, original_mtime_ns=0, audio_sha256="b" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_id="b" * 64,
                                     samples=60 * SR, sample_rate=SR)
         plan = [(a * SR, (a + 20) * SR, a * SR, (a + 20) * SR) for a in (0, 20, 40)]
         self.vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
@@ -99,7 +100,7 @@ class SpeakerTests(unittest.TestCase):
         self.store.start_speaker_run(self.vid)                 # app dies mid-pass
         path = self.store.path
         self.store.close()
-        self.store = Store(path)
+        self.store = Store(path, protector=keyprotect.TestProtector())
         run = self.store.speaker_runs(self.vid)[-1]
         self.assertEqual(run["status"], "interrupted")
         self.assertIn("start again from the beginning", run["error"])

@@ -29,14 +29,20 @@ ALLOWED, WAIT, TOO_NEW = 0, 5, 6     # exit codes used by the installer
 UNREADABLE = object()                  # current_schema(): the workspace exists but cannot be read
 
 # Tables that never make a migration wait: bookkeeping (schema_version, the
-# minimal receipts) and watched-folder configuration (#23). Every other table
-# can hold meeting content. A watched folder's path is kept through the
-# store's codec like content (store.CONTENT_COLUMNS, #111 C2) because it can
-# name a client, but it is configuration, not a meeting's content: it is
-# carried over (store.CARRY_OVER) and never blocks an update (C4).
+# minimal receipts), watched-folder configuration (#23) and the workspace's
+# root key (crypto_meta, #111 C2b-2). Every other table can hold meeting
+# content. A watched folder's path is sealed like content
+# (store.CONTENT_COLUMNS, #111 C2) because it can name a client, but it is
+# configuration, not a meeting's content: it is carried over
+# (store.CARRY_OVER), with the root key that opens it, and never blocks an
+# update (C4). A meeting's or a recording's key (content_keys,
+# recording_keys) and a recording source are not here: one left without its
+# meeting is leftover content, and the update waits.
 NON_CONTENT = {"schema_version", "receipts", "sqlite_sequence",
                # watched-folder configuration and bounded suppression data (#23)
-               "watched_folders", "intake_seen", "intake_content", "intake_meta"}
+               "watched_folders", "intake_seen", "intake_content", "intake_meta",
+               # the root key, protected for this Windows user (#111 C2b-2)
+               "crypto_meta"}
 
 
 def deployment(app_file=None):
@@ -156,7 +162,9 @@ def current_schema(db_path):
 
 
 def blockers(db_path):
-    """What stops a schema-changing update, in plain language. Counts only."""
+    """What stops a schema-changing update, in plain language. Counts only.
+    Reads plain columns and folder names only: no key is needed, so it works
+    on a workspace whose key cannot be unlocked."""
     _local(db_path)                     # before any file access
     try:
         if _stat(db_path) is None:
@@ -195,6 +203,13 @@ def blockers(db_path):
                         f"{waiting} microphone recording{'s have' if waiting != 1 else ' has'} "
                         "not been imported yet. Open the app so it can import or discard "
                         "them."})
+        # Meeting audio left in the workspace (media\<id>), with or without
+        # its meeting: plain data the tables do not show (#111 C2b-2). The
+        # update waits; nothing here deletes it.
+        audio = _filled_folders(Path(db_path).parent / "media")
+        if audio:
+            out.append({"kind": "media", "count": audio, "message":
+                        "Meeting audio files are still in the workspace."})
         known = {"holds", "meetings", "cleanup_jobs"} | NON_CONTENT
         leftover = sum(count(t) for t in tables if t not in known)
         if leftover and not meetings:
@@ -204,6 +219,21 @@ def blockers(db_path):
         return out
     finally:
         con.close()
+
+
+def _filled_folders(folder):
+    """Subfolders of folder that hold anything. One that cannot be read
+    counts as filled: the update waits rather than guess."""
+    if not folder.is_dir():
+        return 0
+    count = 0
+    for p in folder.iterdir():
+        try:
+            if p.is_dir() and next(p.iterdir(), None) is not None:
+                count += 1
+        except OSError:
+            count += 1
+    return count
 
 
 def gate(db_path, new_schema):

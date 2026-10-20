@@ -286,7 +286,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | NVIDIA cuBLAS for CUDA 12 (`nvidia-cublas-cu12` 12.8.4.1, optional download) | NVIDIA CUDA Toolkit end user licence agreement (the wheel's `License.txt`, PyPI "NVIDIA Proprietary Software": 1.1.1 install and use; 2.1 for applications used in systems with NVIDIA GPUs; 1.2 no stand-alone redistribution; cuBLAS is listed as distributable in Attachment A) | Downloaded by the user in Settings > Manage downloads from files.pythonhosted.org (NVIDIA's own PyPI release), for Whisper on an NVIDIA graphics card. Not redistributed here. Checked 20 October 2026 (#248); to confirm with the adviser like the other licences. |
 | sounddevice | MIT | Optional microphone recording in Unminute. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
-| cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Ready for encryption at rest; nothing uses it yet. |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Encrypts meeting content in the workspace database (#111 phase C; not yet in a release). |
 | OpenSSL | To confirm | Version 4.0.3, built into cryptography's Windows wheel. The wheel's own bill of materials names it but gives no licence. |
 
 Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.

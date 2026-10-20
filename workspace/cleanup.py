@@ -27,7 +27,8 @@ from pathlib import Path
 from workspace import media, safe_paths
 from workspace.holds import record_receipt
 from workspace.media import sha256_file
-from workspace.store import DAMAGE_CODES, StoreError, new_id
+from workspace.store import (DAMAGE_CODES, DAMAGED_REFUSAL, DamagedContent, StoreError,
+                             compaction_marker, mark_compaction_owed, new_id)
 
 AUDIO, TRANSCRIPT = "audio", "transcript"
 
@@ -52,7 +53,16 @@ class JobResult:
 
 def confirm_transcript_reviewed(store, mid):
     """Checkpoint 1: freeze the reviewed transcript and record the intent to
-    remove the meeting's audio. Removal itself happens in run_job()."""
+    remove the meeting's audio. Removal itself happens in run_job(). A
+    transcript with a part that cannot be read is refused: the reviewed
+    snapshot is never a placeholder (nothing is written)."""
+    try:
+        return _confirm_reviewed(store, mid)
+    except DamagedContent:
+        raise CleanupError(DAMAGED_REFUSAL) from None
+
+
+def _confirm_reviewed(store, mid):
     with store.tx() as db:
         meeting = db.execute("SELECT id, reviewed_at FROM meetings WHERE id = ?",
                              (mid,)).fetchone()
@@ -142,10 +152,12 @@ def _add_job(db, mid, phase):
 def render_reviewed(store, vid):
     """The reviewed text as plain lines: [time] Speaker: text, with edits and
     the user's speaker names and corrections (#21) applied. Called inside the
-    confirmation transaction (the store lock is re-entrant)."""
+    confirmation transaction (the store lock is re-entrant). Raises
+    DamagedContent if any part cannot be read (store.strict)."""
     from workspace.speaker_names import resolve
-    rows = store.transcript(vid, words=False)
-    view = resolve(store, vid)
+    with store.strict():
+        rows = store.transcript(vid, words=False)
+        view = resolve(store, vid)
     lines = []
     for r in rows:
         h, rest = divmod(int(r["start_s"]), 3600)
@@ -271,18 +283,24 @@ def _remove_audio(store, mid, media_root, original_roots):
         shutil.rmtree(folder)         # raises on a locked file: job stays 'failed'
     notes = []
     for src in store.sources(mid):
-        notes.append(_remove_original(src, original_roots))
+        notes.append(_remove_original(store, src, original_roots))
     with store.tx() as db:
         db.execute("UPDATE meetings SET audio_removed_at = ? WHERE id = ?", (time.time(), mid))
+        # The audio key and the recording's details go in the same
+        # transaction (#111 C2b-2); the text key stays for the transcript.
+        store.remove_audio_keys(db, mid)
     return "; ".join(n for n in notes if n) or None
 
 
-def _remove_original(src, roots):
+def _remove_original(store, src, roots):
     """Delete an intake original only with explicit authority, inside an
-    authorised folder, and only if it is still the exact file imported."""
+    authorised folder, and only if it is still the exact file imported (its
+    fingerprint matches, C3)."""
     path = src["original_path"]
     if not src["delete_original"] or not path:
         return None                                   # no authority: never touched
+    if "original_path" in src.get("damaged", ()):
+        return "Original kept: its location could not be read."
     try:
         if os.name == "nt":             # Windows path rules (the app is Windows-only)
             safe_paths.check_raw(path)  # never a network, device or stream path
@@ -300,7 +318,7 @@ def _remove_original(src, roots):
     if p.is_symlink() or reparse:
         return "Original kept: it is a link, not the recording itself."
     if (st.st_size, st.st_mtime_ns) != (src["original_size"], src["original_mtime_ns"]) \
-            or sha256_file(p) != src["original_sha256"]:
+            or not store.same_fingerprint("original", sha256_file(p), src["original_fp"]):
         return "Original kept: the file changed since it was imported."
     p.unlink()
     return "Original deleted."
@@ -332,7 +350,7 @@ def _remove_transcript(store, mid, media_root):
         # write-ahead log is emptied into the main file, but a damaged database
         # cannot be rebuilt by VACUUM (#198): done, with the compaction left
         # to the next start whose database check passes.
-        _mark_deferred(store)
+        mark_compaction_owed(store.path)
         deferred = True
     folder = media.meeting_folder(media_root, mid)   # anything left (clips, exports)
     if folder.exists():
@@ -361,26 +379,12 @@ def _wal_truncated(store):
             return False
 
 
-def _mark_deferred(store):
-    """Create the marker without following a link planted in its place: an
-    existing file (or link) is left as it is, never written through."""
-    try:
-        fd = os.open(_deferred_marker(store), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return
-    os.close(fd)
-
-
-def _deferred_marker(store):
-    """A file beside the database (configuration, no content): a compaction
-    is owed (#198)."""
-    return store.path.with_name("compact.pending")
-
-
 def compact_deferred(store):
     """At a start whose database check passed: the compaction a damaged
-    database could not do. Kept for the next such start if it fails again."""
-    marker = _deferred_marker(store)
+    database could not do, or a storage migration did not finish (#111
+    C2b-2). Kept for the next such start if it fails again. The marker is
+    made by store.mark_compaction_owed, which never writes through a link."""
+    marker = compaction_marker(store.path)
     if not marker.exists():
         return False
     try:

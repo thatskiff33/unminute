@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))      # fake_worker_engines
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -485,7 +486,8 @@ class WorkspaceGpuTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False,
                             allow_test_engines=True, battery=False,
-                            speaker_model="test:fake_worker_engines:fake_diarizer")
+                            speaker_model="test:fake_worker_engines:fake_diarizer",
+                            protector=keyprotect.TestProtector())
 
     def tearDown(self):
         self.ws.close()
@@ -974,7 +976,8 @@ class WorkspaceWhisperGpuTests(unittest.TestCase):
         self.root = Path(tmp.name)
         self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
                             allow_test_engines=True, battery=False,
-                            speaker_model="test:fake_worker_engines:fake_diarizer")
+                            speaker_model="test:fake_worker_engines:fake_diarizer",
+                            protector=keyprotect.TestProtector())
         self.addCleanup(self.ws.close)
         pcm = (np.random.default_rng(1).standard_normal(100 * 16000) * 300).astype("<i2")
         self.rec = self.root / "synthetic-standup.wav"

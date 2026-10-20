@@ -18,6 +18,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import diag, store  # noqa: E402
 from workspace.app import DEFAULT_SETTINGS, SETTINGS_VERSION, Settings, Workspace  # noqa: E402
@@ -281,6 +282,7 @@ class IntegrityTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def open(self, **kw):
+        kw.setdefault("protector", keyprotect.TestProtector())
         self.ws = Workspace(self.root, Path(self.tmp.name) / "models", start=False,
                             allow_test_engines=True, battery=False,
                             policy_reader=lambda: ({}, ()), **kw)
@@ -410,14 +412,14 @@ class IntegrityTests(unittest.TestCase):
 
     def test_no_migration_while_the_check_holds_work(self):
         db = Path(self.tmp.name) / "older.db"
-        Store(db).close()
+        Store(db, protector=keyprotect.TestProtector()).close()
         con = sqlite3.connect(db)
         con.execute("DELETE FROM schema_version")
         con.execute("INSERT INTO schema_version VALUES (?)", (store.SCHEMA_VERSION - 1,))
         con.commit()
         con.close()
         with self.assertRaisesRegex(store.MigrationBlocked, "found damage"):
-            Store(db, housekeeping=False)
+            Store(db, housekeeping=False, protector=keyprotect.TestProtector())
 
     def test_a_database_error_never_discards_an_import(self):
         ws = self.open()
@@ -446,7 +448,7 @@ class IntegrityTests(unittest.TestCase):
 
     def test_only_damage_codes_count_as_damage(self):
         good = Path(self.tmp.name) / "fine.db"
-        Store(good).close()
+        Store(good, protector=keyprotect.TestProtector()).close()
         self.assertTrue(quick_check_file(good))
         junk = Path(self.tmp.name) / "junk.db"
         junk.write_bytes(b"\x00" * 4096 + b"not a database" * 100)
@@ -466,7 +468,7 @@ class IntegrityTests(unittest.TestCase):
 
     def test_an_io_error_is_tried_once_more_before_it_counts(self):
         good = Path(self.tmp.name) / "fine.db"
-        Store(good).close()
+        Store(good, protector=keyprotect.TestProtector()).close()
         real = sqlite3.connect
         calls = []
 
@@ -544,7 +546,8 @@ class IntegrityTests(unittest.TestCase):
             self.assertIn(code, main._open_failed(StoreError("again")))   # the same code
         self.assertEqual([r["result"] for r in self.checks()], ["failed"])   # recorded once
         db.unlink()
-        Store(db).close()                                    # sound: the store's own message
+        Store(db,
+              protector=keyprotect.TestProtector()).close()   # sound: the store's own message
         with mock.patch("workspace.store.default_root", return_value=self.root):
             self.assertEqual(main._open_failed(StoreError("Newer schema")), "Newer schema")
             with mock.patch("workspace.store.quick_check_file", return_value=None):
@@ -684,7 +687,6 @@ class HoldTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
         self.rec = write_wav(self.base / "synthetic-standup.wav", 20)
-        self.kw = dict(allow_test_engines=True, battery=False, policy_reader=lambda: ({}, ()))
         self.ws = None
 
     def tearDown(self):
@@ -692,15 +694,20 @@ class HoldTests(unittest.TestCase):
             self.ws.close()
         self.tmp.cleanup()
 
+    def workspace(self, **kw):
+        """The workspace, with the test protector unless the caller gives one."""
+        kw.setdefault("protector", keyprotect.TestProtector())
+        return Workspace(self.base / "ws", self.base / "models", allow_test_engines=True,
+                         battery=False, policy_reader=lambda: ({}, ()), **kw)
+
     def reopen_held(self):
         with mock.patch("workspace.app.quick_check_file", return_value=False):
-            ws = self.ws = Workspace(self.base / "ws", self.base / "models", start=False,
-                                     check_integrity=True, **self.kw)
+            ws = self.ws = self.workspace(start=False, check_integrity=True)
         ws._integrity_ok = WatchedEvent()
         return ws
 
     def test_transcription_and_imports_wait_until_continue(self):
-        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        first = self.workspace(start=False)
         first.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         first._import_one(self.rec)
         first.log.open_run()                    # ends without closing
@@ -720,13 +727,13 @@ class HoldTests(unittest.TestCase):
         self.assertEqual([m["progress"] for m in ws.meetings()], [100, 100])
 
     def test_cleanup_waits_too(self):
-        ws = Workspace(self.base / "ws", self.base / "models", **self.kw)
+        ws = self.workspace()
         ws.settings.update(model="test:fake_worker_engines:sentences", speakers=False)
         ws._import_one(self.rec)
         self.assertTrue(ws.wait_idle(120))
         mid = ws.meetings()[0]["id"]
         ws.close()
-        ws = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        ws = self.workspace(start=False)
         ws.confirm_reviewed(mid)                # lined up; nothing runs it yet
         ws.log.open_run()                       # then the app ends without closing
         ws.close()
@@ -739,7 +746,7 @@ class HoldTests(unittest.TestCase):
         self.assertFalse(ws.detail(mid)["audio_available"])   # removed once released
 
     def test_closing_while_held_does_not_wait_for_the_hold(self):
-        first = Workspace(self.base / "ws", self.base / "models", start=False, **self.kw)
+        first = self.workspace(start=False)
         first.log.open_run()
         first.close()
         ws = self.reopen_held()

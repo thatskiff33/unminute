@@ -128,8 +128,8 @@ Before switching version, the installer runs the **new** version's own check, `p
 | --- | --- |
 | None yet | Installed. |
 | Same storage format (schema) | Installed. Everything is kept: meetings, edits, holds, settings. |
-| New storage format, and the workspace holds no meetings, no active retention holds, no unfinished cleanup and no microphone recording waiting to be imported | Installed. Settings, watched folders and the minimal cleanup receipts are carried over when the app next opens. |
-| New storage format, and the workspace still holds any of those | **Waits.** Exit code 5, with the reasons, for example "2 retention holds are active. Holds never expire on their own…". Nothing is changed. |
+| New storage format, and the workspace holds no meetings, no active retention holds, no unfinished cleanup, no microphone recording waiting to be imported and no meeting audio files | Installed. Settings, watched folders, the workspace's encryption key and the minimal cleanup receipts are carried over when the app next opens. |
+| New storage format, and the workspace still holds any of those (or a meeting's key or recording key left without its meeting) | **Waits.** Exit code 5, with the reasons, for example "2 retention holds are active. Holds never expire on their own…" or "Meeting audio files are still in the workspace.". Nothing is changed. |
 | Older storage format than the workspace (a downgrade) | Refused. Exit code 6. |
 | A workspace that cannot be read (damaged, locked, or Windows cannot tell whether it is there) | **Waits.** Exit code 5. It is never treated as "none yet". |
 | A workspace location the app refuses: `%LOCALAPPDATA%` missing, in OneDrive or on a network drive, or `%LOCALAPPDATA%\Unminute` or its `workspace` folder redirected there (#219) or linked to a folder that cannot be reached (#266) | Refused. Exit code 6, with the app's message. |
@@ -141,6 +141,8 @@ Rules:
 - In Intune, map exit code 5 to "Retry". The device gets the update once the people responsible have finished their meetings and released their holds.
 - Deploy in **user** context. The gate checks the signed-in user's workspace, and in System context it would see none.
 - A workspace that exists but cannot be read (damaged or locked) also makes the update wait, with exit code 5. It is never treated as a fresh install.
+- The check reads only plain counts and needs no encryption key (#111 C2b-2), so it works, and gives the same answer, when Windows cannot unlock the user's key. A first start whose key cannot be protected leaves no workspace, so the check sees none.
+- Schema 2 (encryption at rest, #111 phase C) ships as one release, once C3 and C4 are done. A version before it cannot open a schema-2 workspace (exit code 6, as for any downgrade); going back means moving the workspace folder aside first.
 - `-SelfService` switches an IT-managed installation back to self-service updates.
 
 Settings > Updates in the app shows the deployment mode and anything that would hold up a storage-format update.

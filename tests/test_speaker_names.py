@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
@@ -24,10 +25,10 @@ class SpeakerNameTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / "db.sqlite"
-        self.store = Store(self.path)
+        self.store = Store(self.path, protector=keyprotect.TestProtector())
         mid = self.store.create_meeting("t")
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
-                                    original_size=1, original_mtime_ns=0, audio_sha256="b" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_id="b" * 64,
                                     samples=60 * SR, sample_rate=SR)
         self.vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
                                              model_revision="1", precision="int8", config={},
@@ -55,7 +56,7 @@ class SpeakerNameTests(unittest.TestCase):
         """A second transcribed meeting, with no speaker runs yet."""
         mid = self.store.create_meeting("u")
         sid = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
-                                    original_size=1, original_mtime_ns=0, audio_sha256="d" * 64,
+                                    original_size=1, original_mtime_ns=0, audio_id="d" * 64,
                                     samples=60 * SR, sample_rate=SR)
         vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
                                         model_revision="1", precision="int8", config={},
@@ -117,7 +118,7 @@ class SpeakerNameTests(unittest.TestCase):
         new = sn.assign(self.store, self.vid, self.segs["passage 35"], "new")
         self.assertEqual(new, "NEW_1")
         self.store.close()
-        self.store = Store(self.path)
+        self.store = Store(self.path, protector=keyprotect.TestProtector())
         self.assertEqual(self.who("passage 0"), "Aroha Smith")
         self.assertEqual(self.who("passage 30"), "Aroha Smith")
         self.assertEqual(self.who("passage 35"), "Speaker 3")
@@ -195,7 +196,7 @@ class SpeakerNameTests(unittest.TestCase):
         mid = self.store.create_meeting("long")
         sid = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
                                     original_size=1, original_mtime_ns=0,
-                                    audio_sha256="d" * 64, samples=60 * SR, sample_rate=SR)
+                                    audio_id="d" * 64, samples=60 * SR, sample_rate=SR)
         vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
                                         model_revision="1", precision="int8", config={},
                                         chunk_plan=[(0, 60 * SR, 0, 60 * SR)])

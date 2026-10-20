@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -42,7 +43,8 @@ class SetupTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
-                            allow_test_engines=True, battery=False)
+                            allow_test_engines=True, battery=False,
+                            protector=keyprotect.TestProtector())
         # Fake download process and an in-memory credential store.
         self.ws.downloads.target = fake_worker_engines.fake_download
         self.vault = {}

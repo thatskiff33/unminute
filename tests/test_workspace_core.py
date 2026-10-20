@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
@@ -93,7 +94,7 @@ class CoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmp.name) / "workspace.db"
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
 
     def tearDown(self):
         self.store.close()
@@ -105,7 +106,7 @@ class CoreTests(unittest.TestCase):
         mid = self.store.create_meeting("Synthetic")
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
                                     original_size=1, original_mtime_ns=0,
-                                    audio_sha256="b" * 64, samples=reader.total,
+                                    audio_id="b" * 64, samples=reader.total,
                                     sample_rate=SR)
         plan = chunking.plan_chunks(reader, reader.total)
         vid = self.store.ensure_version(mid, sid, engine="fake", model="fake", model_revision="1",
@@ -200,7 +201,7 @@ class CoreTests(unittest.TestCase):
         mid, _, vid, *_ = self.new_meeting(60.0)
         self.store.start_attempt(vid, 0)          # process "dies" here
         self.store.close()
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
         self.assertEqual([a["result"] for a in self.store.attempts(vid, 0)], ["interrupted"])
 
     def test_read_errors_become_store_error(self):
@@ -210,7 +211,7 @@ class CoreTests(unittest.TestCase):
             self.store.meeting(mid)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, FakeEngine(words)),
                          runner.RunResult.STORE_ERROR)
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
 
     # -- failure injection ---------------------------------------------------------
 
@@ -229,7 +230,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([c["status"] for c in self.store.chunks(vid)][:4],
                          ["done", "done", "done", "pending"])
         self.store.close()
-        self.store = Store(self.db_path)                      # restart
+        self.store = Store(self.db_path,
+                           protector=keyprotect.TestProtector())   # restart
         eng2 = FakeEngine(words, group=8)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng2),
                          runner.RunResult.DONE)
@@ -329,7 +331,8 @@ class CoreTests(unittest.TestCase):
         done, total = self.store.progress(vid)
         self.assertTrue(0 < done < total)                      # truthful: committed only
         self.store.close()
-        self.store = Store(self.db_path)                       # restart
+        self.store = Store(self.db_path,
+                           protector=keyprotect.TestProtector())   # restart
         self.assertEqual(self.store.meeting(mid)["paused"], 1)
         eng = FakeEngine(words)
         self.assertEqual(runner.run_version(self.store, mid, vid, reader, eng),
@@ -353,7 +356,7 @@ class CoreTests(unittest.TestCase):
                                                  config={"beam": 5}, chunk_plan=plan)
         self.assertNotEqual(new_settings, vid)
         sid2 = self.store.add_source(mid, original_path=None, original_sha256="c" * 64,
-                                     original_size=2, original_mtime_ns=1, audio_sha256="d" * 64,
+                                     original_size=2, original_mtime_ns=1, audio_id="d" * 64,
                                      samples=reader.total, sample_rate=SR)
         new_source = self.store.ensure_version(mid, sid2, engine="fake", model="fake",
                                                model_revision="1", precision="int8",
@@ -408,7 +411,7 @@ class CoreTests(unittest.TestCase):
         self.store.db.execute("UPDATE schema_version SET version = 999")
         self.store.close()
         with self.assertRaises(SchemaTooNew):
-            Store(self.db_path)
+            Store(self.db_path, protector=keyprotect.TestProtector())
         self.store = Store.__new__(Store)            # tearDown-safe dummy
         self.store.close = lambda: None
 
@@ -418,7 +421,7 @@ class MediaTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.store = Store(self.root / "db.sqlite")
+        self.store = Store(self.root / "db.sqlite", protector=keyprotect.TestProtector())
 
     def tearDown(self):
         self.store.close()
@@ -442,7 +445,10 @@ class MediaTests(unittest.TestCase):
         mid, sid = media.import_recording(self.store, self.root / "media", src, "Tone")
         row = self.store.source(sid)
         self.assertEqual(row["samples"], SR * 5)
-        self.assertEqual(row["original_sha256"], media.sha256_file(src))
+        # Kept as the workspace's fingerprint, never the plain hash (#111 C2b-2).
+        self.assertTrue(self.store.same_fingerprint("original", media.sha256_file(src),
+                                                    row["original_fp"]))
+        self.assertNotEqual(row["original_fp"], media.sha256_file(src))
         path = media.audio_path(self.root / "media", mid)
         self.assertEqual(path.stat().st_size, SR * 5 * 4)
         self.assertNotIn("tone", str(path).lower())        # no source name in app paths

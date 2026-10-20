@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 SR = 16000
@@ -34,7 +35,7 @@ class CleanupTests(unittest.TestCase):
         self.intake = self.root / "intake"
         self.intake.mkdir()
         self.db_path = self.root / "workspace.db"
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
         self.mid, self.vid, self.original = self.make_meeting()
 
     def tearDown(self):
@@ -53,7 +54,7 @@ class CleanupTests(unittest.TestCase):
         sid = self.store.add_source(mid, original_path=str(original),
                                     original_sha256=sha256_file(original),
                                     original_size=st.st_size, original_mtime_ns=st.st_mtime_ns,
-                                    audio_sha256="b" * 64, samples=30 * SR, sample_rate=SR)
+                                    audio_id="b" * 64, samples=30 * SR, sample_rate=SR)
         if authority:
             with self.store.tx() as db:
                 db.execute("UPDATE sources SET delete_original = 1 WHERE id = ?", (sid,))
@@ -74,9 +75,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_review_freezes_text_then_removes_app_audio_only(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
-        snap = self.store._one("SELECT * FROM reviewed_snapshots WHERE meeting_id = ?",
-                               (self.mid,))
-        self.assertIn(f"Speaker 1: edited {MARKER} note", snap["text"])
+        self.assertIn(f"Speaker 1: edited {MARKER} note", self.store.snapshot(self.mid))
         self.assertTrue((self.media / self.mid).exists())          # intent only, so far
         self.assertEqual(self.run_job(jid), JobResult.DONE)
         self.assertFalse((self.media / self.mid).exists())         # audio + clips gone
@@ -163,16 +162,13 @@ class CleanupTests(unittest.TestCase):
     def test_intent_survives_a_crash_and_is_retried(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.store.close()                                          # crash before removal
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.DONE})
         self.assertFalse((self.media / self.mid).exists())
 
     def test_holds_block_every_attempt_until_released(self):
         hid = new_id()
-        with self.store.tx() as db:
-            db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at) "
-                       "VALUES (?, ?, 'audio', 'needed for a dispute', ?)",
-                       (hid, self.mid, time.time()))
+        self.store.add_hold(hid, self.mid, "audio", "needed for a dispute", time.time())
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.assertEqual(self.run_job(jid), JobResult.HELD)
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.HELD})
@@ -191,9 +187,7 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(set(results.values()), {JobResult.DONE})
 
     def add_hold(self, scope="all"):
-        with self.store.tx() as db:
-            db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at) "
-                       "VALUES (?, ?, ?, 'late hold', ?)", (new_id(), self.mid, scope, time.time()))
+        self.store.add_hold(new_id(), self.mid, scope, "late hold", time.time())
 
     def test_hold_added_while_stopping_the_worker_still_wins(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
@@ -209,9 +203,12 @@ class CleanupTests(unittest.TestCase):
 
         def hold_arrives_late(db, mid, phase):         # after both earlier checks
             calls.append(phase)
-            if len(calls) == 3:
-                db.execute("INSERT INTO holds (id, meeting_id, scope, reason, created_at) "
-                           "VALUES (?, ?, 'all', 'late hold', ?)", (new_id(), mid, time.time()))
+            if len(calls) == 3:          # inside the cleanup's own transaction
+                hid = new_id()
+                db.execute("INSERT INTO holds (id, meeting_id, scope, reason_sealed, "
+                           "created_at) VALUES (?, ?, 'all', ?, ?)",
+                           (hid, mid, self.store._seal(mid, "holds", "reason", (hid,),
+                                                       "late hold"), time.time()))
             return real(db, mid, phase)
         cleanup._held = hold_arrives_late
         try:
@@ -239,8 +236,10 @@ class CleanupTests(unittest.TestCase):
         except OSError:
             self.skipTest("creating symlinks needs Developer Mode or admin on Windows")
         with self.store.tx() as db:
-            db.execute("UPDATE sources SET original_path = ? WHERE meeting_id = ?",
-                       (str(link), mid))
+            sid = db.execute("SELECT id FROM sources WHERE meeting_id = ?", (mid,)).fetchone()[0]
+            db.execute("UPDATE sources SET original_path_sealed = ? WHERE id = ?",
+                       (self.store._seal(mid, "sources", "original_path", (sid,), str(link)),
+                        sid))
         jid = cleanup.confirm_transcript_reviewed(self.store, mid)
         self.assertEqual(self.run_job(jid, original_roots=[self.intake]), JobResult.DONE)
         self.assertTrue(link.exists() and original.exists())
@@ -263,9 +262,13 @@ class CleanupTests(unittest.TestCase):
     # -- checkpoint 2: final output saved -> transcript ----------------------------------
 
     def test_final_confirmation_removes_all_transcript_content(self):
-        # Control: the text really is in the database files beforehand.
+        # Control: the text really is in the database files beforehand,
+        # sealed (#111 C2b-2): its ciphertext is there, its plain text is not.
+        self.store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        sealed = [r[0] for r in self.store._all("SELECT text_sealed FROM segments")]
         before = b"".join(f.read_bytes() for f in self.root.glob("workspace.db*"))
-        self.assertIn(MARKER.encode(), before)
+        self.assertTrue(sealed and all(blob in before for blob in sealed))
+        self.assertNotIn(MARKER.encode(), before)
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.run_job(jid)
         jid2 = cleanup.confirm_final_saved(self.store, self.mid)
@@ -275,11 +278,15 @@ class CleanupTests(unittest.TestCase):
                       "reviewed_snapshots"):
             self.assertEqual(self.store._one(f"SELECT COUNT(*) AS n FROM {table}")["n"], 0,
                              table)
-        # No transcript text left readable in the database files.
+        # No transcript text left in the database files, sealed or not, and
+        # the meeting's keys are gone.
+        self.assertEqual(0, self.store._one("SELECT COUNT(*) FROM content_keys")[0])
         self.store.close()
         for f in self.root.glob("workspace.db*"):
             self.assertNotIn(MARKER.encode(), f.read_bytes(), f.name)
-        self.store = Store(self.db_path)
+            for blob in sealed:
+                self.assertNotIn(blob, f.read_bytes(), f.name)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
 
 
 if __name__ == "__main__":

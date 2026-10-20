@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -58,7 +59,8 @@ class WorkspaceTests(unittest.TestCase):
 
     def open(self, start=True, model="sentences", speakers=True):
         ws = Workspace(self.root / "ws", self.root / "models", start=False, allow_test_engines=True,
-                       speaker_model=fake("fake_diarizer"), battery=False)
+                       speaker_model=fake("fake_diarizer"), battery=False,
+                       protector=keyprotect.TestProtector())
         ws.settings.update(model=fake(model), speakers=speakers)
         if start:
             ws.start()
@@ -138,7 +140,7 @@ class WorkspaceTests(unittest.TestCase):
         with self.assertRaises(WorkspaceError):
             ws.transcript(mid, version=1)
         self.assertTrue(ws.transcript(mid)["items"][0]["text"].startswith("second"))
-        old = ws.store._one("SELECT text FROM edits WHERE segment_id = ?", (seg["id"],))
+        old = ws.store.passage(seg["id"])
         self.assertEqual(old["text"], "Human correction")    # machine history untouched
 
     def test_a_failed_meeting_is_transcribed_again_with_another_model(self):
@@ -252,7 +254,7 @@ class WorkspaceTests(unittest.TestCase):
             self.ws.close()
         ws = Workspace(self.root / case / "ws", self.root / case / "models", start=False,
                        allow_test_engines=True, speaker_model=fake(speaker_model),
-                       battery=False)
+                       battery=False, protector=keyprotect.TestProtector())
         ws.settings.update(model=fake(model), speakers=True)
         ws.policy = policy.PolicySource(reader=lambda: read)
         self.ws = ws
@@ -358,7 +360,7 @@ class WorkspaceTests(unittest.TestCase):
 
     def test_battery_waits_for_automatic_work(self):
         ws = Workspace(self.root / "ws", self.root / "models", start=False,
-                       allow_test_engines=True, battery=True)
+                       allow_test_engines=True, battery=True, protector=keyprotect.TestProtector())
         self.ws = ws
         ws.settings.update(model=fake("sentences"))
         ws._import_one(self.rec)
@@ -889,8 +891,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(len(ex["items"]), 3)
         ws.confirm_reviewed(mid)
         self.assertTrue(ws.wait_idle(60))
-        snap = ws.store._one("SELECT text FROM reviewed_snapshots WHERE meeting_id = ?", (mid,))
-        self.assertIn("Aroha: ", snap["text"])
+        self.assertIn("Aroha: ", ws.store.snapshot(mid))
         with self.assertRaises(WorkspaceError):
             ws.rename_speaker(mid, a["label"], "Late change")
         ws.confirm_final_saved(mid)
@@ -1063,7 +1064,8 @@ class ApiTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False,
-                            allow_test_engines=True, battery=False)
+                            allow_test_engines=True, battery=False,
+                            protector=keyprotect.TestProtector())
         self.ws.settings.update(model=fake("sentences"), speakers=False)
         self.ws._import_one(write_wav(root / "a.wav", 20))
         self.mid = self.ws.meetings()[0]["id"]
@@ -1136,7 +1138,8 @@ class NativeConfirmationTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False,
-                            allow_test_engines=True, battery=False)
+                            allow_test_engines=True, battery=False,
+                            protector=keyprotect.TestProtector())
         self.ws.settings.update(model=fake("sentences"), speakers=False)
         self.ws._import_one(write_wav(root / "a.wav", 20))
         self.mid = self.ws.meetings()[0]["id"]

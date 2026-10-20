@@ -23,19 +23,25 @@
 # always works, so intentional reprocessing is never blocked.
 #
 # Suppression data is operational, bounded and holds no names:
-#   intake_seen     folder id, a keyed hash of the path, size, mtime, file id,
-#                   state; rows go when the file leaves the folder.
-#   intake_content  SHA-256 of imported content and when; kept SUPPRESS_DAYS
-#                   (and at most SUPPRESS_MAX rows), then forgotten.
+#   intake_seen     folder id, a keyed hash of the path (its salt is sealed,
+#                   store.intake_salt), size, mtime, file id, state; rows go
+#                   when the file leaves the folder.
+#   intake_content  the workspace's fingerprint (HMAC, #111 C2b-2) of imported
+#                   content and when; kept SUPPRESS_DAYS (and at most
+#                   SUPPRESS_MAX rows), then forgotten.
 # Neither is meeting content; both are documented in docs/WORKSPACE_DESIGN.md.
+# Content is compared by fingerprint, never by its plain SHA-256: the hash a
+# scan computes becomes a fingerprint at once (store.fingerprint).
 
 import hmac
 import os
 import time
 from pathlib import Path
 
+from workspace import keystore
 from workspace.safe_paths import (CloudPlaceholderError, UnsafePathError, check_raw,
                                   validate_input_file)
+from workspace.store import SALT_RESTARTED_NOTE
 
 SCAN_INTERVAL_S = 300          # while the app is open
 LAUNCH_SCAN_DELAY_S = 30       # the first scan waits for start-up to finish
@@ -51,7 +57,19 @@ class IntakeError(ValueError):
 
 
 def _salt(store):
+    """(salt, restarted): see store.intake_salt."""
     return store.intake_salt()
+
+
+def folder_identity(path):
+    """A watched folder's identity: its real path (junctions, links and short
+    names resolved), compared as Windows does (ntpath, so Linux CI agrees),
+    with no trailing separator. C:\\Rec, c:\\rec\\ and a junction to it are
+    the same folder. A drive root cannot reach this (_broad refuses it).
+    One definition: keystore.stored_folder_identity of the resolved path,
+    which store.add_folder fingerprints (add_folder gives it that path) and
+    the schema 1 to 2 migration uses for paths resolved when added."""
+    return keystore.stored_folder_identity(os.path.realpath(path))
 
 
 def _key(salt, path):
@@ -129,7 +147,9 @@ def deletion_roots(store, mid):
     recording was imported from, never to another (e.g. a parent) folder, and
     revoking it keeps the original. Paused folders keep their authority."""
     came_from = {s["intake_folder"] for s in store.sources(mid) if s["intake_folder"]}
-    return [f["path"] for f in store.folders("delete_originals = 1") if f["id"] in came_from]
+    # A folder whose path cannot be read is never a deletion root.
+    return [f["path"] for f in store.folders("delete_originals = 1")
+            if f["id"] in came_from and not f.get("damaged")]
 
 
 def authority_for(store, fid):
@@ -173,37 +193,65 @@ def _walk(root, extensions, stop=None):
     return out, complete
 
 
-def already_imported(store, content_sha):
-    """Content the workspace already has: imported within the suppression
-    window, from any folder or by hand."""
-    if store._one("SELECT 1 FROM intake_content WHERE sha256 = ?", (content_sha,)):
+def already_imported(store, content_fp):
+    """Content the workspace already has (by fingerprint): imported within
+    the suppression window, from any folder or by hand."""
+    if store._one("SELECT 1 FROM intake_content WHERE fp = ?", (content_fp,)):
         return True
-    return store._one("SELECT 1 FROM sources WHERE original_sha256 = ?",
-                      (content_sha,)) is not None
+    return store._one("SELECT 1 FROM sources WHERE original_fp = ?",
+                      (content_fp,)) is not None
 
 
-def importing_elsewhere(store, content_sha):
+def importing_elsewhere(store, content_fp):
     """The same content is lined up for import from another file. Not yet
     imported: that import may still be held (its folder paused) or fail."""
-    return store._one("SELECT 1 FROM intake_seen WHERE state = 'importing' AND content = ?",
-                      (content_sha,)) is not None
+    return store._one("SELECT 1 FROM intake_seen WHERE state = 'importing' AND content_fp = ?",
+                      (content_fp,)) is not None
 
 
-def remember_content(store, content_sha, now=None):
+def remember_content(store, content_fp, now=None):
     with store.tx() as db:
-        db.execute("INSERT OR REPLACE INTO intake_content VALUES (?, ?)",
-                   (content_sha, now or time.time()))
+        db.execute("INSERT OR REPLACE INTO intake_content (fp, imported_at) VALUES (?, ?)",
+                   (content_fp, now or time.time()))
 
 
-def import_finished(store, fid, key, content, ok, now=None):
+def import_finished(store, fid, key, content_fp, ok, now=None):
     """Called by the app after an import from a watched folder. Content is
     suppressed only once it was really imported; a failed import is shown and
-    tried again if the file changes."""
+    tried again if the file changes. A successful import ends the folder's
+    restart note (store.intake_salt)."""
     with store.tx() as db:
-        db.execute("UPDATE intake_seen SET state = ?, content = NULL WHERE folder_id = ? "
+        db.execute("UPDATE intake_seen SET state = ?, content_fp = NULL WHERE folder_id = ? "
                    "AND key = ?", ("imported" if ok else "failed", fid, key))
+        if ok:
+            row = db.execute("SELECT last_error FROM watched_folders WHERE id = ?",
+                             (fid,)).fetchone()
+            if row is not None and _has_restart_note(row[0]):
+                rest = row[0][:-len(SALT_RESTARTED_NOTE)].strip() or None
+                db.execute("UPDATE watched_folders SET last_error = ? WHERE id = ?",
+                           (rest, fid))
     if ok:
-        remember_content(store, content, now)
+        remember_content(store, content_fp, now)
+
+
+def _has_restart_note(note):
+    return isinstance(note, str) and note.endswith(SALT_RESTARTED_NOTE)
+
+
+def _set_note(db, fid, now, note, done=False):
+    """A folder's note after a scan. The restart note (store.intake_salt)
+    stays until the folder's next successful import (import_finished), so a
+    later scan never clears it: any other note comes first, then it. done:
+    the walk was complete, so the baseline is done too."""
+    row = db.execute("SELECT last_error FROM watched_folders WHERE id = ?", (fid,)).fetchone()
+    if row is not None and _has_restart_note(row[0]):
+        note = SALT_RESTARTED_NOTE if note is None else f"{note} {SALT_RESTARTED_NOTE}"
+    if done:
+        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ?, "
+                   "baseline_done = 1 WHERE id = ?", (now, note, fid))
+    else:
+        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ? WHERE id = ?",
+                   (now, note, fid))
 
 
 def watching(store, fid):
@@ -217,14 +265,14 @@ def import_held(store, fid, key):
     policy) waits: back to waiting, so the first scan after the folder is
     turned on again imports it (#152). Nothing if the folder was removed."""
     with store.tx() as db:
-        db.execute("UPDATE intake_seen SET state = 'waiting', content = NULL WHERE "
+        db.execute("UPDATE intake_seen SET state = 'waiting', content_fp = NULL WHERE "
                    "folder_id = ? AND key = ? AND state = 'importing'", (fid, key))
 
 
 def recover(store):
     """At startup: imports that were queued when the app closed are found again."""
     with store.tx() as db:
-        db.execute("UPDATE intake_seen SET state = 'waiting', content = NULL "
+        db.execute("UPDATE intake_seen SET state = 'waiting', content_fp = NULL "
                    "WHERE state = 'importing'")
 
 
@@ -234,7 +282,7 @@ def purge(store, now=None):
     with store.tx() as db:
         db.execute("DELETE FROM intake_content WHERE imported_at < ?",
                    (now - SUPPRESS_DAYS * 86400,))
-        db.execute("DELETE FROM intake_content WHERE sha256 IN (SELECT sha256 FROM "
+        db.execute("DELETE FROM intake_content WHERE fp IN (SELECT fp FROM "
                    "intake_content ORDER BY imported_at DESC LIMIT -1 OFFSET ?)",
                    (SUPPRESS_MAX,))
 
@@ -253,17 +301,28 @@ def _same(row, ident):
 
 def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None):
     """Reconcile every active folder once. `enqueue(path, folder_id, key,
-    content)` queues an import; the app reports back with import_finished().
-    Returns {"queued", "waiting", "duplicates", "cloud", "errors"}."""
+    content_fp)` queues an import; the app reports back with import_finished().
+    hasher(path) returns the file's SHA-256 (hex). Returns {"queued",
+    "waiting", "duplicates", "cloud", "errors"}, and "notice" (fixed text)
+    when the record of the files seen had to be started again
+    (store.intake_salt): each folder's note says so too, until that folder's
+    next successful import (import_finished)."""
     from workspace.media import sha256_file
     hasher = hasher or sha256_file
     now = now or time.time()
-    salt = _salt(store)
+    salt, restarted = _salt(store)
     stats = {"queued": 0, "waiting": 0, "duplicates": 0, "cloud": 0, "errors": 0}
+    if restarted:
+        stats["notice"] = SALT_RESTARTED_NOTE
     for f in folders(store):
         if stop and stop():
             break
         if not f["active"]:
+            continue
+        if f.get("damaged"):
+            # Its location cannot be read: never scanned, never a deletion root.
+            _folder_note(store, f["id"], now, FOLDER_UNREADABLE_NOTE)
+            stats["errors"] += 1
             continue
         root = Path(f["path"])
         if not root.is_dir():
@@ -357,7 +416,7 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
             try:
                 # Read-only: reading a cloud-only file (when allowed) makes the
                 # sync client fetch it; no write access is ever needed.
-                content = hasher(real)
+                content = store.fingerprint("original", hasher(real))
             except PermissionError:
                 _put(writes, f["id"], key, ident, "unreadable", now)
                 stats["errors"] += 1
@@ -406,20 +465,21 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 gone = [k for k in seen if k not in present]
                 db.executemany("DELETE FROM intake_seen WHERE folder_id = ? AND key = ?",
                                [(f["id"], k) for k in gone])
-            db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ?, "
-                       "baseline_done = 1 WHERE id = ?",
-                       (now, None if complete else "Part of the folder could not be read; "
-                        "it will be checked again.", f["id"]))
+            note = (None if complete
+                    else "Part of the folder could not be read; it will be checked again.")
+            _set_note(db, f["id"], now, note, done=True)    # keeps a restart note
     purge(store, now)
     return stats
 
 
 _PUT = ("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state, "
-        "first_seen, last_seen, content) VALUES (?,?,?,?,?,?,?,?,?) "
+        "first_seen, last_seen, content_fp) VALUES (?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(folder_id, key) DO UPDATE SET size = excluded.size, "
         "mtime_ns = excluded.mtime_ns, file_id = excluded.file_id, "
         "state = excluded.state, last_seen = excluded.last_seen, "
-        "content = excluded.content")
+        "content_fp = excluded.content_fp")
+FOLDER_UNREADABLE_NOTE = ("This folder's location could not be read, so it is not checked. "
+                          "Remove it and add it again.")
 _TOUCH = "UPDATE intake_seen SET last_seen = ? WHERE folder_id = ? AND key = ?"
 
 
@@ -454,8 +514,7 @@ def _commit(store, fid, writes):
 
 def _folder_note(store, fid, now, message):
     with store.tx() as db:
-        db.execute("UPDATE watched_folders SET last_scan_at = ?, last_error = ? WHERE id = ?",
-                   (now, message, fid))
+        _set_note(db, fid, now, message)
 
 
 def summary(store):

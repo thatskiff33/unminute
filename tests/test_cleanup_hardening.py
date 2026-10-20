@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -66,7 +67,7 @@ class CleanupHardeningTests(unittest.TestCase):
 
     def open(self):
         ws = Workspace(self.root / "ws", self.root / "models", start=False,
-                       allow_test_engines=True, battery=False)
+                       allow_test_engines=True, battery=False, protector=keyprotect.TestProtector())
         ws.settings.update(model=fake("sentences"), speakers=False)
         self.ws = ws
         return ws
@@ -80,7 +81,13 @@ class CleanupHardeningTests(unittest.TestCase):
         """A meeting row whose id is not the app's own (a damaged or edited database)."""
         real = ws.store.create_meeting("synthetic crafted")
         with ws.store.tx() as db:
-            db.execute("UPDATE meetings SET id = ? WHERE id = ?", (mid, real))
+            # Its keys move with it (the foreign keys hold); its title, sealed
+            # for the old id, then reads as damaged (#111 C2b-2).
+            db.execute("INSERT INTO meetings (id, title_sealed, created_at, updated_at) "
+                       "SELECT ?, title_sealed, created_at, updated_at FROM meetings "
+                       "WHERE id = ?", (mid, real))
+            db.execute("UPDATE content_keys SET meeting_id = ? WHERE meeting_id = ?", (mid, real))
+            db.execute("DELETE FROM meetings WHERE id = ?", (real,))
 
     # -- #194 ------------------------------------------------------------------------
 

@@ -22,6 +22,15 @@ INTRO = "# Changelog\n\nRelease notes for Unminute. Unreleased changes are in ch
 HEAD = INTRO + "## v0.4.3\n\n- **Older.** Kept.\n"
 
 
+def keystore(root, complete):
+    """A scratch workspace/keystore.py with PHASE_C_COMPLETE as given (#111):
+    tools/changelog.py refuses a release while it is False."""
+    (root / "workspace").mkdir(exist_ok=True)
+    (root / "workspace" / "keystore.py").write_text(
+        f"PHASE_C_COMPLETE = {complete}\nPHASE_C_FROZEN_VERSION = \"0.4.3\"\n",
+        encoding="utf-8")
+
+
 def workflow_notes(text, version):
     """The Release workflow's awk, line for line: lines after the dated heading
     '## <tag> (' up to the next line starting '## '."""
@@ -61,6 +70,7 @@ class FragmentTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "changelog.d").mkdir()
         (self.root / "CHANGELOG.md").write_bytes(HEAD.encode())
+        keystore(self.root, True)          # the release tests below: Phase C complete
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -347,6 +357,45 @@ class FragmentTests(unittest.TestCase):
         self.add("9-subheading.md", "- **X.** Y.\n\n### Details\n\n- more\n")   # level 3 is fine
         self.add("10-bom.md", "\ufeff- **X.** Y.\n")
         changelog.check(self.root)
+
+    def test_no_release_while_phase_c_is_not_complete(self):
+        # #111 C2b-2: Phase C ships as one release. While PHASE_C_COMPLETE is
+        # False (or cannot be read), no release section or VERSION is written,
+        # and the fragments stay; --check and --preview keep working.
+        self.add("1-a.md", "- **A.** First.\n")
+        version = self.root / "VERSION"
+        version.write_text("0.4.3\n", encoding="ascii")
+        for state in ("False", "missing", "garbled", "None"):
+            with self.subTest(state=state):
+                path = self.root / "workspace" / "keystore.py"
+                if state == "missing":
+                    path.unlink()
+                elif state == "garbled":
+                    path.write_text("PHASE_C_COMPLETE = (\n", encoding="utf-8")
+                else:
+                    keystore(self.root, state)
+                with self.assertRaisesRegex(ChangelogError, re.escape(
+                        "Phase C (#111) is not complete: no release can be prepared from "
+                        "this commit.")):
+                    changelog.release("v0.5.0", root=self.root, date="2026-10-21")
+                self.assertEqual(self.changelog(), HEAD)
+                self.assertEqual(version.read_text(encoding="ascii"), "0.4.3\n")
+                self.assertTrue((self.root / "changelog.d" / "1-a.md").exists())
+                self.assertEqual(changelog.planned(root=self.root), "- **A.** First.")
+                changelog.check(self.root)
+        keystore(self.root, True)
+        changelog.release("v0.5.0", root=self.root, date="2026-10-21")
+        self.assertIn("## v0.5.0 (2026-10-21)", self.changelog())
+        self.assertEqual(version.read_text(encoding="ascii"), "0.5.0\n")
+
+    def test_the_reader_agrees_with_the_repository(self):
+        # The constant read by parsing equals the one the app imports.
+        sys.path.insert(0, str(ROOT))
+        try:
+            from workspace import keystore as real
+        finally:
+            sys.path.remove(str(ROOT))
+        self.assertIs(changelog.phase_c_complete(ROOT), real.PHASE_C_COMPLETE)
 
     def test_command_line(self):
         out = io.StringIO()

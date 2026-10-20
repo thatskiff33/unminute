@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
@@ -45,7 +46,7 @@ class HoldTests(unittest.TestCase):
     def test_hold_survives_restart_and_blocks_cleanup(self):
         holds.add_hold(self.store, self.mid, "transcript", "client asked us to keep it")
         self.store.close()
-        self.store = Store(self.db_path)
+        self.store = Store(self.db_path, protector=keyprotect.TestProtector())
         [h] = holds.active_holds(self.store, self.mid)
         self.assertEqual(h["reason"], "client asked us to keep it")
         cleanup.confirm_transcript_reviewed(self.store, self.mid)

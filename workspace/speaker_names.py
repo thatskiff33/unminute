@@ -14,6 +14,10 @@
 # autocomplete and no voiceprint. A new speaker pass ("identify again") starts
 # with an empty log; the old run's corrections stay with that run. All of it is
 # removed with the transcript at cleanup (#17).
+#
+# A correction whose value cannot be read (#111 C2b-2) shows as the store's
+# DAMAGED_TEXT; a change to the names (rename, merge, assign, undo) is then
+# refused (store.strict raises DamagedContent), so nothing is built on it.
 
 MAX_NAME = 80
 MIN_CLIP_S, MAX_CLIP_S = 1.5, 15.0     # representative passages: long enough to judge
@@ -97,8 +101,9 @@ def _run_or_refuse(store, vid):
 
 
 def rename(store, vid, label, name):
-    view = resolve(store, vid)
-    rid = _run_or_refuse(store, vid)
+    with store.strict():
+        view = resolve(store, vid)
+        rid = _run_or_refuse(store, vid)
     if label not in view["order"]:
         raise NamingError("That speaker is no longer in the transcript.")
     name = " ".join((name or "").split())[:MAX_NAME]
@@ -108,8 +113,9 @@ def rename(store, vid, label, name):
 
 
 def merge(store, vid, label, into):
-    view = resolve(store, vid)
-    rid = _run_or_refuse(store, vid)
+    with store.strict():
+        view = resolve(store, vid)
+        rid = _run_or_refuse(store, vid)
     if label == into or label not in view["order"] or into not in view["order"]:
         raise NamingError("Choose two different speakers.")
     _append(store, rid, "merge", label, into)
@@ -117,6 +123,11 @@ def merge(store, vid, label, into):
 
 def assign(store, vid, segment_id, label):
     """Reassign one passage. label may be an existing speaker or "new"."""
+    with store.strict():
+        return _assign(store, vid, segment_id, label)
+
+
+def _assign(store, vid, segment_id, label):
     view = resolve(store, vid)
     rid = _run_or_refuse(store, vid)
     if segment_id not in view["labels"]:
@@ -135,10 +146,13 @@ def assign(store, vid, segment_id, label):
 
 
 def undo(store, vid):
-    """Remove the latest correction. Returns its kind, or None if there is none."""
-    run = current_run(store, vid)
-    if run is None:
-        return None
+    """Remove the latest correction. Returns its kind, or None if there is none.
+    Refused (DamagedContent) while any correction of the run cannot be read."""
+    with store.strict():
+        run = current_run(store, vid)
+        if run is None:
+            return None
+        _log(store, run["id"])
     return store.undo_correction(run["id"])
 
 

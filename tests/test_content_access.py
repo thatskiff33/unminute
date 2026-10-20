@@ -1,14 +1,20 @@
 # Meeting content is read and written only through the Store's codec (#111
-# C2a; docs/ENCRYPTION.md), so C2b can seal every content column in one place.
+# C2a; docs/ENCRYPTION.md), which seals every content column (C2b-2).
 #   - Static: no SQL in workspace/ outside store.py, and none in tools/ but
-#     the known sites C2b moves (TOOLS_RAW_SQL), names a content column
-#     (store.CONTENT_COLUMNS), selects or returns * with a table that has one,
-#     inserts into one without naming its columns, or is built at run time
-#     around one. Conditions given to the store's meetings(), holds() and
-#     folders() name plain columns only (store.plain_condition).
-#   - With a codec that changes every value, a whole meeting's life leaves no
-#     content readable in the database file, and everything the app shows is
-#     still right: any read or write that went around the codec would fail.
+#     the known sites (TOOLS_RAW_SQL), names a content column
+#     (store.CONTENT_COLUMNS: the logical or the sealed name), selects or
+#     returns * with a table that has one, inserts into one without naming its
+#     columns, or is built at run time around one. Conditions given to the
+#     store's meetings(), holds() and folders() name plain columns only
+#     (store.plain_condition). Only store.py names the key tables
+#     (store.KEY_TABLES) in SQL; nothing in workspace/ passes protector= but
+#     the Workspace handing its own to the Store, and nothing in workspace/ or
+#     tools/ names the test key protector (tests/keyprotect.py). Every Store
+#     and Workspace built in tests/ has the test protector, apart from the
+#     named tests that use the app's own (REAL_PROTECTOR_TESTS).
+#   - With the real codec and the test protector, a whole meeting's life
+#     leaves no content readable in the database file or its log, every
+#     content column is sealed, and everything the app shows is still right.
 #   - While those runs go, a SQLite authorizer (ContentGuard) refuses any
 #     statement outside store.py that reads or changes a content column.
 # Synthetic text only.
@@ -30,10 +36,19 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import keyprotect  # noqa: E402
 
 from workspace import store  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
+HAVE_CRYPTO = importlib.util.find_spec("cryptography") is not None
+
+# Each table's content column names: the logical ones (rows come back with
+# them) and the sealed ones (the columns that exist). Either named in SQL
+# outside the store is a problem: the second reads ciphertext around the
+# codec, the first fails at run time (#111 C2b-2).
+COLUMNS = {t: tuple(dict.fromkeys([*cols, *cols.values()]))
+           for t, cols in store.CONTENT_COLUMNS.items()}
 
 # -- the static check -----------------------------------------------------------------
 # Every string the parser sees is a candidate. Pieces joined with "+" are
@@ -84,9 +99,12 @@ LOOKS_LIKE_SQL = re.compile(
     r"|\bupdate\s+\S+\s+set\b|\bdelete\s+from\b)")
 NAMES_CONTENT_TABLE = re.compile(
     r"\b(?:from|join|into|update)\s+(?:" + "|".join(store.CONTENT_COLUMNS) + r")\b")
+# A key table (store.KEY_TABLES) after a keyword that names a table.
+NAMES_KEY_TABLE = re.compile(
+    r"\b(?:from|join|into|update|table)\s+(?:" + "|".join(store.KEY_TABLES) + r")\b")
 QUOTED = re.compile(r'"(\w+)"|\[(\w+)\]|`(\w+)`')
 QUOTED_HOLE = re.compile(r"[\"'`\[]\s*\x00\s*[\"'`\]]")
-QUOTED_TABLE = re.compile(r"\b(from|join|into|update|table)\s+'(\w+)'")
+QUOTED_TABLE = re.compile(r"\b(from|join|into|update|table)\s*'(\w+)'")
 SCHEMA_NAME = re.compile(r"\b(?:main|temp)\s*\.\s*")
 # A %-conversion (with a mapping key, flags, width or precision) or a
 # str.format field (with an index, attribute, conversion or spec). It errs on
@@ -104,7 +122,9 @@ RUN_TIME = "<run-time table>"
 # named at run time (a slot): DELETE FROM; a conflict resolution that replaces
 # rows (INSERT OR REPLACE INTO, REPLACE INTO, UPDATE OR REPLACE); DROP TABLE.
 # Comments may stand between the words and before the table.
-_SQL_GAP = r"(?:\s|/\*[\s\S]*?\*/|--[^\n]*(?:\n|$))+"
+# A comment cannot run past its own end ("*/"), so a text with many comments
+# is matched in linear time (C2b-1 review, carried into C2b-2).
+_SQL_GAP = r"(?:\s|/\*(?:[^*]|\*(?!/))*\*/|--[^\n]*(?:\n|$))+"
 DELETE_FROM_CONTENT = re.compile(
     r"\b(?:delete" + _SQL_GAP + r"from|replace" + _SQL_GAP + r"into"
     r"|update" + _SQL_GAP + r"or" + _SQL_GAP + r"replace"
@@ -255,11 +275,11 @@ def sql_in_source(source, prefix=""):
 
 
 def _is_sql(text):
-    """Whether a text has a statement's shape, names a content table or
-    removes rows from one (DELETE_FROM_CONTENT, such as "drop table meetings")."""
+    """Whether a text has a statement's shape, names a content or key table
+    or removes rows from one (DELETE_FROM_CONTENT, such as "drop table meetings")."""
     normal = _normal(text)
     return bool(LOOKS_LIKE_SQL.search(text) or NAMES_CONTENT_TABLE.search(normal)
-                or DELETE_FROM_CONTENT.search(normal))
+                or NAMES_KEY_TABLE.search(normal) or DELETE_FROM_CONTENT.search(normal))
 
 
 def _normal(text):
@@ -267,7 +287,9 @@ def _normal(text):
     format slots (FORMAT_SLOT) as HOLE."""
     text = FORMAT_SLOT.sub(HOLE, text).lower()
     text = QUOTED_HOLE.sub(HOLE, text)
-    text = QUOTED.sub(lambda m: m.group(m.lastindex), text)
+    # A space before an unquoted name: FROM"meetings" is FROM meetings (C2b-1
+    # review, carried into C2b-2).
+    text = QUOTED.sub(lambda m: " " + m.group(m.lastindex), text)
     text = QUOTED_TABLE.sub(r"\1 \2", text)
     return SCHEMA_NAME.sub("", text)
 
@@ -283,10 +305,10 @@ def content_problems(text):
     dynamic = bool(TABLE_SLOT.search(t))
     if not tables and not dynamic:
         return []
-    out = [f"{table}.{column}" for table in tables for column in store.CONTENT_COLUMNS[table]
+    out = [f"{table}.{column}" for table in tables for column in COLUMNS[table]
            if re.search(rf"\b{column}\b", t)]
     if dynamic:
-        out += sorted({f"{RUN_TIME}.{column}" for columns in store.CONTENT_COLUMNS.values()
+        out += sorted({f"{RUN_TIME}.{column}" for columns in COLUMNS.values()
                        for column in columns if re.search(rf"\b{column}\b", t)})
     if STAR.search(t):
         out.append("* with " + ", ".join(tables + [RUN_TIME] * dynamic))
@@ -339,6 +361,94 @@ def workspace_modules():
     return sorted(p for p in (ROOT / "workspace").rglob("*.py") if p.name != "store.py")
 
 
+KEY_TABLE = re.compile(r"\b(?:" + "|".join(store.KEY_TABLES) + r")\b")
+
+
+def key_table_sql_in(paths):
+    """{(path, scope, text)} for each SQL text that names a key table."""
+    found = set()
+    for path in paths:
+        rel = path.relative_to(ROOT).as_posix()
+        for _line, scope, text in sql_in_source(path.read_text(encoding="utf-8")):
+            if KEY_TABLE.search(_normal(text)):
+                found.add((rel, scope, " ".join(text.split())))
+    return found
+
+
+def protector_keywords(paths):
+    """(path, function called, value) for each call with a protector= keyword."""
+    for path in paths:
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call):
+                for k in node.keywords:
+                    if k.arg == "protector":
+                        f = node.func
+                        name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", "?")
+                        yield (path.relative_to(ROOT).as_posix(), name,
+                               k.value.id if isinstance(k.value, ast.Name) else ast.dump(k.value))
+
+
+# Tests that build a Store or Workspace with the app's own protector (Windows
+# Data Protection) on purpose, by (file, test). Every other construction in
+# tests/ names protector=, or passes **name where the same function sets
+# name.setdefault("protector", ...) (keyprotect.open_store and its kind): on
+# Linux CI the default protector refuses, and on Windows a test that leaves
+# it out would use the real one without meaning to (#111 C2b-2).
+REAL_PROTECTOR_TESTS = {
+    # The default workspace under a patched LOCALAPPDATA, where the test
+    # protector is refused (Windows only).
+    ("test_cloud_intake.py",
+     "SyncedSourceTests.test_a_recording_in_onedrive_still_imports_and_is_watched"),
+    # No plain path: the default protector failing leaves no workspace.
+    ("test_schema2.py", "OpeningTests.test_there_is_no_plain_path"),
+    # The real protector's round trip (Windows only).
+    ("test_schema2.py", "OpeningTests.test_windows_data_protection_round_trip"),
+}
+
+
+def _sets_protector(function):
+    """The names n for which function calls n.setdefault("protector", ...)."""
+    out = set()
+    for node in ast.walk(function):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "setdefault" and isinstance(node.func.value, ast.Name)
+                and node.args and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "protector"):
+            out.add(node.func.value.id)
+    return out
+
+
+def constructions_without_protector(source, filename):
+    """(filename, enclosing function, line) for each Store(...) or
+    Workspace(...) call that neither names protector= nor passes **name
+    where its function sets name.setdefault("protector", ...)."""
+    found = []
+
+    def visit(node, scope, given):
+        for child in ast.iter_child_nodes(node):
+            inner, sets = scope, given
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = scope + [child.name]
+                if not isinstance(child, ast.ClassDef):
+                    sets = given | _sets_protector(child)
+            if isinstance(child, ast.Call):
+                f = child.func
+                name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+                if name in ("Store", "Workspace"):
+                    named = any(k.arg == "protector" for k in child.keywords)
+                    spread = any(k.arg is None and isinstance(k.value, ast.Name)
+                                 and k.value.id in sets for k in child.keywords)
+                    if not (named or spread):
+                        found.append((filename, ".".join(scope), child.lineno))
+            visit(child, inner, sets)
+    visit(ast.parse(source), [], frozenset())
+    return found
+
+
+def test_modules():
+    return sorted((ROOT / "tests").glob("*.py"))
+
+
 def tool_modules():
     return sorted((ROOT / "tools").rglob("*.py"))
 
@@ -364,6 +474,64 @@ class StaticTests(unittest.TestCase):
     def test_only_the_store_deletes_rows_with_content(self):
         self.assertEqual(set(), deletions_in(workspace_modules() + tool_modules()))
 
+    def test_only_the_store_names_the_key_tables(self):
+        # crypto_meta, content_keys and recording_keys are the erase points
+        # (#111 C2b-2): only store.py reads, writes or deletes them.
+        self.assertEqual(set(), key_table_sql_in(workspace_modules() + tool_modules()))
+        caught = ['def f(db):\n    db.execute("DELETE FROM content_keys WHERE meeting_id = ?")\n',
+                  'def f(db):\n    return db.execute("SELECT root FROM crypto_meta")\n',
+                  'def f(db):\n    db.execute(\'DROP TABLE "recording_keys"\')\n']
+        for source in caught:
+            with self.subTest(source=source):
+                self.assertTrue([t for _l, _s, t in sql_in_source(source)
+                                 if KEY_TABLE.search(_normal(t))])
+
+    def test_only_the_workspace_passes_a_protector_and_only_its_own(self):
+        # The test protector keeps the root key in effect in clear text: the
+        # app's code never chooses a protector (the Store's default is Windows
+        # Data Protection), and nothing it ships names the test one.
+        self.assertEqual([("workspace/app.py", "Store", "protector")],
+                         list(protector_keywords(workspace_modules()
+                                                 + [ROOT / "workspace" / "store.py"])))
+        named = [p.relative_to(ROOT).as_posix()
+                 for p in workspace_modules() + tool_modules() + [ROOT / "workspace" / "store.py"]
+                 if re.search(r"keyprotect|TestProtector", p.read_text(encoding="utf-8"))]
+        self.assertEqual([], named)
+
+    def test_every_test_store_and_workspace_has_the_test_protector(self):
+        # Only the named tests use the app's own protector, and each still does.
+        found = [c for p in test_modules()
+                 for c in constructions_without_protector(p.read_text(encoding="utf-8"),
+                                                          p.name)]
+        self.assertEqual([], [c for c in found if c[:2] not in REAL_PROTECTOR_TESTS])
+        self.assertEqual(REAL_PROTECTOR_TESTS, {c[:2] for c in found})
+
+    def test_the_protector_check_sees_a_missing_protector(self):
+        source = (
+            "class T:\n"
+            "    def setUp(self):\n"
+            "        self.kw = dict(battery=False)\n"
+            "    def a(self):\n"
+            "        return Workspace(root, start=False, **self.kw)\n"     # not seen to set it
+            "    def b(self, **kw):\n"
+            "        return store.Store(path, **kw)\n"                     # no setdefault
+            "    def c(self, **kw):\n"
+            "        kw.setdefault('protector', keyprotect.TestProtector())\n"
+            "        return Store(path, **kw)\n"                           # passes
+            "    def d(self):\n"
+            "        return Store(path, protector=keyprotect.TestProtector())\n")  # passes
+        self.assertEqual([("x.py", "T.a", 5), ("x.py", "T.b", 7)],
+                         constructions_without_protector(source, "x.py"))
+
+    def test_the_comment_gap_takes_linear_time(self):
+        # Many comments and no match: the gap must not try every way of
+        # joining them (it took seconds before the C2b-2 change).
+        import time
+        text = "delete " + "/* a */ " * 26 + "x"
+        started = time.perf_counter()
+        self.assertIsNone(DELETE_FROM_CONTENT.search(_normal(text)))
+        self.assertLess(time.perf_counter() - started, 0.5)
+
     def test_the_check_sees_deletions(self):
         caught = ["DELETE FROM meetings WHERE id = ?", "delete  from\n  Meetings where id = ?",
                   'DELETE FROM "meetings" WHERE id = ?', "DELETE FROM main.meetings",
@@ -383,7 +551,13 @@ class StaticTests(unittest.TestCase):
                   "UPDATE OR REPLACE meetings SET phase = ? WHERE id = ?",
                   # Dropping a table.
                   "DROP TABLE meetings", "drop table if exists main.segments",
-                  'DROP TABLE IF EXISTS "{t}"']
+                  'DROP TABLE IF EXISTS "{t}"',
+                  # A quoted or bracketed name with no space after the keyword.
+                  'DELETE FROM"meetings" WHERE id = ?', "DELETE FROM[sources]",
+                  "delete from`holds`", "DELETE FROM'meetings'",
+                  # Tables added by schema 2.
+                  "DELETE FROM recording_sources WHERE meeting_id = ?",
+                  "DELETE FROM intake_meta"]
         for text in caught:
             with self.subTest(text=text):
                 self.assertTrue(DELETE_FROM_CONTENT.search(_normal(text)), text)
@@ -429,6 +603,12 @@ class StaticTests(unittest.TestCase):
             "SELECT * FROM meetings": "* with meetings",
             "SELECT m.* FROM meetings m": "* with meetings",
             "SELECT id, title FROM meetings": "meetings.title",
+            "SELECT id, title_sealed FROM meetings": "meetings.title_sealed",
+            "SELECT text_sealed FROM segments": "segments.text_sealed",
+            "SELECT title FROM\"meetings\"": "meetings.title",
+            "UPDATE watched_folders SET path_sealed = ?": "watched_folders.path_sealed",
+            "SELECT info_sealed FROM recording_sources": "recording_sources.info_sealed",
+            "SELECT v_sealed FROM intake_meta WHERE k = 'salt'": "intake_meta.v_sealed",
             "UPDATE meetings SET title = ?": "meetings.title",
             "SELECT s.id FROM segments s JOIN edits e ON e.segment_id = s.id "
             "WHERE e.text IS NULL": "edits.text",
@@ -493,6 +673,9 @@ class StaticTests(unittest.TestCase):
                 "DELETE FROM segments WHERE version_id = ?",
                 "UPDATE cleanup_jobs SET error = ? WHERE id = ?",
                 "UPDATE watched_folders SET last_error = ? WHERE id = ?",
+                "SELECT 1 FROM watched_folders WHERE path_fp = ?",
+                "SELECT 1 FROM intake_content WHERE fp = ?",
+                "SELECT 1 FROM sources WHERE original_fp = ?",
                 "INSERT INTO segment_speakers VALUES (?,?,?,?)",
                 "INSERT INTO speaker_turns VALUES (?,?,?,?,?)",
                 "SELECT (end_sample - start_sample) * 2 FROM chunks",
@@ -571,6 +754,7 @@ class StaticTests(unittest.TestCase):
 
     def test_store_conditions_refuse_content_and_quotes(self):
         for where in ("title LIKE ?", "LAST_ERROR IS NULL", '"title" = ?', "phase != 'error'",
+                      "title_sealed IS NOT NULL", "path_sealed = ?", "reason_sealed = ?",
                       "id = ?; DROP TABLE meetings", "id = ? -- the rest", "id = ? /* x */",
                       "id IN (SELECT meeting_id FROM holds WHERE reason = ?)", "[path] = ?",
                       "`reason` = ?", "(?, ?, ?, ?, ?, ?, ?) IN (SELECT * FROM holds)",
@@ -583,7 +767,7 @@ class StaticTests(unittest.TestCase):
             with self.subTest(where=where), self.assertRaises(ValueError):
                 store.plain_condition(where)
         with tempfile.TemporaryDirectory() as tmp:
-            s = store.Store(Path(tmp) / "w.db")
+            s = store.Store(Path(tmp) / "w.db", protector=keyprotect.TestProtector())
             try:
                 s.create_meeting("synthetic")
                 for call, where in ((s.meetings, "title LIKE ?"), (s.holds, "reason = ?"),
@@ -596,13 +780,35 @@ class StaticTests(unittest.TestCase):
                 s.close()
 
     def test_the_content_columns_are_the_schemas(self):
+        # Every sealed column exists and ends "_sealed"; no column keeps a
+        # logical name, so a raw read or write that went around the codec
+        # fails with "no such column" (#111 C2b-2).
         db = sqlite3.connect(":memory:")
         db.executescript(store.SCHEMA)
         for table, columns in store.CONTENT_COLUMNS.items():
             have = {r[1] for r in db.execute(f'PRAGMA table_info("{table}")')}
             with self.subTest(table=table):
-                self.assertTrue(set(columns) <= have, (table, columns, have))
+                self.assertTrue(set(columns.values()) <= have, (table, columns, have))
+                self.assertFalse(set(columns) & have, (table, columns, have))
+                self.assertTrue(all(c.endswith("_sealed") for c in columns.values()))
+                self.assertEqual(columns.keys(), {c[:-len("_sealed")] if c != "words_sealed"
+                                                  else "words_json" for c in columns.values()})
+        # Nothing else in the schema is sealed.
+        sealed = {(t, r[1]) for (t,) in db.execute(
+                      "SELECT name FROM sqlite_master WHERE type = 'table'")
+                  for r in db.execute(f'PRAGMA table_info("{t}")') if r[1].endswith("_sealed")}
+        self.assertEqual(sealed, {(t, c) for t, cols in store.CONTENT_COLUMNS.items()
+                                  for c in cols.values()})
         db.close()
+
+    def test_diagnostics_can_name_every_content_column(self):
+        # A damaged_value event names the table and logical column (P3: never
+        # a value); diag keeps only names it knows.
+        from workspace import diag
+        for table, columns in store.CONTENT_COLUMNS.items():
+            self.assertEqual(table, diag._clean("table", table))
+            for column in columns:
+                self.assertEqual(column, diag._clean("column", column))
 
 
 # -- the runtime check -------------------------------------------------------------------
@@ -649,7 +855,7 @@ class ContentGuard:
 
     def _check(self, action, table, column, _db, _source):
         if action in (sqlite3.SQLITE_READ, sqlite3.SQLITE_UPDATE):
-            content = column in store.CONTENT_COLUMNS.get(table, ())
+            content = column in store.SEALED_COLUMNS.get(table, ())
         elif action == sqlite3.SQLITE_INSERT:
             content = table in store.CONTENT_COLUMNS
         else:
@@ -666,7 +872,7 @@ class GuardTests(unittest.TestCase):
 
     def test_the_guard_refuses_content_outside_the_store(self):
         with tempfile.TemporaryDirectory() as tmp, ContentGuard() as guard:
-            s = store.Store(Path(tmp) / "w.db")
+            s = store.Store(Path(tmp) / "w.db", protector=keyprotect.TestProtector())
             try:
                 mid = s.create_meeting("synthetic")
                 s.add_hold("h1", mid, "all", "synthetic reason", 1.0)
@@ -676,9 +882,10 @@ class GuardTests(unittest.TestCase):
                 s._one("SELECT COUNT(*) FROM holds")
                 self.assertEqual([], guard.refused)
                 # The store has just run the first of these itself.
-                for sql in ("SELECT * FROM meetings WHERE id = ?", "SELECT title FROM meetings",
-                            "SELECT id FROM holds WHERE reason = ?",
-                            "UPDATE meetings SET title = ? WHERE id = ?",
+                for sql in ("SELECT * FROM meetings WHERE id = ?",
+                            "SELECT title_sealed FROM meetings",
+                            "SELECT id FROM holds WHERE reason_sealed = ?",
+                            "UPDATE meetings SET title_sealed = ? WHERE id = ?",
                             "INSERT INTO holds VALUES (?, ?, ?, ?, ?, ?, ?)"):
                     before = len(guard.refused)
                     with self.subTest(sql=sql), self.assertRaises(store.StoreError):
@@ -687,11 +894,17 @@ class GuardTests(unittest.TestCase):
                 before = len(guard.refused)
                 with self.assertRaises(store.StoreError):
                     with s.tx() as db:
-                        db.execute("INSERT INTO meetings (id, created_at, updated_at, title) "
-                                   "VALUES ('m2', 1, 1, 'x')")
+                        db.execute("INSERT INTO meetings (id, created_at, updated_at, "
+                                   "title_sealed) VALUES ('m2', 1, 1, 'x')")
                 self.assertGreater(len(guard.refused), before)
                 self.assertTrue(all(r.startswith("test_content_access.py:")
                                     for r in guard.refused), guard.refused)
+                # A raw read or write by a logical name fails loudly (#111 C2b-2).
+                for sql in ("SELECT title FROM meetings", "UPDATE holds SET reason = ?",
+                            "SELECT path FROM watched_folders"):
+                    with self.subTest(sql=sql), self.assertRaisesRegex(store.StoreError,
+                                                                       "no such column"):
+                        s._all(sql, ("x",) * sql.count("?"))
             finally:
                 s.close()
 
@@ -700,11 +913,11 @@ class GuardTests(unittest.TestCase):
         # its running speaker pass is still marked, with no note to bind.
         for ending in ("restart", "failed"):
             with self.subTest(ending=ending), tempfile.TemporaryDirectory() as tmp:
-                s = store.Store(Path(tmp) / "w.db", codec=Scrambling())
+                s = store.Store(Path(tmp) / "w.db", protector=keyprotect.TestProtector())
                 try:
                     mid = s.create_meeting("synthetic")
-                    sid = s.add_source(mid, original_path=None, original_sha256="0",
-                                       original_size=1, original_mtime_ns=1, audio_sha256="0",
+                    sid = s.add_source(mid, original_path=None, original_sha256="0" * 64,
+                                       original_size=1, original_mtime_ns=1, audio_id="0" * 64,
                                        samples=16000, sample_rate=16000)
                     vid = s.ensure_version(mid, sid, engine="e", model="m", model_revision="r",
                                            precision="p", config={},
@@ -720,37 +933,33 @@ class GuardTests(unittest.TestCase):
                     else:
                         s.end_speaker_run(rid, "failed", "synthetic failure")
                         want = "failed"
-                    row = s._one("SELECT status, error FROM speaker_runs WHERE id = ?", (rid,))
+                    row = s._one("SELECT status, error_sealed FROM speaker_runs WHERE id = ?",
+                                 (rid,))
                     self.assertEqual((want, None), tuple(row))
                 finally:
                     s.close()
 
 
-class Scrambling:
-    """A codec that changes every value it stores and checks each value it
-    opens came from it, for the same place."""
+class Recording:
+    """Wraps the store's codec: records each (table, sealed column) it seals,
+    and that every value it seals is text."""
 
-    def __init__(self):
+    def __init__(self, codec):
+        self.codec = codec
         self.sealed = set()
-
-    @staticmethod
-    def _tag(meeting, table, column, row):
-        return f"{meeting}|{table}|{column}|{row}"
 
     def seal(self, meeting, table, column, row, value):
         assert isinstance(value, str), (table, column)
         self.sealed.add((table, column))
-        return "~" + self._tag(meeting, table, column, row) + "~" + value[::-1]
+        return self.codec.seal(meeting, table, column, row, value)
 
-    def unseal(self, meeting, table, column, row, value):
-        tag = "~" + self._tag(meeting, table, column, row) + "~"
-        assert value.startswith(tag), (table, column, "opened in the wrong place")
-        return value[len(tag):][::-1]
+    def unseal(self, *args):
+        return self.codec.unseal(*args)
 
 
 MARKERS = ("MARKER-TITLE", "MARKER-PATH", "MARKER-PASSAGE", "MARKER-WORD", "MARKER-EDIT",
            "MARKER-ERROR", "MARKER-RUNERR", "MARKER-NAME", "MARKER-REDACT", "MARKER-REASON",
-           "MARKER-FOLDER")
+           "MARKER-FOLDER", "MARKER-INFO")
 
 
 def passage(start, end, text, words=()):
@@ -763,20 +972,25 @@ def database_bytes(folder):
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
-class ScramblingStoreTests(unittest.TestCase):
+class SealedStoreTests(unittest.TestCase):
     """A meeting's whole life through the store and the modules that keep the
     rules (holds, handoff, speaker names, cleanup, intake), with every content
-    value scrambled on disk."""
+    value sealed on disk by the real codec (#111 C2b-2)."""
 
     def test_nothing_readable_on_disk_and_everything_right_in_the_app(self):
+        import hashlib
+
         from workspace import cleanup, handoff, holds, intake, speaker_names
-        codec = Scrambling()
+        original = hashlib.sha256(b"MARKER synthetic original").hexdigest()
         with tempfile.TemporaryDirectory() as tmp, ContentGuard() as guard:
-            s = store.Store(Path(tmp) / "w.db", codec=codec)
+            s = store.Store(Path(tmp) / "w.db", protector=keyprotect.TestProtector())
+            codec = s.codec = Recording(s.codec)
             mid = s.create_meeting("MARKER-TITLE standup")
-            sid = s.add_source(mid, original_path=r"C:\MARKER-PATH\a.wav", original_sha256="0",
-                               original_size=1, original_mtime_ns=1, audio_sha256="0",
-                               samples=160000, sample_rate=16000)
+            sid = s.add_source(mid, original_path=r"C:\MARKER-PATH\a.wav",
+                               original_sha256=original, original_size=1, original_mtime_ns=1,
+                               audio_id="0" * 64, samples=160000, sample_rate=16000,
+                               recording=("rec-1", '{"device": "MARKER-INFO"}'))
+            salt, _ = s.intake_salt()
             vid = s.ensure_version(mid, sid, engine="e", model="m", model_revision="r",
                                    precision="p", config={}, chunk_plan=[(0, 160000, 0, 160000)])
             self.assertTrue(s.commit_chunk(vid, 0, [
@@ -832,18 +1046,28 @@ class ScramblingStoreTests(unittest.TestCase):
             self.assertIn("MARKER-NAME Aroha: MARKER-EDIT kept", snapshot)
             self.assertEqual(snapshot, cleanup.render_reviewed(s, vid))
             self.assertEqual([r"C:\MARKER-FOLDER"], intake.deletion_roots(s, mid))
+            self.assertEqual('{"device": "MARKER-INFO"}', s.recording_info(mid))
+            self.assertTrue(s.recording_imported("rec-1"))
+            self.assertEqual((salt, False), s.intake_salt())
+            self.assertTrue(s.same_fingerprint("original", original, s.source(sid)["original_fp"]))
             s.close()
             self.assertEqual([], guard.refused)
 
             # Every content column was written through the codec, and none of
-            # it is readable in the database file or its write-ahead log.
-            want = {(t, c) for t, cols in store.CONTENT_COLUMNS.items() for c in cols}
+            # it is readable in the database file or its write-ahead log: not
+            # the plain SHA-256 of the original or the intake salt either.
+            want = {(t, c) for t, cols in store.CONTENT_COLUMNS.items() for c in cols.values()}
             self.assertEqual(set(), want - codec.sealed)
             raw = database_bytes(tmp)
-            for marker in MARKERS:
+            for marker in (*MARKERS, original, salt.decode()):
                 with self.subTest(marker=marker):
                     self.assertFalse(marker.encode() in raw, "readable on disk")
-                    self.assertTrue(marker[::-1].encode() in raw, "not stored at all")
+            # What was read back above came from the file: a new store opens it.
+            s = store.Store(Path(tmp) / "w.db", protector=keyprotect.TestProtector())
+            try:
+                self.assertEqual("MARKER-TITLE standup", s.meeting(mid)["title"])
+            finally:
+                s.close()
 
 
 def write_wav(path, seconds):
@@ -860,11 +1084,11 @@ def write_wav(path, seconds):
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
-class ScramblingWorkspaceTests(unittest.TestCase):
+class SealedWorkspaceTests(unittest.TestCase):
     """The same through the app itself, with fake engines: import, transcribe,
     speakers, rename, edit, hold, handoff options and review."""
 
-    def test_the_app_shows_content_that_is_scrambled_on_disk(self):
+    def test_the_app_shows_content_that_is_sealed_on_disk(self):
         from workspace.app import Workspace
 
         def fake(name):
@@ -874,7 +1098,7 @@ class ScramblingWorkspaceTests(unittest.TestCase):
             rec = write_wav(root / "MARKER-TITLE synthetic.wav", 30)
             ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
                            speaker_model=fake("fake_diarizer"), battery=False,
-                           codec=Scrambling())
+                           protector=keyprotect.TestProtector())
             try:
                 ws.settings.update(model=fake("sentences"), speakers=True)
                 ws.start()
