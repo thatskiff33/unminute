@@ -35,7 +35,7 @@ You do not need Python, Git, FFmpeg or any GPU tools. The package brings its own
 
 ## Install
 
-1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [Releases page](https://github.com/thatskiff33/unminute/releases). The [latest release](https://github.com/thatskiff33/unminute/releases/latest) is the current full release. Previews, such as 0.5.0-preview.2, are marked Pre-release: they are for testing and never become the latest release.
+1. Download `Unminute-<version>.zip` and `Unminute-<version>.zip.sha256` from the [Releases page](https://github.com/thatskiff33/unminute/releases). The [latest release](https://github.com/thatskiff33/unminute/releases/latest) is the current full release. Previews, such as 0.5.0-preview.3, are marked Pre-release: they are for testing and never become the latest release. What changed in each version is in [CHANGELOG.md](CHANGELOG.md). 0.5.0-preview.3 keeps the storage format of 0.5.0-preview.2, so it updates that preview in place and keeps your meetings, edits, holds and settings.
 2. Extract the zip.
 3. Double-click `install.cmd`.
 
@@ -210,7 +210,7 @@ On an otherwise idle Intel Core Ultra 7 255H laptop (32 GB), with 5 minutes of s
 | Parakeet v2 | 12.2 s | 32.4 s (slower) |
 | Whisper large-v3 turbo | 199 s | 47.6 s |
 
-Word error rate on 148 public clips (21.5 minutes), measured before #107: Parakeet v2 15.9%, Whisper turbo 14.8%, Parakeet v3 18.9%. That is a small public sample, not New Zealand business audio. Parakeet v2 on the processor is the default. The graphics card can speed up speaker identification and Whisper: speaker identification on a 15-minute test recording took 80 s instead of 435 s, and Whisper turbo on a 17.5-minute public meeting (AMI ES2004a) took 47.4 s instead of 365.8 s (#248). Details are in issue #12 and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+Word error rate on 148 public clips (21.5 minutes), measured before #107: Parakeet v2 15.9%, Whisper turbo 14.8%, Parakeet v3 18.9%. That is a small public sample, not New Zealand business audio. Parakeet v2 on the processor is the default. The graphics card can speed up speaker identification and Whisper: speaker identification on a 15-minute test recording took 80 s instead of 435 s, and Whisper turbo on a 17.5-minute public meeting (AMI ES2004a) took 47.4 s instead of 365.8 s, and Whisper large-v3 173.0 s instead of 1,708.6 s and 1,843.2 s in two processor runs with other work running (20 October 2026, RTX 500 Ada with 4 GB, #248). Details are in issue #12 and [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 On eight whole public meetings (AMI, 254 minutes), Parakeet v2 had a word error rate of 24.0% at 20 times real time, and 21.2% since its speech detection bridges pauses of up to 1 second (#107; on four meetings not used to choose that setting the gain was 1.4 points); Qwen3-ASR-1.7B, a candidate engine not yet in the app, had 19.4% at 3 times real time but needed about 11 GB of memory. The NPU on the test laptop could not run any engine reliably. Method and full results: [docs/ENGINE_EVALUATION.md](docs/ENGINE_EVALUATION.md).
 
@@ -223,9 +223,9 @@ Checks that need people, hardware or IT are tracked together in #189.
 - Transcription quality has been measured on public and synthetic audio only, not on representative business recordings.
 - Not yet tested with a screen reader, Windows contrast themes or pilot users.
 - Tested on one laptop only. The minimum and recommended hardware levels are untested.
-- Graphics card acceleration has been tested on one NVIDIA laptop GPU (RTX 500 Ada): speaker identification with synthetic audio, Whisper with public meeting audio. Whisper on the card needs a card CTranslate2 can run at float16, which its documentation puts at compute capability 7.0 or later; on an older NVIDIA card Whisper runs on the processor and the meeting says so. Whisper large-v3 on the card can give slightly different text from the processor: on a 39-minute public meeting (AMI ES2004c), 11.8% of words differed, and the word error rate was 21.76% on the card in one direct run and 20.02% through the app, against 19.75% on the processor. AMD and Intel graphics are not supported.
+- Graphics card acceleration has been tested on one NVIDIA laptop GPU (RTX 500 Ada, 4 GB, driver 595.95): speaker identification with synthetic audio (14 October 2026) and a public meeting recording (17 and 19 October 2026), Whisper with public meeting recordings (20 October 2026). Whisper on the card needs a card CTranslate2 can run at float16, which its documentation puts at compute capability 7.0 or later; on an older NVIDIA card Whisper runs on the processor and the meeting says so. Whisper large-v3 on the card can give slightly different text from the processor: on a 39-minute public meeting (AMI ES2004c), 11.8% of words differed, and the word error rate was 21.76% on the card in one direct run and 20.02% through the app, against 19.75% on the processor. AMD and Intel graphics are not supported.
 - Keeping the computer awake, and recording with the lid closed, follow Windows' documentation and have not yet been tested on a real laptop.
-- Recording with the window visible uses about 22% of one processor core; the target is 5% (#216).
+- Recording with the window visible uses about 22 to 24% of one processor core; the target is 5% (#216). Measured on the Intel Core Ultra 7 255H laptop: 22.2% in one quick run on 18 October 2026, and 24% (median of three runs) in v0.5.0-preview.2's release check on 19 October 2026. Minimised, it uses under 1%.
 - The package does not yet include the licence texts of some bundled native libraries, or of the packages that ship none (#176).
 - Version 0.5.0 and its previews are not an update in place from 0.4.3 or earlier ([Coming from 0.4.3 or earlier](#coming-from-043-or-earlier)).
 
