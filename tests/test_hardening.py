@@ -139,6 +139,22 @@ class NavigationTests(unittest.TestCase):
                         r"<[^>]*\s(?:action|formaction|target)\s*="):         # markup only
             self.assertIsNone(re.search(pattern, html), pattern)
 
+    def test_the_page_names_no_assistant_until_the_app_does(self):
+        # #109 review: before the preview arrived (or if it failed), the page
+        # showed "Copy and open ChatGPT" even where IT had turned it off or
+        # named another assistant. Copy and open and its note now start hidden
+        # and empty, Copy prompt and transcript is the main button until then,
+        # and the preview's name and host fill them (app.js layoutHandoff).
+        import re
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        for tag_id in ("ho-open", "ho-open-note"):
+            tag = re.search(r'<[a-z]+ [^>]*\bid="' + tag_id + r'"[^>]*>', html).group(0)
+            self.assertRegex(tag, r"\shidden[\s>]", tag_id)
+        for span in ("ho-open-name", "ho-open-host"):
+            self.assertIn(f'<span id="{span}"></span>', html)
+        copy = re.search(r'<button [^>]*\bid="ho-copy"[^>]*>', html).group(0)
+        self.assertIn('class="primary wide-btn"', copy)
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):

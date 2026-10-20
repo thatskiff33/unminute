@@ -116,6 +116,20 @@ class AssistantValueTests(unittest.TestCase):
                      "Ko\u0304rero", "x" * 31, None, 5):
             self.assertFalse(policy.valid_name(name), repr(name))
 
+    def test_the_default_assistant_meets_the_same_rules(self):
+        # The ChatGPT default is held to the rules an IT-set value must meet,
+        # so an edit to it cannot open something valid_url would refuse.
+        from workspace import handoff
+        name, url = handoff.DEFAULT_ASSISTANT
+        self.assertTrue(policy.valid_name(name))
+        self.assertTrue(policy.valid_url(url))
+
+    def test_the_assistant_pause_matches_the_bridge_pause(self):
+        # The design reuses api.DECLINE_PAUSE_S; app keeps its own copy only
+        # because api imports app.
+        from workspace import api, app
+        self.assertEqual(app.ASSISTANT_PAUSE_S, api.DECLINE_PAUSE_S)
+
 
 @unittest.skipUnless(sys.platform == "win32", "Windows registry types")
 class ParseTests(unittest.TestCase):
@@ -561,13 +575,31 @@ class WorkspacePolicyTests(unittest.TestCase):
             ws.policy = policy.PolicySource(reader=lambda values=values: (values, ()))
             self.assertEqual(ws._assistant(), expected, values)
             self.assertEqual(ws.managed()["assistant"], setting, values)
-        # A bad value in any of the three withholds it; so does an unreadable key.
+        # A bad value in any of the three withholds it; so does an unreadable
+        # key, which Settings words as unreadable, not as IT's choice or a bad value.
         both = {name: "Copilot", url: "https://copilot.example.org/"}
-        for values, invalid in (({name: "Copilot"}, (url,)), ({url: both[url]}, (name,)),
-                                (both, ("AllowHandoffAssistant",)), ({}, policy.UNREADABLE)):
+        for values, invalid, state in (({name: "Copilot"}, (url,), "invalid"),
+                                       ({url: both[url]}, (name,), "invalid"),
+                                       (both, ("AllowHandoffAssistant",), "invalid"),
+                                       ({}, policy.UNREADABLE, "unreadable")):
             p = policy.Policy(values, invalid)
             self.assertIsNone(ws._assistant(p), invalid)
-            self.assertEqual(ws._assistant_setting(p), {"state": "invalid"}, invalid)
+            self.assertEqual(ws._assistant_setting(p), {"state": state}, invalid)
+
+    def test_the_preview_offers_no_assistant_when_policy_withholds_it(self):
+        # What the page lays out by: None (the layout before #109) when policy
+        # turns Copy and open off or sets it badly, else the name and host.
+        from workspace import handoff
+        ws = self.open()
+        mid = ws.store.create_meeting("Synthetic meeting")
+        for values, expected in (({}, {"name": "ChatGPT", "host": "chatgpt.com"}),
+                                 ({"AllowHandoffAssistant": False}, None),
+                                 ({"HandoffAssistantName": "Copilot"}, None)):
+            ws.policy = policy.PolicySource(reader=lambda values=values: (values, ()))
+            with mock.patch.object(handoff, "build", return_value={"filename": "x.md"}), \
+                    mock.patch.object(ws.templates, "get", return_value={}), \
+                    mock.patch.object(handoff, "options", return_value={}):
+                self.assertEqual(ws.handoff_preview(mid, "t")["assistant"], expected, values)
 
     def copy_and_open(self, ws, **kw):
         from workspace import clipboard
@@ -619,6 +651,13 @@ class WorkspacePolicyTests(unittest.TestCase):
         r, copy, _ = self.copy_and_open(ws, return_value=1)
         self.assertIn("turned this off", str(r))
         copy.assert_not_called()
+        values["AllowHandoffAssistant"] = True
+        del values["HandoffAssistantName"]                               # or sets it badly
+        r, copy, _ = self.copy_and_open(ws, return_value=1)
+        self.assertIn("is not valid", str(r))
+        self.assertNotIn("turned this off", str(r))
+        copy.assert_not_called()
+        values["HandoffAssistantName"] = "Copilot"
         del values["AllowHandoffAssistant"]
         values["HandoffAssistantUrl"] = "https://other.example.org/"     # or points it elsewhere
         r, _, _ = self.copy_and_open(ws, return_value=1)
@@ -626,7 +665,8 @@ class WorkspacePolicyTests(unittest.TestCase):
         ws.policy = policy.PolicySource(reader=lambda: ({}, policy.UNREADABLE))
         ws._assistant_opened_at = None
         r, copy, _ = self.copy_and_open(ws, return_value=1)
-        self.assertIn("turned this off", str(r))                          # unreadable: nothing
+        self.assertIn("could not be read", str(r))                        # unreadable: nothing
+        self.assertNotIn("turned this off", str(r))
         copy.assert_not_called()
         self.assertEqual(len(opened), 1)
 

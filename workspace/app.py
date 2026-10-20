@@ -56,8 +56,18 @@ DISPLAY_CACHE_S = 60.0
 PAGE_ERRORS = 20                    # page script errors recorded per run (report_ui_error)
 # Copy and open (#109): after one opening of the assistant's page, another is
 # refused for this long (a double click, or a page calling it in a loop). The
-# same 3 seconds as api.DECLINE_PAUSE_S.
+# same 3 seconds as api.DECLINE_PAUSE_S (a test keeps them equal; api imports
+# this module, so it cannot be imported from there).
 ASSISTANT_PAUSE_S = 3.0
+# Why a click on Copy and open is refused when policy withholds it
+# (Workspace._assistant_withheld), worded as Settings words it.
+ASSISTANT_WITHHELD = {
+    "off": "Your organisation has turned this off. Use Copy prompt and transcript instead.",
+    "invalid": ("Your organisation's setting for Copy and open is not valid, so it is not "
+                "available. Use Copy prompt and transcript instead, and ask your IT team."),
+    "unreadable": ("Your organisation's settings could not be read, so Copy and open is not "
+                   "available. Use Copy prompt and transcript instead, and ask your IT team."),
+}
 SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
 SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
@@ -2359,8 +2369,16 @@ class Workspace:
         assistant = self._assistant(p)
         if assistant is not None:
             return {"state": "set", **self._assistant_shown(assistant)}
-        off = p.values.get("AllowHandoffAssistant") is False
-        return {"state": "off" if off else "invalid"}
+        return {"state": self._assistant_withheld(p)}
+
+    @staticmethod
+    def _assistant_withheld(p):
+        """Why policy withholds Copy and open: "unreadable" (the key exists
+        but could not be read), "off" (IT turned it off) or "invalid" (a value
+        is not valid, or only one of the name and address is set)."""
+        if p.unreadable:
+            return "unreadable"
+        return "off" if p.values.get("AllowHandoffAssistant") is False else "invalid"
 
     def _open_address(self, url):
         """Ask Windows to open a validated https address in the user's default
@@ -2378,10 +2396,10 @@ class Workspace:
         read again first, so a change IT made applies at this click."""
         if self._opener is None and not hasattr(os, "startfile"):
             raise WorkspaceError("Opening the browser works only on Windows.")
-        assistant = self._assistant(self.policy.refresh())
+        p = self.policy.refresh()
+        assistant = self._assistant(p)
         if assistant is None:
-            raise WorkspaceError("Your organisation has turned this off. Use Copy prompt and "
-                                 "transcript instead.")
+            raise WorkspaceError(ASSISTANT_WITHHELD[self._assistant_withheld(p)])
         name, url = assistant
         with self._assistant_lock:
             last, now = self._assistant_opened_at, self._clock()

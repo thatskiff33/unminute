@@ -1468,8 +1468,9 @@ async function applyHandoffOptions() {
 }
 
 // With an assistant (the default), Copy and open is the main button and Copy
-// prompt and transcript joins the row beneath it. Turned off by policy, the
-// page is laid out as before #109: Copy prompt and transcript is the main button.
+// prompt and transcript joins the other two in a row beneath it. Turned off
+// by policy, and until the first preview says, the page is laid out as before
+// #109: Copy prompt and transcript is the main button (index.html starts so).
 function layoutHandoff(a) {
   const copy = $("ho-copy"), row = $("ho-row");
   $("ho-open").hidden = $("ho-open-note").hidden = !a;
@@ -1517,6 +1518,11 @@ async function copyAndOpen() {
   if (!p || handoffState.dirty) return;
   try { r = await call("copy_and_open_assistant", state.mid, handoffState.template, p.digests.combined, handoffState.anonymise); }
   catch (err) { handoffSaid(String(err.message || err)); return; }
+  // The app read the policy again at the click: show the name and host it used.
+  if (handoffState.preview === p) {
+    p.assistant = { name: r.name, host: r.host };
+    layoutHandoff(p.assistant);
+  }
   const chars = r.chars.toLocaleString("en-NZ");
   const long = r.long ? ` It is long: if ${r.name} cuts it off, use Save Markdown and Copy prompt only instead.` : "";
   handoffSaid((r.opened
@@ -1957,7 +1963,8 @@ function renderAssistantSetting(a) {
   const text = !a ? ""
     : a.state === "set" ? `Hand off assistant: ${a.name}, ${a.host} (set by your organisation).`
     : a.state === "off" ? "Hand off assistant: turned off by your organisation."
-    : "Hand off assistant: set by your organisation but not valid. Ask your IT team.";
+    : a.state === "unreadable" ? "Hand off assistant: your organisation's settings could not be read, so Copy and open is not shown. Ask your IT team."
+    : "Hand off assistant: set by your organisation but not valid, so Copy and open is not shown. Ask your IT team.";
   $("s-assistant").textContent = text;
   $("s-assistant").hidden = !text;
 }
