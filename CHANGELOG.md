@@ -22,14 +22,6 @@ Preview for testing, built by GitHub Actions with signed build provenance. Updat
 - **A model that is not ready names your IT team when downloads are turned off.** When your organisation has turned model downloads off, a meeting that stopped because its speech model is not downloaded or is damaged, and speaker identification that failed for the same reason, now say to choose another model or ask your IT team, as Settings does, instead of pointing to Manage downloads.
 - **Security update: aiohttp 3.14.5** (was 3.14.3), which fixes three advisories: two high-severity ones in aiohttp's web server (GHSA-5wr8-gcqf-gqf3, GHSA-2g87-pp6c-29x5) and a low-severity one in its client cookie handling (GHSA-494j-54xm-rwp3). aiohttp is bundled only because fsspec, a file-access library that the model libraries depend on, can use it for web addresses. Unminute never runs an aiohttp server and never loads aiohttp, so exposure was nil in practice; the fix is taken anyway. yarl moves to 1.25.1 with it, as the new aiohttp needs. Nothing changes in how Unminute works (#261).
 
-Known limitations of v0.5.0-preview.3:
-
-- **Recording with the window visible uses about 22 to 24% of one processor core**, against a 5% target: 22.2% in one quick run on 18 October 2026 and 24% (median of three runs) in v0.5.0-preview.2's release check, both on the development laptop (Intel Core Ultra 7 255H) and before this preview's changes. Minimised, it uses under 1%. Tracked in #216.
-- **Whisper large-v3 on the graphics card can give slightly different text from the processor.** On one 39-minute public meeting, 11.8% of words differed, with a word error rate of 20.02% through the app on the card against 19.75% on the processor. Large-v3 also varies from run to run on either device. Whisper on the graphics card has been measured on one NVIDIA laptop card only (RTX 500 Ada, 4 GB, driver 595.95) (#248).
-- **The zip is not code-signed.** It has signed build provenance and a signed bill of materials: check them with `gh attestation verify`, or with `tools/intune/Get-VerifiedRelease.ps1` for IT.
-- **Some bundled native libraries do not yet ship their licence texts** (#176).
-- **Checks that need people, other hardware or IT** (for example other laptops and Intune deployment) are tracked in #189 and are not part of this release's evidence.
-
 ## v0.5.0-preview.2 (2026-10-19)
 
 Preview for testing, built by GitHub Actions with signed build provenance. Replaces v0.5.0-preview.1, which was tagged but never published; its notes are included here. Not an update in place from 0.4.3 or earlier: finish with the earlier version and uninstall it first (see Updates in docs/PACKAGING.md).
