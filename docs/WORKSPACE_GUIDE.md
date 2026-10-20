@@ -193,7 +193,7 @@ These configurations have been tested:
 - **Hardware:** the minimum is 4 processor cores and 8 GB of memory, and 8 cores and 16 GB are recommended. So far it has only been tested on a faster laptop (#28).
 - **Speech models:** Parakeet v2 (recommended) was tested in the workspace. Whisper large-v3 turbo and Whisper large-v3 were tested in the workspace on 20 October 2026, on the processor and on an NVIDIA graphics card, with public meeting recordings. Parakeet v3 was tested only in the retired source app's engine, where it dropped speech on some clips.
 - **Speaker identification:** pyannote community-1.
-- **Graphics card:** one NVIDIA laptop card, an RTX 500 Ada with 4 GB and driver 595.95. Speaker identification on it was tested with synthetic audio (14 October 2026) and a public meeting recording (17 and 19 October 2026), and Whisper large-v3 turbo and Whisper large-v3 with public meeting recordings (20 October 2026). Other NVIDIA cards are untested.
+- **Graphics card:** one NVIDIA laptop card, an RTX 500 Ada with 4 GB. Speaker identification on it was tested with synthetic audio (14 October 2026) and a public meeting recording (17 and 19 October 2026), and Whisper large-v3 turbo and Whisper large-v3 with public meeting recordings (20 October 2026). Other NVIDIA cards are untested.
 
 **Graphics card (optional).** On a computer with an NVIDIA card, Settings > Manage downloads offers two components. You can download either or both:
 
