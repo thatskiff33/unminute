@@ -97,13 +97,26 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(step, check)
 
     def test_the_owners_pre_tag_diff_covers_the_release_machinery(self):
-        # Every tools/ script a release job runs, and every module the build
-        # loads by path (tools/windows_powershell.py, #268), is in the diff the
-        # owner reviews before tagging (docs/RELEASING.md).
+        # Every tools/ script a release job runs, every tools/ module the build
+        # loads by path (tools/windows_powershell.py, #268) and the IT verifier
+        # that T14 relies on are in the diff the owner reviews before tagging
+        # (docs/RELEASING.md). Scripts are found as a path in release.yml, with
+        # either slash and with or without a leading .\ or ./; build modules
+        # as TOOLS / "<name>.py" in build_package.py. The test refuses the
+        # other spellings it cannot read (python -m tools.x, ROOT / "tools",
+        # a TOOLS / path that is not one literal file name). Its limit: a
+        # helper named only through a variable, or imported by another tools/
+        # module, is not found; reviewers check those.
         steps = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in read(WORKFLOW).splitlines())
+        steps = steps.replace("\\", "/")
+        self.assertIsNone(re.search(r"-m\s+tools\b", steps), "a tools module run with -m")
         machinery = set(re.findall(r"tools/[\w/.-]+\.(?:py|ps1)", steps))
-        machinery |= {"tools/" + name for name in re.findall(
-            r'TOOLS / "([\w.]+\.py)"', read(ROOT / "tools" / "build_package.py"))}
+        build = read(ROOT / "tools" / "build_package.py")
+        loaded = re.findall(r'TOOLS / "([\w.]+\.py)"', build)
+        self.assertEqual(len(loaded), build.count("TOOLS /"), "a TOOLS / path not read here")
+        self.assertNotRegex(build, r'ROOT / "tools"')
+        machinery |= {"tools/" + name for name in loaded}
+        machinery.add("tools/intune/Get-VerifiedRelease.ps1")      # T14: IT's check
         self.assertIn("tools/windows_powershell.py", machinery)
         self.assertIn("tools/audit.py", machinery)
         command = re.search(r"git diff <last release tag>\.\.<commit> -- (.+)",
@@ -113,7 +126,7 @@ class WorkflowTests(unittest.TestCase):
         for path in sorted(machinery):
             covered = any(path == r or path.startswith(r.rstrip("/") + "/") for r in reviewed)
             self.assertTrue(covered,
-                            f"{path} runs in a release but is not in the owner's pre-tag diff")
+                            f"{path} is release machinery but not in the owner's pre-tag diff")
 
     def test_publishing_checks_the_draft_attestations_and_evidence(self):
         publish = jobs()["publish"]
