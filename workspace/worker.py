@@ -60,6 +60,12 @@ NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 # own exit code (a crash's) is kept rather than replaced by terminate()'s.
 CRASH_GRACE_S = 2.0
 
+# A worker told to end is waited for this long before its crash file is read:
+# until it has ended, Windows keeps that file open, so it cannot be deleted
+# (nor the folder holding it). A loaded machine can take more than a few
+# seconds to end a process (#278).
+END_WAIT_S = 30.0
+
 
 class WorkerCrashed(RuntimeError):
     """The worker process ended or hung; nothing from it was committed."""
@@ -139,6 +145,7 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         try:
             msg = conn.recv()
         except (EOFError, OSError):
+            _end_crash_capture(log)
             return
         op = msg[0]
         try:
@@ -174,6 +181,9 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 gc.collect()
                 conn.send(("ok", turns, exclusive, ran_on, had_asr))
             elif op == "exit":
+                # The crash file is closed before the answer: the app then
+                # reads and deletes it however long this process takes to end.
+                _end_crash_capture(log)
                 conn.send(("ok",))
                 return
             else:
@@ -184,6 +194,12 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
             # under a code that reaches the user with the message.
             code = diag.incident("worker", exc, op=op)
             conn.send(("error", type(exc).__name__, safe_message(exc), op, code))
+
+
+def _end_crash_capture(log):
+    """The worker's work is done: close its crash file (#278)."""
+    if log is not None:
+        log.stop_crash_capture()
 
 
 class WorkerHandle:
@@ -227,8 +243,11 @@ class WorkerHandle:
         return proc.pid if proc is not None and proc.is_alive() else None
 
     def begin_run(self):
-        """Start of a new run (transcription or speakers): clears an earlier stop."""
-        self._stop_requested.clear()
+        """Start of a new run (transcription or speakers): clears an earlier stop.
+        Once the handle is closed the stop stays: a run that begins while the
+        app closes never starts a worker that nothing would end (#278)."""
+        if not self._closed:
+            self._stop_requested.clear()
 
     def _start(self):
         parent, child = self._ctx.Pipe()
@@ -253,7 +272,7 @@ class WorkerHandle:
                 self._proc.join(grace)
             if self._proc.is_alive():
                 self._proc.terminate()
-            self._proc.join(5)
+            self._proc.join(END_WAIT_S)
             # Ended by itself: not by terminate() (-SIGTERM), a stop or a clean exit.
             self._note_exit(died=not self._stop_requested.is_set()
                             and self._proc.exitcode not in (0, None, -signal.SIGTERM))

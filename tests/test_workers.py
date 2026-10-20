@@ -21,10 +21,11 @@ from workspace import resources  # noqa: E402
 if HAVE_NUMPY:
     import numpy as np
 
-    from workspace import runner
+    from worker_exit import join_workers
+    from workspace import diag, runner
     from workspace.store import Store
-    from workspace.worker import (WorkerCrashed, WorkerEngine, WorkerError, WorkerHandle,
-                                  WorkerStopped)
+    from workspace.worker import (END_WAIT_S, WorkerCrashed, WorkerEngine, WorkerError,
+                                  WorkerHandle, WorkerStopped)
 
     class PlainReader:
         def __init__(self, seconds):
@@ -216,6 +217,73 @@ class WorkerTests(unittest.TestCase):
             h.close()
         self.assertEqual(text, "env {'TORCH_FORCE_WEIGHTS_ONLY_LOAD': '1', "
                                "'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD': None}")
+
+
+class SlowToEnd:
+    """A stand-in worker process that ends only after 8 s of waiting for it,
+    as a loaded machine's can. join() counts the time it was given instead of
+    sleeping."""
+    pid, name = 4321, "unminute-worker"
+
+    def __init__(self):
+        self.waited, self.exitcode = 0.0, None
+
+    def is_alive(self):
+        return self.waited < 8.0
+
+    def terminate(self):
+        pass
+
+    def join(self, timeout=None):
+        self.waited += 8.0 if timeout is None else timeout
+        if not self.is_alive():
+            self.exitcode = 1
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class WorkerEndTests(unittest.TestCase):
+    """#278: a worker that has ended, or been told to, leaves nothing open in
+    the workspace, so its crash file is collected and its folder can go."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.logs = Path(self.tmp.name) / "logs"
+        self.log = diag.Log(self.logs, "app")
+        self.h = WorkerHandle(self.tmp.name, quiet=True, allow_test_engines=True, log=self.log)
+
+    def tearDown(self):
+        try:
+            self.h.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
+
+    def test_the_crash_file_is_closed_before_the_worker_answers_exit(self):
+        self.h.load(fake("slow_exit"), 1)
+        crash = self.logs / "worker.crash"
+        self.assertTrue(crash.exists())                      # faulthandler's file
+        self.h._conn.send(("exit",))
+        self.assertTrue(self.h._conn.poll(30))
+        self.assertEqual(("ok",), self.h._conn.recv())
+        self.assertTrue(self.h._proc.is_alive())             # still ending (60 s)
+        # What the app does when a worker ends: read the file and delete it.
+        self.log.collect_crash(False, crash_path=crash, process="worker")
+        self.assertFalse(crash.exists())
+
+    def test_a_worker_told_to_end_is_waited_for_until_it_has(self):
+        slow = SlowToEnd()
+        self.h._proc = slow
+        self.h._kill()
+        self.assertFalse(slow.is_alive())
+        self.assertGreaterEqual(END_WAIT_S, 8.0)
+        self.assertIsNone(self.h._proc)
+
+    def test_a_closed_handle_never_starts_a_worker(self):
+        self.h.close()
+        self.h.begin_run()                    # a run that began while the app closed
+        with self.assertRaises(WorkerStopped):
+            self.h.load(fake("echo"), 1)
+        self.assertIsNone(self.h._proc)
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

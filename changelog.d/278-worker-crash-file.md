@@ -1,0 +1,1 @@
+- **A worker that ends no longer leaves its crash file open.** The background worker now closes its crash file before it ends, and the app waits for a stopped worker to finish ending (up to 30 seconds on a busy computer), so the file is read and deleted as intended. Closing the app while a meeting was about to start processing can no longer leave a worker running.

@@ -32,6 +32,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import keyprotect  # noqa: E402
+from worker_exit import join_workers  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -294,8 +295,11 @@ class AppOpenedValueTests(unittest.TestCase):
         self.codec = Counting().attach(self.ws.store)
 
     def tearDown(self):
-        self.ws.close()
-        self.tmp.cleanup()
+        try:
+            self.ws.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
 
     def opened(self, fn, *args):
         self.codec.opened.clear()
@@ -477,6 +481,7 @@ class FailedImportTests(unittest.TestCase):
                 self.assertEqual([], list(ws.media.iterdir()) if ws.media.exists() else [])
             finally:
                 ws.close()
+                join_workers(self)
 
 
 def ui_check_long_meeting():
@@ -684,6 +689,7 @@ class UiCheckSetupTests(unittest.TestCase):
                 self.assertEqual([], ws.store.chunks(vid, status="pending"))
             finally:
                 ws.close()
+                join_workers(self)
 
     @unittest.skipUnless(sys.platform == "win32",
                          "imports use Windows path rules (the app is Windows-only)")
@@ -721,6 +727,7 @@ class UiCheckSetupTests(unittest.TestCase):
                 self.assertGreater(ws.transcript(mid)["total"], 0)
             finally:
                 ws.close()
+                join_workers(self)
 
 
 def child_inspect():

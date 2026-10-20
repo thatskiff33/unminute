@@ -23,6 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import keyprotect  # noqa: E402
+from worker_exit import join_workers  # noqa: E402
 
 from workspace import diag  # noqa: E402
 
@@ -335,8 +336,11 @@ class SharingTests(unittest.TestCase):
 
     def tearDown(self):
         diag.set_current(None)
-        self.ws.close()
-        self.tmp.cleanup()
+        try:
+            self.ws.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
 
     def incidents(self, area=None):
         return [r for r in records(self.ws.log.folder)
@@ -738,8 +742,11 @@ class LifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         diag.set_current(None)
-        self.ws.close()
-        self.tmp.cleanup()
+        try:
+            self.ws.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
 
     def logs(self):
         return self.ws.root / "logs"
@@ -868,6 +875,7 @@ class LifecycleTests(unittest.TestCase):
                               if r.get("area") == "bridge"])
         finally:
             other.close()
+            join_workers(self)
             self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
                                 allow_test_engines=True, battery=False,
                                 protector=keyprotect.TestProtector())
