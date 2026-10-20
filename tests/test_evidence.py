@@ -9,6 +9,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -619,7 +620,10 @@ class PrepareTests(TempDir):
     def package_python(self, folder, *, flags=True):
         exe = str(folder / "runtime" / "python.exe")
         f = types.SimpleNamespace(isolated=int(flags), dont_write_bytecode=int(flags))
-        modules = {n: types.SimpleNamespace(__file__=str(folder / "app" / n / "__init__.py"))
+        # A package's file is its __init__.py; a submodule's is its own .py.
+        modules = {n: types.SimpleNamespace(__file__=str(
+                       folder / "app" / n / "__init__.py" if "." not in n
+                       else folder / "app" / (n.replace(".", "/") + ".py")))
                    for n in evidence.APP_MODULES}
         return [mock.patch.object(sys, "_base_executable", exe, create=True),
                 mock.patch.object(sys, "executable", exe),
@@ -666,13 +670,19 @@ class PrepareTests(TempDir):
             self.run_prepare(self.package_python(folder, flags=False), ap, args, folder / "app")
 
     def test_app_modules_must_come_from_the_package(self):
+        # The realistic mix-up is the workspace package itself coming from a
+        # checkout (its submodules then follow it); a stray submodule is checked too.
         _, folder = make_package(self.root)
         ap, args = self.parse("--app", str(folder / "app"))
-        patches = self.package_python(folder)
-        patches.append(mock.patch.dict(sys.modules, {"workspace.asr_engines": types.SimpleNamespace(
-            __file__=str(self.root / "checkout" / "workspace" / "asr_engines.py"))}))
-        with self.assertRaisesRegex(SystemExit, "workspace.asr_engines was imported from"):
-            self.run_prepare(patches, ap, args, folder / "app")
+        checkout = self.root / "checkout" / "workspace"
+        for name, path in (("workspace", checkout / "__init__.py"),
+                           ("workspace.asr_engines", checkout / "asr_engines.py")):
+            with self.subTest(name):
+                patches = self.package_python(folder)
+                patches.append(mock.patch.dict(sys.modules, {
+                    name: types.SimpleNamespace(__file__=str(path))}))
+                with self.assertRaisesRegex(SystemExit, f"^{re.escape(name)} was imported from"):
+                    self.run_prepare(patches, ap, args, folder / "app")
 
     def test_a_wrong_zip_or_a_changed_folder_stops_before_the_check(self):
         zpath, folder = make_package(self.root)

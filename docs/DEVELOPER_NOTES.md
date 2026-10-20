@@ -33,6 +33,11 @@ real time, and remove it when the cause is fixed.
   --min-confidence 60` runs what CI's report runs (install vulture
   from `requirements/ci-vulture.txt`). Most hits are .NET or ctypes attributes set by name;
   add one to the whitelist only with its reason. Remove anything that is really unused.
+- **Tools drive their own version of the app.** Since R13c (#136) the tools import
+  `workspace.asr_engines` and `workspace.offline_guard`, so they fail with an `ImportError`
+  against a checkout or package from before that move (v0.5.0-preview.3 and earlier). To
+  measure an older package, run that version's own tools; `tools/evidence.py` already refuses
+  evidence whose tools come from a different commit than the package.
 - **`time.monotonic()` counts from boot.** Never start a "last run" timer at 0.0, or a check
   is skipped for the first minutes after boot. Start at `float("-inf")`.
 - **PyAV 17 and 8-channel planar audio.** An 8-channel planar frame reports 9 planes, and

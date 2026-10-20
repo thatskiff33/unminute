@@ -227,6 +227,26 @@ class DocsTests(unittest.TestCase):
         cls.job_ids = re.findall(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE)
         names = re.findall(r"^    name: (.+)$", jobs, re.MULTILINE)
         cls.jobs = [j.strip().strip('"') for j in names]
+        cls.compile_line = one(r"^\s*run: python -m compileall (.+)$", workflow,
+                               "compileall step in ci.yml")
+
+    def test_ci_compile_step_names_real_paths_and_covers_all_python(self):
+        # The Syntax check compiles named folders. A glob or a path that matches
+        # nothing (the old root *.py after R13c, #136) only makes compileall warn
+        # and still pass, so each target must exist, and together they must hold
+        # every tracked Python file.
+        targets = [a for a in self.compile_line.split() if not a.startswith("-")]
+        self.assertTrue(targets, "the compileall step names no targets")
+        missing = [t for t in targets if not (ROOT / t).exists()]
+        self.assertEqual(missing, [], "ci.yml compiles paths that do not exist")
+        files = tracked_files()
+        if files is None:                              # outside a checkout: walk the tree
+            skip = {".git", "build", "dist", "extracted", ".venv", "venv", "__pycache__"}
+            files = [p.relative_to(ROOT).as_posix() for p in ROOT.rglob("*.py")
+                     if not skip & set(p.relative_to(ROOT).parts)]
+        uncovered = [f for f in files if f.endswith(".py")
+                     and not any(f == t or f.startswith(t.rstrip("/") + "/") for t in targets)]
+        self.assertEqual(uncovered, [], "ci.yml's compile step misses these Python files")
 
     def test_ci_jobs_found_and_all_named(self):
         self.assertGreaterEqual(len(self.jobs), 5, "the job name pattern no longer matches ci.yml")
