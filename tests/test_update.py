@@ -524,10 +524,27 @@ class SchemaOneMigrationTests(unittest.TestCase):
 
     def test_no_plain_value_is_left_in_the_files(self):
         path = self.schema_1()
+        # Values removed earlier without secure_delete, on pages already free
+        # before the migration (more than it reuses), which dropping the
+        # tables does not overwrite: only compacting the file removes them.
+        removed = r"C:\Removed synthetic folder"
+        con = sqlite3.connect(self.db)
+        con.execute("PRAGMA secure_delete=OFF")
+        con.execute("CREATE TABLE old_rows (x TEXT)")
+        con.executemany("INSERT INTO old_rows VALUES (?)",
+                        [(f"{removed} {i} " + "x" * 2000,) for i in range(300)])
+        con.commit()
+        con.execute("DROP TABLE old_rows")
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.close()
+        before = b"".join(p.read_bytes() for p in self.db.parent.iterdir()
+                          if p.name.startswith("workspace.db"))
+        self.assertIn(removed.encode(), before)                 # the control
         self.open().close()
         raw = b"".join(p.read_bytes() for p in self.db.parent.iterdir()
                        if p.name.startswith("workspace.db"))
-        for plain in (path, self.salt, H_A):
+        for plain in (path, self.salt, H_A, removed):
             with self.subTest(plain=plain):
                 self.assertNotIn(plain.encode(), raw)
         self.assertFalse((self.db.parent / "compact.pending").exists())
