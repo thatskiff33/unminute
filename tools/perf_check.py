@@ -19,6 +19,11 @@
 # exit codes. The window is visible for the whole run; leave the machine idle,
 # on mains power, on the Balanced power plan. The worker's peak memory and
 # speed need real models and come from tools/packaged_check.py.
+#
+# A visible state costs what it costs only while it is drawn (#292): the run
+# keeps the display on for its own duration, and each window measured with the
+# window on screen counts only if the display stayed on, the session unlocked
+# and the page drawing (drawing_report()); otherwise the run stops, exit 2.
 
 import argparse
 import json
@@ -74,6 +79,17 @@ LEAK_BUDGET_MINUTES = 30          # the leak budget is growth over this long
 RELEASE_RUNS = evidence.PERF_RELEASE["runs"]
 RELEASE_SETTLE_S = evidence.PERF_RELEASE["settle_s"]
 RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
+# The states with the window on screen (#292). Each window measured in one
+# counts only if it was drawn (drawing_report()); release evidence checks the
+# record of that (tools/evidence.py).
+VISIBLE_STATES = evidence.PERF_VISIBLE_STATES
+# The level meter asks for every display frame while recording with the window
+# in view; fewer than MIN_DRAW_FPS a second means it was not being drawn.
+DRAWING_STATES = ("recording",)
+MIN_DRAW_FPS = 20
+# GUID_SESSION_DISPLAY_STATUS's values. A dimmed display still draws every frame.
+DISPLAY_STATES = {0: "off", 1: "on", 2: "dimmed"}
+DRAWN_DISPLAY = ("on", "dimmed")
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
 (the Settings view), minimised, recording (the Meetings view while recording,
@@ -104,10 +120,26 @@ after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
 short-window noise cannot be scaled up.
 
+Drawn on screen (#292): a visible state's drawing cost is only paid while the
+display is on and the window is drawn, so the run asks Windows to keep the
+display on (and the machine awake) for its own duration, without changing the
+power plan, and records whether it could ("display": "kept_awake"). Each
+window measured in a visible state (meetings, settings, recording) counts
+only if the display stayed on (Windows' display status for the session), the
+session was not locked and showed no screen saver, and the page was visible
+and drew: at least one frame in every such window, and at least 20 frames a
+second of the level display while recording. The page's frames are counted
+by a wrapper the tool puts around requestAnimationFrame in its own window, so
+counting adds no frames; the tool asks for one frame as each window starts, to
+see one drawn. Each such window's "drawing" block records what was seen. A
+window that was not drawn stops the run (exit 2), in every mode: keep the
+session unlocked and the window in view.
+
 Output: a JSON report with the machine's specification ("machine": processor,
 cores and logical processors, memory, Windows build, power plan, mains or
-battery, display adapters and drivers, WebView2 version; nothing that names
-the computer or its user), the app version, every run's figures, the medians
+battery, display adapters and drivers, the primary display's refresh rate,
+WebView2 version; nothing that names the computer or its user), the app
+version, the display block above, every run's figures, the medians
 (for the worker's unload, the slowest run: a pass or fail, not a noisy
 figure), anything over budget or not measured, and budgets proposed from these
 figures (plus 20%). There is no named reference machine: the budgets in
@@ -118,7 +150,8 @@ stops the run before it starts (exit 2).
 Exit codes: 0 within budget (or no budgets file yet); 1 a figure is over its
 budget (a worker that did not unload counts as over), or a budgeted figure was
 not measured; 2 the window could not be measured (it did not start, did not
-respond, lost its recording, or left processes outside the measuring job).
+respond, lost its recording, was not drawn in a visible state, or left
+processes outside the measuring job).
 
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
 --leak-minutes 30, about two and a quarter hours. --quick is 1 run, 20 s
@@ -382,6 +415,100 @@ def steps(state, recording):
     return out
 
 
+# -- was the window drawn? (#292; pure, tested in tests/test_perf_check.py) -------------
+#
+# An overnight release run measured recording with the window visible at about
+# 19% of one core; with the screen on it was about 44% (#216), most of it the
+# level display drawn on every frame. The display had most likely turned itself
+# off, so the browser drew few or no frames. So each window measured in a
+# visible state needs the display on, the session unlocked and the page drawing.
+
+# Put into the tool's own window once the page has started (the child, never
+# the app): counts the animation frames the page itself asks for, by wrapping
+# requestAnimationFrame, so counting adds no frame. read() also asks for one
+# frame of its own ("ping"), so the next read shows whether any frame was drawn
+# in between, even in a view that draws nothing. Only counts leave the page.
+PAGE_COUNTER_JS = """(() => {
+  if (window.__perfCheck) return true;
+  const raf = window.requestAnimationFrame.bind(window);
+  const p = { frames: 0, ping: 0 };
+  window.requestAnimationFrame = (cb) => raf((t) => { p.frames += 1; return cb(t); });
+  p.read = () => {
+    raf(() => { p.ping = performance.now(); });
+    return JSON.stringify({ visibility: document.visibilityState, frames: p.frames,
+                            now: performance.now(), ping: p.ping });
+  };
+  Object.defineProperty(window, "__perfCheck", { value: p });
+  return true;
+})()"""
+PAGE_READ_JS = "window.__perfCheck ? window.__perfCheck.read() : null"
+
+
+def page_reading(raw):
+    """PAGE_READ_JS's answer as {"visibility", "frames", "now", "ping"}, or
+    None when it is not that (no counter, or the page did not answer). The
+    answer is JSON text; one evaluate_js has already parsed is taken as well."""
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("visibility"), str):
+        return None
+    if not all(_number(data.get(k)) and data[k] >= 0 for k in ("frames", "now", "ping")):
+        return None
+    return {"visibility": data["visibility"][:20], "frames": data["frames"],
+            "now": data["now"], "ping": data["ping"]}
+
+
+def display_states(events, t0, t1):
+    """The display's power states during [t0, t1], in order, from (time, state)
+    events in time order: the state it was in at t0, then any it changed to
+    before t1. None when no state was known at t0."""
+    at_start = [state for t, state in events if t <= t0]
+    if not at_start:
+        return None
+    return list(dict.fromkeys([at_start[-1]] + [s for t, s in events if t0 < t <= t1]))
+
+
+def drawing_report(state, display, sessions, page0, page1):
+    """Whether a window measured in a visible state was drawn as a person
+    would see it, and why not. display: display_states() for the window;
+    sessions: the session's state ({"locked", "screensaver"}, or None when
+    unread) at its start and end; page0, page1: page_reading() then. Returns
+    {"drawn", "problems", "display", "page_visibility", "frames_per_s"}."""
+    problems = []
+    if display is None:
+        problems.append("the display's power state was not known")
+    else:
+        problems += [f"the display was {s}" for s in display if s not in DRAWN_DISPLAY]
+    for session in sessions:
+        if not isinstance(session, dict):
+            problems.append("the session's state could not be read")
+            continue
+        if session.get("locked") is not False:
+            problems.append("the session was locked")
+        if session.get("screensaver") is not False:
+            problems.append("the screen saver was running")
+    fps = None
+    if not page0 or not page1:
+        problems.append("the page did not report its frames")
+    else:
+        if page0["visibility"] != "visible" or page1["visibility"] != "visible":
+            problems.append(f"the page was {page0['visibility']}, then {page1['visibility']}")
+        if page1["ping"] <= page0["now"]:
+            problems.append("the page drew no frame")
+        seconds = (page1["now"] - page0["now"]) / 1000
+        if seconds > 0:
+            fps = round((page1["frames"] - page0["frames"]) / seconds, 1)
+        if state in DRAWING_STATES and (fps is None or fps < MIN_DRAW_FPS):
+            problems.append(f"the level display drew {fps} frames a second "
+                            f"(at least {MIN_DRAW_FPS} expected)")
+    return {"drawn": not problems, "problems": list(dict.fromkeys(problems)),
+            "display": display,
+            "page_visibility": [p["visibility"] if p else None for p in (page0, page1)],
+            "frames_per_s": fps}
+
+
 # -- measuring from outside (Windows only)--------------------------------------------
 
 def _win():
@@ -554,6 +681,144 @@ def measure(job, pid, settle, window):
     }
 
 
+class DisplayEvents:
+    """The display's power state over time, as (time.monotonic(), state)
+    events; record() may be called from any thread."""
+
+    def __init__(self, clock=time.monotonic):
+        self.events, self._clock = [], clock
+        self._lock, self.known = threading.Lock(), threading.Event()
+
+    def record(self, value):
+        with self._lock:
+            self.events.append((self._clock(), DISPLAY_STATES.get(value, "unknown")))
+        self.known.set()
+
+    def states(self, t0, t1):
+        with self._lock:
+            events = list(self.events)
+        return display_states(events, t0, t1)
+
+
+GUID_SESSION_DISPLAY_STATUS = "2b84c20e-ad23-4ddf-93db-05ffbd7efca5"
+ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
+PBT_POWERSETTINGCHANGE, DEVICE_NOTIFY_CALLBACK = 0x8013, 2
+
+
+class WindowsDisplay(DisplayEvents):
+    """The run's display (#292). start() asks Windows to keep the display on
+    and the machine awake while this thread runs (SetThreadExecutionState with
+    ES_CONTINUOUS; stop() releases it, and Windows does when the process ends;
+    no power setting or plan is changed), and records the display's state for
+    the user's session from Windows' notifications (GUID_SESSION_DISPLAY_STATUS:
+    the state when asked, then each change; no window is opened). session()
+    reads whether the session is locked or a screen saver is running. Reads
+    give None when they cannot be made, never an exception."""
+
+    def __init__(self):
+        super().__init__()
+        self._handle = self._keep = None
+        self.kept_awake = False
+
+    def start(self):
+        """{"kept_awake", "power_state_known"} once Windows has answered (5 s at most)."""
+        ctypes, wintypes = _win()
+        k32 = ctypes.WinDLL("kernel32")
+        k32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+        k32.SetThreadExecutionState.restype = ctypes.c_uint32
+        self.kept_awake = bool(k32.SetThreadExecutionState(
+            ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED))
+        try:
+            self._register(ctypes, wintypes)
+        except (OSError, AttributeError):
+            self._handle = None
+        return {"kept_awake": self.kept_awake,
+                "power_state_known": self._handle is not None and self.known.wait(5)}
+
+    def _register(self, ctypes, wintypes):
+        import uuid
+
+        class Guid(ctypes.Structure):
+            _fields_ = [("bytes", ctypes.c_ubyte * 16)]
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+                                           ctypes.c_void_p)
+
+        class Subscribe(ctypes.Structure):       # DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS
+            _fields_ = [("Callback", callback_type), ("Context", ctypes.c_void_p)]
+
+        def changed(context, kind, setting):
+            # POWERBROADCAST_SETTING: the setting's GUID, then a DWORD data
+            # length (offset 16), then the data (offset 20): a DWORD here.
+            try:
+                if kind == PBT_POWERSETTINGCHANGE and setting:
+                    if ctypes.c_uint32.from_address(setting + 16).value >= 4:
+                        self.record(ctypes.c_uint32.from_address(setting + 20).value)
+            except Exception:
+                pass
+            return 0
+        guid = Guid((ctypes.c_ubyte * 16)(*uuid.UUID(GUID_SESSION_DISPLAY_STATUS).bytes_le))
+        function = callback_type(changed)
+        params = Subscribe(function, None)
+        powrprof = ctypes.WinDLL("powrprof")
+        powrprof.PowerSettingRegisterNotification.argtypes = [
+            ctypes.POINTER(Guid), wintypes.DWORD, ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p)]
+        powrprof.PowerSettingRegisterNotification.restype = wintypes.DWORD
+        handle = ctypes.c_void_p()
+        self._keep = (guid, function, params, powrprof)     # alive while registered
+        if powrprof.PowerSettingRegisterNotification(ctypes.byref(guid), DEVICE_NOTIFY_CALLBACK,
+                                                     ctypes.byref(params),
+                                                     ctypes.byref(handle)) == 0 and handle.value:
+            self._handle = handle
+
+    def stop(self):
+        try:
+            ctypes, _ = _win()
+            if self._handle is not None:
+                powrprof = self._keep[3]
+                powrprof.PowerSettingUnregisterNotification.argtypes = [ctypes.c_void_p]
+                powrprof.PowerSettingUnregisterNotification(self._handle)
+                self._handle = None
+            k32 = ctypes.WinDLL("kernel32")
+            k32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+            k32.SetThreadExecutionState(ES_CONTINUOUS)         # back to normal
+        except (OSError, AttributeError):
+            pass                       # Windows releases both when the process ends
+
+    def session(self):
+        """{"locked": the input desktop is not the user's, "screensaver": running}."""
+        try:
+            ctypes, wintypes = _win()
+            user32 = ctypes.WinDLL("user32")
+            user32.OpenInputDesktop.restype = wintypes.HANDLE
+            user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+            user32.GetUserObjectInformationW.argtypes = [
+                wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD)]
+            locked = True              # the lock screen's desktop cannot be opened
+            desktop = user32.OpenInputDesktop(0, False, 0x0001)      # DESKTOP_READOBJECTS
+            if desktop:
+                try:
+                    name = ctypes.create_unicode_buffer(64)
+                    if user32.GetUserObjectInformationW(desktop, 2, name, ctypes.sizeof(name),
+                                                        ctypes.byref(wintypes.DWORD())):
+                        locked = name.value.lower() != "default"      # UOI_NAME
+                finally:
+                    user32.CloseDesktop(desktop)
+            running = wintypes.BOOL()
+            if not user32.SystemParametersInfoW(0x0072, 0, ctypes.byref(running), 0):
+                return None                                  # SPI_GETSCREENSAVERRUNNING
+            return {"locked": locked, "screensaver": bool(running.value)}
+        except (OSError, AttributeError):
+            return None
+
+
+def display_watch():
+    """The run's display (tests put a fake in its place)."""
+    return WindowsDisplay()
+
+
 # -- the parent: runs the child once per run and measures it ---------------------------
 
 # -- the machine it ran on (pure apart from WindowsProbe; tested with a fake) ------------
@@ -644,6 +909,7 @@ def machine_spec(probe):
             break
         webview2 = None
     logical = probe.logical_processors()
+    hz = probe.display_refresh_hz()          # drawing cost scales with it (#292)
     return {
         "cpu": _short(reg("HKLM", CPU_KEY, "ProcessorNameString")),
         "cores": sum(cores) if cores and all(evidence._count(c) for c in cores) else None,
@@ -655,6 +921,8 @@ def machine_spec(probe):
         "on_mains_power": {0: False, 1: True}.get(line),
         "battery": None if flag in (None, BATTERY_UNKNOWN) else flag != BATTERY_NONE,
         "gpus": gpus,
+        # 0 and 1 mean "the hardware's default", not a rate (DEVMODE)
+        "display_refresh_hz": hz if evidence._count(hz) and hz > 1 else None,
         "webview2": webview2,
     }
 
@@ -753,6 +1021,36 @@ class WindowsProbe:
     def logical_processors(self):
         return os.cpu_count()
 
+    def display_refresh_hz(self):
+        """The primary display's current refresh rate (EnumDisplaySettingsW), or None."""
+        ctypes, wintypes = _win()
+
+        class DevMode(ctypes.Structure):                       # DEVMODEW, display fields
+            _fields_ = [("dmDeviceName", ctypes.c_wchar * 32), ("dmSpecVersion", wintypes.WORD),
+                        ("dmDriverVersion", wintypes.WORD), ("dmSize", wintypes.WORD),
+                        ("dmDriverExtra", wintypes.WORD), ("dmFields", wintypes.DWORD),
+                        ("dmPositionX", ctypes.c_long), ("dmPositionY", ctypes.c_long),
+                        ("dmDisplayOrientation", wintypes.DWORD),
+                        ("dmDisplayFixedOutput", wintypes.DWORD), ("dmColor", ctypes.c_short),
+                        ("dmDuplex", ctypes.c_short), ("dmYResolution", ctypes.c_short),
+                        ("dmTTOption", ctypes.c_short), ("dmCollate", ctypes.c_short),
+                        ("dmFormName", ctypes.c_wchar * 32), ("dmLogPixels", wintypes.WORD),
+                        ("dmBitsPerPel", wintypes.DWORD), ("dmPelsWidth", wintypes.DWORD),
+                        ("dmPelsHeight", wintypes.DWORD), ("dmDisplayFlags", wintypes.DWORD),
+                        ("dmDisplayFrequency", wintypes.DWORD)] + [
+                (f"x{i}", wintypes.DWORD) for i in range(8)]
+        try:
+            user32 = ctypes.WinDLL("user32")
+            user32.EnumDisplaySettingsW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD,
+                                                    ctypes.c_void_p]
+            mode = DevMode()
+            mode.dmSize = ctypes.sizeof(mode)
+            if not user32.EnumDisplaySettingsW(None, 0xFFFFFFFF, ctypes.byref(mode)):
+                return None                                  # ENUM_CURRENT_SETTINGS
+            return int(mode.dmDisplayFrequency)
+        except (OSError, AttributeError):
+            return None
+
 
 def environment(args):
     """When and with what the run was made. The machine's specification is
@@ -793,7 +1091,9 @@ def child_command(args, workdir):
     return command, env
 
 
-def one_run(args, settle, window, leak_minutes=0):
+def one_run(args, settle, window, leak_minutes=0, display=None):
+    """One run of the window through every state. display: the run's
+    WindowsDisplay (parent()); without one, no visible state counts as drawn."""
     workdir = Path(tempfile.mkdtemp(prefix="unminute-perf-"))
     command, env = child_command(args, workdir)
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
@@ -838,6 +1138,11 @@ def one_run(args, settle, window, leak_minutes=0):
             out["private_growth_mb"] = round(growth, 1)
         return out
 
+    def look():                      # the session and the page's frames, now (#292)
+        say("probe")
+        page = read(STEP_TIMEOUT_S).get("page")
+        return {"session": display.session() if display else None, "page": page}
+
     result = {}
     try:
         try:
@@ -874,7 +1179,21 @@ def one_run(args, settle, window, leak_minutes=0):
             if reached.get("state") != state:
                 raise Unmeasurable(f"the window did not reach {state}")
             t0 = time.monotonic()
-            result[state] = measure(job, proc.pid, settle, window)
+            visible = state in VISIBLE_STATES
+            time.sleep(settle)
+            if visible:                      # read just before the window, outside it
+                start, at0 = look(), time.monotonic()
+            result[state] = measure(job, proc.pid, 0, window)
+            if visible:                      # and just after it
+                at1, end = time.monotonic(), look()
+                drawing = drawing_report(
+                    state, display.states(at0, at1) if display else None,
+                    [start["session"], end["session"]], start["page"], end["page"])
+                result[state]["drawing"] = drawing
+                if not drawing["drawn"]:
+                    raise Unmeasurable(
+                        f"{state} was not drawn on screen ({'; '.join(drawing['problems'])}): "
+                        "keep the session unlocked and the window in view")
             if state in RECORDING_STATES:    # still the same recording, still recording
                 say("check")
                 held = read(STEP_TIMEOUT_S)
@@ -915,6 +1234,7 @@ def parent(args):
               "recording_input": {"synthetic": True, "rate": SYNTHETIC_RATE,
                                   "block_s": SYNTHETIC_BLOCK_S, "paced": "real time"}}
     results = []
+    display = None
     try:
         # Inside the guard: a probe that fails (a damaged version.json, a
         # missing system tool) is "not measured", not a traceback.
@@ -931,15 +1251,26 @@ def parent(args):
         if getattr(args, "zip", None) and missing:
             raise RuntimeError(f"the machine's specification could not be read in full "
                                f"({', '.join(missing)}), and release evidence records it")
+        # The display stays on for the run, and its state is watched, so each
+        # visible state is measured while drawn (#292).
+        display = display_watch()
+        report["display"] = display.start()
+        if not report["display"]["power_state_known"]:
+            raise RuntimeError("the display's power state could not be read, so the visible "
+                               "states could not be shown to be drawn")
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1
-            results.append(one_run(args, settle, window, args.leak_minutes if last else 0))
+            results.append(one_run(args, settle, window, args.leak_minutes if last else 0,
+                                   display=display))
     except Exception as exc:          # anything that stops a run means "not measured"
         report["each_run"], report["error"] = results, str(exc)
         Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"COULD NOT MEASURE: {exc}")
         return 2
+    finally:
+        if display is not None:
+            display.stop()            # the display may turn off again as the plan says
     report["each_run"] = results
     # Managed policy: recording states it turned off (in any run), and how the
     # recordings were confirmed. Neither is a figure, so neither has a median.
@@ -972,6 +1303,9 @@ def parent(args):
         print(f"{s}: {POLICY_SKIPPED}; managed policy turns microphone recording off")
     if "off by policy" in consents:
         print("The recording confirmation is off by policy: no consent record was made.")
+    if not report["display"]["kept_awake"]:
+        print("Windows did not keep the display on for the run; each visible window was "
+              "still checked as drawn.")
     if skip:
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
     if not budgets:
@@ -1077,10 +1411,16 @@ def child(args):
                      startup_s=round(imports_s + interactive, 2),
                      recording_allowed=ws.managed()["allow"]["AllowMicrophoneRecording"],
                      **worker)
+                # The frame counter (#292), after start-up is timed, before any state.
+                if window.evaluate_js(PAGE_COUNTER_JS) is not True:
+                    raise RuntimeError("the page's frame counter could not be set up")
                 for line in sys.stdin:
                     state = line.strip()
                     if state == "check":                 # after a recording state's window
                         send(recording=recording_now())
+                        continue
+                    if state == "probe":                 # around a visible state's window
+                        send(page=page_reading(window.evaluate_js(PAGE_READ_JS)))
                         continue
                     started = {}
                     for step in steps(state, ws.recording_active()):

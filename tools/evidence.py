@@ -10,8 +10,10 @@
 #   - whether the version folder held exactly the zip's files before and after
 #     the run: names compared exactly, nothing missing, changed or added, and no
 #     link or extra folder (install.ps1 copies the package unchanged);
-#   - for performance, the run's shape (a full release run or not), and the
-#     specification of the machine it ran on (PERF_MACHINE).
+#   - for performance, the run's shape (a full release run or not), the
+#     specification of the machine it ran on (PERF_MACHINE), and that every
+#     window measured in a visible state was drawn on a display that was on
+#     (PERF_VISIBLE_STATES; #292).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -48,6 +50,9 @@ KINDS = {
 }
 # A performance run that counts as evidence (docs/RELEASING.md): at least this.
 PERF_RELEASE = {"runs": 3, "settle_s": 60, "window_s": 300, "leak_minutes": 30}
+# The performance states with the window on screen (tools/perf_check.py): each
+# window measured in one counts only if it was drawn (its "drawing" block; #292).
+PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
 # The machine a performance report ran on (tools/perf_check.py, "machine"), as
 # a test of each field. Specification only: nothing names a person, the
 # computer or a path (AGENTS.md P3).
@@ -64,6 +69,7 @@ PERF_MACHINE = {
     "gpus": lambda v: isinstance(v, list) and all(     # display adapters; [] if none
         isinstance(g, dict) and set(g) == {"name", "driver"} and _text(g["name"])
         and (g["driver"] is None or _text(g["driver"])) for g in v),
+    "display_refresh_hz": lambda v: _count(v) and v > 1,   # the primary display's (#292)
     "webview2": lambda v: _text(v),                    # the WebView2 Runtime's version
 }
 APP_MODULES = ("workspace", "workspace.asr_engines", "workspace.offline_guard")   # the app's own
@@ -102,7 +108,7 @@ def machine_line(machine):
             f"{m['windows']} ({m['os_build']}), {m['power_plan']} power plan, "
             f"{'on mains power' if m['on_mains_power'] else 'on battery'}"
             f"{'' if m['battery'] else ' (no battery)'}, GPU: {gpus}, "
-            f"WebView2 {m['webview2']}.")
+            f"display at {m['display_refresh_hz']} Hz, WebView2 {m['webview2']}.")
 
 
 def sha256(path):
@@ -347,6 +353,29 @@ def perf_release_run(run):
         for key, least in PERF_RELEASE.items())
 
 
+def perf_not_drawn(body):
+    """The windows of a performance report measured in a visible state that do
+    not show they were drawn (empty when every one does; #292): each needs its
+    "drawing" block saying "drawn": true. A state a run did not measure (policy
+    turning recording off) has no window to show."""
+    runs = body.get("each_run") if isinstance(body, dict) else None
+    if not isinstance(runs, list) or not runs:
+        return ["no runs recorded"]
+    out = []
+    for n, run in enumerate(runs, 1):
+        if not isinstance(run, dict):
+            out.append(f"run {n}")
+            continue
+        for state in PERF_VISIBLE_STATES:
+            figures = run.get(state)
+            if figures is None:
+                continue
+            drawing = figures.get("drawing") if isinstance(figures, dict) else None
+            if not (isinstance(drawing, dict) and drawing.get("drawn") is True):
+                out.append(f"{state} in run {n}")
+    return out
+
+
 def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
     """Add the evidence block to a check's report and return it. It counts only
     if the check passed and the folder held exactly the package before and
@@ -444,6 +473,10 @@ def check(expected_sha256, paths, commit=None):
             elif missing:
                 found.append(f"records the machine only in part (not read: "
                              f"{', '.join(missing)})")
+            undrawn = perf_not_drawn(body)
+            if undrawn:
+                found.append(f"does not show every visible window drawn on a display that was "
+                             f"on (not shown: {', '.join(undrawn[:MAX_LISTED])})")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():
         if kind not in seen:

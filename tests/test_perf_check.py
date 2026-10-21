@@ -102,6 +102,7 @@ class ParentTests(unittest.TestCase):
                                    report=str(report), app=None)
             with mock.patch.object(perf_check, "environment",
                                    side_effect=ValueError("damaged version.json")), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
                     mock.patch.object(perf_check, "one_run") as run, \
                     mock.patch("builtins.print"):
                 self.assertEqual(perf_check.parent(args), 2)
@@ -445,14 +446,57 @@ class ConsentOutcomeTests(unittest.TestCase):
             self.outcome(False, self.consent.recording_record(), [])
 
 
+def drawn_pages(fps=120.0, step_ms=60000.0, visibility="visible"):
+    """The page's frame counter as the child reports it (perf_check.page_reading):
+    each read is step_ms of page time after the last, with a frame drawn just
+    before it, and the level display drawing fps frames a second while a
+    recording state is shown."""
+    clock = {"now": 1000.0, "frames": 0}
+
+    def page(commands):
+        state = [c for c in commands if c not in ("probe", "check")][-1]
+        clock["now"] += step_ms
+        if state in perf_check.DRAWING_STATES:
+            clock["frames"] += round(fps * step_ms / 1000)
+        return {"visibility": visibility, "frames": clock["frames"], "now": clock["now"],
+                "ping": clock["now"] - 5}
+    return page
+
+
+class FakeDisplay:
+    """The run's display for one_run and parent(), as WindowsDisplay gives it:
+    the display's states during each window (by the state being measured), the
+    session's state, and whether start() and stop() were called."""
+
+    def __init__(self, states=None, session=None, known=True, kept=True):
+        self.by_state = states or {}
+        self.session_state = session if session is not None else {
+            "locked": False, "screensaver": False}
+        self.known, self.kept, self.calls, self.measuring = known, kept, [], None
+
+    def start(self):
+        self.calls.append("start")
+        return {"kept_awake": self.kept, "power_state_known": self.known}
+
+    def stop(self):
+        self.calls.append("stop")
+
+    def session(self):
+        return self.session_state
+
+    def states(self, t0, t1):
+        return self.by_state.get(self.measuring, ["on"])
+
+
 class FakeChild:
     """subprocess.Popen for one_run: answers each command from a script, as
     the child process would, and records the commands it was given."""
 
-    def __init__(self, ready, check):
+    def __init__(self, ready, check, page=None, display=None):
         import queue
         self.commands, self.pid, self._out = [], 4242, queue.Queue()
         self._check, self.returncode = check, None
+        self._page, self._display = page or drawn_pages(), display
         self._send(ready)
         test = self
 
@@ -475,7 +519,11 @@ class FakeChild:
             self._out.put(None)
         elif command == "check":
             self._send({"recording": self._check(self.commands)})
+        elif command == "probe":
+            self._send({"page": self._page(self.commands)})
         else:
+            if self._display is not None:
+                self._display.measuring = command
             msg = {"state": command}
             if command in perf_check.RECORDING_STATES:
                 msg["recording"] = {"state": "recording", "seconds": 1.0}
@@ -505,7 +553,7 @@ class OneRunTests(unittest.TestCase):
     READY = {"imports_s": 1.0, "window_to_interactive_s": 1.0, "startup_s": 2.0,
              "recording_allowed": True}
 
-    def run_child(self, child, leak_minutes=0, held=None):
+    def run_child(self, child, leak_minutes=0, held=None, display=None):
         from types import SimpleNamespace
         from unittest import mock
         figures = lambda *a: {"cpu_percent_of_one_core": 1.0, "private_mb": 700}  # noqa: E731
@@ -522,13 +570,16 @@ class OneRunTests(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        return perf_check.one_run(args, 0, 0, leak_minutes)
+        display = display or child._display or FakeDisplay()
+        return perf_check.one_run(args, 0, 0, leak_minutes, display=display)
 
     def test_the_leak_check_runs_before_the_recording_states(self):
         child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0})
         result = self.run_child(child, leak_minutes=1, held=60.0)
-        self.assertEqual(["meetings", "settings", "minimised", "meetings", "recording",
-                          "check", "recording-minimised", "check", "quit"], child.commands)
+        # The page is read just before and after each visible state's window.
+        self.assertEqual(["meetings", "probe", "probe", "settings", "probe", "probe",
+                          "minimised", "meetings", "recording", "probe", "probe", "check",
+                          "recording-minimised", "check", "quit"], child.commands)
         self.assertEqual(1, result["leak"]["minutes"])
         self.assertEqual("asked and recorded", result["recording_consent"])
         self.assertEqual(60.0, result["recording-minimised"]["recorded_s"])
@@ -543,11 +594,255 @@ class OneRunTests(unittest.TestCase):
     def test_policy_off_measures_the_idle_states_only(self):
         child = FakeChild({**self.READY, "recording_allowed": False}, lambda c: None)
         result = self.run_child(child)
-        self.assertEqual(["meetings", "settings", "minimised", "quit"], child.commands)
+        self.assertEqual(["meetings", "probe", "probe", "settings", "probe", "probe",
+                          "minimised", "quit"], child.commands)
         self.assertEqual(list(perf_check.RECORDING_STATES), result["not_measured_by_policy"])
         for state in perf_check.IDLE_STATES:
             self.assertIn(state, result)
 
+
+class DrawnWindowTests(unittest.TestCase):
+    """#292: a window measured in a visible state counts only if it was drawn:
+    the display on, the session unlocked and the page drawing frames."""
+
+    ON = {"locked": False, "screensaver": False}
+
+    def page(self, now, frames=0, ping=None, visibility="visible"):
+        return {"visibility": visibility, "frames": frames, "now": now,
+                "ping": now - 5 if ping is None else ping}
+
+    def report(self, state="recording", display=("on",), sessions=None, fps=120.0, **page1):
+        start = self.page(1000.0)
+        end = self.page(301000.0, frames=round(fps * 300), **page1)
+        return perf_check.drawing_report(state, None if display is None else list(display),
+                                         sessions or [self.ON, self.ON], start, end)
+
+    def test_a_drawn_window_counts(self):
+        got = self.report()
+        self.assertEqual({"drawn": True, "problems": [], "display": ["on"],
+                          "page_visibility": ["visible", "visible"], "frames_per_s": 120.0}, got)
+        # A view that animates nothing still drew a frame in the window.
+        self.assertTrue(self.report("meetings", fps=0)["drawn"])
+        # A dimmed display still draws every frame.
+        self.assertTrue(self.report(display=("on", "dimmed"))["drawn"])
+
+    def test_a_window_with_the_display_off_is_not_drawn(self):
+        for display in (("off",), ("on", "off"), ("on", "off", "on"), ("unknown",)):
+            with self.subTest(display=display):
+                got = self.report(display=display)
+                self.assertFalse(got["drawn"])
+                self.assertIn(f"the display was {[s for s in display if s != 'on'][0]}",
+                              got["problems"])
+        got = self.report(display=None)
+        self.assertEqual(["the display's power state was not known"], got["problems"])
+
+    def test_a_locked_session_or_screen_saver_is_not_drawn(self):
+        cases = (({"locked": True, "screensaver": False}, "the session was locked"),
+                 ({"locked": False, "screensaver": True}, "the screen saver was running"),
+                 (None, "the session's state could not be read"),
+                 ({}, "the session was locked"))
+        for session, problem in cases:
+            with self.subTest(session=session):
+                got = self.report(sessions=[self.ON, session])
+                self.assertFalse(got["drawn"])
+                self.assertIn(problem, got["problems"])
+
+    def test_a_page_that_was_hidden_or_drew_nothing_is_not_drawn(self):
+        got = self.report(visibility="hidden")
+        self.assertIn("the page was visible, then hidden", got["problems"])
+        got = self.report("meetings", fps=0, ping=900.0)       # no frame since the start
+        self.assertEqual(["the page drew no frame"], got["problems"])
+        got = perf_check.drawing_report("settings", ["on"], [self.ON, self.ON], None,
+                                        self.page(2000.0))
+        self.assertEqual(["the page did not report its frames"], got["problems"])
+
+    def test_the_level_display_must_draw_while_recording(self):
+        got = self.report(fps=5)
+        self.assertFalse(got["drawn"])
+        self.assertEqual([f"the level display drew 5.0 frames a second (at least "
+                          f"{perf_check.MIN_DRAW_FPS} expected)"], got["problems"])
+        self.assertTrue(self.report(fps=perf_check.MIN_DRAW_FPS)["drawn"])
+        self.assertTrue(self.report(fps=60)["drawn"])
+        self.assertIn(f"at least {perf_check.MIN_DRAW_FPS} frames a\nsecond", perf_check.HELP)
+        # Only the recording state draws on every frame.
+        self.assertEqual(("recording",), perf_check.DRAWING_STATES)
+        self.assertEqual(("meetings", "settings", "recording"), perf_check.VISIBLE_STATES)
+        self.assertTrue(set(perf_check.VISIBLE_STATES) <= set(perf_check.STATES))
+
+    def test_display_states_during_a_window(self):
+        events = [(0.0, "on"), (10.0, "off"), (20.0, "on")]
+        self.assertEqual(["on"], perf_check.display_states(events, 1.0, 9.0))
+        self.assertEqual(["on", "off"], perf_check.display_states(events, 5.0, 15.0))
+        self.assertEqual(["off", "on"], perf_check.display_states(events, 12.0, 25.0))
+        self.assertEqual(["on", "off"], perf_check.display_states(events, 1.0, 30.0))
+        self.assertIsNone(perf_check.display_states(events, -1.0, 5.0))   # nothing known
+        self.assertIsNone(perf_check.display_states([], 0.0, 5.0))
+
+    def test_display_events_from_windows_values(self):
+        now = [0.0]
+        events = perf_check.DisplayEvents(clock=lambda: now[0])
+        self.assertFalse(events.known.is_set())
+        for at, value in ((0.0, 1), (5.0, 2), (6.0, 0), (9.0, 7)):
+            now[0] = at
+            events.record(value)
+        self.assertTrue(events.known.is_set())
+        self.assertEqual(["on", "dimmed", "off", "unknown"], events.states(1.0, 10.0))
+        self.assertEqual(["on"], events.states(1.0, 4.0))
+
+    def test_the_page_reading_takes_only_counts(self):
+        good = {"visibility": "visible", "frames": 3, "now": 10.5, "ping": 9.0}
+        self.assertEqual(good, perf_check.page_reading(json.dumps(good)))
+        self.assertEqual(good, perf_check.page_reading(dict(good, extra="x")))
+        for bad in (None, "", "null", "not json", "[1]", json.dumps(dict(good, frames=-1)),
+                    json.dumps(dict(good, now="10")), json.dumps(dict(good, ping=True)),
+                    json.dumps({k: v for k, v in good.items() if k != "frames"}),
+                    json.dumps(dict(good, visibility=None))):
+            with self.subTest(bad=bad):
+                self.assertIsNone(perf_check.page_reading(bad))
+
+    def test_the_page_counter_only_wraps_the_pages_own_frames(self):
+        js = perf_check.PAGE_COUNTER_JS
+        # It wraps requestAnimationFrame and asks for one frame per read, no loop.
+        self.assertIn("window.requestAnimationFrame = (cb) => raf(", js)
+        self.assertEqual(1, js.count("raf(() =>"))
+        self.assertNotIn("setInterval", js)
+        self.assertNotIn("setTimeout", js)
+
+
+class DrawnRunTests(unittest.TestCase):
+    """#292: one_run and parent() with a scripted child and a fake display (no
+    window is opened). A visible state measured while not drawn stops the run."""
+
+    READY = OneRunTests.READY
+
+    def run_child(self, child, display):
+        return OneRunTests.run_child(self, child, held=60.0, display=display)
+
+    def test_every_visible_window_records_how_it_was_drawn(self):
+        display = FakeDisplay()
+        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
+                          display=display)
+        result = self.run_child(child, display)
+        for state in perf_check.VISIBLE_STATES:
+            self.assertTrue(result[state]["drawing"]["drawn"], state)
+        self.assertEqual(120.0, result["recording"]["drawing"]["frames_per_s"])
+        for state in ("minimised", "recording-minimised"):
+            self.assertNotIn("drawing", result[state])
+
+    def test_a_window_with_the_display_off_is_unmeasurable(self):
+        display = FakeDisplay(states={"recording": ["on", "off"]})
+        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
+                          display=display)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, display)
+        self.assertIn("recording was not drawn on screen (the display was off)",
+                      str(caught.exception))
+        self.assertNotIn("recording-minimised", child.commands)
+
+    def test_a_locked_session_is_unmeasurable(self):
+        display = FakeDisplay(session={"locked": True, "screensaver": False})
+        child = FakeChild(self.READY, lambda c: None, display=display)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, display)
+        self.assertIn("meetings was not drawn on screen (the session was locked)",
+                      str(caught.exception))
+
+    def test_a_level_display_not_drawing_is_unmeasurable(self):
+        display = FakeDisplay()
+        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
+                          page=drawn_pages(fps=2.0), display=display)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, display)
+        self.assertIn("the level display drew 2.0 frames a second", str(caught.exception))
+
+    def test_without_a_display_nothing_counts_as_drawn(self):
+        from types import SimpleNamespace
+        child = FakeChild(self.READY, lambda c: None)
+        with mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
+                mock.patch.object(perf_check, "Job"), \
+                mock.patch.object(perf_check, "measure", return_value={"private_mb": 1}), \
+                mock.patch.object(perf_check.time, "sleep"), \
+                mock.patch("builtins.print"), \
+                self.assertRaises(perf_check.Unmeasurable) as caught:
+            perf_check.one_run(SimpleNamespace(app=None, zip=None), 0, 0)
+        self.assertIn("the display's power state was not known", str(caught.exception))
+
+    def run_parent(self, display, page=None):
+        """A release-shaped parent() run against the scripted child and display."""
+        import tempfile
+        from types import SimpleNamespace
+        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
+                          page=page, display=display)
+        figures = {"cpu_percent_of_one_core": 1.0, "private_mb": 700}
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "perf.json"
+            args = SimpleNamespace(quick=False, settle=0, window=0, runs=1, leak_minutes=0,
+                                   report=str(report), app=None, zip=None)
+            env = {"machine": dict(MachineReportTests.FULL)}
+            with mock.patch.object(perf_check, "environment", return_value=env), \
+                    mock.patch.object(perf_check, "display_watch", create=True,
+                                      return_value=display), \
+                    mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
+                    mock.patch.object(perf_check, "Job"), \
+                    mock.patch.object(perf_check, "measure",
+                                      side_effect=lambda *a: dict(figures)), \
+                    mock.patch.object(perf_check, "check_held", return_value=60.0), \
+                    mock.patch.object(perf_check.time, "sleep"), \
+                    mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
+                    mock.patch("builtins.print"):
+                rc = perf_check.parent(args)
+            return rc, json.loads(report.read_text(encoding="utf-8"))
+
+    def test_a_release_run_on_a_display_that_turned_off_fails(self):
+        # The regression (#292): overnight the display turned itself off and
+        # the visible states were measured without their drawing cost, yet the
+        # run passed. Now it is "could not measure" (exit 2), naming why.
+        display = FakeDisplay(states={"recording": ["on", "off"]})
+        rc, report = self.run_parent(display)
+        self.assertEqual(2, rc)
+        self.assertIn("recording was not drawn on screen (the display was off)",
+                      report.get("error", ""))
+        self.assertEqual(["start", "stop"], display.calls)     # the display let go again
+
+    def test_a_release_run_with_the_window_drawn_passes_and_says_so(self):
+        display = FakeDisplay()
+        rc, report = self.run_parent(display)
+        self.assertEqual(0, rc)
+        self.assertEqual({"kept_awake": True, "power_state_known": True}, report["display"])
+        self.assertEqual(["start", "stop"], display.calls)
+        self.assertEqual([], perf_check.evidence.perf_not_drawn(report))
+
+    def test_a_display_whose_state_cannot_be_read_stops_before_measuring(self):
+        display = FakeDisplay(known=False)
+        rc, report = self.run_parent(display)
+        self.assertEqual(2, rc)
+        self.assertIn("the display's power state could not be read", report["error"])
+        self.assertEqual([], report["each_run"])
+        self.assertEqual(["start", "stop"], display.calls)
+
+    def test_a_display_that_could_not_be_kept_on_is_recorded(self):
+        rc, report = self.run_parent(FakeDisplay(kept=False))
+        self.assertEqual(0, rc)              # each window was still shown drawn
+        self.assertIs(False, report["display"]["kept_awake"])
+
+    @unittest.skipUnless(sys.platform == "win32", "asks this Windows machine")
+    def test_the_windows_display_answers_without_failing(self):
+        # Only the shape is checked: what the display is doing here is not.
+        display = perf_check.WindowsDisplay()
+        try:
+            started = display.start()
+            self.assertEqual({"kept_awake", "power_state_known"}, set(started))
+            self.assertTrue(all(isinstance(v, bool) for v in started.values()))
+            session = display.session()
+            self.assertTrue(session is None or (set(session) == {"locked", "screensaver"}
+                                                and all(isinstance(v, bool)
+                                                        for v in session.values())))
+            for _, state in display.events:
+                self.assertIn(state, (*perf_check.DISPLAY_STATES.values(), "unknown"))
+        finally:
+            display.stop()
+        hz = perf_check.WindowsProbe().display_refresh_hz()
+        self.assertTrue(hz is None or (isinstance(hz, int) and hz >= 0))
 
 class PolicyReportTests(unittest.TestCase):
     """Review of 51a7605: under managed policy the run is still measured."""
@@ -562,6 +857,7 @@ class PolicyReportTests(unittest.TestCase):
             args = SimpleNamespace(quick=True, settle=0, window=0, runs=1, leak_minutes=0,
                                    report=str(report), app=None)
             with mock.patch.object(perf_check, "environment", return_value={}), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
                     mock.patch.object(perf_check, "one_run", side_effect=results), \
                     mock.patch.object(perf_check, "BUDGETS", budget_file), \
                     mock.patch("builtins.print"):
@@ -634,6 +930,7 @@ class FakeProbe:
         self.memory, self.status = 16 * 2**30, (1, 0)        # mains, a battery charging
         self.plan = "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)\n"
         self.logical = 16
+        self.refresh = 120
         self.reads = []
         for name, value in change.items():
             setattr(self, name, value)
@@ -657,6 +954,9 @@ class FakeProbe:
     def logical_processors(self):
         return self.logical
 
+    def display_refresh_hz(self):
+        return self.refresh
+
 
 class MachineSpecTests(unittest.TestCase):
     def test_the_specification_is_recorded_from_its_readers(self):
@@ -667,7 +967,7 @@ class MachineSpecTests(unittest.TestCase):
             "power_plan": "Balanced", "on_mains_power": True, "battery": True,
             "gpus": [{"name": "Synthetic GPU A", "driver": None},
                      {"name": "Synthetic GPU B", "driver": "31.0.1"}],
-            "webview2": "140.0.1.2"}, spec)
+            "display_refresh_hz": 120, "webview2": "140.0.1.2"}, spec)
         # Exactly what release evidence asks for, and complete.
         self.assertEqual(list(perf_check.evidence.PERF_MACHINE), list(spec))
         self.assertEqual([], perf_check.evidence.machine_problems(spec))
@@ -743,7 +1043,7 @@ class MachineSpecTests(unittest.TestCase):
 
     def test_what_cannot_be_read_is_none_and_named_not_guessed(self):
         probe = FakeProbe(values={}, cim_rows=None, memory=None, status=None, plan=None,
-                          logical=None)
+                          logical=None, refresh=None)
         spec = perf_check.machine_spec(probe)
         self.assertEqual(dict.fromkeys(perf_check.evidence.PERF_MACHINE), spec)
         self.assertEqual(list(perf_check.evidence.PERF_MACHINE),
@@ -755,6 +1055,16 @@ class MachineSpecTests(unittest.TestCase):
         self.assertIsNone(spec["cores"])
         self.assertEqual([], spec["gpus"])                     # no adapter: known, and empty
         self.assertEqual(["cores"], perf_check.evidence.machine_problems(spec))
+
+    def test_the_display_refresh_rate(self):
+        # 0 and 1 mean "the hardware's default" in DEVMODE: not a rate (#292).
+        for value, expected in ((60, 60), (144, 144), (0, None), (1, None), (None, None),
+                                (True, None), ("120", None)):
+            with self.subTest(value=value):
+                spec = perf_check.machine_spec(FakeProbe(refresh=value))
+                self.assertEqual(expected, spec["display_refresh_hz"])
+                self.assertEqual([] if expected else ["display_refresh_hz"],
+                                 perf_check.evidence.machine_problems(spec))
 
     def test_two_processors_add_their_cores(self):
         rows = {"Win32_Processor": [{"NumberOfCores": 8}, {"NumberOfCores": 8}],
@@ -820,7 +1130,8 @@ class MachineReportTests(unittest.TestCase):
 
     FULL = {"cpu": "Synthetic CPU", "cores": 4, "logical_processors": 8, "memory_gb": 7.8,
             "windows": "Windows 11 24H2", "os_build": "10.0.26100.1", "power_plan": "Balanced",
-            "on_mains_power": True, "battery": True, "gpus": [], "webview2": "140.0.1.2"}
+            "on_mains_power": True, "battery": True, "gpus": [], "display_refresh_hz": 120,
+            "webview2": "140.0.1.2"}
 
     def run_parent(self, machine, zip_path=None):
         import tempfile
@@ -831,6 +1142,7 @@ class MachineReportTests(unittest.TestCase):
                                    report=str(report), app=None, zip=zip_path)
             env = {"python": "3.14.0", "machine": machine}
             with mock.patch.object(perf_check, "environment", return_value=env), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
                     mock.patch.object(perf_check, "one_run", return_value={}) as run, \
                     mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
                     mock.patch("builtins.print"):
