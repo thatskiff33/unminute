@@ -43,7 +43,7 @@ BAD_KEY_STATE = -2146893813
 
 if HAVE_DEPS:
     from workspace import app as app_module
-    from workspace import cleanup, diag, holds, keystore, update
+    from workspace import cleanup, diag, holds, keystore, media, update
     from workspace.app import LOCKED_TEXT, Workspace, WorkspaceError
     from workspace.store import KeyUnavailable
 
@@ -136,7 +136,7 @@ class LockedStartTests(unittest.TestCase):
             ids.append(mid)
             folder = self.root / "media" / mid
             folder.mkdir(parents=True)
-            (folder / "audio.bin").write_bytes(MARKER.encode())
+            (folder / media.AUDIO_FILE).write_bytes(MARKER.encode())   # present, never opened
         s.create_recording_key("c" * 32)
         holds.add_hold(s, ids[1], "all", f"{MARKER} reason")
         cleanup.discard(s, ids[2])
@@ -364,6 +364,85 @@ class LockedStartTests(unittest.TestCase):
                 p.stop()
         for name, spy in started.items():
             self.assertFalse(spy.called, name)
+        self.assertEqual(3, len(ids))
+
+    def test_no_audio_key_is_read_or_changed_while_locked(self):
+        # C3a (#281) reads a meeting's audio key to transcribe (open_audio),
+        # for a speaker pass (audio_ref, the key in the diarize request), for
+        # playback and for Transcribe again. While locked none of them runs
+        # (design 7.2): the processing thread is held, and a direct call is
+        # refused by the store before any file or key is opened. No key row
+        # is destroyed or made, and the update gate reads no key.
+        ids = self.fill()
+        before = self.snapshot()
+        targets = ("workspace.store.Store.meeting_key", "workspace.store.Store.destroy_keys",
+                   "workspace.store.Store.remove_audio_keys",
+                   "workspace.store.Store.recording_key",
+                   "workspace.store.Store.create_recording_key",
+                   "workspace.store.Store.destroy_recording_key",
+                   "workspace.media.open_audio", "workspace.media.audio_ref",
+                   "workspace.media.AudioReader", "workspace.speakers.run_speakers",
+                   "workspace.speakers.record_failure", "workspace.cleanup.run_job",
+                   "workspace.intake.deletion_roots")
+        patches = [mock.patch(t, side_effect=AssertionError(t)) for t in targets]
+        spies = [p.start() for p in patches]
+        # The receipt purge's refused write would also end each pass; without
+        # it, only the hold keeps the thread from the audio.
+        patches.append(mock.patch.object(Workspace, "_maybe_purge"))
+        patches[-1].start()
+        try:
+            ws = self.locked(start=True)
+            for _ in range(3):                        # processing passes, at once
+                ws._wake.set()
+                time.sleep(0.2)
+        finally:
+            for p in patches:
+                p.stop()
+        for target, spy in zip(targets, spies, strict=True):
+            self.assertFalse(spy.called, target)
+        self.assertTrue(ws._audio_available(ws._meeting(ids[0])))   # due, with its audio
+        # Called directly (the bridge gate refuses first): the store refuses
+        # before the audio file is opened.
+        with mock.patch("workspace.media.AudioReader",
+                        side_effect=AssertionError("opened")) as reader, \
+                mock.patch.object(Workspace, "_speech_states",
+                                  side_effect=lambda: {ws.settings["model"]: "ready"}):
+            for call in (lambda: ws.clip(ids[0], 0, 1), lambda: ws.retranscribe(ids[0])):
+                with self.assertRaises(KeyUnavailable):
+                    call()
+        reader.assert_not_called()
+        self.close(ws)
+        # The update gate on the locked workspace: plain columns only.
+        with mock.patch("workspace.dpapi.unprotect", side_effect=AssertionError("dpapi")), \
+                mock.patch("workspace.store.Store", side_effect=AssertionError("store")):
+            kinds = {b["kind"] for b in update.blockers(self.db)}
+        self.assertIn("media", kinds)
+        self.assertEqual(before, self.snapshot())
+
+    def test_the_cleanup_count_leaves_out_cleanup_owed_a_new_confirmation(self):
+        # Round 2 review nit: a job that a released hold moved to
+        # awaiting_confirmation needs the user to confirm again, so its
+        # meeting is not "confirmed and not finished". A confirmed job that
+        # a hold still blocks (pending) is.
+        ids = self.fill()
+        ws = self.workspace()
+        s = ws.store
+        mid = s.create_meeting(f"{MARKER} meeting 3")
+        sid = s.add_source(mid, original_path=f"C:\\{MARKER}\\3.wav", original_sha256=H,
+                           original_size=1, original_mtime_ns=0, audio_id=H,
+                           samples=SR, sample_rate=SR)
+        s.ensure_version(mid, sid, engine="e", model="m", model_revision="r",
+                         precision="p", config={}, chunk_plan=[(0, SR, 0, SR)])
+        cleanup.discard(s, mid)
+        hid = holds.add_hold(s, mid, "all", f"{MARKER} reason")
+        self.assertTrue(holds.release_hold(s, hid))
+        self.assertEqual({mid}, {j["meeting_id"] for j in holds.awaiting_confirmation(s)})
+        self.close(ws)
+        ws = self.locked()
+        text = ws.diagnostics()
+        self.close(ws)
+        self.assertIn("Cleanup confirmed and not finished: 1", text)     # ids[2] only
+        self.assertNotIn(MARKER, text)
         self.assertEqual(3, len(ids))
 
     def test_a_start_that_unlocks_runs_the_work_that_waited(self):

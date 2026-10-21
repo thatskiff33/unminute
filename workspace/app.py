@@ -2254,8 +2254,10 @@ class Workspace:
                 "(SELECT COUNT(*) FROM cleanup_jobs) AS cleanup, "
                 "(SELECT COUNT(*) FROM watched_folders) AS folders, "
                 # Meetings, not jobs: a confirmation adds one job per phase.
+                # Confirmed means pending or failed: a job a released hold
+                # left awaiting_confirmation needs the user to confirm again.
                 "(SELECT COUNT(DISTINCT meeting_id) FROM cleanup_jobs "
-                "WHERE state != 'done') AS unfinished")
+                "WHERE state IN ('pending', 'failed')) AS unfinished")
         except StoreError:                    # a locked database that is not this version's
             counts = None
         if counts is None:
