@@ -50,7 +50,9 @@ Get-Content Unminute-<version>.zip.sha256
 
 That detects a damaged download, not a replaced one. From 0.5.0 (including its previews), each release is built by GitHub Actions from its tagged commit, with signed build provenance and a signed software bill of materials, and is published only after the project owner approves it. The zip itself is still not code-signed. To check that a download was built that way, IT can run `tools\intune\Get-VerifiedRelease.ps1` (add `-AllowPrerelease` for a preview); see "Verifying a release before packaging" in [docs/PACKAGING.md](docs/PACKAGING.md).
 
-Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md).
+Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents.
+
+Some behaviour described in this README is in the latest code but not yet in a release: Copy and open ChatGPT, encryption of the workspace database and handoff templates, and the message for a data folder linked to a folder that cannot be reached. The [user guide](docs/WORKSPACE_GUIDE.md) lists what 0.5.0-preview.3 does instead.
 
 ### Coming from 0.4.3 or earlier
 
@@ -258,6 +260,8 @@ Design and plans:
 - [docs/design/boards/](docs/design/boards/): the approved UI design boards that `tools/design_check.py` compares the app against.
 - [docs/history/](docs/history/): the original product plan and coding sequence, and the desktop shell trial's evidence, kept for history and no longer maintained.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md): threat model, trust boundaries, controls and residual risks.
+- [docs/CONTROL_MATRIX.md](docs/CONTROL_MATRIX.md): each invariant and threat with its control, guard test and evidence, kept in step by `tests/test_consistency.py`.
+- [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md) and [docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md](docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md): the IT deployment guide, and a factual draft for a deploying organisation's own privacy impact assessment.
 - [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md), [docs/RELEASING.md](docs/RELEASING.md) and [docs/VALIDATION_RUNBOOK.md](docs/VALIDATION_RUNBOOK.md): release criteria, release process and hands-on checks.
 
 Dependencies are hash-locked on purpose: `requirements.in` lists the direct ones, and `tools/lock.py` writes `requirements.txt` with every package and its SHA-256 hashes (see [docs/RELEASING.md](docs/RELEASING.md)). If you upgrade torch, torchaudio, pyannote.audio or huggingface_hub, re-test speaker identification end to end with a non-sensitive recording: `tools/packaged_check.py` runs the full lifecycle (import, transcription, speakers, review, cleanup) with real models from a built package, and `tools/durable_core_check.py` checks the workspace's processing core. The workflows in `.github/workflows/` run the automated checks on pull requests; [docs/RELEASE_STANDARD.md](docs/RELEASE_STANDARD.md) lists every gate and where it runs. CI does not run the models.

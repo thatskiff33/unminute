@@ -1,0 +1,98 @@
+# Control matrix
+
+One row for each invariant in [AGENTS.md](../AGENTS.md) and each threat in [SECURITY_MODEL.md](SECURITY_MODEL.md): the control that answers it, the test that guards the control (or "Review" where there is none), the slice still planned for it, and where the evidence that it works comes from.
+
+This page is an index, not the source. The rules are in AGENTS.md, the threats, controls and residual risks in SECURITY_MODEL.md, and the exact guard tests for each invariant in `INVARIANT_GUARDS` in `tests/test_consistency.py`. It describes `main`, not a particular release: see [CHANGELOG.md](../CHANGELOG.md) for what each release contains.
+
+`ControlMatrixTests` in `tests/test_consistency.py` keeps it from drifting. It fails when:
+
+- an invariant or threat is added, removed or renamed in AGENTS.md or SECURITY_MODEL.md without a row here;
+- an invariant's guard files differ from `INVARIANT_GUARDS`;
+- a threat row names no guard test and does not say "Review";
+- a slice that SECURITY_MODEL.md plans for a threat is missing from its row;
+- a path named here no longer exists.
+
+It does not check that the words in the Control column still describe the code. A pull request that changes a control updates SECURITY_MODEL.md first and this row with it.
+
+## Kinds of evidence
+
+| Evidence | What it is | When it runs |
+| --- | --- | --- |
+| CI | The guard tests, run by `tools/run_tests.py` in the required checks on every pull request ("Unit tests (Windows)" with strict skips, and the Linux tests in "Syntax check"). The other required checks are listed in [RELEASING.md](RELEASING.md). | Every pull request |
+| Build | The Release workflow's checks of the package it builds: the packaged `--self-test`, `--verify-precompiled`, and the signed build provenance and SBOM attestations (`.github/workflows/release.yml`). | Every release |
+| Release evidence | The five reports run against the release package (performance, packaged lifecycle, crash, UI, accessibility), checked by `tools/evidence.py` before publishing ([RELEASING.md](RELEASING.md), "Cutting a release"). | Every release |
+| IT | A control the deploying organisation runs on its devices or tenant ([IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)). Unminute cannot check it. | Set by IT |
+| Owner settings | GitHub settings only the repository owner can change, read back in [RELEASING.md](RELEASING.md). | When changed |
+| Manual | A check that needs a person or hardware, tracked in the validation tracker (#189). Not passed until it is recorded there. | By sitting |
+| Review | No automated guard: the rule is checked by the independent review of each pull request. | Every pull request |
+
+## Invariants
+
+The guard files for each invariant match `INVARIANT_GUARDS`; the test names are there.
+
+| ID | Rule | Control | Guard | Evidence |
+| --- | --- | --- | --- | --- |
+| P1 | No real meeting content in the repository or on GitHub | Synthetic or public fixtures only; no tracked media files; the pull request template's private-data item | `tests/test_consistency.py` (tracked media only); the PR template; partial | CI; Review |
+| P2 | Agents never open, print or summarise real content | Claude Code deny rules and hook (`.claude/settings.json`, `.claude/hooks/private_data_guard.py`); `--status` prints counts only. A guard rail, not a security boundary (T34) | `tests/test_agent_guard.py`; Review for Codex | CI; Review |
+| P3 | Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths or tokens | Fixed messages for refused imports and worker errors; per-field log rules (`workspace/diag.py`); counts-only `--status` and `--health` | `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py` | CI |
+| N1 | Processing never uses the network; dependency telemetry off before heavy imports | Offline guard and telemetry switches (`workspace/offline_guard.py`) in the app and workers | `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py` | CI; Build (`--self-test`) |
+| N2 | Only the user-started download process reaches the network, to the allowed hosts | `setup.DOWNLOAD_HOSTS` and `setup.download_hosts` (`workspace/setup.py`); every request and redirect checked | `tests/test_download_process.py` | CI |
+| N3 | The Hugging Face token stays in Credential Manager and reaches the download process by pipe only | `workspace/credentials.py`; the token passed over the download process's pipe; an environment token dropped at start | `tests/test_setup.py`, `tests/test_hardening.py` | CI |
+| I1 | Model files pinned by revision and SHA-256; the speaker model re-hashed and built from the checked bytes | Pins in `workspace/asr_engines.py` (listed in `docs/MODEL_MANIFEST.md`); `workspace/speaker_load.py` | `tests/test_model_integrity.py`, `tests/test_asr_engines.py` | CI; Build (`--self-test` refuses a code-running checkpoint) |
+| I2 | Untrusted media decoded only in the sandboxed decode process; network drives and links refused unless policy allows | `workspace/decode_child.py` in a Low-integrity Windows job (`workspace/jobs.py`); `workspace/safe_paths.py` | `tests/test_intake_isolation.py`, `tests/test_safe_paths.py` | CI |
+| I3 | The page reaches Python only through `API_METHODS`, renders text only and runs only in WebView2 | `workspace/api.py` and the dispatch guard in `workspace/shell.py`; CSP in `workspace/ui/index.html` | `tests/test_consistency.py`, `tests/test_hardening.py` | CI |
+| D1 | Chunk text and its completion commit together; generated text never overwrites edits | One transaction per chunk (`workspace/store.py`, `workspace/runner.py`) | `tests/test_workspace_core.py` | CI |
+| D2 | An explicit pause stays paused after a restart | Pause state kept in the store | `tests/test_workspace_core.py` | CI |
+| D3 | One app instance owns the state; the workspace never in a synced or network folder | Single-instance lock (`workspace/__main__.py`); location check (`workspace/store.py`) | `tests/test_hardening.py` | CI |
+| D4 | Heavy models load lazily, one at a time; speaker and GPU failures degrade safely and say so | `workspace/worker.py`, `workspace/speakers.py`, `workspace/gpu.py` | `tests/test_workers.py`, `tests/test_speakers.py`, `tests/test_gpu.py` | CI; Manual (GPU hardware) |
+| C1 | Deletion needs one of the two confirmations; copy or export never deletes; cleanup intent persists | `workspace/cleanup.py` | `tests/test_cleanup.py` | CI |
+| C2 | Holds block cleanup and never expire; releasing one deletes nothing | `workspace/holds.py` | `tests/test_holds.py` | CI |
+| C3 | An original is deleted only with its folder's authority and a matching identity | `workspace/cleanup.py`, `workspace/intake.py` | `tests/test_cleanup.py` | CI |
+| C4 | A storage-format change waits for an empty workspace | The update gate (`workspace/update.py`, run by `packaging/install.ps1`) | `tests/test_update.py` | CI; Manual (installer end to end) |
+| R1 | Recording, delete-originals authority and discarding a meeting need a confirmation drawn outside the page | `workspace/shell.py` and `workspace/consent.py`; `RECORDING_WORDING_VERSION` | `tests/test_app.py`, `tests/test_recorder.py`, `tests/test_policy.py` | CI; Release evidence (`tools/workspace_ui_check.py`) |
+| K1 | The install identity is never renamed without the user | Install folder, uninstall key, APP_ID, credential name, data folders and icon, tied across the app, build and installer | `tests/test_consistency.py` | CI |
+| K2 | A standard user installs with nothing else to install; the processor is always a working baseline | Private runtime in the package (`tools/build_package.py`); per-user installer (`packaging/install.ps1`) | Review | Review; Manual (clean standard-user profile, #189) |
+| K3 | Managed policy wins over settings; an unreadable policy grants nothing | `workspace/policy.py`; the template in `packaging/policy/Unminute.admx` | `tests/test_policy.py` | CI |
+| E1 | Report only checks actually run | The pull request template's "Checks run"; `tools/evidence.py` binds each release report to its package and commit | Review | Review |
+| E2 | Never weaken a guard to make a change pass | `ALLOWED_SKIPS` in `tools/run_tests.py`; budgets in `tests/budgets.json` and `docs/perf-budgets.json` | Review | Review |
+
+## Threats
+
+"Control in place" is a summary of the "In place" column in SECURITY_MODEL.md, which has the detail and the residual risk. "Planned" is that row's planned control.
+
+| ID | Threat | Control in place | Guard | Planned | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| T1 | Page script calls the bridge to read content or trigger actions | CSP with `connect-src 'none'` (`workspace/ui/index.html`); text-only rendering; exact-name bridge allowlist (`workspace/api.py`) and dispatch guard; navigation lock; native confirmations (`workspace/consent.py`); browser permission and dialog requests refused (`workspace/shell.py`) | `tests/test_hardening.py`, `tests/test_consistency.py`, `tests/test_app.py`; the CSP text: Review | None | CI; Release evidence (UI check) |
+| T2 | Hostile media file exploits the decoder | Separate decode process at Low integrity in a Windows job (`workspace/decode_child.py`, `workspace/jobs.py`); demuxer allowlist; checked audio frames only | `tests/test_intake_isolation.py`, `tests/test_safe_paths.py` | None | CI |
+| T3 | Media file makes the decoder fetch network or local resources | Local file protocol only; network-capable demuxers excluded; network guard in the decode process | `tests/test_intake_isolation.py`, `tests/test_offline_guard.py` | B7: firewall block for the runtime | CI |
+| T4 | File decodes to an enormous length and fills the disk | 8 GB input, 12 hours of audio, 1 GB kept free, 2 GB memory for the decode process | `tests/test_intake_isolation.py` | None | CI |
+| T5 | Path tricks cause network access or deletion outside the intended folder | `workspace/safe_paths.py`; deletion authority and identity (`workspace/cleanup.py`); data-folder location check (`workspace/store.py`); install-folder checks (`packaging/install.ps1`, `packaging/uninstall.ps1`) | `tests/test_safe_paths.py`, `tests/test_cleanup.py`, `tests/test_hardening.py` | None | CI |
+| T6 | Offline access to the disk reads meetings | Content columns sealed with AES-256-GCM under per-meeting keys wrapped by a DPAPI-protected root key (`workspace/store.py`, `workspace/vault.py`, `workspace/keystore.py`, `workspace/dpapi.py`); templates sealed (`workspace/handoff.py`); BitLocker by IT | `tests/test_content_access.py`, `tests/test_schema2.py`, `tests/test_vault.py`, `tests/test_dpapi.py`, `tests/test_handoff.py` | C3: audio and recorder chunks encrypted. C4: locked screen. IT: BitLocker compliance policy | CI; IT (BitLocker) |
+| T7 | Deleted content is recoverable from free pages, the WAL, SSD remnants or temp files | `secure_delete`, WAL truncation and VACUUM at final cleanup (`workspace/cleanup.py`); in-memory temp store; meeting keys destroyed at cleanup | `tests/test_cleanup.py`, `tests/test_cleanup_hardening.py`, `tests/test_schema2.py` | C3: crypto-erase of the audio | CI; Release evidence (packaged lifecycle) |
+| T8 | Another account, an administrator or a backup agent reads the workspace | Inherited `%LOCALAPPDATA%` permissions; sealed content unreadable without the user's DPAPI key | `tests/test_content_access.py`, `tests/test_dpapi.py` | C3: audio unreadable without the user's key | CI; IT (accounts and backup agents) |
+| T9 | Malware running as the user reads content, records or tampers with the app | `-X disable-remote-debug` on every app process (`packaging/install.ps1`); Windows' microphone indicator; endpoint protection by IT | `tests/test_hardening.py`, `tests/test_release_workflow.py` | B6: per-machine install standard users cannot change. B7: read-only machine-wide models | CI; IT (Defender) |
+| T10 | Tampered model file runs code when loaded | Revision and SHA-256 pins (`workspace/asr_engines.py`); speaker model read once, hashed and built from those bytes with a scoped weights-only unpickler (`workspace/speaker_load.py`) | `tests/test_model_integrity.py`, `tests/test_asr_engines.py` | B7: read-only machine-wide models | CI; Build (`--self-test`) |
+| T11 | Content or telemetry leaves over the network | Offline guard on Python sockets, UDP and asyncio (`workspace/offline_guard.py`); telemetry off; page CSP; WebView2 host-resolver switch (not yet verified that WebView2 honours it) | `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py` | B7: firewall block for the runtime | CI; Build (`--self-test`) |
+| T12 | Tampered or redirected download | HTTPS with the Windows certificate store; host allowlist on every request and redirect (`workspace/setup.py`); SHA-256 before files move into place | `tests/test_download_process.py`, `tests/test_setup.py` | None | CI |
+| T13 | Hugging Face token is stolen | Windows Credential Manager (`workspace/credentials.py`); pipe only; environment token removed | `tests/test_setup.py`, `tests/test_hardening.py` | B7: models pre-staged so staff need no token | CI |
+| T14 | A tampered release reaches laptops | Hash-locked, reproducible release build of the tagged commit with a binary allowlist (`tools/build_package.py`, `packaging/binary-allowlist.json`); CI-built, attested release behind the owner's approval (`.github/workflows/release.yml`); evidence bound to the zip (`tools/evidence.py`); IT's verifier (`tools/intune/Get-VerifiedRelease.ps1`) | `tests/test_package.py`, `tests/test_release_workflow.py`, `tests/test_evidence.py`, `tests/test_dependency_locks.py` | Owner: repository move and settings (SECURITY_MODEL.md, T14) | CI; Build; IT (verify each download); Owner settings |
+| T15 | Workflow injection or token misuse in CI | No default permissions; SHA-pinned actions; no persisted credentials; workflow lint (zizmor) and CodeQL | `tests/test_release_workflow.py`; the workflow lint job | Owner settings already in place | CI; Owner settings |
+| T16 | Known vulnerability in a shipped dependency or the runtime | Hash locks resolved again in CI; pip-audit on every pull request and daily (`tools/audit.py`); monthly re-lock | `tests/test_dependency_locks.py` | Next Python before 3.14's Windows binaries end (#178) | CI; daily audit (`.github/workflows/audit.yml`) |
+| T17 | A handoff goes somewhere uncontrolled | Explicit copy and save; clipboard-history exclusion; policy clear (`workspace/clipboard.py`); handoff policy values, including the assistant's name and address (`workspace/policy.py`) | `tests/test_handoff.py`, `tests/test_policy.py` | C5: copy and save in the audit log | CI; IT (policy and training) |
+| T18 | A meeting is recorded without people knowing | Off by default; confirmation outside the page (`workspace/consent.py`); recording marks; 8-hour limit; policy (`AllowMicrophoneRecording`, `RequireRecordingConsent`) | `tests/test_recorder.py`, `tests/test_app.py`, `tests/test_policy.py` | C5: the confirmation in the audit log | CI; Release evidence (UI check); Manual (lid and sleep on a real laptop) |
+| T19 | Content is kept longer than needed | Two explicit cleanup confirmations; holds with reasons, listed for review after 30 days | `tests/test_holds.py`, `tests/test_cleanup.py` | C6: reminders and an action-required state | CI |
+| T20 | Nobody can show who exported or deleted what | Content-free receipts for 30 days | `tests/test_holds.py`, `tests/test_app.py` | C5: hash-chained audit log with an Event Log mirror | CI |
+| T21 | A crash dump captures content | Content-free logs (`workspace/diag.py`); Windows Error Reporting dialog off in workers; WebView2 started with `--disable-breakpad` (not yet verified) | `tests/test_diagnostics.py` | IT: Windows Error Reporting local-dump setting. C7: packaged checks report new dumps | CI; Manual (managed device) |
+| T22 | Installer weakens endpoint protections | None | Review (no control in place) | B6: no execution policy bypass, no execution from `%TEMP%`, no Mark of the Web removal | Review |
+| T23 | WebView2 not detected; pywebview falls back to the old IE engine | Installer requires WebView2; the app refuses to start without it | `tests/test_hardening.py` | None | CI |
+| T24 | Code planted in the user-writable install, bytecode cache or GPU component | Precompiled modules, `-B`, per-file manifest at install; each shipped `.pyc` checked against its source in the Release workflow (`--verify-precompiled`); GPU component hashed once per session | `tests/test_package.py`, `tests/test_release_workflow.py`, `tests/test_gpu.py` | B6: admin-only install folder | CI; Build |
+| T25 | An optional GPU component is tampered with after download | Pinned wheel and per-file hashes; cuBLAS loaded by full path with a restricted DLL search (`workspace/gpu.py`); `AllowGpuComponent` | `tests/test_gpu.py`, `tests/test_download_process.py`, `tests/test_policy.py` | None | CI; Manual (GPU hardware) |
+| T26 | An old, vulnerable version is kept or restored | `-Rollback` runs the update gate, with no minimum-version check | `tests/test_update.py`, `tests/test_hardening.py` | B5 and B6: managed per-machine installs updated by Intune | CI; Manual (installer end to end) |
+| T27 | Settings or templates are changed to weaken the app | Settings validated on load; templates sealed under the workspace key | `tests/test_hardening.py`, `tests/test_integrity.py`, `tests/test_handoff.py` | None | CI |
+| T28 | Deleting a watched original deletes it everywhere it syncs | Authority off unless granted per folder, with a confirmation outside the page; identity must match; `AllowDeleteOriginals` | `tests/test_cleanup.py`, `tests/test_policy.py`, `tests/test_app.py` | None | CI; IT (which folders sync) |
+| T29 | Content is left behind when a person leaves or a laptop is reassigned | None: uninstall keeps the workspace, models and token by design | Review (no control in place) | B8: offboarding report and removal | Review; IT (offboarding steps in [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)) |
+| T30 | Text in a transcript tries to steer the AI assistant (prompt injection) | Content-derived markers, a data note and tool rules in every handoff; invisible characters removed (`workspace/handoff.py`) | `tests/test_handoff.py` | None | CI; IT (the assistant's connectors) |
+| T31 | The window is shown in a screen share or captured | None | Review (no control in place) | None | Review |
+| T32 | Diagnostics leak content or names | Per-field log rules (`workspace/diag.py`); rate-limited page errors; `--health` states and counts only | `tests/test_diagnostics.py` | None | CI (marker test) |
+| T33 | The lid action is left at "Do nothing" | Saved and restored values; policy `AllowLidOverride`; restore at uninstall (`workspace/power.py`, `packaging/uninstall.ps1`) | `tests/test_power.py`, `tests/test_hardening.py` | None | CI; Manual (real laptop, #189) |
+| T34 | An AI coding agent reads or copies real meeting content | Deny rules and the PreToolUse hook (`.claude/settings.json`, `.claude/hooks/private_data_guard.py`) | `tests/test_agent_guard.py` | None | CI; Review (Codex) |

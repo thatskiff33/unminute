@@ -1,0 +1,6 @@
+Security hardening (#111, phase D):
+
+- **An IT deployment guide.** `docs/IT_DEPLOYMENT.md` brings together what IT needs to deploy Unminute: the device controls it relies on, install modes, verifying a release with `Get-VerifiedRelease.ps1`, the Intune app, every managed policy value with its name in the ADMX template, health monitoring with `--health`, updates and rollback, offboarding as it works today, and an incident runbook that links to the withdrawal runbook.
+- **A privacy impact assessment draft.** `docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md` sets out, for an organisation writing its own assessment, what Unminute stores, where, whether it is encrypted, how long it is kept, who can reach it and what leaves the device, and only by which user action. It states facts and leaves every decision to the organisation.
+- **A control matrix.** `docs/CONTROL_MATRIX.md` maps each project invariant and each threat in the security model to its control, the tests that guard it and where its evidence comes from.
+- **Accessibility target: WCAG 2.2 AA.** The release standard now names WCAG 2.2 AA, and says which of its criteria the automated accessibility check covers and which are left to the manual keyboard and screen-reader pass.

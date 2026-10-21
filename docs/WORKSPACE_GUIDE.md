@@ -4,7 +4,11 @@ Unminute turns a meeting recording into a reviewed transcript on your own comput
 
 It is a temporary workspace, not an archive. Your final documents live wherever your organisation files them.
 
-This guide covers the packaged workspace.
+This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.3 (20 October 2026). These parts of the guide are not in that release yet, and arrive with the next one (see [CHANGELOG.md](../CHANGELOG.md)):
+
+- **Copy and open ChatGPT** on the Hand off page, and IT's option to rename it, point it at another assistant or turn it off. In 0.5.0-preview.3 the main button is **Copy prompt and transcript**.
+- **Encryption of the workspace.** Transcripts, edits, speaker names and other meeting text in the workspace database, and your handoff templates, are encrypted with a key Windows keeps for your account. In 0.5.0-preview.3 the app encrypts nothing itself; your organisation's disk encryption (BitLocker) protects the workspace. With encryption come the "[Could not be read]" marker and [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace).
+- **The message for a workspace folder linked to a folder that cannot be reached.** In 0.5.0-preview.3 Unminute closed at start without saying why.
 
 ## What stays on your computer, and what does not
 
@@ -12,7 +16,7 @@ This guide covers the packaged workspace.
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer. This is not a synced folder. The app's working copy of each meeting's audio is encrypted the same way. A microphone recording waiting to be imported is not encrypted yet. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer (not in 0.5.0-preview.3, see above). This is not a synced folder. The app's working copy of each meeting's audio is encrypted the same way. A microphone recording waiting to be imported is not encrypted yet, nor are your settings. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
@@ -172,7 +176,7 @@ For IT support:
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
 - The app keeps small content-free logs in `%LOCALAPPDATA%\Unminute\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
-Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
+Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md). [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md) brings together what IT needs: install modes, managed policy, health monitoring, updates, offboarding and incidents.
 
 ## If Unminute cannot unlock its workspace
 

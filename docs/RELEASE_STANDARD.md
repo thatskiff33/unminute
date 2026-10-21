@@ -168,11 +168,12 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 
 **Principle.** Everyone who needs the app can use it with a keyboard, a screen reader, zoom and high contrast.
 
-**Criterion.** WCAG 2.1 AA (whether to move to 2.2 AA is to confirm).
+**Criterion.** WCAG 2.2 AA (owner decision, 21 October 2026, #121).
 
 **Check.**
 - Automated checks on the real window every release: names, keyboard reach, focus, contrast, reflow and zoom.
 - A manual keyboard and screen-reader pass every minor release.
+- Each app's Part B says which success criteria its automated check covers and which are left to the manual pass. An automated pass is never reported as conformance.
 
 ### 13. Security and privacy
 
@@ -262,7 +263,7 @@ Status is one of:
 | JavaScript syntax | 7 | The "JavaScript syntax" job in `.github/workflows/ci.yml` | In place |
 | Coverage reported, then a rising floor | 7 | The "Coverage (report only)" job in `.github/workflows/quality.yml` | Report in place, not yet required; no floor yet |
 | Changelog fragment for shipped changes | 8, 10 | `.github/workflows/changelog.yml` (a `changelog.d/` fragment; the `no-changelog` label opts out); fragments checked by `tools/changelog.py --check` in the unit tests | In place |
-| Manual keyboard and screen-reader pass, every minor release | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (#27) |
+| Manual keyboard and screen-reader pass, every minor release, covering the WCAG 2.2 AA criteria the automated check leaves out ("Accessibility against WCAG 2.2 AA" below) | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (#27) |
 | Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py`, against the package with its own Python (`--app`) | Manual; the reports name the package (B3a) and are required before a release is published (B3b) |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` (pass criteria in its `verdict`) | Manual; the report names the package (B3a) and is required before a release is published (B3b); extended by security plan C7 |
 | Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
@@ -283,6 +284,30 @@ Status is one of:
 | Withdrawal runbook | 14 | [RELEASING.md](RELEASING.md) | In place |
 | Pull request definition of done and bug template | 10, 14 | `.github/pull_request_template.md`, `.github/ISSUE_TEMPLATE/` | In place |
 | Agent instructions: the paths and invariant guard tests that `AGENTS.md` names exist; no `CLAUDE.md`; no tracked media | 1, 10 | Unit test (`tests/test_consistency.py`); Claude Code guard tested in `tests/test_agent_guard.py` | In place |
+
+### Accessibility against WCAG 2.2 AA
+
+The target is WCAG 2.2 AA (section 12). `tools/accessibility_check.py` is the automated half of the check: it opens the real window on a throwaway workspace with synthetic audio and fake engines, visits a fixed list of views and dialogs (Setup's steps, Downloads, Meetings with the microphone chooser, Settings, Help, a meeting with its Versions, Holds and Speakers tabs, the names and confirmation dialogs, and the Hand off page), and fails on any finding. Passing it is not conformance: most of WCAG 2.2 AA needs the manual keyboard and screen-reader pass ([VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md), #27).
+
+What it checks, and fails on:
+
+- **4.1.2 Name, Role, Value (names only):** every visible control and open dialog has an accessible name. Roles, states and values are not checked.
+- **2.1.1 Keyboard (in part):** no visible, enabled control is taken out of the tab order, and nothing with a pointer cursor is unreachable by keyboard. It does not operate each control from the keyboard.
+- **2.4.7 Focus Visible:** each focusable control (the first 80 in a view) shows an outline or shadow on keyboard focus.
+- **1.4.3 Contrast (Minimum):** text against its effective background, 4.5:1, or 3:1 for large text; disabled controls are exempt. Backgrounds are taken as the nearest solid colour, so text over an image or gradient is not measured.
+- **1.4.10 Reflow:** at 640 and 320 CSS px wide (200% and 400% zoom of a 1280 px window), no horizontal scrolling or cut-off content.
+- **1.4.4 Resize Text (in part):** Ctrl+plus zooms the page and Ctrl+0 resets it, checked once, not per view.
+- **1.4.1 Use of Color (in part):** status badges carry text or a name, not colour alone.
+
+It records but does not fail on the page language (3.1.1), the window title (2.4.2) and the status region's `aria-live` setting (4.1.3).
+
+Not checked by the tool, so left to the manual pass:
+
+- **New in WCAG 2.2:** 2.4.11 Focus Not Obscured (Minimum), 2.5.7 Dragging Movements, 2.5.8 Target Size (Minimum), 3.2.6 Consistent Help, 3.3.7 Redundant Entry and 3.3.8 Accessible Authentication (Minimum).
+- **From 2.1 and earlier:** screen-reader output, reading and focus order (1.3.1, 1.3.2, 2.4.3), keyboard traps (2.1.2), timing such as the confirmation button's delay (2.2.1), pausing moving content such as the live recording curve (2.2.2), non-text contrast of controls and focus rings (1.4.11), text spacing (1.4.12), content on hover or focus (1.4.13), headings and labels (2.4.6), label in name (2.5.3), status messages as announced (4.1.3), and error identification and suggestions (3.3.1, 3.3.3).
+- **Windows contrast themes** (forced colours).
+- **The confirmation windows the app draws outside the page** (recording, deletion authority, discard; `workspace/consent.py`): they are not part of the page the tool audits.
+- **States the tool does not visit:** a recording in progress, a recovered recording, error and damage messages, and the Downloads page while a download runs.
 
 ### Exceptions
 
