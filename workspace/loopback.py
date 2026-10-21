@@ -608,10 +608,11 @@ class LoopbackStream:
     16-bit mono block at LOOPBACK_RATE with the monotonic time of its first
     frame; notify(kind, name) is told "switched" (now following a new default
     output, name given), "reopened" (the same output again after it was
-    interrupted or after a spell with none, name given), "no_output" (no output device: silence until one
-    appears) and "failed" (capture stopped; nothing more arrives). Both are
-    called on the reader thread. start() returns once capture is running, or
-    raises LoopbackError; stop() and close() may be called more than once."""
+    interrupted or after a spell with none, name given), "no_output" (no
+    output device: silence until one appears) and "failed" (capture stopped;
+    nothing more arrives). Both are called on the reader thread. start()
+    returns once capture is running, or raises LoopbackError; stop() and
+    close() may be called more than once."""
 
     def __init__(self, source, callback, notify, tick=time.monotonic):
         self.source = check_source(source)
