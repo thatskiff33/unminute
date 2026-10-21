@@ -2751,6 +2751,9 @@ class Workspace:
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if changes.get("live_drafts") is True and not self._allowed("AllowLiveDrafts"):
             raise WorkspaceError(MANAGED_OFF.format(what="Draft text while recording"))
+        if changes.get("live_drafts") is True and not drafts.ON_PAGE:
+            raise WorkspaceError("Draft text while recording is not available in this "
+                                 "version yet.")
         if changes.get("lid_override") is True:
             if not self._allowed("AllowLidOverride"):
                 raise WorkspaceError(MANAGED_OFF.format(what="Changing the lid setting"))

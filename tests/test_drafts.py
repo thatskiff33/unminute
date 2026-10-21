@@ -652,6 +652,17 @@ class WorkspaceDraftTests(unittest.TestCase):
             self.ws.stop_recording()
         made.assert_not_called()
 
+    def test_the_switch_cannot_be_turned_on_before_the_page_shows_drafts(self):
+        # Fail closed until the page part (slice 3): no bridge call turns on
+        # a worker whose text nobody can see. Turning it off always works.
+        with self.assertRaisesRegex(WorkspaceError, "not available in this version"):
+            self.ws.set_settings({"live_drafts": True})
+        self.assertFalse(self.ws.settings["live_drafts"])
+        self.ws.set_settings({"live_drafts": False})
+        with mock.patch.object(drafts, "ON_PAGE", True):
+            self.ws.set_settings({"live_drafts": True})
+        self.assertTrue(self.ws.settings["live_drafts"])
+
     def test_on_battery_drafts_wait_unless_battery_processing_is_allowed(self):
         self.ws._battery = True
         with mock.patch.object(drafts, "DraftSession") as made:
@@ -991,6 +1002,25 @@ class WorkspaceDraftTests(unittest.TestCase):
             self.assertIsNone(ws._drafts)
         self.assertEqual(ws.recording_draft()["state"], "ended")
         ws.stop_recording()
+
+    def test_a_download_that_begins_just_after_the_tick_checks_is_not_missed(self):
+        # The download ends drafts between the tick's checks and the start:
+        # _start_drafts checks again under the lock, so no session is made.
+        ws = self.ws
+        ws.settings.update(live_drafts=True)
+        real_ready = ws._draft_model_ready
+
+        def ready():
+            ok = real_ready()
+            ws._before_model_change()                     # setup.Downloads' before_install
+            return ok
+        with mock.patch.object(drafts, "DraftSession") as made, \
+                mock.patch.object(ws, "_draft_model_ready", ready):
+            ws.start_recording(3, consent=CONSENT)
+            ws._policy_tick()
+            self.assertIsNone(ws._drafts)
+            ws.stop_recording()
+        made.assert_not_called()
 
     def test_drafts_wait_while_a_model_is_downloaded_or_removed(self):
         ws = self.ws
