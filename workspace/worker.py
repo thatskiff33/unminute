@@ -271,8 +271,10 @@ def draft_main(conn, cache_dir, model, threads, allow_test_engines=False, log_di
         raise
     drafts.serve(conn, lambda: load_draft_engine(model, cache_dir, threads,
                                                  allow_test=allow_test_engines), log)
-    # The pipe closed or "exit" came: serve has let go of the model, and the
-    # crash file is closed before the process ends, as the main worker's (#278).
+    # The pipe closed or "exit" came and serve has returned. Its transcribe
+    # thread (a daemon) may still be inside the engine with a phrase; it ends
+    # with the process. The crash file is closed before the process ends, as
+    # the main worker's is (#278).
     _end_crash_capture(log)
 
 

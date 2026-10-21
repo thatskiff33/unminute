@@ -437,7 +437,13 @@ class Recording:
         """Seconds captured so far: saved, buffered and still queued for the
         writer. Call with _lock held."""
         return (self.journal["frames"] + self._buffered) / self.rate \
-            + self._queue.qsize() * BLOCK_S
+            + self._queued_blocks() * BLOCK_S
+
+    def _queued_blocks(self):
+        """Microphone blocks still queued for the writer. A live-draft pause
+        marker takes a place in the queue but holds no audio."""
+        with self._queue.mutex:
+            return sum(1 for item in self._queue.queue if item is not _PAUSED)
 
     def _event(self, kind, seconds=None, note=""):
         with self._lock:
@@ -553,7 +559,7 @@ class Recording:
         except OSError as exc:
             # Disk full or unwritable: keep every chunk already saved, stop
             # capture, and say how much could not be saved.
-            lost = self._buffered / self.rate + self._queue.qsize() * BLOCK_S
+            lost = self._buffered / self.rate + self._queued_blocks() * BLOCK_S
             track = self._computer
             if track is not None:
                 # Both tracks cover the same time: the longer unsaved stretch is lost.

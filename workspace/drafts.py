@@ -77,8 +77,9 @@ STOP_JOIN_S = 5.0                # a draft thread is waited for this long at a s
 LOG_NAME = "draft-worker"        # its log, crash file and process name (workspace.diag)
 FLUSH = "flush"                  # tap queue marker: end the current phrase (pause)
 # The page part (slice 3) shows draft text and sets this True. Until then
-# Workspace.set_settings refuses to turn live_drafts on (fail closed), so no
-# bridge call starts a worker whose text nobody can see.
+# Workspace.set_settings refuses to turn live_drafts on, and drafts stay off
+# whatever the settings file says (fail closed): no worker starts whose text
+# nobody can see.
 ON_PAGE = False
 
 # Session states (what the page part will show, #104 slice 3):

@@ -1076,8 +1076,9 @@ class Workspace:
 
     def _draft_reason(self, p):
         """Why live drafts may not run now, or None. Managed policy withholds
-        them when it says no, holds a bad value or cannot be read (K3)."""
-        if not self.settings["live_drafts"]:
+        them when it says no, holds a bad value or cannot be read (K3). Until
+        the page shows drafts, they stay off whatever the settings file says."""
+        if not (self.settings["live_drafts"] and drafts.ON_PAGE):
             return "off"
         if not p.get("AllowLiveDrafts"):
             return "managed"

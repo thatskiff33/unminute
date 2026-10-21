@@ -554,6 +554,88 @@ class TapTests(unittest.TestCase):
         self.rec.stop()
         self.assertEqual(threads, {"recorder-writer"})
 
+    def test_the_tap_gets_the_block_itself_not_the_queued_tuple(self):
+        # Since #287 the writer's queue holds (block, stamp, segment). A tap
+        # handed the tuple would fail and be turned off: drafts would stop
+        # with nothing said. It gets the 16-bit block and stays on.
+        blocks = []
+
+        def strict(start, block):
+            if not (isinstance(block, np.ndarray) and block.dtype == np.int16
+                    and block.ndim == 1):
+                raise TypeError("not an audio block")
+            blocks.append(len(block))
+        self.rec.tap = strict
+        self.rec.start()
+        self.addCleanup(self.rec.stop)
+        self.holder["stream"].play(tone(1.0))
+        journal = self.rec.stop()
+        self.assertIs(self.rec.tap, strict)               # never turned off
+        self.assertEqual(blocks, [1600] * 10)
+        self.assertEqual(sum(blocks), journal["frames"])
+
+    def test_with_computer_audio_the_tap_follows_the_microphone_only(self):
+        # The owner's decision of 22 Oct 2026: drafts use the microphone
+        # track until the page part adds the choice of a live mix.
+        class Loopback:
+            device_name = "Test speakers"
+
+            def __init__(self, source, callback, notify):
+                self.callback = callback
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def close(self):
+                pass
+
+        held = {}
+
+        def open_loopback(source, callback, notify):
+            held["comp"] = Loopback(source, callback, notify)
+            return held["comp"]
+        rec = recorder.Recording(Path(self.tmp.name) / "two", 3, "Test microphone", 16000,
+                                 open_stream=opener(self.holder),
+                                 computer={"open": open_loopback,
+                                           "source": {"kind": "endpoint"}, "rate": 48000})
+        seen = []
+        rec.tap = lambda start, block: seen.append((start, len(block)))
+        rec.start()
+        self.addCleanup(rec.stop)
+        comp = tone(1.0, 48000, freq=1000.0)
+        for k in range(0, 48000, 4800):
+            held["comp"].callback(comp[k:k + 4800], time.monotonic())
+        self.holder["stream"].play(tone(1.0))
+        journal = rec.stop()
+        self.assertEqual(journal["tracks"]["computer"]["frames"], 48000)   # saved, not tapped
+        self.assertEqual(seen, [(i * 1600, 1600) for i in range(10)])
+        self.assertEqual(journal["frames"], 16000)
+
+    def test_a_pause_marker_is_not_counted_as_queued_audio(self):
+        # The marker that ends the draft's phrase at a pause takes a place in
+        # the writer's queue but holds no audio: event times ignore it.
+        inside, gate = threading.Event(), threading.Event()
+
+        def held(start, block):
+            if block is not None and start == 0:
+                inside.set()
+                gate.wait(10)                             # the writer waits here
+        self.rec.tap = held
+        self.rec.start()
+        self.addCleanup(self.rec.stop)
+        self.addCleanup(gate.set)
+        self.holder["stream"].play(tone(1.0))
+        self.assertTrue(inside.wait(10))
+        self.rec.pause()                                  # the marker is queued
+        self.rec.resume()                                 # no audio in between
+        gate.set()
+        journal = self.rec.stop()
+        at = {e["kind"]: e["at_s"] for e in journal["events"]}
+        self.assertEqual(at["resumed"], at["paused"])
+
 
 # -- the workspace: off by default, policy, battery, every way a recording ends -----
 
@@ -576,6 +658,9 @@ class WorkspaceDraftTests(unittest.TestCase):
         def never(*args, **kwargs):
             raise AssertionError("a test reached the real power scheme")
         patches += [mock.patch.object(power._PowrProf, name, never) for name in ("write", "apply")]
+        # As the page part will set it; the tests of the refusal before then
+        # set it back to False.
+        patches.append(mock.patch.object(drafts, "ON_PAGE", True))
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -655,13 +740,28 @@ class WorkspaceDraftTests(unittest.TestCase):
     def test_the_switch_cannot_be_turned_on_before_the_page_shows_drafts(self):
         # Fail closed until the page part (slice 3): no bridge call turns on
         # a worker whose text nobody can see. Turning it off always works.
-        with self.assertRaisesRegex(WorkspaceError, "not available in this version"):
-            self.ws.set_settings({"live_drafts": True})
-        self.assertFalse(self.ws.settings["live_drafts"])
-        self.ws.set_settings({"live_drafts": False})
-        with mock.patch.object(drafts, "ON_PAGE", True):
-            self.ws.set_settings({"live_drafts": True})
+        with mock.patch.object(drafts, "ON_PAGE", False):
+            with self.assertRaisesRegex(WorkspaceError, "not available in this version"):
+                self.ws.set_settings({"live_drafts": True})
+            self.assertFalse(self.ws.settings["live_drafts"])
+            self.ws.set_settings({"live_drafts": False})
+        self.ws.set_settings({"live_drafts": True})
         self.assertTrue(self.ws.settings["live_drafts"])
+
+    def test_a_hand_edited_settings_file_cannot_start_drafts_before_the_page_shows_them(self):
+        # The settings file says on (as a hand edit could leave it), but no
+        # draft worker starts and no audio is tapped until the page part.
+        with mock.patch.object(drafts, "ON_PAGE", False), \
+                mock.patch.object(drafts, "DraftSession") as made:
+            rec = self.record()
+            self.holder["stream"].play(self.speech(1))
+            for _ in range(3):
+                self.ws._policy_tick()
+            self.assertIsNone(self.ws._drafts)
+            self.assertIsNone(rec.tap)
+            self.assertEqual(self.ws.recording_draft()["state"], "off")
+            self.ws.stop_recording()
+        made.assert_not_called()
 
     def test_on_battery_drafts_wait_unless_battery_processing_is_allowed(self):
         self.ws._battery = True
