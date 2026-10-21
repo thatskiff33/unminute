@@ -25,9 +25,10 @@
 # segment_dropped record says which, by number and last line (so deleting old
 # segments by hand shows while the drop records around it are kept).
 # A line cut short by a crash is left as it is: the next record starts a new
-# segment with tail_damaged. Every kind but the internal ones is rate-limited
-# (those the page reaches, and also imports and the cleanup loop's records),
-# and what is held back is counted (suppressed). A failed write never blocks or undoes
+# segment with tail_damaged. The kinds the page drives are rate-limited and
+# what is held back is counted (suppressed); the records the app writes for
+# imports and deletions (APP_WRITTEN) never are, nor the internal ones (the
+# owner's decision, 21 Oct 2026). A failed write never blocks or undoes
 # the action that was recorded: it is counted, and write_failed says how many
 # at the next write.
 #
@@ -51,7 +52,7 @@ SOURCE = "Unminute"                  # the Event Log source (unregistered: per-u
 SEGMENT_BYTES = 1 << 20              # a segment rotates at 1 MB
 MAX_BYTES = 16 << 20                 # the folder keeps at most 16 MB (about 80,000 records)
 TAIL_BYTES = 64 * 1024               # how much of the newest segment is read at open
-RATE_PER_KIND_MINUTE = 20            # LIMITED kinds: records a minute, per kind
+RATE_PER_KIND_MINUTE = 20            # LIMITED (page-driven) kinds: records a minute, per kind
 RATE_TOTAL_HOUR = 200                # ...and all of them together, an hour
 MIRROR_RETRY_S = 60.0                # a failing Event Log is tried again this often
 CLOSE_DRAIN_S = 2.0                  # at close, the mirror queue is drained for this long
@@ -163,7 +164,14 @@ KINDS = {
 # Written by the log itself or at start: never rate-limited.
 INTERNAL = frozenset({"chain_start", "app_start", "locked", "tail_damaged", "write_failed",
                       "segment_dropped", "mirror_gap", "suppressed"})
-LIMITED = tuple(k for k in KINDS if k not in INTERNAL)
+# Written by the app for imports and deletions: never reduced to a count (the
+# owner's decision of 21 Oct 2026, #111), so a page flood or a legitimate burst
+# never hides which meeting was imported or deleted. Failed cleanups are not
+# re-recorded every minute (workspace/cleanup.py run_job), so these stay paced.
+APP_WRITTEN = frozenset({"meeting_imported", "recording_ended", "cleanup_started",
+                         "cleanup_done"})
+# The kinds the page drives: limited per kind a minute and together an hour.
+LIMITED = tuple(k for k in KINDS if k not in INTERNAL and k not in APP_WRITTEN)
 KINDS["suppressed"][2]["of_kind"] = _one_of(*LIMITED)
 COMMON = ("v", "chain", "seq", "at", "kind", "prev")      # every record's own keys
 if any(set(rules) & set(COMMON) for _, _, rules in KINDS.values()):
@@ -536,19 +544,26 @@ def read_event_log(source=None, provider=SOURCE):
     return result.stdout.decode("utf-8", errors="replace")
 
 
-def _entries(xml_text, provider):
-    """[(chain, seq, kind, sha) or None for an entry that does not parse]."""
+def _entries(xml_text, provider, sid=None):
+    """([(chain, seq, kind, sha) or None for an entry that does not parse],
+    the number of entries left out because they carry another account's SID
+    or none: only with `sid`)."""
     import xml.etree.ElementTree as ET
     if re.search(r"<!(DOCTYPE|ENTITY)", xml_text, re.IGNORECASE):
         raise AuditError("a document type declaration is refused")
     root = ET.fromstring(xml_text)
-    out = []
+    out, others = [], 0
     for event in root.iter():
         if event.tag not in (EVENT_NS + "Event", "Event"):
             continue
         names = [p.get("Name") for p in event.iter() if p.tag.endswith("Provider")]
         if names and names[0] != provider:
             continue
+        if sid is not None:
+            users = [s.get("UserID") for s in event.iter() if s.tag.endswith("Security")]
+            if not users or users[0] != sid:
+                others += 1
+                continue
         found = None
         for data in event.iter():
             if data.tag.endswith("Data") and data.text:
@@ -557,29 +572,35 @@ def _entries(xml_text, provider):
                     found = (m.group(1), int(m.group(2)), m.group(3), m.group(4))
                     break
         out.append(found)
-    return out
+    return out, others
 
 
-def compare_event_log(folder, source=None, provider=SOURCE, read=None):
-    """Check the file against its Event Log copy (C5-2): missing_in_log
-    (file records with no entry, outside a mirror_gap range, from the oldest
-    file record that has one, in file order across chains, so records made
-    up under a new chain count too), missing_in_file (entries of a chain in
-    the file, from the oldest seq the file still holds, whose seq the file
-    does not have, including any past its last record), mismatched (same
-    seq, another line hash: an edited or rebuilt chain); unmatched (entries
-    that do not parse, or name a chain the file does not have: also any
-    other account's on this computer, or other devices' in an exported
-    file). result "match", "differs", "no_log" (no entry) or "unreadable".
+def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None):
+    """Check the file against its Event Log copy (C5-2). sid: count only the
+    entries carrying this account's SID (the local log, which every account
+    on the computer writes to; --verify-audit passes the signed-in user's),
+    and report the rest as other_accounts. Counts: missing_in_log (file
+    records with no entry, outside a mirror_gap range, from the oldest file
+    record that has one, in file order across chains, so records made up
+    under a new chain count too), missing_in_file (entries of a chain in the
+    file, from the oldest seq the file still holds, whose seq the file does
+    not have, including any past its last record), mismatched (same seq,
+    another line hash: an edited or rebuilt chain), unmatched (entries that
+    do not parse: someone else wrote them under the source name); and,
+    without making it differ, other_chains (well-formed entries naming a
+    chain the file does not have: another workspace's, other devices' in an
+    exported file, or an earlier chain whose segments were all dropped; read
+    it with verify's result and starts) and other_accounts. result "match",
+    "differs", "no_log" (no entry names a chain in the file) or "unreadable".
     Counts only: no line, id or SID."""
     out = {"result": "unreadable", "entries": 0, "missing_in_log": 0, "missing_in_file": 0,
-           "mismatched": 0, "unmatched": 0}
+           "mismatched": 0, "unmatched": 0, "other_chains": 0, "other_accounts": 0}
     try:
         text = (read or read_event_log)(source, provider)
-        entries = _entries(text, provider)
+        entries, out["other_accounts"] = _entries(text, provider, sid)
         scanned = _scan(folder)
     except (OSError, ValueError, subprocess.SubprocessError):
-        return out
+        return {**out, "other_accounts": 0}
     out["entries"] = len(entries)
     if not entries:
         return {**out, "result": "no_log"}
@@ -593,11 +614,15 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None):
             if record["kind"] == "mirror_gap":
                 gaps.setdefault(record["chain"], []).append(
                     (record["first_seq"], record["last_seq"]))
-    logged = set()
+    logged, known = set(), False
     for entry in entries:
-        if entry is None or entry[0] not in lines:
+        if entry is None:
             out["unmatched"] += 1
             continue
+        if entry[0] not in lines:
+            out["other_chains"] += 1
+            continue
+        known = True
         chain, seq, _, sha = entry
         oldest = min(lines[chain])
         if seq < oldest:
@@ -612,6 +637,8 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None):
         if (chain, seq) not in logged and not any(
                 a <= seq <= b for a, b in gaps.get(chain, ())):
             out["missing_in_log"] += 1
+    if not known and not out["unmatched"]:
+        return {**out, "result": "no_log"}            # no entry of this file's chains
     differs = any(out[k] for k in ("missing_in_log", "missing_in_file", "mismatched",
                                    "unmatched"))
     return {**out, "result": "differs" if differs else "match"}
@@ -683,7 +710,7 @@ class AuditLog:
                     return False
                 now = self.timer()
                 self._flush_suppressed(now)
-                if kind not in INTERNAL and not self._allowed(kind, now):
+                if kind in LIMITED and not self._allowed(kind, now):
                     return False
                 return self._write(kind, fields)
         except Exception as exc:              # never break the action that was recorded

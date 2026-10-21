@@ -241,7 +241,12 @@ def verify_audit(argv, root=None):
             return {**out, "event_log": {"result": "no_file"}}, 1
         source = str(Path(argv[at]).absolute())
     if source or "--event-log" in argv:
-        out["event_log"] = audit.compare_event_log(folder, source=source)
+        # The local Application log holds every account's entries on this
+        # computer: only the signed-in user's are compared. An exported file
+        # is compared whole (another device's chains are other_chains).
+        user = None if source else audit.token_user()
+        out["event_log"] = audit.compare_event_log(folder, source=source,
+                                                   sid=user[1] if user else None)
         ok = ok and out["event_log"]["result"] == "match"
     return out, 0 if ok else 1
 

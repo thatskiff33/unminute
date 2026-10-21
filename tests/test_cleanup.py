@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
@@ -336,6 +337,26 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.run_job(jid, quiesce=self.add_hold,
                                       on_event=lambda k, **f: events.append(k)), JobResult.HELD)
         self.assertEqual(events, [])
+
+    def test_a_failing_job_tells_cleanup_started_once_until_try_again(self):
+        """A failed job is retried every minute by the processing loop: only
+        the first attempt and the first after Try again are told (#289
+        review), so a stuck job never floods the audit log."""
+        events = []
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        with mock.patch.object(cleanup, "_remove_audio", side_effect=OSError(13, "in use")):
+            for _ in range(4):                            # the first, then automatic retries
+                self.assertEqual(self.run_job(jid, on_event=lambda k, **f: events.append(k)),
+                                 JobResult.FAILED)
+            with self.store.tx() as db:                   # Try again (app.retry_cleanup)
+                db.execute("UPDATE cleanup_jobs SET last_attempt_at = NULL WHERE id = ?",
+                           (jid,))
+            for _ in range(2):
+                self.run_job(jid, on_event=lambda k, **f: events.append(k))
+        self.assertEqual(self.job(jid)["attempts"], 6)
+        self.assertEqual(self.run_job(jid, on_event=lambda k, **f: events.append(k)),
+                         JobResult.DONE)
+        self.assertEqual(events, ["cleanup_started", "cleanup_started", "cleanup_done"])
 
     def test_an_audit_log_that_raises_never_changes_the_result(self):
         def broken(kind, **fields):

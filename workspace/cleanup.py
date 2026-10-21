@@ -180,11 +180,17 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=(), on_event
     on_event(kind, **fields) (the audit log, #111 C5) is told cleanup_started
     once the attempt is committed and before anything is removed, so a crash
     cannot hide a deletion, and cleanup_done once the receipt is committed.
+    cleanup_started is told for a pending job (its first attempt, or the
+    first after Confirm or a hold) and after Try again (a failed job whose
+    last_attempt_at was cleared), never for the processing loop's automatic
+    retry of a failed job every minute, which would flood the log (#289
+    review; the orchestrator's default of 21 Oct 2026, no new kind).
     An on_event that raises never changes the job's result."""
     job = store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
     if job is None or job["state"] not in ("pending", "failed"):
         return JobResult.NOTHING_PENDING     # finished, or awaiting confirmation after a hold
     mid, phase = job["meeting_id"], job["phase"]
+    announce = job["state"] == "pending" or job["last_attempt_at"] is None
     if is_held(store, mid, phase):
         _mark(store, jid, "pending", HELD_NOTE)
         return JobResult.HELD
@@ -211,7 +217,8 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=(), on_event
         if held:
             _mark(store, jid, "pending", HELD_NOTE)
             return JobResult.HELD
-        _notify(on_event, "cleanup_started", meeting=mid, phase=phase, job=jid)
+        if announce:
+            _notify(on_event, "cleanup_started", meeting=mid, phase=phase, job=jid)
         if phase == AUDIO:
             notes, deleted, kept = _remove_audio(store, mid, Path(media_root), original_roots)
         else:

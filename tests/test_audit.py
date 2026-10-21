@@ -69,11 +69,13 @@ def kinds(folder):
     return [r["kind"] for r in records(folder)]
 
 
-def event_xml(texts, provider=audit.SOURCE):
-    """Entries as `wevtutil qe /f:xml /e:Events` prints them."""
+def event_xml(texts, provider=audit.SOURCE, sid=None):
+    """Entries as `wevtutil qe /f:xml /e:Events` prints them (with the
+    writer's SID when sid is given)."""
     ns = "http://schemas.microsoft.com/win/2004/08/events/event"
+    user = f"<Security UserID='{sid}'/>" if sid else ""
     body = "".join(f"<Event xmlns='{ns}'><System><Provider Name='{provider}'/>"
-                   f"<EventID Qualifiers='0'>1000</EventID></System>"
+                   f"<EventID Qualifiers='0'>1000</EventID>{user}</System>"
                    f"<EventData><Data>{t}</Data></EventData></Event>" for t in texts)
     return f"<Events>{body}</Events>"
 
@@ -395,6 +397,7 @@ class FieldRuleTests(Base):
                             "names_replaced": 1, "omitted": 0, "redactions": 0}),
         ("app_start", {"version": "C:\\Users\\someone", "schema": 2}),
         ("suppressed", {"of_kind": "app_start", "count": 1}),    # only limited kinds
+        ("suppressed", {"of_kind": "cleanup_started", "count": 1}),   # never limited
     ]
 
     def test_a_record_that_breaks_its_rules_is_refused_and_nothing_is_written(self):
@@ -467,6 +470,36 @@ class RateLimitTests(Base):
     def test_internal_kinds_are_never_limited(self):
         self.fill(500).close()
         self.assertEqual(kinds(self.folder).count("app_start"), 500)
+
+    def test_imports_and_deletions_are_never_reduced_to_a_count(self):
+        """The owner's decision of 21 Oct 2026: the records the app writes
+        for imports and deletions are always written one by one, also once
+        a page flood has spent the hour and beyond 20 in a minute."""
+        log = self.log()
+        for _minute in range(10):                            # the page spends the hour
+            self.timer.t += 61
+            for _ in range(25):
+                log.record("handoff_copied", meeting=MEETING, what="combined",
+                           template="built_in", names_replaced=False, omitted=0,
+                           redactions=0)
+        self.assertFalse(log.record("damage_continued"))     # the hour is spent
+        for _ in range(30):                                  # in one minute
+            self.assertTrue(log.record("meeting_imported", meeting=MEETING, source="folder",
+                                       folder=OTHER, recording=None, seconds=5,
+                                       delete_original=True))
+            self.assertTrue(log.record("recording_ended", recording=OTHER, result="saved",
+                                       seconds=5))
+            self.assertTrue(log.record("cleanup_started", meeting=MEETING, phase="audio",
+                                       job=JOB))
+            self.assertTrue(log.record("cleanup_done", meeting=MEETING, phase="audio", job=JOB,
+                                       originals_deleted=1, originals_kept=0))
+        log.close()
+        got = kinds(self.folder)
+        for kind in sorted(audit.APP_WRITTEN):
+            self.assertEqual(got.count(kind), 30, kind)
+        held = {r["of_kind"] for r in records(self.folder) if r["kind"] == "suppressed"}
+        self.assertEqual(held, {"handoff_copied", "damage_continued"})
+        self.assertEqual(audit.APP_WRITTEN & set(audit.LIMITED), set())
 
 
 class MirrorTests(Base):
@@ -672,6 +705,33 @@ class CompareTests(Base):
         r = self.compare(self.texts + ["Unminute audit v1 nothing to see"])
         self.assertEqual((r["result"], r["unmatched"]), ("differs", 1))
 
+    def test_another_chain_is_counted_apart_and_does_not_differ(self):
+        """Another workspace's chain (an exported file from several devices,
+        or an earlier chain dropped at the cap) is reported, not a difference."""
+        other = (f"Unminute audit v1 chain={'f' * 32} seq=1 kind=chain_start "
+                 f"sha256={'0' * 64}")
+        r = self.compare(self.texts + [other, "Unminute audit v1 nothing to see"])
+        self.assertEqual((r["result"], r["other_chains"], r["unmatched"]), ("differs", 1, 1))
+        r = self.compare(self.texts + [other])
+        self.assertEqual((r["result"], r["other_chains"], r["unmatched"]), ("match", 1, 0))
+        r = self.compare([other])                           # nothing of this file's chains
+        self.assertEqual((r["result"], r["other_chains"]), ("no_log", 1))
+
+    def test_only_the_users_own_entries_are_compared(self):
+        """The local Application log holds every account's entries: with the
+        user's SID, other accounts' (and entries with no SID) are left out
+        and counted, never a difference."""
+        mine, theirs = "S-1-5-21-1-2-3-1001", "S-1-5-21-1-2-3-1002"
+        stranger = ["Unminute audit v1 nothing to see"]
+        xml = event_xml(self.texts, sid=mine)[:-len("</Events>")] \
+            + event_xml(self.texts[:3] + stranger, sid=theirs)[len("<Events>"):-len("</Events>")] \
+            + event_xml(stranger)[len("<Events>"):]
+        r = audit.compare_event_log(self.folder, read=lambda s, p: xml, sid=mine)
+        self.assertEqual((r["result"], r["entries"], r["other_accounts"], r["unmatched"]),
+                         ("match", 11, 5, 0), r)
+        r = audit.compare_event_log(self.folder, read=lambda s, p: xml)   # an exported file
+        self.assertEqual((r["result"], r["other_accounts"], r["unmatched"]), ("differs", 0, 2))
+
     def test_a_missing_entry(self):
         r = self.compare(self.texts[:4] + self.texts[5:])
         self.assertEqual((r["result"], r["missing_in_log"]), ("differs", 1))
@@ -708,11 +768,16 @@ class CommandLineTests(Base):
         with mock.patch.object(main, "_system_account", return_value=False):
             result, code = main.verify_audit(["--verify-audit"], root=self.folder.parent)
             self.assertEqual((result["result"], result["records"], code), ("ok", 3, 0))
-            with mock.patch.object(audit, "read_event_log",
-                                   lambda s, p: event_xml(texts[:-1])):
+            sid = "S-1-5-21-1-2-3-1001"
+            # The signed-in user's entries only (another account's are left out).
+            xml = event_xml(texts[:-1], sid=sid)[:-len("</Events>")] \
+                + event_xml(texts, sid="S-1-5-21-1-2-3-1002")[len("<Events>"):]
+            with mock.patch.object(audit, "read_event_log", lambda s, p: xml), \
+                    mock.patch.object(audit, "token_user", return_value=(b"", sid)):
                 result, code = main.verify_audit(["--verify-audit", "--event-log"],
                                                  root=self.folder.parent)
-            self.assertEqual((result["event_log"]["missing_in_log"], code), (1, 1))
+            self.assertEqual((result["event_log"]["missing_in_log"],
+                              result["event_log"]["other_accounts"], code), (1, 3, 1))
             result, code = main.verify_audit(["--verify-audit", "--event-log-file", "nowhere"],
                                              root=self.folder.parent)
             self.assertEqual((result["event_log"]["result"], code), ("no_file", 1))
@@ -771,7 +836,8 @@ class WindowsEventLogTests(Base):
         log.record("damage_continued")
         log.close()
         self.assertEqual(log.summary()["mirror"], "ok")
-        report = audit.compare_event_log(self.folder, provider="Unminute-Test")
+        report = audit.compare_event_log(self.folder, provider="Unminute-Test",
+                                         sid=audit.token_user()[1])
         self.assertGreaterEqual(report["entries"], 2, report)
         self.assertEqual((report["missing_in_log"], report["missing_in_file"],
                           report["mismatched"]), (0, 0, 0), report)
@@ -1003,6 +1069,37 @@ class WorkspaceAuditTests(unittest.TestCase):
         rs = records(ws.root / "audit")
         self.assertEqual([(r["kind"], r.get("job"), r.get("phase")) for r in rs[3:]],
                          [("cleanup_confirmed", jid, "audio"), ("cleanup_retry", jid, "audio")])
+
+    def test_a_failing_cleanup_retried_by_the_loop_is_recorded_once(self):
+        """The processing loop retries a failed job (every minute; at once
+        here): one cleanup_started for the first attempt, one more after Try
+        again, and cleanup_done when it finally works (#289 review)."""
+        from workspace import app as app_module
+        from workspace import cleanup
+        ws = self.open()
+        mid = self.imported(ws)
+        with ws.store.tx() as db:                           # a reviewed meeting's audio job
+            db.execute("UPDATE meetings SET reviewed_at = 1 WHERE id = ?", (mid,))
+            jid = cleanup._add_job(db, mid, cleanup.AUDIO)
+
+        def run_due():
+            work = ws._next_work()
+            self.assertEqual(work, ("cleanup", mid, jid))
+            ws._run(*work)
+        with mock.patch.object(app_module, "FAILED_RETRY_S", 0):
+            with mock.patch.object(cleanup, "_remove_audio", side_effect=OSError(13, "in use")):
+                for _ in range(5):
+                    run_due()
+                ws.retry_cleanup(jid)
+                for _ in range(3):
+                    run_due()
+            run_due()                                       # it works now
+        self.assertIsNone(ws._job_row(jid))                 # the receipt replaced it
+        rs = records(ws.root / "audit")
+        self.assertEqual([r["kind"] for r in rs if r["kind"].startswith("cleanup_")],
+                         ["cleanup_started", "cleanup_retry", "cleanup_started",
+                          "cleanup_done"])
+        self.assertEqual(ws.audit.stats["suppressed"], 0)
 
     def test_a_locked_start_records_locked_and_leaves_the_database_alone(self):
         from workspace.app import Workspace
