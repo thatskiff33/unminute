@@ -7,8 +7,11 @@
 # recording. Before it touches the file it lowers its own integrity level to
 # Low, the level browsers use for web content: from then on Windows stops it
 # writing the user's files, opening the app's process or sending messages to
-# other windows. It can still read what the user can read; the network guard
-# covers its Python code and the runtime firewall rule (B7) the rest.
+# other windows. It can still read what the user can read, the workspace
+# included, and Low integrity does not limit the network: the network guard
+# covers its Python code only, and the runtime firewall rule (#111 B7) is not
+# shipped yet (docs/SECURITY_MODEL.md T2; #299 tracks a decoder that cannot
+# read the workspace).
 #
 # Protocol, on stdin and stdout only (nothing is ever unpickled):
 #   app -> decoder  line 1: JSON list, the sys.path to use (read by BOOT)
@@ -35,14 +38,45 @@ BOOT = ("import sys,json;sys.path[:]=json.loads(sys.stdin.readline());"
 # descriptions (SDP, RTP, RTSP), concat scripts and every other demuxer are
 # refused whatever the file claims to be.
 DEMUXERS = "wav,mp3,mov,mp4,m4a,matroska,webm,flac,ogg,aac,asf,avi"
-OPEN_OPTIONS = {"protocol_whitelist": "file", "format_whitelist": DEMUXERS}
+# Decoder names (FFmpeg) for the audio codecs those types carry. Opening a
+# file probes every stream, so without this list a video track, cover art in
+# an MP3 or FLAC, or a subtitle track reached FFmpeg's video, image or
+# subtitle decoders before the app chose the audio (D2 red team, part 2,
+# finding 1). FFmpeg refuses any other decoder while probing, and decode()
+# refuses an audio stream whose decoder is not listed. Parsers still run.
+# The phone and VoIP speech decoders (G.729, G.723.1, GSM, iLBC, Speex) are
+# listed by the owner's decision of 22 October 2026 (#302); TrueSpeech and
+# QDM2 stay refused.
+AUDIO_DECODERS = (
+    "pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,"
+    "pcm_f64le,pcm_f64be,pcm_u8,pcm_s8,pcm_alaw,pcm_mulaw,adpcm_ima_wav,adpcm_ms,adpcm_ima_qt,"
+    "gsm_ms,mp3float,mp3,mp2float,mp2,aac,aac_fixed,alac,flac,opus,libopus,vorbis,"
+    "wmav1,wmav2,wmapro,wmavoice,wmalossless,ac3,ac3_fixed,eac3,amrnb,amrwb,"
+    "g729,g723_1,gsm,ilbc,speex")
+OPEN_OPTIONS = {"protocol_whitelist": "file", "format_whitelist": DEMUXERS,
+                "codec_whitelist": AUDIO_DECODERS}
 SAMPLE_RATE = 16000
 MAX_DECODED_S = 12 * 3600
+# Input sample rates outside this range are refused: a header that claims
+# 1 Hz turned each stored sample into 16,000 output samples (finding 3).
+MIN_INPUT_RATE, MAX_INPUT_RATE = 4000, 384000
+# At most one second of decoded audio per 16 bytes of file (128 bit/s on
+# average). No supported codec stores speech below about 6 kbit/s, and a
+# whole file of digital silence measured at least 64 bytes a second (AAC at
+# 8 kHz), so a real recording stays far inside it; a small crafted file can
+# no longer claim hours (finding 3). The app enforces it too.
+BYTES_PER_DECODED_S = 16
 FRAME_SAMPLES = 1 << 16                  # about 4 s of audio per frame
 MIX_SAMPLES = 1 << 14                    # samples per channel mixed at a time
 LOW_INTEGRITY = 0x1000
 
-E_SETUP, E_NO_AUDIO, E_TOO_LONG, E_UNREADABLE, E_MEMORY = 1, 2, 3, 4, 5
+E_SETUP, E_NO_AUDIO, E_TOO_LONG, E_UNREADABLE, E_MEMORY, E_TOO_DENSE = 1, 2, 3, 4, 5, 6
+
+
+def max_samples_for(size, rate=SAMPLE_RATE):
+    """The most output samples a file of `size` bytes may decode to: the
+    12-hour cap or BYTES_PER_DECODED_S, whichever is lower."""
+    return min(MAX_DECODED_S, max(0, int(size)) // BYTES_PER_DECODED_S) * rate
 
 
 def _integrity_level(token):
@@ -145,13 +179,26 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
     full-scale input, exactly as it does for a mono file."""
     from fractions import Fraction
 
+    import os
+
     import av
     import numpy as np
     pending, total = bytearray(), 0
     with open(src, "rb") as fh, av.open(fh, options=OPEN_OPTIONS) as container:
+        # The file's own size bounds how much audio it may decode to.
+        dense_limit = max_samples_for(os.fstat(fh.fileno()).st_size)
         stream = next((s for s in container.streams if s.type == "audio"), None)
         if stream is None:
             raise DecodeFailed(E_NO_AUDIO)
+        # No decoder for the stream (an unknown format tag, or 0 bits per
+        # sample): PyAV 17 leaves codec_context as None, and decoding it
+        # crashed the process (finding 4). A decoder outside the list is
+        # refused here too, since the probe's list does not bind PyAV.
+        codec = stream.codec_context
+        if codec is None or codec.name not in AUDIO_DECODERS.split(","):
+            raise DecodeFailed(E_UNREADABLE)
+        if codec.sample_rate and not MIN_INPUT_RATE <= codec.sample_rate <= MAX_INPUT_RATE:
+            raise DecodeFailed(E_UNREADABLE)
         if container.duration and container.duration / 1e6 > MAX_DECODED_S + 60:
             raise DecodeFailed(E_TOO_LONG)
         # A mono frame goes straight to the 16 kHz resampler, as before. Any
@@ -192,12 +239,16 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
                 total += len(data) // 4
                 if total > max_samples:
                     raise DecodeFailed(E_TOO_LONG)
+                if total > dense_limit:
+                    raise DecodeFailed(E_TOO_DENSE)
                 pending.extend(data)
                 while len(pending) >= FRAME_SAMPLES * 4:
                     send(b"A", bytes(pending[:FRAME_SAMPLES * 4]))
                     del pending[:FRAME_SAMPLES * 4]
 
         for frame in container.decode(stream):
+            if not MIN_INPUT_RATE <= frame.sample_rate <= MAX_INPUT_RATE:
+                raise DecodeFailed(E_UNREADABLE)
             if len(frame.layout.channels) == 1:
                 take(to_rate.resample(frame))
             else:
