@@ -600,7 +600,9 @@ def heading_anchors(text):
     return anchors
 
 
-SLICE = re.compile(r"\b[A-D]\d{1,2}\b")          # a #111 slice, such as B6 or C3
+# A #111 slice, such as B6, C3, C3a or C2b-2. A lettered slice has no word boundary
+# between its digit and its letter, so the letter and part number are matched too.
+SLICE = re.compile(r"\b[A-D]\d{1,2}[a-z]?(?:-\d+)?\b")
 TEST_FILE = re.compile(r"`(tests/[\w/]+\.py)`")
 
 
@@ -645,12 +647,16 @@ class ControlMatrixTests(unittest.TestCase):
                                 f"{ident} names no guard test and does not say Review")
 
     def test_planned_slices_are_carried(self):
+        # Both ways: a slice SECURITY_MODEL.md plans is in the matrix, and a slice the
+        # matrix still shows as planned is still planned there (not delivered or dropped).
         for ident, cells in self.model.items():
             with self.subTest(threat=ident):
                 planned = set(SLICE.findall(cells[4]))
                 carried = set(SLICE.findall(self.threats.get(ident, [""] * 6)[4]))
                 self.assertEqual(set(), planned - carried,
                                  f"{ident}: SECURITY_MODEL.md plans slices the matrix omits")
+                self.assertEqual(set(), carried - planned,
+                                 f"{ident}: the matrix plans slices SECURITY_MODEL.md does not")
 
     def test_named_paths_exist(self):
         missing = [token for token in set(re.findall(r"`([^`\s]+)`", self.text))
@@ -686,6 +692,18 @@ class DeploymentGuideTests(unittest.TestCase):
         self.assertEqual(listed, template,
                          "IT_DEPLOYMENT.md's policy list differs from packaging/policy")
 
+    def test_not_set_column_matches_packaging(self):
+        # Most Allow values grant when not set: IT must not read an unset value as off.
+        packaging = read("docs/PACKAGING.md").split("### Managed settings (policy)", 1)[1]
+        packaging = packaging.split("\n#", 1)[0]
+        expected = {name.strip("`"): cells[2]
+                    for name, cells in table_rows(packaging, r"`\w+`").items()}
+        rows = table_rows(section(self.text, "Managed policy"), r"`\w+`")
+        listed = {name.strip("`"): cells[3] for name, cells in rows.items()}
+        self.assertGreaterEqual(len(expected), 10, "PACKAGING.md's policy table no longer matches")
+        self.assertEqual(listed, expected,
+                         "IT_DEPLOYMENT.md's Not set column differs from PACKAGING.md's")
+
     def test_incident_runbook_links_withdrawal_and_health(self):
         incidents = section(self.text, "Incidents")
         self.assertIn("(RELEASING.md#withdrawing-a-bad-release)", incidents)
@@ -705,18 +723,31 @@ class DeploymentGuideTests(unittest.TestCase):
         self.assertEqual([], broken)
 
 
+# Words that take a legal position or name an adviser step.
+LEGAL_WORDS = re.compile(r"\b(?:un)?lawful(?:ly|ness)?\b|\b(?:il)?legal(?:ly|ity)?\b"
+                         r"|\bPrivacy Act\b|\bCrimes Act\b|\bIPPs?\b|\badvis[eo]rs?\b",
+                         re.IGNORECASE)
+
+
 class PrivacyDraftTests(unittest.TestCase):
     """The privacy impact assessment draft states facts only: the deploying
     organisation decides the legal position (the owner's rule), so the draft says
-    it is a draft and takes no position."""
+    it is a draft and takes no position. The other docs stay silent on it too."""
 
     def test_marked_as_a_draft_with_no_legal_position(self):
         text = read("docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md")
         self.assertIn("**Status: draft.**", text.split("\n## ", 1)[0])
-        found = re.findall(r"\b(?:un)?lawful\b|\blegal(?:ly)?\b|\bPrivacy Act\b|\bIPPs?\b"
-                           r"|\badvis[eo]rs?\b", text, re.IGNORECASE)
+        found = LEGAL_WORDS.findall(text)
         self.assertEqual([], found, "the draft takes no legal position and names no "
                                     "adviser step; leave that to the organisation")
+
+    def test_no_doc_takes_a_legal_position_or_names_an_adviser_step(self):
+        # AGENTS.md states the rule itself, so it is the one doc allowed the words.
+        found = {doc: LEGAL_WORDS.findall(read(doc)) for doc in DocsTests.DOCS
+                 if doc != "AGENTS.md"}
+        self.assertEqual({}, {doc: words for doc, words in found.items() if words},
+                         "docs describe what the app does and stay silent on the legal "
+                         "position, with no adviser step (the owner's rule)")
 
 
 class AccessibilityTargetTests(unittest.TestCase):

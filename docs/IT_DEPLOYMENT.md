@@ -15,7 +15,8 @@ Unminute assumes these are in place ([SECURITY_MODEL.md](SECURITY_MODEL.md), "Sc
 | Control | Why | Threat |
 | --- | --- | --- |
 | BitLocker on every device, enforced by a compliance policy | On `main`, meeting text in the database and the handoff templates are encrypted, but the app's working copy of the audio and microphone recordings waiting to be imported are not (C3 is planned). In v0.5.0-preview.3 nothing is encrypted by the app. BitLocker protects all of it when the laptop is off or hibernated, and also covers the page file and hibernation file | T6, T7 |
-| Staff sign in as standard users, one Windows account per person | The install and the workspace are per user. Another standard user cannot read them; an administrator who runs code in the user's session can | T8, T9 |
+| Staff sign in as standard users, one Windows account per person | The install and the workspace are per user. Another standard user cannot read them. An administrator can read the files the app does not encrypt directly, and the encrypted content by running code as the user or with the domain's DPAPI backup key | T8, T9 |
+| How Windows protects the user's keys (**Not in v0.5.0-preview.3**) | On `main` the workspace key is protected by Windows (DPAPI) for the user. With a roaming profile it can be unlocked from another computer the user signs in to; whoever holds the domain's DPAPI backup keys can unlock it; and if Windows loses the user's protection keys, for example when an administrator resets the password without the old one, the encrypted content cannot be opened again. Which of these applies to your devices is to confirm on a pilot laptop (#189). Keep the backup keys protected, and have users finish or clean up their meetings before such a reset ([ENCRYPTION.md](ENCRYPTION.md), "What it does not do") | T6, T8 |
 | Microsoft Defender (or equivalent) active | Malware running as the user can read what the user can read | T9 |
 | WebView2 Evergreen runtime, kept up to date | The window needs a runtime recent enough to report screen-capture requests, or it closes rather than open a page it cannot secure ([PACKAGING.md](PACKAGING.md), prerequisites) | T1, T23 |
 | A fixed proxy, or models staged by IT | Downloads use a proxy set in Windows or `HTTPS_PROXY`, not one given only by a PAC or WPAD script. Certificates are checked against the Windows certificate store, so a TLS-inspecting proxy works if its root is trusted there. With `AllowModelDownloads` set to 0, models have to be placed by IT | T12 |
@@ -52,7 +53,7 @@ powershell -NoProfile -File tools\intune\Get-VerifiedRelease.ps1 -Tag v0.5.0-pre
 - It downloads the zip, its `.sha256`, the SBOM and the attestation bundle into a new folder, checks the checksum, and verifies both attestations against the repository's Release workflow at that tag, from the tag's commit, on a GitHub-hosted runner.
 - It prints VERIFIED and the zip's SHA-256, or NOT VERIFIED and the reason. Package only a verified zip.
 - It needs the GitHub CLI (`gh`) on the path, and no GitHub sign-in while the repository is public.
-- The repository is due to move to the Unlimit organisation. After the move, the script's default `-Repository` changes with it, and the signer identity names the new address ([RELEASING.md](RELEASING.md), "Protecting releases").
+- Releases are published from `thatskiff33/unminute`. The script's default `-Repository` names it, and so does the signer identity it checks ([RELEASING.md](RELEASING.md), "Protecting releases").
 
 Details: [PACKAGING.md](PACKAGING.md), "Verifying a release before packaging".
 
@@ -63,7 +64,7 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 1. Verify the release (above), then wrap the extracted folder with the Microsoft Win32 Content Prep Tool, with `install.cmd` as the setup file.
 2. Install behaviour: **User**. Install command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Silent` (add `-Managed` if IT manages updates).
 3. Uninstall command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\Unminute\uninstall.ps1" -Silent`.
-4. Return codes: map 5 (the update is waiting for the workspace) to Retry, and 2, 3 and 4 to Failed. Code 3 (the app is running) is worth a retry.
+4. Return codes: map 5 (the update is waiting for the workspace) to Retry, and 1, 2, 3, 4 and 6 to Failed. Code 3 (the app is running) is worth a retry. Code 6 means this version cannot open the user's existing workspace, for example a newer workspace after a downgrade, or one in a refused location such as OneDrive or a network drive (see "Updates and rollback" below, and the exit codes in [PACKAGING.md](PACKAGING.md)).
 5. Detection rule: the registry value `DisplayVersion` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
 6. Requirements: Windows 10 1809 or later, x64, and the WebView2 runtime.
 
@@ -71,28 +72,28 @@ Coming from 0.4.3 or earlier is not an update in place: users finish with the ea
 
 ## Managed policy
 
-Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and override the user's settings. The administrative template is `packaging/policy/Unminute.admx` with `packaging/policy/en-US/Unminute.adml`: import both under Devices > Manage devices > Configuration > Import ADMX, then build a profile from the "Unminute" category. What each value does, its type and its default are in the table in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". This list is checked against the template by `DeploymentGuideTests` in `tests/test_consistency.py`.
+Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and override the user's settings. The administrative template is `packaging/policy/Unminute.admx` with `packaging/policy/en-US/Unminute.adml`: import both under Devices > Manage devices > Configuration > Import ADMX, then build a profile from the "Unminute" category. Most values grant something when not set: every `Allow` value except `AllowNetworkSources` is allowed until it is set to 0, and `RequireRecordingConsent` is on unless it is set to 0. The "Not set" column says what each one does when IT leaves it unset. What each value does when set, and its type, are in the table in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". This list is checked against the template, and its "Not set" column against PACKAGING.md, by `DeploymentGuideTests` in `tests/test_consistency.py`.
 
-| Value | Setting name in the template | Area |
-| --- | --- | --- |
-| `AllowModelDownloads` | Allow model downloads in the app | Downloads |
-| `AllowGpuComponent` | Allow the graphics card components | GPU |
-| `AllowMicrophoneRecording` | Allow microphone recording | Microphone |
-| `AllowLidOverride` | Allow keeping a recording going with the lid closed | Microphone |
-| `RequireRecordingConsent` | Confirm before each recording that everyone has been told | Microphone |
-| `AllowWatchedFolders` | Allow watched folders | Watched folders |
-| `AllowDeleteOriginals` | Allow deleting original recordings from watched folders | Watched folders |
-| `AllowNetworkSources` | Allow recordings on network drives | Network drives |
-| `HandoffFilenameIncludesTitle` | Suggest the meeting title as the handoff file name | Handoff |
-| `ClipboardClearMinutes` | Clear the app's handoff copy from the clipboard | Clipboard |
-| `HandoffDefaultFolder` | Starting folder for saved handoffs | Handoff |
-| `AllowHandoffAssistant` | Allow "Copy and open" on the Hand off page | Handoff |
-| `HandoffAssistantName` | Hand off assistant name | Handoff |
-| `HandoffAssistantUrl` | Hand off assistant address | Handoff |
+| Value | Setting name in the template | Area | Not set |
+| --- | --- | --- | --- |
+| `AllowModelDownloads` | Allow model downloads in the app | Downloads | Allowed |
+| `AllowGpuComponent` | Allow the graphics card components | GPU | Allowed |
+| `AllowMicrophoneRecording` | Allow microphone recording | Microphone | Allowed |
+| `AllowLidOverride` | Allow keeping a recording going with the lid closed | Microphone | Allowed |
+| `RequireRecordingConsent` | Confirm before each recording that everyone has been told | Microphone | Required |
+| `AllowWatchedFolders` | Allow watched folders | Watched folders | Allowed |
+| `AllowDeleteOriginals` | Allow deleting original recordings from watched folders | Watched folders | Allowed |
+| `AllowNetworkSources` | Allow recordings on network drives | Network drives | Refused |
+| `HandoffFilenameIncludesTitle` | Suggest the meeting title as the handoff file name | Handoff | Date and time only |
+| `ClipboardClearMinutes` | Clear the app's handoff copy from the clipboard | Clipboard | Never cleared |
+| `HandoffDefaultFolder` | Starting folder for saved handoffs | Handoff | The dialog's usual folder |
+| `AllowHandoffAssistant` | Allow "Copy and open" on the Hand off page | Handoff | Allowed |
+| `HandoffAssistantName` | Hand off assistant name | Handoff | ChatGPT |
+| `HandoffAssistantUrl` | Hand off assistant address | Handoff | `https://chatgpt.com/` |
 
 **Not in v0.5.0-preview.3:** `AllowHandoffAssistant`, `HandoffAssistantName` and `HandoffAssistantUrl`, and the Copy and open button they control. That release ignores them, as it ignores any value name it does not know. The template's revision number did not change when they were added, and Intune does not overwrite an imported template: to take the new values, delete the profiles that use the template and the old template, then import again ([PACKAGING.md](PACKAGING.md)).
 
-Until the per-machine install (B6), the code that enforces policy sits in the user's profile; the policy key itself stays admin-only.
+The app enforces these values in its own code. Until the per-machine install (B6), that code sits in the user's profile, so someone able to change files there could remove the checks: policy is not enforced against a determined user. The policy key itself stays admin-only.
 
 ## Health monitoring with `--health`
 
@@ -117,7 +118,7 @@ exit $LASTEXITCODE
 | --- | --- | --- |
 | `"workspace": "none"` | This user has not opened the app yet | Nothing; it counts as healthy |
 | `"workspace": "damaged"` | The last database check found damage | The user guide, [If Unminute finds damage](WORKSPACE_GUIDE.md#if-unminute-finds-damage) |
-| `"workspace": "location"` | The data folder is missing, in OneDrive, on a network drive, or a link to one of those or to a folder that cannot be reached | Restore the folder or remove the link; only `Unminute\models` may be redirected ([PACKAGING.md](PACKAGING.md), "What the package contains") |
+| `"workspace": "location"` | The data folder is missing, in OneDrive, on a network drive, or a link to one of those or to a folder that cannot be reached (**Not in v0.5.0-preview.3:** the link to a folder that cannot be reached; that release does not report it as `location`) | Restore the folder or remove the link; only `Unminute\models` may be redirected ([PACKAGING.md](PACKAGING.md), "What the package contains") |
 | `"workspace": "unreadable"` | The workspace cannot be read, or Windows cannot say which account the check runs as | Ask the user for **Copy diagnostics** (Help); see the user guide's troubleshooting table |
 | `"workspace": "system_account"` | The script ran as SYSTEM | Set it to run with the logged-on credentials |
 | `"last_run": "did_not_close"` or `crashes_7d` above 0 | The app or one of its processes ended unexpectedly | Ask the user for **Copy diagnostics** and any code shown (`U-…`); if many devices show it after an update, see "Incidents" below |
