@@ -66,8 +66,15 @@ SPEC = {
     "AllowHandoffAssistant": ("bool", True, True),
     "HandoffAssistantName": ("name", None, False),
     "HandoffAssistantUrl": ("url", None, False),
+    # Retention reminders (#111 C6): a meeting whose next step has waited this
+    # many days shows "Review due" or "Action required" (0 = off). Not
+    # permissions: they block and delete nothing, so a bad value gives the
+    # app's default (workspace.holds.retention_state).
+    "ReviewReminderDays": ("int", 30, False),
+    "ActionRequiredDays": ("int", 0, False),
 }
-INT_RANGES = {"ClipboardClearMinutes": (0, 1440)}
+INT_RANGES = {"ClipboardClearMinutes": (0, 1440), "ReviewReminderDays": (0, 365),
+              "ActionRequiredDays": (0, 365)}
 ERROR_NO_MORE_ITEMS = 259
 # A policy key that exists but cannot be read in full: every value counts as
 # invalid, so every permission is withheld and the rest use the app default.

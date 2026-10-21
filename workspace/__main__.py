@@ -9,9 +9,10 @@
 # Support options (no window):
 #   --version     the installed package version
 #   --status      workspace contents as JSON counts (meetings, holds, pending
-#                 cleanup), the last database check and the key's state at the
-#                 last start (#111 C4a, never by unlocking it); used by
-#                 installers and updates (#26). No content.
+#                 cleanup, retention reminders), the last database check and
+#                 the key's state at the last start (#111 C4a, never by
+#                 unlocking it); used by installers and updates (#26).
+#                 No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency, check the offline guard,
 #                 check that the speaker model loader refuses a code-running
@@ -24,6 +25,8 @@
 #                 app is running, how the last run ended and crashes in the
 #                 last 7 days. Exit 0 healthy, 1 needs attention. No content
 #                 (docs/PACKAGING.md).
+#                 Also counts meetings that require action, and held ones
+#                 past the threshold (#111 C6), without changing "healthy".
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
@@ -99,17 +102,19 @@ def package_version():
     return package_version()
 
 
-def status(root=None):
+def status(root=None, policy_reader=None):
     """Counts only: never titles, names or text. integrity: the last
     database check (R11), "ok", "failed" or "unchecked". keys: the key's
     state at the app's last start (#111 C4a), "ok", "locked" or "unchecked",
     read from logs/keys.json and never by unlocking the key (no DPAPI call:
     Intune may run this as SYSTEM); lock_reason and lock_code (the Windows
     error number) while locked. audit_seq: the audit log's newest sequence
-    number, from its end only (#111 C5)."""
+    number, from its end only (#111 C5). reminders_due, action_required and
+    held_overdue: the retention reminders (#111 C6), from plain columns and
+    the managed policy, so they need no key. policy_reader: tests only."""
     import sqlite3
 
-    from workspace import audit, diag
+    from workspace import audit, diag, holds, policy
     from workspace.store import default_root
     root = Path(root or default_root()).absolute()
     db = root / "workspace.db"
@@ -123,7 +128,8 @@ def status(root=None):
            "keys": keys["result"] if keys else "unchecked",
            "lock_reason": keys["reason"] if locked else None,
            "lock_code": keys["winerror"] if locked else None,
-           "audit_seq": audit.tail_seq(root / "audit")}
+           "audit_seq": audit.tail_seq(root / "audit"),
+           "reminders_due": 0, "action_required": 0, "held_overdue": 0}
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
@@ -133,6 +139,10 @@ def status(root=None):
                        pending_cleanup=q("SELECT COUNT(*) FROM cleanup_jobs"),
                        receipts=q("SELECT COUNT(*) FROM receipts"),
                        schema=q("SELECT MAX(version) FROM schema_version"))
+            # An unreadable policy gives the app's defaults: these grant nothing.
+            managed = policy.Policy(*(policy_reader or policy.read_registry)())
+            out.update(holds.retention_counts(holds.retention_from(
+                lambda sql: con.execute(sql).fetchall(), managed)))
         except sqlite3.DatabaseError:
             out["readable"] = False             # damaged (or not ours): counts unknown
         finally:
@@ -156,8 +166,12 @@ def health(root=None):
     workspace, and must never run the user's own install), or when something
     crashed in the last 7 days (including a run that ended without closing,
     which the next start records as a crash)."""
+    # action_required and held_overdue (#111 C6): counts of meetings, not app
+    # faults, so they leave healthy alone; null when not counted (for
+    # example run as SYSTEM), never a false "no backlog".
     out = {"version": "?", "workspace": "unreadable", "running": False,
-           "last_run": "clean", "crashes_7d": 0, "schema": None}
+           "last_run": "clean", "crashes_7d": 0, "schema": None,
+           "action_required": None, "held_overdue": None}
     try:
         _health(out, root)
     except Exception:                           # never a traceback (it holds folders)
@@ -206,6 +220,8 @@ def _health(out, root):
     elif counts["integrity"] == "failed":
         out["workspace"] = "damaged"            # the last database check found damage
     out["schema"] = counts["schema"]
+    out["action_required"] = counts["action_required"]
+    out["held_overdue"] = counts["held_overdue"]
 
 
 def _app_running(name=None):

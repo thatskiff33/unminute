@@ -8,6 +8,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -212,6 +213,55 @@ class MeetingListTests(unittest.TestCase):
             with self.ws.store.tx() as db:            # with their keys (#111 C2b-2)
                 for m in mids:
                     self.ws.store.delete_meeting_row(db, m)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class ReminderQueryTests(unittest.TestCase):
+    """reminders(), which the page asks for with the list, makes the same
+    number of statements for 1 meeting as for 200, the retention reminders
+    included (#111 C6)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                            allow_test_engines=True,
+                            policy_reader=lambda: ({"ActionRequiredDays": 14}, ()),
+                            protector=keyprotect.TestProtector())
+
+    def tearDown(self):
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def statements(self):
+        seen = []
+        self.ws.store.db.set_trace_callback(seen.append)
+        try:
+            r = self.ws.reminders()
+        finally:
+            self.ws.store.db.set_trace_callback(None)
+        return len(seen), r
+
+    def add(self, n):
+        store, then = self.ws.store, time.time() - 40 * 86400
+        mids = [store.create_meeting(f"Synthetic {i}") for i in range(n)]
+        with store.tx() as db:
+            db.executemany("UPDATE meetings SET created_at = ? WHERE id = ?",
+                           [(then, m) for m in mids])
+            db.executemany("INSERT INTO cleanup_jobs (id, meeting_id, phase, state, intent_at) "
+                           "VALUES (?, ?, 'audio', 'failed', ?)",
+                           [(f"j{m}", m, then) for m in mids[::2]])
+        for m in mids[1::3]:
+            store.add_hold(f"h{m}", m, "audio", "Synthetic reason", then)
+
+    def test_the_same_statements_for_1_and_200_meetings(self):
+        self.add(1)
+        one, r = self.statements()
+        self.assertEqual(len(r["retention"]), 1)
+        self.add(199)
+        many, r = self.statements()
+        self.assertGreater(len(r["retention"]), 100)
+        self.assertEqual(many, one)
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
