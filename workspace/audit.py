@@ -586,15 +586,21 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None)
     file, from the oldest seq the file still holds, whose seq the file does
     not have, including any past its last record), mismatched (same seq,
     another line hash: an edited or rebuilt chain), unmatched (entries that
-    do not parse: someone else wrote them under the source name); and,
-    without making it differ, other_chains (well-formed entries naming a
-    chain the file does not have: another workspace's, other devices' in an
-    exported file, or an earlier chain whose segments were all dropped; read
-    it with verify's result and starts) and other_accounts. result "match",
-    "differs", "no_log" (no entry names a chain in the file) or "unreadable".
-    Counts only: no line, id or SID."""
+    do not parse: someone else wrote them under the source name);
+    other_chains (well-formed entries naming a chain the file does not
+    have) and other_accounts. With sid, other_chains are the user's own
+    entries, so they also count as unexplained_chains, which make it differ
+    (review round 2: a deleted audit folder, or one replaced by a fresh
+    first_use chain), unless the file holds a chain_start whose previous is
+    "missing" or "unreadable" (the app recorded that the history before it
+    was lost, which verify reports in starts). Without sid (an exported
+    file, which may hold other devices' chains) other_chains never make it
+    differ: read them with verify's starts. result "match", "differs",
+    "no_log" (no entry names a chain in the file, and none is unexplained)
+    or "unreadable". Counts only: no line, id or SID."""
     out = {"result": "unreadable", "entries": 0, "missing_in_log": 0, "missing_in_file": 0,
-           "mismatched": 0, "unmatched": 0, "other_chains": 0, "other_accounts": 0}
+           "mismatched": 0, "unmatched": 0, "other_chains": 0, "unexplained_chains": 0,
+           "other_accounts": 0}
     try:
         text = (read or read_event_log)(source, provider)
         entries, out["other_accounts"] = _entries(text, provider, sid)
@@ -604,7 +610,7 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None)
     out["entries"] = len(entries)
     if not entries:
         return {**out, "result": "no_log"}
-    lines, gaps, order = {}, {}, []
+    lines, gaps, order, lost = {}, {}, [], False
     for _, records, _ in scanned:
         for record, line in records:
             if record is None:
@@ -614,6 +620,8 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None)
             if record["kind"] == "mirror_gap":
                 gaps.setdefault(record["chain"], []).append(
                     (record["first_seq"], record["last_seq"]))
+            elif record["kind"] == "chain_start" and record["previous"] != "first_use":
+                lost = True                       # the app recorded the history as lost
     logged, known = set(), False
     for entry in entries:
         if entry is None:
@@ -621,6 +629,8 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None)
             continue
         if entry[0] not in lines:
             out["other_chains"] += 1
+            if sid is not None and not lost:
+                out["unexplained_chains"] += 1    # the user's own entries of another chain
             continue
         known = True
         chain, seq, _, sha = entry
@@ -637,10 +647,10 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None, sid=None)
         if (chain, seq) not in logged and not any(
                 a <= seq <= b for a, b in gaps.get(chain, ())):
             out["missing_in_log"] += 1
-    if not known and not out["unmatched"]:
+    if not known and not out["unmatched"] and not out["unexplained_chains"]:
         return {**out, "result": "no_log"}            # no entry of this file's chains
     differs = any(out[k] for k in ("missing_in_log", "missing_in_file", "mismatched",
-                                   "unmatched"))
+                                   "unmatched", "unexplained_chains"))
     return {**out, "result": "differs" if differs else "match"}
 
 

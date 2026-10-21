@@ -732,6 +732,72 @@ class CompareTests(Base):
         r = audit.compare_event_log(self.folder, read=lambda s, p: xml)   # an exported file
         self.assertEqual((r["result"], r["other_accounts"], r["unmatched"]), ("differs", 0, 2))
 
+    def replace_with_new_chain(self, previous):
+        """Delete the folder and start a fresh chain (`previous` its start),
+        then let the app write one mirrored record that continues it (the
+        round 2 reviewer's probe). Returns the Event Log texts: the real
+        chain's and the new record's."""
+        shutil.rmtree(self.folder)
+        if previous == "first_use":
+            forged = self.log(new_workspace=True)     # made by hand, never mirrored
+            forged.record("app_start", version=None, schema=1)
+            forged.close()
+        m2 = FakeMirror()                             # missing: the app's own restart
+        app = self.log(mirror=m2)
+        app.record("app_start", version=None, schema=2)
+        app.close()
+        self.assertEqual(audit.verify(self.folder)["starts"][previous], 1)
+        return self.texts + [e[2] for e in m2.sent]
+
+    def compare_mine(self, texts, theirs=()):
+        """The local log, filtered by the user's SID (as --verify-audit does)."""
+        mine, other = "S-1-5-21-1-2-3-1001", "S-1-5-21-1-2-3-1002"
+        xml = event_xml(texts, sid=mine)
+        if theirs:
+            xml = xml[:-len("</Events>")] + event_xml(theirs, sid=other)[len("<Events>"):]
+        return audit.compare_event_log(self.folder, read=lambda s, p: xml, sid=mine)
+
+    def test_a_replaced_log_with_a_first_use_chain_differs(self):
+        """Round 2 finding: deleting audit\\ and starting a fresh first_use
+        chain must not get past the local comparison. The user's own entries
+        of a chain the file does not have make it differ, counted apart."""
+        texts = self.replace_with_new_chain("first_use")
+        self.assertEqual(audit.verify(self.folder)["result"], "ok")
+        r = self.compare_mine(texts)
+        self.assertEqual(r["result"], "differs", r)
+        self.assertEqual((r["result"], r["unexplained_chains"], r["other_chains"],
+                          r["missing_in_log"], r["mismatched"]), ("differs", 11, 11, 0, 0), r)
+
+    def test_a_deleted_log_with_nothing_since_differs(self):
+        shutil.rmtree(self.folder)
+        r = self.compare_mine(self.texts)
+        self.assertEqual(r["result"], "differs", r)
+        self.assertEqual((r["result"], r["unexplained_chains"]), ("differs", 11), r)
+
+    def test_a_chain_restarted_for_a_recorded_reason_does_not_differ(self):
+        """The app's own restart after the folder went missing records why
+        (chain_start previous=missing, which verify reports in starts): the
+        earlier chain's entries are other_chains, not a difference."""
+        texts = self.replace_with_new_chain("missing")
+        r = self.compare_mine(texts)
+        self.assertEqual((r["result"], r["unexplained_chains"], r["other_chains"]),
+                         ("match", 0, 11), r)
+
+    def test_another_accounts_chains_stay_excluded(self):
+        other = (f"Unminute audit v1 chain={'f' * 32} seq=1 kind=chain_start "
+                 f"sha256={'0' * 64}")
+        r = self.compare_mine(self.texts, theirs=[other])
+        self.assertEqual((r["result"], r["other_accounts"], r["other_chains"],
+                          r["unexplained_chains"]), ("match", 1, 0, 0), r)
+
+    def test_an_exported_file_reports_other_chains_without_differing(self):
+        """Without a SID (an exported file, which may hold other devices'
+        chains) another chain is reported, never a difference."""
+        texts = self.replace_with_new_chain("first_use")
+        r = self.compare(texts)
+        self.assertEqual((r["result"], r["other_chains"], r["unexplained_chains"]),
+                         ("match", 11, 0), r)
+
     def test_a_missing_entry(self):
         r = self.compare(self.texts[:4] + self.texts[5:])
         self.assertEqual((r["result"], r["missing_in_log"]), ("differs", 1))
