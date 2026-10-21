@@ -64,6 +64,9 @@ _.encoding              # a text stream's protocol (workspace/diag.py)
 _.errors
 _.writable
 time_info               # sounddevice callback signature (workspace/recorder.py)
+_.wFormatTag            # WAVEFORMATEX fields Windows reads (workspace/loopback.py)
+_.nAvgBytesPerSec
+_.cbSize
 context                 # ctypes power-notification callback signature (workspace/power.py)
 
 # Test helpers, named as such where they are defined: tests and tools call them.
@@ -73,3 +76,5 @@ _.idle_wakeups          # workspace/worker.py
 get_priority            # workspace/resources.py
 resume_pending          # workspace/cleanup.py
 uninstall               # workspace/offline_guard.py
+list_outputs            # workspace/loopback.py: tools/capture_probe.py (and Settings, #108)
+probe                   # workspace/loopback.py: tools/capture_probe.py
