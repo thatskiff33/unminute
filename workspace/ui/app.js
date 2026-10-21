@@ -2270,18 +2270,44 @@ function restartMeter(v, clock) { v.last = 0; clock.prev = 0; clock.count = 0; }
 function easeShare(rate, dt) { return 1 - Math.pow(1 - rate, dt * EASE_REF_HZ); }
 function ease(cur, to, rate, dt) { return cur + (to - cur) * easeShare(rate, dt); }
 
+// -- drawing each frame cheaply (#216) --
+// The canvas keeps its real pixel size (CSS size times the pixel ratio), set
+// only when that changes: a ResizeObserver marks the size stale, so the layout
+// is read once after a resize rather than on every frame. Static shapes (the
+// centre line, the flow curves' taper) are worked out once per size, and the
+// frame itself allocates nothing.
+const meter = { canvas: null, level: null, card: null, g: null, observer: null,
+                w: 0, h: 0, dpr: 0, stale: true };
+
+function meterElements() {
+  if (!meter.canvas) {
+    meter.canvas = $("rec-canvas"); meter.level = $("rec-level"); meter.card = $("rec-card");
+    meter.observer = new ResizeObserver(() => { meter.stale = true; });
+    meter.observer.observe(meter.canvas);
+  }
+  return meter;
+}
+
+// The canvas at its real pixel size; the layout is read only when it is stale.
+function fitMeter(c, dpr) {
+  if (!meter.stale && dpr === meter.dpr) return;
+  meter.stale = false; meter.dpr = dpr;
+  meter.w = c.clientWidth; meter.h = c.clientHeight;
+  const pw = Math.round(meter.w * dpr), ph = Math.round(meter.h * dpr);
+  if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
+}
+
 function drawViz(t) {
-  const c = $("rec-canvas");
-  if ($("rec-level").hidden || $("rec-card").hidden || state.view !== "meetings") { viz.raf = 0; return; }
+  const m = meterElements(), c = m.canvas;
+  if (m.level.hidden || m.card.hidden || state.view !== "meetings") { viz.raf = 0; return; }
   viz.raf = requestAnimationFrame(drawViz);
   if (!meterFrame(meterClock, t)) return;
   const dt = meterDt(viz, t);
   const dpr = window.devicePixelRatio || 1;
-  const w = c.clientWidth, h = c.clientHeight;
-  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
-    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
-  }
-  const g = c.getContext("2d");
+  fitMeter(c, dpr);
+  const w = m.w, h = m.h;
+  if (!w || !h) return;                               // not laid out yet
+  const g = m.g || (m.g = c.getContext("2d"));
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
   if (!vizColours.accent) readVizColours();
@@ -2296,69 +2322,151 @@ function drawViz(t) {
 
 function line(g, colour, width) { g.strokeStyle = colour; g.lineWidth = width; g.lineJoin = "round"; g.lineCap = "round"; }
 
+// The centre line, as a shape kept until the size changes.
+const baseline = { w: -1, mid: -1, path: null };
+function drawBaseline(g, w, mid, quiet) {
+  if (baseline.w !== w || baseline.mid !== mid) {
+    baseline.w = w; baseline.mid = mid;
+    baseline.path = new Path2D(); baseline.path.moveTo(0, mid); baseline.path.lineTo(w, mid);
+  }
+  line(g, quiet, 1);
+  g.stroke(baseline.path);
+}
+
+// The flow curves: three sine ripples under a taper, so the ends rest on the line.
+//   y = mid + amp * size * taper(u) * sin(u * k * freq * pi + phase * speed),
+//   u = -2..2 across the card, taper(u) = (2 / (2 + u^4))^2.
+// Drawn as cubic curves through one point every FLOW_STEP_PX, each with the
+// curve's own slope there. That follows the exact shape more closely than the
+// straight lines every 2 pixels it replaces: within a hundredth of a pixel on
+// a card 600 pixels wide or more (the lines were up to a quarter of a pixel off).
+const FLOW_STEP_PX = 4;
+const FLOW_CURVES = [[1, 1, 1, 0.95], [0.75, 1.35, 0.7, 0.55], [1.3, 0.7, 0.5, 0.35]];
+const flowShape = { w: 0, n: 0, x: null, u: null, taper: null, slope: null };
+
+// The points across a card w wide, and the taper and its slope at each, kept
+// until the width changes. The curve ends where it always has: the last even
+// pixel (it was drawn every 2 pixels from 0).
+function flowPoints(w) {
+  if (flowShape.w === w && flowShape.x) return flowShape;
+  const end = Math.floor(w / 2) * 2, n = Math.max(1, Math.ceil(end / FLOW_STEP_PX));
+  flowShape.w = w; flowShape.n = n;
+  flowShape.x = new Float64Array(n + 1); flowShape.u = new Float64Array(n + 1);
+  flowShape.taper = new Float64Array(n + 1); flowShape.slope = new Float64Array(n + 1);
+  for (let i = 0; i <= n; i++) {
+    const x = i === n ? end : i * FLOW_STEP_PX, u = (x / w) * 4 - 2, q = 2 + Math.pow(u, 4);
+    flowShape.x[i] = x; flowShape.u[i] = u;
+    flowShape.taper[i] = 4 / (q * q);
+    flowShape.slope[i] = (-32 * u * u * u) / (q * q * q);   // d taper / du
+  }
+  return flowShape;
+}
+
+// One flow curve as a path: y and its slope at each point, joined by cubics.
+function flowPath(g, p, mid, a, kk, ph, w) {
+  const du = 4 / w;                                   // u per pixel
+  let x0 = 0, y0 = 0, d0 = 0;
+  for (let i = 0; i <= p.n; i++) {
+    const x = p.x[i], th = p.u[i] * kk + ph, s = Math.sin(th);
+    const y = mid + a * p.taper[i] * s;
+    const d = a * (p.slope[i] * s + p.taper[i] * kk * Math.cos(th)) * du;   // dy/dx
+    if (i === 0) g.moveTo(x, y);
+    else {
+      const third = (x - x0) / 3;
+      g.bezierCurveTo(x0 + third, y0 + d0 * third, x - third, y - d * third, x, y);
+    }
+    x0 = x; y0 = y; d0 = d;
+  }
+}
+
 function drawFlow(g, w, h, mid, tg, dt, accent, quiet) {
   // Ripple count follows the voice's pitch (80 to 400 Hz: 1.5 to 4.5 waves).
   const pitch = tg && tg.pitch_hz ? tg.pitch_hz : 0;
   if (pitch) viz.k = ease(viz.k, 1.5 + Math.max(0, Math.min(1, (pitch - 80) / 320)) * 3, 0.08, dt);
   if (!reducedMotion.matches) viz.phase += dt * (1.2 + viz.amp * 7);
   const amp = Math.max(0.04, viz.amp) * (mid - 3);
-  const curves = [[1, 1, 1, 0.95], [0.75, 1.35, 0.7, 0.55], [1.3, 0.7, 0.5, 0.35]];
-  for (const [speed, freq, size, alpha] of curves) {
+  const p = flowPoints(w);
+  for (let i = 0; i < FLOW_CURVES.length; i++) {
+    const [speed, freq, size, alpha] = FLOW_CURVES[i];
     g.beginPath();
-    for (let x = 0; x <= w; x += 2) {
-      const u = (x / w) * 4 - 2;                       // -2..2 across the card
-      const taper = Math.pow(2 / (2 + Math.pow(u, 4)), 2);   // the ends rest on the line
-      const y = mid + amp * size * taper * Math.sin(u * viz.k * freq * Math.PI + viz.phase * speed);
-      if (x === 0) g.moveTo(x, y); else g.lineTo(x, y);
-    }
+    flowPath(g, p, mid, amp * size, viz.k * freq * Math.PI, viz.phase * speed, w);
     g.globalAlpha = alpha;
     line(g, accent, size === 1 ? 2.5 : 2);
     g.stroke();
   }
   g.globalAlpha = 1;
-  if (viz.amp < 0.02) { g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke(); }
+  if (viz.amp < 0.02) drawBaseline(g, w, mid, quiet);
+}
+
+// Half the spectrum's outline (sign 1 above the line, -1 below), through the
+// mid-points between bands.
+function spectrumHalf(g, w, mid, sign) {
+  const b = viz.bands, n = b.length, top = mid - 3;
+  g.moveTo(0, mid);
+  for (let i = 0; i < n - 1; i++) {
+    const x0 = (i / (n - 1)) * w, x1 = ((i + 1) / (n - 1)) * w;
+    const y0 = b[i] * top, y1 = b[i + 1] * top;
+    g.quadraticCurveTo(x0, mid - sign * y0, (x0 + x1) / 2, mid - sign * (y0 + y1) / 2);
+  }
+  g.lineTo(w, mid);
+}
+
+// The latest block's bands on 0..1, worked out once per block (ten a second).
+const spectrumTarget = { from: null, bands: [] };
+function spectrumBands(tg) {
+  if (!tg) return null;
+  if (spectrumTarget.from !== tg) {
+    spectrumTarget.from = tg;
+    const out = spectrumTarget.bands;
+    out.length = tg.bands.length;
+    for (let i = 0; i < out.length; i++) out[i] = Math.max(0, Math.min(1, (tg.bands[i] + 85) / 70));
+  }
+  return spectrumTarget.bands;
 }
 
 function drawSpectrum(g, w, h, mid, tg, dt, accent, quiet) {
-  const target = tg ? tg.bands.map((db) => Math.max(0, Math.min(1, (db + 85) / 70))) : [];
-  const n = target.length || viz.bands.length || 40;
+  const target = spectrumBands(tg);
+  const n = (target && target.length) || viz.bands.length || 40;
   if (viz.bands.length !== n) viz.bands = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) viz.bands[i] = ease(viz.bands[i], target[i] || 0, 0.25, dt);
-  const pts = viz.bands.map((v, i) => [(i / (n - 1)) * w, v * (mid - 3)]);
-  const shape = (sign) => {
-    g.moveTo(0, mid);
-    for (let i = 0; i < pts.length - 1; i++) {
-      const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
-      g.quadraticCurveTo(x0, mid - sign * y0, (x0 + x1) / 2, mid - sign * (y0 + y1) / 2);
-    }
-    g.lineTo(w, mid);
-  };
-  g.beginPath(); shape(1); shape(-1);
+  for (let i = 0; i < n; i++) viz.bands[i] = ease(viz.bands[i], (target && target[i]) || 0, 0.25, dt);
+  g.beginPath(); spectrumHalf(g, w, mid, 1); spectrumHalf(g, w, mid, -1);
   g.globalAlpha = 0.35; g.fillStyle = accent; g.fill();
   g.globalAlpha = 1;
-  g.beginPath(); shape(1); line(g, accent, 2); g.stroke();
-  g.beginPath(); shape(-1); line(g, accent, 2); g.stroke();
-  g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke();
+  g.beginPath(); spectrumHalf(g, w, mid, 1); line(g, accent, 2); g.stroke();
+  g.beginPath(); spectrumHalf(g, w, mid, -1); line(g, accent, 2); g.stroke();
+  drawBaseline(g, w, mid, quiet);
+}
+
+// The latest block's loudest sample, worked out once per block.
+const wavePeak = { from: null, peak: 0 };
+function waveTargetPeak(tg) {
+  if (!tg) return 0;
+  if (wavePeak.from !== tg) {
+    wavePeak.from = tg;
+    let peak = 0;
+    for (let i = 0; i < tg.wave.length; i++) peak = Math.max(peak, Math.abs(tg.wave[i]));
+    wavePeak.peak = peak;
+  }
+  return wavePeak.peak;
 }
 
 function drawWave(g, w, h, mid, tg, dt, accent, quiet) {
-  const target = tg ? tg.wave : [];
-  const n = target.length || viz.wave.length || 128;
+  const target = tg ? tg.wave : null;
+  const n = (target && target.length) || viz.wave.length || 128;
   if (viz.wave.length !== n) viz.wave = new Array(n).fill(0);
   // Scale so speech fills most of the height, without blowing up silence.
-  const peak = target.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  const peak = waveTargetPeak(tg);
   if (peak > 0.002) viz.gain = ease(viz.gain, Math.min(40, 0.85 / peak), 0.1, dt);
-  for (let i = 0; i < n; i++) viz.wave[i] = ease(viz.wave[i], target[i] || 0, 0.35, dt);
+  for (let i = 0; i < n; i++) viz.wave[i] = ease(viz.wave[i], (target && target[i]) || 0, 0.35, dt);
+  const top = mid - 3, gain = viz.gain;
   g.beginPath();
+  let px = 0, py = 0;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * w;
-    const y = mid - Math.max(-1, Math.min(1, viz.wave[i] * viz.gain)) * (mid - 3);
+    const y = mid - Math.max(-1, Math.min(1, viz.wave[i] * gain)) * top;
     if (i === 0) g.moveTo(x, y);
-    else {
-      const px = ((i - 1) / (n - 1)) * w;
-      const py = mid - Math.max(-1, Math.min(1, viz.wave[i - 1] * viz.gain)) * (mid - 3);
-      g.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2);
-    }
+    else g.quadraticCurveTo(px, py, (px + x) / 2, (py + y) / 2);
+    px = x; py = y;
   }
   line(g, viz.amp < 0.02 ? quiet : accent, 2);
   g.stroke();
