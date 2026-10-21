@@ -995,6 +995,98 @@ class RedirectedDataFolderTests(unittest.TestCase):
                 self.assertFalse(os.path.lexists(gone))          # nothing made there
 
 
+class _Tripwire:
+    """A stand-in Workspace for the bridge gate (#111 C4a): touching anything
+    but what make_api sets up fails the test."""
+    _allowed = ("locked", "log", "recording_indicator")
+
+    def __init__(self, locked):
+        object.__setattr__(self, "locked", locked)
+        object.__setattr__(self, "log", None)
+        object.__setattr__(self, "touched", [])
+
+    def __getattr__(self, name):
+        self.touched.append(name)
+        raise AssertionError(f"the Workspace was called: {name}")
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class LockedBridgeTests(unittest.TestCase):
+    """While locked, the page reaches only LOCKED_METHODS; every other bridge
+    method refuses with the fixed text without calling the Workspace (I3)."""
+
+    def call_all(self, page, names):
+        import inspect
+        out = {}
+        for name in sorted(names):
+            method = getattr(page, name)
+            # Arguments of the right count; their values never matter here.
+            params = [p for p in inspect.signature(method).parameters.values()
+                      if p.default is inspect.Parameter.empty]
+            try:
+                out[name] = method(*([None] * len(params)))
+            except AssertionError as exc:
+                out[name] = exc
+        return out
+
+    def test_every_content_method_is_refused_while_locked(self):
+        from workspace import api
+        from workspace.app import LOCKED_TEXT
+        self.assertLessEqual(api.LOCKED_METHODS, api.API_METHODS)
+        gated = api.API_METHODS - api.LOCKED_METHODS - {"pywebviewEventHandler"}
+        self.assertIn("meetings", gated)
+        self.assertIn("continue_despite_damage", gated)     # never offered while locked
+        ws = _Tripwire(locked=RuntimeError("locked"))
+        page = api.make_api(ws)
+        results = self.call_all(page, gated)
+        self.assertEqual({n: {"ok": False, "error": LOCKED_TEXT} for n in gated}, results)
+        self.assertEqual([], ws.touched)
+        # Unlocked, the same calls reach the Workspace: the gate refused them.
+        ws = _Tripwire(locked=None)
+        results = self.call_all(api.make_api(ws), gated)
+        reached = {n for n, r in results.items()
+                   if isinstance(r, AssertionError) or r.get("error") != LOCKED_TEXT}
+        self.assertEqual(gated, reached)
+
+    def test_the_page_keeps_the_signatures_pywebview_reads(self):
+        import inspect
+
+        from workspace import api
+        ws = _Tripwire(locked=None)
+        page = api.make_api(ws)
+        for name in api.API_METHODS - {"pywebviewEventHandler"}:
+            fn = getattr(type(page), name)
+            # pywebview builds the page's stubs from getfullargspec.
+            self.assertNotIn("args", inspect.getfullargspec(fn).args, name)
+        self.assertEqual(["self", "mid", "start", "count", "version"],
+                         inspect.getfullargspec(type(page).transcript).args)
+
+    @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
+    def test_a_drop_imports_nothing_while_locked(self):
+        from workspace import api
+
+        class Events:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+
+        window = mock.Mock()
+        window._drop_enabled = False
+        window.dom.document.events.dragover = Events()
+        window.dom.document.events.drop = drops = Events()
+        ws = mock.Mock(locked=RuntimeError("locked"))
+        api.enable_drop(window, ws)
+        event = {"dataTransfer": {"files": [{"pywebviewFullPath": "C:\\x\\a.wav"}]}}
+        drops.handlers[0].callback(event)
+        ws.import_paths.assert_not_called()
+        ws.locked = None
+        drops.handlers[0].callback(event)
+        ws.import_paths.assert_called_once_with(["C:\\x\\a.wav"])
+
+
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class StoreTempTests(unittest.TestCase):
     def test_temporary_data_stays_in_memory(self):

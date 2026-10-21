@@ -94,10 +94,29 @@ RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
 
 MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if you need it."
+# Every request refused while the workspace is locked (#111 C4a): the bridge
+# gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
+LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
+               "Ask your IT team.")
 
 
 class WorkspaceError(ValueError):
     """A refused request. The message is safe to show in the UI."""
+
+
+def _key_line(locked, code):
+    """Copy diagnostics' line for the workspace key (#111 C4a): "Key: ok", or
+    the reason, the Windows error number in decimal and hexadecimal, and the
+    incident code. Fixed words, numbers and codes only (P3)."""
+    if locked is None:
+        return "Key: ok"
+    parts = [locked.reason if locked.reason in diag.KEY_REASONS else "?"]
+    win = locked.code
+    if isinstance(win, int) and not isinstance(win, bool) and -2**31 <= win < 2**32:
+        parts.append(f"Windows error {win} = 0x{win & 0xFFFFFFFF:08X}")
+    if code:
+        parts.append(f"code {code}")
+    return f"Key: locked ({', '.join(parts)})"
 
 
 def _model_note(name, state, downloads_allowed=True):
@@ -287,7 +306,10 @@ class Workspace:
         protector, on_unavailable: passed to the Store (#111 C2b-2): the key
         protector (Windows Data Protection unless given; tests give their
         own, which the store refuses for the real workspace) and what
-        happens when the key cannot be used ("raise" until C4a).
+        happens when the key cannot be used: "raise", or "lock" (the app's
+        own start, #111 C4a), when the workspace opens locked (self.locked):
+        nothing is read but counts, nothing is written, and every job,
+        import, scan, recording and the start-up upkeep waits.
         opener: tests and the UI check tools only; called with the assistant's
         address instead of asking Windows to open it (copy_and_open_assistant)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
@@ -310,13 +332,19 @@ class Workspace:
         self._check_database(check_integrity)
         held = self._integrity["state"] == "failed"
         self._integrity_ok = threading.Event()      # set: work may start
-        if not held:
-            self._integrity_ok.set()
         # A damaged database opens without marking interrupted work, and the
         # start-up upkeep below waits too: on damaged pages it could delete.
         self.store = Store(self.root / "workspace.db", housekeeping=not held,
                            protector=protector, on_unavailable=on_unavailable)
         self.store.log = self.log         # damaged values are recorded here (content-free)
+        # Locked (#111 C4a): the key cannot be used, so nothing can be opened
+        # or written. Work is held as for damage, but nothing releases it in
+        # this run (no Continue anyway): the next start tries the key again.
+        self.locked = self.store.locked
+        self._lock_code = None            # the incident code of a locked start
+        self._record_keys()
+        if not held and self.locked is None:
+            self._integrity_ok.set()
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         # Handoff templates are built at their first use, not here (#111 C2c):
@@ -383,10 +411,24 @@ class Workspace:
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
-        if not held:
+        if not held and self.locked is None:
             self._upkeep()
         if start:
             self.start()
+
+    def _record_keys(self):
+        """The key's state at this start, for --status, --health and Copy
+        diagnostics (logs\\keys.json; they never unlock the key themselves),
+        and a locked start in the log with an incident code. Reason, Windows
+        error number and code only (P3)."""
+        if self.locked is None:
+            diag.record_keys(self.log.folder, "ok")
+            return
+        self._lock_code = diag.new_code()
+        self.log.write("key_unavailable", code=self._lock_code, reason=self.locked.reason,
+                       winerror=self.locked.code)
+        diag.record_keys(self.log.folder, "locked", self.locked.reason, self.locked.code,
+                         self._lock_code)
 
     def _check_database(self, check_integrity):
         """The database check (R11), before the store opens: after the app
@@ -445,6 +487,10 @@ class Workspace:
         threading.Thread(target=gpu.detected, daemon=True, name="gpu-detect").start()
         # Recordings left by a crash, power loss or a failed import (#30). One the
         # app never stopped waits for the user (Keep and transcribe, or Delete).
+        # Not while locked (#111 C4a): they wait, untouched, for a start that
+        # can import them.
+        if self.locked is not None:
+            return
         for folder, _ in recorder.unfinished(self.recordings):   # also half-removed ones
             self._imports.put(("__recovered__", str(folder)))
 
@@ -506,9 +552,17 @@ class Workspace:
     def _allowed(self, name):
         return bool(self.policy.current().get(name))
 
+    def _not_locked(self):
+        """Refuse a request that would read or write content while the
+        workspace is locked (#111 C4a). The bridge gate refuses first; this
+        covers the drop handler and any other caller."""
+        if self.locked is not None:
+            raise WorkspaceError(LOCKED_TEXT)
+
     def check_can_record(self, device, name=None):
         """Refuse now what start_recording would refuse, before anyone is asked
         (the microphone included)."""
+        self._not_locked()
         self._need_microphone()
         if self._capturing():
             raise WorkspaceError("A recording is already running.")
@@ -626,7 +680,9 @@ class Workspace:
     def import_paths(self, paths):
         """Queue recordings chosen in the file dialog or dropped on the window.
         Paths come from the operating system, never from page script, and are
-        validated again here. Returns the number accepted."""
+        validated again here. Returns the number accepted. Refused while
+        locked (#111 C4a)."""
+        self._not_locked()
         accepted, refused = 0, []
         network = self._allowed("AllowNetworkSources")
         for p in list(paths)[:50]:
@@ -749,7 +805,8 @@ class Workspace:
     def start_recording(self, device, name=None, consent=None):
         """consent: the record of the confirmation (workspace.consent),
         kept with the recording. The bridge asks for it; it is required unless
-        policy turns the confirmation off."""
+        policy turns the confirmation off. Refused while locked (#111 C4a)."""
+        self._not_locked()
         self._need_microphone()
         if consent is not None and not recording_consent.valid_recording_record(consent):
             raise WorkspaceError("The recording confirmation is not valid.")
@@ -885,6 +942,10 @@ class Workspace:
 
     def recording_status(self):
         rec = self._recording
+        if self.locked is not None:              # nothing records, and no report is shown
+            return {"enabled": False, "display": self.settings["recording_display"],
+                    "lid_override": False, "lid_refused": None, "recording": None,
+                    "reports": []}
         return {"enabled": (self.settings["microphone"]
                             and self._allowed("AllowMicrophoneRecording")),
                 "display": self.settings["recording_display"],
@@ -1211,6 +1272,7 @@ class Workspace:
         intake.remove_folder(self.store, _hold_id(fid))
 
     def scan_now(self):
+        self._not_locked()
         self._scan_wake.set()
 
     # -- processing thread ------------------------------------------------------------
@@ -2182,12 +2244,26 @@ class Workspace:
                    for name in p.summary()["managed"] if name in policy.SPEC]
         lines.append("Managed policy: " + (", ".join(managed) if managed else "none")
                      + ("; unreadable" if p.unreadable else ""))
-        counts = self.store._one(
-            "SELECT (SELECT COUNT(*) FROM meetings) AS meetings, "
-            "(SELECT COUNT(*) FROM holds WHERE released_at IS NULL) AS holds, "
-            "(SELECT COUNT(*) FROM cleanup_jobs) AS cleanup, "
-            "(SELECT COUNT(*) FROM watched_folders) AS folders")
-        lines.append("Workspace: " + ", ".join(f"{k}={counts[k]}" for k in counts.keys()))
+        # The key's state (#111 C4a), with the codes IT needs while locked.
+        lines.append(_key_line(self.locked, self._lock_code))
+        try:
+            counts = self.store._one(
+                "SELECT (SELECT COUNT(*) FROM meetings) AS meetings, "
+                "(SELECT COUNT(*) FROM holds WHERE released_at IS NULL) AS holds, "
+                "(SELECT COUNT(*) FROM cleanup_jobs) AS cleanup, "
+                "(SELECT COUNT(*) FROM watched_folders) AS folders, "
+                "(SELECT COUNT(*) FROM cleanup_jobs WHERE state != 'done') AS unfinished")
+        except StoreError:                    # a locked database that is not this version's
+            counts = None
+        if counts is None:
+            lines.append("Workspace: ?")
+        else:
+            lines.append("Workspace: " + ", ".join(f"{k}={counts[k]}" for k in
+                                                   ("meetings", "holds", "cleanup", "folders")))
+            # Plain counts IT needs before renaming a locked workspace (#111 C4a):
+            # meetings already confirmed for removal stay in the renamed folder.
+            lines.append(f"Active holds: {counts['holds']}")
+            lines.append(f"Cleanup confirmed and not finished: {counts['unfinished']}")
         try:
             cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
             lines.append("Models: " + ", ".join(f"{word(c['name'])}={word(c['state'])}"
@@ -2225,7 +2301,10 @@ class Workspace:
     def continue_despite_damage(self):
         """Continue anyway: the user lets work start on a damaged database,
         and the start-up upkeep that waited runs now. The next start checks
-        again (and holds again while the damage stays)."""
+        again (and holds again while the damage stays). Does nothing while
+        locked (#111 C4a): continuing could neither read nor write content."""
+        if self.locked is not None:
+            return
         with self._lock:
             if self._integrity["state"] != "failed":
                 return
@@ -2254,11 +2333,27 @@ class Workspace:
         if held:                              # nothing runs: say why, once (R11)
             message = "On hold: the workspace database is damaged" + (
                 f" · {waiting} import{'s' if waiting > 1 else ''} waiting" if waiting else "")
+        locked = self._locked_notice()
+        if locked is not None:                # the locked screen states the damage too
+            message = "Locked"
         return {"busy": self._busy[1] if self._busy else None, "message": message,
                 "mode": self.settings["mode"],
                 "import_errors": list(self._import_errors),
                 "importing": 0 if held else waiting,
-                "changes": self._changes(), "integrity": self._integrity_notice()}
+                "changes": self._changes(),
+                "integrity": None if locked is not None else self._integrity_notice(),
+                "locked": locked}
+
+    def _locked_notice(self):
+        """For the page (#111 C4a): why the workspace is locked, the incident
+        code, the Windows error number and the code of any damage the
+        database check found; None when it is not locked. Fixed words,
+        numbers and codes only."""
+        if self.locked is None:
+            return None
+        damage = self._integrity_notice()
+        return {"reason": self.locked.reason, "code": self._lock_code,
+                "win_error": self.locked.code, "damage": damage["code"] if damage else None}
 
     def _changes(self):
         """A number that differs whenever the Meetings list or the reminders

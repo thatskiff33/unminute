@@ -424,7 +424,8 @@ INVARIANT_GUARDS = {
            "tests/test_safe_paths.py": ["FileValidationTests"]},
     "I3": {"tests/test_consistency.py": ["BridgeNameTests"],
            "tests/test_hardening.py": ["test_refuses_the_internet_explorer_fallback",
-                                       "test_the_page_opens_no_link_itself"]},
+                                       "test_the_page_opens_no_link_itself",
+                                       "test_every_content_method_is_refused_while_locked"]},
     "D1": {"tests/test_workspace_core.py": [
         "test_crash_before_commit_resumes_without_loss_or_duplication",
         "test_generated_output_never_overwrites_edits"]},

@@ -875,12 +875,9 @@ class WorkspaceTemplatesTests(unittest.TestCase):
                     self.made.clear()
                     path = self.root / "templates.sealed"
                 before = path.read_bytes()
-                # Until C4a holds the start-up work while locked, the upkeep
-                # (which writes, and so raises) is left out here.
-                from workspace.app import Workspace
-                with mock.patch.object(Workspace, "_upkeep"):
-                    ws = self.workspace(protector=keyprotect.TestProtector(fail=True),
-                                        on_unavailable="lock")
+                # A real locked start (#111 C4a holds the start-up upkeep).
+                ws = self.workspace(protector=keyprotect.TestProtector(fail=True),
+                                    on_unavailable="lock")
                 self.assertIsNotNone(ws.store.locked)
                 with self.assertRaises(KeyUnavailable):
                     ws.handoff_templates()

@@ -171,17 +171,17 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 
 ## If Unminute cannot unlock its workspace
 
-Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute says so with a code when it starts, and closes. It does not open the workspace, change it, make a new key over it or show anything unencrypted. Your meetings are kept as they were.
+Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute opens locked: it does not read your meetings, change anything in the workspace, make a new key over it or show anything unencrypted, and processing, imports, recording and cleanup wait. Your meetings are kept as they were. Close Unminute, sign out of Windows and back in, then open Unminute again: if Windows can unlock the key by then, everything carries on, including any cleanup you had confirmed.
 
 Windows can refuse when the workspace was made by another Windows account or on another computer, after an administrator reset your password without the old one, or when your Windows profile is damaged. Settings, the model downloads and the Hugging Face token are not affected.
 
 For IT support:
 
-1. Ask for the code in the message. **Copy diagnostics** cannot be reached while the app will not open; the record with that code, in `%LOCALAPPDATA%\Unminute\workspace\logs\app.log`, holds the reason and the Windows error number only.
-2. `runtime\python.exe -m workspace --status` and the installer's check (`--gate`) still work: they read counts only and need no key.
-3. Whether Windows can still unlock the key (for example after a password reset) depends on how the laptop and account are set up, which is being checked (validation tracker #189). If it cannot, the meetings in this workspace cannot be read by anyone: rename the workspace folder (as in step 3 of [If Unminute finds damage](#if-unminute-finds-damage)) so Unminute can start a new one, and delete the renamed folder once no hold applies to anything in it.
+1. Ask the user for Help > **Copy diagnostics**, which still works while locked. Its "Key" line gives the reason, the Windows error number and a code, and it shows the number of active holds and of meetings whose cleanup was confirmed but not finished. The record with that code, in `%LOCALAPPDATA%\Unminute\workspace\logs\app.log`, holds the same reason and number only.
+2. `runtime\python.exe -m workspace --status` shows `"keys": "locked"` with `lock_reason` and `lock_code`, and `--health` reports `"workspace": "locked"`. Both read what the app recorded at its last start and never try the key. The installer's check (`--gate`) still works: it reads counts only.
+3. Whether Windows can still unlock the key (for example after a password reset) depends on how the laptop and account are set up, which is being checked (validation tracker #189). If it cannot, the meetings in this workspace cannot be read by anyone. Rename the workspace folder (as in step 3 of [If Unminute finds damage](#if-unminute-finds-damage)) so Unminute can start a new one. The renamed folder still holds every meeting, including those confirmed for cleanup that did not finish, and they become readable again if Windows later unlocks the key. Delete the renamed folder once no hold applies to anything in it. The new workspace starts with the built-in handoff templates.
 
-A later version shows a locked screen in place of the message, with these steps.
+If Windows cannot set up a key for a new workspace at all, Unminute says so with the Windows error number and a code, and closes; nothing is created. This version opens its usual window while locked, with every request refused; a later version shows a locked screen with these steps.
 
 ## If Unminute finds damage
 

@@ -9,8 +9,9 @@
 # Support options (no window):
 #   --version     the installed package version
 #   --status      workspace contents as JSON counts (meetings, holds, pending
-#                 cleanup) and the last database check; used by installers and
-#                 updates (#26). No content.
+#                 cleanup), the last database check and the key's state at the
+#                 last start (#111 C4a, never by unlocking it); used by
+#                 installers and updates (#26). No content.
 #                 If the app data location is refused: {"error": ...}, exit 1.
 #   --self-test   import every runtime dependency, check the offline guard,
 #                 check that the speaker model loader refuses a code-running
@@ -19,9 +20,10 @@
 #                 (the workspace's root key is kept that way, #111 C2b-2)
 #   --health      for an Intune Remediation detection script run as the
 #                 signed-in user (R9b): JSON with the version, whether the
-#                 workspace opens, whether the app is running, how the last run
-#                 ended and crashes in the last 7 days. Exit 0 healthy, 1 needs
-#                 attention. No content (docs/PACKAGING.md).
+#                 workspace opens (or was locked at its last start), whether the
+#                 app is running, how the last run ended and crashes in the
+#                 last 7 days. Exit 0 healthy, 1 needs attention. No content
+#                 (docs/PACKAGING.md).
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
@@ -71,7 +73,11 @@ def package_version():
 
 def status(root=None):
     """Counts only: never titles, names or text. integrity: the last
-    database check (R11), "ok", "failed" or "unchecked"."""
+    database check (R11), "ok", "failed" or "unchecked". keys: the key's
+    state at the app's last start (#111 C4a), "ok", "locked" or "unchecked",
+    read from logs/keys.json and never by unlocking the key (no DPAPI call:
+    Intune may run this as SYSTEM); lock_reason and lock_code (the Windows
+    error number) while locked."""
     import sqlite3
 
     from workspace import diag
@@ -79,10 +85,15 @@ def status(root=None):
     root = Path(root or default_root()).absolute()
     db = root / "workspace.db"
     checked = diag.integrity_state(root / "logs")
+    keys = diag.keys_state(root / "logs")
+    locked = bool(keys and keys["result"] == "locked")
     out = {"version": package_version(), "workspace": db.exists(), "meetings": 0,
            "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None,
            "integrity": checked["result"] if checked else "unchecked", "readable": True,
-           "recordings": _count_folders(root / "recordings")}   # not yet in a meeting
+           "recordings": _count_folders(root / "recordings"),   # not yet in a meeting
+           "keys": keys["result"] if keys else "unchecked",
+           "lock_reason": keys["reason"] if locked else None,
+           "lock_code": keys["winerror"] if locked else None}
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
@@ -158,7 +169,11 @@ def _health(out, root):
         out["workspace"] = "unreadable"
         return
     out["workspace"] = "ok" if counts["workspace"] else "none"   # none: never opened here
-    if counts["integrity"] == "failed":
+    if counts["workspace"] and counts["keys"] == "locked":
+        # Locked at the last start (#111 C4a), read from keys.json: this
+        # never unlocks the key. Ranks after unreadable, before damaged.
+        out["workspace"] = "locked"
+    elif counts["integrity"] == "failed":
         out["workspace"] = "damaged"            # the last database check found damage
     out["schema"] = counts["schema"]
 
@@ -383,7 +398,11 @@ def main():
     try:
         # check_integrity: after an unclean exit (this run's marker is not
         # written yet, diag.install below), the database is checked (R11).
-        ws = Workspace(cache_dir=model_cache(), check_integrity=True)
+        # on_unavailable="lock" (#111 C4a): a key Windows will not unlock
+        # opens the workspace locked (nothing read but counts, nothing
+        # written, every request refused) rather than closing. The protector
+        # is never chosen here: the store's own (Windows Data Protection).
+        ws = Workspace(cache_dir=model_cache(), check_integrity=True, on_unavailable="lock")
     except (StoreError, sqlite3.DatabaseError) as exc:
         # e.g. a workspace from a newer version, one that cannot be migrated,
         # or a damaged database: explain instead of disappearing (pythonw
@@ -534,10 +553,13 @@ def _single_instance(name=MUTEX_NAME):
 
 
 def _open_failed(exc):
-    """The message when the workspace will not open. A key Windows will not
-    unlock is said so, with a code (#111 C2b-2); a damaged database is said
-    so, with a code, and kept for --status and --health (R11); anything else
-    gives the store's own message."""
+    """The message when the workspace will not open. A key that cannot be
+    set up is said so, with the Windows error number and a code: with
+    on_unavailable="lock" (#111 C4a) a workspace with content opens locked,
+    so a KeyUnavailable that reaches here is a new or empty workspace whose
+    key Windows would not protect. A damaged database is said so, with a
+    code, and kept for --status and --health (R11); anything else gives the
+    store's own message."""
     from workspace import diag
     from workspace.store import KeyUnavailable, StoreError, default_root, quick_check_file
     try:
@@ -550,10 +572,11 @@ def _open_failed(exc):
         # The record holds the reason and the Windows error number only.
         code = diag.new_code()
         log.write("key_unavailable", code=code, reason=exc.reason, winerror=exc.code)
-        return (f"Windows could not unlock Unminute's encryption key (code {code}), so the "
-                f"workspace cannot open. Your meetings are kept and have not been changed. "
-                f"Ask your IT team: the steps are in the Unminute user guide, under \"If "
-                f"Unminute cannot unlock its workspace\".")
+        error = (f"error {exc.code}, " if isinstance(exc.code, int)
+                 and not isinstance(exc.code, bool) else "")
+        return (f"Unminute could not set up its encryption key with Windows ({error}code "
+                f"{code}). Ask your IT team: the steps are in the Unminute user guide, under "
+                f"\"If Unminute cannot unlock its workspace\".")
     if db.exists() and quick_check_file(db) is False:
         last = diag.integrity_state(logs)
         if last and last["result"] == "failed" and last["code"]:
