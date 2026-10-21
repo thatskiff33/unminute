@@ -1,0 +1,1 @@
+- **Recording with the window open uses less processor time.** The recording display now redraws about 60 times a second, on every second refresh of a 120 Hz screen, rather than on every refresh. It looks and moves the same as before (#216).

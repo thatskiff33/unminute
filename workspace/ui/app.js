@@ -2124,8 +2124,9 @@ function eventText(e) {
   return `${e.note || e.kind}${at}${len}`;
 }
 
-// The recording display: one canvas across the card, drawn every frame from the
-// latest block the recorder measured (ten a second), easing between them.
+// The recording display: one canvas across the card, drawn about 60 times a
+// second (#216) from the latest block the recorder measured (ten a second),
+// easing between them.
 //   flow: Siri-style curves; height follows the level, ripple follows the pitch.
 //   spectrum: pitch from low (left) to high, mirrored about the centre line.
 //   wave: the shape of the sound itself.
@@ -2163,12 +2164,54 @@ function stopViz() {
   viz.raf = 0; viz.target = null; viz.amp = 0; viz.bands = []; viz.wave = [];
 }
 
-function ease(cur, to, rate) { return cur + (to - cur) * rate; }
+// -- the meter's frame rate (#216) --
+// Drawing on every display frame (120 a second on a 120 Hz screen) cost most of
+// the processor time while recording with the window visible. The meter draws
+// on every Nth frame instead, N = round(display rate / 60), at least 1: every
+// frame at 60 Hz, every 2nd at 120 or 144 Hz. N is whole, so draws stay evenly
+// spaced. requestAnimationFrame still drives it, so it stops when hidden.
+const METER_HZ = 60;
+// The easing rates below (0.3, 0.08, 0.25, 0.35, 0.1) are shares per frame. The
+// motion they give was seen and approved drawing on every frame of a 120 Hz
+// display (the development laptop's, and the #216 demo), so 120 is the
+// reference. easeShare turns each rate into the share for the time that passed,
+// so the motion matches that at any draw rate.
+const EASE_REF_HZ = 120;
+
+// How many display frames apart to draw. Near the half-way point between two
+// steps (90 Hz is 1.5), the current step is kept, so it does not flip between them.
+function meterStep(displayHz, current) {
+  const ratio = displayHz / METER_HZ;
+  const want = Math.max(1, Math.round(ratio));
+  if (!current || want === current) return want;
+  return Math.abs(ratio - (Math.min(want, current) + 0.5)) < 0.1 ? current : want;
+}
+
+// Called on every animation frame with its time; true on the frames to draw.
+// Tracks the display's frame interval, ignoring the first frame and long gaps
+// (a stall, or the window hidden and shown again).
+function meterFrame(clock, t) {
+  const gap = clock.prev ? t - clock.prev : 0;
+  clock.prev = t;
+  if (gap > 2 && gap < 50) {
+    clock.frameMs = clock.frameMs ? clock.frameMs + (gap - clock.frameMs) * 0.1 : gap;
+    clock.step = meterStep(1000 / clock.frameMs, clock.step);
+  }
+  if (++clock.count < (clock.step || 1)) return false;
+  clock.count = 0;
+  return true;
+}
+const meterClock = { prev: 0, frameMs: 0, step: 0, count: 0 };
+
+// The share of the way to move over dt seconds, for a rate per EASE_REF_HZ frame.
+function easeShare(rate, dt) { return 1 - Math.pow(1 - rate, dt * EASE_REF_HZ); }
+function ease(cur, to, rate, dt) { return cur + (to - cur) * easeShare(rate, dt); }
 
 function drawViz(t) {
   const c = $("rec-canvas");
   if ($("rec-level").hidden || $("rec-card").hidden || state.view !== "meetings") { viz.raf = 0; return; }
   viz.raf = requestAnimationFrame(drawViz);
+  if (!meterFrame(meterClock, t)) return;
   const dt = Math.min(0.1, viz.last ? (t - viz.last) / 1000 : 0.016);
   viz.last = t;
   const dpr = window.devicePixelRatio || 1;
@@ -2182,10 +2225,10 @@ function drawViz(t) {
   if (!vizColours.accent) readVizColours();
   const { accent, quiet } = vizColours;
   const mid = h / 2;
-  viz.amp = ease(viz.amp, levelAmount(viz.db), 0.3);
+  viz.amp = ease(viz.amp, levelAmount(viz.db), 0.3, dt);
   const tg = viz.target;
-  if (viz.mode === "spectrum") drawSpectrum(g, w, h, mid, tg, accent, quiet);
-  else if (viz.mode === "wave") drawWave(g, w, h, mid, tg, accent, quiet);
+  if (viz.mode === "spectrum") drawSpectrum(g, w, h, mid, tg, dt, accent, quiet);
+  else if (viz.mode === "wave") drawWave(g, w, h, mid, tg, dt, accent, quiet);
   else drawFlow(g, w, h, mid, tg, dt, accent, quiet);
 }
 
@@ -2194,7 +2237,7 @@ function line(g, colour, width) { g.strokeStyle = colour; g.lineWidth = width; g
 function drawFlow(g, w, h, mid, tg, dt, accent, quiet) {
   // Ripple count follows the voice's pitch (80 to 400 Hz: 1.5 to 4.5 waves).
   const pitch = tg && tg.pitch_hz ? tg.pitch_hz : 0;
-  if (pitch) viz.k = ease(viz.k, 1.5 + Math.max(0, Math.min(1, (pitch - 80) / 320)) * 3, 0.08);
+  if (pitch) viz.k = ease(viz.k, 1.5 + Math.max(0, Math.min(1, (pitch - 80) / 320)) * 3, 0.08, dt);
   if (!reducedMotion.matches) viz.phase += dt * (1.2 + viz.amp * 7);
   const amp = Math.max(0.04, viz.amp) * (mid - 3);
   const curves = [[1, 1, 1, 0.95], [0.75, 1.35, 0.7, 0.55], [1.3, 0.7, 0.5, 0.35]];
@@ -2214,11 +2257,11 @@ function drawFlow(g, w, h, mid, tg, dt, accent, quiet) {
   if (viz.amp < 0.02) { g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke(); }
 }
 
-function drawSpectrum(g, w, h, mid, tg, accent, quiet) {
+function drawSpectrum(g, w, h, mid, tg, dt, accent, quiet) {
   const target = tg ? tg.bands.map((db) => Math.max(0, Math.min(1, (db + 85) / 70))) : [];
   const n = target.length || viz.bands.length || 40;
   if (viz.bands.length !== n) viz.bands = new Array(n).fill(0);
-  for (let i = 0; i < n; i++) viz.bands[i] = ease(viz.bands[i], target[i] || 0, 0.25);
+  for (let i = 0; i < n; i++) viz.bands[i] = ease(viz.bands[i], target[i] || 0, 0.25, dt);
   const pts = viz.bands.map((v, i) => [(i / (n - 1)) * w, v * (mid - 3)]);
   const shape = (sign) => {
     g.moveTo(0, mid);
@@ -2236,14 +2279,14 @@ function drawSpectrum(g, w, h, mid, tg, accent, quiet) {
   g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); line(g, quiet, 1); g.stroke();
 }
 
-function drawWave(g, w, h, mid, tg, accent, quiet) {
+function drawWave(g, w, h, mid, tg, dt, accent, quiet) {
   const target = tg ? tg.wave : [];
   const n = target.length || viz.wave.length || 128;
   if (viz.wave.length !== n) viz.wave = new Array(n).fill(0);
   // Scale so speech fills most of the height, without blowing up silence.
   const peak = target.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
-  if (peak > 0.002) viz.gain = ease(viz.gain, Math.min(40, 0.85 / peak), 0.1);
-  for (let i = 0; i < n; i++) viz.wave[i] = ease(viz.wave[i], target[i] || 0, 0.35);
+  if (peak > 0.002) viz.gain = ease(viz.gain, Math.min(40, 0.85 / peak), 0.1, dt);
+  for (let i = 0; i < n; i++) viz.wave[i] = ease(viz.wave[i], target[i] || 0, 0.35, dt);
   g.beginPath();
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * w;
