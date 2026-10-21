@@ -16,8 +16,9 @@ Unminute turns a meeting recording into a reviewed transcript on the user's own 
 | What was said | Transcript passages, word timings, edits and their history, the reviewed snapshot | Made on the laptop from the audio, then edited by the user |
 | Names and labels typed by the user | Speaker names, meeting titles, hold reasons, redaction words, handoff templates | The user |
 | File locations | The path of an imported recording, watched-folder paths (either can include a person's or client's name) | The user's choice of file or folder |
-| Recording details | Microphone name, when recording started, paused and stopped, and a record that the user confirmed everyone was told (confirmed, wording version, time; no names) | The app, during a microphone recording |
+| Recording details | Microphone name, when recording started, paused and stopped, and a record that the user confirmed everyone was told (confirmed, wording version, time; no names). With computer audio (#108; no version shows its switch yet), also the output device's name and timing marks | The app, during a microphone recording |
 | Usage metadata | When the app started and stopped, when errors happened, error codes and versions; raw crash files hold program folders, which include the Windows user name | The app's own logs, in the workspace's `logs` folder |
+| A record of what was done (**not in v0.5.0-preview.3**) | When each meeting was imported or recorded (with the confirmation's outcome), reviewed, handed off, held, cleaned up or discarded, and when watched folders and delete-originals authority changed, by the app's own random ids, with fixed words and counts; no text, titles, names, folders or hold reasons. A copy of each record's hash goes to the Windows Application log with the user's Windows account (SID) | The app's audit log, in the workspace's `audit` folder |
 | A credential | The user's Hugging Face access token, if they choose to remember it | The user, in Setup |
 
 The app does not collect contact details and keeps no account of its own. Speaker identification separates the voices in a recording; it does not work out who the speakers are. Names come only from what the user types.
@@ -38,6 +39,8 @@ Everything the app keeps is on the laptop, under the signed-in user's profile; t
 | Cleanup receipts (a random number, times and the result) | `workspace.db` | Content-free | Same | 30 days |
 | Settings | `workspace\settings.json` | No; settings only | Same | The user changes them |
 | Logs, crash files and the key state (`keys.json`: ok or locked, a reason, a Windows error number, a code, a time) | `workspace\logs\` | No; content-free by design | Same | Size-capped and rotated; crash files read and deleted at the next start |
+| Audit log (each action's kind and time, the app's random ids for the meeting, hold, cleanup job, watched folder or recording, fixed words and counts; no content, names, paths or reasons). A meeting's id links its import, handoffs and deletion in this file, and maps to nothing once the meeting is cleaned up | `workspace\audit\` | No; content-free by design, and hash-chained so a change shows | Not present | At most 16 MB, after which the oldest 1 MB segment is deleted; kept across an update that waits for an empty workspace; removed with the workspace |
+| The audit log's Event Log copy (chain id, sequence number, kind and the record's SHA-256; no ids or content), with the user's Windows account (SID) | The Windows Application log, and wherever IT forwards it | No | Not present | The Application log's size and retention, and those of any forwarded copy |
 | Hugging Face token | Windows Credential Manager | Protected by Windows (DPAPI) | Same | The user removes it; uninstalling keeps it |
 | Copied handoff | The Windows clipboard | No. The Copy buttons ask Windows to keep it out of clipboard history and cloud clipboard (best effort: if that request fails, the copy still goes ahead) | Same | Replaced, or cleared after a set time if IT sets `ClipboardClearMinutes` |
 | Saved handoff | Wherever the user saves it | No | Same | Not tracked by the app |
@@ -49,14 +52,14 @@ Disk encryption (BitLocker) is the organisation's control. While the laptop is o
 
 - **The signed-in user** can see everything in their own workspace through the app.
 - **Other standard users of the same laptop** cannot read the workspace: it inherits the user's profile permissions.
-- **Administrators, SYSTEM services and backup agents** can read files the app does not encrypt (microphone recordings waiting to be imported, `recording.json`, settings, logs). On `main` they cannot read the encrypted database content or the working copy of the audio without the user's Windows key protection, unless they run code as the user (an administrator of a device the user is signed in to can usually do this) or hold the domain's DPAPI backup key. In v0.5.0-preview.3 nothing is encrypted by the app.
+- **Administrators, SYSTEM services and backup agents** can read files the app does not encrypt (microphone recordings waiting to be imported, `recording.json`, settings, logs, the audit log). On `main` they cannot read the encrypted database content or the working copy of the audio without the user's Windows key protection, unless they run code as the user (an administrator of a device the user is signed in to can usually do this) or hold the domain's DPAPI backup key. In v0.5.0-preview.3 nothing is encrypted by the app.
 - **Software running as the user**, including malware, can read what the user can read, encrypted or not.
-- **IT** sets managed policy (below). Policy gives IT no access to content, and `--status`, `--health` and Copy diagnostics report counts, states and codes, never content.
+- **IT** sets managed policy (below). Policy gives IT no access to content, and `--status`, `--health`, `--verify-audit` and Copy diagnostics report counts, states and codes, never content. On `main`, whoever can read the Windows Application log, or IT's forwarded copy of it, sees the audit log's Event Log copy: when and how often the user took each kind of action, with their Windows account, and no ids or content.
 - **The Unminute project** receives nothing: the app has no telemetry and no update check.
 
 ## What leaves the device
 
-The app sends no meeting content itself, and every flow below needs a user action. The limits of the network controls are under "Known limits".
+The app sends no meeting content itself, and every flow below needs a user action, apart from IT forwarding the Windows Application log. The limits of the network controls are under "Known limits".
 
 | Flow | Started by | What goes, and where |
 | --- | --- | --- |
@@ -68,6 +71,7 @@ The app sends no meeting content itself, and every flow below needs a user actio
 | Model downloads | The user, in Setup or Manage downloads | HTTPS requests for fixed model files to huggingface.co and its download hosts, download-r2.pytorch.org (graphics card component) and files.pythonhosted.org (graphics card component for Whisper). The Hugging Face token is sent for the speaker model download. No meeting content. The hosts see the requests and the network address they come from |
 | Help pages | The user | Windows opens a fixed help address in the browser; nothing from the meeting is in it |
 | Copy diagnostics | The user | Versions, settings, counts and error locations, with no content, names or folders, to the clipboard for a support request |
+| The audit log's Event Log copy (**not in v0.5.0-preview.3**) | IT, if it forwards the Application log (Windows Event Forwarding or a SIEM) | Each record's chain id, sequence number, kind and hash, with the user's Windows account; no ids or content. The app writes it to the local Application log only; forwarding is IT's |
 | Deleting a watched original | The user, after authorising that folder and confirming review | The original file is deleted. In a synced folder, the deletion syncs to the cloud and to everyone the folder is shared with |
 
 Recordings already in a synced folder (for example OneDrive, where Teams saves them) are in that service before Unminute reads them.
@@ -80,6 +84,7 @@ Recordings already in a synced folder (for example OneDrive, where Teams saves t
 - **No reminders** for unreviewed meetings yet (planned: #111 C6). The Meetings page shows each meeting's age and next step.
 - **How deletion works.** Deleted database rows are overwritten, and final cleanup compacts the database. On `main`, a meeting's keys are destroyed at cleanup, so a leftover copy of its encrypted text cannot be opened once every copy of the key is gone. On `main` the audio key is destroyed when the audio is cleaned up, so the encrypted working copy cannot be opened afterwards either. Audio files are still removed by ordinary deletion, and microphone recordings are not encrypted; on an SSD, old blocks are not guaranteed to be erased.
 - **What cleanup cannot reach:** copies in synced or backed-up folders, the original on a phone or recorder, cloud recycle bins, saved handoff files, the clipboard, and anything shared with an AI assistant.
+- **The audit log** (on `main`) is not removed by cleanup: it keeps the record that a meeting was imported, handed off and deleted, with no content, up to its 16 MB cap. Its Event Log copy follows the Application log's retention.
 - **Uninstalling** keeps the workspace, the models and the token. There is no offboarding command yet (planned: #111 B8); [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md) has today's steps.
 
 ## Settings the organisation controls
@@ -87,6 +92,7 @@ Recordings already in a synced folder (for example OneDrive, where Teams saves t
 Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the user's settings. The values that bear on personal information:
 
 - `AllowMicrophoneRecording`: whether staff can record with the microphone at all.
+- `AllowComputerAudioRecording` (**not in v0.5.0-preview.3**): whether staff may record the sound playing on the computer, such as the other side of a call, beside the microphone. Allowed when not set, but each user's switch is off by default, and no version shows the switch yet (#108).
 - `RequireRecordingConsent`: whether each recording needs the user to confirm, in the app's own window, that everyone has been told it is being recorded, and why. On unless set to 0.
 - `AllowWatchedFolders` and `AllowDeleteOriginals`: whether folders can be watched, and whether originals can be deleted from them.
 - `AllowNetworkSources`: whether recordings on mapped network drives can be imported.
@@ -95,7 +101,7 @@ Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the u
 - `AllowHandoffAssistant`, `HandoffAssistantName`, `HandoffAssistantUrl` (**not in v0.5.0-preview.3**): whether Copy and open is offered, and which assistant it opens.
 - `AllowModelDownloads` and `AllowGpuComponent`: whether staff can download models and the graphics card components.
 
-The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
+The audit log has no policy value: it is always on. The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
 
 ## Known limits
 
@@ -110,6 +116,8 @@ From [SECURITY_MODEL.md](SECURITY_MODEL.md), "What the controls do not cover":
 - Once content is on the clipboard, in a saved file or with an assistant, the app no longer controls it.
 - Windows may write memory to the page file or hibernation file; disk encryption protects these.
 - Ordinary deletion is not forensic erasure.
+- The user whose actions the audit log records can rebuild its local file, and on the device can push its Event Log copy out by filling the Application log. The copy is a stronger record only once IT forwards it off the device (SECURITY_MODEL.md T20).
+- Computer audio, once a version offers it, records every sound the output device plays, such as notifications or a video in another tab. The recording support can also take one app's sound only (Windows 11); choosing the meeting app that way is planned, and how it behaves with the new Teams and with browser meetings is not yet verified (SECURITY_MODEL.md T35).
 - The window can be seen in a screen share.
 
 ## For the deploying organisation to complete
@@ -121,7 +129,8 @@ These are the organisation's decisions. The software has no view on them.
 - Which AI assistant staff hand off to, under which account, where its provider keeps what it receives, and which connectors it may use.
 - How long final documents are kept and where they are filed (outside Unminute).
 - Who manages holds, and how often held content is reviewed.
-- Which managed policy values to set.
+- Which managed policy values to set, including whether staff may record computer audio once a version offers it.
+- Whether to forward the Windows Application log off the device, who may read the audit log's Event Log copy, and how long it is kept.
 - Whether recordings may come from synced or shared folders, and whether originals may be deleted from them.
 - The device controls Unminute relies on: disk encryption, standard-user accounts, endpoint protection ([IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)).
 - How a person's request about information held about them is handled, given that content lives only in each user's own workspace until cleanup.

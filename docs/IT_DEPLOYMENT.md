@@ -24,6 +24,7 @@ Unminute assumes these are in place ([SECURITY_MODEL.md](SECURITY_MODEL.md), "Sc
 | Remote-desktop clipboard redirection | Any app in the session, and a redirected clipboard, can read what Unminute copies | T17 |
 | The handoff assistant's account and connectors | Unminute only copies text and opens a fixed address. What the assistant receives, and what its connected tools can read or change, is set in the assistant's tenant: read-only connectors and approval for actions are the controls | T17, T30 |
 | Synced folders | A recording in a watched folder that syncs (for example OneDrive) is already in that service. Deleting an original from a synced folder, where the user has granted that, syncs the deletion too (to confirm) | T28 |
+| Forwarding the Windows Application log off the device (**Not in v0.5.0-preview.3**) | The app copies each audit record's hash to the Application log. On the device, a standard user can typically write to that log, and it overwrites its oldest events when full, so without forwarding the copy detects casual edits of the audit file only. Forwarded (Windows Event Forwarding or a SIEM), it is the stronger record. Standard users' rights to the log, and its size and retention on your baseline, are to confirm (#189). See "Audit log" below | T20 |
 
 Planned, not available yet: a per-machine install that standard users cannot change (B6), machine-wide models staged by IT (B7), and offboarding support (B8). A firewall rule that blocks the app's runtime is part of B7; until models are staged by IT it would also block model downloads, which run in the same runtime.
 
@@ -40,6 +41,8 @@ Only a per-user install exists. It goes into `%LOCALAPPDATA%\Programs\Unminute\v
 | Roll back | `install.ps1 -Rollback` from the current version's folder | Refused if the previous version cannot open the workspace |
 
 Users never install Python, Git, FFmpeg or GPU tools.
+
+A custom `-InstallDir` must be new, empty or an existing Unminute install. A folder that already holds other files, or a link or junction where the installer looks, stops it with exit code 2, and nothing is changed; the installer and uninstaller remove only the version folders the installer made (**Not in v0.5.0-preview.3**, #297; [PACKAGING.md](PACKAGING.md), "Installing (self-service)").
 
 ## Verify a release before packaging
 
@@ -79,6 +82,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | `AllowModelDownloads` | Allow model downloads in the app | Downloads | Allowed |
 | `AllowGpuComponent` | Allow the graphics card components | GPU | Allowed |
 | `AllowMicrophoneRecording` | Allow microphone recording | Microphone | Allowed |
+| `AllowComputerAudioRecording` | Allow recording computer audio | Computer audio | Allowed (each user's switch is still off by default) |
 | `AllowLidOverride` | Allow keeping a recording going with the lid closed | Microphone | Allowed |
 | `RequireRecordingConsent` | Confirm before each recording that everyone has been told | Microphone | Required |
 | `AllowWatchedFolders` | Allow watched folders | Watched folders | Allowed |
@@ -91,7 +95,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 | `HandoffAssistantName` | Hand off assistant name | Handoff | ChatGPT |
 | `HandoffAssistantUrl` | Hand off assistant address | Handoff | `https://chatgpt.com/` |
 
-**Not in v0.5.0-preview.3:** `AllowHandoffAssistant`, `HandoffAssistantName` and `HandoffAssistantUrl`, and the Copy and open button they control. That release ignores them, as it ignores any value name it does not know. The template's revision number did not change when they were added, and Intune does not overwrite an imported template: to take the new values, delete the profiles that use the template and the old template, then import again ([PACKAGING.md](PACKAGING.md)).
+**Not in v0.5.0-preview.3:** `AllowHandoffAssistant`, `HandoffAssistantName` and `HandoffAssistantUrl`, and the Copy and open button they control; and `AllowComputerAudioRecording`. That release ignores them, as it ignores any value name it does not know. On `main`, `AllowComputerAudioRecording` and the recording support for computer audio are in place, but no version shows the switch yet (#108): computer audio cannot be recorded until a later version adds it. It never applies when `AllowMicrophoneRecording` is 0. The template's revision number did not change when they were added, and Intune does not overwrite an imported template: to take the new values, delete the profiles that use the template and the old template, then import again ([PACKAGING.md](PACKAGING.md)).
 
 The app enforces these values in its own code. Until the per-machine install (B6), that code sits in the user's profile, so someone able to change files there could remove the checks: policy is not enforced against a determined user. The policy key itself stays admin-only.
 
@@ -126,12 +130,26 @@ exit $LASTEXITCODE
 
 When the app cannot unlock its encryption key (**Not in v0.5.0-preview.3**), it opens locked rather than closing: the page can still copy diagnostics, open help and close, every other request is refused, and no meeting is read or changed (only the problem is logged). `--status` shows `"keys": "locked"` with the reason and a code. If Windows cannot set up a key for a new workspace at all, the app says so with a code and closes, creating nothing. The steps are in the user guide, [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace).
 
+## Audit log
+
+**Not in v0.5.0-preview.3.** The app keeps a content-free, hash-chained audit log in `%LOCALAPPDATA%\Unminute\workspace\audit\`. It records imports and recordings (with the recording confirmation's outcome and wording version), the review and final confirmations, discards, holds, handoffs, watched folders, changes to delete-originals authority, and each cleanup. Each record carries the kind of action, the time, the app's own random ids, fixed words and counts, never text, titles, names, folders or hold reasons. It is always on, with no policy value (the owner's decision, 21 Oct 2026). It is capped at 16 MB: past that the oldest 1 MB segment is deleted, and a record says so. It is not in the database, so an update that waits for an empty workspace keeps it. The full description is in [PACKAGING.md](PACKAGING.md#the-audit-log-and-its-event-log-copy-111-c5) and SECURITY_MODEL.md T20.
+
+- **The Event Log copy.** Each record's chain, sequence number, kind and SHA-256, never an id, go to the Windows Application log under the source `Unminute`, with the signed-in user's SID. The source is not registered (installs are per user), so Event Viewer shows the text without a description and a SIEM reads it from `EventData`. The event IDs and levels are in PACKAGING.md. Forward the log off the device for the stronger record (see "Controls Unminute relies on IT for" above).
+- **Checking it.** Run, as the signed-in user (never as SYSTEM, as for `--health`), from the installed version folder:
+
+  ```
+  runtime\python.exe -I -B -m workspace --verify-audit --event-log
+  ```
+
+  It needs no key, reads no database and prints one line of JSON with counts and states only. `result` is `ok` when the chain is whole, or `broken` with the sequence number and a reason. `--event-log` compares the file with the signed-in user's `Unminute` entries in this computer's Application log; `--event-log-file <path>` compares it with an exported `.evtx` file instead, for example from the forwarded copy. It exits 0 when the chain is `ok` and, if compared, matches; 1 otherwise. `--status` also shows `audit_seq`, the newest record's sequence number.
+- **What it cannot show.** The file alone cannot show whole lines removed from its end, a rebuilt chain or a deleted folder: those show only against the Event Log copy, while it still holds the entries. The SID on an entry is supplied by whoever writes it, so it attributes the app's own entries but does not prove who wrote one. A crash between an action and its record loses the record, and can leave the last few records without an Event Log copy.
+
 ## Updates and rollback
 
 - **Same storage format:** installing the new version keeps everything.
 - **New storage format:** the update waits (exit code 5) until the user's workspace holds no meetings, active holds, unfinished cleanup, microphone recordings waiting to be imported or meeting audio. It never expires a hold, deletes content or backs content up to proceed. Map 5 to Retry in Intune; Settings > Updates in the app says what it is waiting for.
 - **Encryption at rest is a storage-format change.** The release that brings it (schema 2) ships as one release once #111 phase C is complete, and the workspace must be empty before it installs. A version before it cannot open a schema-2 workspace.
-- **Rollback:** `install.ps1 -Rollback` from the current version's folder returns to the previous installed version, after the same check with that version. It has no minimum-version check (T26).
+- **Rollback:** `install.ps1 -Rollback` from the current version's folder returns to the previous installed version, after the same check with that version. It has no minimum-version check (T26). It goes back only to a version folder the installer made (**Not in v0.5.0-preview.3**, #297).
 - **The first release after the rename (#136)** has no earlier version in its install folder to roll back to.
 
 Details: [PACKAGING.md](PACKAGING.md), "Updates (#26)".
@@ -144,7 +162,7 @@ Unminute has no offboarding command yet (B8, planned). Uninstalling removes the 
 2. **Check what is left:** from the installed version folder, as the user, `runtime\python.exe -I -B -m workspace --status` prints counts only: meetings, holds, pending cleanup and recordings not yet in a meeting.
 3. **Remove the token:** Settings > Manage downloads > **Remove the remembered token**. After uninstalling, it can be removed in Windows Credential Manager (Windows Credentials, Generic) as `Unminute/HuggingFaceToken`. A token saved by 0.4.3 or earlier is under `WhisperTranscriber/HuggingFaceToken`.
 4. **Uninstall:** Settings > Apps > Unminute, or the Intune uninstall command.
-5. **Remove the data**, once nothing in it is needed and whoever manages holds agrees: delete `%LOCALAPPDATA%\Unminute` (the workspace with its logs, and the models). A version 0.4.3 or earlier leaves `%LOCALAPPDATA%\whisper\workspace` and `%LOCALAPPDATA%\whisper-models` too. This is ordinary deletion: on an SSD, old blocks are not guaranteed to be erased, and BitLocker is what protects them. Never copy a workspace to a share or another computer.
+5. **Remove the data**, once nothing in it is needed and whoever manages holds agrees: delete `%LOCALAPPDATA%\Unminute` (the workspace with its logs and audit log, and the models). The audit log's Event Log copy stays in the Application log, and in any forwarded copy, under its own retention. Unminute has no export step for the audit log yet: whether it gets one before removal is decided in B8. A version 0.4.3 or earlier leaves `%LOCALAPPDATA%\whisper\workspace` and `%LOCALAPPDATA%\whisper-models` too. This is ordinary deletion: on an SSD, old blocks are not guaranteed to be erased, and BitLocker is what protects them. Never copy a workspace to a share or another computer.
 6. **Reassigning the laptop:** a reset or wipe that does not keep user data removes the profile, and the workspace with it.
 
 ## Incidents
@@ -157,6 +175,7 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 | Many devices report unhealthy after an update | Read `--health` across devices: crashes, damage, a locked workspace or location. Ask affected users for **Copy diagnostics** | [Health monitoring](#health-monitoring-with---health) above; [PACKAGING.md](PACKAGING.md#managed-deployment-intune) for the fields |
 | One user's workspace is damaged or will not open | Follow the user guide's recovery steps; there are no backups, by design | [If Unminute finds damage](WORKSPACE_GUIDE.md#if-unminute-finds-damage) |
 | The app cannot unlock its key (**Not in v0.5.0-preview.3**) | `--health` shows `locked`. Ask for **Copy diagnostics**, which still works while locked, and the code; `--status` still works | [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace) |
+| Someone needs to show what was exported or deleted, or the audit log may have been changed (**Not in v0.5.0-preview.3**) | As the user, run `--verify-audit --event-log`; or compare with the forwarded copy, exported as `.evtx`, with `--event-log-file`. It reports counts and states only | [Audit log](#audit-log) above; SECURITY_MODEL.md T20 for what it cannot show |
 | A suspected security vulnerability in Unminute | Report it privately, with synthetic data only | [SECURITY.md](../SECURITY.md) |
 | A laptop is lost or stolen, or content went somewhere it should not | Follow your organisation's own incident process. What Unminute keeps on the laptop, and what is encrypted, is in the privacy impact assessment draft | [PRIVACY_IMPACT_ASSESSMENT_DRAFT.md](PRIVACY_IMPACT_ASSESSMENT_DRAFT.md) |
 
@@ -164,8 +183,8 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 
 - A per-machine install in Program Files that standard users cannot change (B6), with a launch-time update gate and first-launch fallback (B5).
 - Machine-wide models staged by IT, and the runtime firewall rule (B7).
-- An offboarding report and removal (B8).
-- A content-free audit log of exports, deletions and recording confirmations, mirrored to the Windows Event Log (C5).
+- An offboarding report and removal (B8), which also decides whether the audit log is exported before the workspace is removed.
+- The switch to record computer audio beside the microphone (#108). The recording support and `AllowComputerAudioRecording` are on `main`, but no version shows the switch yet.
 - Encryption of microphone recordings waiting to be imported and of the recording handed to the decoder (C3b), and a locked screen in the window when the key cannot be unlocked (C4b; until then the usual window opens with every request refused).
 - A decoder process that cannot read the workspace (#299). Today it runs at Low integrity, which stops it writing the user's files but not reading them.
 - Code signing of the zip and the installer scripts. Releases from 0.5.0 carry signed build provenance and an SBOM attestation instead; signing options are in [PACKAGING.md](PACKAGING.md), "Signing and trust".

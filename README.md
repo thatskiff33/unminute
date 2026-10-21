@@ -52,7 +52,7 @@ That detects a damaged download, not a replaced one. From 0.5.0 (including its p
 
 Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents.
 
-Some behaviour described in this README is in the latest code but not yet in a release: Copy and open ChatGPT, encryption of the workspace database, the handoff templates and each meeting's working copy of the audio, the locked workspace when Windows will not unlock its key, and the message for a data folder linked to a folder that cannot be reached. The [user guide](docs/WORKSPACE_GUIDE.md) lists what 0.5.0-preview.3 does instead.
+Some behaviour described in this README is in the latest code but not yet in a release: Copy and open ChatGPT, encryption of the workspace database, the handoff templates and each meeting's working copy of the audio, the locked workspace when Windows will not unlock its key, the message for a data folder linked to a folder that cannot be reached, the audit log with its Windows event log copy and `--verify-audit`, and the installer's refusal of a custom install folder that holds other files. The [user guide](docs/WORKSPACE_GUIDE.md) lists what 0.5.0-preview.3 does instead.
 
 ### Coming from 0.4.3 or earlier
 
