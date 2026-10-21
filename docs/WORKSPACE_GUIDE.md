@@ -7,7 +7,7 @@ It is a temporary workspace, not an archive. Your final documents live wherever 
 This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.3 (20 October 2026). These parts of the guide are not in that release yet, and arrive with the next one (see [CHANGELOG.md](../CHANGELOG.md)):
 
 - **Copy and open ChatGPT** on the Hand off page, and IT's option to rename it, point it at another assistant or turn it off. In 0.5.0-preview.3 the main button is **Copy prompt and transcript**.
-- **Encryption of the workspace.** Transcripts, edits, speaker names and other meeting text in the workspace database, and your handoff templates, are encrypted with a key Windows keeps for your account. In 0.5.0-preview.3 the app encrypts nothing itself; your organisation's disk encryption (BitLocker) protects the workspace. With encryption come the "[Could not be read]" marker and [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace).
+- **Encryption of the workspace.** Transcripts, edits, speaker names and other meeting text in the workspace database, your handoff templates and the app's working copy of each meeting's audio are encrypted with a key Windows keeps for your account. In 0.5.0-preview.3 the app encrypts nothing itself; your organisation's disk encryption (BitLocker) protects the workspace. With encryption come the "[Could not be read]" marker and the locked workspace in [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace).
 - **The message for a workspace folder linked to a folder that cannot be reached.** In 0.5.0-preview.3 Unminute closed at start without saying why.
 
 ## What stays on your computer, and what does not

@@ -174,6 +174,7 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 - Automated checks on the real window every release: names, keyboard reach, focus, contrast, reflow and zoom.
 - A manual keyboard and screen-reader pass every minor release.
 - Each app's Part B says which success criteria its automated check covers and which are left to the manual pass. An automated pass is never reported as conformance.
+- For Unminute, extending the automated check to the WCAG 2.2 AA criteria it can test (#298) is a gate for the next release (owner decision, 22 October 2026).
 
 ### 13. Security and privacy
 
@@ -264,7 +265,7 @@ Status is one of:
 | Coverage reported, then a rising floor | 7 | The "Coverage (report only)" job in `.github/workflows/quality.yml` | Report in place, not yet required; no floor yet |
 | Changelog fragment for shipped changes | 8, 10 | `.github/workflows/changelog.yml` (a `changelog.d/` fragment; the `no-changelog` label opts out); fragments checked by `tools/changelog.py --check` in the unit tests | In place |
 | Manual keyboard and screen-reader pass, every minor release, covering the WCAG 2.2 AA criteria the automated check leaves out ("Accessibility against WCAG 2.2 AA" below) | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (validation tracker #189) |
-| Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py`, against the package with its own Python (`--app`) | Manual; the reports name the package (B3a) and are required before a release is published (B3b) |
+| Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py`, against the package with its own Python (`--app`) | Manual; the reports name the package (B3a) and are required before a release is published (B3b). Extending the accessibility check to the automatable WCAG 2.2 AA criteria (#298) is a gate for the next release (owner decision, 22 October 2026) |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` (pass criteria in its `verdict`) | Manual; the report names the package (B3a) and is required before a release is published (B3b); extended by security plan C7 |
 | Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
 | Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
@@ -287,7 +288,7 @@ Status is one of:
 
 ### Accessibility against WCAG 2.2 AA
 
-The target is WCAG 2.2 AA (section 12). `tools/accessibility_check.py` is the automated half of the check: it opens the real window on a throwaway workspace with synthetic audio and fake engines, visits a fixed list of views and dialogs (Setup's steps, Downloads, Meetings with the microphone chooser, Settings, Help, a meeting with its Versions, Holds and Speakers tabs, the names and confirmation dialogs, and the Hand off page), and fails on any finding. Passing it is not conformance: most of WCAG 2.2 AA needs the manual keyboard and screen-reader pass ([VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md), section 5; validation tracker #189, sitting 5). Extending the tool to the criteria below that can be checked automatically (for example 2.5.8 Target Size, 2.4.11 Focus Not Obscured and 1.4.11 Non-text Contrast) is #298; until then they stay with the manual pass.
+The target is WCAG 2.2 AA (section 12). `tools/accessibility_check.py` is the automated half of the check: it opens the real window on a throwaway workspace with synthetic audio and fake engines, visits a fixed list of views and dialogs (Setup's steps, Downloads, Meetings with the microphone chooser, Settings, Help, a meeting with its Versions, Holds and Speakers tabs, the names and confirmation dialogs, and the Hand off page), and fails on any finding. Passing it is not conformance: most of WCAG 2.2 AA needs the manual keyboard and screen-reader pass ([VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md), section 5; validation tracker #189, sitting 5). Extending the tool to the criteria below that can be checked automatically (for example 2.5.8 Target Size, 2.4.11 Focus Not Obscured and 1.4.11 Non-text Contrast) is #298, which is a gate for the next release (owner decision, 22 October 2026): no release is published until it has landed. Until then those criteria stay with the manual pass.
 
 What it checks, and fails on:
 

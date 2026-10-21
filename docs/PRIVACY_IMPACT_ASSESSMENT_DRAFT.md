@@ -2,7 +2,7 @@
 
 **Status: draft.** This is a starting point for an organisation that deploys Unminute to write its own privacy impact assessment. It records facts about the software: what it stores, where, how it is protected, how long it is kept, who can reach it and what leaves the device. It does not assess those facts against any law, standard or policy, and it reaches no conclusions. That assessment, and every decision in the last section, belongs to the deploying organisation.
 
-It describes the `main` branch as at 21 October 2026. Where the newest release, v0.5.0-preview.3 (20 October 2026), differs, the difference is stated. The technical detail behind each statement is in [SECURITY_MODEL.md](SECURITY_MODEL.md) (threats, controls and the data inventory) and [ENCRYPTION.md](ENCRYPTION.md); when they differ from this draft, they are the source.
+It describes the `main` branch as at 22 October 2026. Where the newest release, v0.5.0-preview.3 (20 October 2026), differs, the difference is stated. The technical detail behind each statement is in [SECURITY_MODEL.md](SECURITY_MODEL.md) (threats, controls and the data inventory) and [ENCRYPTION.md](ENCRYPTION.md); when they differ from this draft, they are the source.
 
 ## What Unminute does
 
@@ -29,14 +29,15 @@ Everything the app keeps is on the laptop, under the signed-in user's profile; t
 | Data | Where | Encrypted by Unminute on `main` | In v0.5.0-preview.3 | Kept until |
 | --- | --- | --- | --- | --- |
 | Original recording | Wherever the user keeps it | No: the app reads it in place | Same | The user deletes it. The app deletes an original only from a watched folder whose deletion the user has authorised, after review is confirmed |
-| Working copy of the audio, and `recording.json` (meeting title, microphone name, recording events, confirmation record) | `%LOCALAPPDATA%\Unminute\workspace\media\` | No (planned: #111 C3) | No | The user confirms the transcript is reviewed, or discards the meeting; longer while a hold applies |
-| Microphone recording in progress or not yet imported | `workspace\recordings\` | No (planned: #111 C3) | No | Imported into a meeting; after a crash, until the user keeps or deletes it |
+| Working copy of the audio (`audio.uma`) | `%LOCALAPPDATA%\Unminute\workspace\media\` | Yes: AES-256-GCM, block by block, under the meeting's own audio key; no plain copy is written | No (a plain `audio.f32`) | The user confirms the transcript is reviewed, or discards the meeting; longer while a hold applies |
+| `recording.json` (meeting title, microphone name, recording events, confirmation record) | `workspace\media\` | No | No | With the working copy of the audio |
+| Microphone recording in progress or not yet imported | `workspace\recordings\` | No (planned: #111 C3b) | No | Imported into a meeting; after a crash, until the user keeps or deletes it |
 | Transcript, edits, history, snapshot, speaker names, titles, hold reasons, redaction words, file paths, and the error and restart notes the app writes about a meeting | `workspace\workspace.db` | Yes: AES-256-GCM under per-meeting keys, wrapped by a key Windows protects for this user (DPAPI). Times, states, counts and approximate lengths stay readable | No | The user confirms the final document is saved, or discards the meeting; longer while a hold applies |
 | Handoff templates | `workspace\templates.sealed` | Yes, under the workspace key | No (`templates.json`, plain) | The user changes them |
 | Fingerprints of recordings, to recognise a file already imported | `workspace.db` | Kept as keyed fingerprints (HMAC), not plain hashes | Plain hashes | A meeting's own: until its final cleanup. A watched folder's: 120 days |
 | Cleanup receipts (a random number, times and the result) | `workspace.db` | Content-free | Same | 30 days |
 | Settings | `workspace\settings.json` | No; settings only | Same | The user changes them |
-| Logs and crash files | `workspace\logs\` | No; content-free by design | Same | Size-capped and rotated; crash files read and deleted at the next start |
+| Logs, crash files and the key state (`keys.json`: ok or locked, a reason, a Windows error number, a code, a time) | `workspace\logs\` | No; content-free by design | Same | Size-capped and rotated; crash files read and deleted at the next start |
 | Hugging Face token | Windows Credential Manager | Protected by Windows (DPAPI) | Same | The user removes it; uninstalling keeps it |
 | Copied handoff | The Windows clipboard | No. The Copy buttons ask Windows to keep it out of clipboard history and cloud clipboard (best effort: if that request fails, the copy still goes ahead) | Same | Replaced, or cleared after a set time if IT sets `ClipboardClearMinutes` |
 | Saved handoff | Wherever the user saves it | No | Same | Not tracked by the app |
@@ -48,7 +49,7 @@ Disk encryption (BitLocker) is the organisation's control. While the laptop is o
 
 - **The signed-in user** can see everything in their own workspace through the app.
 - **Other standard users of the same laptop** cannot read the workspace: it inherits the user's profile permissions.
-- **Administrators, SYSTEM services and backup agents** can read files the app does not encrypt (the working copy of the audio, recordings, settings, logs). On `main` they cannot read the encrypted database content without the user's Windows key protection, unless they run code as the user (an administrator of a device the user is signed in to can usually do this) or hold the domain's DPAPI backup key. In v0.5.0-preview.3 nothing is encrypted by the app.
+- **Administrators, SYSTEM services and backup agents** can read files the app does not encrypt (microphone recordings waiting to be imported, `recording.json`, settings, logs). On `main` they cannot read the encrypted database content or the working copy of the audio without the user's Windows key protection, unless they run code as the user (an administrator of a device the user is signed in to can usually do this) or hold the domain's DPAPI backup key. In v0.5.0-preview.3 nothing is encrypted by the app.
 - **Software running as the user**, including malware, can read what the user can read, encrypted or not.
 - **IT** sets managed policy (below). Policy gives IT no access to content, and `--status`, `--health` and Copy diagnostics report counts, states and codes, never content.
 - **The Unminute project** receives nothing: the app has no telemetry and no update check.
@@ -77,7 +78,7 @@ Recordings already in a synced folder (for example OneDrive, where Teams saves t
 - **Discard.** Before review is confirmed, a meeting can be discarded in one confirmation, which deletes its audio and text.
 - **Holds** stop the matching cleanup until released, never expire, and are listed for review every 30 days while the app is open. Releasing a hold deletes nothing by itself.
 - **No reminders** for unreviewed meetings yet (planned: #111 C6). The Meetings page shows each meeting's age and next step.
-- **How deletion works.** Deleted database rows are overwritten, and final cleanup compacts the database. On `main`, a meeting's keys are destroyed at cleanup, so a leftover copy of its encrypted text cannot be opened once every copy of the key is gone. Audio files are removed by ordinary deletion; on an SSD, old blocks are not guaranteed to be erased.
+- **How deletion works.** Deleted database rows are overwritten, and final cleanup compacts the database. On `main`, a meeting's keys are destroyed at cleanup, so a leftover copy of its encrypted text cannot be opened once every copy of the key is gone. On `main` the audio key is destroyed when the audio is cleaned up, so the encrypted working copy cannot be opened afterwards either. Audio files are still removed by ordinary deletion, and microphone recordings are not encrypted; on an SSD, old blocks are not guaranteed to be erased.
 - **What cleanup cannot reach:** copies in synced or backed-up folders, the original on a phone or recorder, cloud recycle bins, saved handoff files, the clipboard, and anything shared with an AI assistant.
 - **Uninstalling** keeps the workspace, the models and the token. There is no offboarding command yet (planned: #111 B8); [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md) has today's steps.
 
@@ -100,9 +101,10 @@ The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". 
 
 From [SECURITY_MODEL.md](SECURITY_MODEL.md), "What the controls do not cover":
 
-- Malware running as the user can unlock the encrypted content as the app does, and can read the unencrypted audio.
+- Malware running as the user can unlock the encrypted content as the app does, and can read the unencrypted microphone recordings.
+- The decoder process runs at Low integrity, which stops it writing the user's files but not reading them. A recording crafted to exploit the decoder could read what the user can read, including the workspace and the key Windows protects for the user (SECURITY_MODEL.md T2; a decoder that cannot read the workspace is #299).
 - Someone with administrator rights who runs code in the user's session can read what the user can read.
-- Windows' protection of the key (DPAPI) is not tied to one computer in every set-up: with a roaming profile the key can be unlocked from another computer, whoever holds the domain's DPAPI backup keys can unlock it, and a disk image or profile backup together with the user's password may be enough. If Windows loses the user's protection keys (for example an administrator resets the password without the old one), the encrypted content cannot be opened again. Which of these applies to the organisation's laptops is to confirm on a pilot laptop (#189; [ENCRYPTION.md](ENCRYPTION.md), "What it does not do").
+- Windows' protection of the key (DPAPI) is not tied to one computer in every set-up: with a roaming profile the key can be unlocked from another computer, whoever holds the domain's DPAPI backup keys can unlock it, and a disk image or profile backup together with the user's password may be enough. If Windows loses the user's protection keys (for example an administrator resets the password without the old one), the encrypted content cannot be opened again: on `main` the workspace then opens locked, reading and changing no meeting. Which of these applies to the organisation's laptops is to confirm on a pilot laptop (#189; [ENCRYPTION.md](ENCRYPTION.md), "What it does not do").
 - The app's network guard covers its own Python code, not the native libraries it loads or WebView2's own processes. Whether WebView2 honours the switch that stops it resolving host names is not yet verified. A firewall rule for the app's runtime is planned (#111 B7).
 - Whether Windows Error Reporting still writes or sends crash dumps of the app's processes, which could hold meeting content from memory, is to confirm on a managed device (SECURITY_MODEL.md T21; [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)).
 - Once content is on the clipboard, in a saved file or with an assistant, the app no longer controls it.

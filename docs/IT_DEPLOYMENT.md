@@ -14,7 +14,7 @@ Unminute assumes these are in place ([SECURITY_MODEL.md](SECURITY_MODEL.md), "Sc
 
 | Control | Why | Threat |
 | --- | --- | --- |
-| BitLocker on every device, enforced by a compliance policy | On `main`, meeting text in the database and the handoff templates are encrypted, but the app's working copy of the audio and microphone recordings waiting to be imported are not (C3 is planned). In v0.5.0-preview.3 nothing is encrypted by the app. BitLocker protects all of it when the laptop is off or hibernated, and also covers the page file and hibernation file | T6, T7 |
+| BitLocker on every device, enforced by a compliance policy | On `main`, meeting text in the database, the handoff templates and the app's working copy of each meeting's audio are encrypted, but microphone recordings waiting to be imported, settings and logs are not (the recordings are planned: C3b). In v0.5.0-preview.3 nothing is encrypted by the app. BitLocker protects all of it when the laptop is off or hibernated, and also covers the page file and hibernation file | T6, T7 |
 | Staff sign in as standard users, one Windows account per person | The install and the workspace are per user. Another standard user cannot read them. An administrator can read the files the app does not encrypt directly, and the encrypted content by running code as the user or with the domain's DPAPI backup key | T8, T9 |
 | How Windows protects the user's keys (**Not in v0.5.0-preview.3**) | On `main` the workspace key is protected by Windows (DPAPI) for the user. With a roaming profile it can be unlocked from another computer the user signs in to; whoever holds the domain's DPAPI backup keys can unlock it; and if Windows loses the user's protection keys, for example when an administrator resets the password without the old one, the encrypted content cannot be opened again. Which of these applies to your devices is to confirm on a pilot laptop (#189). Keep the backup keys protected, and have users finish or clean up their meetings before such a reset ([ENCRYPTION.md](ENCRYPTION.md), "What it does not do") | T6, T8 |
 | Microsoft Defender (or equivalent) active | Malware running as the user can read what the user can read | T9 |
@@ -117,13 +117,14 @@ exit $LASTEXITCODE
 | `--health` shows | What it means | What to do |
 | --- | --- | --- |
 | `"workspace": "none"` | This user has not opened the app yet | Nothing; it counts as healthy |
+| `"workspace": "locked"` (**Not in v0.5.0-preview.3**) | At the app's last start Windows would not unlock the workspace key, so the workspace opened locked: no meeting is read or changed (only the problem is logged) and work waits. Read from what the app recorded, never by trying the key; it takes precedence over `damaged` | The user guide, [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace) |
 | `"workspace": "damaged"` | The last database check found damage | The user guide, [If Unminute finds damage](WORKSPACE_GUIDE.md#if-unminute-finds-damage) |
 | `"workspace": "location"` | The data folder is missing, in OneDrive, on a network drive, or a link to one of those or to a folder that cannot be reached (**Not in v0.5.0-preview.3:** the link to a folder that cannot be reached; that release does not report it as `location`) | Restore the folder or remove the link; only `Unminute\models` may be redirected ([PACKAGING.md](PACKAGING.md), "What the package contains") |
 | `"workspace": "unreadable"` | The workspace cannot be read, or Windows cannot say which account the check runs as | Ask the user for **Copy diagnostics** (Help); see the user guide's troubleshooting table |
 | `"workspace": "system_account"` | The script ran as SYSTEM | Set it to run with the logged-on credentials |
 | `"last_run": "did_not_close"` or `crashes_7d` above 0 | The app or one of its processes ended unexpectedly | Ask the user for **Copy diagnostics** and any code shown (`U-…`); if many devices show it after an update, see "Incidents" below |
 
-When the app cannot unlock its encryption key (**Not in v0.5.0-preview.3**), it stops at start with a code; `--status` still works. The steps are in the user guide, [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace).
+When the app cannot unlock its encryption key (**Not in v0.5.0-preview.3**), it opens locked rather than closing: the page can still copy diagnostics, open help and close, every other request is refused, and no meeting is read or changed (only the problem is logged). `--status` shows `"keys": "locked"` with the reason and a code. If Windows cannot set up a key for a new workspace at all, the app says so with a code and closes, creating nothing. The steps are in the user guide, [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace).
 
 ## Updates and rollback
 
@@ -153,9 +154,9 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 | Incident | First steps | Runbook |
 | --- | --- | --- |
 | A release has a severity 1 issue (content lost or exposed, the core task broken, updates blocked) | The maintainer withdraws it: the previous good release becomes the default download, and the bad release's notes carry a warning. IT stops assigning the bad version. Installs are per user until B6, so each one rolls back with `install.ps1 -Rollback`, unless the bad version changed the storage format, in which case the fix is forward | [Withdrawing a bad release](RELEASING.md#withdrawing-a-bad-release); severity is defined in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), section 14 |
-| Many devices report unhealthy after an update | Read `--health` across devices: crashes, damage or location. Ask affected users for **Copy diagnostics** | [Health monitoring](#health-monitoring-with---health) above; [PACKAGING.md](PACKAGING.md#managed-deployment-intune) for the fields |
+| Many devices report unhealthy after an update | Read `--health` across devices: crashes, damage, a locked workspace or location. Ask affected users for **Copy diagnostics** | [Health monitoring](#health-monitoring-with---health) above; [PACKAGING.md](PACKAGING.md#managed-deployment-intune) for the fields |
 | One user's workspace is damaged or will not open | Follow the user guide's recovery steps; there are no backups, by design | [If Unminute finds damage](WORKSPACE_GUIDE.md#if-unminute-finds-damage) |
-| The app cannot unlock its key (**Not in v0.5.0-preview.3**) | Ask for the code; `--status` still works | [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace) |
+| The app cannot unlock its key (**Not in v0.5.0-preview.3**) | `--health` shows `locked`. Ask for **Copy diagnostics**, which still works while locked, and the code; `--status` still works | [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace) |
 | A suspected security vulnerability in Unminute | Report it privately, with synthetic data only | [SECURITY.md](../SECURITY.md) |
 | A laptop is lost or stolen, or content went somewhere it should not | Follow your organisation's own incident process. What Unminute keeps on the laptop, and what is encrypted, is in the privacy impact assessment draft | [PRIVACY_IMPACT_ASSESSMENT_DRAFT.md](PRIVACY_IMPACT_ASSESSMENT_DRAFT.md) |
 
@@ -165,5 +166,6 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 - Machine-wide models staged by IT, and the runtime firewall rule (B7).
 - An offboarding report and removal (B8).
 - A content-free audit log of exports, deletions and recording confirmations, mirrored to the Windows Event Log (C5).
-- Encryption of the app's working copy of the audio and of recordings (C3), and a locked screen when the key cannot be unlocked (C4).
+- Encryption of microphone recordings waiting to be imported and of the recording handed to the decoder (C3b), and a locked screen in the window when the key cannot be unlocked (C4b; until then the usual window opens with every request refused).
+- A decoder process that cannot read the workspace (#299). Today it runs at Low integrity, which stops it writing the user's files but not reading them.
 - Code signing of the zip and the installer scripts. Releases from 0.5.0 carry signed build provenance and an SBOM attestation instead; signing options are in [PACKAGING.md](PACKAGING.md), "Signing and trust".

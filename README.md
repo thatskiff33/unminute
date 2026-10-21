@@ -52,7 +52,7 @@ That detects a damaged download, not a replaced one. From 0.5.0 (including its p
 
 Unattended and Intune deployment, exit codes, detection rules and signing are covered in [docs/PACKAGING.md](docs/PACKAGING.md). IT teams can start from [docs/IT_DEPLOYMENT.md](docs/IT_DEPLOYMENT.md): install modes, managed policy, health monitoring, updates, offboarding and incidents.
 
-Some behaviour described in this README is in the latest code but not yet in a release: Copy and open ChatGPT, encryption of the workspace database and handoff templates, and the message for a data folder linked to a folder that cannot be reached. The [user guide](docs/WORKSPACE_GUIDE.md) lists what 0.5.0-preview.3 does instead.
+Some behaviour described in this README is in the latest code but not yet in a release: Copy and open ChatGPT, encryption of the workspace database, the handoff templates and each meeting's working copy of the audio, the locked workspace when Windows will not unlock its key, and the message for a data folder linked to a folder that cannot be reached. The [user guide](docs/WORKSPACE_GUIDE.md) lists what 0.5.0-preview.3 does instead.
 
 ### Coming from 0.4.3 or earlier
 
@@ -292,7 +292,7 @@ The repository contains this project's own code, plus one third-party wheel (`pr
 | NVIDIA cuBLAS for CUDA 12 (`nvidia-cublas-cu12` 12.8.4.1, optional download) | NVIDIA CUDA Toolkit end user licence agreement (the wheel's `License.txt`, PyPI "NVIDIA Proprietary Software": 1.1.1 install and use; 2.1 for applications used in systems with NVIDIA GPUs; 1.2 no stand-alone redistribution; cuBLAS is listed as distributable in Attachment A) | Downloaded by the user in Settings > Manage downloads from files.pythonhosted.org (NVIDIA's own PyPI release), for Whisper on an NVIDIA graphics card. Not redistributed here. Checked 20 October 2026 (#248). |
 | sounddevice | MIT | Optional microphone recording in Unminute. Verified 14 October 2026. |
 | PortAudio | MIT | Bundled with sounddevice. The workspace package keeps only the 64-bit Windows library without ASIO. Verified 14 October 2026. |
-| cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Encrypts meeting content in the workspace database and the handoff templates (#111 phase C; not yet in a release). |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Version 50.0.2, from its package metadata, verified 19 October 2026. Encrypts meeting content in the workspace database, the handoff templates and each meeting's decoded audio (#111 phase C; not yet in a release). |
 | OpenSSL | To confirm | Version 4.0.3, built into cryptography's Windows wheel. The wheel's own bill of materials names it but gives no licence. |
 
 Attribution for the speaker identification model: the pyannote speaker-diarization-community-1 pipeline by pyannoteAI, released under CC BY 4.0. If you publish transcripts or derived work that relied on speaker identification, keep that attribution.

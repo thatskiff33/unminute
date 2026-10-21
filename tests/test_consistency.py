@@ -761,6 +761,17 @@ class AccessibilityTargetTests(unittest.TestCase):
                         "accessibility criterion")
         self.assertTrue(criterion.startswith("WCAG 2.2 AA"), criterion)
 
+    def test_the_tool_extension_gates_the_next_release(self):
+        # Owner decision, 22 Oct 2026: #298 (the automatable WCAG 2.2 AA criteria in
+        # tools/accessibility_check.py) is a gate for the next release. The pull request
+        # that lands #298 updates this test with the wording.
+        standard = read("docs/RELEASE_STANDARD.md")
+        wcag = standard.split("### Accessibility against WCAG 2.2 AA", 1)[1].split("\n### ", 1)[0]
+        self.assertIn("#298, which is a gate for the next release", wcag)
+        before = section(read("docs/RELEASING.md"), "Before cutting a release")
+        self.assertRegex(before, r"(?m)^\d+\. \*\*The accessibility check covers WCAG 2\.2 AA "
+                                 r"where it can \(#298\)\.\*\* .*gate for the next release")
+
     def test_no_doc_names_another_wcag_version(self):
         for doc in DocsTests.DOCS:
             with self.subTest(doc=doc):
