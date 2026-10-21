@@ -1,7 +1,7 @@
 # tests/test_ui_idle_check.py
 # The ratchet logic of tools/ui_idle_check.py (docs/RELEASE_STANDARD.md,
-# section 3). The check itself runs the page in headless Edge, in the quality
-# workflow (.github/workflows/quality.yml).
+# section 3). The check itself runs the page in headless Edge, in the CI
+# workflow's "UI idle (headless Edge)" job (.github/workflows/ci.yml).
 
 import json
 import sys

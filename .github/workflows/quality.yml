@@ -1,7 +1,7 @@
-# Quality checks that are not required status checks yet (#125). Each becomes
-# a required check, by moving it into ci.yml and the list in docs/RELEASING.md,
-# after 10 consecutive green runs; that ruleset change needs the owner account.
-# The same supply-chain rules as ci.yml apply (see its header).
+# Report-only quality checks (#125): they never block a merge, so they are not
+# required status checks (docs/RELEASING.md). The UI idle and JavaScript syntax
+# jobs that started here became required and moved into ci.yml (owner decision,
+# 21 Oct 2026, #121). The same supply-chain rules as ci.yml apply (see its header).
 name: Quality
 
 on:
@@ -13,33 +13,6 @@ on:
 permissions: {}
 
 jobs:
-  ui-idle:
-    # Counts what the idle page does per minute of page time (bridge calls,
-    # timers, meeting-list rebuilds), visible and hidden, in headless Edge with
-    # the design fixtures. Counted, not timed, so it is stable on a hosted runner.
-    name: UI idle (headless Edge)
-    runs-on: windows-2025
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.14"
-      - name: Count idle work
-        shell: pwsh
-        run: |
-          python tools/ui_idle_check.py ui-idle.json
-          $code = $LASTEXITCODE
-          if (Test-Path ui-idle.json) {
-            "``````json" >> $env:GITHUB_STEP_SUMMARY
-            Get-Content ui-idle.json >> $env:GITHUB_STEP_SUMMARY
-            "``````" >> $env:GITHUB_STEP_SUMMARY
-          }
-          exit $code
-
   dead-code:
     # Report only (#136): vulture over the shipped code, with the reviewed
     # names in tools/vulture_whitelist.py. Anything listed is a candidate to
@@ -75,19 +48,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat vulture.txt
-
-  js-syntax:
-    name: JavaScript syntax
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      # The runner image's Node.js; nothing is installed from npm.
-      - name: Check every tracked JavaScript file parses
-        run: git ls-files -z '*.js' | xargs -0 -n1 node --check
 
   coverage:
     # Report only: no floor yet (docs/RELEASE_STANDARD.md, section 7). Worker

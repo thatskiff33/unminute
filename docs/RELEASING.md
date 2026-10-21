@@ -18,19 +18,18 @@ These settings cannot be applied from a script that only has push access, so set
    - Block force pushes
    - Require linear history
    - Require a pull request before merging. Leave Required approvals at 0 (a solo maintainer cannot approve their own pull request), tick Dismiss stale pull request approvals when new commits are pushed, and tick Require conversation resolution before merging.
-   - Require status checks to pass. Add every job from `.github/workflows/ci.yml`: `Syntax check`, `Unit tests (Windows)`, `Requirements resolve (wheels only)`, `Ruff`, `PSScriptAnalyzer` and `Workflow lint`. They only appear in the picker after the CI workflow has run once, so add them after the first pull request goes green.
+   - Require status checks to pass. Add every job from `.github/workflows/ci.yml`, `.github/workflows/changelog.yml`, `.github/workflows/audit.yml` and `.github/workflows/codeql.yml`: `Syntax check`, `Unit tests (Windows)`, `Requirements resolve (wheels only)`, `Ruff`, `PSScriptAnalyzer`, `Workflow lint`, `UI idle (headless Edge)`, `JavaScript syntax`, `Changelog entry`, `Dependency audit (pip-audit)`, `Analyse Python`, `Analyse JavaScript` and `Analyse workflows`. A check only appears in the picker after its workflow has run once, so add it after a pull request where it has gone green.
 5. Leave Bypass list empty. Admins are then held to the same rules, which is the point.
 6. Click Create.
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
 Newer checks start outside that list:
-- **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage), `.github/workflows/changelog.yml` (changelog entry) and `.github/workflows/audit.yml` (dependency audit).
-- **How they become required:** after 10 consecutive green runs.
-  - A `quality.yml` job moves into `ci.yml` and joins the list above.
-  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. It joins the list above, and `tests/test_consistency.py` is extended to include `changelog.yml`'s job, since it takes the required set from `ci.yml` today.
-  - The dependency audit stays in `audit.yml`, because it also runs daily, and joins the list the same way.
-  - Adding a check to the ruleset needs the owner account.
+- **How they become required:** after 10 consecutive green runs, and adding a check to the ruleset needs the owner account. The UI idle, JavaScript syntax, changelog entry, dependency audit and CodeQL checks joined the list by owner decision on 21 Oct 2026 (#121).
+  - A `quality.yml` job moves into `ci.yml` when it becomes required, as UI idle and JavaScript syntax did.
+  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. The dependency audit stays in `audit.yml`, because it also runs daily. CodeQL stays in `codeql.yml`.
+  - `tests/test_consistency.py` takes the required set from every job in those four workflows and checks it against the list above.
+- **Report only:** `.github/workflows/quality.yml` keeps `Coverage (report only)` and `Dead code (report only)`. They never block a merge and are not required.
 - **The changelog check:** it looks for a new or changed fragment in `changelog.d/` whenever a pull request changes what is shipped. An edit to `CHANGELOG.md` does not count. Add the `no-changelog` label to a pull request whose change is not worth a release note.
 
 Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps in `.github/dependabot.yml` cover GitHub Actions only (monthly, grouped, a 7-day cooldown); Python dependencies are re-locked instead (see "Workflow supply-chain rules"). CodeQL analyses the Python code, the JavaScript and the workflows from `.github/workflows/codeql.yml`.
@@ -61,7 +60,7 @@ The workflows run with the repository's token, so they are held to these rules. 
 - **A security fix inside the cooldown:** `python tools/lock.py --allow-newer <name>` (after changing the pin in `requirements.in`, for a direct dependency) moves that package to its newest version and records a dated exception in the lock, which lapses once the cooldown covers that version. `--check` lists every active exception.
 - **A rollback:** pin the older version with `==` in the `.in` file; a re-lock otherwise refuses to move any package to an older version.
 - **A Dependabot security pull request** for a Python package edits `requirements.txt` only, so it fails the lock check: treat it as an alert and re-lock instead.
-- **Vulnerability audit.** `tools/audit.py` runs pip-audit over every lock on every pull request and daily (`.github/workflows/audit.yml`). A finding that cannot be fixed yet may be ignored in `requirements/audit-ignore.json`, with the package, a reason and an `until` date at most 90 days ahead; an expired entry fails the audit.
+- **Vulnerability audit.** `tools/audit.py` runs pip-audit over every lock on every pull request and daily (`.github/workflows/audit.yml`). A finding that cannot be fixed yet may be ignored in `requirements/audit-ignore.json`, with the package, a reason and an `until` date at most 90 days ahead; an expired entry fails the audit. Because the audit is a required check, a new advisory or an expired ignore turns every pull request red until a pull request that fixes it (a re-lock, or a dated entry in `requirements/audit-ignore.json`) merges; that pull request passes, since the audit reads its own locks. If PyPI or the advisory database cannot be reached, re-run the failed job once they can.
 - A new version of an action or tool is adopted only after it has been public for at least 7 days, so a compromised or broken release has time to be found.
 
 ## Before cutting a release

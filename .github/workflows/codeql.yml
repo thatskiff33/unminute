@@ -1,6 +1,7 @@
 # CodeQL static analysis of the Python code, the page's JavaScript and the
 # GitHub Actions workflows themselves (injection, permissions). Results go to the Security
-# tab; the branch ruleset blocks merging on high or higher security alerts.
+# tab; the branch ruleset blocks merging on high or higher security alerts, and
+# each job below is a required status check (docs/RELEASING.md).
 #
 # The Python job keeps its original id and no category, so its results stay
 # the same code-scanning configuration that the branch ruleset expects.

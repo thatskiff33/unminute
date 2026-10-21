@@ -227,3 +227,43 @@ jobs:
           --require-hashes -r requirements/ci.txt
       - name: Audit workflows
         run: zizmor --offline --format github .
+
+  ui-idle:
+    # Counts what the idle page does per minute of page time (bridge calls,
+    # timers, meeting-list rebuilds), visible and hidden, in headless Edge with
+    # the design fixtures. Counted, not timed, so it is stable on a hosted runner.
+    name: UI idle (headless Edge)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.14"
+      - name: Count idle work
+        shell: pwsh
+        run: |
+          python tools/ui_idle_check.py ui-idle.json
+          $code = $LASTEXITCODE
+          if (Test-Path ui-idle.json) {
+            "``````json" >> $env:GITHUB_STEP_SUMMARY
+            Get-Content ui-idle.json >> $env:GITHUB_STEP_SUMMARY
+            "``````" >> $env:GITHUB_STEP_SUMMARY
+          }
+          exit $code
+
+  js-syntax:
+    name: JavaScript syntax
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner image's Node.js; nothing is installed from npm.
+      - name: Check every tracked JavaScript file parses
+        run: git ls-files -z '*.js' | xargs -0 -n1 node --check

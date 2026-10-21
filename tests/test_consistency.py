@@ -230,13 +230,28 @@ class DocsTests(unittest.TestCase):
                         broken.append(f"{rel}:{n}: {target}")
         self.assertEqual(broken, [])
 
+    # Every job in these workflows is a required status check (docs/RELEASING.md,
+    # "Protecting main"). ci.yml holds most; the changelog job re-runs when labels
+    # change, the audit also runs daily and CodeQL runs weekly, so they keep their
+    # own workflows. quality.yml holds report-only jobs; release.yml runs only
+    # from a release tag.
+    REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
+    REPORT_ONLY_WORKFLOWS = ("quality.yml",)
+    OTHER_WORKFLOWS = ("release.yml",)
+
+    @staticmethod
+    def workflow_jobs(name):
+        """The job ids and job names in .github/workflows/<name>."""
+        workflow = read(f".github/workflows/{name}")
+        jobs = workflow[workflow.index("\njobs:"):]
+        ids = re.findall(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE)
+        names = re.findall(r"^    name: (.+)$", jobs, re.MULTILINE)
+        return ids, [j.strip().strip('"') for j in names]
+
     @classmethod
     def setUpClass(cls):
         workflow = read(".github/workflows/ci.yml")
-        jobs = workflow[workflow.index("\njobs:"):]
-        cls.job_ids = re.findall(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE)
-        names = re.findall(r"^    name: (.+)$", jobs, re.MULTILINE)
-        cls.jobs = [j.strip().strip('"') for j in names]
+        cls.job_ids, cls.jobs = cls.workflow_jobs("ci.yml")
         cls.compile_line = one(r"^\s*run: python -m compileall (.+)$", workflow,
                                "compileall step in ci.yml")
 
@@ -264,12 +279,44 @@ class DocsTests(unittest.TestCase):
         # lists below would not know about.
         self.assertEqual(len(self.job_ids), len(self.jobs), "every ci.yml job needs a name:")
 
-    def test_required_checks_list_matches_ci_jobs(self):
+    def test_every_workflow_is_classified(self):
+        # A new workflow joins one of the lists above, so its jobs are either
+        # required or left out on purpose.
+        present = {p.name for p in (ROOT / ".github" / "workflows").glob("*.y*ml")}
+        known = set(self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS + self.OTHER_WORKFLOWS)
+        self.assertEqual(present, known, "classify each workflow in DocsTests")
+
+    def test_other_workflow_jobs_found_and_all_named(self):
+        for name in self.REQUIRED_WORKFLOWS + self.REPORT_ONLY_WORKFLOWS:
+            with self.subTest(workflow=name):
+                ids, names = self.workflow_jobs(name)
+                self.assertTrue(ids, f"the job pattern no longer matches {name}")
+                self.assertEqual(len(ids), len(names), f"every {name} job needs a name:")
+
+    def test_required_checks_list_matches_required_jobs(self):
         line = one(r"^.*Require status checks.*$", read("docs/RELEASING.md"),
                    "'Require status checks' line in docs/RELEASING.md")
-        listed = set(re.findall(r"`([^`]+)`", line)) - {".github/workflows/ci.yml"}
-        self.assertEqual(set(self.jobs), listed,
-                         "docs/RELEASING.md's required checks differ from the jobs in ci.yml")
+        quoted = re.findall(r"`([^`]+)`", line)
+        sources = {q.removeprefix(".github/workflows/") for q in quoted
+                   if q.startswith(".github/workflows/")}
+        listed = {q for q in quoted if not q.startswith(".github/workflows/")}
+        self.assertEqual(set(self.REQUIRED_WORKFLOWS), sources,
+                         "docs/RELEASING.md names other workflows for the required checks")
+        required = [job for name in self.REQUIRED_WORKFLOWS
+                    for job in self.workflow_jobs(name)[1]]
+        self.assertEqual(len(required), len(set(required)), "two required jobs share a name")
+        self.assertEqual(set(required), listed,
+                         "docs/RELEASING.md's required checks differ from the jobs in "
+                         + ", ".join(self.REQUIRED_WORKFLOWS))
+
+    def test_report_only_jobs_say_so(self):
+        # A job outside the required workflows never blocks a merge, so its name
+        # says so; a check that should block moves into ci.yml (docs/RELEASING.md).
+        for name in self.REPORT_ONLY_WORKFLOWS:
+            for job in self.workflow_jobs(name)[1]:
+                self.assertTrue(job.endswith("(report only)"),
+                                f"{name} job {job!r} is not report-only: move it into "
+                                "ci.yml and the required list in docs/RELEASING.md")
 
     def test_no_partial_lists_of_ci_jobs(self):
         # A line naming three or more CI jobs is a list of them, and has to name

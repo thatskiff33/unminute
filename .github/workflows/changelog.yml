@@ -2,9 +2,8 @@
 # runtime pins) needs a changelog fragment in changelog.d/ (see its README).
 # CHANGELOG.md itself changes only when a release is prepared, so editing it
 # does not count. Add the "no-changelog" label when a change is not worth a
-# release note. Not a required check yet (#125). It re-runs when labels change,
-# which is why it is its own workflow, and it stays here when it becomes
-# required (docs/RELEASING.md).
+# release note. A required status check (docs/RELEASING.md). It re-runs when
+# labels change, which is why it is its own workflow rather than a job in ci.yml.
 name: Changelog
 
 on:
