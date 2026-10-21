@@ -285,8 +285,8 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 .held { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--hold); color: var(--hold-fg); }
 /* Retention reminders (#111 C6): next to the title, like Held */
 .chip-retention { padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
-.chip-retention.due { background: var(--soft-strong); color: var(--text); }
-.chip-retention.action { background: var(--danger); color: var(--danger-fg); }
+.chip-retention.retention-due { background: var(--soft-strong); color: var(--text); }
+.chip-retention.retention-action { background: var(--danger); color: var(--danger-fg); }
 .progress { height: 8px; border-radius: 999px; overflow: hidden; background: var(--track); }
 .progress > span { display: block; height: 100%; border-radius: 999px; background: var(--fill); }
 .progress.paused > span { background: var(--muted); }

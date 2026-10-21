@@ -191,7 +191,7 @@ function titleLine(m) {
   return el("div", { class: "row-title" },
     el("button", { type: "button", class: "open", textContent: m.title, on: { click: () => openMeeting(m.id) } }),
     m.held ? el("span", { class: "held", textContent: "Held" }) : null,
-    m.retention ? el("span", { class: `chip-retention ${m.retention === "due" ? "due" : "action"}`,
+    m.retention ? el("span", { class: `chip-retention ${m.retention === "due" ? "retention-due" : "retention-action"}`,
                                textContent: RETENTION[m.retention] }) : null);
 }
 

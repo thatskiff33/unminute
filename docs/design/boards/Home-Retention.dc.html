@@ -14,7 +14,7 @@
 body{margin:0}
 </style>
 </helmet>
-<div style="width: 1100px; height: 900px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966">
+<div style="width: 1100px; height: 1100px; display: flex; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966">
 
   <nav aria-label="Main" style="width: 224px; flex: none; box-sizing: border-box; padding: 24px 16px; display: flex; flex-direction: column; gap: 28px; background: #EEF7FD; border-right: 1px solid rgba(20,41,102,0.10)">
     <div style="padding: 0 8px; font-size: 26px; font-weight: 800; letter-spacing: -0.03em">Unminute<span style="color: #E56600">.</span></div>
@@ -37,7 +37,11 @@ body{margin:0}
   </nav>
 
   <main style="flex: 1; min-width: 0; box-sizing: border-box; padding: 32px 40px; display: flex; flex-direction: column; gap: 22px">
-    <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Meetings</h1>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Meetings</h1>
+      <p style="margin: 0; font-size: 15px; color: #566591">Record or import a meeting. Unminute transcribes it here, then walks you through review and hand off.</p>
+    </div>
+
 
     <sc-if value="{{action}}" hint-placeholder-val="{{ true }}">
       <div style="border-radius: 14px; padding: 12px 16px; display: flex; align-items: center; gap: 12px; border: 1px solid #B3261E">
@@ -51,6 +55,31 @@ body{margin:0}
         <span style="flex: 1; font-size: 15px">{{banner}}</span>
       </div>
     </sc-if>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+      <button style="font: inherit; text-align: left; border: 0; border-radius: 16px; padding: 24px; min-height: 148px; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; background: #E56600; color: #FFFFFF">
+        <span style="width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #FFFFFF; color: #E56600">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/><path d="M8 21h8"/></svg>
+        </span>
+        <span style="display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 22px; font-weight: 800">Record a meeting</span>
+          <span style="font-size: 19px; font-weight: 700; opacity: 0.95">Laptop microphone</span>
+        </span>
+      </button>
+      <button style="font: inherit; text-align: left; border-radius: 16px; padding: 24px; min-height: 148px; display: flex; flex-direction: column; justify-content: space-between; gap: 16px; background: #FFFFFF; color: #142966; border: 2px dashed rgba(43,97,191,0.55)">
+        <span style="width: 48px; height: 48px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #B4DDF6; color: #142966">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+        </span>
+        <span style="display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 22px; font-weight: 800">Import a recording</span>
+          <span style="font-size: 15px; color: #566591">Choose files, or drop audio or video anywhere in this window</span>
+        </span>
+      </button>
+    </div>
+    <div style="display: flex; align-items: center; gap: 14px; margin-top: -14px; font-size: 14px; color: #566591">
+      <span>Microphone: Laptop microphone</span>
+      <a href="Recording-States.dc.html" style="font-weight: 600; color: #2B61BF">Change or test</a>
+    </div>
 
     <sc-for list="{{groups}}" as="g" hint-placeholder-count="4">
       <section style="display: flex; flex-direction: column; gap: 10px">
@@ -92,7 +121,7 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"policy":{"editor":"enum","options":["managed","default"],"default":"managed"},"$preview":{"width":1100,"height":900}}'>
+<script type="text/x-dc" data-dc-script data-props='{"policy":{"editor":"enum","options":["managed","default"],"default":"managed"},"$preview":{"width":1100,"height":1100}}'>
 class Component extends DCLogic {
   renderVals() {
     // #111 C6. managed: IT set "Review due" at 7 days and "Action required" at

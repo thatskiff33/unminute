@@ -15,7 +15,7 @@
     "Home-Drop.dc.html": {"x": 3540, "y": 1140, "w": 1100, "h": 760, "title": "Dropping files to import"},
     "Home-States.dc.html": {"x": 4720, "y": 1140, "w": 1100, "h": 1180, "title": "Every meeting row state, reminders and import errors"},
     "Recording-States.dc.html": {"x": 5900, "y": 1140, "w": 1100, "h": 1180, "title": "Record card states"},
-    "Home-Retention.dc.html": {"x": 7080, "y": 1140, "w": 1100, "h": 900, "title": "Retention reminders: Review due and Action required (prop: policy managed or default)"},
+    "Home-Retention.dc.html": {"x": 7080, "y": 1140, "w": 1100, "h": 1100, "title": "Retention reminders: Review due and Action required (prop: policy managed or default)"},
 
     "Meeting.dc.html": {"x": 0, "y": 2700, "w": 1100, "h": 760, "title": "Review"},
     "Meeting-Transcribing.dc.html": {"x": 1180, "y": 2700, "w": 1100, "h": 760, "title": "Still transcribing"},
