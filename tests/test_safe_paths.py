@@ -5,11 +5,13 @@
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -122,6 +124,36 @@ class FileValidationTests(unittest.TestCase):
             self.assertEqual(got, Path(os.path.realpath(self.outside / "secret.wav")))
         finally:
             os.rmdir(link)
+
+    @unittest.skipUnless(os.name == "nt", "the Windows path length limit")
+    def test_a_path_too_long_for_windows_says_so(self):
+        # #111 D2 (red-team part 2, finding 5): with long paths off, a file
+        # past MAX_PATH was reported as missing. Windows is made to refuse the
+        # plain long path here, so this holds whatever this computer's setting.
+        extended = "\\\\?\\"
+        top = self.root / ("e" * 120)
+        target = top / ("f" * 120) / "long.wav"
+        os.makedirs(extended + str(target.parent))
+        real_stat = os.stat
+
+        def stat(path, *args, **kw):
+            text = os.fspath(path)
+            if isinstance(text, str) and not text.startswith(extended) and \
+                    len(text) >= sp.MAX_PATH:
+                raise FileNotFoundError(3, "The system cannot find the path specified")
+            return real_stat(path, *args, **kw)
+        try:
+            with open(extended + str(target), "wb") as f:
+                f.write(b"RIFF" + b"\0" * 100)
+            with mock.patch.object(os, "stat", stat):
+                with self.assertRaises(sp.UnsafePathError) as ctx:
+                    sp.validate_input_file(str(target), AUDIO, 10**6)
+                self.assertEqual(str(ctx.exception), sp.TOO_LONG_MESSAGE)
+                with self.assertRaises(sp.UnsafePathError) as ctx:     # really missing
+                    sp.validate_input_file(str(target.with_name("gone.wav")), AUDIO, 10**6)
+                self.assertIn("could not be found", str(ctx.exception))
+        finally:
+            shutil.rmtree(extended + str(top))
 
     def test_refuses_wrong_type_empty_large_and_directories(self):
         (self.root / "notes.exe").write_bytes(b"MZ")

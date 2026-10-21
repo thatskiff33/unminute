@@ -173,9 +173,23 @@ class ParseTests(unittest.TestCase):
                             winreg.REG_EXPAND_SZ)
         self.assertEqual(got, os.path.join(os.environ["USERPROFILE"], "Handoffs"))
 
+    def test_folder_expands_only_what_windows_expands(self):
+        # #111 D2 (red-team part 2, finding 7): os.path.expandvars also
+        # expanded $NAME and ${NAME}, which Windows leaves as they are.
+        import os
+        import winreg
+        env = {"UMV_TEST_BASE": "C:\\Data", "UMV_TEST_DOLLAR": "\\\\evil\\x"}
+        with mock.patch.dict(os.environ, env):
+            got = policy._parse("HandoffDefaultFolder",
+                                "%UMV_TEST_BASE%\\$UMV_TEST_DOLLAR\\${UMV_TEST_DOLLAR}",
+                                winreg.REG_EXPAND_SZ)
+            self.assertEqual(got, "C:\\Data\\$UMV_TEST_DOLLAR\\${UMV_TEST_DOLLAR}")
+            with self.assertRaises(ValueError):          # expands to a network path
+                policy._parse("HandoffDefaultFolder", "%UMV_TEST_DOLLAR%", winreg.REG_EXPAND_SZ)
+
     def test_reading_without_a_policy_key_is_empty(self):
         # Development and CI machines have no policy key.
-        self.assertEqual(policy.read_registry(), ({}, ()))
+        self.assertEqual(policy.read_registry(), ({}, (), ()))
 
     def test_registry_reading_end_to_end(self):
         import winreg
@@ -188,14 +202,43 @@ class ParseTests(unittest.TestCase):
                 return False
         done = OSError(None, "No more data is available", None, policy.ERROR_NO_MORE_ITEMS)
         rows = [("allowmodeldownloads", 0, winreg.REG_DWORD),        # any case
-                ("AllowModelDownload", 1, winreg.REG_DWORD),         # misspelt: ignored
+                ("AllowModelDownload", 1, winreg.REG_DWORD),         # misspelt: listed only
                 ("AllowWatchedFolders", "0", winreg.REG_SZ),          # wrong type: withheld
                 ("ClipboardClearMinutes", 5, winreg.REG_DWORD), done]
         with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
                 mock.patch.object(winreg, "EnumValue", side_effect=rows):
-            values, invalid = policy.read_registry()
+            values, invalid, unrecognised = policy.read_registry()
         self.assertEqual(values, {"AllowModelDownloads": False, "ClipboardClearMinutes": 5})
         self.assertEqual(invalid, ("AllowWatchedFolders",))
+        self.assertEqual(unrecognised, ("AllowModelDownload",))
+
+    def test_unrecognised_names_are_listed_and_change_nothing(self):
+        # #111 D2 (red-team part 2, finding 8): a deny with a trailing space or
+        # a lookalike letter was ignored with nothing to show it.
+        import winreg
+
+        class Key:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+        done = OSError(None, "No more data is available", None, policy.ERROR_NO_MORE_ITEMS)
+        rows = [("AllowModelDownloads ", 0, winreg.REG_DWORD),
+                ("AllowModelDownlоads", 0, winreg.REG_DWORD),
+                *((f"Other{i}", 1, winreg.REG_DWORD) for i in range(30)), done]
+        with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
+                mock.patch.object(winreg, "EnumValue", side_effect=rows):
+            values, invalid, unrecognised = policy.read_registry()
+        self.assertEqual((values, invalid), ({}, ()))
+        self.assertEqual(len(unrecognised), policy.UNRECOGNISED_MAX)        # bounded
+        p = policy.PolicySource(reader=lambda: (values, invalid, unrecognised)).current()
+        self.assertTrue(p.get("AllowModelDownloads"))      # still not managed: nothing changes
+        self.assertFalse(p.managed("AllowModelDownloads"))
+        shown = p.summary()["unrecognised"]
+        self.assertIn("AllowModelDownloads\\x20", shown)
+        self.assertIn("AllowModelDownl\\u043eads", shown)
+        self.assertTrue(all(n.isascii() and n.isprintable() and " " not in n for n in shown))
 
     def test_a_policy_key_that_cannot_be_read_withholds_everything(self):
         import winreg
@@ -207,13 +250,13 @@ class ParseTests(unittest.TestCase):
             def __exit__(self, *exc):
                 return False
         with mock.patch.object(winreg, "OpenKey", side_effect=PermissionError("denied")):
-            self.assertEqual(policy.read_registry(), ({}, policy.UNREADABLE))
+            self.assertEqual(policy.read_registry(), ({}, policy.UNREADABLE, ()))
         broken = [("AllowGpuComponent", 1, winreg.REG_DWORD),
                   OSError(None, "The key was changed", None, 1018)]   # not "no more items"
         with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
                 mock.patch.object(winreg, "EnumValue", side_effect=broken):
-            values, invalid = policy.read_registry()
-        self.assertEqual((values, invalid), ({}, policy.UNREADABLE))
+            values, invalid, unrecognised = policy.read_registry()
+        self.assertEqual((values, invalid, unrecognised), ({}, policy.UNREADABLE, ()))
         p = policy.Policy(values, invalid)
         self.assertFalse(any(p.get(n) for n in policy.SPEC if policy.SPEC[n][2]))
 

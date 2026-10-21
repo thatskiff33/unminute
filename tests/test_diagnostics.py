@@ -440,7 +440,9 @@ class SharingTests(unittest.TestCase):
         from workspace import clipboard, gpu, policy, setup, update
         self.values.update(AllowModelDownloads=False, HandoffDefaultFolder=f"C:\\{MARKER}")
         self.invalid = ("ClipboardClearMinutes",)
-        self.ws.policy = policy.PolicySource(reader=lambda: (self.values, self.invalid))
+        # A value name Unminute does not recognise is counted, never shown (#111 D2).
+        self.ws.policy = policy.PolicySource(
+            reader=lambda: (self.values, self.invalid, (f"Allow{MARKER}",)))
         self.ws._forget_display()
         odd = f"{MARKER} text"
         with mock.patch.object(setup, "cards", return_value=[{"name": odd, "state": odd}]), \
@@ -452,6 +454,7 @@ class SharingTests(unittest.TestCase):
         self.assertIn("AllowModelDownloads=False", text)
         self.assertIn("HandoffDefaultFolder=set", text)
         self.assertIn("ClipboardClearMinutes=invalid", text)
+        self.assertIn("; names not recognised: 1", text)
         self.assertIn("mode=quiet", text)
         self.assertNotIn(MARKER, text)
         self.ws.settings.values["model"] = MARKER               # past validation somehow

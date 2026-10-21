@@ -2,8 +2,10 @@
 # Synthetic files only; the hasher is real (SHA-256), imports are recorded.
 #   python -m unittest discover -s tests -v
 
+import contextlib
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -17,6 +19,7 @@ import keyprotect  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 EXT = (".wav", ".mp3", ".m4a")
+EXTENDED = "\\\\?\\"                 # a Windows extended-length path prefix
 BIG = 1 << 30
 
 if HAVE_DEPS:
@@ -81,6 +84,35 @@ class IntakeTests(unittest.TestCase):
         intake.add_folder(self.store, str(self.folder))
         with self.assertRaises(IntakeError):
             intake.add_folder(self.store, str(self.folder))       # already watched
+
+    def test_refuses_folders_that_hold_the_profile_or_app_data(self):
+        # #111 D2 (red-team part 2, finding 6): the folder holding every
+        # profile, and AppData with the app's own data folder, could be watched.
+        profile = self.root / "Users" / "someone"
+        appdata = profile / "AppData"
+        local = appdata / "Local"
+        for d in (local / "Unminute" / "workspace", local / "Temp" / "Recordings",
+                  appdata / "Roaming", appdata / "LocalLow", profile / "Documents" / "Recordings"):
+            d.mkdir(parents=True)
+        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
+               "LOCALAPPDATA": str(local)}
+        with mock.patch.dict(os.environ, env):
+            for bad in (self.root / "Users", profile, appdata, local, appdata / "Roaming",
+                        appdata / "LocalLow", local / "Unminute", local / "Unminute" / "workspace"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            for good in (local / "Temp" / "Recordings", profile / "Documents" / "Recordings"):
+                intake.add_folder(self.store, str(good))
+        # A local app data folder redirected elsewhere: what holds it is refused too.
+        data = self.root / "Data"
+        (data / "Local" / "Unminute").mkdir(parents=True)
+        (data / "Shared").mkdir()
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(data / "Local")}):
+            for bad in (data, data / "Local", data / "Local" / "Unminute"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(data / "Shared"))
+        self.assertEqual(len(intake.folders(self.store)), 3)
 
     def test_only_a_duplicate_is_called_already_watched(self):
         # Any other failure (here a full disk) is not "already watched" (#111 C2a).
@@ -207,7 +239,7 @@ class IntakeTests(unittest.TestCase):
         wav(self.folder / "history.wav", seed=33)
         intake.add_folder(self.store, str(self.folder))
         real = intake._walk
-        intake._walk = lambda root, ext, stop=None: ([], False)       # e.g. sync re-initialising
+        intake._walk = lambda root, ext, stop=None: ([], False, [])       # e.g. sync re-initialising
         try:
             self.scan()
         finally:
@@ -215,6 +247,83 @@ class IntakeTests(unittest.TestCase):
         self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
         self.settle()
         self.assertEqual(self.queued, [])                           # history not imported
+
+    def long_paths(self, limit):
+        """Act as Windows without long paths turned on: a plain path of
+        `limit` characters or more cannot be listed or read, while its
+        extended form can. The same whatever this computer's setting is."""
+        real_scandir, real_stat = os.scandir, os.stat
+
+        def plain(path):
+            text = os.fspath(path)
+            if not isinstance(text, str):
+                return path
+            if text.startswith(EXTENDED):
+                return text[len(EXTENDED):]
+            if len(text) >= limit:
+                raise FileNotFoundError(3, "The system cannot find the path specified")
+            return text
+
+        def scandir(path="."):
+            return real_scandir(plain(path))
+
+        def stat(path, *args, **kw):
+            return real_stat(path if isinstance(path, int) else plain(path), *args, **kw)
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(os, "scandir", scandir))
+        stack.enter_context(mock.patch.object(os, "stat", stat))
+        stack.enter_context(mock.patch.object(intake, "_LONG_PATHS", True, create=True))
+        return stack
+
+    def test_a_path_too_long_for_windows_does_not_stop_the_baseline(self):
+        # #111 D2 (red-team part 2, finding 5): one folder past MAX_PATH made
+        # the walk incomplete, so the baseline was never recorded and nothing
+        # was ever imported from the folder.
+        wav(self.folder / "history.wav", seed=40)
+        deep = self.folder / ("d" * 30) / ("e" * 30)
+        old = wav(deep / "deep history.wav", seed=41)
+        intake.add_folder(self.store, str(self.folder))
+        limit = len(str(deep))
+        with self.long_paths(limit):
+            self.settle()
+        [f] = intake.folders(self.store)
+        self.assertTrue(f["baseline_done"])
+        self.assertIsNone(f["last_error"])
+        self.assertEqual(self.queued, [])                         # a baseline imports nothing
+        wav(self.folder / "new.wav", seed=42)
+        wav(deep / "new deep.wav", seed=43)
+        with self.long_paths(limit):
+            self.settle()
+        self.assertEqual([p.name for p in self.queued], ["new.wav"])
+        self.assertEqual(intake.folders(self.store)[0]["last_error"], intake._too_long_note(1))
+        # Moved to a shorter path: the old recording is still not new, and the
+        # new one is imported.
+        old.rename(self.folder / old.name)
+        (deep / "new deep.wav").rename(self.folder / "new deep.wav")
+        with self.long_paths(limit):
+            self.settle()
+        self.assertEqual(sorted(p.name for p in self.queued), ["new deep.wav", "new.wav"])
+        self.assertIsNone(intake.folders(self.store)[0]["last_error"])
+
+    def test_a_real_long_path_does_not_stop_the_baseline(self):
+        # The same on this computer's file system, whatever its long path
+        # setting: with long paths off, the deep file is listed by the
+        # extended form and counted; with them on, it is an ordinary file.
+        top = self.folder / ("e" * 120)
+        deep = top / ("f" * 120)
+        os.makedirs(EXTENDED + str(deep))
+        try:
+            with open(EXTENDED + str(deep / "deep history.wav"), "wb") as f:
+                f.write(b"RIFF")
+            wav(self.folder / "history.wav", seed=44)
+            intake.add_folder(self.store, str(self.folder))
+            self.settle()
+            self.assertTrue(intake.folders(self.store)[0]["baseline_done"])
+            wav(self.folder / "new.wav", seed=45)
+            self.settle()
+            self.assertEqual([p.name for p in self.queued], ["new.wav"])
+        finally:
+            shutil.rmtree(EXTENDED + str(top))
 
     def count_transactions(self):
         """Patch the store so each transaction is counted (R7: each one is a
@@ -466,7 +575,7 @@ class IntakeTests(unittest.TestCase):
         intake.add_folder(self.store, str(self.folder))
         self.settle()
         real = intake._walk
-        intake._walk = lambda root, ext, stop=None: ([], False)
+        intake._walk = lambda root, ext, stop=None: ([], False, [])
         try:
             self.scan()
         finally:

@@ -234,7 +234,9 @@ def _check_request(request):
     a redirect to another host: this check does."""
     from workspace import offline_guard
     host = request.url.raw_host       # the exact name sent (httpx decodes xn-- in .host)
-    if request.url.scheme != "https" or not offline_guard.host_allowed(host):
+    # HTTPS on its standard port only (#111 D2): httpx gives None for 443.
+    if (request.url.scheme != "https" or request.url.port not in (None, 443)
+            or not offline_guard.host_allowed(host)):
         raise offline_guard.NetworkBlockedError(
             13, f"Download address not allowed: {request.url.host}")
 
@@ -462,9 +464,34 @@ class _SameHost(urllib.request.HTTPRedirectHandler):
         self.prefix = prefix
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not newurl.startswith(self.prefix):
+        if not _within(newurl, self.prefix):
             raise SetupError("The download site redirected elsewhere. Nothing was installed.")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _origin(parts):
+    """(scheme, host, port) of a split address, the port filled in."""
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    return parts.scheme, parts.hostname, port
+
+
+def _within(url, prefix):
+    """The address lies inside the pinned location prefix: the same scheme,
+    host and port, no user name or password, and a path under the prefix's
+    path once percent-escapes are decoded, with no . or .. segment and no
+    backslash. A plain string comparison would let /whl/cu130/../../x
+    through (#111 D2)."""
+    from urllib.parse import unquote, urlsplit
+    try:
+        u, p = urlsplit(url), urlsplit(prefix)
+        if _origin(u) != _origin(p) or u.username is not None or u.password is not None:
+            return False
+    except ValueError:                           # a malformed port
+        return False
+    path = unquote(u.path)
+    if "\\" in path or any(s in (".", "..") for s in path.split("/")):
+        return False
+    return path.startswith(unquote(p.path))
 
 
 def _fetcher(prefix):
@@ -477,7 +504,7 @@ def _fetch(url, dest, expected_size, prefix=gpu.DOWNLOAD_HOST):
     """Stream one file to disk (download process only); the caller checks the
     SHA-256. Only the component's pinned HTTPS download location is accepted."""
     import urllib.request
-    if not prefix.startswith("https://") or not url.startswith(prefix):
+    if not prefix.startswith("https://") or not url.startswith(prefix) or not _within(url, prefix):
         raise SetupError("Unexpected download address.")
     opener = urllib.request.build_opener(_SameHost(prefix))
     req = urllib.request.Request(url, headers={"User-Agent": "Unminute"})

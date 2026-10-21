@@ -197,6 +197,24 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(ws.transcript(mid, version=0)["items"][0]["text"], "Human correction")
         self.assertTrue(ws.transcript(mid)["items"][0]["text"].startswith("second"))
 
+    def test_titles_and_speaker_names_drop_invisible_format_characters(self):
+        # #111 D2 (red-team part 2, finding 9): a right-to-left override
+        # (U+202E) in a file name or a rename could disguise a title in the
+        # meeting list. Transcript edits keep such characters (not labels).
+        from workspace.app import _clean_text
+        ws = self.open(start=False)
+        named = self.root / "Board‮v4p.mp3.wav"
+        named.write_bytes(self.rec.read_bytes())
+        ws._import_one(named)
+        [m] = ws.meetings()
+        self.assertEqual(m["title"], "Boardv4p.mp3")
+        ws.rename(m["id"], "‮Budget​ review⁦")
+        self.assertEqual(ws.meetings()[0]["title"], "Budget review")
+        ws.rename(m["id"], "‮​ ")
+        self.assertEqual(ws.meetings()[0]["title"], "Untitled meeting")
+        self.assertEqual(_clean_text("Aroha‮", 40, label=True), "Aroha")
+        self.assertEqual(_clean_text("kept‍", 40), "kept‍")
+
     def test_transcribe_again_is_offered_unless_transcribing_reviewed_or_without_audio(self):
         ws = self.open(start=False)
         ws._import_one(self.rec)
