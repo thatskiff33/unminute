@@ -834,6 +834,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotEqual(gone["exitcode"], 0)
         self.assertTrue([r for r in records(self.logs()) if r["kind"] == "crash"])
 
+    def test_a_crash_while_a_worker_releases_its_model_is_recorded(self):
+        # The model is released before the crash file closes (#278), so a
+        # crash in its teardown keeps its frames.
+        handle = self.ws.handle
+        handle.load(fake("crash_on_release"), 1)
+        handle.shutdown()
+        [gone] = [r for r in records(self.logs()) if r["kind"] == "worker_exit"]
+        self.assertNotEqual(gone["exitcode"], 0)
+        [crash] = [r for r in records(self.logs()) if r["kind"] == "crash"]
+        self.assertEqual(crash["code"], gone["code"])
+        self.assertTrue(crash["frames"])
+        self.assertEqual(leaks(self.logs()), [])
+
     def test_a_processing_error_shows_its_code(self):
         ws = self.ws
         mid = ws.store.create_meeting("Synthetic")

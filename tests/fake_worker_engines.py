@@ -126,6 +126,17 @@ def slow_exit(threads):
     return echo(threads)
 
 
+class _CrashesOnRelease(_Engine):
+    def __del__(self):
+        _access_violation()
+
+
+def crash_on_release(threads):
+    """Like echo, but releasing it crashes natively, as a model's native
+    teardown (a graphics card context) can (#278)."""
+    return _CrashesOnRelease(echo(threads).fn)
+
+
 def load_fails(threads):
     raise RuntimeError("model files failed verification")
 

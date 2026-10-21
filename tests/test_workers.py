@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
@@ -240,6 +242,25 @@ class SlowToEnd:
             self.exitcode = 1
 
 
+class NeverEnds:
+    """A stand-in worker process that does not end however long it is waited
+    for. join() moves a shared clock on by the time it was given instead of
+    sleeping."""
+    pid, name, exitcode = 4321, "unminute-worker", None
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def is_alive(self):
+        return True
+
+    def terminate(self):
+        pass
+
+    def join(self, timeout=None):
+        self.clock[0] += timeout
+
+
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class WorkerEndTests(unittest.TestCase):
     """#278: a worker that has ended, or been told to, leaves nothing open in
@@ -283,6 +304,47 @@ class WorkerEndTests(unittest.TestCase):
         with self.assertRaises(WorkerStopped):
             self.h.load(fake("echo"), 1)
         self.assertIsNone(self.h._proc)
+
+    def test_a_run_that_began_as_the_handle_closed_starts_no_worker(self):
+        self.h.close()
+        # begin_run read _closed just before close() set it, then cleared the stop.
+        self.h._stop_requested.clear()
+        with self.assertRaises(WorkerStopped):
+            self.h.load(fake("echo"), 1)
+        self.assertIsNone(self.h._proc)
+
+    def test_a_companion_asked_for_after_close_is_closed(self):
+        self.h.close()
+        companion = self.h.gpu_worker(self.tmp.name)
+        self.assertTrue(companion._closed)
+        self.assertTrue(companion._stop_requested.is_set())
+
+    def _never_ending_workers(self):
+        """This handle and both GPU companions, each with a process that does
+        not end; the clock their waits move on."""
+        clock = [0.0]
+        handles = [self.h, self.h.gpu_worker(self.tmp.name),
+                   self.h.whisper_gpu_worker(self.tmp.name, "whisper")]
+        for h in handles:
+            h._proc = NeverEnds(clock)
+        return clock, handles
+
+    def test_close_waits_for_all_its_workers_together(self):
+        from workspace import worker
+        clock, handles = self._never_ending_workers()
+        with mock.patch.object(worker, "time", SimpleNamespace(monotonic=lambda: clock[0])):
+            self.h.close()
+        self.assertEqual(worker.END_WAIT_S, clock[0])        # not once for each
+        self.assertEqual([None] * 3, [h._proc for h in handles])
+
+    def test_stop_now_waits_briefly_for_all_its_workers_together(self):
+        # It runs while the app holds its own lock (pause, discard).
+        from workspace import worker
+        clock, handles = self._never_ending_workers()
+        with mock.patch.object(worker, "time", SimpleNamespace(monotonic=lambda: clock[0])):
+            self.h.stop_now()
+        self.assertEqual(worker.STOP_WAIT_S, clock[0])
+        self.assertEqual([None] * 3, [h._proc for h in handles])
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

@@ -65,6 +65,10 @@ CRASH_GRACE_S = 2.0
 # (nor the folder holding it). A loaded machine can take more than a few
 # seconds to end a process (#278).
 END_WAIT_S = 30.0
+# Stop now waits at most this long, all its workers together: it can run while
+# the app holds its own lock (pause, discard). A worker still ending then is
+# left to end by itself, and cleanup that finds a file still open retries (C1).
+STOP_WAIT_S = 5.0
 
 
 class WorkerCrashed(RuntimeError):
@@ -145,6 +149,7 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         try:
             msg = conn.recv()
         except (EOFError, OSError):
+            engine = loaded = None           # released while crashes are still captured
             _end_crash_capture(log)
             return
         op = msg[0]
@@ -181,8 +186,11 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                 gc.collect()
                 conn.send(("ok", turns, exclusive, ran_on, had_asr))
             elif op == "exit":
-                # The crash file is closed before the answer: the app then
-                # reads and deletes it however long this process takes to end.
+                # The model is released, and the crash file closed, before the
+                # answer: a crash in the model's teardown is still captured,
+                # and the app reads and deletes the file however long this
+                # process then takes to end.
+                engine = loaded = None
                 _end_crash_capture(log)
                 conn.send(("ok",))
                 return
@@ -197,7 +205,11 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
 
 
 def _end_crash_capture(log):
-    """The worker's work is done: close its crash file (#278)."""
+    """The worker's work is done and its model released: free what the model
+    left (native teardown, still under faulthandler), then close the crash
+    file (#278)."""
+    import gc
+    gc.collect()
     if log is not None:
         log.stop_crash_capture()
 
@@ -263,16 +275,17 @@ class WorkerHandle:
         self._conn, self._loaded = parent, None
         self._wake.set()                 # the idle loop now has a worker to watch
 
-    def _kill(self, grace=0.0):
+    def _kill(self, grace=0.0, wait=END_WAIT_S):
         """End the worker. grace: when it looks to be dying already, let it
         finish for that long first, so its own exit code (and crash file) are
-        kept rather than replaced by ours."""
+        kept rather than replaced by ours. wait: how long to wait for it to
+        end once terminated."""
         if self._proc is not None:
             if grace and self._proc.is_alive():
                 self._proc.join(grace)
             if self._proc.is_alive():
                 self._proc.terminate()
-            self._proc.join(END_WAIT_S)
+            self._proc.join(max(0.0, wait))
             # Ended by itself: not by terminate() (-SIGTERM), a stop or a clean exit.
             self._note_exit(died=not self._stop_requested.is_set()
                             and self._proc.exitcode not in (0, None, -signal.SIGTERM))
@@ -313,6 +326,8 @@ class WorkerHandle:
                                    allow_test_engines=self.allow_test_engines, log=self.log,
                                    gpu_component=component)
             setattr(self, attr, current)
+            if self._closed:
+                current.close()          # nothing would close it later (#278)
         current.quiet = self.quiet
         # Clear the companion's old stop first, then carry over a stop that is
         # in force now, so a stop that lands meanwhile is never lost.
@@ -361,39 +376,57 @@ class WorkerHandle:
 
     def _shutdown_own(self):
         with self._lock:
+            grace = 0.0
             if self._proc is not None and self._proc.is_alive():
                 try:
                     self._conn.send(("exit",))
                     if self._conn.poll(5):
                         self._conn.recv()
                 except (OSError, EOFError):
-                    pass
-            self._kill()
+                    # It ended without answering (a crash while releasing its
+                    # model): keep its own exit code, as a request does.
+                    grace = CRASH_GRACE_S
+            self._kill(grace=grace)
 
-    def close(self):
-        for companion in self._companions():
-            companion.close()
+    def close(self, deadline=None):
+        """End this worker and its companions for good. Every process is told
+        to end first, then all are waited for: END_WAIT_S at most in all, not
+        for each worker. An in-flight chunk is not waited for."""
+        if deadline is None:
+            deadline = time.monotonic() + END_WAIT_S
         self._closed = True
         self._wake.set()
-        self.stop_now()              # do not wait for an in-flight chunk
+        self._terminate()
+        for companion in self._companions():
+            companion.close(deadline)
         with self._lock:
-            self._kill()
+            self._kill(wait=deadline - time.monotonic())
 
-    def stop_now(self):
-        """Terminate immediately (e.g. user Stop or cleanup). In-flight work is lost
-        by design; it was never committed. Safe from any thread: it flags the
-        stop and terminates the process; the thread running a request (if any)
-        cleans up and raises WorkerStopped, otherwise cleanup happens here.
-        The stop stays in force until begin_run()."""
+    def _terminate(self):
+        """Flag the stop and terminate this worker and its companions, waiting
+        for none of them."""
         self._stop_requested.set()
         for companion in self._companions():
-            companion.stop_now()
+            companion._terminate()
         proc = self._proc
         if proc is not None and proc.is_alive():
             proc.terminate()
+
+    def stop_now(self, deadline=None):
+        """Terminate immediately (e.g. user Stop or cleanup). In-flight work is lost
+        by design; it was never committed. Safe from any thread: it flags the
+        stop and terminates the process; the thread running a request (if any)
+        cleans up and raises WorkerStopped, otherwise cleanup happens here,
+        waiting STOP_WAIT_S at most for this worker and its companions together.
+        The stop stays in force until begin_run()."""
+        if deadline is None:
+            deadline = time.monotonic() + STOP_WAIT_S
+        self._terminate()
+        for companion in self._companions():
+            companion.stop_now(deadline)
         if self._lock.acquire(blocking=False):      # no request in flight
             try:
-                self._kill()
+                self._kill(wait=deadline - time.monotonic())
             finally:
                 self._lock.release()
 
@@ -436,6 +469,10 @@ class WorkerHandle:
             if self._proc is not None and not self._proc.is_alive():
                 self._kill()                 # it ended while idle: noted before a new one
             if self._proc is None:
+                if self._closed:
+                    # A run that began just as the handle closed (begin_run read
+                    # _closed before close() set it): never start a worker then.
+                    raise WorkerStopped("Closed.")
                 self._start()
             try:
                 self._conn.send(msg)
