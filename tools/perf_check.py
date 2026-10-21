@@ -83,10 +83,14 @@ RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
 # counts only if it was drawn (drawing_report()); release evidence checks the
 # record of that (tools/evidence.py).
 VISIBLE_STATES = evidence.PERF_VISIBLE_STATES
-# The level meter asks for every display frame while recording with the window
-# in view; fewer than MIN_DRAW_FPS a second means it was not being drawn.
+# The level meter draws while recording with the window in view: on every
+# display frame up to METER_MAX_HZ, then on every Nth frame for about that rate
+# (#294). Its draws are counted, not the page's frames, and a window counts
+# only if it drew at least half its expected rate (min_meter_draws()) and was
+# never undrawn for longer than MAX_UNDRAWN_S at a stretch.
 DRAWING_STATES = ("recording",)
-MIN_DRAW_FPS = 20
+METER_MAX_HZ = 60
+MAX_UNDRAWN_S = 5.0
 # GUID_SESSION_DISPLAY_STATUS's values. A dimmed display still draws every frame.
 DISPLAY_STATES = {0: "off", 1: "on", 2: "dimmed"}
 DRAWN_DISPLAY = ("on", "dimmed")
@@ -123,17 +127,34 @@ short-window noise cannot be scaled up.
 Drawn on screen (#292): a visible state's drawing cost is only paid while the
 display is on and the window is drawn, so the run asks Windows to keep the
 display on (and the machine awake) for its own duration, without changing the
-power plan, and records whether it could ("display": "kept_awake"). Each
-window measured in a visible state (meetings, settings, recording) counts
-only if the display stayed on (Windows' display status for the session), the
-session was not locked and showed no screen saver, and the page was visible
-and drew: at least one frame in every such window, and at least 20 frames a
-second of the level display while recording. The page's frames are counted
-by a wrapper the tool puts around requestAnimationFrame in its own window, so
-counting adds no frames; the tool asks for one frame as each window starts, to
-see one drawn. Each such window's "drawing" block records what was seen. A
-window that was not drawn stops the run (exit 2), in every mode: keep the
-session unlocked and the window in view.
+power plan, and records whether it could ("display": "kept_awake") and the
+display's refresh rate once it is kept on ("refresh_hz", which the machine
+block then records; with the rate read before, "refresh_hz_before_kept_on",
+if the two differ: dynamic refresh can lower it while idle). A run that starts
+with the display off or the session locked stops before measuring (exit 2).
+Each window measured in a visible state (meetings, settings, recording)
+counts only if the display stayed on (Windows' display status for the
+session), the session was not locked and showed no screen saver, and the page
+was visible and drew: at least one frame in every such window, and while
+recording, the level display drawn at least half as often as it should be
+(it draws on every display frame up to about 60 a second: so at least 30 a
+second on a 60 Hz or faster display, 24 on a 48 Hz one; 60 Hz is assumed if
+the rate is not known), with no stretch longer than 5 s undrawn. The page's
+frames are counted by a wrapper the tool puts around requestAnimationFrame in
+its own window, and the level display's draws by a wrapper around clearRect
+that counts the animation frames in which the level display's canvas was
+cleared for drawing, so counting adds no frames; the tool asks for one frame
+as each window starts, to see one drawn.
+Each such window's "drawing" block records what was seen ("page_frames_per_s",
+"meter_draws_per_s", "min_meter_draws_per_s", "longest_undrawn_s"). A window
+that was not drawn stops the run (exit 2), in every mode, --quick included:
+keep the session unlocked and the window in view.
+
+Keeping the display on does not stop a screen saver or an inactivity lock set
+by Intune or other policy (a laptop whose policy locks after about 60 minutes
+without input locks part-way through a release run). An unattended release
+run must account for that, or the run stops with exit 2 when the session
+locks or the screen saver starts.
 
 Output: a JSON report with the machine's specification ("machine": processor,
 cores and logical processors, memory, Windows build, power plan, mains or
@@ -424,40 +445,64 @@ def steps(state, recording):
 # visible state needs the display on, the session unlocked and the page drawing.
 
 # Put into the tool's own window once the page has started (the child, never
-# the app): counts the animation frames the page itself asks for, by wrapping
-# requestAnimationFrame, so counting adds no frame. read() also asks for one
-# frame of its own ("ping"), so the next read shows whether any frame was drawn
-# in between, even in a view that draws nothing. Only counts leave the page.
+# the app). It counts two things, and adds no frame of its own while counting:
+#   - the page's frames: the distinct animation frames in which the page's own
+#     requestAnimationFrame callbacks ran (wrapped; one count per frame);
+#   - the level display's draws: the animation frames in which the level
+#     display's canvas (#rec-canvas) was cleared for drawing (clearRect wrapped;
+#     one count per frame). The meter clears its canvas each time it draws and
+#     only then, so this counts frames it drew, not callbacks it skipped (#294),
+#     and the longest stretch between two draws.
+# read() returns the counts and the longest undrawn stretch since the last read
+# (to the read itself), then starts the next stretch, and asks for one frame of
+# its own ("ping") so the next read shows whether any frame was drawn in
+# between, even in a view that draws nothing. Only counts leave the page.
 PAGE_COUNTER_JS = """(() => {
   if (window.__perfCheck) return true;
   const raf = window.requestAnimationFrame.bind(window);
-  const p = { frames: 0, ping: 0 };
-  window.requestAnimationFrame = (cb) => raf((t) => { p.frames += 1; return cb(t); });
+  const ctx = CanvasRenderingContext2D.prototype, clear = ctx.clearRect;
+  const p = { frames: 0, frame: -1, draws: 0, drawn: -1, last: performance.now(), gap: 0,
+              ping: 0 };
+  window.requestAnimationFrame = (cb) => raf((t) => {
+    if (t !== p.frame) { p.frame = t; p.frames += 1; }
+    return cb(t);
+  });
+  ctx.clearRect = function (...args) {
+    if (this.canvas && this.canvas.id === "rec-canvas" && p.drawn !== p.frame) {
+      const now = performance.now();
+      p.drawn = p.frame; p.draws += 1;
+      p.gap = Math.max(p.gap, now - p.last); p.last = now;
+    }
+    return clear.apply(this, args);
+  };
   p.read = () => {
+    const now = performance.now(), undrawn = Math.max(p.gap, now - p.last);
+    p.gap = 0; p.last = now;
     raf(() => { p.ping = performance.now(); });
     return JSON.stringify({ visibility: document.visibilityState, frames: p.frames,
-                            now: performance.now(), ping: p.ping });
+                            draws: p.draws, undrawn_ms: undrawn, now: now, ping: p.ping });
   };
   Object.defineProperty(window, "__perfCheck", { value: p });
   return true;
 })()"""
 PAGE_READ_JS = "window.__perfCheck ? window.__perfCheck.read() : null"
+PAGE_COUNTS = ("frames", "draws", "undrawn_ms", "now", "ping")
 
 
 def page_reading(raw):
-    """PAGE_READ_JS's answer as {"visibility", "frames", "now", "ping"}, or
-    None when it is not that (no counter, or the page did not answer). The
-    answer is JSON text; one evaluate_js has already parsed is taken as well."""
+    """PAGE_READ_JS's answer as {"visibility", "frames", "draws", "undrawn_ms",
+    "now", "ping"}, or None when it is not that (no counter, or the page did
+    not answer). The answer is JSON text; one evaluate_js has already parsed is
+    taken as well."""
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:
         return None
     if not isinstance(data, dict) or not isinstance(data.get("visibility"), str):
         return None
-    if not all(_number(data.get(k)) and data[k] >= 0 for k in ("frames", "now", "ping")):
+    if not all(_number(data.get(k)) and data[k] >= 0 for k in PAGE_COUNTS):
         return None
-    return {"visibility": data["visibility"][:20], "frames": data["frames"],
-            "now": data["now"], "ping": data["ping"]}
+    return {"visibility": data["visibility"][:20], **{k: data[k] for k in PAGE_COUNTS}}
 
 
 def display_states(events, t0, t1):
@@ -470,26 +515,50 @@ def display_states(events, t0, t1):
     return list(dict.fromkeys([at_start[-1]] + [s for t, s in events if t0 < t <= t1]))
 
 
-def drawing_report(state, display, sessions, page0, page1):
+def refresh_rate(hz):
+    """A display refresh rate as Windows reports it, or None: 0 and 1 mean
+    "the hardware's default", not a rate (DEVMODE)."""
+    return hz if evidence._count(hz) and hz > 1 else None
+
+
+def min_meter_draws(refresh_hz):
+    """The fewest level-display draws a second that show it was drawn: half
+    of what it draws on this display (every frame, at most about METER_MAX_HZ;
+    #294). A display whose rate is not known is taken as METER_MAX_HZ."""
+    hz = refresh_rate(refresh_hz) or METER_MAX_HZ
+    return round(min(METER_MAX_HZ, hz) / 2, 1)
+
+
+def session_problems(session):
+    """Why the session could not show the window ({"locked", "screensaver"},
+    or None when unread); [] when it could."""
+    if not isinstance(session, dict):
+        return ["the session's state could not be read"]
+    return ([] if session.get("locked") is False else ["the session was locked"]) + (
+        [] if session.get("screensaver") is False else ["the screen saver was running"])
+
+
+def drawing_report(state, display, sessions, page0, page1, refresh_hz=None):
     """Whether a window measured in a visible state was drawn as a person
     would see it, and why not. display: display_states() for the window;
     sessions: the session's state ({"locked", "screensaver"}, or None when
-    unread) at its start and end; page0, page1: page_reading() then. Returns
-    {"drawn", "problems", "display", "page_visibility", "frames_per_s"}."""
+    unread) at its start and end; page0, page1: page_reading() then;
+    refresh_hz: the display's refresh rate during the run (None if not known).
+    Returns {"drawn", "problems", "display", "page_visibility",
+    "page_frames_per_s", "meter_draws_per_s", "min_meter_draws_per_s",
+    "longest_undrawn_s"}; the last two only for a state the level display
+    draws in (DRAWING_STATES), else None."""
     problems = []
     if display is None:
         problems.append("the display's power state was not known")
     else:
         problems += [f"the display was {s}" for s in display if s not in DRAWN_DISPLAY]
     for session in sessions:
-        if not isinstance(session, dict):
-            problems.append("the session's state could not be read")
-            continue
-        if session.get("locked") is not False:
-            problems.append("the session was locked")
-        if session.get("screensaver") is not False:
-            problems.append("the screen saver was running")
-    fps = None
+        problems += session_problems(session)
+    frames = draws = least = longest = None
+    meter = state in DRAWING_STATES
+    if meter:
+        least = min_meter_draws(refresh_hz)
     if not page0 or not page1:
         problems.append("the page did not report its frames")
     else:
@@ -499,14 +568,21 @@ def drawing_report(state, display, sessions, page0, page1):
             problems.append("the page drew no frame")
         seconds = (page1["now"] - page0["now"]) / 1000
         if seconds > 0:
-            fps = round((page1["frames"] - page0["frames"]) / seconds, 1)
-        if state in DRAWING_STATES and (fps is None or fps < MIN_DRAW_FPS):
-            problems.append(f"the level display drew {fps} frames a second "
-                            f"(at least {MIN_DRAW_FPS} expected)")
+            frames = round((page1["frames"] - page0["frames"]) / seconds, 1)
+            draws = round((page1["draws"] - page0["draws"]) / seconds, 1)
+        if meter:
+            longest = round(page1["undrawn_ms"] / 1000, 1)
+            if draws is None or draws < least:
+                problems.append(f"the level display drew {draws} times a second "
+                                f"(at least {least} expected)")
+            if longest > MAX_UNDRAWN_S:
+                problems.append(f"the level display was not drawn for {longest} s at a "
+                                f"stretch (at most {MAX_UNDRAWN_S} s allowed)")
     return {"drawn": not problems, "problems": list(dict.fromkeys(problems)),
             "display": display,
             "page_visibility": [p["visibility"] if p else None for p in (page0, page1)],
-            "frames_per_s": fps}
+            "page_frames_per_s": frames, "meter_draws_per_s": draws,
+            "min_meter_draws_per_s": least, "longest_undrawn_s": longest}
 
 
 # -- measuring from outside (Windows only)--------------------------------------------
@@ -699,6 +775,11 @@ class DisplayEvents:
             events = list(self.events)
         return display_states(events, t0, t1)
 
+    def current(self):
+        """The display's state now (the last one recorded), or None."""
+        with self._lock:
+            return self.events[-1][1] if self.events else None
+
 
 GUID_SESSION_DISPLAY_STATUS = "2b84c20e-ad23-4ddf-93db-05ffbd7efca5"
 ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED = 0x80000000, 0x1, 0x2
@@ -772,18 +853,25 @@ class WindowsDisplay(DisplayEvents):
             self._handle = handle
 
     def stop(self):
+        """Lets the display go first, then stops watching it, each on its own:
+        a failure to stop watching cannot keep the display on. Windows
+        releases both when the process ends in any case."""
         try:
             ctypes, _ = _win()
-            if self._handle is not None:
-                powrprof = self._keep[3]
-                powrprof.PowerSettingUnregisterNotification.argtypes = [ctypes.c_void_p]
-                powrprof.PowerSettingUnregisterNotification(self._handle)
-                self._handle = None
             k32 = ctypes.WinDLL("kernel32")
             k32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
             k32.SetThreadExecutionState(ES_CONTINUOUS)         # back to normal
         except (OSError, AttributeError):
-            pass                       # Windows releases both when the process ends
+            pass
+        try:
+            if self._handle is not None:
+                ctypes, _ = _win()
+                powrprof = self._keep[3]       # _keep stays: the callback may still be held
+                powrprof.PowerSettingUnregisterNotification.argtypes = [ctypes.c_void_p]
+                powrprof.PowerSettingUnregisterNotification(self._handle)
+                self._handle = None
+        except (OSError, AttributeError):
+            pass
 
     def session(self):
         """{"locked": the input desktop is not the user's, "screensaver": running}."""
@@ -817,6 +905,15 @@ class WindowsDisplay(DisplayEvents):
 def display_watch():
     """The run's display (tests put a fake in its place)."""
     return WindowsDisplay()
+
+
+def refresh_now():
+    """The primary display's refresh rate now (refresh_rate()), or None when
+    it cannot be read (tests put a fake in its place)."""
+    try:
+        return refresh_rate(WindowsProbe().display_refresh_hz())
+    except Exception:
+        return None
 
 
 # -- the parent: runs the child once per run and measures it ---------------------------
@@ -921,8 +1018,7 @@ def machine_spec(probe):
         "on_mains_power": {0: False, 1: True}.get(line),
         "battery": None if flag in (None, BATTERY_UNKNOWN) else flag != BATTERY_NONE,
         "gpus": gpus,
-        # 0 and 1 mean "the hardware's default", not a rate (DEVMODE)
-        "display_refresh_hz": hz if evidence._count(hz) and hz > 1 else None,
+        "display_refresh_hz": refresh_rate(hz),
         "webview2": webview2,
     }
 
@@ -1091,9 +1187,11 @@ def child_command(args, workdir):
     return command, env
 
 
-def one_run(args, settle, window, leak_minutes=0, display=None):
+def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None):
     """One run of the window through every state. display: the run's
-    WindowsDisplay (parent()); without one, no visible state counts as drawn."""
+    WindowsDisplay (parent()); without one, no visible state counts as drawn.
+    refresh_hz: the display's refresh rate (parent()), for the level display's
+    expected draws (min_meter_draws())."""
     workdir = Path(tempfile.mkdtemp(prefix="unminute-perf-"))
     command, env = child_command(args, workdir)
     proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env,
@@ -1188,7 +1286,8 @@ def one_run(args, settle, window, leak_minutes=0, display=None):
                 at1, end = time.monotonic(), look()
                 drawing = drawing_report(
                     state, display.states(at0, at1) if display else None,
-                    [start["session"], end["session"]], start["page"], end["page"])
+                    [start["session"], end["session"]], start["page"], end["page"],
+                    refresh_hz)
                 result[state]["drawing"] = drawing
                 if not drawing["drawn"]:
                     raise Unmeasurable(
@@ -1258,11 +1357,31 @@ def parent(args):
         if not report["display"]["power_state_known"]:
             raise RuntimeError("the display's power state could not be read, so the visible "
                                "states could not be shown to be drawn")
+        # Not drawn from the start: stop now, not after the first window.
+        at_start = report["display"]["at_start"] = display.current()
+        if at_start not in DRAWN_DISPLAY:
+            raise RuntimeError(f"the display was {at_start or 'in an unknown state'} as the run "
+                               "started, so the visible states could not be drawn: turn the "
+                               "display on and start again")
+        problems = session_problems(display.session())
+        if problems:
+            raise RuntimeError(f"{'; '.join(problems)} as the run started, so the visible "
+                               "states could not be drawn: unlock the session and start again")
+        # The refresh rate once the display is kept on (dynamic refresh can
+        # lower it while idle): the machine block takes it, and the display
+        # block keeps the rate read before if the two differ.
+        machine = report["machine"] if isinstance(report["machine"], dict) else {}
+        before, hz = machine.get("display_refresh_hz"), refresh_now()
+        report["display"]["refresh_hz"] = hz
+        if hz != before:
+            report["display"]["refresh_hz_before_kept_on"] = before
+            if hz is not None and "display_refresh_hz" in machine:
+                machine["display_refresh_hz"] = hz
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1
             results.append(one_run(args, settle, window, args.leak_minutes if last else 0,
-                                   display=display))
+                                   display=display, refresh_hz=hz or before))
     except Exception as exc:          # anything that stops a run means "not measured"
         report["each_run"], report["error"] = results, str(exc)
         Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")

@@ -4,6 +4,7 @@
 # opens a real window and is run by hand at release time.
 
 import json
+import shutil
 import subprocess
 import sys
 import unittest
@@ -103,6 +104,7 @@ class ParentTests(unittest.TestCase):
             with mock.patch.object(perf_check, "environment",
                                    side_effect=ValueError("damaged version.json")), \
                     mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "one_run") as run, \
                     mock.patch("builtins.print"):
                 self.assertEqual(perf_check.parent(args), 2)
@@ -446,20 +448,28 @@ class ConsentOutcomeTests(unittest.TestCase):
             self.outcome(False, self.consent.recording_record(), [])
 
 
-def drawn_pages(fps=120.0, step_ms=60000.0, visibility="visible"):
-    """The page's frame counter as the child reports it (perf_check.page_reading):
+def drawn_pages(fps=120.0, draws=None, undrawn_ms=None, step_ms=60000.0,
+                visibility="visible"):
+    """The page's counter as the child reports it (perf_check.page_reading):
     each read is step_ms of page time after the last, with a frame drawn just
-    before it, and the level display drawing fps frames a second while a
-    recording state is shown."""
-    clock = {"now": 1000.0, "frames": 0}
+    before it. While a recording state is shown the page runs fps animation
+    frames a second and the level display draws `draws` times a second (by
+    default every frame up to 60 a second, as #294 has it), never undrawn for
+    longer than undrawn_ms (by default two draws' time)."""
+    clock = {"now": 1000.0, "frames": 0, "draws": 0}
+    draws = min(fps, 60.0) if draws is None else draws
 
     def page(commands):
         state = [c for c in commands if c not in ("probe", "check")][-1]
         clock["now"] += step_ms
+        gap = step_ms
         if state in perf_check.DRAWING_STATES:
             clock["frames"] += round(fps * step_ms / 1000)
-        return {"visibility": visibility, "frames": clock["frames"], "now": clock["now"],
-                "ping": clock["now"] - 5}
+            clock["draws"] += round(draws * step_ms / 1000)
+            gap = undrawn_ms if undrawn_ms is not None else (
+                2000 / draws if draws else step_ms)
+        return {"visibility": visibility, "frames": clock["frames"], "draws": clock["draws"],
+                "undrawn_ms": gap, "now": clock["now"], "ping": clock["now"] - 5}
     return page
 
 
@@ -468,21 +478,28 @@ class FakeDisplay:
     the display's states during each window (by the state being measured), the
     session's state, and whether start() and stop() were called."""
 
-    def __init__(self, states=None, session=None, known=True, kept=True):
+    def __init__(self, states=None, session=None, known=True, kept=True, at_start="on",
+                 session_at_start=None):
         self.by_state = states or {}
         self.session_state = session if session is not None else {
             "locked": False, "screensaver": False}
         self.known, self.kept, self.calls, self.measuring = known, kept, [], None
+        self.at_start, self.session_at_start = at_start, session_at_start
 
     def start(self):
         self.calls.append("start")
         return {"kept_awake": self.kept, "power_state_known": self.known}
 
-    def stop(self):
-        self.calls.append("stop")
+    def current(self):
+        return self.at_start if self.measuring is None else self.states(0, 0)[-1]
 
     def session(self):
+        if self.measuring is None and self.session_at_start is not None:
+            return self.session_at_start
         return self.session_state
+
+    def stop(self):
+        self.calls.append("stop")
 
     def states(self, t0, t1):
         return self.by_state.get(self.measuring, ["on"])
@@ -607,22 +624,30 @@ class DrawnWindowTests(unittest.TestCase):
 
     ON = {"locked": False, "screensaver": False}
 
-    def page(self, now, frames=0, ping=None, visibility="visible"):
-        return {"visibility": visibility, "frames": frames, "now": now,
-                "ping": now - 5 if ping is None else ping}
+    def page(self, now, frames=0, draws=0, undrawn_ms=20.0, ping=None, visibility="visible"):
+        return {"visibility": visibility, "frames": frames, "draws": draws,
+                "undrawn_ms": undrawn_ms, "now": now, "ping": now - 5 if ping is None else ping}
 
-    def report(self, state="recording", display=("on",), sessions=None, fps=120.0, **page1):
+    def report(self, state="recording", display=("on",), sessions=None, fps=120.0, draws=None,
+               refresh_hz=120, **page1):
+        draws = min(fps, 60.0) if draws is None else draws
         start = self.page(1000.0)
-        end = self.page(301000.0, frames=round(fps * 300), **page1)
+        end = self.page(301000.0, frames=round(fps * 300), draws=round(draws * 300), **page1)
         return perf_check.drawing_report(state, None if display is None else list(display),
-                                         sessions or [self.ON, self.ON], start, end)
+                                         sessions or [self.ON, self.ON], start, end, refresh_hz)
 
     def test_a_drawn_window_counts(self):
         got = self.report()
         self.assertEqual({"drawn": True, "problems": [], "display": ["on"],
-                          "page_visibility": ["visible", "visible"], "frames_per_s": 120.0}, got)
-        # A view that animates nothing still drew a frame in the window.
-        self.assertTrue(self.report("meetings", fps=0)["drawn"])
+                          "page_visibility": ["visible", "visible"], "page_frames_per_s": 120.0,
+                          "meter_draws_per_s": 60.0, "min_meter_draws_per_s": 30.0,
+                          "longest_undrawn_s": 0.0}, got)
+        # A view that animates nothing still drew a frame in the window, and
+        # has no level display to count.
+        got = self.report("meetings", fps=0)
+        self.assertTrue(got["drawn"])
+        self.assertIsNone(got["min_meter_draws_per_s"])
+        self.assertIsNone(got["longest_undrawn_s"])
         # A dimmed display still draws every frame.
         self.assertTrue(self.report(display=("on", "dimmed"))["drawn"])
 
@@ -659,12 +684,11 @@ class DrawnWindowTests(unittest.TestCase):
     def test_the_level_display_must_draw_while_recording(self):
         got = self.report(fps=5)
         self.assertFalse(got["drawn"])
-        self.assertEqual([f"the level display drew 5.0 frames a second (at least "
-                          f"{perf_check.MIN_DRAW_FPS} expected)"], got["problems"])
-        self.assertTrue(self.report(fps=perf_check.MIN_DRAW_FPS)["drawn"])
+        self.assertEqual(["the level display drew 5.0 times a second (at least 30.0 "
+                          "expected)"], got["problems"])
+        self.assertTrue(self.report(fps=30)["drawn"])
         self.assertTrue(self.report(fps=60)["drawn"])
-        self.assertIn(f"at least {perf_check.MIN_DRAW_FPS} frames a\nsecond", perf_check.HELP)
-        # Only the recording state draws on every frame.
+        # Only the recording state has the level display drawing.
         self.assertEqual(("recording",), perf_check.DRAWING_STATES)
         self.assertEqual(("meetings", "settings", "recording"), perf_check.VISIBLE_STATES)
         self.assertTrue(set(perf_check.VISIBLE_STATES) <= set(perf_check.STATES))
@@ -682,31 +706,149 @@ class DrawnWindowTests(unittest.TestCase):
         now = [0.0]
         events = perf_check.DisplayEvents(clock=lambda: now[0])
         self.assertFalse(events.known.is_set())
+        self.assertIsNone(events.current())
         for at, value in ((0.0, 1), (5.0, 2), (6.0, 0), (9.0, 7)):
             now[0] = at
             events.record(value)
         self.assertTrue(events.known.is_set())
         self.assertEqual(["on", "dimmed", "off", "unknown"], events.states(1.0, 10.0))
         self.assertEqual(["on"], events.states(1.0, 4.0))
+        self.assertEqual("unknown", events.current())        # the last one recorded
 
     def test_the_page_reading_takes_only_counts(self):
-        good = {"visibility": "visible", "frames": 3, "now": 10.5, "ping": 9.0}
+        good = {"visibility": "visible", "frames": 3, "draws": 2, "undrawn_ms": 16.7,
+                "now": 10.5, "ping": 9.0}
         self.assertEqual(good, perf_check.page_reading(json.dumps(good)))
         self.assertEqual(good, perf_check.page_reading(dict(good, extra="x")))
         for bad in (None, "", "null", "not json", "[1]", json.dumps(dict(good, frames=-1)),
                     json.dumps(dict(good, now="10")), json.dumps(dict(good, ping=True)),
+                    json.dumps(dict(good, draws=None)), json.dumps(dict(good, undrawn_ms=-1)),
                     json.dumps({k: v for k, v in good.items() if k != "frames"}),
+                    json.dumps({k: v for k, v in good.items() if k != "draws"}),
                     json.dumps(dict(good, visibility=None))):
             with self.subTest(bad=bad):
                 self.assertIsNone(perf_check.page_reading(bad))
 
     def test_the_page_counter_only_wraps_the_pages_own_frames(self):
         js = perf_check.PAGE_COUNTER_JS
-        # It wraps requestAnimationFrame and asks for one frame per read, no loop.
+        # It wraps requestAnimationFrame and the 2D context's clearRect, and
+        # asks for one frame per read, no loop.
         self.assertIn("window.requestAnimationFrame = (cb) => raf(", js)
+        self.assertIn("ctx.clearRect = function", js)
+        self.assertIn('this.canvas.id === "rec-canvas"', js)
         self.assertEqual(1, js.count("raf(() =>"))
         self.assertNotIn("setInterval", js)
         self.assertNotIn("setTimeout", js)
+        # The level display's canvas is the one the app draws its meter on.
+        app = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('$("rec-canvas")', app)
+        self.assertIn("clearRect(", app)
+
+    def test_the_expected_draws_follow_the_display(self):
+        # #292 review: half of what the meter draws on this display: every
+        # frame up to 60 a second (#294), so half of min(60, refresh rate).
+        for hz, least in ((60, 30.0), (120, 30.0), (144, 30.0), (240, 30.0), (48, 24.0),
+                          (30, 15.0), (None, 30.0), (0, 30.0), (1, 30.0)):
+            with self.subTest(hz=hz):
+                self.assertEqual(least, perf_check.min_meter_draws(hz))
+        # On a 30 Hz display 15 draws a second is all it can do, and counts.
+        self.assertTrue(self.report(fps=30, refresh_hz=30, draws=15)["drawn"])
+        got = self.report(fps=120, draws=25)
+        self.assertEqual(["the level display drew 25.0 times a second (at least 30.0 "
+                          "expected)"], got["problems"])
+
+    def test_the_meter_draws_are_counted_not_the_pages_frames(self):
+        # #292 review: the page can run every frame while the meter draws none
+        # (or only every second frame, #294): only the meter's draws count.
+        got = self.report(fps=120, draws=0)
+        self.assertFalse(got["drawn"])
+        self.assertEqual(120.0, got["page_frames_per_s"])
+        self.assertEqual(0.0, got["meter_draws_per_s"])
+        self.assertTrue(self.report(fps=120, draws=60)["drawn"])
+
+    def test_a_long_undrawn_stretch_is_not_drawn(self):
+        # #292 review: a window drawn well on average can still have gone
+        # undrawn for a long stretch (the display off for a minute of five).
+        got = self.report(undrawn_ms=60000.0)
+        self.assertEqual([f"the level display was not drawn for 60.0 s at a stretch (at most "
+                          f"{perf_check.MAX_UNDRAWN_S} s allowed)"], got["problems"])
+        self.assertTrue(self.report(undrawn_ms=perf_check.MAX_UNDRAWN_S * 1000)["drawn"])
+        # A view without the level display is not held to it.
+        self.assertTrue(self.report("meetings", fps=0, undrawn_ms=300000.0)["drawn"])
+
+    def test_the_help_says_how_the_drawing_is_judged(self):
+        text = " ".join(perf_check.HELP.split())
+        self.assertIn("at least 30 a second on a 60 Hz or faster display", text)
+        self.assertIn("no stretch longer than 5 s undrawn", text)
+        self.assertNotIn("20 frames", text)
+        self.assertEqual(5.0, perf_check.MAX_UNDRAWN_S)
+        self.assertEqual(60, perf_check.METER_MAX_HZ)
+
+    def test_the_docs_say_a_policy_lock_still_stops_the_run(self):
+        # #292 review: keeping the display on does not stop a screen saver or
+        # an inactivity lock set by policy; an unattended run must allow for it.
+        releasing = " ".join((ROOT / "docs" / "RELEASING.md").read_text(
+            encoding="utf-8").split())
+        for text in (" ".join(perf_check.HELP.split()), releasing):
+            self.assertIn("does not stop a screen saver or an inactivity lock set by Intune "
+                          "or other policy", text)
+            self.assertIn("an unattended release run must account for that", text.lower())
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js not installed")
+class PageCounterScriptTests(unittest.TestCase):
+    """#292 review: PAGE_COUNTER_JS run in Node.js against a stand-in page,
+    with the level meter drawing on every second frame as #294 has it."""
+
+    SCRIPT = r"""
+let now = 0; const queue = [];
+globalThis.performance = { now: () => now };
+globalThis.document = { visibilityState: "visible" };
+globalThis.window = globalThis;
+window.requestAnimationFrame = (cb) => { queue.push(cb); return queue.length; };
+class CanvasRenderingContext2D { clearRect() {} }
+globalThis.CanvasRenderingContext2D = CanvasRenderingContext2D;
+const meter = new CanvasRenderingContext2D(); meter.canvas = { id: "rec-canvas" };
+const other = new CanvasRenderingContext2D(); other.canvas = { id: "other" };
+const installed = eval(process.argv[1]);
+const frame = (ms) => { now += ms; const due = queue.splice(0); due.forEach((cb) => cb(now)); };
+const read = () => JSON.parse(eval(process.argv[2]));
+let n = 0, paused = false;
+function draw() {                       // the meter: every second callback draws
+  requestAnimationFrame(draw);
+  n += 1;
+  if (paused || n % 2) return;
+  meter.clearRect(0, 0, 1, 1); meter.clearRect(0, 0, 1, 1);   // twice in one frame: one draw
+  other.clearRect(0, 0, 1, 1);                               // another canvas: not counted
+}
+const first = read();
+requestAnimationFrame(draw);
+requestAnimationFrame(() => {});        // a second callback in the same frames
+for (let i = 0; i < 120; i++) frame(1000 / 120);
+const second = read();
+paused = true;                             // the meter stops drawing for a while
+for (let i = 0; i < 10; i++) frame(100);
+paused = false; n = 1; frame(1);           // and draws once more
+const third = read();
+console.log(JSON.stringify({ installed, again: eval(process.argv[1]), first, second, third }));
+"""
+
+    def test_it_counts_the_meters_draws_and_its_longest_gap(self):
+        out = subprocess.run(
+            [shutil.which("node"), "-e", self.SCRIPT, "--", perf_check.PAGE_COUNTER_JS,
+             perf_check.PAGE_READ_JS],
+            capture_output=True, text=True, timeout=60, check=True)
+        got = json.loads(out.stdout)
+        self.assertIs(True, got["installed"])
+        self.assertIs(True, got["again"])            # a second install changes nothing
+        second, third = got["second"], got["third"]
+        self.assertEqual(120, second["frames"] - got["first"]["frames"])   # frames, not callbacks
+        self.assertEqual(60, second["draws"] - got["first"]["draws"])      # every second frame
+        self.assertLess(second["undrawn_ms"], 20)
+        self.assertEqual(61, third["draws"])
+        self.assertGreaterEqual(third["undrawn_ms"], 1000)                 # the stopped stretch
+        for reading in (got["first"], second, third):
+            self.assertIsNotNone(perf_check.page_reading(json.dumps(reading)))
 
 
 class DrawnRunTests(unittest.TestCase):
@@ -725,7 +867,8 @@ class DrawnRunTests(unittest.TestCase):
         result = self.run_child(child, display)
         for state in perf_check.VISIBLE_STATES:
             self.assertTrue(result[state]["drawing"]["drawn"], state)
-        self.assertEqual(120.0, result["recording"]["drawing"]["frames_per_s"])
+        self.assertEqual(120.0, result["recording"]["drawing"]["page_frames_per_s"])
+        self.assertEqual(60.0, result["recording"]["drawing"]["meter_draws_per_s"])
         for state in ("minimised", "recording-minimised"):
             self.assertNotIn("drawing", result[state])
 
@@ -753,7 +896,18 @@ class DrawnRunTests(unittest.TestCase):
                           page=drawn_pages(fps=2.0), display=display)
         with self.assertRaises(perf_check.Unmeasurable) as caught:
             self.run_child(child, display)
-        self.assertIn("the level display drew 2.0 frames a second", str(caught.exception))
+        self.assertIn("the level display drew 2.0 times a second", str(caught.exception))
+
+    def test_a_page_drawing_frames_without_the_meter_is_unmeasurable(self):
+        # #292 review: the page's own frames are not the meter's draws. A page
+        # running every frame while the meter draws nothing is not drawn.
+        display = FakeDisplay()
+        child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
+                          page=drawn_pages(fps=120.0, draws=0), display=display)
+        with self.assertRaises(perf_check.Unmeasurable) as caught:
+            self.run_child(child, display)
+        self.assertIn("recording was not drawn on screen (the level display drew 0.0 times",
+                      str(caught.exception))
 
     def test_without_a_display_nothing_counts_as_drawn(self):
         from types import SimpleNamespace
@@ -767,21 +921,29 @@ class DrawnRunTests(unittest.TestCase):
             perf_check.one_run(SimpleNamespace(app=None, zip=None), 0, 0)
         self.assertIn("the display's power state was not known", str(caught.exception))
 
-    def run_parent(self, display, page=None):
-        """A release-shaped parent() run against the scripted child and display."""
+    def run_parent(self, display, page=None, refresh=(120, 120)):
+        """A release-shaped parent() run against the scripted child and display.
+        refresh: the display's refresh rate read with the machine, then again
+        once the display is kept on."""
         import tempfile
         from types import SimpleNamespace
         child = FakeChild(self.READY, lambda c: {"state": "recording", "seconds": 61.0},
                           page=page, display=display)
         figures = {"cpu_percent_of_one_core": 1.0, "private_mb": 700}
+
+        def refresh_now():
+            display.calls.append("refresh")
+            return refresh[1]
         with tempfile.TemporaryDirectory() as tmp:
             report = Path(tmp) / "perf.json"
             args = SimpleNamespace(quick=False, settle=0, window=0, runs=1, leak_minutes=0,
                                    report=str(report), app=None, zip=None)
-            env = {"machine": dict(MachineReportTests.FULL)}
+            env = {"machine": dict(MachineReportTests.FULL, display_refresh_hz=refresh[0])}
             with mock.patch.object(perf_check, "environment", return_value=env), \
                     mock.patch.object(perf_check, "display_watch", create=True,
                                       return_value=display), \
+                    mock.patch.object(perf_check, "refresh_now", create=True,
+                                      side_effect=refresh_now), \
                     mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
                     mock.patch.object(perf_check, "Job"), \
                     mock.patch.object(perf_check, "measure",
@@ -802,15 +964,108 @@ class DrawnRunTests(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("recording was not drawn on screen (the display was off)",
                       report.get("error", ""))
-        self.assertEqual(["start", "stop"], display.calls)     # the display let go again
+        self.assertEqual(["start", "refresh", "stop"], display.calls)   # let go again
 
     def test_a_release_run_with_the_window_drawn_passes_and_says_so(self):
         display = FakeDisplay()
         rc, report = self.run_parent(display)
         self.assertEqual(0, rc)
-        self.assertEqual({"kept_awake": True, "power_state_known": True}, report["display"])
-        self.assertEqual(["start", "stop"], display.calls)
+        self.assertEqual({"kept_awake": True, "power_state_known": True, "at_start": "on",
+                          "refresh_hz": 120}, report["display"])
+        self.assertEqual(["start", "refresh", "stop"], display.calls)
         self.assertEqual([], perf_check.evidence.perf_not_drawn(report))
+
+    def test_a_display_already_off_stops_before_measuring(self):
+        # #292 review: known to be off at the start is as bad as not known.
+        for at_start in ("off", "unknown", None):
+            with self.subTest(at_start=at_start):
+                display = FakeDisplay(at_start=at_start)
+                rc, report = self.run_parent(display)
+                self.assertEqual(2, rc)
+                self.assertIn(f"the display was {at_start or 'in an unknown state'} as the "
+                              "run started", report.get("error", ""))
+                self.assertEqual([], report["each_run"])
+                self.assertEqual(["start", "stop"], display.calls)
+        # Dimmed still draws every frame.
+        rc, _ = self.run_parent(FakeDisplay(at_start="dimmed"))
+        self.assertEqual(0, rc)
+
+    def test_a_session_locked_at_the_start_stops_before_measuring(self):
+        for session, problem in (({"locked": True, "screensaver": False}, "the session was locked"),
+                                 ({"locked": False, "screensaver": True},
+                                  "the screen saver was running")):
+            with self.subTest(session=session):
+                display = FakeDisplay(session_at_start=session)
+                rc, report = self.run_parent(display)
+                self.assertEqual(2, rc)
+                self.assertIn(f"{problem} as the run started", report.get("error", ""))
+                self.assertEqual([], report["each_run"])
+
+    def test_the_refresh_rate_is_read_once_the_display_is_kept_on(self):
+        # #292 review: dynamic refresh can lower the rate while idle, so it is
+        # read again after the display is kept on, and both kept if they differ.
+        display = FakeDisplay()
+        rc, report = self.run_parent(display, page=drawn_pages(fps=60.0), refresh=(48, 60))
+        self.assertEqual(0, rc)
+        self.assertEqual(["start", "refresh", "stop"], display.calls)
+        self.assertEqual(60, report["display"].get("refresh_hz"))
+        self.assertEqual(48, report["display"].get("refresh_hz_before_kept_on"))
+        self.assertEqual(60, report["machine"]["display_refresh_hz"])
+        # Not read again: the rate read with the machine stays, and is used.
+        rc, report = self.run_parent(FakeDisplay(), refresh=(120, None))
+        self.assertEqual(0, rc)
+        self.assertIsNone(report["display"].get("refresh_hz", "missing"))
+        self.assertEqual(120, report["display"].get("refresh_hz_before_kept_on"))
+        self.assertEqual(120, report["machine"]["display_refresh_hz"])
+
+    def test_the_expected_draws_use_the_rate_read_once_kept_on(self):
+        # #292 review: the bar follows the display, not a fixed 20 a second.
+        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=120.0, draws=25.0))
+        self.assertEqual(2, rc)
+        self.assertIn("the level display drew 25.0 times a second (at least 30.0 expected)",
+                      report.get("error", ""))
+        # On a 48 Hz display (read once kept on) 26 draws a second is enough.
+        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=48.0, draws=26.0),
+                                     refresh=(120, 48))
+        self.assertEqual(0, rc)
+        self.assertEqual(24.0, report["each_run"][0]["recording"]["drawing"].get(
+            "min_meter_draws_per_s"))
+
+    def test_a_long_undrawn_stretch_in_a_run_is_unmeasurable(self):
+        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(undrawn_ms=90000.0))
+        self.assertEqual(2, rc)
+        self.assertIn("the level display was not drawn for 90.0 s at a stretch",
+                      report.get("error", ""))
+
+    def test_the_refresh_rate_now_is_a_rate_or_none(self):
+        for value, expected in ((75, 75), (1, None), (0, None), (None, None)):
+            with self.subTest(value=value), mock.patch.object(perf_check, "WindowsProbe") as p:
+                p.return_value.display_refresh_hz.return_value = value
+                self.assertEqual(expected, perf_check.refresh_now())
+        with mock.patch.object(perf_check, "WindowsProbe", side_effect=OSError("no display")):
+            self.assertIsNone(perf_check.refresh_now())
+
+    def test_stop_lets_the_display_go_even_if_unwatching_fails(self):
+        # #292 review: the execution state is released first, on its own, so
+        # a failure to stop watching cannot leave the display kept on.
+        from types import SimpleNamespace
+        k32 = mock.Mock()
+        powrprof = mock.Mock()
+        powrprof.PowerSettingUnregisterNotification.side_effect = OSError("refused")
+        fake_ctypes = SimpleNamespace(WinDLL=lambda name: k32, c_uint32=int, c_void_p=int)
+        display = perf_check.WindowsDisplay()
+        display._handle, display._keep = object(), (None, None, None, powrprof)
+        with mock.patch.object(perf_check, "_win", return_value=(fake_ctypes, None)):
+            display.stop()
+        k32.SetThreadExecutionState.assert_called_once_with(perf_check.ES_CONTINUOUS)
+        powrprof.PowerSettingUnregisterNotification.assert_called_once()
+        # And the other way round: a failed release still stops watching.
+        k32.SetThreadExecutionState.side_effect = OSError("refused")
+        powrprof.PowerSettingUnregisterNotification.side_effect = None
+        with mock.patch.object(perf_check, "_win", return_value=(fake_ctypes, None)):
+            display.stop()
+        self.assertEqual(2, powrprof.PowerSettingUnregisterNotification.call_count)
+        self.assertIsNone(display._handle)
 
     def test_a_display_whose_state_cannot_be_read_stops_before_measuring(self):
         display = FakeDisplay(known=False)
@@ -818,7 +1073,7 @@ class DrawnRunTests(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("the display's power state could not be read", report["error"])
         self.assertEqual([], report["each_run"])
-        self.assertEqual(["start", "stop"], display.calls)
+        self.assertEqual(["start", "stop"], display.calls)       # nothing read after it
 
     def test_a_display_that_could_not_be_kept_on_is_recorded(self):
         rc, report = self.run_parent(FakeDisplay(kept=False))
@@ -858,6 +1113,7 @@ class PolicyReportTests(unittest.TestCase):
                                    report=str(report), app=None)
             with mock.patch.object(perf_check, "environment", return_value={}), \
                     mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "one_run", side_effect=results), \
                     mock.patch.object(perf_check, "BUDGETS", budget_file), \
                     mock.patch("builtins.print"):
@@ -1143,6 +1399,7 @@ class MachineReportTests(unittest.TestCase):
             env = {"python": "3.14.0", "machine": machine}
             with mock.patch.object(perf_check, "environment", return_value=env), \
                     mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
                     mock.patch.object(perf_check, "one_run", return_value={}) as run, \
                     mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
                     mock.patch("builtins.print"):

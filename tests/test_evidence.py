@@ -642,8 +642,28 @@ class MachineEvidenceTests(TempDir):
         body = report("perf")
         for run in body["each_run"]:
             del run["recording"]
+        body["not_measured_by_policy"] = ["recording", "recording-minimised"]
         self.assertEqual([], evidence.perf_not_drawn(body))
         self.assertEqual([], evidence.check(SHA, self.complete(perf=body)))
+
+    def test_a_missing_visible_state_counts_only_if_policy_names_it(self):
+        # #292 review: a visible state missing from a run is excused only when
+        # the report names it as not measured by policy.
+        for policy in (None, [], ["recording-minimised"], "recording"):
+            with self.subTest(policy=policy):
+                body = report("perf")
+                del body["each_run"][0]["recording"]
+                del body["each_run"][2]["meetings"]
+                if policy is not None:
+                    body["not_measured_by_policy"] = policy
+                self.assertEqual(["recording in run 1", "meetings in run 3"],
+                                 evidence.perf_not_drawn(body))
+        # Policy names recording only: a missing meetings window is still refused.
+        body = report("perf")
+        del body["each_run"][0]["recording"]
+        del body["each_run"][1]["meetings"]
+        body["not_measured_by_policy"] = ["recording", "recording-minimised"]
+        self.assertEqual(["meetings in run 2"], evidence.perf_not_drawn(body))
 
     def test_the_machine_command_refuses_an_incomplete_or_unreadable_report(self):
         for name, body in (("old.json", perf_with()), ("part.json", perf_with(drop=("gpus",))),

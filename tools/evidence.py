@@ -356,11 +356,13 @@ def perf_release_run(run):
 def perf_not_drawn(body):
     """The windows of a performance report measured in a visible state that do
     not show they were drawn (empty when every one does; #292): each needs its
-    "drawing" block saying "drawn": true. A state a run did not measure (policy
-    turning recording off) has no window to show."""
+    "drawing" block saying "drawn": true. Only a state the report names as not
+    measured by policy (policy turning recording off) may have no window."""
     runs = body.get("each_run") if isinstance(body, dict) else None
     if not isinstance(runs, list) or not runs:
         return ["no runs recorded"]
+    policy = body.get("not_measured_by_policy")
+    policy = policy if isinstance(policy, list) else []
     out = []
     for n, run in enumerate(runs, 1):
         if not isinstance(run, dict):
@@ -368,7 +370,7 @@ def perf_not_drawn(body):
             continue
         for state in PERF_VISIBLE_STATES:
             figures = run.get(state)
-            if figures is None:
+            if figures is None and state in policy:
                 continue
             drawing = figures.get("drawing") if isinstance(figures, dict) else None
             if not (isinstance(drawing, dict) and drawing.get("drawn") is True):
