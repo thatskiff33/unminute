@@ -60,8 +60,10 @@ Network, secrets and integrity
   protocol and size limits, by PyAV (users never install FFmpeg). Network drives and symbolic
   links are refused unless managed policy allows network sources. Guard:
   `tests/test_intake_isolation.py`, `tests/test_safe_paths.py`.
-- **I3** The page reaches Python only through `API_METHODS`, with arguments checked; it renders
-  text only and runs only in WebView2. Guard: `tests/test_consistency.py`, `tests/test_hardening.py`.
+- **I3** The page reaches Python only through `API_METHODS`, and only through `LOCKED_METHODS`
+  while the workspace is locked (the user's decision, 21 October 2026, #111), with arguments
+  checked; it renders text only and runs only in WebView2. Guard: `tests/test_consistency.py`,
+  `tests/test_hardening.py`.
 
 Durability
 

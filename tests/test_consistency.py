@@ -65,6 +65,26 @@ class BridgeNameTests(unittest.TestCase):
         self.assertEqual(set(), served - self.allowed,
                          "tools/design_check/fixtures.js serves methods the app does not expose")
 
+    def test_locked_methods_match_agents_md_and_the_docs(self):
+        # #111 C4a, I3: while locked the page reaches only LOCKED_METHODS (the
+        # user's decision, 21 Oct 2026). AGENTS.md names both lists, and the
+        # docs' copies of the locked list equal the code's, so widening it
+        # shows in the docs and the PR (AGENTS.md, E2).
+        from workspace import api
+        locked = api.LOCKED_METHODS
+        self.assertLessEqual(locked, self.allowed, "LOCKED_METHODS outside API_METHODS")
+        self.assertNotIn("continue_despite_damage", locked)
+        text = read("AGENTS.md")
+        start = text.index("- **I3**")
+        i3 = text[start:text.index("\n- **", start + 1)]
+        for name in ("API_METHODS", "LOCKED_METHODS"):
+            self.assertIn(f"`{name}`", i3, f"AGENTS.md I3 does not name {name}")
+        for doc in ("docs/ENCRYPTION.md", "docs/WORKSPACE_DESIGN.md"):
+            listed = one(r"`api\.LOCKED_METHODS` \(([^)]*)\)", read(doc),
+                         f"LOCKED_METHODS list in {doc}")
+            self.assertEqual(locked, set(re.findall(r"`(\w+)`", listed)),
+                             f"{doc} lists different locked methods from workspace/api.py")
+
 
 class DependencyPinTests(unittest.TestCase):
     def test_gpu_wheels_match_requirement_pins(self):
@@ -422,7 +442,8 @@ INVARIANT_GUARDS = {
            "tests/test_asr_engines.py": ["test_docs_manifest_matches_code"]},
     "I2": {"tests/test_intake_isolation.py": ["test_lowered_decoder_cannot_write_the_users_files"],
            "tests/test_safe_paths.py": ["FileValidationTests"]},
-    "I3": {"tests/test_consistency.py": ["BridgeNameTests"],
+    "I3": {"tests/test_consistency.py": ["BridgeNameTests",
+                                         "test_locked_methods_match_agents_md_and_the_docs"],
            "tests/test_hardening.py": ["test_refuses_the_internet_explorer_fallback",
                                        "test_the_page_opens_no_link_itself",
                                        "test_every_content_method_is_refused_while_locked"]},
