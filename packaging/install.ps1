@@ -25,10 +25,11 @@
   -Managed records that IT manages updates (Intune); -Rollback switches back to
   the previous installed version if it can still open the workspace.
 
-  The install folder must be new, empty, an install (a current.json naming a
-  valid version), or hold only what an install that stopped early leaves;
-  anything else, or a link or junction where the installer would look, is
-  refused before anything is written (#297).
+  The install folder must be new, empty, an install (a current.json object
+  naming a valid version and, if it gives a path, that version's own folder),
+  or hold only what an install that stopped early leaves; anything else, or a
+  link or junction where the installer would look, is refused before anything
+  is written (#297).
   Only versions the installer made are removed, never through a link.
 
   Exit codes: 0 installed, 1 failed, 2 prerequisites missing or the install
@@ -295,13 +296,27 @@ function Test-OwnWorkingFolder([IO.DirectoryInfo]$Dir) {
     return Test-VersionName $Matches[1]
 }
 
-# An install's record: a current.json that reads as a JSON object naming a plain
-# version. Anything else there, such as another program's current.json, does not make
-# the folder an install (#297 review).
+# An install's record: a current.json that is a JSON object (its text starts with {,
+# since PowerShell 7's ConvertFrom-Json reads a one-item list as its item) whose
+# version is a JSON string with a plain name, and whose path, if it has one, is
+# <InstallDir>\versions\<version>, as the installer writes it (letter case aside).
+# Anything else there, such as another program's current.json, does not make the
+# folder an install (#297 reviews).
 function Test-InstallRecord([IO.FileInfo]$File) {
-    try { $record = Get-Content -LiteralPath $File.FullName -Raw | ConvertFrom-Json } catch { return $false }
+    try {
+        $text = Get-Content -LiteralPath $File.FullName -Raw
+        if ($text -isnot [string] -or $text -notmatch '\A[ \t\r\n]*\{') { return $false }
+        $record = ConvertFrom-Json -InputObject $text
+    } catch { return $false }
     if ($record -isnot [Management.Automation.PSCustomObject]) { return $false }
-    return $null -ne (Get-VersionValue $record.version)
+    $version = $record.version
+    if ($version -isnot [string] -or -not (Test-VersionName $version)) { return $false }
+    if ($null -eq $record.PSObject.Properties["path"]) { return $true }
+    $path = $record.path
+    if ($path -isnot [string]) { return $false }
+    $own = [IO.Path]::Combine($File.DirectoryName, "versions", $version)
+    try { $path = [IO.Path]::GetFullPath($path) } catch { return $false }
+    return [string]::Equals($path, $own, [StringComparison]::OrdinalIgnoreCase)
 }
 
 # The installer writes and removes only inside a folder that is new, empty, an install

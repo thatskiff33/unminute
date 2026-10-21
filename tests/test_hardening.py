@@ -2147,7 +2147,14 @@ class InstallFolderScopeTests(unittest.TestCase):
                    "a path": json.dumps({"version": "..\\x"}),
                    "a final dot": json.dumps({"version": "0.8.0."}),
                    "a final newline": json.dumps({"version": "1.0.0\n"}),
-                   "a list": json.dumps([{"version": "1.0.0"}])}
+                   "a list": json.dumps([{"version": "1.0.0"}]),
+                   # #297 round 2 (R2-1): the version must be a JSON string, and a
+                   # path, when there is one, must be this folder's versions\<version>.
+                   "a number": json.dumps({"version": 100}),
+                   "a version list": json.dumps({"version": ["1.0.0"]}),
+                   "a path elsewhere": json.dumps({"version": "1.0.0",
+                                                   "path": str(self.root / "versions" / "1.0.0")}),
+                   "a path that is no string": json.dumps({"version": "1.0.0", "path": 5})}
         for number, (label, text) in enumerate(records.items()):
             with self.subTest(label):
                 folder = self.root / f"record-{number}"
@@ -2159,6 +2166,99 @@ class InstallFolderScopeTests(unittest.TestCase):
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
                 self.assertIn(self.NOT_OURS, r.stderr)
                 self.assertEqual(snapshot(folder), before)
+
+    def test_an_install_the_installer_made_is_still_an_install(self):
+        # The record the installer writes (version and path) makes the folder an
+        # install, so an update over it carries on (#297 round 2).
+        self.write_package("0.9.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(Path(self.current()["path"]), self.versions / "0.9.0")
+        self.write_package("1.0.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.current()["version"], self.current()["previous"]),
+                         ("1.0.0", "0.9.0"))
+
+    # PowerShell 7's ConvertFrom-Json, unlike 5.1's, sends the items of a top-level
+    # list down the pipeline one by one, so a one-item list reads as its object. This
+    # stand-in gives Windows PowerShell 5.1 that behaviour.
+    PS7_CONVERT = r"""
+function ConvertFrom-Json {
+    param([Parameter(ValueFromPipeline = $true, Position = 0)]$InputObject)
+    process {
+        foreach ($item in (Microsoft.PowerShell.Utility\ConvertFrom-Json $InputObject)) { $item }
+    }
+}
+"""
+
+    def record_check(self, folder, convert=""):
+        """A script that runs install.ps1's own Test-InstallRecord on each
+        folder/case-*.json and prints case-NN=1 for an install's record, 0 otherwise."""
+        text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        start = text.index("$VersionPattern = '")
+        end = text.index("\n}\n", text.index("function Test-InstallRecord")) + 3
+        script = folder / "record-check.ps1"
+        script.write_text('$ErrorActionPreference = "Stop"\n' + convert + text[start:end] + """
+foreach ($file in Get-ChildItem -LiteralPath $args[0] -Filter 'case-*.json' | Sort-Object Name) {
+    Write-Output ("{0}={1}" -f $file.BaseName, [int](Test-InstallRecord $file))
+}
+""", encoding="utf-8")
+        return script
+
+    def test_the_install_record_is_an_object_with_a_string_version_and_its_own_path(self):
+        # #297 round 2 (R2-1): only a JSON object whose version is a JSON string with
+        # a plain name, and whose path, if there is one, is <InstallDir>\versions\
+        # <version> (letter case aside), is an install's record. On PowerShell 7 a
+        # one-item list must not pass for its object.
+        folder = self.root / "records"
+        folder.mkdir()
+        own = str(folder / "versions" / "1.0.0")
+        cases = {
+            "an object": ({"version": "1.0.0"}, 1),
+            "with its path": ({"version": "1.0.0", "path": own, "previous": None}, 1),
+            "with its path in other letter case": ({"version": "1.0.0", "path": own.upper()}, 1),
+            "a list": ([{"version": "1.0.0"}], 0),
+            "a list of its own record": ([{"version": "1.0.0", "path": own}], 0),
+            "a string": ("1.0.0", 0),
+            "an empty object": ({}, 0),
+            "a number": ({"version": 100}, 0),
+            "a version list": ({"version": ["1.0.0"]}, 0),
+            "a version object": ({"version": {"name": "1.0.0"}}, 0),
+            "a path elsewhere": ({"version": "1.0.0",
+                                  "path": str(self.root / "versions" / "1.0.0")}, 0),
+            "a path to another version": ({"version": "1.0.0",
+                                           "path": str(folder / "versions" / "0.9.0")}, 0),
+            "a path inside the version": ({"version": "1.0.0", "path": own + "\\app"}, 0),
+            "a path that is no string": ({"version": "1.0.0", "path": 5}, 0),
+            "a null path": ({"version": "1.0.0", "path": None}, 0),
+        }
+        expected = []
+        for number, (record, verdict) in enumerate(cases.values()):
+            (folder / f"case-{number:02}.json").write_text(json.dumps(record))
+            expected.append(f"case-{number:02}={verdict}")
+        # Whitespace before a list still leaves a list.
+        (folder / "case-99.json").write_text(" \r\n\t" + json.dumps([{"version": "1.0.0"}]))
+        expected.append("case-99=0")
+        shells = [("Windows PowerShell 5.1", windows_powershell.executable(), ""),
+                  ("5.1 with PowerShell 7's ConvertFrom-Json", windows_powershell.executable(),
+                   self.PS7_CONVERT)]
+        pwsh = shutil.which("pwsh")
+        if os.environ.get("GITHUB_ACTIONS"):          # CI's Windows runner has PowerShell 7
+            self.assertIsNotNone(pwsh, "PowerShell 7 (pwsh) is missing from the CI runner")
+        if pwsh:
+            shells.append(("PowerShell 7", pwsh, ""))
+        for label, exe, convert in shells:
+            with self.subTest(label):
+                script = self.record_check(folder, convert)
+                env = windows_powershell.environment()
+                if convert == "" and exe == pwsh:
+                    env.pop("PSModulePath")       # PowerShell 7 finds its own modules
+                r = subprocess.run([exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                                    str(script), str(folder)], capture_output=True, text=True,
+                                   timeout=120, env=env, cwd=self.root)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(r.stdout.split(), expected, r.stderr)
 
     def test_rollback_refuses_a_previous_version_with_a_final_newline(self):
         # #297 review N1: "0.8.0\n" is not a plain name, so there is no previous version.
