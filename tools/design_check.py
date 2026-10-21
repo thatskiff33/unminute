@@ -45,9 +45,9 @@ CASES = [
     # Retention reminders (#111 C6): the banner's wording with IT's thresholds
     # and with the app's own default (C6-5).
     {"name": "home-retention", "board": "Home-Retention.dc.html", "app": "home-retention",
-     "h": 900, "props": {"policy": "managed"}},
+     "h": 1100, "props": {"policy": "managed"}},
     {"name": "home-retention-default", "board": "Home-Retention.dc.html",
-     "app": "home-retention-default", "h": 900, "props": {"policy": "default"}},
+     "app": "home-retention-default", "h": 1100, "props": {"policy": "default"}},
     {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
     {"name": "meeting-transcribing", "app": "meeting-transcribing",
      "board": "Meeting-Transcribing.dc.html"},
