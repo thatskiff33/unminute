@@ -44,11 +44,15 @@ DEMUXERS = "wav,mp3,mov,mp4,m4a,matroska,webm,flac,ogg,aac,asf,avi"
 # subtitle decoders before the app chose the audio (D2 red team, part 2,
 # finding 1). FFmpeg refuses any other decoder while probing, and decode()
 # refuses an audio stream whose decoder is not listed. Parsers still run.
+# The phone and VoIP speech decoders (G.729, G.723.1, GSM, iLBC, Speex) are
+# listed by the owner's decision of 22 October 2026 (#302); TrueSpeech and
+# QDM2 stay refused.
 AUDIO_DECODERS = (
     "pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,"
     "pcm_f64le,pcm_f64be,pcm_u8,pcm_s8,pcm_alaw,pcm_mulaw,adpcm_ima_wav,adpcm_ms,adpcm_ima_qt,"
     "gsm_ms,mp3float,mp3,mp2float,mp2,aac,aac_fixed,alac,flac,opus,libopus,vorbis,"
-    "wmav1,wmav2,wmapro,wmavoice,wmalossless,ac3,ac3_fixed,eac3,amrnb,amrwb")
+    "wmav1,wmav2,wmapro,wmavoice,wmalossless,ac3,ac3_fixed,eac3,amrnb,amrwb,"
+    "g729,g723_1,gsm,ilbc,speex")
 OPEN_OPTIONS = {"protocol_whitelist": "file", "format_whitelist": DEMUXERS,
                 "codec_whitelist": AUDIO_DECODERS}
 SAMPLE_RATE = 16000

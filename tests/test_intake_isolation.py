@@ -54,6 +54,8 @@ def encode(path, fmt, codec, video=False, rate=16000, seconds=1, silent=False):
         a.layout = "mono"
         if codec == "wmav2":
             a.bit_rate = 64000              # the encoder refuses its default
+        if codec == "g723_1":
+            a.bit_rate = 6300               # its only rate (8 kHz mono)
         if video:
             v = out.add_stream("libx264" if video is True else video, rate=10)
             v.width, v.height, v.pix_fmt = 64, 64, "yuv420p"
@@ -256,6 +258,26 @@ class DecoderTests(unittest.TestCase):
         with self.assertRaises(media.DecodeError) as ctx:
             media.decode(src, io.BytesIO())
         self.assertEqual(str(ctx.exception), media._GENERIC)
+
+    def test_phone_and_voip_speech_decoders_are_listed_and_two_are_not(self):
+        # The owner's decision of 22 October 2026 (#302): phone and VoIP
+        # speech codecs import (audio only); TrueSpeech and QDM2 stay refused.
+        from workspace import decode_child
+        names = decode_child.AUDIO_DECODERS.split(",")
+        for name in ("g729", "g723_1", "gsm", "gsm_ms", "ilbc", "speex"):
+            with self.subTest(allowed=name):
+                self.assertIn(name, names)
+        for name in ("truespeech", "qdm2"):
+            with self.subTest(refused=name):
+                self.assertNotIn(name, names)
+
+    def test_g723_1_phone_speech_decodes(self):
+        # The one listed phone codec this PyAV build can also encode: a
+        # synthetic second of G.723.1 (6.3 kbit/s, 8 kHz) in a WAV.
+        from workspace import media
+        src = encode(self.root / "phone.wav", "wav", "g723_1", rate=8000)
+        samples = media.decode(src, io.BytesIO())
+        self.assertAlmostEqual(samples, 16000, delta=800)
 
     def test_a_stream_with_no_decoder_is_refused_not_crashed(self):
         # PyAV 17 leaves codec_context as None when FFmpeg has no decoder for
