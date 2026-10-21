@@ -1,11 +1,10 @@
 # Known-vulnerability audit of the hash-locked requirements (#111 B1): pip-audit,
 # from requirements/ci-audit.txt, on every pull request, on pushes to main and
 # daily, so a vulnerability published after a merge is still found. Ignores
-# expire (requirements/audit-ignore.json, read by tools/audit.py). Not a required
-# status check yet: after 10 consecutive green runs it joins the list in
-# docs/RELEASING.md, staying in this workflow for its daily run (as the changelog
-# job stays in changelog.yml); that ruleset change needs the owner account. The
-# same supply-chain rules as ci.yml apply (see its header).
+# expire (requirements/audit-ignore.json, read by tools/audit.py). A required
+# status check (docs/RELEASING.md) that stays in this workflow for its daily run,
+# as the changelog job stays in changelog.yml. The same supply-chain rules as
+# ci.yml apply (see its header).
 name: Dependency audit
 
 on:

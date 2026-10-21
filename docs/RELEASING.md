@@ -18,19 +18,18 @@ These settings cannot be applied from a script that only has push access, so set
    - Block force pushes
    - Require linear history
    - Require a pull request before merging. Leave Required approvals at 0 (a solo maintainer cannot approve their own pull request), tick Dismiss stale pull request approvals when new commits are pushed, and tick Require conversation resolution before merging.
-   - Require status checks to pass. Add every job from `.github/workflows/ci.yml`: `Syntax check`, `Unit tests (Windows)`, `Requirements resolve (wheels only)`, `Ruff`, `PSScriptAnalyzer` and `Workflow lint`. They only appear in the picker after the CI workflow has run once, so add them after the first pull request goes green.
+   - Require status checks to pass. Add every job from `.github/workflows/ci.yml`, `.github/workflows/changelog.yml`, `.github/workflows/audit.yml` and `.github/workflows/codeql.yml`: `Syntax check`, `Unit tests (Windows)`, `Requirements resolve (wheels only)`, `Ruff`, `PSScriptAnalyzer`, `Workflow lint`, `UI idle (headless Edge)`, `JavaScript syntax`, `Changelog entry`, `Dependency audit (pip-audit)`, `Analyse Python`, `Analyse JavaScript` and `Analyse workflows`. A check only appears in the picker after its workflow has run once, so add it after a pull request where it has gone green.
 5. Leave Bypass list empty. Admins are then held to the same rules, which is the point.
 6. Click Create.
 
 From then on, all changes reach `main` through a pull request, and nobody can force-push or delete the branch.
 
 Newer checks start outside that list:
-- **Where they run:** `.github/workflows/quality.yml` (UI idle, JavaScript syntax, coverage), `.github/workflows/changelog.yml` (changelog entry) and `.github/workflows/audit.yml` (dependency audit).
-- **How they become required:** after 10 consecutive green runs.
-  - A `quality.yml` job moves into `ci.yml` and joins the list above.
-  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. It joins the list above, and `tests/test_consistency.py` is extended to include `changelog.yml`'s job, since it takes the required set from `ci.yml` today.
-  - The dependency audit stays in `audit.yml`, because it also runs daily, and joins the list the same way.
-  - Adding a check to the ruleset needs the owner account.
+- **How they become required:** after 10 consecutive green runs, and adding a check to the ruleset needs the owner account. The UI idle, JavaScript syntax, changelog entry, dependency audit and CodeQL checks joined the list by owner decision on 21 Oct 2026 (#121).
+  - A `quality.yml` job moves into `ci.yml` when it becomes required, as UI idle and JavaScript syntax did.
+  - The changelog job stays in `changelog.yml`, because that workflow re-runs when labels change. The dependency audit stays in `audit.yml`, because it also runs daily. CodeQL stays in `codeql.yml`.
+  - `tests/test_consistency.py` takes the required set from every job in those four workflows and checks it against the list above.
+- **Report only:** `.github/workflows/quality.yml` keeps `Coverage (report only)` and `Dead code (report only)`. They never block a merge and are not required.
 - **The changelog check:** it looks for a new or changed fragment in `changelog.d/` whenever a pull request changes what is shipped. An edit to `CHANGELOG.md` does not count. Add the `no-changelog` label to a pull request whose change is not worth a release note.
 
 Already enabled at repository level (Settings > Advanced Security): Dependabot alerts, Dependabot security updates, secret scanning and push protection. Routine version bumps in `.github/dependabot.yml` cover GitHub Actions only (monthly, grouped, a 7-day cooldown); Python dependencies are re-locked instead (see "Workflow supply-chain rules"). CodeQL analyses the Python code, the JavaScript and the workflows from `.github/workflows/codeql.yml`.
