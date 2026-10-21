@@ -73,6 +73,9 @@ JOURNAL_FORMAT = 2
 MARK_EVERY_S = 30            # a timing mark at least this often, per track
 COMPUTER = "computer"
 COMPUTER_PREFIX = "sys-"     # the computer track's chunk files
+# Live drafts (#104): put in the writer's queue at a pause, after the blocks
+# captured before it, so the draft's phrase in progress ends at the pause.
+_PAUSED = object()
 
 
 class RecorderError(ValueError):
@@ -508,10 +511,12 @@ class Recording:
                     block = self._queue.get(timeout=0.2)
                 except queue.Empty:
                     block = None
-                if block is not None:
+                if block is _PAUSED:
+                    self._tap_block(None)        # live drafts: the phrase ends here
+                elif block is not None:
                     block, stamp, segment = block
                     self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
-                    self._tap_block(block)       # live drafts: the block alone
+                    self._tap_block(block)       # live drafts: the block alone, not the tuple
                     self._buffer.append(block)
                     self._buffered += len(block)
                 elif self._stop.is_set():
@@ -574,8 +579,9 @@ class Recording:
                 pass        # the journal on disk still lists every saved chunk
 
     def _tap_block(self, block):
-        """Hand the block to live drafts. Drafts never affect the recording:
-        a tap that fails is turned off, with nothing in the journal."""
+        """Hand the block to live drafts (None: the recording paused here).
+        Drafts never affect the recording: a tap that fails is turned off,
+        with nothing in the journal."""
         tap = self.tap
         if tap is None:
             return
@@ -721,6 +727,11 @@ class Recording:
             self.paused = True
             self._display_block = None
             self._event("paused")
+            if self.tap is not None:     # live drafts: only while they take audio
+                try:
+                    self._queue.put_nowait(_PAUSED)
+                except queue.Full:
+                    pass                 # the draft's phrase then runs on past the pause
 
     def lid_changed(self, open_):
         """The lid closed or opened while recording (#172). On opening, a

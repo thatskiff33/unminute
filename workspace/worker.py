@@ -262,11 +262,18 @@ def draft_main(conn, cache_dir, model, threads, allow_test_engines=False, log_di
     """The draft worker (#104): live drafts while recording, in its own
     process with the same start-up as the main worker, always at
     below-normal priority. workspace.drafts.serve runs its loop."""
-    from workspace import drafts
+    from workspace import diag, drafts
     log, _ = _start_up(log_dir, drafts.LOG_NAME, quiet=True)
-    from workspace.engines import load_draft_engine
+    try:
+        from workspace.engines import load_draft_engine
+    except BaseException as exc:
+        diag.incident("worker_start", exc)
+        raise
     drafts.serve(conn, lambda: load_draft_engine(model, cache_dir, threads,
                                                  allow_test=allow_test_engines), log)
+    # The pipe closed or "exit" came: serve has let go of the model, and the
+    # crash file is closed before the process ends, as the main worker's (#278).
+    _end_crash_capture(log)
 
 
 class WorkerHandle:

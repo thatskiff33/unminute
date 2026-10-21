@@ -394,6 +394,90 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: len(self.phrases(s)) == 2))
         self.assertGreater(self.phrases(s)[1]["start"], 7.0)
 
+    # -- round 1 review of PR #290 ------------------------------------------------
+
+    def test_the_draft_worker_cannot_reach_the_network(self):
+        # N1: the draft worker is its own process, so it is guarded on its own.
+        s = self.session("draft_network")
+        self.play(s, self.speech(1))
+        self.assertTrue(wait_for(lambda: self.phrases(s), timeout=30))
+        text = self.phrases(s)[0]["text"]
+        self.assertIn("blocked NetworkBlockedError", text)
+        self.assertIn("weights=1", text)                 # weights-only loading too
+
+    def test_an_error_while_scoring_ends_drafts_with_an_incident(self):
+        from workspace import diag
+        log = diag.Log(self.root / "logs", "app")
+        s = self.session("draft_scoring_fails", log=log)
+        self.play(s, self.speech(1))
+        self.assertTrue(wait_for(lambda: s.state == drafts.FAILED, timeout=30))
+        self.assertTrue(wait_for(lambda: s.pid is None))
+        self.assertEqual((s.reason, s.restarts), ("error", 0))    # not taken for a crash
+        records = diag.shareable_records(self.root / "logs")
+        self.assertTrue(any(r.get("kind") == "incident" and r.get("op") == "draft"
+                            for r in records))
+
+    def test_the_draft_worker_limits_its_crash_file_as_it_goes(self):
+        # Run in this process with a pipe stand-in: the loop starts the crash
+        # file afresh past its limit (#278), as the main worker does.
+        from fake_worker_engines import draft_phrases
+
+        class Conn:
+            def __init__(self, msgs):
+                self.msgs, self.sent = list(msgs), []
+
+            def recv(self):
+                if not self.msgs:
+                    raise EOFError
+                return self.msgs.pop(0)
+
+            def send(self, msg):
+                self.sent.append(msg)
+        pcm = tone(0.5).astype("<i2").tobytes()
+        conn = Conn([("start", 16000)] + [("audio", i * 8000, pcm) for i in range(4)])
+        log = mock.Mock()
+        drafts.serve(conn, lambda: draft_phrases(1), log)
+        self.assertGreaterEqual(log.limit_crash_file.call_count, 4)
+
+    def test_the_draft_worker_closes_its_crash_file_before_it_ends(self):
+        from workspace import worker
+        log = mock.Mock()
+        with mock.patch.object(worker, "_start_up", return_value=(log, "cpu")), \
+                mock.patch.object(drafts, "serve") as serve:
+            worker.draft_main(None, str(self.root), FAKE + "draft_phrases", 1, True, None)
+        serve.assert_called_once()
+        log.stop_crash_capture.assert_called_once()
+
+    def test_an_ended_draft_worker_is_waited_for_as_long_as_the_main_worker(self):
+        from workspace import worker
+        s = drafts.DraftSession("rec1", 16000, self.root)
+        proc = mock.Mock(is_alive=lambda: True)
+        s._end_process(proc, None)
+        proc.terminate.assert_called_once()
+        proc.join.assert_called_once_with(worker.END_WAIT_S)
+
+    def test_load_time_must_be_a_finite_number(self):
+        s = drafts.DraftSession("rec1", 16000, self.root)
+        for bad in (float("nan"), float("inf"), True, "1.0"):
+            with self.subTest(load_s=bad), s._lock:
+                s._take(("ready", "engine", bad))
+                self.assertIsNone(s.load_s)
+        with s._lock:
+            s._take(("ready", "engine", 1.25))
+        self.assertEqual(s.load_s, 1.25)
+
+    def test_the_logged_phrase_count_leaves_out_skipped_notes(self):
+        log = mock.Mock()
+        s = drafts.DraftSession("rec1", 16000, self.root, log=log)
+        with s._lock:
+            s._take(("phrase", 0.0, 1.0, "one"))
+            s._take(("skipped", 4.0))
+            s._take(("phrase", 5.0, 6.0, "two"))
+        s.stop()
+        [(args, kwargs)] = [c for c in log.write.call_args_list if c.args[:1] == ("drafts",)]
+        self.assertEqual(kwargs["phrases"], 2)
+        self.assertEqual(kwargs["skipped_s"], 4.0)
+
 
 # -- the recorder tap ---------------------------------------------------------------
 
@@ -783,6 +867,199 @@ class WorkspaceDraftTests(unittest.TestCase):
         records = diag.shareable_records(logs)
         self.assertTrue(any(r.get("kind") == "drafts" for r in records))
         self.assertTrue(any(r.get("op") == "draft" for r in records))   # the incidents
+
+    # -- round 1 review of PR #290 ------------------------------------------------
+    # These run the policy tick and processing checks by hand (the app's threads
+    # are not started), so each step happens exactly when the test says.
+
+    def hold_shutdown(self):
+        """The first main-worker shutdown (the one _start_drafts makes) waits
+        until released; returns (entered, release)."""
+        entered, release = threading.Event(), threading.Event()
+        real, first = self.ws.handle.shutdown, [True]
+
+        def shutdown():
+            if first[0]:
+                first[0] = False
+                entered.set()
+                release.wait(30)
+            real()
+        patch = mock.patch.object(self.ws.handle, "shutdown", side_effect=shutdown)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return entered, release
+
+    def tick_in_background(self):
+        t = threading.Thread(target=self.ws._policy_tick, daemon=True)
+        t.start()
+        return t
+
+    def test_processing_waits_for_the_draft_worker_after_the_recording_ends(self):
+        # D4: between the recording ending and its draft worker exiting, only
+        # the draft session holds processing back.
+        ws = self.ws
+        ws.start_recording(3, consent=CONSENT)            # drafts off: a meeting to process
+        self.holder["stream"].play(self.speech(1))
+        ws.stop_recording()
+        _, folder = ws._imports.get_nowait()
+        ws._import_recording_folder(Path(folder))
+        job = ws._next_work()
+        self.assertEqual(job[0], "transcribe")
+        ws.settings.update(live_drafts=True)
+        ws.start_recording(3, consent=CONSENT)
+        ws._policy_tick()
+        self.assertTrue(wait_for(self.running))
+        session = ws._drafts
+        entered, release = threading.Event(), threading.Event()
+        real_end = session._end_process
+
+        def held_end(*args, **kwargs):
+            entered.set()
+            release.wait(30)
+            real_end(*args, **kwargs)
+        session._end_process = held_end
+        stopper = threading.Thread(target=ws.stop_recording)
+        stopper.start()
+        try:
+            self.assertTrue(entered.wait(30))
+            self.assertIsNone(ws._recording)                 # the recording has ended...
+            self.assertIsNone(ws._next_work())               # ...its draft worker has not
+        finally:
+            release.set()
+            stopper.join(60)
+        self.assertIsNone(ws._drafts)
+        self.assertEqual(ws._next_work(), job)               # then processing carries on
+
+    def test_the_processing_loop_checks_the_draft_worker_again(self):
+        ws = self.ws
+        ws._integrity_ok.set()
+        ran = []
+        ws._drafts = object()                       # a draft session not yet ended
+        try:
+            with mock.patch.object(ws, "_next_work", return_value=("transcribe", "m", "v")), \
+                    mock.patch.object(ws, "_maybe_purge"), \
+                    mock.patch.object(ws, "_run", side_effect=lambda *a: ran.append(a)):
+                loop = threading.Thread(target=ws._process_loop, daemon=True)
+                loop.start()
+                ws._wake.set()
+                time.sleep(1.0)
+                ws._closing.set()
+                ws._wake.set()
+                loop.join(10)
+        finally:
+            ws._drafts = None
+        self.assertEqual(ran, [])
+
+    def test_the_first_words_are_drafted_while_the_main_worker_lets_go(self):
+        ws = self.ws
+        entered, release = self.hold_shutdown()
+        ws.settings.update(live_drafts=True)
+        ws.start_recording(3, consent=CONSENT)
+        ticker = self.tick_in_background()
+        try:
+            self.assertTrue(entered.wait(30))
+            self.holder["stream"].play(self.speech(1))     # while the main worker lets go
+        finally:
+            release.set()
+            ticker.join(60)
+        self.assertTrue(wait_for(lambda: len(self.draft_phrases()) == 1, timeout=30))
+        self.assertAlmostEqual(self.draft_phrases()[0]["start"], 0.0, delta=0.4)
+        ws.stop_recording()
+
+    def test_a_download_that_begins_as_drafts_start_ends_them(self):
+        ws = self.ws
+        entered, release = self.hold_shutdown()
+        started = []
+        real_start = drafts.DraftSession.start
+
+        def start(session):
+            started.append(real_start(session))
+            return started[-1]
+        ws.settings.update(live_drafts=True)
+        with mock.patch.object(drafts.DraftSession, "start", start):
+            ws.start_recording(3, consent=CONSENT)
+            ticker = self.tick_in_background()
+            try:
+                self.assertTrue(entered.wait(30))
+                ws._before_model_change()                  # setup.Downloads' before_install
+            finally:
+                release.set()
+                ticker.join(60)
+            self.assertIsNone(ws._drafts)
+            self.assertFalse(any(started))                 # no draft worker ever started
+            ws._policy_tick()
+            self.assertIsNone(ws._drafts)
+        self.assertEqual(ws.recording_draft()["state"], "ended")
+        ws.stop_recording()
+
+    def test_drafts_wait_while_a_model_is_downloaded_or_removed(self):
+        ws = self.ws
+        ws.settings.update(live_drafts=True)
+        with mock.patch.object(drafts, "DraftSession") as made:
+            ws.start_recording(3, consent=CONSENT)
+            with mock.patch.object(ws.downloads, "busy", return_value=True):
+                ws._policy_tick()
+            self.assertEqual(ws.recording_draft()["state"], "busy")
+            ws._removing = "some model"
+            try:
+                ws._policy_tick()
+            finally:
+                ws._removing = None
+            self.assertEqual(ws.recording_draft()["state"], "busy")
+        made.assert_not_called()
+        ws._policy_tick()                                   # done: drafts start
+        self.assertTrue(wait_for(self.running))
+        ws.stop_recording()
+
+    def test_pause_ends_the_phrase_after_the_audio_queued_before_it(self):
+        self.record()
+        self.assertTrue(wait_for(self.running))
+        rec = self.ws._recording
+        real, gate, first = rec.tap, threading.Event(), [True]
+
+        def held(start, block):                           # the writer falls behind
+            if first[0]:
+                first[0] = False
+                gate.wait(30)
+            real(start, block)
+        rec.tap = held
+        self.holder["stream"].play(tone(2.0, self.RATE))    # queued behind the first block
+        self.ws.pause_recording()
+        gate.set()
+        self.assertTrue(wait_for(lambda: len(self.draft_phrases()) == 1, timeout=30))
+        self.assertAlmostEqual(self.draft_phrases()[0]["end"], 2.0, delta=0.3)
+        self.ws.resume_recording()
+        self.ws.stop_recording()
+
+    def test_stop_ends_capture_before_the_drafts(self):
+        rec = self.record()
+        self.assertTrue(wait_for(self.running))
+        order, session = [], self.ws._drafts
+        real_rec_stop, real_session_stop = rec.stop, session.stop
+
+        def rec_stop():
+            order.append("recording")
+            return real_rec_stop()
+
+        def session_stop():
+            order.append("drafts")
+            real_session_stop()
+        rec.stop, session.stop = rec_stop, session_stop
+        self.ws.stop_recording()
+        self.assertEqual(order, ["recording", "drafts"])
+
+    def test_a_recording_that_cannot_be_saved_still_ends_its_drafts(self):
+        rec = self.record()
+        self.assertTrue(wait_for(self.running))
+        proc = self.ws._drafts._proc
+        real_rec_stop = rec.stop
+        rec.stop = mock.Mock(side_effect=recorder.RecorderError("Saving did not finish."))
+        try:
+            self.ws.stop_recording()
+            self.assertIsNone(self.ws._drafts)
+            self.assertFalse(proc.is_alive())
+        finally:
+            real_rec_stop()
 
 
 if __name__ == "__main__":

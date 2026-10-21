@@ -15,7 +15,11 @@
 #   - The recorder's writer thread (never the audio callback) hands each block
 #     to DraftSession.tap: a non-blocking put into a bounded queue. A full
 #     queue loses draft audio only, never recorded audio, and an error in the
-#     tap turns the tap off without touching the recording.
+#     tap turns the tap off without touching the recording. The tap holds
+#     audio from as soon as the app decides to start drafts, while the main
+#     worker lets go of its model and the draft worker loads (up to TAP_S).
+#     A pause reaches the tap from the writer too, after the blocks queued
+#     before it, and ends the phrase in progress there.
 #   - A feeder thread sends the audio in batches of about BATCH_S to the draft
 #     worker, its own process (worker.draft_main): below-normal priority,
 #     DRAFT_THREADS threads, the same offline start-up as the main worker
@@ -30,6 +34,10 @@
 #   - A crashed draft worker is restarted once per session; a second crash, or
 #     a model that will not load, ends drafts for that recording. Neither ever
 #     touches the recording.
+#   - Its crash file is handled as the main worker's (#278): started afresh
+#     past diag.CRASH_MAX while it runs, closed before the process ends by
+#     itself, and an ended worker is waited for up to worker.END_WAIT_S before
+#     the app reads and deletes the file.
 # Standard library and numpy only at module level: the window process imports
 # this module (tests/test_import_hygiene.py).
 
@@ -65,7 +73,7 @@ MAX_TEXT = 2000                  # characters of one phrase kept
 MAX_KEPT = 10000                 # phrases kept for one recording (about 8 hours)
 MAX_RESTARTS = 1                 # automatic restarts of a crashed draft worker
 LOAD_TIMEOUT_S = 300.0           # a worker that has not loaded by then is ended
-STOP_JOIN_S = 5.0
+STOP_JOIN_S = 5.0                # a draft thread is waited for this long at a stop
 LOG_NAME = "draft-worker"        # its log, crash file and process name (workspace.diag)
 FLUSH = "flush"                  # tap queue marker: end the current phrase (pause)
 
@@ -339,19 +347,29 @@ def serve(conn, load, log=None):
     pipeline = DraftPipeline(rate, engine.speech_prob, getattr(engine, "reset", None))
     try:
         while True:
+            if log is not None:
+                log.limit_crash_file()       # recovered native errors stay small (#278)
             try:
                 msg = conn.recv()
             except (EOFError, OSError):
                 return
             if not isinstance(msg, tuple) or not msg:
                 continue
-            if msg[0] == "audio" and len(msg) == 3 and isinstance(msg[1], int) \
-                    and isinstance(msg[2], bytes) and 0 < len(msg[2]) <= 2 * MAX_BATCH_FRAMES:
-                pcm = np.frombuffer(msg[2][: len(msg[2]) // 2 * 2], dtype="<i2")
-                queue_phrases(pipeline.feed(msg[1], pcm))
-            elif msg[0] == FLUSH:
-                queue_phrases(pipeline.flush())
-            elif msg[0] == "exit":
+            try:
+                if msg[0] == "audio" and len(msg) == 3 and isinstance(msg[1], int) \
+                        and isinstance(msg[2], bytes) \
+                        and 0 < len(msg[2]) <= 2 * MAX_BATCH_FRAMES:
+                    pcm = np.frombuffer(msg[2][: len(msg[2]) // 2 * 2], dtype="<i2")
+                    queue_phrases(pipeline.feed(msg[1], pcm))
+                elif msg[0] == FLUSH:
+                    queue_phrases(pipeline.flush())
+                elif msg[0] == "exit":
+                    return
+            except Exception as exc:
+                # Scoring or splitting failed: recorded with its frames, and the
+                # app told, so drafts end for this recording (not restarted).
+                code = diag.incident("worker", exc, op="draft")
+                send("error", type(exc).__name__, safe_message(exc), "draft", code)
                 return
     finally:
         with cond:
@@ -381,7 +399,11 @@ class DraftSession:
         self._first = 0                  # index of _phrases[0] (older ones were let go)
         self.state, self.reason = STARTING, None
         self.restarts = 0
-        self.dropped_s = self.skipped_s = 0.0
+        self.skipped_s = 0.0
+        # Draft audio lost: by the tap (the writer thread only) and by the
+        # feeder (its thread only), each counted by its own thread.
+        self._tap_dropped_s = self._send_dropped_s = 0.0
+        self._phrase_count = 0           # phrases kept, not counting skipped notes
         self.load_s = None
         self.description = None
         self._proc = self._conn = None
@@ -394,15 +416,33 @@ class DraftSession:
 
     def tap(self, start, block):
         """start: where the block begins in the recording, in frames at the
-        device rate (paused time is not recorded, so not counted)."""
+        device rate (paused time is not recorded, so not counted). block None:
+        the recording paused here (after the blocks before it), so the phrase
+        in progress ends."""
         if not self._feeding:
             return
         try:
-            self._tap.put_nowait((start, block))
+            self._tap.put_nowait((FLUSH, None) if block is None else (start, block))
         except queue.Full:
-            self.dropped_s += len(block) / self.rate
+            if block is not None:
+                self._tap_dropped_s += len(block) / self.rate
+
+    @property
+    def dropped_s(self):
+        """Seconds of draft audio lost (a full tap, or a worker that was gone)."""
+        return self._tap_dropped_s + self._send_dropped_s
 
     # -- control --------------------------------------------------------------------
+
+    def open(self):
+        """Hold audio from the tap from now on (up to TAP_S), before the
+        worker starts: the first words are not missed while the main worker
+        lets go of its model and the draft worker loads. False once stopped."""
+        with self._lock:
+            if self._stopped:
+                return False
+            self._feeding = True
+            return True
 
     def start(self):
         with self._lock:
@@ -437,15 +477,6 @@ class DraftSession:
         reader.start()
         self._threads.append(reader)
 
-    def pause(self):
-        """The recording paused: end the phrase in progress once the audio
-        queued before the pause has been sent."""
-        if self._feeding:
-            try:
-                self._tap.put_nowait((FLUSH, None))
-            except queue.Full:
-                pass
-
     def suspend(self, state=BATTERY):
         """End the worker (memory freed) but keep the text: on battery."""
         with self._lock:
@@ -473,7 +504,7 @@ class DraftSession:
         with self._lock:
             already = self._stopped
         if already:
-            self._ended.wait(2 * STOP_JOIN_S + 1)
+            self._ended.wait(self._end_wait() + STOP_JOIN_S * (len(self._threads) + 1))
             return
         with self._lock:
             if self._stopped:
@@ -482,7 +513,7 @@ class DraftSession:
             self.state = STOPPED
             proc, conn = self._proc, self._conn
             self._proc = self._conn = None
-            kept = self.count
+            kept = self._phrase_count
             self._phrases, self._first = [], 0
         self._end_process(proc, conn)
         self._drain()
@@ -499,11 +530,19 @@ class DraftSession:
                            dropped_s=round(self.dropped_s, 1), load_s=self.load_s)
         self._ended.set()
 
+    @staticmethod
+    def _end_wait():
+        from workspace.worker import END_WAIT_S
+        return END_WAIT_S
+
     def _end_process(self, proc, conn, died=False):
         if proc is not None:
             if proc.is_alive():
                 proc.terminate()
-            proc.join(STOP_JOIN_S)
+            # Until it has ended, Windows keeps its crash file open, so it
+            # could not be read and deleted (#278): waited for as long as the
+            # main worker is.
+            proc.join(self._end_wait())
             if self.log is not None:
                 crash = self.log.folder / f"{LOG_NAME}.crash"
                 code = self.log.collect_crash(died, crash_path=crash, process=LOG_NAME)
@@ -573,7 +612,7 @@ class DraftSession:
         for i in range(0, len(pcm), MAX_BATCH_FRAMES):
             part = pcm[i:i + MAX_BATCH_FRAMES]
             if not self._send(("audio", start + i, part.tobytes())):
-                self.dropped_s += len(part) / self.rate
+                self._send_dropped_s += len(part) / self.rate
 
     def _send(self, msg):
         # Not before the worker is ready (it reads nothing while it loads), and
@@ -628,7 +667,8 @@ class DraftSession:
         kind = msg[0]
         if kind == "ready" and len(msg) == 3:
             self.description = str(msg[1])[:200]
-            self.load_s = msg[2] if isinstance(msg[2], (int, float)) else None
+            self.load_s = msg[2] if isinstance(msg[2], (int, float)) \
+                and not isinstance(msg[2], bool) and math.isfinite(msg[2]) else None
             self.state = RUNNING
             self._ready.set()
         elif kind == "phrase" and len(msg) == 4 and isinstance(msg[3], str) \
@@ -645,6 +685,9 @@ class DraftSession:
             self._feeding = False
 
     def _keep(self, item):
+        """Call with _lock held. MAX_KEPT counts phrases and skipped notes."""
+        if item["kind"] == "phrase":
+            self._phrase_count += 1
         self._phrases.append(item)
         if len(self._phrases) > MAX_KEPT:
             drop = len(self._phrases) - MAX_KEPT

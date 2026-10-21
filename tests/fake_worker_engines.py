@@ -368,3 +368,30 @@ def draft_crash_always(threads):
 
 def draft_load_fails(threads):
     raise RuntimeError("model files failed verification")
+
+
+class _DraftNetwork(_DraftEngine):
+    def transcribe_phrase(self, audio):
+        try:
+            socket.create_connection(("192.0.2.1", 443), timeout=2)
+            got = "connected"
+        except OSError as exc:
+            got = f"blocked {type(exc).__name__}"
+        return f"{got} weights={os.environ.get('TORCH_FORCE_WEIGHTS_ONLY_LOAD')}"
+
+
+def draft_network(threads):
+    """Each phrase says whether a connection got out of the draft worker
+    (N1), and its torch.load switch."""
+    return _DraftNetwork()
+
+
+class _DraftScoringFails(_DraftEngine):
+    def speech_prob(self, window):
+        raise RuntimeError("speech scoring failed")
+
+
+def draft_scoring_fails(threads):
+    """Scoring the audio for speech fails (not a phrase): an error in the
+    draft worker's own loop."""
+    return _DraftScoringFails()

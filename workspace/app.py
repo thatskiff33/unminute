@@ -968,28 +968,28 @@ class Workspace:
                 return False             # already finished by the other path
             self._recording = None
         self._indicate()
-        self._end_drafts(rec)            # before the import, so processing waits for it (D4)
         if event:                        # noted only by the path that finishes it
             rec._event(event[0], note=event[1])
         try:
             rec.stop()
         except recorder.RecorderError as exc:
+            self._end_drafts(rec)
             self._hung[rec.folder.name] = rec
             self._add_report({"title": None, "seconds": rec.status()["seconds"],
                               "events": list(rec.journal["events"]),
                               "note": str(exc), "pending": rec.folder.name})
             return                       # imported at the next start
         self._recording_ended(rec, "saved")
+        # Capture has stopped; drafts end before the import is queued. Until
+        # the draft worker has exited, processing waits for it (D4).
+        self._end_drafts(rec)
         self._imports.put(("__recording__", str(rec.folder)))
         self._wake.set()
 
     def pause_recording(self):
         if self._recording is None:
             raise WorkspaceError("Nothing is being recorded.")
-        self._recording.pause()
-        session = self._drafts
-        if session is not None:
-            session.pause()              # the phrase in progress ends here
+        self._recording.pause()          # live drafts: the phrase in progress ends here
         return self._recording.status()
 
     def resume_recording(self):
@@ -1112,6 +1112,9 @@ class Workspace:
         if reason or self._drafts_ended == rec.journal["id"]:
             self._draft_why = reason or self._draft_why
             return
+        if self.downloads.busy() or self._removing:
+            self._draft_why = "busy"          # model files may be changing: not yet
+            return
         if not self._draft_model_ready():
             self._draft_why = "unavailable"   # Parakeet v2 is not downloaded or is damaged
             self._drafts_ended = rec.journal["id"]
@@ -1119,40 +1122,47 @@ class Workspace:
         self._start_drafts(rec)
 
     def _start_drafts(self, rec):
-        # D4: one heavy model at a time. The main worker lets go of a model it
-        # may still hold (idle) before the draft worker loads one.
-        self.handle.shutdown()
         with self._lock:
-            if self._recording is not rec or self._drafts is not None:
+            # Checked again under the lock that a model download or removal
+            # takes before it ends drafts (_end_drafts), so one that began
+            # since the tick is never missed.
+            if (self._recording is not rec or self._drafts is not None
+                    or self._drafts_ended == rec.journal["id"]
+                    or self.downloads.busy() or self._removing):
                 return
             self._draft_gen += 1
             session = drafts.DraftSession(rec.journal["id"], rec.rate, self.cache_dir,
                                           generation=self._draft_gen, model=self.draft_model,
                                           log=self.log,
                                           allow_test_engines=self.handle.allow_test_engines)
-            self._drafts = session
+            self._drafts = session        # processing waits from here (D4)
+        # The tap holds audio from now, so the first words are drafted too.
+        if session.open():
+            rec.tap = session.tap
         try:
-            started = session.start()
+            # D4: one heavy model at a time. The main worker lets go of a model
+            # it may still hold (idle) before the draft worker loads one.
+            self.handle.shutdown()
+            session.start()
         except Exception as exc:
             self.log.incident("drafts", exc)
             self._draft_why = "failed"
             self._end_drafts(rec, final=True)
-            return
-        if started:
-            rec.tap = session.tap
 
     def _end_drafts(self, rec=None, final=False):
         """End live drafts: the draft worker is ended (and waited for) and its
         text forgotten. final: not again for this recording (its model files
         are about to change, or the app is closing)."""
-        session = self._drafts
-        if final:
-            target = session.recording_id if session is not None else (
-                rec.journal["id"] if rec is not None else
-                self._recording.journal["id"] if self._recording is not None else None)
-            if target is not None:
-                self._drafts_ended = target
-                self._draft_why = "ended"
+        with self._lock:                  # _start_drafts checks the mark under it
+            session = self._drafts
+            if final:
+                current = self._recording
+                target = session.recording_id if session is not None else (
+                    rec.journal["id"] if rec is not None else
+                    current.journal["id"] if current is not None else None)
+                if target is not None:
+                    self._drafts_ended = target
+                    self._draft_why = "ended"
         if session is None:
             return
         for r in (rec, self._recording):
