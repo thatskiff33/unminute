@@ -928,9 +928,10 @@ class DraftEngine:
         for spec in (self.spec, SILERO_VAD):
             problems = check_files(spec, model_dir(spec, self.cache_dir))
             if problems:
-                raise ModelLoadError(
-                    f"{label(spec.name)} cannot be used. {PARAKEET_FIX} "
-                    f"({'; '.join(problems)})")
+                # Not shown as a meeting's error: drafts only say they are
+                # not available (the full pass reports the model's problem).
+                raise ModelLoadError(f"{label(spec.name)} cannot be used for drafts "
+                                     f"({'; '.join(problems)})")
         try:
             import onnx_asr
             import onnxruntime as rt
@@ -954,9 +955,8 @@ class DraftEngine:
                 str(model_dir(SILERO_VAD, self.cache_dir) / "silero_vad.onnx"),
                 sess_options=options(1), providers=cpu)
         except Exception as exc:
-            raise ModelLoadError(
-                f"{label(self.spec.name)} failed to load. {PARAKEET_FIX} "
-                f"({type(exc).__name__}: {exc})") from exc
+            raise ModelLoadError(f"{label(self.spec.name)} failed to load for drafts "
+                                 f"({type(exc).__name__}: {exc})") from exc
         self.reset()
         return self
 

@@ -111,7 +111,8 @@ def load_draft_engine(name, cache_dir, threads, allow_test=False):
     if name.startswith(TEST_PREFIX):
         return _test_factory(name, allow_test)(threads)
     if name != asr_engines.PARAKEET_V2:
-        raise ModelLoadError("Draft text uses Parakeet v2 only.")
+        raise ModelLoadError(f"Draft text uses {asr_engines.label(asr_engines.PARAKEET_V2)} "
+                             "only.")
     state, detail = asr_engines.parakeet_status(name, cache_dir)
     if state != "ready":
         raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {fix_speech(name)} "

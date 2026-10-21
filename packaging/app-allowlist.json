@@ -20,6 +20,7 @@
   "workspace/decode_child.py",
   "workspace/diag.py",
   "workspace/dpapi.py",
+  "workspace/drafts.py",
   "workspace/engines.py",
   "workspace/gpu.py",
   "workspace/handoff.py",

@@ -386,6 +386,7 @@ class DraftSession:
         self.description = None
         self._proc = self._conn = None
         self._stopped = False
+        self._ended = threading.Event()  # stop() has finished: the worker has exited
         self._ready = threading.Event()
         self._threads = []
 
@@ -466,7 +467,14 @@ class DraftSession:
             self._feeding = True
 
     def stop(self):
-        """End drafts for good: the worker is ended and the text forgotten."""
+        """End drafts for good: the worker is ended and the text forgotten.
+        Returns once the worker has exited, also when another thread's stop
+        is still under way (D4: processing waits for that)."""
+        with self._lock:
+            already = self._stopped
+        if already:
+            self._ended.wait(2 * STOP_JOIN_S + 1)
+            return
         with self._lock:
             if self._stopped:
                 return
@@ -489,6 +497,7 @@ class DraftSession:
             self.log.write("drafts", phrases=kept, restarts=self.restarts,
                            skipped_s=round(self.skipped_s, 1),
                            dropped_s=round(self.dropped_s, 1), load_s=self.load_s)
+        self._ended.set()
 
     def _end_process(self, proc, conn, died=False):
         if proc is not None:

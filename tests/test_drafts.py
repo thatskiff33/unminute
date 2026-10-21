@@ -262,6 +262,25 @@ class SessionTests(unittest.TestCase):
         s.tap(0, tone(0.1))                          # after a stop: ignored, never raises
         self.assertFalse(s.start())                  # and never started again
 
+    def test_a_second_stop_returns_only_once_the_worker_has_exited(self):
+        # D4: the policy thread and the page can end drafts at the same time;
+        # whichever returns second must not return while the worker still runs.
+        s = self.session("draft_phrases")
+        self.assertTrue(wait_for(lambda: s.state == drafts.RUNNING))
+        proc = s._proc
+        real_end = s._end_process
+
+        def slow_end(*args, **kwargs):
+            time.sleep(1.0)
+            real_end(*args, **kwargs)
+        s._end_process = slow_end
+        first = threading.Thread(target=s.stop)
+        first.start()
+        self.assertTrue(wait_for(lambda: s._stopped))
+        s.stop()
+        self.assertFalse(proc.is_alive())
+        first.join(10)
+
     def test_a_late_result_after_stop_is_dropped(self):
         s = drafts.DraftSession("rec1", 16000, self.root)
         late = ("phrase", 0.0, 1.0, "late words")
