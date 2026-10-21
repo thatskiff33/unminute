@@ -205,14 +205,19 @@ def _app_running(name=None):
     return error == 5                           # ERROR_ACCESS_DENIED
 
 
-def _system_account():
+_UNREAD = object()                              # _system_account: read the token itself
+
+
+def _system_account(user=_UNREAD):
     """Is this process running as Local System (S-1-5-18)? Intune runs a
     script there unless it is set to use the logged-on credentials. None if
     Windows cannot say (so --health never reports healthy on a guess); False
     off Windows. The token's user is read by audit.token_user, which the
-    audit log's Event Log copy also uses (#111 C5)."""
-    from workspace import audit
-    user = audit.token_user()
+    audit log's Event Log copy also uses (#111 C5), unless the caller passes
+    the one it read."""
+    if user is _UNREAD:
+        from workspace import audit
+        user = audit.token_user()
     if user is None or user is False:
         return user
     return user[1] == "S-1-5-18"
@@ -220,13 +225,16 @@ def _system_account():
 
 def verify_audit(argv, root=None):
     """--verify-audit (#111 C5): (result, exit code). Counts and states only.
-    Run as SYSTEM, or when Windows cannot say who runs it, nothing is read."""
-    account = _system_account()
+    Run as SYSTEM, or when Windows cannot say who runs it, nothing is read.
+    The token's user is read once: the same answer refuses SYSTEM and filters
+    the local Event Log by SID (review round 3)."""
+    from workspace import audit
+    user = audit.token_user()
+    account = _system_account(user)
     if account is None:
         return {"result": "account_unknown"}, 1
     if account:
         return {"result": "system_account"}, 1
-    from workspace import audit
     from workspace.store import StoreError, default_root
     try:
         folder = Path(root or default_root()) / "audit"
@@ -242,11 +250,16 @@ def verify_audit(argv, root=None):
         source = str(Path(argv[at]).absolute())
     if source or "--event-log" in argv:
         # The local Application log holds every account's entries on this
-        # computer: only the signed-in user's are compared. An exported file
-        # is compared whole (another device's chains are other_chains).
-        user = None if source else audit.token_user()
-        out["event_log"] = audit.compare_event_log(folder, source=source,
-                                                   sid=user[1] if user else None)
+        # computer: only the signed-in user's are compared, by the SID read
+        # above; with none (off Windows) the log is not read, never compared
+        # unfiltered. An exported file is compared whole (another device's
+        # chains are other_chains).
+        if source:
+            out["event_log"] = audit.compare_event_log(folder, source=source)
+        elif user:
+            out["event_log"] = audit.compare_event_log(folder, sid=user[1])
+        else:
+            out["event_log"] = {"result": "account_unknown"}
         ok = ok and out["event_log"]["result"] == "match"
     return out, 0 if ok else 1
 

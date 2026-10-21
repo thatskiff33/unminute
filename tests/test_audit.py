@@ -849,6 +849,49 @@ class CommandLineTests(Base):
             self.assertEqual((result["event_log"]["result"], code), ("no_file", 1))
         self.assertNotIn(MEETING, json.dumps(result))
 
+    def test_the_account_is_read_once(self):
+        """Round 3 nit: --verify-audit --event-log read the token's user twice.
+        If only the second read failed, the comparison ran without the SID and
+        the user's own entries of another chain were never counted. It reads
+        the user once and filters with that SID."""
+        from workspace import __main__ as main
+        mirror = FakeMirror()
+        self.fill(2, self.log(mirror=mirror, new_workspace=True)).close()   # first_use
+        sid = "S-1-5-21-1-2-3-1001"
+        gone = (f"Unminute audit v1 chain={'f' * 32} seq=1 kind=chain_start "
+                f"sha256={'0' * 64}")                 # the user's own, of a deleted chain
+        xml = event_xml([e[2] for e in mirror.sent] + [gone], sid=sid)
+        with mock.patch.object(audit, "read_event_log", lambda s, p: xml), \
+                mock.patch.object(audit, "token_user",
+                                  side_effect=[(b"", sid), None]) as user:
+            result, code = main.verify_audit(["--verify-audit", "--event-log"],
+                                             root=self.folder.parent)
+        self.assertEqual((result["event_log"]["result"],
+                          result["event_log"]["unexplained_chains"], code),
+                         ("differs", 1, 1), result)
+        self.assertEqual(user.call_count, 1)
+        with mock.patch.object(audit, "token_user",
+                               side_effect=[None, (b"", sid)]) as user:   # cannot tell
+            self.assertEqual(main.verify_audit(["--verify-audit", "--event-log"],
+                                               root=self.folder.parent),
+                             ({"result": "account_unknown"}, 1))
+        self.assertEqual(user.call_count, 1)
+
+    def test_no_account_never_compares_the_local_log_unfiltered(self):
+        """Off Windows the token's user is False: nothing to filter the local
+        log by, so it is account_unknown, never a match of every account."""
+        from workspace import __main__ as main
+        self.fill(2).close()
+
+        def refuse(*a, **k):
+            raise AssertionError("read the event log without a SID")
+        with mock.patch.object(audit, "read_event_log", refuse), \
+                mock.patch.object(audit, "token_user", return_value=False):
+            result, code = main.verify_audit(["--verify-audit", "--event-log"],
+                                             root=self.folder.parent)
+        self.assertEqual((result["result"], result["event_log"], code),
+                         ("ok", {"result": "account_unknown"}, 1))
+
     def test_status_reports_the_newest_seq(self):
         from workspace import __main__ as main
         self.fill(4).close()
