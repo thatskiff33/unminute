@@ -115,6 +115,7 @@ async function openMeeting(mid, { handoff = false } = {}) {
   stopEditing();
   state.pendingHandoff = handoff;
   state.mid = mid; state.total = -1; state.signature = ""; state.hits = []; state.hit = -1;
+  dropSearches();
   state.version = null; state.items = []; state.speakerList = []; state.playingRow = null; state.speakersSig = "";
   $("m-search").value = ""; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true;
   $("m-search").closest(".search").classList.remove("active");
@@ -754,7 +755,8 @@ function viewVersion(index) {
   stopEditing();
   state.version = index;
   state.signature = "";
-  $("m-search").value = ""; state.hits = []; $("m-hits").textContent = "";
+  $("m-search").value = ""; state.hits = []; state.hit = -1; $("m-hits").textContent = "";
+  dropSearches();
   $("m-hit-nav").hidden = true;
   $("m-search").closest(".search").classList.remove("active");
   renderMeeting();
@@ -935,8 +937,21 @@ async function renderTranscript() {
   }
   // The user may have started editing, or switched meeting or version, while
   // this was loading: never replace a passage being edited; render later.
-  if (state.editing || state.mid !== mid || state.version !== version) {
+  const stopped = () => state.editing || state.mid !== mid || state.version !== version;
+  if (stopped()) {
     state.signature = "";
+    return;
+  }
+  // A search open: its matches are found before the list is redrawn and shown
+  // with it, so the new rows never appear with the old list's count and
+  // highlights. Search opens every passage (#111), which on a long meeting
+  // takes longer than drawing the rows.
+  const query = $("m-search").value.trim();
+  const seq = query ? newSearch() : 0;
+  const hits = query ? (await attempt(() => call("search", mid, query, version)) || []) : [];
+  if (stopped()) {
+    state.signature = "";
+    if (query && seq === searchSeq) showHits(query, hits, takeJump());   // on the rows shown
     return;
   }
   let prev;
@@ -951,7 +966,10 @@ async function renderTranscript() {
   state.playingRow = null;
   document.scrollingElement.scrollTop = scroll;
   document.querySelector(".transcript-wrap").scrollTop = paneScroll;
-  if ($("m-search").value) runSearch(false);
+  // The latest search shows its matches; otherwise the matches shown so far
+  // go on the new rows, and the newer search (typed meanwhile) shows its own.
+  if (query && seq === searchSeq) showHits(query, hits, takeJump());
+  else markHits();
   updatePlayer();
 }
 
@@ -1077,16 +1095,48 @@ async function undo() {
 }
 
 // -- search --------------------------------------------------------------------
+// Every search request takes the next number, and only the latest request's
+// answer is shown, so an answer that comes late never replaces a newer one.
+// Typing and opening another meeting or version take a number too, dropping
+// the answers to every request made before. A search the user typed jumps to
+// its first match when its matches are shown, whichever request (typed, or a
+// redraw's for the same text) answers last.
+let searchSeq = 0, searchJump = false;
+function newSearch(jump = false) { if (jump) searchJump = true; return ++searchSeq; }
+function dropSearches() { searchJump = false; return ++searchSeq; }
+function takeJump() { const jump = searchJump; searchJump = false; return jump; }
+
 async function runSearch(jump = true) {
+  const q = $("m-search").value.trim(), mid = state.mid, version = state.version;
+  if (!q) { dropSearches(); showHits("", [], false); return; }
+  const seq = newSearch(jump);
+  const hits = await attempt(() => call("search", mid, q, version)) || [];
+  if (seq !== searchSeq) return;        // a newer search, typing or another meeting since
+  showHits(q, hits, takeJump());
+}
+
+// A search's matches shown on the rows drawn: highlighted and counted. Without
+// a jump, the current match stays current if it still matches.
+function showHits(q, hits, jump) {
+  const current = state.hit >= 0 ? state.hits[state.hit] : undefined;
   for (const li of document.querySelectorAll("#transcript li.hit")) li.classList.remove("hit", "current");
-  const q = $("m-search").value.trim();
   $("m-search").closest(".search").classList.toggle("active", !!q);
-  if (!q) { state.hits = []; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true; return; }
-  state.hits = await attempt(() => call("search", state.mid, q, state.version)) || [];
+  if (!q) { state.hits = []; state.hit = -1; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true; return; }
+  state.hits = hits;
+  state.hit = jump ? -1 : hits.indexOf(current);
+  $("m-hits").textContent = hits.length ? `${hits.length} found` : "No matches";
+  $("m-hit-nav").hidden = hits.length === 0;
+  markHits();
+  if (jump) nextHit(1);
+  else if (state.hit >= 0) $("m-hits").textContent = `${state.hit + 1} of ${hits.length}`;
+}
+
+// The matches shown so far marked on the rows drawn (after a redraw).
+function markHits() {
+  if (!$("m-search").value.trim()) return;
   for (const id of state.hits) { const row = rowFor(id); if (row) row.classList.add("hit"); }
-  $("m-hits").textContent = state.hits.length ? `${state.hits.length} found` : "No matches";
-  $("m-hit-nav").hidden = state.hits.length === 0;
-  if (jump) { state.hit = -1; nextHit(1); }
+  const row = state.hit >= 0 ? rowFor(state.hits[state.hit]) : null;
+  if (row) row.classList.add("current");
 }
 
 function rowFor(id) { return document.querySelector(`#transcript li[data-id="${Number(id)}"]`); }
@@ -2749,7 +2799,10 @@ function wire() {
     });
   });
   let searchTimer;
-  $("m-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250); });
+  $("m-search").addEventListener("input", () => {
+    dropSearches();                      // answers to what was typed before are stale
+    clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 250);
+  });
   $("m-search").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); nextHit(e.shiftKey ? -1 : 1); } });
   $("m-next").addEventListener("click", () => nextHit(1));
   $("m-prev").addEventListener("click", () => nextHit(-1));
