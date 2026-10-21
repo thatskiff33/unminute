@@ -153,15 +153,14 @@ def _load_whisper_gpu(name, cache_dir, threads):
 SPEAKER_MODEL = "pyannote"
 
 
-def diarize_file(model, cache_dir, audio_path, hint, threads, device="cpu", allow_test=False):
-    """Speaker separation over a meeting's decoded audio file (16 kHz float32).
-    Returns (turns, exclusive_turns, device); turns are (start, end, label).
-    Offline only: builds pyannote from the hash-checked bytes in memory."""
+def diarize_audio(model, cache_dir, audio, hint, threads, device="cpu", allow_test=False):
+    """Speaker separation over a meeting's decoded audio (16 kHz mono
+    float32, the whole waveform: the worker reads it from the encrypted file,
+    #111 C3a). Returns (turns, exclusive_turns, device); turns are
+    (start, end, label). Offline only: builds pyannote from the hash-checked
+    bytes in memory."""
     import numpy as np
-    mm = np.memmap(audio_path, dtype="<f4", mode="r")
-    audio = np.array(mm)            # pyannote needs the whole waveform anyway
-    mm._mmap.close()                # release the file handle now (cleanup, #17)
-    del mm
+    audio = np.ascontiguousarray(audio, dtype=np.float32)
     if model.startswith(TEST_PREFIX):
         factory = _test_factory(model, allow_test)
         result = factory(audio, hint)

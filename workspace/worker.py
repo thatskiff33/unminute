@@ -173,16 +173,22 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
                                    [tuple(w) for w in (getattr(s, "words", ()) or ())])
                                   for s in segments], duration))
             elif op == "diarize":
-                _, model, audio_path, hint, threads, wanted = msg
+                _, model, audio, hint, threads, wanted = msg
+                del msg                      # holds the meeting's audio key
                 # One heavy model at a time: release the speech model first.
                 had_asr = engine is not None
                 engine, loaded = None, None
                 import gc
                 gc.collect()
-                from workspace.engines import diarize_file
-                turns, exclusive, ran_on = diarize_file(model, cache_dir, audio_path, hint,
-                                                        threads, device=wanted,
-                                                        allow_test=allow_test_engines)
+                try:
+                    waveform = _read_audio(audio)
+                finally:
+                    del audio                # the key is not kept (#111 C3a)
+                from workspace.engines import diarize_audio
+                turns, exclusive, ran_on = diarize_audio(model, cache_dir, waveform, hint,
+                                                         threads, device=wanted,
+                                                         allow_test=allow_test_engines)
+                del waveform
                 gc.collect()
                 conn.send(("ok", turns, exclusive, ran_on, had_asr))
             elif op == "exit":
@@ -212,6 +218,30 @@ def _end_crash_capture(log):
     gc.collect()
     if log is not None:
         log.stop_crash_capture()
+
+
+def _read_audio(audio):
+    """The whole decoded meeting audio for speaker identification, from the
+    encrypted file named in a diarize request: (path, key, context), checked
+    here. Read block by block (each authenticated) into one float32 array;
+    the file is closed before the model runs. An AudioCryptError goes back
+    as an ordinary error: its message never names the file or the key. The
+    context holds text only, as the meeting audio's does; a context with
+    other parts (C3b's recorder files) widens this check deliberately."""
+    if not (isinstance(audio, tuple) and len(audio) == 3):
+        raise ValueError("The speaker identification request is not valid.")
+    path, key, context = audio
+    if not (isinstance(path, str) and isinstance(key, bytes) and len(key) == 32
+            and isinstance(context, tuple) and context
+            and all(isinstance(p, str) for p in context)):
+        raise ValueError("The speaker identification request is not valid.")
+    from workspace import audiocrypt
+    with audiocrypt.AudioReader(path, key, context) as reader:
+        if (reader.sample_format, reader.channels, reader.rate) != ("float32", 1, SAMPLE_RATE):
+            raise audiocrypt.AudioCryptError("The audio file is damaged (header).")
+        waveform = np.empty(reader.frames, dtype=np.float32)
+        reader.readinto(waveform, 0)
+    return waveform
 
 
 class WorkerHandle:
@@ -548,13 +578,16 @@ DIARIZE_TIMEOUT_FACTOR = 3.0      # x audio length, plus a floor: generous for s
 DIARIZE_TIMEOUT_FLOOR_S = 600.0
 
 
-def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=None):
-    """Whole-meeting speaker separation in the worker. Returns
-    (turns, exclusive_turns, device, asr_was_loaded_before). A stop or a hang
-    ends the pass (it restarts from the beginning next time). With
-    device="cuda" it runs in the companion GPU worker (gpu_site)."""
-    from pathlib import Path
-    seconds = Path(audio_path).stat().st_size / 4 / SAMPLE_RATE
+def diarize(handle, model, audio, hint, threads, device="cpu", gpu_site=None):
+    """Whole-meeting speaker separation in the worker. audio: a
+    media.AudioRef (the encrypted file, its key and context, its length).
+    Returns (turns, exclusive_turns, device, asr_was_loaded_before). A stop
+    or a hang ends the pass (it restarts from the beginning next time). With
+    device="cuda" it runs in the companion GPU worker (gpu_site). The audio
+    key goes to the worker only here, inside the request over its pipe
+    (#111 C3a): never in the process's arguments, environment or command
+    line, and never logged; transcription sends samples, never a key."""
+    seconds = audio.frames / SAMPLE_RATE
     timeout = max(DIARIZE_TIMEOUT_FLOOR_S, DIARIZE_TIMEOUT_FACTOR * seconds)
     # One heavy model at a time: Whisper on the graphics card holds its model
     # in its own worker until that worker ends (#248).
@@ -571,8 +604,9 @@ def diarize(handle, model, audio_path, hint, threads, device="cpu", gpu_site=Non
         target = handle
     with target._lock:
         try:
-            reply = target._request(("diarize", model, str(audio_path), hint, threads,
-                                     device), timeout)
+            reply = target._request(("diarize", model,
+                                     (str(audio.path), audio.key, tuple(audio.context)),
+                                     hint, threads, device), timeout)
         finally:
             # The worker released the speech model before trying, so the next
             # transcription must reload it even if speaker separation failed.

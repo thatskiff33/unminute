@@ -23,7 +23,7 @@ from workspace.worker import WorkerEngine, WorkerHandle  # noqa: E402
 def run(root, src, handle, model, mode):
     store = Store(root / f"{mode}.db")
     mid, sid = media.import_recording(store, root / f"media-{mode}", src, "Check")
-    reader = media.AudioReader(media.audio_path(root / f"media-{mode}", mid))
+    reader = media.open_audio(store, root / f"media-{mode}", mid)
     plan = chunking.plan_chunks(reader, len(reader))
     vid = store.ensure_version(mid, sid, engine="worker", model=model, model_revision="pinned",
                                precision="int8", config={"mode": mode}, chunk_plan=plan)

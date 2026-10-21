@@ -19,7 +19,7 @@ if HAVE_NUMPY:
     import numpy as np
 
     from workspace.asr_engines import Segment
-    from workspace import speakers
+    from workspace import audiocrypt, media, speakers
     from workspace.speakers import SpeakerResult
     from workspace.store import Store
     from workspace.worker import WorkerHandle
@@ -36,9 +36,13 @@ class SpeakerTests(unittest.TestCase):
         root = Path(self.tmp.name)
         self.store = Store(root / "db.sqlite", protector=keyprotect.TestProtector())
         self.handle = WorkerHandle(root, allow_test_engines=True)
-        self.audio = root / "audio.f32"
-        np.zeros(60 * SR, dtype="<f4").tofile(self.audio)
         mid = self.store.create_meeting("t")
+        # The meeting's decoded audio, encrypted as an import writes it (#111 C3a).
+        path, context = root / "audio.uma", media.audio_context(mid)
+        key = self.store.meeting_key(mid, "audio")
+        with audiocrypt.AudioWriter(path, key, context, "float32", 1, SR) as w:
+            w.write(np.zeros(60 * SR, dtype=np.float32))
+        self.audio = media.AudioRef(path, key, context, 60 * SR)
         sid = self.store.add_source(mid, original_path=None, original_sha256="a" * 64,
                                     original_size=1, original_mtime_ns=0, audio_id="b" * 64,
                                     samples=60 * SR, sample_rate=SR)
@@ -152,8 +156,9 @@ class SpeakerTests(unittest.TestCase):
         self.assertNotIn("Doe", safe_message(exc))
 
     def test_refusals(self):
-        self.assertEqual(self.run_speakers(audio=Path(self.tmp.name) / "gone.f32"),
-                         SpeakerResult.NO_AUDIO)
+        gone = media.AudioRef(Path(self.tmp.name) / "gone.uma", self.audio.key,
+                              self.audio.context, self.audio.frames)
+        self.assertEqual(self.run_speakers(audio=gone), SpeakerResult.NO_AUDIO)
         for bad in (0, 21, "3", 2.5, True):
             self.assertEqual(self.run_speakers(hint=bad), SpeakerResult.BAD_HINT)
         self.assertEqual(self.store.speaker_runs(self.vid), [])

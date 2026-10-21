@@ -333,6 +333,7 @@ def act(ws, action, marker):
 
 
 def inspect(root, marker):
+    from workspace import media
     from workspace.store import Store
     wal = root / "workspace.db-wal"          # before opening: closing may checkpoint
     wal_bytes = wal.stat().st_size if wal.exists() else 0
@@ -363,7 +364,7 @@ def inspect(root, marker):
                    "SELECT phase, state, error FROM cleanup_jobs")],
                "active_holds": one("SELECT count(*) FROM holds WHERE released_at IS NULL"),
                "receipts": [r[0] for r in rows("SELECT result FROM receipts")],
-               "audio_files": len(list((root / "media").rglob("audio.f32"))),
+               "audio_files": len(list((root / "media").rglob(media.AUDIO_FILE))),
                "freelist_pages": one("PRAGMA freelist_count")}
         # The generated text of every version, in version then time order, and
         # whether any edit holds the marker (case ignored, as SQL LIKE did).

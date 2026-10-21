@@ -359,13 +359,12 @@ class SpeakerModelLoadTests(unittest.TestCase):
         import numpy as np
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.audio = Path(self.tmp.name) / "audio.f32"
-        np.zeros(16000, dtype="<f4").tofile(self.audio)
+        self.audio = np.zeros(16000, dtype=np.float32)   # decoded audio, as the worker reads it
 
     def diarize(self, model, fake):
         from workspace import engines
         with model.pinned(), fake.installed():
-            return engines.diarize_file("pyannote", str(model.cache), str(self.audio), None, 1)
+            return engines.diarize_audio("pyannote", str(model.cache), self.audio, None, 1)
 
     def test_speaker_model_loads_only_the_hash_checked_bytes(self):
         # The I1 guard (AGENTS.md): every pinned file is read once and hashed,

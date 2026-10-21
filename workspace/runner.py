@@ -10,7 +10,12 @@
 #   - an explicit pause is persisted on the meeting and honoured between
 #     chunks; reported progress comes from committed chunks only;
 #   - the decoded audio is checked against its recorded identity before a
-#     run, so changed audio is never transcribed into an existing version;
+#     run (its length and file id; #111 C3a: the file is encrypted, so each
+#     block is authenticated as it is read, and no full pass is needed), so
+#     changed audio is never transcribed into an existing version;
+#   - a block of audio that does not open (damaged, AudioCryptError) stops
+#     the run as SOURCE_CHANGED without counting a failure; committed chunks
+#     stay;
 #   - a database error (e.g. disk full) rolls the chunk back and stops the run;
 #   - a meeting whose key or text cannot be read (DamagedContent, #111 C2b-2)
 #     rolls the chunk back and stops the run without counting a failure.
@@ -36,6 +41,51 @@ MAX_ATTEMPTS = 3
 
 DAMAGED_NOTE = ("This meeting's text could not be saved because part of it could not be "
                 "read. Nothing was changed.")
+
+# The meeting's decoded audio changed, is damaged or is missing (#111 C3a).
+# Fixed texts, chosen by source (damaged_audio_note, missing_audio_note):
+# "Import the recording again" only when that is possible.
+AUDIO_DAMAGED_REIMPORT = ("The meeting audio is damaged; it was not transcribed. Import the "
+                          "recording again.")
+AUDIO_DAMAGED_KEPT = "The meeting audio is damaged. The transcript so far is kept."
+# Its audio file or audio key is missing: the same choice (missing_audio_note).
+AUDIO_MISSING_REIMPORT = ("The meeting audio is missing from the workspace. Import the "
+                          "recording again.")
+AUDIO_MISSING_KEPT = ("The meeting audio is missing from the workspace. The transcript so far "
+                      "is kept.")
+
+
+def can_import_again(source):
+    """Whether the meeting's recording can be imported again: a file import
+    whose original is still at its recorded path (a local path; kept only
+    with deletion authority, #24). Not a microphone recording, an original
+    that was deleted or moved, or a path that cannot be read or is not local."""
+    import os
+    from pathlib import Path
+
+    from workspace import safe_paths
+    path = source.get("original_path") if source else None
+    if not isinstance(path, str) or not path or "original_path" in source.get("damaged", ()):
+        return False
+    try:
+        if os.name == "nt":
+            safe_paths.check_raw(path)       # never a network or device path
+        return Path(path).is_file()
+    except (safe_paths.UnsafePathError, OSError, ValueError):
+        return False
+
+
+def damaged_audio_note(source):
+    """The note for damaged meeting audio: "Import the recording again" only
+    when that is possible (can_import_again); otherwise the note that keeps
+    the transcript so far."""
+    return AUDIO_DAMAGED_REIMPORT if can_import_again(source) else AUDIO_DAMAGED_KEPT
+
+
+def missing_audio_note(source):
+    """The note for missing meeting audio (its file or its audio key), chosen
+    as damaged_audio_note is (security review of #281)."""
+    return AUDIO_MISSING_REIMPORT if can_import_again(source) else AUDIO_MISSING_KEPT
 
 
 def _note_error(store, mid, message):
@@ -83,8 +133,7 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
     if version["state"] != "active":
         return RunResult.SUPERSEDED
     if not _audio_matches(reader, source):
-        _note_error(store, mid, "The meeting audio has changed or is damaged; it was not "
-                                "transcribed. Import the recording again.")
+        _note_error(store, mid, damaged_audio_note(source))
         return RunResult.SOURCE_CHANGED
     # Plain state only: nothing is opened per chunk (#111).
     epoch = store.meeting_state(mid)["content_epoch"]
@@ -103,7 +152,17 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
             _note_error(store, mid, f"Could not save progress: {exc}")
             return RunResult.STORE_ERROR
         try:
-            audio = reader.read(chunk["ctx_start"], chunk["ctx_end"])
+            try:
+                audio = reader.read(chunk["ctx_start"], chunk["ctx_end"])
+            except Exception as exc:
+                if not _audio_damaged(exc):
+                    raise
+                # A block that does not open: not this chunk's fault, so it
+                # does not count towards MAX_ATTEMPTS; the chunks before it
+                # stay committed (D1).
+                _finish(store, attempt, "stopped", engine)
+                _note_error(store, mid, damaged_audio_note(source))
+                return RunResult.SOURCE_CHANGED
             segments, _ = engine.transcribe(audio)
             offset = chunk["ctx_start"] / SAMPLE_RATE
             absolute = [_shift(s, offset) for s in segments if s.text.strip()]
@@ -167,12 +226,20 @@ def _run(store, mid, vid, reader, engine, on_progress, hooks, downloads_allowed=
 
 
 def _audio_matches(reader, source):
-    """Length always; full SHA-256 when the reader is backed by a file
-    (sources.audio_id holds the decoded audio's SHA-256 until C3a)."""
+    """The length always, and the file id when the reader has one
+    (sources.audio_id holds the decoded file's random id, #111 C3a): an
+    older copy of the file, or another file, has another id. No full pass:
+    opening the file checked its header tag and last block, and every other
+    block is authenticated when it is read, so damaged audio never reaches
+    the engine. Test readers without a file id are checked by length."""
     if len(reader) != source["samples"]:
         return False
-    path = getattr(reader, "path", None)
-    if path is None:
+    file_id = getattr(reader, "file_id", None)
+    if file_id is None:
         return True
-    from workspace.media import sha256_file
-    return sha256_file(path) == source["audio_id"]
+    return file_id.hex() == source["audio_id"]
+
+
+def _audio_damaged(exc):
+    from workspace.media import damaged_audio
+    return damaged_audio(exc)

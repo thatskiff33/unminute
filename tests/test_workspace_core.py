@@ -319,7 +319,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(runner.run_version(self.store, mid, vid, shorter, FakeEngine(words)),
                          runner.RunResult.SOURCE_CHANGED)
         self.assertEqual(self.store.chunks(vid, status="done"), [])
-        self.assertIn("changed", self.store.meeting(mid)["last_error"])
+        # Fixed wording chosen by source (#111 C3a); no original kept here.
+        self.assertEqual(runner.AUDIO_DAMAGED_KEPT, self.store.meeting(mid)["last_error"])
 
     # -- pause, versions, edits, threads ---------------------------------------
 
@@ -450,9 +451,11 @@ class MediaTests(unittest.TestCase):
                                                     row["original_fp"]))
         self.assertNotEqual(row["original_fp"], media.sha256_file(src))
         path = media.audio_path(self.root / "media", mid)
-        self.assertEqual(path.stat().st_size, SR * 5 * 4)
+        self.assertTrue(path.is_file())
         self.assertNotIn("tone", str(path).lower())        # no source name in app paths
-        reader = media.AudioReader(path)
+        reader = media.open_audio(self.store, self.root / "media", mid)   # encrypted (C3a)
+        self.assertEqual(len(reader), SR * 5)
+        self.assertEqual(row["audio_id"], reader.file_id.hex())
         part = reader.read(SR, SR * 2)
         self.assertEqual(len(part), SR)
         self.assertNotIsInstance(part, np.memmap)          # a copy of the slice only
@@ -473,7 +476,7 @@ class MediaTests(unittest.TestCase):
         from workspace import media
         mid, sid = media.import_recording(self.store, self.root / "media", self.tone(), "Tone")
         path = media.audio_path(self.root / "media", mid)
-        reader = media.AudioReader(path)
+        reader = media.open_audio(self.store, self.root / "media", mid)
         plan = chunking.plan_chunks(reader, len(reader))
         vid = self.store.ensure_version(mid, sid, engine="fake", model="fake",
                                         model_revision="1", precision="int8", config={},
@@ -482,7 +485,7 @@ class MediaTests(unittest.TestCase):
         data = bytearray(path.read_bytes())
         data[100:104] = b"\x00\x00\x80\x7f"                   # same length, different bytes
         path.write_bytes(bytes(data))
-        reader = media.AudioReader(path)
+        reader = media.open_audio(self.store, self.root / "media", mid)
         try:
             self.assertEqual(runner.run_version(self.store, mid, vid, reader, object()),
                              runner.RunResult.SOURCE_CHANGED)

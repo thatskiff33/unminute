@@ -11,12 +11,12 @@ Technical design for Unminute's durable core. It defines state ownership, chunk 
 
 ## Source identity
 
-On import, the original file is hashed (SHA-256) and decoded once to 16 kHz mono float32, stored as `audio.f32` (raw little-endian). A file with several channels is mixed to mono with equal weights, the mean of all channels (#220), whatever layout it declares: FFmpeg's surround matrix would treat the channels as speaker positions, drop one it took for a low-frequency channel and let a mix of similar channels exceed full scale. On a recorder that gives each person a track, that could lose a person. Engines read slices through a memory map, so memory stays bounded however long the meeting is.
+On import, the original file is hashed (SHA-256) and decoded once to 16 kHz mono float32, stored encrypted as `audio.uma` under the meeting's audio key (`workspace/audiocrypt.py`, context `("decoded", meeting id)`, #111 C3a; `docs/ENCRYPTION.md`, "Audio files"). No plain copy of the decoded audio is written: the app encrypts each block of the decoder's output as it arrives, writes the file as `audio.partial`, finishes it (last block sealed, flushed to disk), renames it, then reads it back and authenticates every block once before the source is recorded. A stale `audio.partial` is deleted first, so a new file always gets a new random id and key. A file with several channels is mixed to mono with equal weights, the mean of all channels (#220), whatever layout it declares: FFmpeg's surround matrix would treat the channels as speaker positions, drop one it took for a low-frequency channel and let a mix of similar channels exceed full scale. On a recorder that gives each person a track, that could lose a person. Engines read slices (`media.AudioReader`, opened by `media.open_audio`): only the blocks a slice covers are read and decrypted, so memory stays bounded however long the meeting is.
 
 Each source row records:
 
 - the original file's fingerprint (`original_fp`: an HMAC of its SHA-256 under the workspace's key, so a copy of the recording cannot be checked against it without that key, #111 C2b-2), size and modification time;
-- the decoded audio's identity (`audio_id`: its SHA-256 until C3a, then the encrypted file's random id), sample count and sample rate;
+- the decoded audio's identity (`audio_id`: the encrypted file's random 32-byte id, in hex, from its header; it reveals nothing about the audio), sample count and sample rate;
 - the original path, sealed, used only for #24 deletion authority, never for processing.
 
 ## Working versions
@@ -68,7 +68,9 @@ Progress is reported only from committed chunks, so a pause or crash never claim
 
 ## Source checks
 
-Before each run, the decoded audio's length, and its SHA-256 when it is file-backed, are checked against the source record. Changed or damaged audio is never transcribed into an existing version; re-importing creates a new source and version.
+Before each run, the decoded audio's length and its file id are checked against the source record (#111 C3a). There is no full pass over the file per run: opening it checks its header tag and last block, and every other block is authenticated when a chunk reads it. An older copy of the same meeting's file, or another file, has another id; another meeting's file does not open (its context differs). Changed or damaged audio is never transcribed into an existing version; re-importing creates a new source and version.
+
+A block that does not open stops the run as `SOURCE_CHANGED`: the attempt is recorded as `stopped`, not counted as a failure, and the chunks committed before it stay. The meeting's note is fixed text chosen by source: "Import the recording again" only for a file import whose original is still at its recorded path (kept only with deletion authority, #24); otherwise (a microphone recording, an original that was deleted or moved, a path that is not local) "The meeting audio is damaged. The transcript so far is kept." A missing audio key or file is missing audio ("The meeting audio is missing from the workspace", then "Import the recording again" or "The transcript so far is kept", chosen the same way); a new audio key is never made for an existing meeting. For a speaker pass, audio that does not open (its header, or an audio key that will not unwrap) fails that pass only, as a block that does not open during the pass does: a failed speaker run with fixed wording, and the finished transcript stays in Review (D4). Playback and Transcribe again refuse damaged or unreadable audio with fixed wording.
 
 A failed import removes its own half-created meeting and media folder. An original that changes while it is being hashed and decoded is refused.
 
@@ -135,6 +137,7 @@ Meeting `phase`: `new`, then `transcribing`, then `transcribed`, then (#16) spea
 Heavy inference runs in a separate worker process (`workspace/worker.py`). The state owner keeps the database and the worker never opens it.
 
 - **What the worker does:** it loads one model at a time; loading another replaces the first in the same process. It transcribes the bounded audio it is sent (at most 120 s per request) and returns plain segments with word times.
+- **Audio key (#111 C3a):** for transcription the app sends decrypted samples per chunk, never a key. For speaker identification the diarize request carries the file's path, the meeting's audio key and its context, over the worker's pipe only (never in its arguments, environment or command line, never logged). The worker checks the request, reads the whole file block by block into one array, closes it and drops the key before the model runs; the timeout comes from the audio's length in frames.
 - **Network and priority:** before loading anything, the worker installs the offline network guard and, in Quiet mode, lowers its own priority to below normal.
 - **No downloads:** the worker loads models offline only (`workspace/engines.py`). A missing or unverified model is an error for Setup (#19); downloads happen in a separate step.
 

@@ -17,8 +17,6 @@ SR = 16000
 MARKER = "zebracrossing"   # distinctive transcript text to search for after cleanup
 
 if HAVE_NUMPY:
-    import numpy as np
-
     from workspace.asr_engines import Segment
     from workspace import cleanup
     from workspace.cleanup import CleanupError, JobResult
@@ -49,7 +47,7 @@ class CleanupTests(unittest.TestCase):
         mid = self.store.create_meeting("Synthetic")
         folder = self.media / mid
         (folder / "clips").mkdir(parents=True)
-        np.zeros(30 * SR, dtype="<f4").tofile(folder / "audio.f32")
+        (folder / "audio.uma").write_bytes(os.urandom(4096))     # stands in for the audio
         (folder / "clips" / "c1.wav").write_bytes(b"clip")
         sid = self.store.add_source(mid, original_path=str(original),
                                     original_sha256=sha256_file(original),
@@ -125,7 +123,7 @@ class CleanupTests(unittest.TestCase):
         with self.store.tx():
             cleanup.render_reviewed(self.store, self.vid)           # what an export uses
         self.assertEqual(self.store._all("SELECT * FROM cleanup_jobs"), [])
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
 
     def test_quiesce_runs_before_anything_is_removed(self):
         seen = []
@@ -147,7 +145,7 @@ class CleanupTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "Windows file locking")
     def test_locked_file_fails_honestly_then_retries(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
-        handle = open(self.media / self.mid / "audio.f32", "rb")      # e.g. a stray reader
+        handle = open(self.media / self.mid / "audio.uma", "rb")      # e.g. a stray reader
         try:
             self.assertEqual(self.run_job(jid), JobResult.FAILED)
             self.assertEqual(self.job(jid)["state"], "failed")
@@ -172,7 +170,7 @@ class CleanupTests(unittest.TestCase):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.assertEqual(self.run_job(jid), JobResult.HELD)
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.HELD})
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
         # An audio hold also blocks transcript cleanup (it removes everything left).
         jid2 = cleanup.confirm_final_saved(self.store, self.mid)
         self.assertEqual(self.run_job(jid2), JobResult.HELD)
@@ -180,7 +178,7 @@ class CleanupTests(unittest.TestCase):
         from workspace import holds
         self.assertEqual(set(holds.release_hold(self.store, hid)), {jid, jid2})
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {})
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
         for j in (jid, jid2):
             holds.confirm_pending_cleanup(self.store, j)
         results = cleanup.resume_pending(self.store, self.media)
@@ -192,7 +190,7 @@ class CleanupTests(unittest.TestCase):
     def test_hold_added_while_stopping_the_worker_still_wins(self):
         jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.assertEqual(self.run_job(jid, quiesce=self.add_hold), JobResult.HELD)
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
         self.assertEqual(self.job(jid)["state"], "pending")
 
     def test_hold_added_during_transcript_cleanup_keeps_everything(self):

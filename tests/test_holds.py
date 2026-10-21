@@ -51,7 +51,7 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(h["reason"], "client asked us to keep it")
         cleanup.confirm_transcript_reviewed(self.store, self.mid)
         self.run_all()                           # audio is not covered by a transcript hold
-        self.assertFalse((self.media / self.mid / "audio.f32").exists())
+        self.assertFalse((self.media / self.mid / "audio.uma").exists())
         jid = cleanup.confirm_final_saved(self.store, self.mid)
         self.assertEqual(self.run_all(), {jid: JobResult.HELD})
         self.assertIsNotNone(self.store.meeting(self.mid))
@@ -65,13 +65,13 @@ class HoldTests(unittest.TestCase):
         # Startup retries and direct runs both leave the waiting job alone.
         self.assertEqual(self.run_all(), {})
         self.assertEqual(cleanup.run_job(self.store, jid, self.media), JobResult.NOTHING_PENDING)
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
         [waiting] = holds.awaiting_confirmation(self.store)
         self.assertIn("confirm", waiting["error"])
         # Confirming the same checkpoint again is the explicit confirmation.
         self.assertEqual(cleanup.confirm_transcript_reviewed(self.store, self.mid), jid)
         self.assertEqual(self.run_all(), {jid: JobResult.DONE})
-        self.assertFalse((self.media / self.mid / "audio.f32").exists())
+        self.assertFalse((self.media / self.mid / "audio.uma").exists())
 
     def test_release_racing_a_held_attempt_still_needs_confirmation(self):
         hid = holds.add_hold(self.store, self.mid, "audio", "dispute")
@@ -79,7 +79,7 @@ class HoldTests(unittest.TestCase):
         holds.release_hold(self.store, hid)
         cleanup._mark(self.store, jid, "pending", cleanup.HELD_NOTE)   # a late "held" write
         self.assertEqual(self.run_all(), {})
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
 
     def test_release_only_touches_jobs_the_hold_covered(self):
         hid = holds.add_hold(self.store, self.mid, "transcript", "audit")
@@ -96,7 +96,7 @@ class HoldTests(unittest.TestCase):
         holds.release_hold(self.store, h1)
         holds.confirm_pending_cleanup(self.store, jid)
         self.assertEqual(self.run_all(), {jid: JobResult.HELD})
-        self.assertTrue((self.media / self.mid / "audio.f32").exists())
+        self.assertTrue((self.media / self.mid / "audio.uma").exists())
 
     def test_review_reminders_only_for_stale_holds(self):
         now = time.time()
