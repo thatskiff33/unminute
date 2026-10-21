@@ -2616,6 +2616,10 @@ class Workspace:
         titles = {m["id"]: m["title"] for m in self.store.meetings(content=("title",))}
         p, now = self.policy.current(), time.time()
         limits = holds.thresholds(p)
+        try:
+            retention = holds.retention_state(self.store, p, now)
+        except StoreError:
+            retention = []        # a damaged database (R11): its own notice says so
         waiting = []
         for r in list(self._recording_reports):
             if r.get("recovered") and r.get("pending") and not r.get("discarded"):
@@ -2634,7 +2638,7 @@ class Workspace:
                                       for j in holds.awaiting_confirmation(self.store)],
             "retention": [{"meeting": r["meeting"], "title": titles.get(r["meeting"], ""),
                            "step": r["step"], "days": r["days"], "state": r["state"]}
-                          for r in holds.retention_state(self.store, p, now) if r["state"]],
+                          for r in retention if r["state"]],
             "recordings_waiting": waiting,
             "thresholds": limits,
         }
@@ -2659,7 +2663,11 @@ class Workspace:
         """Copy diagnostics: the reminder thresholds in force, who set them,
         and counts only (#111 C6)."""
         limits = holds.thresholds(p)
-        counts = holds.retention_counts(holds.retention_state(self.store, p))
+        try:
+            counts = holds.retention_counts(holds.retention_state(self.store, p))
+        except StoreError:
+            # A damaged database (R11): the rest of the diagnostics still count.
+            counts = {"counts": "unreadable"}
 
         def shown(key):
             days = limits[f"{key}_days"]
