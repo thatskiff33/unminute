@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,8 @@ HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 MEETING, OTHER, JOB, HOLD = "a" * 32, "b" * 32, "c" * 32, "d" * 32
 MARKER = "Zqxvmarker"                      # one word: a filter that refuses spaces misses it
 SR = 16000
+# 0x8009000B (NTE_BAD_KEY_STATE) as the signed number Windows reports (#111 C4a).
+BAD_KEY_STATE = -2146893813
 
 
 class FakeMirror:
@@ -915,6 +918,18 @@ class ImportRuleTests(unittest.TestCase):
             cwd=ROOT, capture_output=True, text=True, timeout=60)
         self.assertEqual(probe.stdout.strip(), "False", probe.stderr[-500:])
 
+    def test_no_key_or_store_module_is_imported(self):
+        # The log is plain metadata (P3) written while the workspace is
+        # locked (#111 C4a): it seals and opens nothing, so importing it
+        # loads none of the key, encryption or store modules.
+        names = ("workspace.keystore", "workspace.vault", "workspace.dpapi",
+                 "workspace.audiocrypt", "workspace.store", "cryptography")
+        probe = subprocess.run(
+            [sys.executable, "-B", "-c", "import sys; import workspace.audit; "
+             f"print(sorted(m for m in sys.modules if m.startswith({names!r})))"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(probe.stdout.strip(), "[]", probe.stderr[-500:])
+
 
 class StoreNewRootTests(unittest.TestCase):
     def test_new_root_only_when_this_open_made_the_key(self):
@@ -1210,23 +1225,100 @@ class WorkspaceAuditTests(unittest.TestCase):
                           "cleanup_done"])
         self.assertEqual(ws.audit.stats["suppressed"], 0)
 
+    def locked_run(self, protector):
+        """A locked start as the app makes one (#111 C4a: on_unavailable="lock",
+        the start-up threads running, work held), Copy diagnostics, then close."""
+        ws = self.open(protector=protector, on_unavailable="lock")
+        ws.start()
+        self.assertIsNotNone(ws.locked)
+        text = ws.diagnostics()
+        ws.close()
+        self.ws = None
+        return ws, text
+
+    def locked_records(self):
+        return [r for r in records(self.root / "ws" / "audit") if r["kind"] == "locked"]
+
     def test_a_locked_start_records_locked_and_leaves_the_database_alone(self):
-        from workspace.app import Workspace
         ws = self.open()
         ws.close()
         self.ws = None
         db = self.root / "ws" / "workspace.db"
         before = db.read_bytes()
-        with mock.patch.object(Workspace, "_upkeep"):      # until C4a holds start-up work
-            ws = self.open(protector=keyprotect.TestProtector(fail=True), on_unavailable="lock")
-        self.assertIsNotNone(ws.store.locked)
-        ws.close()
-        self.ws = None
+        ws, _ = self.locked_run(keyprotect.TestProtector(fail=True, code=BAD_KEY_STATE))
         self.assertEqual(db.read_bytes(), before)
         rs = records(self.root / "ws" / "audit")
         self.assertEqual([r["kind"] for r in rs], ["chain_start", "app_start", "locked"])
-        self.assertEqual((rs[-1]["reason"], rs[-1]["winerror"]), ("windows", 13))
+        self.assertEqual((rs[-1]["reason"], rs[-1]["winerror"]), ("windows", BAD_KEY_STATE))
+        self.assertEqual((ws.locked.reason, ws.locked.code), ("windows", BAD_KEY_STATE))
         self.assertEqual(rs[0]["previous"], "first_use")
+
+    def test_each_kind_of_locked_start_is_recorded(self):
+        # Workspace.locked's reason, whichever way the store opened locked:
+        # another protector (the key check), and rows with no schema version
+        # (found before the key is read, "missing").
+        ws = self.open()
+        ws.store.create_meeting("Synthetic meeting")      # rows: "missing" locks, never rebuilds
+        ws.close()
+        self.ws = None
+        other = keyprotect.TestProtector()
+        other.name = "other"
+        first, _ = self.locked_run(other)
+        db = self.root / "ws" / "workspace.db"
+        con = sqlite3.connect(db)
+        try:
+            con.execute("DELETE FROM schema_version")
+            con.commit()
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            con.close()
+        second, _ = self.locked_run(keyprotect.TestProtector())
+        self.assertEqual([(r["reason"], r["winerror"]) for r in self.locked_records()],
+                         [(first.locked.reason, None), ("missing", None)])
+        self.assertEqual(first.locked.reason, "protector")
+        self.assertNotIn("app_start", kinds(self.root / "ws" / "audit")[2:])
+        self.assertEqual(audit.verify(self.root / "ws" / "audit")["result"], "ok")
+
+    def test_a_locked_start_takes_the_windows_error_number_as_keys_json_does(self):
+        # diag.windows_error's rule (#111 C4a; keys.json, Copy diagnostics):
+        # a 32-bit number, signed or not, else none. A number outside it is
+        # recorded as none, never refused, so a locked start is always in
+        # the log with the number IT is shown.
+        from workspace import diag
+        ws = self.open()
+        ws.close()
+        self.ws = None
+        for code in (2 ** 32 - 1, 10 ** 12):
+            ws, _ = self.locked_run(keyprotect.TestProtector(fail=True, code=code))
+            self.assertEqual(ws.audit.stats["refused"], 0)
+        self.assertEqual([r["winerror"] for r in self.locked_records()], [2 ** 32 - 1, None])
+        self.assertIsNone(diag.keys_state(ws.log.folder)["winerror"])
+
+    def test_no_audit_write_needs_the_key_while_locked(self):
+        # The audit log is plain metadata (P3) in its own file, not the
+        # database: a locked run (start, Copy diagnostics, close) asks Windows
+        # for the key once, the store's own attempt, and every record of the
+        # run is written and chained.
+        ws = self.open()
+        ws.close()
+        self.ws = None
+        asked = []
+
+        class Counting(keyprotect.TestProtector):
+            def unprotect(self, blob):
+                asked.append(len(blob))
+                return super().unprotect(blob)
+
+        ws, text = self.locked_run(Counting(fail=True))
+        self.assertEqual(len(asked), 1)
+        self.assertIsNone(ws.store.keyring)
+        summary = ws.audit.summary()
+        self.assertGreaterEqual(summary["written"], 1)
+        self.assertEqual((summary["refused"], summary["failed_writes"], summary["unmirrored"]),
+                         (0, 0, 0))
+        self.assertEqual(kinds(self.root / "ws" / "audit")[-1], "locked")
+        self.assertEqual(audit.verify(self.root / "ws" / "audit")["result"], "ok")
+        self.assertIn("Audit log: newest seq 3;", text)
 
     def test_a_watched_folder_import_names_its_folder(self):
         ws = self.open()

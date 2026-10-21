@@ -443,7 +443,9 @@ class Workspace:
         runs add nothing under the app's source. A record that breaks its
         rules is refused, counted and logged by type; it never raises, in
         tests too (their fakes need not use the app's ids), so the app tests
-        check that nothing was refused."""
+        check that nothing was refused. Opened once Workspace.locked is
+        known; while locked it writes and reads only its own folder, never
+        the database or a key (plain metadata, P3)."""
         from workspace.store import SCHEMA_VERSION, under_workspace_root
         real = self.store.protector.name == keystore.APP_PROTECTOR
         if mirror is None and real and os.name == "nt" \
@@ -451,9 +453,12 @@ class Workspace:
             mirror = audit.EventLogMirror()
         log = audit.AuditLog(self.root / "audit", mirror=mirror, log=self.log,
                              new_workspace=self.store.new_root)
-        locked = self.store.locked
-        if locked is not None:
-            log.record("locked", reason=locked.reason, winerror=locked.code)
+        if self.locked is not None:
+            # A locked start (#111 C4a): Workspace.locked's reason and Windows
+            # error number only, the number to diag's rule as keys.json has
+            # it. The log is its own plain file: no key is asked for.
+            log.record("locked", reason=self.locked.reason,
+                       winerror=diag.windows_error(self.locked.code))
         else:
             from workspace import update
             try:

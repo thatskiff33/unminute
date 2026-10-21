@@ -122,7 +122,7 @@ _HANDOFF = {"meeting": _id, "template": _one_of("built_in", "custom"), "names_re
 KINDS = {
     "chain_start": (1000, INFO, {"previous": _one_of("first_use", "missing", "unreadable")}),
     "app_start": (1001, INFO, {"version": valid_version, "schema": _count}),
-    "locked": (1002, INFO, {"reason": _one_of("windows", "key", "protector", "missing"),
+    "locked": (1002, INFO, {"reason": _one_of(*diag.KEY_REASONS),
                             "winerror": _opt_int}),
     "damage_continued": (1003, INFO, {}),
     "meeting_imported": (1100, INFO, {"meeting": _id,
