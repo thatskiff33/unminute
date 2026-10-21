@@ -23,6 +23,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import keyprotect  # noqa: E402
+from worker_exit import join_workers  # noqa: E402
 
 from workspace import diag  # noqa: E402
 
@@ -335,8 +336,11 @@ class SharingTests(unittest.TestCase):
 
     def tearDown(self):
         diag.set_current(None)
-        self.ws.close()
-        self.tmp.cleanup()
+        try:
+            self.ws.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
 
     def incidents(self, area=None):
         return [r for r in records(self.ws.log.folder)
@@ -738,8 +742,11 @@ class LifecycleTests(unittest.TestCase):
 
     def tearDown(self):
         diag.set_current(None)
-        self.ws.close()
-        self.tmp.cleanup()
+        try:
+            self.ws.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
 
     def logs(self):
         return self.ws.root / "logs"
@@ -827,6 +834,19 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotEqual(gone["exitcode"], 0)
         self.assertTrue([r for r in records(self.logs()) if r["kind"] == "crash"])
 
+    def test_a_crash_while_a_worker_releases_its_model_is_recorded(self):
+        # The model is released before the crash file closes (#278), so a
+        # crash in its teardown keeps its frames.
+        handle = self.ws.handle
+        handle.load(fake("crash_on_release"), 1)
+        handle.shutdown()
+        [gone] = [r for r in records(self.logs()) if r["kind"] == "worker_exit"]
+        self.assertNotEqual(gone["exitcode"], 0)
+        [crash] = [r for r in records(self.logs()) if r["kind"] == "crash"]
+        self.assertEqual(crash["code"], gone["code"])
+        self.assertTrue(crash["frames"])
+        self.assertEqual(leaks(self.logs()), [])
+
     def test_a_processing_error_shows_its_code(self):
         ws = self.ws
         mid = ws.store.create_meeting("Synthetic")
@@ -868,6 +888,7 @@ class LifecycleTests(unittest.TestCase):
                               if r.get("area") == "bridge"])
         finally:
             other.close()
+            join_workers(self)
             self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
                                 allow_test_engines=True, battery=False,
                                 protector=keyprotect.TestProtector())

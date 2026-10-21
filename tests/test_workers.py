@@ -9,6 +9,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
@@ -21,7 +23,8 @@ from workspace import resources  # noqa: E402
 if HAVE_NUMPY:
     import numpy as np
 
-    from workspace import runner
+    from worker_exit import join_workers
+    from workspace import diag, runner
     from workspace.store import Store
     from workspace.worker import (WorkerCrashed, WorkerEngine, WorkerError, WorkerHandle,
                                   WorkerStopped)
@@ -216,6 +219,132 @@ class WorkerTests(unittest.TestCase):
             h.close()
         self.assertEqual(text, "env {'TORCH_FORCE_WEIGHTS_ONLY_LOAD': '1', "
                                "'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD': None}")
+
+
+class SlowToEnd:
+    """A stand-in worker process that ends only after 8 s of waiting for it,
+    as a loaded machine's can. join() counts the time it was given instead of
+    sleeping."""
+    pid, name = 4321, "unminute-worker"
+
+    def __init__(self):
+        self.waited, self.exitcode = 0.0, None
+
+    def is_alive(self):
+        return self.waited < 8.0
+
+    def terminate(self):
+        pass
+
+    def join(self, timeout=None):
+        self.waited += 8.0 if timeout is None else timeout
+        if not self.is_alive():
+            self.exitcode = 1
+
+
+class NeverEnds:
+    """A stand-in worker process that does not end however long it is waited
+    for. join() moves a shared clock on by the time it was given instead of
+    sleeping."""
+    pid, name, exitcode = 4321, "unminute-worker", None
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def is_alive(self):
+        return True
+
+    def terminate(self):
+        pass
+
+    def join(self, timeout=None):
+        self.clock[0] += timeout
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class WorkerEndTests(unittest.TestCase):
+    """#278: a worker that has ended, or been told to, leaves nothing open in
+    the workspace, so its crash file is collected and its folder can go."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.logs = Path(self.tmp.name) / "logs"
+        self.log = diag.Log(self.logs, "app")
+        self.h = WorkerHandle(self.tmp.name, quiet=True, allow_test_engines=True, log=self.log)
+
+    def tearDown(self):
+        try:
+            self.h.close()
+            join_workers(self)
+        finally:
+            self.tmp.cleanup()
+
+    def test_the_crash_file_is_closed_before_the_worker_answers_exit(self):
+        self.h.load(fake("slow_exit"), 1)
+        crash = self.logs / "worker.crash"
+        self.assertTrue(crash.exists())                      # faulthandler's file
+        self.h._conn.send(("exit",))
+        self.assertTrue(self.h._conn.poll(30))
+        self.assertEqual(("ok",), self.h._conn.recv())
+        self.assertTrue(self.h._proc.is_alive())             # still ending (60 s)
+        # What the app does when a worker ends: read the file and delete it.
+        self.log.collect_crash(False, crash_path=crash, process="worker")
+        self.assertFalse(crash.exists())
+
+    def test_a_worker_told_to_end_is_waited_for_until_it_has(self):
+        slow = SlowToEnd()
+        self.h._proc = slow
+        self.h._kill()
+        self.assertFalse(slow.is_alive())              # 5 s was too short (#278)
+        self.assertIsNone(self.h._proc)
+
+    def test_a_closed_handle_never_starts_a_worker(self):
+        self.h.close()
+        self.h.begin_run()                    # a run that began while the app closed
+        with self.assertRaises(WorkerStopped):
+            self.h.load(fake("echo"), 1)
+        self.assertIsNone(self.h._proc)
+
+    def test_a_run_that_began_as_the_handle_closed_starts_no_worker(self):
+        self.h.close()
+        # begin_run read _closed just before close() set it, then cleared the stop.
+        self.h._stop_requested.clear()
+        with self.assertRaises(WorkerStopped):
+            self.h.load(fake("echo"), 1)
+        self.assertIsNone(self.h._proc)
+
+    def test_a_companion_asked_for_after_close_is_closed(self):
+        self.h.close()
+        companion = self.h.gpu_worker(self.tmp.name)
+        self.assertTrue(companion._closed)
+        self.assertTrue(companion._stop_requested.is_set())
+
+    def _never_ending_workers(self):
+        """This handle and both GPU companions, each with a process that does
+        not end; the clock their waits move on."""
+        clock = [0.0]
+        handles = [self.h, self.h.gpu_worker(self.tmp.name),
+                   self.h.whisper_gpu_worker(self.tmp.name, "whisper")]
+        for h in handles:
+            h._proc = NeverEnds(clock)
+        return clock, handles
+
+    def test_close_waits_for_all_its_workers_together(self):
+        from workspace import worker
+        clock, handles = self._never_ending_workers()
+        with mock.patch.object(worker, "time", SimpleNamespace(monotonic=lambda: clock[0])):
+            self.h.close()
+        self.assertEqual(worker.END_WAIT_S, clock[0])        # not once for each
+        self.assertEqual([None] * 3, [h._proc for h in handles])
+
+    def test_stop_now_waits_briefly_for_all_its_workers_together(self):
+        # It runs while the app holds its own lock (pause, discard).
+        from workspace import worker
+        clock, handles = self._never_ending_workers()
+        with mock.patch.object(worker, "time", SimpleNamespace(monotonic=lambda: clock[0])):
+            self.h.stop_now()
+        self.assertEqual(worker.STOP_WAIT_S, clock[0])
+        self.assertEqual([None] * 3, [h._proc for h in handles])
 
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")

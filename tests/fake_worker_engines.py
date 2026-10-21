@@ -117,6 +117,26 @@ def sleepy(threads):
     return _Engine(run)
 
 
+def slow_exit(threads):
+    """Like echo, but its process takes 60 s to end once told to exit (a
+    thread that is not a daemon keeps it running), as a loaded machine's
+    can take a while (#278)."""
+    import threading
+    threading.Thread(target=time.sleep, args=(60,), daemon=False).start()
+    return echo(threads)
+
+
+class _CrashesOnRelease(_Engine):
+    def __del__(self):
+        _access_violation()
+
+
+def crash_on_release(threads):
+    """Like echo, but releasing it crashes natively, as a model's native
+    teardown (a graphics card context) can (#278)."""
+    return _CrashesOnRelease(echo(threads).fn)
+
+
 def load_fails(threads):
     raise RuntimeError("model files failed verification")
 
