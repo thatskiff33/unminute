@@ -10,6 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 from workspace import policy  # noqa: E402
 
@@ -319,6 +320,9 @@ HAVE_DEPS = all(_ilu.find_spec(m) for m in ("numpy", "av"))
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class WorkspacePolicyTests(unittest.TestCase):
     """Each policy value is enforced by the app, whatever the page shows."""
+
+    def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
 
     def open(self, **values):
         import tempfile

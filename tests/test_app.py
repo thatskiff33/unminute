@@ -15,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
@@ -214,6 +215,25 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(ws.meetings()[0]["title"], "Untitled meeting")
         self.assertEqual(_clean_text("Aroha\u202e", 40, label=True), "Aroha")
         self.assertEqual(_clean_text("kept\u200d", 40), "kept\u200d")
+
+    def test_titles_keep_the_joiners_persian_and_indic_scripts_need(self):
+        # #111 D2 review (round 1, info): the zero-width non-joiner (U+200C)
+        # and joiner (U+200D) are format characters too, but they are part of
+        # correct Persian and Indic spelling and do not reorder text, so a
+        # title, a file name's title or a speaker name keeps them.
+        from workspace.app import _clean_text
+        persian = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"     # ZWNJ inside a word
+        hindi = "\u0915\u094d\u200d\u0937"                                  # ZWJ in a conjunct
+        self.assertEqual(_clean_text(persian, 40, label=True), persian)
+        self.assertEqual(_clean_text(hindi + "\u202e", 40, label=True), hindi)
+        ws = self.open(start=False)
+        named = self.root / (persian + ".wav")
+        named.write_bytes(self.rec.read_bytes())
+        ws._import_one(named)
+        [m] = ws.meetings()
+        self.assertEqual(m["title"], persian)
+        ws.rename(m["id"], "\u2067" + hindi + "\u2069")
+        self.assertEqual(ws.meetings()[0]["title"], hindi)
 
     def test_transcribe_again_is_offered_unless_transcribing_reviewed_or_without_audio(self):
         ws = self.open(start=False)
@@ -1294,6 +1314,7 @@ class NativeConfirmationTests(unittest.TestCase):
     meeting need a Yes in a question the page cannot answer (#111 A6)."""
 
     def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.ws = Workspace(root / "ws", root / "models", start=False,

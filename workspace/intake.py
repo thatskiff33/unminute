@@ -86,27 +86,36 @@ def _inside(child, parent):
     return child == parent or parent in child.parents
 
 
+def _environ():
+    """The environment _broad reads. A function so the tests, whose folders
+    sit in %TEMP% (inside AppData), can give it a profile elsewhere without
+    changing os.environ, which the test key protector's guard reads."""
+    return os.environ
+
+
 def _broad(path):
     """Folders too broad to watch (#111 D2): a drive root; the user profile
-    or any folder that holds it (C:\\Users holds every profile); AppData,
-    its Local, LocalLow and Roaming folders and the redirected %APPDATA% or
+    or any folder that holds it (C:\\Users holds every profile); the whole
+    AppData tree (AppData and every folder inside it, such as Temp, other
+    apps' data and the old %LOCALAPPDATA%\\whisper data folder, which keeps
+    real content) and everything inside a redirected %APPDATA% or
     %LOCALAPPDATA%; any folder that holds the app's own data folder
     (%LOCALAPPDATA%\\Unminute) or lies inside it; and the Windows and program
-    folders. A folder inside AppData\\Local (Temp, for example) is not one of
-    these. Environment variables that are not set are skipped."""
+    folders. Environment variables that are not set are skipped."""
     p = _norm(path)
     if p == Path(p.anchor):
         return True
+    environ = _environ()
     env = {name: _norm(v) for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
                                        "ProgramFiles", "ProgramFiles(x86)")
-           if (v := os.environ.get(name)) and os.path.isabs(v)}
-    if any(p == env.get(n) for n in ("APPDATA", "LOCALAPPDATA", "SystemRoot",
-                                     "ProgramFiles", "ProgramFiles(x86)")):
+           if (v := environ.get(name)) and os.path.isabs(v)}
+    if any(p == env.get(n) for n in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)")):
+        return True
+    if any(_inside(p, env[n]) for n in ("APPDATA", "LOCALAPPDATA") if n in env):
         return True
     profile = env.get("USERPROFILE")
     if profile is not None:
-        appdata = _norm(Path(profile) / "AppData")
-        if _inside(profile, p) or p == appdata or p.parent == appdata:
+        if _inside(profile, p) or _inside(p, _norm(Path(profile) / "AppData")):
             return True
     local = env.get("LOCALAPPDATA")
     if local is not None:
@@ -372,7 +381,10 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
     """Reconcile every active folder once. `enqueue(path, folder_id, key,
     content_fp)` queues an import; the app reports back with import_finished().
     hasher(path) returns the file's SHA-256 (hex). Returns {"queued",
-    "waiting", "duplicates", "cloud", "errors"}, and "notice" (fixed text)
+    "waiting", "duplicates", "cloud", "errors"} for this scan only (the app
+    keeps the latest, never a total, so a problem that lasts, such as an
+    unreadable file or a path too long to open, counts once in each scan),
+    and "notice" (fixed text)
     when the record of the files seen had to be started again
     (store.intake_salt): each folder's note says so too, until that folder's
     next successful import (import_finished)."""

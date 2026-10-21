@@ -148,12 +148,18 @@ def _model_note(name, state, downloads_allowed=True):
             "choose another speech model.")
 
 
+_JOINERS = "\u200c\u200d"          # zero-width non-joiner and joiner (_plain_label)
+
+
 def _plain_label(text):
     """A title or speaker name without invisible format characters (Unicode
     category Cf): a right-to-left override (U+202E) could make the meeting
-    list show a disguised name (#111 D2). The handoff file name strips them
-    too (handoff.title_filename)."""
-    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
+    list show a disguised name (#111 D2). The zero-width non-joiner and
+    joiner (U+200C, U+200D) stay: Persian and Indic scripts need them for
+    correct spelling, and they do not reorder text. The handoff file name
+    strips format characters too (handoff.title_filename)."""
+    return "".join(ch for ch in text
+                   if ch in _JOINERS or unicodedata.category(ch) != "Cf")
 
 
 def _clean_text(text, limit, label=False):

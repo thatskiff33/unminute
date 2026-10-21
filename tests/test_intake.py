@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 EXT = (".wav", ".mp3", ".m4a")
@@ -43,6 +44,105 @@ def wav(path, seconds=1.0, seed=0):
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
+class BroadFolderTests(unittest.TestCase):
+    """Folders too broad to watch (#111 D2). These set the real environment
+    variables (self.root is in %TEMP%, inside the real AppData, so each case
+    names a profile and app data folders that do not hold it)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.folder = self.root / "Recordings"
+        self.folder.mkdir()
+        self.store = Store(self.root / "ws" / "workspace.db", protector=keyprotect.TestProtector())
+        elsewhere = self.root / "Elsewhere" / "someone"
+        self.elsewhere = {"USERPROFILE": str(elsewhere),
+                          "APPDATA": str(elsewhere / "AppData" / "Roaming"),
+                          "LOCALAPPDATA": str(elsewhere / "AppData" / "Local")}
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_refuses_broad_or_missing_folders(self):
+        for bad in (Path(self.root.anchor), Path(os.environ.get("USERPROFILE", self.root.anchor)),
+                    self.root / "missing", self.root):     # self.root: in %TEMP%, in AppData
+            with self.assertRaises(IntakeError, msg=str(bad)):
+                intake.add_folder(self.store, str(bad))
+        with mock.patch.dict(os.environ, self.elsewhere):
+            intake.add_folder(self.store, str(self.folder))
+            with self.assertRaises(IntakeError):
+                intake.add_folder(self.store, str(self.folder))   # already watched
+
+    def test_refuses_folders_that_hold_the_profile_or_app_data(self):
+        # #111 D2 (red-team part 2, finding 6): the folder holding every
+        # profile, and AppData with the app's own data folder, could be watched.
+        profile = self.root / "Users" / "someone"
+        appdata = profile / "AppData"
+        local = appdata / "Local"
+        for d in (local / "Unminute" / "workspace", appdata / "Roaming",
+                  appdata / "LocalLow", profile / "Documents" / "Recordings"):
+            d.mkdir(parents=True)
+        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
+               "LOCALAPPDATA": str(local)}
+        with mock.patch.dict(os.environ, env):
+            for bad in (self.root / "Users", profile, appdata, local, appdata / "Roaming",
+                        appdata / "LocalLow", local / "Unminute", local / "Unminute" / "workspace"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(profile / "Documents" / "Recordings"))
+        # A local app data folder redirected elsewhere: what holds it is refused too.
+        data = self.root / "Data"
+        (data / "Local" / "Unminute").mkdir(parents=True)
+        (data / "Shared").mkdir()
+        with mock.patch.dict(os.environ, {**self.elsewhere, "LOCALAPPDATA": str(data / "Local")}):
+            for bad in (data, data / "Local", data / "Local" / "Unminute"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(data / "Shared"))
+        self.assertEqual(len(intake.folders(self.store)), 2)
+
+    def test_refuses_every_folder_inside_app_data(self):
+        # #111 D2 review (round 1, low): only AppData and its direct children
+        # were refused, so the old data folder (%LOCALAPPDATA%\whisper\workspace,
+        # which keeps real content), Temp and other apps' data could be watched.
+        # The whole AppData tree is refused, and so is anything inside a
+        # redirected %APPDATA% or %LOCALAPPDATA%.
+        profile = self.root / "Users" / "someone"
+        appdata = profile / "AppData"
+        local = appdata / "Local"
+        inside = (local / "whisper" / "workspace", local / "whisper", local / "Temp",
+                  local / "Temp" / "Recordings", appdata / "Roaming" / "SomeApp" / "Audio",
+                  appdata / "LocalLow" / "SomeApp", appdata / "Other")
+        for d in inside:
+            d.mkdir(parents=True, exist_ok=True)
+        (profile / "Documents" / "Recordings").mkdir(parents=True)
+        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
+               "LOCALAPPDATA": str(local)}
+        with mock.patch.dict(os.environ, env):
+            for bad in inside:
+                with self.assertRaises(IntakeError, msg=str(bad)) as caught:
+                    intake.add_folder(self.store, str(bad))
+                # The usual broad-folder message: no path or name in it (P3).
+                self.assertIn("app data folders cannot be watched", str(caught.exception))
+                self.assertNotIn("someone", str(caught.exception))
+            intake.add_folder(self.store, str(profile / "Documents" / "Recordings"))
+        # Redirected app data folders outside the profile: their trees too.
+        roaming, local2 = self.root / "Redirected" / "Roaming", self.root / "Data" / "Local"
+        shared = self.root / "Data" / "Shared"
+        for d in (roaming / "SomeApp", local2 / "Temp" / "Recordings", shared):
+            d.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {**self.elsewhere, "APPDATA": str(roaming),
+                                          "LOCALAPPDATA": str(local2)}):
+            for bad in (roaming / "SomeApp", local2 / "Temp", local2 / "Temp" / "Recordings"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(shared))
+        self.assertEqual(len(intake.folders(self.store)), 2)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+@unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class IntakeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -56,6 +156,7 @@ class IntakeTests(unittest.TestCase):
         self.saved_recent = intake.STABLE_RECENT_S
         intake.STABLE_RECENT_S = 0          # simulated clock; recency has its own test
         self.import_ok = True
+        profile_elsewhere.start(self)       # self.root is in %TEMP%, inside AppData
 
     def tearDown(self):
         intake.STABLE_RECENT_S = self.saved_recent
@@ -75,44 +176,6 @@ class IntakeTests(unittest.TestCase):
         """Two scans: first sees a new file, the second (later) imports it."""
         self.scan()
         return self.scan()
-
-    def test_refuses_broad_or_missing_folders(self):
-        for bad in (Path(self.root.anchor), Path(os.environ.get("USERPROFILE", self.root.anchor)),
-                    self.root / "missing"):
-            with self.assertRaises(IntakeError):
-                intake.add_folder(self.store, str(bad))
-        intake.add_folder(self.store, str(self.folder))
-        with self.assertRaises(IntakeError):
-            intake.add_folder(self.store, str(self.folder))       # already watched
-
-    def test_refuses_folders_that_hold_the_profile_or_app_data(self):
-        # #111 D2 (red-team part 2, finding 6): the folder holding every
-        # profile, and AppData with the app's own data folder, could be watched.
-        profile = self.root / "Users" / "someone"
-        appdata = profile / "AppData"
-        local = appdata / "Local"
-        for d in (local / "Unminute" / "workspace", local / "Temp" / "Recordings",
-                  appdata / "Roaming", appdata / "LocalLow", profile / "Documents" / "Recordings"):
-            d.mkdir(parents=True)
-        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
-               "LOCALAPPDATA": str(local)}
-        with mock.patch.dict(os.environ, env):
-            for bad in (self.root / "Users", profile, appdata, local, appdata / "Roaming",
-                        appdata / "LocalLow", local / "Unminute", local / "Unminute" / "workspace"):
-                with self.assertRaises(IntakeError, msg=str(bad)):
-                    intake.add_folder(self.store, str(bad))
-            for good in (local / "Temp" / "Recordings", profile / "Documents" / "Recordings"):
-                intake.add_folder(self.store, str(good))
-        # A local app data folder redirected elsewhere: what holds it is refused too.
-        data = self.root / "Data"
-        (data / "Local" / "Unminute").mkdir(parents=True)
-        (data / "Shared").mkdir()
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(data / "Local")}):
-            for bad in (data, data / "Local", data / "Local" / "Unminute"):
-                with self.assertRaises(IntakeError, msg=str(bad)):
-                    intake.add_folder(self.store, str(bad))
-            intake.add_folder(self.store, str(data / "Shared"))
-        self.assertEqual(len(intake.folders(self.store)), 3)
 
     def test_only_a_duplicate_is_called_already_watched(self):
         # Any other failure (here a full disk) is not "already watched" (#111 C2a).
@@ -637,6 +700,9 @@ class IntakeTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DEPS and os.name == "nt", "Windows paths")
 class WorkspaceIntakeTests(unittest.TestCase):
+    def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
+
     def test_new_recording_in_a_watched_folder_becomes_a_meeting(self):
         from workspace import app
         with tempfile.TemporaryDirectory() as tmp:
