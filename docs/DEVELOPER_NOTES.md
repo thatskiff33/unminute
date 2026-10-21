@@ -165,10 +165,16 @@ real time, and remove it when the cause is fixed.
   `Remove-Item -Recurse -Force` removed a junction inside a folder as a link and left its
   target alone (checked 21 October 2026 in a scratch folder); older 5.1 builds are not known.
   .NET Framework's `[IO.Directory]::Delete(path, $true)` failed on the same folder with
-  "Access to the path ... is denied". So `packaging/install.ps1` removes version folders
-  with its own walk (`Remove-OwnFolder`), which deletes a link as a link and never descends
-  into it; on 20,000 small files it took about as long as `Remove-Item` (6.5 against 6.2
-  seconds on a development laptop).
+  "Access to the path ... is denied". So `packaging/install.ps1` and
+  `packaging/uninstall.ps1` remove folders with the same walk (`Remove-OwnFolder`, kept equal
+  by `tests/test_hardening.py`), which deletes a link as a link and never descends into it;
+  on 20,000 small files it took about as long as `Remove-Item` (6.5 against 6.2 seconds on a
+  development laptop). The uninstaller's walk was also checked with a junction under
+  PowerShell 7.6 (22 October 2026); symbolic links need administrator rights or Developer
+  Mode to create, so they were not.
+- **A regular expression's `$` matches before a final newline (#297).** In .NET, as in
+  Python, a pattern `^...$` also accepts a name with a final newline, such as `"1.0.0\n"`.
+  A check on a name that becomes a path ends in `\z` instead.
 
 ## Claude Code hooks on Windows
 

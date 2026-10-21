@@ -25,9 +25,10 @@
   -Managed records that IT manages updates (Intune); -Rollback switches back to
   the previous installed version if it can still open the workspace.
 
-  The install folder must be new, empty, an install (current.json), or hold only
-  what an install that stopped early leaves; anything else, or a link or junction
-  where the installer would look, is refused before anything is written (#297).
+  The install folder must be new, empty, an install (a current.json naming a
+  valid version), or hold only what an install that stopped early leaves;
+  anything else, or a link or junction where the installer would look, is
+  refused before anything is written (#297).
   Only versions the installer made are removed, never through a link.
 
   Exit codes: 0 installed, 1 failed, 2 prerequisites missing or the install
@@ -231,12 +232,13 @@ function Test-AppRunning {
 # A version becomes a folder name under versions, so the package's version and the
 # values in current.json must be plain names first: the uninstaller's pattern
 # (tests/test_hardening.py keeps the two equal), no final dot (Windows drops it, so
-# 0.6.0. would name the folder 0.6.0), and not a working folder's name.
-$VersionPattern = '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$'
+# 0.6.0. would name the folder 0.6.0), and not a working folder's name. The patterns
+# end in \z, not $, which also matches before a final newline ("1.0.0`n").
+$VersionPattern = '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z'
 
 function Test-VersionName([string]$Name) {
     return ($Name -cmatch $VersionPattern) -and -not $Name.EndsWith(".") -and
-        $Name -notmatch '\.(partial|old)$'
+        $Name -notmatch '\.(partial|old)\z'
 }
 
 # A version from current.json, or $null when it is missing or not a plain name.
@@ -246,71 +248,15 @@ function Get-VersionValue($Value) {
     return $null
 }
 
+# Removes a folder the installer made without following links (#297): a junction or
+# symbolic link found inside it is removed as a link, and what it points to is left
+# alone. A folder that is itself a link is never removed. Windows PowerShell's own
+# Remove-Item -Recurse is not relied on for this. install.ps1 and uninstall.ps1 have
+# the same functions (tests/test_hardening.py keeps them equal).
 function Test-Link([IO.FileSystemInfo]$Item) {
     return [bool]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)
 }
 
-# A version the installer made: a plain name, not a link, holding a version.json
-# (not a link) whose version is that name, exactly.
-function Test-OwnVersion([IO.DirectoryInfo]$Dir) {
-    if (-not (Test-VersionName $Dir.Name) -or (Test-Link $Dir)) { return $false }
-    $file = [IO.FileInfo]::new([IO.Path]::Combine($Dir.FullName, "version.json"))
-    if (-not $file.Exists -or (Test-Link $file)) { return $false }
-    try { $info = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { return $false }
-    return ([string]$info.version) -ceq $Dir.Name
-}
-
-# A working folder the installer made: <version>.partial (a copy in progress) or
-# <version>.old (a version being replaced by itself), not a link.
-function Test-OwnWorkingFolder([IO.DirectoryInfo]$Dir) {
-    if ((Test-Link $Dir) -or $Dir.Name -notmatch '^(.+)\.(partial|old)$') { return $false }
-    return Test-VersionName $Matches[1]
-}
-
-# The installer writes and removes only inside a folder that is new, empty, an install
-# (it holds current.json), or holds only what an install that stopped before writing
-# current.json leaves: versions, holding only versions and working folders the
-# installer made, and uninstall.ps1 beside a complete version (#245, #239). So a wrong
-# -InstallDir, such as a shared folder or a drive's root, loses nothing. A link or
-# junction at current.json, uninstall.ps1, versions or directly inside versions is
-# refused in every case. Checked before anything is written; the messages name no
-# path. An install keeps whatever else is in it: the installer never removes that.
-function Assert-InstallFolder([string]$Dir) {
-    $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
-    if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
-    $folder = [IO.DirectoryInfo]::new($Dir)
-    if (-not $folder.Exists) { return }
-    $install = $false; $uninstaller = $false; $versions = $null
-    $foreign = 0; $links = 0; $complete = 0; $strays = 0
-    foreach ($item in $folder.GetFileSystemInfos()) {
-        $isDir = $item -is [IO.DirectoryInfo]
-        if (@("current.json", "uninstall.ps1", "versions") -notcontains $item.Name) { $foreign++ }
-        elseif (Test-Link $item) { $links++ }
-        elseif ($isDir -ne ($item.Name -eq "versions")) { $foreign++ }
-        elseif ($item.Name -eq "current.json") { $install = $true }
-        elseif ($item.Name -eq "uninstall.ps1") { $uninstaller = $true }
-        else { $versions = $item }
-    }
-    if ($versions) {
-        foreach ($item in $versions.GetFileSystemInfos()) {
-            if (Test-Link $item) { $links++ }
-            elseif ($item -isnot [IO.DirectoryInfo]) { $strays++ }
-            elseif (Test-OwnVersion $item) { $complete++ }
-            elseif (-not (Test-OwnWorkingFolder $item)) { $strays++ }
-        }
-    }
-    if ($links) {
-        Stop-Install 2 ("The install folder holds a link or junction that $AppName did not put there, " +
-            "so nothing was changed. Remove it, or choose an empty or new -InstallDir.")
-    }
-    if ($install) { return }
-    if ($foreign -or $strays -or ($uninstaller -and -not $complete)) { Stop-Install 2 $notOurs }
-}
-
-# Removes a folder the installer made without following links (#297): a junction or
-# symbolic link found inside it is removed as a link, and what it points to is left
-# alone. A folder that is itself a link is never removed. Windows PowerShell's own
-# Remove-Item -Recurse is not relied on for this.
 function Remove-OwnFolder([string]$Path) {
     $dir = [IO.DirectoryInfo]::new($Path)
     if (-not $dir.Exists) { return }
@@ -330,6 +276,75 @@ function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
         $Dir.Attributes = $Dir.Attributes -bxor [IO.FileAttributes]::ReadOnly
     }
     $Dir.Delete()
+}
+
+# A version the installer made: a plain name, not a link, holding a version.json
+# (not a link) whose version is that name, exactly.
+function Test-OwnVersion([IO.DirectoryInfo]$Dir) {
+    if (-not (Test-VersionName $Dir.Name) -or (Test-Link $Dir)) { return $false }
+    $file = [IO.FileInfo]::new([IO.Path]::Combine($Dir.FullName, "version.json"))
+    if (-not $file.Exists -or (Test-Link $file)) { return $false }
+    try { $info = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { return $false }
+    return ([string]$info.version) -ceq $Dir.Name
+}
+
+# A working folder the installer made: <version>.partial (a copy in progress) or
+# <version>.old (a version being replaced by itself), not a link.
+function Test-OwnWorkingFolder([IO.DirectoryInfo]$Dir) {
+    if ((Test-Link $Dir) -or $Dir.Name -notmatch '^(.+)\.(partial|old)\z') { return $false }
+    return Test-VersionName $Matches[1]
+}
+
+# An install's record: a current.json that reads as a JSON object naming a plain
+# version. Anything else there, such as another program's current.json, does not make
+# the folder an install (#297 review).
+function Test-InstallRecord([IO.FileInfo]$File) {
+    try { $record = Get-Content -LiteralPath $File.FullName -Raw | ConvertFrom-Json } catch { return $false }
+    if ($record -isnot [Management.Automation.PSCustomObject]) { return $false }
+    return $null -ne (Get-VersionValue $record.version)
+}
+
+# The installer writes and removes only inside a folder that is new, empty, an install
+# (its current.json is an install's record, above), or holds only what an install that
+# stopped before writing current.json leaves: versions, holding only versions and
+# working folders the installer made, and uninstall.ps1 beside a complete version
+# (#245, #239). Any other current.json counts as someone else's file. So a wrong
+# -InstallDir, such as a shared folder or a drive's root, loses nothing. A link or
+# junction at current.json, uninstall.ps1, versions or directly inside versions is
+# refused in every case. Checked before anything is written; the messages name no
+# path. An install keeps whatever else is in it: the installer never removes that.
+function Assert-InstallFolder([string]$Dir) {
+    $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
+    if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
+    $folder = [IO.DirectoryInfo]::new($Dir)
+    if (-not $folder.Exists) { return }
+    $install = $false; $uninstaller = $false; $versions = $null
+    $foreign = 0; $links = 0; $complete = 0; $strays = 0
+    foreach ($item in $folder.GetFileSystemInfos()) {
+        $isDir = $item -is [IO.DirectoryInfo]
+        if (@("current.json", "uninstall.ps1", "versions") -notcontains $item.Name) { $foreign++ }
+        elseif (Test-Link $item) { $links++ }
+        elseif ($isDir -ne ($item.Name -eq "versions")) { $foreign++ }
+        elseif ($item.Name -eq "current.json") {
+            if (Test-InstallRecord $item) { $install = $true } else { $foreign++ }
+        }
+        elseif ($item.Name -eq "uninstall.ps1") { $uninstaller = $true }
+        else { $versions = $item }
+    }
+    if ($versions) {
+        foreach ($item in $versions.GetFileSystemInfos()) {
+            if (Test-Link $item) { $links++ }
+            elseif ($item -isnot [IO.DirectoryInfo]) { $strays++ }
+            elseif (Test-OwnVersion $item) { $complete++ }
+            elseif (-not (Test-OwnWorkingFolder $item)) { $strays++ }
+        }
+    }
+    if ($links) {
+        Stop-Install 2 ("The install folder holds a link or junction that $AppName did not put there, " +
+            "so nothing was changed. Remove it, or choose an empty or new -InstallDir.")
+    }
+    if ($install) { return }
+    if ($foreign -or $strays -or ($uninstaller -and -not $complete)) { Stop-Install 2 $notOurs }
 }
 
 # -- update gate (#26) ----------------------------------------------------------------

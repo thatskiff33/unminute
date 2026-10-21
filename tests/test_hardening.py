@@ -1439,6 +1439,74 @@ class DataFolderOverlapTests(unittest.TestCase):
         self.assertEqual(check("install.ps1"), check("uninstall.ps1"))
         self.assertIn("function Get-DataOverlap", check("uninstall.ps1"))
 
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_never_removes_through_a_link(self):
+        # #297 review Q2: a junction inside a version is removed as a link and what
+        # it points to stays; a junction at versions or current.json stops the
+        # uninstall before anything is removed.
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            target = Path(tmp) / "someone"
+            (target / "versions" / "0.5.0").mkdir(parents=True)
+            (target / "sentinel.txt").write_text("keep")
+            kept = snapshot(target)
+
+            def junction(at, to):
+                made = mklink_junction(at, to, capture_output=True, text=True, timeout=30)
+                self.assertEqual(0, made.returncode, made.stdout + made.stderr)
+                self.addCleanup(lambda: os.path.lexists(at) and os.rmdir(at))
+
+            def install(name):
+                folder = Path(tmp) / name
+                folder.mkdir()
+                (folder / "current.json").write_text('{"version": "0.5.0"}')
+                shutil.copy(copy, folder / "uninstall.ps1")
+                return folder
+
+            inside = install("inside")
+            (inside / "versions" / "0.5.0" / "app").mkdir(parents=True)
+            (inside / "versions" / "0.5.0" / "app" / "held.txt").write_text("ours")
+            junction(inside / "versions" / "0.5.0" / "app" / "link", target)
+            link.write_text("shortcut")
+            r = self.run_script(copy, inside, local, cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertFalse(os.path.lexists(inside))
+            self.assertEqual(snapshot(target), kept)
+            for at in ("versions", "current.json"):
+                with self.subTest(at=at):
+                    folder = install(f"as-{at}")
+                    if at == "current.json":
+                        (folder / "current.json").unlink()
+                        (folder / "versions" / "0.5.0").mkdir(parents=True)
+                    junction(folder / at, target if at == "current.json" else target / "versions")
+                    link.write_text("shortcut")
+                    before = snapshot(folder)
+                    r = self.run_script(copy, folder, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn("link or junction", r.stderr)
+                    self.assertIn("so nothing was removed", r.stderr)
+                    self.assertEqual(snapshot(folder), before)
+                    self.assertEqual(snapshot(target), kept)
+                    self.assertTrue(link.is_file())
+
+    def test_both_scripts_remove_folders_the_same_way(self):
+        # #297: the uninstaller removes with the installer's walk, which never
+        # follows a link, not with Remove-Item -Recurse.
+        def walk(name):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            start = text.index("# Removes a folder the installer made without following links")
+            end = text.index("\n}\n", text.index("function Remove-FolderTree")) + 3
+            return text[start:end]
+        self.assertEqual(walk("install.ps1"), walk("uninstall.ps1"))
+        for function in ("Test-Link", "Remove-OwnFolder", "Remove-FolderTree"):
+            self.assertIn(f"function {function}(", walk("uninstall.ps1"))
+        uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        self.assertIn("Invoke-LockRetry { Remove-OwnFolder $path }", uninstall)
+        self.assertNotRegex(uninstall,
+                            r"Remove-Item[^\n]*\$(path|Options\.InstallDir)[^\n]*-Recurse")
+
 
 # A hook for copies of install.ps1 and uninstall.ps1 (FolderInUseTests): at the named
 # step, the copy says it is ready, then waits until the test says go.
@@ -1730,8 +1798,7 @@ class FolderInUseTests(unittest.TestCase):
         for step in (self.STAGING, self.OLD):
             self.assertIn("Invoke-LockRetry { " + step, install)
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn("Invoke-LockRetry { Remove-Item -LiteralPath $path -Recurse -Force }",
-                      uninstall)
+        self.assertIn("Invoke-LockRetry { Remove-OwnFolder $path }", uninstall)
 
 
 # Stand-ins that a copy of install.ps1 defines just before its main part
@@ -2043,7 +2110,9 @@ class InstallFolderScopeTests(unittest.TestCase):
         # "..\x" would install beside versions; "0.6.0." names the folder 0.6.0,
         # because Windows drops a final dot, so the old retention step then removed
         # the version it had just installed.
-        for version in ("..\\x", "0.6.0.", "", "a/b", ".hidden", "1.0.0.partial"):
+        # "1.0.0\n": a regular expression's $ also matches before a final newline
+        # (#297 review N1).
+        for version in ("..\\x", "0.6.0.", "", "a/b", ".hidden", "1.0.0.partial", "1.0.0\n"):
             with self.subTest(version=version):
                 shutil.rmtree(self.install, ignore_errors=True)
                 self.write_package(version)
@@ -2053,18 +2122,56 @@ class InstallFolderScopeTests(unittest.TestCase):
                 self.assertFalse(self.install.exists())
                 self.assertFalse((self.root / "x").exists())
 
-    def test_current_json_values_that_are_not_plain_names_are_ignored(self):
-        # An update treats them as absent: no previous version is kept for them.
+    def test_a_previous_value_that_is_not_a_plain_name_is_ignored(self):
+        # Reinstalling the same version keeps current.json's previous version; one
+        # that is not a plain name is treated as absent.
         self.write_package("1.0.0")
-        for bad in ("..\\x", "0.8.0.", "C:\\Elsewhere"):
+        for bad in ("..\\x", "0.8.0.", "C:\\Elsewhere", "0.8.0\n"):
             with self.subTest(bad=bad):
                 shutil.rmtree(self.install, ignore_errors=True)
-                self.write_current(version=bad, previous=None, managed=False)
-                self.version_folder(self.versions / "0.9.0")
+                self.write_current(version="1.0.0", previous=bad, managed=False)
+                self.version_folder(self.versions / "1.0.0")
                 r = self.run_installer()
                 self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
                 self.assertEqual(self.current()["version"], "1.0.0")
                 self.assertIsNone(self.current()["previous"])
+
+    def test_a_current_json_that_is_not_an_install_record_is_refused(self):
+        # #297 review N2: only a current.json that reads as JSON and names a plain
+        # version makes the folder an install. Another program's current.json, or
+        # one that names no valid version, leaves the folder check as for any other
+        # folder, so its versions\1.0.0.partial and the file itself are kept.
+        self.write_package("1.0.0")
+        records = {"another program's": json.dumps({"name": "Other", "settings": 1}),
+                   "not JSON": "someone's notes", "empty": "",
+                   "a path": json.dumps({"version": "..\\x"}),
+                   "a final dot": json.dumps({"version": "0.8.0."}),
+                   "a final newline": json.dumps({"version": "1.0.0\n"}),
+                   "a list": json.dumps([{"version": "1.0.0"}])}
+        for number, (label, text) in enumerate(records.items()):
+            with self.subTest(label):
+                folder = self.root / f"record-{number}"
+                (folder / "versions" / "1.0.0.partial").mkdir(parents=True)
+                (folder / "versions" / "1.0.0.partial" / "data.txt").write_text("someone's work")
+                (folder / "current.json").write_text(text)
+                before = snapshot(folder)
+                r = self.run_installer(install=folder)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(self.NOT_OURS, r.stderr)
+                self.assertEqual(snapshot(folder), before)
+
+    def test_rollback_refuses_a_previous_version_with_a_final_newline(self):
+        # #297 review N1: "0.8.0\n" is not a plain name, so there is no previous version.
+        self.write_package("1.0.0")
+        self.write_current(version="0.9.0", previous="0.8.0\n", managed=False)
+        for name in ("0.9.0", "0.8.0"):
+            self.version_folder(self.versions / name)
+        before = (self.install / "current.json").read_text()
+        r = self.run_installer("-Rollback")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("There is no previous version to go back to.", r.stderr)
+        self.assertNotIn("GATE RAN", r.stdout)
+        self.assertEqual((self.install / "current.json").read_text(), before)
 
     def test_rollback_refuses_a_previous_version_that_is_not_a_plain_name(self):
         # -Rollback never looks outside versions or runs anything from there. Each
@@ -2110,8 +2217,15 @@ class InstallFolderScopeTests(unittest.TestCase):
             self.assertEqual(len(found), 1, name)
             return found[0]
 
-        self.assertEqual(pattern("install.ps1", r"(?m)^\$VersionPattern = '([^']+)'$"),
-                         pattern("uninstall.ps1", r"-cnotmatch '([^']+)'"))
+        found = pattern("install.ps1", r"(?m)^\$VersionPattern = '([^']+)'$")
+        self.assertEqual(found, pattern("uninstall.ps1", r"-cnotmatch '([^']+)'"))
+        # As .NET reads it (#297 review N1): a final newline is not part of a name.
+        check = (f"$p = '{found}'; foreach ($n in '1.0.0', \"1.0.0`n\", \"1.0.0`r`n\") "
+                 "{ Write-Output ([int]($n -cmatch $p)) }")
+        r = subprocess.run([windows_powershell.executable(), "-NoProfile", "-Command", check],
+                           capture_output=True, text=True, timeout=60,
+                           env=windows_powershell.environment())
+        self.assertEqual(r.stdout.split(), ["1", "0", "0"], r.stdout + r.stderr)
 
 
 STUB_APP = '''\
