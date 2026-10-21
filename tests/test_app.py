@@ -1358,8 +1358,9 @@ class NativeConfirmationTests(unittest.TestCase):
 
 def js_function(source, name):
     """The body of a top-level JavaScript function in source, by its braces
-    (the functions read here have none unbalanced in strings)."""
-    start = source.index("{", source.index(f"function {name}("))
+    (the functions read here have none unbalanced in strings). The body
+    starts after the parameters (which may hold a destructuring default)."""
+    start = source.index(") {", source.index(f"function {name}(")) + 2
     depth = 0
     for i in range(start, len(source)):
         depth += {"{": 1, "}": -1}.get(source[i], 0)
@@ -1376,31 +1377,71 @@ class PageSearchTests(unittest.TestCase):
     only then start the search, so the rows appeared with the old list's
     count ("No matches") and highlights until it returned; the real-window
     check read the count then. The matches are now found before the list is
-    redrawn and shown with it, in the same task."""
+    redrawn and shown with it, in the same task. With searches slower, two can
+    overlap, so only the latest request's answer is shown (a sequence number),
+    and the latest decides whether to jump to the first match. Read from the
+    page's source: the tests do not run JavaScript."""
 
     @classmethod
     def setUpClass(cls):
         page = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js")
         cls.page = page.read_text(encoding="utf-8")
 
+    def function(self, name):
+        """A function's body in the page; a failure (not an error) if missing."""
+        self.assertTrue(f"function {name}(" in self.page, f"the page has no {name}()")
+        return js_function(self.page, name)
+
+    def assertInOrder(self, text, *parts):
+        """Each part in text, after the one before it."""
+        at = 0
+        for part in parts:
+            self.assertIn(part, text[at:], f"{part!r} missing, or out of order")
+            at += text[at:].index(part) + len(part)
+
     def test_a_redraw_shows_its_matches_with_the_rows(self):
-        body = js_function(self.page, "renderTranscript")
-        drawn = body.index("list.replaceChildren(")
-        self.assertIn('call("search", mid, query, version)', body[:drawn],
-                      "the matches are not found before the list is redrawn")
-        after = body[drawn:]
-        self.assertIn("showHits(query, hits, false)", after)
+        body = self.function("renderTranscript")
+        # The stop check comes before the search (nothing is searched for a
+        # redraw that will not draw), the search before the rows are drawn,
+        # and the matches are shown in the same task as the rows.
+        self.assertInOrder(body, "if (stopped())", "const seq = query ? newSearch() : 0;",
+                           'call("search", mid, query, version)', "if (stopped())",
+                           "list.replaceChildren(",
+                           "if (query && seq === searchSeq) showHits(query, hits, takeJump());",
+                           "else markHits();")
+        after = body[body.index("list.replaceChildren("):]
         self.assertNotIn("await", after, "something is awaited between the rows and their matches")
-        self.assertNotIn("await", js_function(self.page, "showHits"))
+        self.assertNotIn("await", self.function("showHits"))
+        self.assertNotIn("await", self.function("markHits"))
+        # The redraw never starts a second search alongside a typed one.
+        self.assertNotIn("runSearch(", body)
 
-    def test_a_search_answered_late_never_replaces_a_newer_one(self):
-        body = js_function(self.page, "runSearch")
-        searched = body.index('call("search", mid, q, version)')
-        stale = body.index('$("m-search").value.trim() !== q || state.mid !== mid '
-                           '|| state.version !== version) return;')
-        self.assertLess(searched, stale)
-        self.assertLess(stale, body.index("showHits(q, hits, jump)"))
+    def test_only_the_latest_search_request_is_shown(self):
+        body = self.function("runSearch")
+        self.assertInOrder(body, "const seq = newSearch(jump);", 'call("search", mid, q, version)',
+                           "if (seq !== searchSeq) return;", "showHits(q, hits, takeJump());")
+        # Not by comparing the query: an older request for the same text that
+        # answers last would pass that.
+        self.assertNotIn("!== q", body)
+        self.assertIn("return ++searchSeq;", self.function("newSearch"))
+        self.assertIn("return ++searchSeq;", self.function("dropSearches"))
+        # Typing and opening another meeting or version drop older answers.
+        self.assertRegex(self.page, r'\$\("m-search"\)\.addEventListener\("input", \(\) => \{\s*'
+                                    r"dropSearches\(\);")
+        self.assertIn("dropSearches();", self.function("openMeeting"))
+        self.assertIn("dropSearches();", self.function("viewVersion"))
 
+    def test_the_latest_request_decides_the_jump(self):
+        # A typed search asks for the jump; whichever request answers last
+        # (the typed one, or a redraw's for the same text) takes it.
+        self.assertIn("if (jump) searchJump = true;", self.function("newSearch"))
+        self.assertIn("searchJump = false;", self.function("takeJump"))
+        self.assertIn("searchJump = false;", self.function("dropSearches"))
+        # Without a jump, the current match stays current while it matches.
+        self.assertInOrder(self.function("showHits"),
+                           "const current = state.hit >= 0 ? state.hits[state.hit] : undefined;",
+                           "state.hit = jump ? -1 : hits.indexOf(current);",
+                           "if (jump) nextHit(1);")
 
 if __name__ == "__main__":
     unittest.main()
