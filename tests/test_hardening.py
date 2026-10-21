@@ -1848,8 +1848,11 @@ class InstallFolderScopeTests(unittest.TestCase):
 
     def run_installer(self, extra="", install=None):
         call = f"& '{self.copy}' -InstallDir '{install or self.install}' -Silent {extra}"
-        env = dict(os.environ, LOCALAPPDATA=str(self.local), APPDATA=str(self.appdata),
-                   UNMINUTE_TEST_PACKAGE=str(self.package))
+        # The helper's minimal environment: from pwsh 7 (as in CI), an inherited
+        # PSModulePath hides 5.1's own Get-FileHash, which the manifest check uses.
+        env = windows_powershell.environment({
+            "LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata),
+            "UNMINUTE_TEST_PACKAGE": str(self.package)})
         return subprocess.run([windows_powershell.executable(), "-NoProfile",
                                "-ExecutionPolicy", "Bypass",
                                "-Command", f"{call}; exit $LASTEXITCODE"],
