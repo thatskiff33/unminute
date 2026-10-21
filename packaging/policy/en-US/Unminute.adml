@@ -72,7 +72,7 @@ Enabled: Save suggests the meeting title, except when speaker names are being re
 Disabled, not configured or 0: the app never clears the clipboard.</string>
 
       <string id="ReviewReminderDays">Days before a meeting's next step shows "Review due"</string>
-      <string id="ReviewReminderDays_Help">Enabled: a meeting whose next step (review the transcript, hand off and confirm the final output is saved, or confirm or finish its cleanup) has waited this many days shows "Review due" on the Meetings page, at the top of its group after any that require action, with a banner, while the app is open (0 to 365; 0 turns it off). Each step counts from when it began: the review from the import, the handoff from the review confirmation. Nothing is blocked or deleted. A step whose cleanup a hold blocks is not shown. --status counts these meetings.
+      <string id="ReviewReminderDays_Help">Enabled: a meeting whose next step (review the transcript, hand off and confirm the final output is saved, or confirm or finish its cleanup) has waited this many days shows "Review due" on the Meetings page, at the top of its group after any that require action, with a banner, while the app is open (0 to 365; 0 turns it off). Each step counts from when it began: the review from the import, the handoff from the review confirmation. The banner says how long the meetings have waited; it does not say that your organisation asks for anything, because a reminder is not a deadline (only "Action required" does). Nothing is blocked or deleted. A step whose cleanup a hold blocks is not shown. --status counts these meetings.
 
 Disabled or not configured: 30 days, the app's default. To turn the reminder off, enable this policy and set 0.</string>
 
