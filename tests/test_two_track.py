@@ -15,7 +15,9 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import types
 import unittest
 import wave
 from pathlib import Path
@@ -162,6 +164,39 @@ class LoopbackHelperTests(unittest.TestCase):
         self.assertEqual(out[0][1], 0)
         self.assertAlmostEqual(out[0][2] + out[0][0] / CRATE, out[1][2], places=3)
 
+    def test_audio_lost_between_blocks_is_filled_so_the_track_keeps_time(self):
+        # 10 s of 50 ms passes with a 150 ms gap each second (shorter than
+        # IDLE_PAD_S, so never an idle spell): the track still covers 10 s.
+        p = loopback.Pacer(CRATE, now=0.0)
+        out = []
+        cb = lambda block, stamp: out.append((len(block), stamp))  # noqa: E731
+        now, n = 0.0, int(0.05 * CRATE)
+        loopback.deliver(p, [np.ones(1, np.int16)], 0.0, cb)
+        for i in range(200):
+            now += 0.05
+            if i % 20 in (1, 2, 3):
+                loopback.deliver(p, [], now, cb)          # nothing arrived; less than IDLE_PAD_S
+            else:
+                loopback.deliver(p, [np.ones(n, np.int16)], now, cb)
+        frames = sum(k for k, _ in out)
+        self.assertLess(abs(frames / CRATE - now), 0.06)
+        for (k, s), (_, s2) in zip(out, out[1:], strict=False):  # contiguous in time
+            self.assertAlmostEqual(s + k / CRATE, s2, delta=loopback.GAP_TOL_S)
+
+    def test_arrival_jitter_is_not_padded_but_a_flagged_loss_is(self):
+        p = loopback.Pacer(CRATE, now=0.0)
+        out = []
+        cb = lambda block, stamp: out.append(len(block))  # noqa: E731
+        loopback.deliver(p, [np.ones(2400, np.int16)], 0.05, cb)
+        out.clear()
+        # 20 ms later than expected: within the jitter of arrival times.
+        loopback.deliver(p, [np.ones(2400, np.int16)], 0.12, cb)
+        self.assertEqual(out, [2400])
+        out.clear()
+        # The same 20 ms with Windows' discontinuity flag: the loss is filled.
+        loopback.deliver(p, [np.ones(2400, np.int16)], 0.19, cb, lost=True)
+        self.assertEqual(out, [960, 2400])
+
     def test_only_known_sources_are_accepted(self):
         self.assertEqual(loopback.check_source({"kind": "endpoint"}), {"kind": "endpoint"})
         self.assertEqual(loopback.check_source({"kind": "process", "pid": 42}),
@@ -184,6 +219,130 @@ class LoopbackHelperTests(unittest.TestCase):
             self.skipTest("the window modules cannot be imported here: "
                           + result.stderr[-300:])
         self.assertEqual(result.stdout.strip().splitlines()[-1], "[]")
+
+
+# -- loopback: the endpoint reader's loop, with fake COM ---------------------------------
+
+class FakeApi:
+    """Stands in for loopback._com(): records releases; calls succeed."""
+
+    def __init__(self):
+        import ctypes
+        self.ctypes = ctypes
+        self.wintypes = types.SimpleNamespace(DWORD=ctypes.c_ulong)
+        self.IID_IAudioClient = ctypes.c_int(0)
+        self.released = []
+        self.ole32 = types.SimpleNamespace(CoInitializeEx=lambda *a: 1,
+                                           CoUninitialize=lambda: None)
+
+    def release(self, ptr):
+        self.released.append(ptr)
+
+    def call(self, *args, **kwargs):
+        return 0
+
+
+class FakeClient:
+    """An endpoint client: reads a block per pass until its script says gone."""
+
+    def __init__(self, gone_after=None):
+        self.gone_after, self.reads, self.closed = gone_after, 0, False
+
+    def read(self):
+        self.reads += 1
+        if self.gone_after is not None and self.reads > self.gone_after:
+            raise loopback.LoopbackError("Computer audio stopped.")
+        return [np.ones(480, np.int16)], False
+
+    def close(self):
+        self.closed = True
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class LoopbackEndpointLoopTests(unittest.TestCase):
+    def run_stream(self, opens, default_ids, until, limit=None):
+        """Run the endpoint reader with fakes until notify has seen `until`
+        (or 10 s pass). opens: what each _endpoint_client call returns or
+        raises; default_ids: a list whose last item is the current default."""
+        api, events, blocks = FakeApi(), [], []
+        clock = iter(i * 0.1 for i in range(10 ** 7))
+        done = threading.Event()
+
+        def open_client(api_, enumerator):
+            step = opens.pop(0) if len(opens) > 1 else opens[0]
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        def notify(kind, name):
+            events.append((kind, name))
+            if kind == until:
+                done.set()
+
+        patches = [mock.patch.object(loopback, "_com", lambda: api),
+                   mock.patch.object(loopback, "_enumerator", lambda api_: "enum"),
+                   mock.patch.object(loopback, "_default_id", lambda api_, e: default_ids[-1]),
+                   mock.patch.object(loopback, "_endpoint_client", open_client),
+                   mock.patch.object(loopback, "POLL_S", 0.001)]
+        if limit is not None:
+            patches.append(mock.patch.object(loopback, "REOPEN_LIMIT_S", limit))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        stream = loopback.LoopbackStream({"kind": "endpoint"},
+                                         lambda b, s: blocks.append(b), notify,
+                                         tick=lambda: next(clock))
+        thread = threading.Thread(target=stream._run, daemon=True)
+        thread.start()
+        done.wait(10)
+        stream._stop.set()
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        return stream, events, blocks, api
+
+    def test_a_reopen_that_fails_is_retried_with_silence_then_carries_on(self):
+        first, second, third = FakeClient(gone_after=3), FakeClient(), FakeClient()
+        error = loopback.LoopbackError("Computer audio could not be opened.")
+        ids = ["dev1"]
+        opens = [(first, "Speakers", "dev1"), error, error, (second, "Speakers", "dev1")]
+        stream, events, blocks, _ = self.run_stream(opens, ids, until="reopened")
+        self.assertEqual(events, [("reopened", "Speakers")])   # not "failed", not "switched"
+        self.assertTrue(first.closed)
+        self.assertTrue(any(not np.any(b) for b in blocks))      # silence while it settled
+        # A new default output is followed and named as a switch.
+        stream, events, _, _ = self.run_stream(
+            [(FakeClient(), "Speakers", "dev1"), (third, "Headset", "dev2")], ["dev2"],
+            until="switched")
+        self.assertEqual(events, [("switched", "Headset")])
+
+    def test_a_reopen_that_keeps_failing_ends_the_track_after_the_limit(self):
+        first = FakeClient(gone_after=2)
+        error = loopback.LoopbackError("Computer audio could not be opened.")
+        stream, events, blocks, _ = self.run_stream([(first, "Speakers", "dev1"), error],
+                                                    ["dev1"], until="failed", limit=3.0)
+        self.assertEqual(events, [("failed", None)])
+        self.assertTrue(first.closed)
+        silence = sum(len(b) for b in blocks if not np.any(b))
+        self.assertGreater(silence, 2.0 * CRATE)                 # silence until it gave up
+
+    def test_reading_a_device_id_that_fails_leaves_nothing_open_or_held(self):
+        api = FakeApi()
+        built = []
+        with mock.patch.object(loopback, "_default_render", lambda a, e: "device"), \
+                mock.patch.object(loopback, "_friendly_name", lambda a, d: "Speakers"), \
+                mock.patch.object(loopback, "_device_id",
+                                  mock.Mock(side_effect=loopback.LoopbackError("x"))), \
+                mock.patch.object(loopback, "_Client", lambda *a, **k: built.append(a)):
+            with self.assertRaises(loopback.LoopbackError):
+                loopback._endpoint_client(api, "enum")
+            self.assertEqual(built, [])                          # no stream was started
+            self.assertEqual(api.released, ["device"])
+            api.released.clear()
+            with mock.patch.object(loopback, "_com", lambda: api), \
+                    mock.patch.object(loopback, "_enumerator", lambda a: "enum"):
+                with self.assertRaises(loopback.LoopbackError):
+                    loopback.list_outputs()
+            self.assertEqual(sorted(api.released), ["device", "enum"])
 
 
 # -- mixdown: one mix, lined up ----------------------------------------------------------
@@ -465,6 +624,57 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertEqual(journal["tracks"]["computer"]["state"], "policy_stop")
         self.assertEqual([e["kind"] for e in journal["events"]], ["computer_policy_stop"])
 
+    def test_the_computer_queue_holds_as_much_time_as_the_microphones(self):
+        # Loopback hands on a block per POLL_S (50 ms), not per 100 ms.
+        rec = recorder.Recording(
+            self.root / "q", 3, "Mic", RATE, open_stream=opener(self.holder, "mic", FakeMic),
+            computer={"open": opener(self.holder, "comp", FakeLoopback),
+                      "source": {"kind": "endpoint"}, "rate": CRATE,
+                      "block_s": loopback.POLL_S})
+        self.assertAlmostEqual(rec._computer.queue.maxsize * loopback.POLL_S,
+                               rec._queue.maxsize * recorder.BLOCK_S)
+        self.assertAlmostEqual(rec._queue.maxsize * recorder.BLOCK_S, recorder.QUEUE_S)
+
+    def test_reopening_the_same_output_is_not_called_a_switch(self):
+        rec, mic, comp = self.start()
+        comp.notify("reopened", "Speakers")
+        journal = rec.stop()
+        self.assertEqual([e["kind"] for e in journal["events"]], ["computer_reopened"])
+        self.assertNotIn("new", journal["events"][0]["note"])
+        self.assertEqual(journal["tracks"]["computer"]["device_name"], "Speakers")
+
+    def test_a_full_disk_stops_both_tracks_and_counts_the_computers_unsaved_audio(self):
+        def full(path, data):
+            raise OSError(28, "No space left on device")
+        rec, mic, comp = self.start()
+        mic.feed(0.5)
+        with mock.patch.object(recorder, "_write_atomic", full):
+            comp.feed(5.5)                    # its first chunk cannot be saved
+            deadline = time.time() + 10
+            while rec.journal["state"] != "failed" and time.time() < deadline:
+                time.sleep(0.05)
+        self.assertEqual(rec.journal["state"], "failed")
+        self.assertFalse(rec.computer_on)
+        self.assertTrue(comp.closed)
+        self.assertEqual(rec.journal["tracks"]["computer"]["state"], "failed")
+        event = next(e for e in rec.journal["events"] if e["kind"] == "disk_full")
+        self.assertGreaterEqual(event["seconds"], 5.0)   # the microphone had only 0.5 s unsaved
+        self.assertIn("Both tracks", event["note"])
+
+    def test_sleep_stops_both_tracks(self):
+        rec, mic, comp = self.start()
+        mic.feed(1)
+        comp.feed(1)
+        time.sleep(0.3)
+        rec._slept()
+        rec._close_after_sleep()
+        self.assertTrue(comp.stopped and comp.closed and mic.closed)
+        comp.feed(1)                          # nothing more is kept after the sleep
+        journal = rec.stop()
+        self.assertEqual(journal["state"], "slept")
+        self.assertEqual(journal["tracks"]["computer"]["frames"], CRATE)
+        self.assertEqual(journal["tracks"]["computer"]["state"], "stopped")
+
     def test_if_computer_audio_cannot_start_the_recording_does_not_start(self):
         with self.assertRaisesRegex(recorder.RecorderError, "Computer audio"):
             self.start(fail=True)
@@ -621,6 +831,26 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertEqual(kinds, ["computer_policy_stop"])
         ws.stop_recording()
 
+    def test_an_invalid_policy_value_mid_recording_stops_only_the_computer_track(self):
+        from workspace import policy
+        ws, mic, comp = self.start_two()
+        mic.feed(1)
+        ws.policy = policy.PolicySource(reader=lambda: ({}, ("AllowComputerAudioRecording",)))
+        ws._policy_tick()                       # an invalid value grants nothing
+        self.assertTrue(comp.stopped and comp.closed)
+        self.assertEqual(ws._recording.status()["state"], "recording")
+        self.assertEqual([e["kind"] for e in ws._recording.journal["events"]],
+                         ["computer_policy_stop"])
+        ws.stop_recording()
+
+    def test_the_app_sizes_the_computer_queue_by_how_often_loopback_delivers(self):
+        ws = self.make()
+        ws.settings.update(microphone=True, computer_audio=True)
+        with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):
+            spec = ws._computer_track()
+        self.assertEqual((spec["source"], spec["rate"], spec["block_s"]),
+                         ({"kind": "endpoint"}, loopback.LOOPBACK_RATE, loopback.POLL_S))
+
     def test_resume_checks_the_policy_again(self):
         from workspace import policy
         ws, mic, comp = self.start_two()
@@ -673,6 +903,30 @@ class LoopbackWindowsTests(unittest.TestCase):
         self.assertEqual(api.ctypes.sizeof(api.PROPVARIANT), 24 if sys.maxsize > 2 ** 32 else 16)
         self.assertEqual(api.ctypes.sizeof(api.WAVEFORMATEX), 18)
         self.assertEqual(api.ctypes.sizeof(api.ACTIVATION_PARAMS), 12)
+
+    def test_propvariant_fields_sit_where_windows_puts_them(self):
+        # The union starts at byte 8: a text value's pointer is there, a BLOB's
+        # size is there and its data pointer follows (byte 16 on x64).
+        api = loopback._com()
+        ptr = api.ctypes.sizeof(api.ctypes.c_void_p)
+        union = api.PROPVARIANT.value.offset
+        self.assertEqual(union, 8)
+        self.assertEqual(union + api.PROPVALUE.pwszVal.offset, 8)
+        self.assertEqual(union + api.PROPVALUE.blob.offset + api.BLOB.cbSize.offset, 8)
+        self.assertEqual(union + api.PROPVALUE.blob.offset + api.BLOB.pBlobData.offset,
+                         8 + max(4, ptr))
+
+    def test_a_text_property_is_read_from_the_start_of_the_union(self):
+        # As IPropertyStore::GetValue fills it: VT_LPWSTR, the pointer at byte 8.
+        api = loopback._com()
+        ct = api.ctypes
+        text = ct.create_unicode_buffer("Test   speakers\n(2)")
+        value = api.PROPVARIANT()
+        value.vt = loopback.VT_LPWSTR
+        ct.c_void_p.from_buffer(value, 8).value = ct.addressof(text)
+        self.assertEqual(loopback._propvariant_text(api, value), "Test speakers (2)")
+        value.vt = loopback.VT_BLOB
+        self.assertEqual(loopback._propvariant_text(api, value), "")
 
 
 if __name__ == "__main__":

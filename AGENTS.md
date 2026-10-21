@@ -96,7 +96,8 @@ Recording and confirmations
   confirmation drawn outside the page (`workspace/shell.py`, wording in `workspace/consent.py`).
   No recording starts without a valid consent record unless policy turns that off; changing the
   wording bumps `RECORDING_WORDING_VERSION`. Guard: `tests/test_app.py`, `tests/test_recorder.py`,
-  `tests/test_policy.py`; `tools/workspace_ui_check.py` end to end.
+  `tests/test_policy.py`, `tests/test_two_track.py` (no computer track opens yet);
+  `tools/workspace_ui_check.py` end to end.
 
 Compatibility, installation and policy
 
@@ -109,7 +110,8 @@ Compatibility, installation and policy
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
   a governed area (downloads, GPU, microphone, computer audio, watched folders, network
-  drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard: `tests/test_policy.py`.
+  drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard:
+  `tests/test_policy.py`, `tests/test_two_track.py`.
 
 Evidence
 

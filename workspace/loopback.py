@@ -5,8 +5,11 @@
 # Two sources, as the design names them (owner's decisions 1 and 2, 20 Oct 2026):
 #   - ENDPOINT: everything playing on the Windows default output device
 #     (eConsole). When Windows changes the default output, or the device goes,
-#     capture follows the new default and says so (decision 6); with no output
-#     device at all it records silence until one appears.
+#     capture follows the new default and says so (decision 6). With no output
+#     device at the start, the recording does not start; if the output goes
+#     away mid-recording, it records silence until one appears. A reopen that
+#     fails (a device still settling) is retried, with silence meanwhile, for
+#     up to REOPEN_LIMIT_S before the computer track stops.
 #   - PROCESS: only one process and its child processes (the meeting app),
 #     through ActivateAudioInterfaceAsync with process loopback parameters.
 #     Windows 10 build 20348 or later (Windows 11 on client PCs).
@@ -22,6 +25,9 @@
 # Loopback delivers no data while nothing plays, so silence is not a lost
 # device: the Pacer fills those gaps with silence by the monotonic clock, so the
 # track stays continuous in time and lines up with the microphone afterwards.
+# A gap between blocks longer than GAP_TOL_S, or any gap where Windows flagged
+# lost data, is filled the same way; shorter gaps are within the jitter of
+# estimating a block's start from when it arrived, and the mix's fit absorbs them.
 #
 # Imported only when a recording with computer audio starts, or by the probe
 # (tools/capture_probe.py): never at window start-up. Stdlib (ctypes) and numpy.
@@ -37,7 +43,9 @@ LOOPBACK_CHANNELS = 2            # asked of Windows; mixed to mono at once
 POLL_S = 0.05                    # the reader drains WASAPI this often
 BUFFER_S = 1.0                   # WASAPI's own buffer: the reader may be this late
 IDLE_PAD_S = 0.2                 # no data for this long: silence is filled in
+GAP_TOL_S = 0.03                 # a gap between blocks longer than this is filled in
 DEFAULT_CHECK_S = 1.0            # how often the endpoint reader checks the default output
+REOPEN_LIMIT_S = 30.0            # the default output cannot be reopened this long: track ends
 ACTIVATE_TIMEOUT_S = 5.0         # process loopback activation is asynchronous
 
 ENDPOINT = "endpoint"
@@ -78,8 +86,9 @@ class Pacer:
     estimated from when it arrived (so the stamps carry the device clock's
     drift, which the mix corrects); lead is the silence, in frames, to put
     before the block when it is the first audio after an idle spell (or the
-    start), so the frames keep pace with the clock. While audio flows, no
-    silence is ever added. idle(now) is called on every pass of the reader;
+    start), or when audio was lost between blocks (a gap past GAP_TOL_S, or
+    any gap Windows flagged), so the frames keep pace with the clock. While
+    audio flows, no silence is added. idle(now) is called on every pass of the reader;
     once nothing has arrived for IDLE_PAD_S it returns (frames, stamp) of the
     silence that fills the time since the audio last reached, else None."""
 
@@ -88,10 +97,14 @@ class Pacer:
         self.end = now               # the time the frames delivered so far reach
         self.idle_spell = True       # nothing has arrived yet: the start is a lead
 
-    def data(self, frames, now):
+    def data(self, frames, now, lost=False):
+        """lost: Windows flagged a discontinuity (it dropped data), so any gap
+        is real; otherwise a gap counts only past GAP_TOL_S, the jitter of
+        estimating a block's start from when it arrived."""
         stamp = now - frames / self.rate
         lead = 0
-        if self.idle_spell and stamp > self.end:
+        tolerance = 0.0 if (self.idle_spell or lost) else GAP_TOL_S
+        if stamp - self.end > tolerance:
             lead = int(round((stamp - self.end) * self.rate))
         self.idle_spell = False
         self.end = now
@@ -109,12 +122,13 @@ class Pacer:
         return frames, stamp
 
 
-def deliver(pacer, blocks, now, callback):
+def deliver(pacer, blocks, now, callback, lost=False):
     """One pass of a reader: the blocks that arrived (joined into one), with
-    any lead-in silence first, or the silence that fills an idle spell."""
+    any lead-in silence first, or the silence that fills an idle spell. lost:
+    Windows flagged data it dropped before these blocks."""
     block = (blocks[0] if len(blocks) == 1 else np.concatenate(blocks)) if blocks else None
     if block is not None and len(block):
-        lead, stamp = pacer.data(len(block), now)
+        lead, stamp = pacer.data(len(block), now, lost)
         if lead:
             callback(np.zeros(lead, dtype=np.int16), stamp - lead / pacer.rate)
         callback(block, stamp)
@@ -150,6 +164,7 @@ AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
 AUDCLNT_STREAMFLAGS_EVENTCALLBACK = 0x00040000
 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
+AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY = 0x1
 AUDCLNT_BUFFERFLAGS_SILENT = 0x2
 WAVE_FORMAT_IEEE_FLOAT = 3
 CLSCTX_ALL = 0x17
@@ -207,13 +222,20 @@ def _com():
         class PROPERTYKEY(ctypes.Structure):
             _fields_ = [("fmtid", GUID), ("pid", wintypes.DWORD)]
 
+        class BLOB(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("pBlobData", ctypes.c_void_p)]
+
+        class PROPVALUE(ctypes.Union):
+            # The union starts at byte 8: a VT_LPWSTR's pointer is there, while
+            # a BLOB's data pointer follows its size (byte 16 on x64).
+            _fields_ = [("pwszVal", ctypes.c_void_p), ("blob", BLOB)]
+
         class PROPVARIANT(ctypes.Structure):
-            # vt, three reserved words, then a 16-byte union: as a pointer
-            # (VT_LPWSTR) or a BLOB {ULONG cbSize; BYTE *pBlobData}.
+            # vt, three reserved words, then the union.
+            _anonymous_ = ("value",)
             _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort),
                         ("r2", ctypes.c_ushort), ("r3", ctypes.c_ushort),
-                        ("size", ctypes.c_ulong), ("pad", ctypes.c_ulong),
-                        ("ptr", ctypes.c_void_p)]
+                        ("value", PROPVALUE)]
 
         class WAVEFORMATEX(ctypes.Structure):
             _pack_ = 1
@@ -269,7 +291,7 @@ def _com():
         _api = type("ComApi", (), {})()
         _api.__dict__.update(
             ctypes=ctypes, wintypes=wintypes, GUID=GUID, PROPERTYKEY=PROPERTYKEY,
-            PROPVARIANT=PROPVARIANT, WAVEFORMATEX=WAVEFORMATEX,
+            BLOB=BLOB, PROPVALUE=PROPVALUE, PROPVARIANT=PROPVARIANT, WAVEFORMATEX=WAVEFORMATEX,
             ACTIVATION_PARAMS=ACTIVATION_PARAMS, ole32=ole32, kernel32=kernel32,
             activate_async=activate_async, call=call, release=release,
             CLSID_MMDeviceEnumerator=guid("BCDE0395-E52F-467C-8E3D-C4579291692E"),
@@ -330,13 +352,30 @@ def _friendly_name(api, device):
         hr = api.call(store.value, _PROPS_GET, ct.byref(api.PKEY_FriendlyName),
                       ct.byref(value), argtypes=(ct.c_void_p, ct.c_void_p))
         try:
-            if hr & 0x80000000 or value.vt != VT_LPWSTR or not value.ptr:
-                return ""
-            return " ".join(ct.wstring_at(value.ptr).split())[:120]
+            return "" if hr & 0x80000000 else _propvariant_text(api, value)
         finally:
             api.ole32.PropVariantClear(ct.byref(value))
     finally:
         api.release(store.value)
+
+
+def _propvariant_text(api, value):
+    """A VT_LPWSTR PROPVARIANT's text, whitespace tidied and at most 120
+    characters; "" for any other type or a null pointer."""
+    if value.vt != VT_LPWSTR or not value.pwszVal:
+        return ""
+    return " ".join(api.ctypes.wstring_at(value.pwszVal).split())[:120]
+
+
+def _default_id(api, enumerator):
+    """The default output device's id, or None when there is none."""
+    default = _default_render(api, enumerator)
+    if default is None:
+        return None
+    try:
+        return _device_id(api, default)
+    finally:
+        api.release(default)
 
 
 def _default_render(api, enumerator):
@@ -360,9 +399,7 @@ def list_outputs():
     enumerator = None
     try:
         enumerator = _enumerator(api)
-        default = _default_render(api, enumerator)
-        default_id = _device_id(api, default) if default else None
-        api.release(default)
+        default_id = _default_id(api, enumerator)
         collection = ct.c_void_p()
         _check(api.call(enumerator, _ENUM_ENDPOINTS, E_RENDER, DEVICE_STATE_ACTIVE,
                         ct.byref(collection),
@@ -440,24 +477,27 @@ class _Client:
             raise
 
     def read(self):
-        """Every packet waiting, as [(mono int16 block)]; raises LoopbackError
-        with the HRESULT when the device has gone."""
+        """Every packet waiting, as ([mono int16 block], lost): lost is True
+        when Windows flagged a discontinuity (data dropped because the reader
+        fell behind). Raises LoopbackError with the HRESULT when the device has gone."""
         api, ct = self.api, self.api.ctypes
-        blocks = []
+        blocks, lost = [], False
         size = ct.c_uint32()
         while True:
             hr = api.call(self.capture, _CC_NEXT, ct.byref(size), argtypes=(ct.c_void_p,))
             _check(hr, "Computer audio stopped.")
             if size.value == 0:
-                return blocks
+                return blocks, lost
             data, frames, flags = ct.c_void_p(), ct.c_uint32(), ct.c_uint32()
             hr = api.call(self.capture, _CC_GET, ct.byref(data), ct.byref(frames),
                           ct.byref(flags), None, None,
                           argtypes=(ct.c_void_p,) * 5)
             _check(hr, "Computer audio stopped.")
             if hr == AUDCLNT_S_BUFFER_EMPTY:
-                return blocks
+                return blocks, lost
             try:
+                if flags.value & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY:
+                    lost = True        # the pacer fills the lost time before this pass's audio
                 n = frames.value
                 if flags.value & AUDCLNT_BUFFERFLAGS_SILENT or not data.value:
                     blocks.append(np.zeros(n, dtype=np.int16))
@@ -480,19 +520,21 @@ class _Client:
 
 
 def _endpoint_client(api, enumerator):
-    """(client, name) for the default output, or (None, None) when there is none."""
+    """(client, name, device id) for the default output, or (None, None, None)
+    when there is none. The name and id are read before the stream starts,
+    so an error there leaves nothing running."""
     ct = api.ctypes
     device = _default_render(api, enumerator)
     if device is None:
         return None, None, None
     try:
+        name, ident = _friendly_name(api, device), _device_id(api, device)
         audio_client = ct.c_void_p()
         _check(api.call(device, _DEV_ACTIVATE, ct.byref(api.IID_IAudioClient), CLSCTX_ALL,
                         None, ct.byref(audio_client),
                         argtypes=(ct.c_void_p, api.wintypes.DWORD, ct.c_void_p, ct.c_void_p)),
                "Computer audio could not be opened.")
-        return _Client(api, audio_client.value), _friendly_name(api, device), \
-            _device_id(api, device)
+        return _Client(api, audio_client.value), name, ident
     finally:
         api.release(device)
 
@@ -538,8 +580,8 @@ def _process_client(api, pid, event):
     params = api.ACTIVATION_PARAMS(PROCESS_LOOPBACK_ACTIVATION, pid,
                                    INCLUDE_TARGET_PROCESS_TREE)
     blob = api.PROPVARIANT()
-    blob.vt, blob.size = VT_BLOB, ct.sizeof(params)
-    blob.ptr = ct.addressof(params)
+    blob.vt, blob.blob.cbSize = VT_BLOB, ct.sizeof(params)
+    blob.blob.pBlobData = ct.addressof(params)
     operation = ct.c_void_p()
     _check(_hresult(api.activate_async(VIRTUAL_PROCESS_LOOPBACK,
                                        ct.byref(api.IID_IAudioClient), ct.byref(blob),
@@ -565,7 +607,8 @@ class LoopbackStream:
     """Computer audio from one source. callback(block, stamp) gets each
     16-bit mono block at LOOPBACK_RATE with the monotonic time of its first
     frame; notify(kind, name) is told "switched" (now following a new default
-    output, name given), "no_output" (no output device: silence until one
+    output, name given), "reopened" (the same output again after it was
+    interrupted, name given), "no_output" (no output device: silence until one
     appears) and "failed" (capture stopped; nothing more arrives). Both are
     called on the reader thread. start() returns once capture is running, or
     raises LoopbackError; stop() and close() may be called more than once."""
@@ -632,8 +675,8 @@ class LoopbackStream:
         except Exception:
             pass
 
-    def _deliver(self, pacer, blocks):
-        deliver(pacer, blocks, self._tick(), self._callback)
+    def _deliver(self, pacer, blocks, lost=False):
+        deliver(pacer, blocks, self._tick(), self._callback, lost)
 
     def _run_process(self, api):
         event = api.kernel32.CreateEventW(None, False, False, None)
@@ -643,9 +686,18 @@ class LoopbackStream:
             pacer = Pacer(LOOPBACK_RATE, self._tick())
             self._opened.set()
             wait_ms = int(POLL_S * 1000)
+            # Windows signals every packet (about 10 ms); the blocks are handed
+            # on once per POLL_S, as the endpoint reader does, so the recorder's
+            # queue holds the same length of audio whichever the source.
+            pending, lost, due = [], False, self._tick() + POLL_S
             while not self._stop.is_set():
                 api.kernel32.WaitForSingleObject(event, wait_ms)
-                self._deliver(pacer, client.read())
+                blocks, dropped = client.read()
+                pending.extend(blocks)
+                lost = lost or dropped
+                if self._tick() >= due:
+                    self._deliver(pacer, pending, lost)
+                    pending, lost, due = [], False, self._tick() + POLL_S
         finally:
             if client is not None:
                 client.close()
@@ -661,37 +713,51 @@ class LoopbackStream:
             pacer = Pacer(LOOPBACK_RATE, self._tick())
             self._opened.set()
             checked = self._tick()
+            failing = None            # when reopening the output began to fail
             while not self._stop.wait(POLL_S):
-                blocks, lost = [], False
+                blocks, dropped, gone = [], False, False
                 if client is not None:
                     try:
-                        blocks = client.read()
+                        blocks, dropped = client.read()
                     except LoopbackError:
-                        lost = True        # the device went (or Windows audio restarted)
-                self._deliver(pacer, blocks)
+                        gone = True        # the device went (or Windows audio restarted)
+                self._deliver(pacer, blocks, dropped)
                 now = self._tick()
-                if not lost and now - checked < DEFAULT_CHECK_S:
+                if not gone and now - checked < DEFAULT_CHECK_S:
                     continue
                 checked = now
-                # Follow the Windows default output (decision 6): reopen when it
-                # changed or the device went; with none, silence until one appears.
-                default = _default_render(api, enumerator)
-                new_id = _device_id(api, default) if default else None
-                api.release(default)
-                if new_id == current and not lost:
-                    continue
-                if client is not None:
+                if gone:
                     client.close()
                     client = None
+                # Follow the Windows default output (decision 6): reopen when it
+                # changed, the device went or an earlier reopen failed; with
+                # none, silence until one appears. A reopen that fails (a device
+                # still settling) is retried here with silence meanwhile, and
+                # ends the track only after REOPEN_LIMIT_S.
+                try:
+                    new_id = _default_id(api, enumerator)
+                    if client is not None and new_id == current:
+                        continue
+                    if client is not None:
+                        client.close()
+                        client = None
+                    if new_id is not None:
+                        client, name, opened = _endpoint_client(api, enumerator)
+                        new_id = opened if client is not None else None
+                except LoopbackError:
+                    failing = now if failing is None else failing
+                    if now - failing >= REOPEN_LIMIT_S:
+                        raise
+                    continue
+                failing = None
                 if new_id is None:
                     if current is not None:
                         self._say("no_output", None)
                     current = None
                     continue
-                client, name, current = _endpoint_client(api, enumerator)
-                if client is not None:
-                    self.device_name = name
-                    self._say("switched", name)
+                self.device_name = name
+                self._say("reopened" if new_id == current else "switched", name)
+                current = new_id
         finally:
             if client is not None:
                 client.close()

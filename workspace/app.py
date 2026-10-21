@@ -795,7 +795,8 @@ class Workspace:
             return None
         from workspace import loopback       # only when a recording needs it
         return {"open": self.open_loopback or loopback.open_loopback,
-                "source": {"kind": loopback.ENDPOINT}, "rate": loopback.LOOPBACK_RATE}
+                "source": {"kind": loopback.ENDPOINT}, "rate": loopback.LOOPBACK_RATE,
+                "block_s": loopback.POLL_S}
 
     def microphone_devices(self):
         self._need_microphone()

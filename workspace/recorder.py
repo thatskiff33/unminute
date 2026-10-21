@@ -266,7 +266,8 @@ class Recording:
                  clock=time.time, tick=time.monotonic, computer=None):
         """computer: None (the microphone only), or a dict for a second
         track: {"open": open_loopback(source, callback, notify), "source":
-        the loopback source, "rate": its rate}."""
+        the loopback source, "rate": its rate, "block_s": how often it
+        delivers a block (sizes its queue to QUEUE_S, as the microphone's)}."""
         self.folder = Path(folder)
         self.rate = int(rate)
         self._clock = clock               # wall clock: journal times only
@@ -301,7 +302,8 @@ class Recording:
         self._mic = _TrackTiming(self.rate)
         self._computer = None
         if computer is not None:
-            self._computer = _ComputerTrack(computer, max(1, int(QUEUE_S / BLOCK_S)))
+            block_s = float(computer.get("block_s", BLOCK_S))
+            self._computer = _ComputerTrack(computer, max(1, int(QUEUE_S / block_s)))
             self.journal.update(format=2, marks=[], tracks={COMPUTER: {
                 "source": dict(computer["source"]), "rate": self._computer.rate,
                 "chunks": [], "frames": 0, "marks": [], "state": "recording",
@@ -383,6 +385,11 @@ class Recording:
                 self.journal["tracks"][COMPUTER]["device_name"] = name
             self._event("computer_switched", note="Computer audio now records the new "
                                                   "Windows default output.")
+        elif kind == "reopened":
+            with self._lock:
+                self.journal["tracks"][COMPUTER]["device_name"] = name
+            self._event("computer_reopened", note="Computer audio was interrupted and "
+                                                  "carries on from the same output.")
         elif kind == "no_output":
             self._event("computer_no_output", note="Computer audio has no output device to "
                                                    "record. Silence is recorded until one is "
@@ -535,10 +542,22 @@ class Recording:
             # Disk full or unwritable: keep every chunk already saved, stop
             # capture, and say how much could not be saved.
             lost = self._buffered / self.rate + self._queue.qsize() * BLOCK_S
+            track = self._computer
+            if track is not None:
+                # Both tracks cover the same time: the longer unsaved stretch is lost.
+                with track.queue.mutex:          # the reader thread may still be adding
+                    queued = sum(len(b) for b, _, _ in track.queue.queue)
+                lost = max(lost, (track.buffered + queued) / track.rate)
             self._event("disk_full" if getattr(exc, "errno", None) == 28 else "write_failed",
                         seconds=lost, note="The recording could not be saved any further: "
-                                           "the disk is full or not writable.")
+                                           "the disk is full or not writable."
+                                           + (" Both tracks stopped." if track is not None
+                                              else ""))
             self.journal["state"] = "failed"
+            if track is not None:
+                with self._lock:
+                    track.on = False
+                    self.journal["tracks"][COMPUTER]["state"] = "failed"
             self._stopping.set()
             self._stop.set()
             self._close_stream()
