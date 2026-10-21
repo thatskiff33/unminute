@@ -25,7 +25,8 @@ import re
 
 from workspace import vault
 
-# Phase C (#111) ships as one release. C4b sets this True when C3 and C4 have merged.
+# Phase C (#111) ships as one release. C7 sets this True when every Phase C slice
+# has merged (the owner's decision, 21 Oct 2026; it was C4b).
 PHASE_C_COMPLETE = False
 # VERSION when C2b-2 merged; no release can be prepared until PHASE_C_COMPLETE.
 PHASE_C_FROZEN_VERSION = "0.5.0-preview.3"

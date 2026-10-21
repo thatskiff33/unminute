@@ -3,7 +3,7 @@
 This lists what a workspace release needs, what has been verified, and what still needs people or hardware.
 
 - **Publishing** is a separate step. It needs explicit authorisation and follows [RELEASING.md](RELEASING.md).
-- **Phase C (#111) is not releasable until C4b** sets `PHASE_C_COMPLETE` in `workspace/keystore.py` (schema 2 merged in C2b-2; "Before cutting a release", step 4, in [RELEASING.md](RELEASING.md)).
+- **Phase C (#111) is not releasable until C7** sets `PHASE_C_COMPLETE` in `workspace/keystore.py` (schema 2 merged in C2b-2; "Before cutting a release", step 4, in [RELEASING.md](RELEASING.md)).
 
 ## Every change (automated, in CI)
 

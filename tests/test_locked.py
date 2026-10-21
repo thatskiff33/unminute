@@ -292,6 +292,37 @@ class LockedStartTests(unittest.TestCase):
         with self.assertRaises(KeyUnavailable):                  # the default still raises
             self.workspace()
 
+    def test_an_older_locked_database_still_gives_copy_diagnostics(self):
+        # Rows with no version from an older build whose tables differ from
+        # this version's: the counts cannot be read, so Copy diagnostics says
+        # "Workspace: ?" instead of failing, and nothing is built or rebuilt.
+        self.fill()
+        self.raw("DELETE FROM schema_version")
+        self.raw("DROP TABLE cleanup_jobs")
+        before = database_state(self.db)
+        ws = self.workspace(on_unavailable="lock")
+        self.assert_locked(ws, "missing")
+        text = ws.diagnostics()
+        self.close(ws)
+        self.assertIn(f"Key: locked (missing, code {ws._lock_code})", text)
+        self.assertIn("Workspace: ?", text)
+        self.assertNotIn("Active holds:", text)
+        self.assertNotIn(MARKER, text)
+        self.assertEqual(before, database_state(self.db))      # no table made again
+
+    def test_an_out_of_range_windows_error_is_shown_nowhere(self):
+        # The Windows error number is checked the same way for the page,
+        # Copy diagnostics and keys.json: anything but a 32-bit value is left out.
+        self.fill()
+        ws = self.locked(code=2**40)
+        info = ws.status()["locked"]
+        text = ws.diagnostics()
+        self.close(ws)
+        self.assertEqual(("windows", None), (info["reason"], info["win_error"]))
+        self.assertIn(f"Key: locked (windows, code {info['code']})", text)
+        self.assertNotIn(str(2**40), text)
+        self.assertIsNone(diag.keys_state(self.root / "logs")["winerror"])
+
     # -- work is held ----------------------------------------------------------------
 
     def test_work_waits_and_requests_are_refused(self):
@@ -414,7 +445,8 @@ class LockedStartTests(unittest.TestCase):
         self.assertIn(f"Key: locked (windows, Windows error {BAD_KEY_STATE} = 0x8009000B, "
                       f"code {code})", text)
         self.assertIn("Active holds: 1", text)
-        self.assertIn("Cleanup confirmed and not finished: 2", text)
+        # One meeting discarded: two jobs (audio, transcript), one meeting.
+        self.assertIn("Cleanup confirmed and not finished: 1", text)
         self.assertNotIn(MARKER, text)
         self.assertNotIn(str(self.root), text)
         # Neither command touches Windows Data Protection, a key or the store.

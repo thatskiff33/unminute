@@ -171,7 +171,7 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md).
 
 ## If Unminute cannot unlock its workspace
 
-Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute opens locked: it does not read your meetings, change anything in the workspace, make a new key over it or show anything unencrypted, and processing, imports, recording and cleanup wait. Your meetings are kept as they were. Close Unminute, sign out of Windows and back in, then open Unminute again: if Windows can unlock the key by then, everything carries on, including any cleanup you had confirmed.
+Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute opens locked: it does not read your meetings, change your meetings or settings (it only records the problem in its logs), make a new key over it or show anything unencrypted, and processing, imports, recording and cleanup wait. Your meetings are kept as they were. Close Unminute, sign out of Windows and back in, then open Unminute again: if Windows can unlock the key by then, everything carries on, including any cleanup you had confirmed.
 
 Windows can refuse when the workspace was made by another Windows account or on another computer, after an administrator reset your password without the old one, or when your Windows profile is damaged. Settings, the model downloads and the Hugging Face token are not affected.
 

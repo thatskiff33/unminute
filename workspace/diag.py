@@ -696,9 +696,10 @@ def _write_state(folder, name, state):
         pass
 
 
-def _windows_error(value):
-    """A Windows error number as the app records it (dpapi.DpapiError.code: a
-    32-bit value, signed or not), or None."""
+def windows_error(value):
+    """A Windows error number as the app records and shows it
+    (dpapi.DpapiError.code: a 32-bit value, signed or not), or None. Used
+    for keys.json, Copy diagnostics and status() alike (#111 C4a)."""
     if isinstance(value, int) and not isinstance(value, bool) and -2**31 <= value < 2**32:
         return value
     return None
@@ -710,9 +711,10 @@ def keys_state(folder):
     KEY_REASONS or None, "winerror": the Windows error number or None,
     "code": "U-..." or None, "t": time or None}, or None if none was
     recorded (or the file cannot be read). Each value is checked: anything
-    else reads as None. Read by --status, --health and Copy diagnostics,
-    which never unlock the key themselves (Intune may run --health as
-    SYSTEM, where this user's key cannot be unlocked)."""
+    else reads as None. Read by --status and --health, which never unlock
+    the key themselves (Intune may run --health as SYSTEM, where this
+    user's key cannot be unlocked). Copy diagnostics uses the running
+    app's own state instead."""
     try:
         with open(Path(folder) / KEYS_FILE, "rb") as f:
             raw = json.loads(f.read(500).decode("ascii"))
@@ -725,15 +727,15 @@ def keys_state(folder):
     return {"result": raw["result"],
             "reason": raw.get("reason") if locked and raw.get("reason") in KEY_REASONS
             else None,
-            "winerror": _windows_error(raw.get("winerror")) if locked else None,
+            "winerror": windows_error(raw.get("winerror")) if locked else None,
             "code": code if locked and FIELDS["code"](code) == code else None,
             "t": t if isinstance(t, str) and re.fullmatch(
                 r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else None}
 
 
 def record_keys(folder, result, reason=None, winerror=None, code=None):
-    """Keep the key's state at this start for --status, --health and Copy
-    diagnostics (#111 C4a): "ok", or "locked" with the reason, the Windows
+    """Keep the key's state at this start for --status and --health
+    (#111 C4a): "ok", or "locked" with the reason, the Windows
     error number and the incident code. Fixed words and numbers only (P3).
     An "ok" already recorded is not written again. Never raises."""
     if result == "ok":
@@ -744,7 +746,7 @@ def record_keys(folder, result, reason=None, winerror=None, code=None):
         return
     _write_state(folder, KEYS_FILE, {
         "result": "locked", "reason": reason if reason in KEY_REASONS else None,
-        "winerror": _windows_error(winerror),
+        "winerror": windows_error(winerror),
         "code": code if FIELDS["code"](code) == code else None})
 
 

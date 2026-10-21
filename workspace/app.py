@@ -111,8 +111,8 @@ def _key_line(locked, code):
     if locked is None:
         return "Key: ok"
     parts = [locked.reason if locked.reason in diag.KEY_REASONS else "?"]
-    win = locked.code
-    if isinstance(win, int) and not isinstance(win, bool) and -2**31 <= win < 2**32:
+    win = diag.windows_error(locked.code)
+    if win is not None:
         parts.append(f"Windows error {win} = 0x{win & 0xFFFFFFFF:08X}")
     if code:
         parts.append(f"code {code}")
@@ -417,10 +417,11 @@ class Workspace:
             self.start()
 
     def _record_keys(self):
-        """The key's state at this start, for --status, --health and Copy
-        diagnostics (logs\\keys.json; they never unlock the key themselves),
-        and a locked start in the log with an incident code. Reason, Windows
-        error number and code only (P3)."""
+        """The key's state at this start, for --status and --health
+        (logs\\keys.json; they never unlock the key themselves), and a locked
+        start in the log with an incident code. Copy diagnostics uses this
+        run's own state (_key_line). Reason, Windows error number and code
+        only (P3)."""
         if self.locked is None:
             diag.record_keys(self.log.folder, "ok")
             return
@@ -2252,7 +2253,9 @@ class Workspace:
                 "(SELECT COUNT(*) FROM holds WHERE released_at IS NULL) AS holds, "
                 "(SELECT COUNT(*) FROM cleanup_jobs) AS cleanup, "
                 "(SELECT COUNT(*) FROM watched_folders) AS folders, "
-                "(SELECT COUNT(*) FROM cleanup_jobs WHERE state != 'done') AS unfinished")
+                # Meetings, not jobs: a confirmation adds one job per phase.
+                "(SELECT COUNT(DISTINCT meeting_id) FROM cleanup_jobs "
+                "WHERE state != 'done') AS unfinished")
         except StoreError:                    # a locked database that is not this version's
             counts = None
         if counts is None:
@@ -2352,8 +2355,9 @@ class Workspace:
         if self.locked is None:
             return None
         damage = self._integrity_notice()
-        return {"reason": self.locked.reason, "code": self._lock_code,
-                "win_error": self.locked.code, "damage": damage["code"] if damage else None}
+        return {"reason": self.locked.reason if self.locked.reason in diag.KEY_REASONS else None,
+                "code": self._lock_code, "win_error": diag.windows_error(self.locked.code),
+                "damage": damage["code"] if damage else None}
 
     def _changes(self):
         """A number that differs whenever the Meetings list or the reminders

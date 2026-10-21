@@ -104,7 +104,7 @@ class VersionTests(unittest.TestCase):
                          "sets both when a release is prepared")
 
     def test_no_release_is_prepared_until_phase_c_is_complete(self):
-        # #111 C2b-2: Phase C ships as one release. Until C4b sets
+        # #111 C2b-2: Phase C ships as one release. Until C7 sets
         # PHASE_C_COMPLETE, VERSION stays what it was when C2b-2 merged, so a
         # release-prep written by hand (not by tools/changelog.py, which
         # refuses) fails here.
