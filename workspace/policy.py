@@ -37,6 +37,10 @@ SPEC = {
     "AllowGpuComponent": ("bool", True, True),
     # Microphone recording (the user may still turn it off).
     "AllowMicrophoneRecording": ("bool", True, True),
+    # Computer audio as a second track beside the microphone (#108). Allowed
+    # when not set (the owner's decision 4, 20 Oct 2026); each user's switch
+    # is still off by default, and it never applies without the microphone.
+    "AllowComputerAudioRecording": ("bool", True, True),
     # Setting the Windows lid action to "Do nothing" while recording, if the
     # user turns it on (#172). Off by policy: never changed, and put back.
     "AllowLidOverride": ("bool", True, True),

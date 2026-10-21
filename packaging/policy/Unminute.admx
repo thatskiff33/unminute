@@ -47,6 +47,15 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="AllowComputerAudioRecording" class="Machine"
+            displayName="$(string.AllowComputerAudioRecording)"
+            explainText="$(string.AllowComputerAudioRecording_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowComputerAudioRecording">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
     <policy name="AllowLidOverride" class="Machine"
             displayName="$(string.AllowLidOverride)"
             explainText="$(string.AllowLidOverride_Help)" key="SOFTWARE\Policies\Unminute"

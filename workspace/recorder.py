@@ -17,6 +17,18 @@
 #     folder is removed. If the app closed while recording, the next start
 #     recovers what was saved and reports the interval that may be missing.
 #
+# Computer audio (#108, groundwork; off unless the app asks for it): a second
+# track, captured by workspace/loopback.py, with its own queue and its own
+# chunk files (sys-NNNNNN.pcm) saved by the same writer thread. The journal
+# then has "format": 2, a "tracks" entry for it, and timing marks for both
+# tracks; a microphone-only journal is unchanged (format 1, no format field).
+# Silence on the computer track is normal (nothing playing), so the lost-device
+# rule is the microphone's alone. Unlike the microphone, the computer track
+# follows the Windows default output when it changes, with an event (the
+# owner's decision 6); a computer track that fails stops on its own and the
+# microphone carries on. On stop the two tracks become ONE mix
+# (workspace/mixdown.py), which is transcribed once (decision 10).
+#
 # No audio leaves the computer; the recording folder lives inside the workspace.
 
 import collections
@@ -52,6 +64,12 @@ SLEEP_S = 15.0
 HEARTBEAT_S = 1.0            # how often the "still recording" time is noted
 LID_NOTE_S = 5.0             # a lid closed this long while recording is noted on opening
 MAX_HOURS = 8                # a forgotten recording stops itself
+# Journal formats this version reads: 1 (no "format" field: the microphone
+# only) and 2 (with a computer track). A newer one is kept, never half-imported.
+JOURNAL_FORMAT = 2
+MARK_EVERY_S = 30            # a timing mark at least this often, per track
+COMPUTER = "computer"
+COMPUTER_PREFIX = "sys-"     # the computer track's chunk files
 
 
 class RecorderError(ValueError):
@@ -245,7 +263,11 @@ class Recording:
     a fake in tests."""
 
     def __init__(self, folder, device, device_name, rate, open_stream=_sounddevice_stream,
-                 clock=time.time, tick=time.monotonic):
+                 clock=time.time, tick=time.monotonic, computer=None):
+        """computer: None (the microphone only), or a dict for a second
+        track: {"open": open_loopback(source, callback, notify), "source":
+        the loopback source, "rate": its rate, "block_s": how often it
+        delivers a block (sizes its queue to QUEUE_S, as the microphone's)}."""
         self.folder = Path(folder)
         self.rate = int(rate)
         self._clock = clock               # wall clock: journal times only
@@ -277,6 +299,15 @@ class Recording:
             "id": self.folder.name, "device": device, "device_name": device_name,
             "rate": self.rate, "started_at": clock(), "state": "recording",
             "chunks": [], "frames": 0, "events": [], "last_seen": clock()}
+        self._mic = _TrackTiming(self.rate)
+        self._computer = None
+        if computer is not None:
+            block_s = float(computer.get("block_s", BLOCK_S))
+            self._computer = _ComputerTrack(computer, max(1, int(QUEUE_S / block_s)))
+            self.journal.update(format=2, marks=[], tracks={COMPUTER: {
+                "source": dict(computer["source"]), "rate": self._computer.rate,
+                "chunks": [], "frames": 0, "marks": [], "state": "recording",
+                "device_name": None}})
 
     # -- capture (PortAudio callback thread: no disk work, no blocking) --------------
 
@@ -312,8 +343,12 @@ class Recording:
         # every block; replaced whole, so a reader sees one block.
         self._display_block = (self._level_seq, block)
         try:
-            self._queue.put_nowait(block)
+            # With its timing (the block's first frame, by when it arrived),
+            # used only to line up a computer track.
+            self._queue.put_nowait((block, now - len(block) / self.rate,
+                                    self._mic.take_segment()))
         except queue.Full:
+            self._mic.new_segment()       # a gap in the saved track: time jumps here
             self._event("dropped", seconds=len(block) / self.rate,
                         note="Saving fell behind; this audio was lost.")
 
@@ -321,6 +356,71 @@ class Recording:
         # PortAudio also calls this when we stop the stream ourselves.
         if not self._stopping.is_set() and not self._stop.is_set():
             self._device_lost()
+
+    # -- the computer track (its reader thread) -------------------------------------
+
+    def _computer_callback(self, block, stamp):
+        """A block of computer audio (16-bit mono) and the monotonic time of
+        its first frame. Never decides that a device is lost: silence is normal."""
+        track = self._computer
+        if (track is None or not track.on or self._stop.is_set() or self.paused
+                or self._frozen(self._tick())):
+            return
+        block = np.asarray(block, dtype=np.int16).reshape(-1)
+        track.level_db = _level_db(block)
+        try:
+            track.queue.put_nowait((block, stamp, track.timing.take_segment()))
+        except queue.Full:
+            track.timing.new_segment()
+            self._event("computer_dropped", seconds=len(block) / track.rate,
+                        note="Saving fell behind; this computer audio was lost.")
+
+    def _computer_notify(self, kind, name):
+        """The computer track's device changed (decision 6), or it failed."""
+        track = self._computer
+        if track is None or not track.on or self._stop.is_set():
+            return
+        if kind == "switched":
+            with self._lock:
+                self.journal["tracks"][COMPUTER]["device_name"] = name
+            self._event("computer_switched", note="Computer audio now records the new "
+                                                  "Windows default output.")
+        elif kind == "reopened":
+            with self._lock:
+                self.journal["tracks"][COMPUTER]["device_name"] = name
+            self._event("computer_reopened", note="Computer audio was interrupted and "
+                                                  "carries on from the same output.")
+        elif kind == "no_output":
+            self._event("computer_no_output", note="Computer audio has no output device to "
+                                                   "record. Silence is recorded until one is "
+                                                   "available.")
+        elif kind == "failed":
+            self._end_computer("failed", "computer_failed",
+                               "Computer audio stopped working. The microphone carries on.",
+                               close=False)
+
+    def _end_computer(self, state, kind, note, close=True):
+        """Stop the computer track only; the microphone carries on."""
+        track = self._computer
+        with self._lock:
+            if track is None or not track.on:
+                return False
+            track.on = False
+            track.level_db = -96.0
+            self.journal["tracks"][COMPUTER]["state"] = state
+        self._event(kind, note=note)
+        if close:
+            track.close()
+        return True
+
+    def stop_computer(self, note):
+        """Policy turned computer audio off mid-recording: that track stops,
+        with an event; the microphone carries on. False if it was not on."""
+        return self._end_computer("policy_stop", "computer_policy_stop", note)
+
+    @property
+    def computer_on(self):
+        return self._computer is not None and self._computer.on
 
     # -- journal ---------------------------------------------------------------------
 
@@ -356,7 +456,42 @@ class Recording:
             self.journal["chunks"].append({"file": name, "frames": self._buffered})
             self.journal["frames"] += self._buffered
             self._buffer, self._buffered = [], 0
+            marks = self._mic.take_marks()
+            if self._computer is not None:      # only a two-track journal keeps them
+                self.journal["marks"].extend(marks)
         self._save_journal()
+
+    def _flush_computer(self):
+        track = self._computer
+        if track is None or not track.buffered:
+            return
+        entry = self.journal["tracks"][COMPUTER]
+        pcm = np.concatenate(track.buffer).astype("<i2").tobytes()
+        name = f"{COMPUTER_PREFIX}{len(entry['chunks']):06d}.pcm"
+        _retrying(lambda: _write_atomic(self.folder / name, pcm))
+        with self._lock:
+            entry["chunks"].append({"file": name, "frames": track.buffered})
+            entry["frames"] += track.buffered
+            track.buffer, track.buffered = [], 0
+            entry["marks"].extend(track.timing.take_marks())
+        self._save_journal()
+
+    def _take_computer(self):
+        """Move what the computer track queued into its buffer (writer thread)."""
+        track = self._computer
+        if track is None:
+            return
+        entry = self.journal["tracks"][COMPUTER]
+        while True:
+            try:
+                block, stamp, segment = track.queue.get_nowait()
+            except queue.Empty:
+                break
+            track.timing.note(entry["frames"] + track.buffered, stamp, segment)
+            track.buffer.append(block)
+            track.buffered += len(block)
+            if track.buffered >= CHUNK_S * track.rate:
+                self._flush_computer()
 
     def _write_loop(self):
         last_beat = float("-inf")       # monotonic, like every interval here
@@ -368,12 +503,15 @@ class Recording:
                 except queue.Empty:
                     block = None
                 if block is not None:
+                    block, stamp, segment = block
+                    self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
                     self._buffer.append(block)
                     self._buffered += len(block)
                 elif self._stop.is_set():
                     break
                 if self._buffered >= CHUNK_S * self.rate:
                     self._flush_chunk()
+                self._take_computer()
                 # Intervals on the monotonic clock, so setting the time back
                 # cannot pause these checks; the wall clock is written only as
                 # the "last seen" time that recovery after a crash compares.
@@ -398,14 +536,28 @@ class Recording:
                         self._stop.set()
             self._close_after_sleep()
             self._flush_chunk()
+            self._take_computer()
+            self._flush_computer()
         except OSError as exc:
             # Disk full or unwritable: keep every chunk already saved, stop
             # capture, and say how much could not be saved.
             lost = self._buffered / self.rate + self._queue.qsize() * BLOCK_S
+            track = self._computer
+            if track is not None:
+                # Both tracks cover the same time: the longer unsaved stretch is lost.
+                with track.queue.mutex:          # the reader thread may still be adding
+                    queued = sum(len(b) for b, _, _ in track.queue.queue)
+                lost = max(lost, (track.buffered + queued) / track.rate)
             self._event("disk_full" if getattr(exc, "errno", None) == 28 else "write_failed",
                         seconds=lost, note="The recording could not be saved any further: "
-                                           "the disk is full or not writable.")
+                                           "the disk is full or not writable."
+                                           + (" Both tracks stopped." if track is not None
+                                              else ""))
             self.journal["state"] = "failed"
+            if track is not None:
+                with self._lock:
+                    track.on = False
+                    self.journal["tracks"][COMPUTER]["state"] = "failed"
             self._stopping.set()
             self._stop.set()
             self._close_stream()
@@ -495,6 +647,8 @@ class Recording:
         self._stop.set()
 
     def _close_stream(self):
+        if self._computer is not None:
+            self._computer.close()
         s, self._stream = self._stream, None
         if s is not None:
             try:
@@ -523,6 +677,19 @@ class Recording:
             raise RecorderError("The microphone could not be started. Check that it is "
                                 "connected and that Windows allows apps to use it "
                                 "(Settings > Privacy > Microphone).") from exc
+        if self._computer is not None:
+            # Both tracks were asked for: if computer audio cannot start, the
+            # recording does not start (never silently the microphone only).
+            try:
+                self._computer.open(self._computer_callback, self._computer_notify)
+                self.journal["tracks"][COMPUTER]["device_name"] = self._computer.device_name
+                self._save_journal()
+            except Exception as exc:
+                self._close_stream()
+                shutil.rmtree(self.folder, ignore_errors=True)
+                raise RecorderError("Computer audio could not be started, so the recording "
+                                    "did not start. Turn computer audio off to record the "
+                                    "microphone only.") from exc
         self._last_audio = self._alive = self._started_tick = self._tick()
         self._writer = threading.Thread(target=self._write_loop, name="recorder-writer",
                                         daemon=True)
@@ -555,6 +722,9 @@ class Recording:
     def resume(self):
         if self.paused:
             self._last_audio = self._tick()
+            self._mic.new_segment()       # the tracks are lined up again from here
+            if self._computer is not None:
+                self._computer.timing.new_segment()
             self.paused = False
             self._event("resumed")
 
@@ -572,6 +742,12 @@ class Recording:
         self._display_block = self._viz_cache = None    # nothing of the sound is kept
         if self.journal["state"] == "recording":
             self.journal["state"] = "stopped"
+        if self._computer is not None:
+            with self._lock:
+                self._computer.on = False
+                entry = self.journal["tracks"][COMPUTER]
+                if entry["state"] == "recording":
+                    entry["state"] = "stopped"
         try:
             self._save_journal()
         except OSError:
@@ -596,6 +772,10 @@ class Recording:
                 "levels": [list(x) for x in list(self._levels)],
                 "viz": self._display(),
                 "device": self.journal["device_name"],
+                "computer": None if self._computer is None else {
+                    "on": self._computer.on,
+                    "level_db": round(self._computer.level_db, 1)
+                    if self._computer.on and not self.paused else -96.0},
                 "events": events}
 
     def _display(self):
@@ -613,6 +793,77 @@ class Recording:
             viz = None
         self._viz_cache = (latest[0], viz)
         return viz
+
+
+class _TrackTiming:
+    """Timing marks for one track, to line the tracks up afterwards: [frame,
+    stamp, segment] at a track's first block, at least every MARK_EVERY_S,
+    and at the first block after each resume (segment 1: the time jumps
+    there). frame is the block's first frame in the saved track; stamp the
+    monotonic time of that frame. Marks wait here until the chunk holding
+    their frames is saved, so the journal never names unsaved frames."""
+
+    def __init__(self, rate):
+        self.rate = int(rate)
+        self._segment = True          # the next block starts a segment
+        self._last = None             # frame of the latest mark
+        self._marks = []
+
+    def new_segment(self):
+        self._segment = True
+
+    def take_segment(self):
+        """For the capture thread: does the block being queued start a segment?"""
+        seg, self._segment = self._segment, False
+        return seg
+
+    def note(self, frame, stamp, segment):
+        """For the writer thread, as each block is buffered."""
+        if segment or self._last is None or frame - self._last >= MARK_EVERY_S * self.rate:
+            self._marks.append([int(frame), round(float(stamp), 4), 1 if segment else 0])
+            self._last = frame
+
+    def take_marks(self):
+        marks, self._marks = self._marks, []
+        return marks
+
+
+class _ComputerTrack:
+    """The second track's capture stream, queue and unsaved buffer."""
+
+    def __init__(self, spec, queue_blocks):
+        self._open = spec["open"]
+        self.source = spec["source"]
+        self.rate = int(spec["rate"])
+        self.queue = queue.Queue(maxsize=queue_blocks)
+        self.buffer, self.buffered = [], 0
+        self.timing = _TrackTiming(self.rate)
+        self.level_db = -96.0
+        self.on = False
+        self.stream = None
+        self.device_name = None
+        self._close_lock = threading.Lock()
+
+    def open(self, callback, notify):
+        self.on = True
+        try:
+            self.stream = self._open(self.source, callback, notify)
+            self.stream.start()
+        except Exception:
+            self.on = False
+            self.close()
+            raise
+        self.device_name = getattr(self.stream, "device_name", None)
+
+    def close(self):
+        with self._close_lock:
+            s, self.stream = self.stream, None
+        if s is not None:
+            for step in (s.stop, s.close):
+                try:
+                    step()
+                except Exception:
+                    pass
 
 
 # -- after recording: assemble, recover ---------------------------------------------
@@ -637,11 +888,36 @@ def read_journal(folder):
     return None
 
 
-def assemble_wav(folder, journal):
+def journal_format(journal):
+    """1 for a journal with no format field (the microphone only); 0 for a
+    format field that is not a whole number (never imported)."""
+    value = journal.get("format", 1)
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def track_files(folder, chunks, prefix):
+    """[(file name, frames)] for a track: the chunks the journal lists, then
+    chunk files renamed into place (so fully written) but not yet listed.
+    Temporary files are not included."""
+    folder = Path(folder)
+    listed = [(c["file"], int(c["frames"])) for c in chunks]
+    names = {name for name, _ in listed}
+    extra = sorted(p.name for p in folder.glob(f"{prefix}*.pcm") if p.name not in names)
+    return listed + [(name, (folder / name).stat().st_size // 2) for name in extra]
+
+
+def assemble_wav(folder, journal, notes=None):
     """Join the saved chunks into recording.wav. Chunk files that were renamed
     into place (so fully written) but not yet listed in the journal are
-    included; temporary files are not. Returns (path, seconds)."""
+    included; temporary files are not. Returns (path, seconds). With a
+    computer track (format 2), recording.wav is the ONE mix of both tracks
+    that is transcribed (workspace/mixdown.py); events about the mix are
+    appended to notes."""
     folder = Path(folder)
+    if journal_format(journal) == 2 and COMPUTER in (journal.get("tracks") or {}):
+        from workspace import mixdown
+        return mixdown.write_mix(folder, journal, folder / "recording.wav",
+                                 notes if notes is not None else [])
     listed = [c["file"] for c in journal.get("chunks", [])]
     extra = sorted(p.name for p in folder.glob("chunk-*.pcm") if p.name not in listed)
     out = folder / "recording.wav"

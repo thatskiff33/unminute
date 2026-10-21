@@ -26,6 +26,11 @@ Disabled: neither component can be downloaded or used; speaker identification an
 
 Disabled: microphone recording is off and cannot be turned on, and a recording in progress is stopped and saved when the app next reads the policy (within 15 minutes). Recordings can still be imported.</string>
 
+      <string id="AllowComputerAudioRecording">Allow recording computer audio</string>
+      <string id="AllowComputerAudioRecording_Help">Enabled or not configured: users may record the sound playing on the computer (for example the other side of a Teams or Zoom call) as a second track beside the microphone. Each user's switch is off until they turn it on, and it never applies when microphone recording is off. Computer audio is captured with Windows loopback, with no driver, virtual cable or Stereo Mix, and stays on the computer. (This version has the policy and the recording support; the switch itself comes in a later version.)
+
+Disabled: computer audio cannot be recorded or turned on, and a recording in progress carries on with the microphone only from when the app next reads the policy (within 15 minutes).</string>
+
       <string id="AllowLidOverride">Allow keeping a recording going with the lid closed</string>
       <string id="AllowLidOverride_Help">Enabled or not configured: users can turn on "Keep recording when the lid is closed" in Settings. While a recording is open, Unminute then sets the active power plan's lid action to "Do nothing" (plugged in and on battery) and puts the original values back when the recording ends, or at the next start after a crash. It never changes the lid action where Group Policy or Intune sets it.
 
