@@ -748,15 +748,30 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
             fn(*args)
         return str(ctx.exception)
 
+    def test_the_switch_cannot_be_saved_before_the_app_offers_it(self):
+        # Fail closed until the page slice: set_settings refuses computer
+        # audio, nothing in the same change is saved, and a value already in
+        # the settings file reads as off.
+        ws = self.make()
+        self.assertIn("not available", self.refused(
+            ws.set_settings, {"microphone": True, "computer_audio": True}))
+        self.assertIs(ws.settings["computer_audio"], False)
+        self.assertIs(ws.settings["microphone"], False)
+        ws.set_settings({"microphone": True})
+        ws.settings.update(computer_audio=True)          # saved by some other means
+        self.assertIs(ws.get_settings()["computer_audio"], False)
+
     def test_not_set_by_it_the_switch_is_allowed_but_off_by_default(self):
         ws = self.make()
         self.assertTrue(ws.managed()["allow"]["AllowComputerAudioRecording"])
         self.assertIs(ws.get_settings()["computer_audio"], False)
-        self.assertIn("microphone", self.refused(ws.set_settings, {"computer_audio": True}))
-        ws.set_settings({"microphone": True, "computer_audio": True})
-        self.assertIs(ws.get_settings()["computer_audio"], True)
-        ws.set_settings({"microphone": False})          # never without the microphone
-        self.assertIs(ws.settings["computer_audio"], False)
+        with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):  # the page slice
+            self.assertIn("microphone", self.refused(ws.set_settings,
+                                                     {"computer_audio": True}))
+            ws.set_settings({"microphone": True, "computer_audio": True})
+            self.assertIs(ws.get_settings()["computer_audio"], True)
+            ws.set_settings({"microphone": False})          # never without the microphone
+            self.assertIs(ws.settings["computer_audio"], False)
 
     def test_turned_off_unreadable_or_invalid_policy_refuses_it(self):
         from workspace import policy
@@ -767,10 +782,10 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         for values, invalid in cases:
             ws = self.make(values, invalid)
             ws.settings.update(microphone=True, computer_audio=True)   # saved before the policy
-            self.assertIn("organisation", self.refused(ws.set_settings,
-                                                       {"computer_audio": True}))
-            self.assertIs(ws.get_settings()["computer_audio"], False)
-            with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):
+            with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):  # the page slice
+                self.assertIn("organisation", self.refused(ws.set_settings,
+                                                           {"computer_audio": True}))
+                self.assertIs(ws.get_settings()["computer_audio"], False)
                 self.assertIsNone(ws._computer_track())
 
     def test_no_computer_track_opens_until_the_app_allows_it(self):

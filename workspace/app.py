@@ -2448,7 +2448,8 @@ class Workspace:
         effective = dict(self.settings.values)
         if not self._allowed("AllowMicrophoneRecording"):
             effective["microphone"] = False
-        if not (self._computer_audio_allowed() and effective["microphone"]):
+        if not (COMPUTER_AUDIO_STARTS and self._computer_audio_allowed()
+                and effective["microphone"]):
             effective["computer_audio"] = False
         if not self._allowed("AllowGpuComponent"):
             effective["gpu_speakers"] = False
@@ -2485,6 +2486,10 @@ class Workspace:
         if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
         if changes.get("computer_audio") is True:
+            # Fail closed until the page slice: nothing is saved early, so no
+            # value set now is carried over to the version that offers it.
+            if not COMPUTER_AUDIO_STARTS:
+                raise WorkspaceError("Computer audio is not available in this version.")
             if not self._computer_audio_allowed():
                 raise WorkspaceError(MANAGED_OFF.format(what="Computer audio recording"))
             if not changes.get("microphone", self.settings["microphone"]):
