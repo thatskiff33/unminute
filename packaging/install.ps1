@@ -25,8 +25,14 @@
   -Managed records that IT manages updates (Intune); -Rollback switches back to
   the previous installed version if it can still open the workspace.
 
-  Exit codes: 0 installed, 1 failed, 2 prerequisites missing,
-  3 the app is running, 4 the package failed verification,
+  The install folder must be new, empty, an install (current.json), or hold only
+  what an install that stopped early leaves; anything else, or a link or junction
+  where the installer would look, is refused before anything is written (#297).
+  Only versions the installer made are removed, never through a link.
+
+  Exit codes: 0 installed, 1 failed, 2 prerequisites missing or the install
+  folder is not allowed, 3 the app is running, 4 the package failed
+  verification (including a version that is not a plain folder name),
   5 the update waits for the workspace (see the message), 6 this version cannot
   open the existing workspace (it was created by a newer version) or its
   location is refused (missing, synced, on a network drive, or a data folder
@@ -67,6 +73,11 @@ $WebView2Client = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
 function Write-Step([string]$Message) {
     if (-not $Options.Silent) { Write-Host $Message }
+}
+
+function Write-Warn([string]$Message) {
+    if ($Options.Silent) { [Console]::Error.WriteLine("Warning: $Message") }
+    else { Write-Host "Warning: $Message" -ForegroundColor Yellow }
 }
 
 function Stop-Install([int]$Code, [string]$Message) {
@@ -215,6 +226,112 @@ function Test-AppRunning {
     if ($running) { Stop-Install 3 "$AppName is running. Close it (and let any processing finish), then run this again." }
 }
 
+# -- the install folder (#297) ---------------------------------------------------------
+
+# A version becomes a folder name under versions, so the package's version and the
+# values in current.json must be plain names first: the uninstaller's pattern
+# (tests/test_hardening.py keeps the two equal), no final dot (Windows drops it, so
+# 0.6.0. would name the folder 0.6.0), and not a working folder's name.
+$VersionPattern = '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$'
+
+function Test-VersionName([string]$Name) {
+    return ($Name -cmatch $VersionPattern) -and -not $Name.EndsWith(".") -and
+        $Name -notmatch '\.(partial|old)$'
+}
+
+# A version from current.json, or $null when it is missing or not a plain name.
+function Get-VersionValue($Value) {
+    $name = [string]$Value
+    if (Test-VersionName $name) { return $name }
+    return $null
+}
+
+function Test-Link([IO.FileSystemInfo]$Item) {
+    return [bool]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+# A version the installer made: a plain name, not a link, holding a version.json
+# (not a link) whose version is that name, exactly.
+function Test-OwnVersion([IO.DirectoryInfo]$Dir) {
+    if (-not (Test-VersionName $Dir.Name) -or (Test-Link $Dir)) { return $false }
+    $file = [IO.FileInfo]::new([IO.Path]::Combine($Dir.FullName, "version.json"))
+    if (-not $file.Exists -or (Test-Link $file)) { return $false }
+    try { $info = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json } catch { return $false }
+    return ([string]$info.version) -ceq $Dir.Name
+}
+
+# A working folder the installer made: <version>.partial (a copy in progress) or
+# <version>.old (a version being replaced by itself), not a link.
+function Test-OwnWorkingFolder([IO.DirectoryInfo]$Dir) {
+    if ((Test-Link $Dir) -or $Dir.Name -notmatch '^(.+)\.(partial|old)$') { return $false }
+    return Test-VersionName $Matches[1]
+}
+
+# The installer writes and removes only inside a folder that is new, empty, an install
+# (it holds current.json), or holds only what an install that stopped before writing
+# current.json leaves: versions, holding only versions and working folders the
+# installer made, and uninstall.ps1 beside a complete version (#245, #239). So a wrong
+# -InstallDir, such as a shared folder or a drive's root, loses nothing. A link or
+# junction at current.json, uninstall.ps1, versions or directly inside versions is
+# refused in every case. Checked before anything is written; the messages name no
+# path. An install keeps whatever else is in it: the installer never removes that.
+function Assert-InstallFolder([string]$Dir) {
+    $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
+    if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
+    $folder = [IO.DirectoryInfo]::new($Dir)
+    if (-not $folder.Exists) { return }
+    $install = $false; $uninstaller = $false; $versions = $null
+    $foreign = 0; $links = 0; $complete = 0; $strays = 0
+    foreach ($item in $folder.GetFileSystemInfos()) {
+        $isDir = $item -is [IO.DirectoryInfo]
+        if (@("current.json", "uninstall.ps1", "versions") -notcontains $item.Name) { $foreign++ }
+        elseif (Test-Link $item) { $links++ }
+        elseif ($isDir -ne ($item.Name -eq "versions")) { $foreign++ }
+        elseif ($item.Name -eq "current.json") { $install = $true }
+        elseif ($item.Name -eq "uninstall.ps1") { $uninstaller = $true }
+        else { $versions = $item }
+    }
+    if ($versions) {
+        foreach ($item in $versions.GetFileSystemInfos()) {
+            if (Test-Link $item) { $links++ }
+            elseif ($item -isnot [IO.DirectoryInfo]) { $strays++ }
+            elseif (Test-OwnVersion $item) { $complete++ }
+            elseif (-not (Test-OwnWorkingFolder $item)) { $strays++ }
+        }
+    }
+    if ($links) {
+        Stop-Install 2 ("The install folder holds a link or junction that $AppName did not put there, " +
+            "so nothing was changed. Remove it, or choose an empty or new -InstallDir.")
+    }
+    if ($install) { return }
+    if ($foreign -or $strays -or ($uninstaller -and -not $complete)) { Stop-Install 2 $notOurs }
+}
+
+# Removes a folder the installer made without following links (#297): a junction or
+# symbolic link found inside it is removed as a link, and what it points to is left
+# alone. A folder that is itself a link is never removed. Windows PowerShell's own
+# Remove-Item -Recurse is not relied on for this.
+function Remove-OwnFolder([string]$Path) {
+    $dir = [IO.DirectoryInfo]::new($Path)
+    if (-not $dir.Exists) { return }
+    if (Test-Link $dir) { throw "A folder to remove is a link or junction, so it was left in place." }
+    Remove-FolderTree $dir
+}
+
+function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
+    foreach ($item in $Dir.GetFileSystemInfos()) {
+        if ($item -is [IO.DirectoryInfo] -and -not (Test-Link $item)) { Remove-FolderTree $item; continue }
+        if (-not (Test-Link $item) -and ($item.Attributes -band [IO.FileAttributes]::ReadOnly)) {
+            $item.Attributes = $item.Attributes -bxor [IO.FileAttributes]::ReadOnly
+        }
+        $item.Delete()                  # a file, or the link itself
+    }
+    if ($Dir.Attributes -band [IO.FileAttributes]::ReadOnly) {
+        $Dir.Attributes = $Dir.Attributes -bxor [IO.FileAttributes]::ReadOnly
+    }
+    $Dir.Delete()
+}
+
 # -- update gate (#26) ----------------------------------------------------------------
 
 function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema = 0) {
@@ -299,7 +416,7 @@ function Install-Version([string]$Root, [string]$Version) {
     $target = Join-Path $versions $Version
     New-Item -ItemType Directory -Force -Path $versions | Out-Null
     $staging = "$target.partial"
-    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    Remove-OwnFolder $staging
     Write-Step "Copying files..."
     Copy-Item -LiteralPath $Root -Destination $staging -Recurse
     # Files extracted by Explorer carry the "downloaded from the internet" mark;
@@ -310,10 +427,10 @@ function Install-Version([string]$Root, [string]$Version) {
     # never leave a half-deleted version in use. Both renames wait out a file held
     # open for a moment, such as by a virus scan of the new files (#239).
     $old = "$target.old"
-    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force }
+    Remove-OwnFolder $old
     if (Test-Path -LiteralPath $target) { Invoke-LockRetry { Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf) } }
     Invoke-LockRetry { Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf) }
-    if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force -ErrorAction SilentlyContinue }
+    try { Remove-OwnFolder $old } catch { }        # if it fails, the next install of this version removes it
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     return $target
 }
@@ -323,8 +440,10 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
     $previous = $null
     if (Test-Path -LiteralPath $currentFile) {
         $was = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
-        # Reinstalling the same version keeps the existing rollback version.
-        $previous = if ($was.version -eq $Version) { $was.previous } else { $was.version }
+        # A value that is not a plain version name is ignored (#297). Reinstalling the
+        # same version keeps the existing rollback version.
+        $wasVersion = Get-VersionValue $was.version
+        $previous = if ($wasVersion -and $wasVersion -eq $Version) { Get-VersionValue $was.previous } else { $wasVersion }
     }
     $managed = [bool]$Options.Managed
     if (-not $managed -and -not $Options.SelfService -and (Test-Path -LiteralPath $currentFile)) {
@@ -333,10 +452,19 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
     }
     @{ version = $Version; path = $Target; previous = $previous; managed = $managed } |
         ConvertTo-Json | Set-Content -LiteralPath $currentFile -Encoding UTF8
-    # Keep the current and the previous version (for rollback, #26); remove older ones.
-    Get-ChildItem -LiteralPath (Join-Path $Options.InstallDir "versions") -Directory | Where-Object {
-        $_.Name -ne $Version -and $_.Name -ne $previous -and $_.Name -notlike "*.partial" -and $_.Name -notlike "*.old"
-    } | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+    # Keep the current and the previous version (for rollback, #26); remove older ones,
+    # but only versions the installer made, never through a link (#297). Anything else
+    # is left in place and counted, without names. Working folders (.partial, .old)
+    # are left for the next install of that version.
+    $left = 0
+    foreach ($dir in [IO.DirectoryInfo]::new((Join-Path $Options.InstallDir "versions")).GetDirectories()) {
+        if ($dir.Name -eq $Version -or ($previous -and $dir.Name -eq $previous) -or
+            $dir.Name -like "*.partial" -or $dir.Name -like "*.old") { continue }
+        if (Test-OwnVersion $dir) { Remove-OwnFolder $dir.FullName } else { $left++ }
+    }
+    if ($left) {
+        Write-Warn "$left folder(s) in the versions folder were not made by $AppName, so they were left in place."
+    }
 }
 
 # Stamp an explicit AppUserModelID onto a .lnk so a pinned shortcut groups with
@@ -484,9 +612,13 @@ function Invoke-Rollback {
     $currentFile = Join-Path $Options.InstallDir "current.json"
     if (-not (Test-Path -LiteralPath $currentFile)) { Stop-Install 1 "$AppName is not installed." }
     $current = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
-    if (-not $current.previous) { Stop-Install 1 "There is no previous version to go back to." }
-    $target = Join-Path $Options.InstallDir "versions\$($current.previous)"
-    if (-not (Test-Path -LiteralPath $target)) { Stop-Install 1 "The previous version is no longer installed." }
+    # Both values become folder names, so each must be a plain version name (#297).
+    $previous = Get-VersionValue $current.previous
+    $version = Get-VersionValue $current.version
+    if (-not $previous) { Stop-Install 1 "There is no previous version to go back to." }
+    if (-not $version) { Stop-Install 1 "The install record does not name a valid current version, so there is nothing to go back from." }
+    $target = Join-Path $Options.InstallDir "versions\$previous"
+    if (-not (Test-OwnVersion ([IO.DirectoryInfo]::new($target)))) { Stop-Install 1 "The previous version is no longer installed." }
     Test-AppRunning
     # Can the older version open this workspace? Versions from before the update
     # gate cannot answer themselves; they all used schema 1.
@@ -494,15 +626,15 @@ function Invoke-Rollback {
     if ($info.features -contains "gate") {
         Test-WorkspaceGate $target
     } else {
-        Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$($current.version)") -Schema 1
+        Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$version") -Schema 1
     }
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
-    @{ version = $current.previous; path = $target; previous = $current.version
+    @{ version = $previous; path = $target; previous = $version
        managed = [bool]$current.managed } | ConvertTo-Json |
         Set-Content -LiteralPath $currentFile -Encoding UTF8
     New-Shortcut $target
-    Register-Uninstall $target $current.previous
-    Write-Step "$(Get-VersionAppName $target) is back on version $($current.previous)."
+    Register-Uninstall $target $previous
+    Write-Step "$(Get-VersionAppName $target) is back on version $previous."
     exit 0
 }
 
@@ -527,10 +659,15 @@ try {
     # with \", which Windows reads as a literal quote. A drive's root keeps its \.
     $driveRoot = [IO.Path]::GetPathRoot($Options.InstallDir)
     $Options.InstallDir = $driveRoot + $Options.InstallDir.Substring($driveRoot.Length).TrimEnd("\", "/")
+    # Before anything is written: the folder must be one the installer may use (#297).
+    Assert-InstallFolder $Options.InstallDir
     if ($Options.Rollback) { Invoke-Rollback }
     Test-Prerequisite
     $root = Get-PackageRoot
-    $version = (Get-Content -LiteralPath (Join-Path $root "version.json") -Raw | ConvertFrom-Json).version
+    $version = [string](Get-Content -LiteralPath (Join-Path $root "version.json") -Raw | ConvertFrom-Json).version
+    if (-not (Test-VersionName $version)) {
+        Stop-Install 4 "The package's version.json does not hold a valid version, so nothing was installed."
+    }
     Write-Step "Installing $AppName $version for $env:USERNAME..."
     Test-PackageFile $root
     Test-AppRunning

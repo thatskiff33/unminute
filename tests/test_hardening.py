@@ -1497,12 +1497,15 @@ class FolderInUseTests(unittest.TestCase):
         self.versions = self.install / "versions"
 
     @staticmethod
-    def write_package(folder, label):
+    def write_package(folder, label, version="1.0.0"):
         (folder / "app").mkdir(parents=True)
         (folder / "app" / "held.txt").write_text(label)
         (folder / "runtime").mkdir()
         (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
         (folder / "uninstall.ps1").write_text("# synthetic\n")
+        # As every package has: a live version names itself (the installer's folder
+        # check, #297, takes a version folder without it for someone else's).
+        (folder / "version.json").write_text(json.dumps({"version": version}))
 
     def with_hooks(self, text, steps, seconds=None):
         """text with the hook, called just before the line holding each step, and
@@ -1538,7 +1541,7 @@ class FolderInUseTests(unittest.TestCase):
         copy.write_text(self.with_hooks(copy.read_text(encoding="utf-8"),
                                         {"remove": self.REMOVE}, seconds), encoding="utf-8")
         link.write_text("shortcut")
-        self.write_package(self.versions / "0.5.0", "old")
+        self.write_package(self.versions / "0.5.0", "old", "0.5.0")
         (self.install / "current.json").write_text("{}")
         shutil.copy(copy, self.install / "uninstall.ps1")
         return copy, link
@@ -1729,6 +1732,383 @@ class FolderInUseTests(unittest.TestCase):
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
         self.assertIn("Invoke-LockRetry { Remove-Item -LiteralPath $path -Recurse -Force }",
                       uninstall)
+
+
+# Stand-ins that a copy of install.ps1 defines just before its main part
+# (InstallFolderScopeTests): the prerequisites, the workspace check, the app-running
+# check, the shortcut and the uninstall entry do nothing, and the package is a
+# synthetic folder. The gate's stand-in says that it ran.
+INSTALL_STUBS = '''\
+function Test-Prerequisite { }
+function Test-AppRunning { }
+function Test-WorkspaceGate { Write-Output "GATE RAN" }
+function Get-PackageRoot { return $env:UNMINUTE_TEST_PACKAGE }
+function New-Shortcut { }
+function Register-Uninstall { }
+'''
+
+
+def snapshot(folder):
+    """Every path under folder, with each file's text, without following links."""
+    found, todo = {}, [Path(folder)]
+    while todo:
+        for path in sorted(todo.pop().iterdir()):
+            rel = path.relative_to(folder).as_posix()
+            if path.is_junction() or path.is_symlink():
+                found[rel] = "<link>"
+            elif path.is_file():
+                found[rel] = path.read_text(encoding="utf-8", errors="replace")
+            else:
+                found[rel] = "<dir>"
+                todo.append(path)
+    return found
+
+
+@WINDOWS_ONLY
+class InstallFolderScopeTests(unittest.TestCase):
+    """#297 (D2 red-team): the installer writes and removes only inside a folder
+    that is an install (current.json) or holds only what an install that stopped
+    early leaves; it removes only folders it made, never through a link; and the
+    versions it reads from version.json and current.json must be plain folder names
+    before they become paths. A copy of install.ps1 runs for real in temporary
+    folders, with a temporary LOCALAPPDATA and APPDATA, its Start menu folder and
+    uninstall key swapped for temporary ones, and the steps that would reach this
+    computer (prerequisites, the workspace check, the shortcut and the uninstall
+    entry) replaced by stand-ins (INSTALL_STUBS). The package is synthetic."""
+
+    MAIN = "# -- main -----"
+    PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
+                               DataFolderOverlapTests.TEST_KEY)
+    NOT_OURS = "already holds files that Unminute did not put there"
+    LINK = "holds a link or junction"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        # The long form of the path: the installer's manifest check compares paths
+        # as Get-ChildItem spells them, which expands an 8.3 short name.
+        self.root = Path(os.path.realpath(tmp.name))
+        self.local = self.root / "Local"
+        self.local.mkdir()
+        self.appdata = self.root / "Roaming"
+        self.appdata.mkdir()
+        self.install = self.root / "Apps"
+        self.versions = self.install / "versions"
+        self.package = self.root / "package"
+        self.copy = self.installer_copy()
+
+    def installer_copy(self):
+        text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
+        self.assertEqual((text.count(self.MAIN), text.count(self.PROGRAMS), text.count(self.KEY)),
+                         (1, 1, 1))
+        programs = self.root / "programs"
+        programs.mkdir()
+        text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
+            self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"')
+        text = text.replace(self.MAIN, INSTALL_STUBS + self.MAIN)
+        copy = self.root / "install-copy.ps1"
+        copy.write_text(text, encoding="utf-8")
+        return copy
+
+    def write_package(self, version="1.0.0", folder=None):
+        """A synthetic package: a few files, version.json and the manifest."""
+        import hashlib
+        folder = folder or self.package
+        shutil.rmtree(folder, ignore_errors=True)
+        (folder / "app").mkdir(parents=True)
+        (folder / "app" / "held.txt").write_text("new")
+        (folder / "runtime").mkdir()
+        (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
+        (folder / "uninstall.ps1").write_text("# synthetic\n")
+        (folder / "version.json").write_text(json.dumps(
+            {"name": "Unminute", "version": version, "features": ["gate", "restore-lid"]}))
+        manifest = {}
+        for path in sorted(folder.rglob("*")):
+            if path.is_file():
+                data = path.read_bytes()
+                manifest[path.relative_to(folder).as_posix()] = [len(data),
+                                                                 hashlib.sha256(data).hexdigest()]
+        (folder / "package-manifest.json").write_text(json.dumps(manifest))
+
+    @staticmethod
+    def version_folder(folder, version=None):
+        """An installed version as the installer leaves it: version.json names it."""
+        (folder / "runtime").mkdir(parents=True)
+        (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
+        (folder / "uninstall.ps1").write_text("# synthetic\n")
+        (folder / "version.json").write_text(json.dumps(
+            {"name": "Unminute", "version": version or folder.name, "features": ["gate"]}))
+
+    def write_current(self, **record):
+        self.install.mkdir(parents=True, exist_ok=True)
+        (self.install / "current.json").write_text(json.dumps(record))
+
+    def current(self):
+        return json.loads((self.install / "current.json").read_text(encoding="utf-8-sig"))
+
+    def run_installer(self, extra="", install=None):
+        call = f"& '{self.copy}' -InstallDir '{install or self.install}' -Silent {extra}"
+        env = dict(os.environ, LOCALAPPDATA=str(self.local), APPDATA=str(self.appdata),
+                   UNMINUTE_TEST_PACKAGE=str(self.package))
+        return subprocess.run([windows_powershell.executable(), "-NoProfile",
+                               "-ExecutionPolicy", "Bypass",
+                               "-Command", f"{call}; exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=180, cwd=self.root,
+                              env=env)
+
+    def junction(self, link, target):
+        made = mklink_junction(link, target, capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, made.returncode, made.stdout + made.stderr)
+        self.addCleanup(lambda: os.path.lexists(link) and os.rmdir(link))
+
+    def test_an_update_removes_only_the_versions_unminute_made(self):
+        # The current and previous versions stay, an older Unminute version goes,
+        # and anything else in versions is left in place and counted, without names.
+        self.write_package("1.0.0")
+        self.write_current(version="0.9.0", previous="0.8.0", managed=True)
+        for name in ("0.9.0", "0.8.0", "0.7.0"):
+            self.version_folder(self.versions / name)
+        (self.versions / "project-a").mkdir()
+        (self.versions / "project-a" / "data.txt").write_text("someone's work")
+        (self.versions / "0.6.0").mkdir()                       # no version.json
+        (self.versions / "0.6.0" / "data.txt").write_text("someone's work")
+        self.version_folder(self.versions / "0.5.0", "0.5.1")   # names another version
+        self.version_folder(self.versions / "Tool", "tool")     # case differs
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(sorted(p.name for p in self.versions.iterdir()),
+                         ["0.5.0", "0.6.0", "0.9.0", "1.0.0", "Tool", "project-a"])
+        self.assertEqual((self.versions / "project-a" / "data.txt").read_text(), "someone's work")
+        self.assertEqual(self.current()["version"], "1.0.0")
+        self.assertEqual(self.current()["previous"], "0.9.0")
+        self.assertTrue(self.current()["managed"])
+        self.assertIn("4 folder(s) in the versions folder were not made by Unminute", r.stderr)
+        for name in ("project-a", "0.6.0", "Tool", str(self.root)):
+            self.assertNotIn(name, r.stdout + r.stderr)
+
+    def test_a_folder_that_is_not_an_install_is_refused_and_nothing_changes(self):
+        def red_team(folder):                 # the D2 reproduction, with no current.json
+            (folder / "versions" / "project-a").mkdir(parents=True)
+            (folder / "versions" / "project-a" / "data.txt").write_text("someone's work")
+            (folder / "versions" / "project-b").mkdir()
+            (folder / "versions" / "1.0.0").mkdir()          # named like it, but empty
+
+        def other_file(folder):               # a version of ours beside someone's file
+            self.version_folder(folder / "versions" / "0.9.0")
+            (folder / "notes.txt").write_text("someone's notes")
+
+        def only_a_script(folder):            # someone's uninstall.ps1, no version
+            folder.mkdir(parents=True)
+            (folder / "uninstall.ps1").write_text("someone's script")
+
+        def a_file_in_versions(folder):
+            (folder / "versions").mkdir(parents=True)
+            (folder / "versions" / "list.txt").write_text("someone's list")
+
+        self.write_package("1.0.0")
+        for make in (red_team, other_file, only_a_script, a_file_in_versions):
+            with self.subTest(make.__name__):
+                folder = self.root / make.__name__
+                make(folder)
+                before = snapshot(folder)
+                r = self.run_installer(install=folder)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(self.NOT_OURS, r.stderr)
+                self.assertIn("-InstallDir", r.stderr)
+                self.assertNotIn(str(folder), r.stdout + r.stderr)
+                self.assertEqual(snapshot(folder), before)
+        # A file where the folder should be.
+        afile = self.root / "a-file"
+        afile.write_text("someone's file")
+        r = self.run_installer(install=afile)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(afile.read_text(), "someone's file")
+
+    def test_an_empty_or_new_folder_and_an_existing_install_are_accepted(self):
+        self.write_package("1.0.0")
+        for name in ("new", "empty"):
+            with self.subTest(name):
+                folder = self.root / name
+                if name == "empty":
+                    folder.mkdir()
+                r = self.run_installer(install=folder)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertTrue((folder / "versions" / "1.0.0" / "version.json").is_file())
+                self.assertTrue((folder / "uninstall.ps1").is_file())
+        # An install (current.json) updates; what else is in it is left alone.
+        self.write_current(version="0.9.0", previous=None, managed=False)
+        self.version_folder(self.versions / "0.9.0")
+        (self.install / "uninstall.ps1").write_text("# synthetic\n")
+        (self.install / "readme.txt").write_text("someone's note")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.current()["version"], self.current()["previous"]),
+                         ("1.0.0", "0.9.0"))
+        self.assertEqual((self.install / "readme.txt").read_text(), "someone's note")
+        # The same version again.
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.current()["version"], self.current()["previous"]),
+                         ("1.0.0", "0.9.0"))
+        self.assertEqual(sorted(p.name for p in self.versions.iterdir()), ["0.9.0", "1.0.0"])
+
+    def test_an_install_that_stopped_before_current_json_finishes(self):
+        # What a first install leaves when it stops after copying (#245, #239): a
+        # complete version and the uninstaller, or a copy still in progress, or one
+        # of each from an earlier try. A rerun finishes it.
+        def copied(folder):
+            self.version_folder(folder / "versions" / "1.0.0")
+            (folder / "uninstall.ps1").write_text("# synthetic\n")
+
+        def copying(folder):
+            (folder / "versions" / "1.0.0.partial" / "app").mkdir(parents=True)
+            (folder / "versions" / "1.0.0.partial" / "app" / "held.txt").write_text("half")
+
+        def replaced(folder):
+            self.version_folder(folder / "versions" / "1.0.0.old", "1.0.0")
+            self.version_folder(folder / "versions" / "0.9.0")
+            (folder / "versions" / "0.9.0.partial").mkdir()
+            (folder / "uninstall.ps1").write_text("# synthetic\n")
+
+        self.write_package("1.0.0")
+        for make in (copied, copying, replaced):
+            with self.subTest(make.__name__):
+                folder = self.root / make.__name__
+                make(folder)
+                r = self.run_installer(install=folder)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                record = json.loads((folder / "current.json").read_text(encoding="utf-8-sig"))
+                self.assertEqual(record["version"], "1.0.0")
+                self.assertEqual((folder / "versions" / "1.0.0" / "app" / "held.txt").read_text(),
+                                 "new")
+                self.assertFalse((folder / "versions" / "1.0.0.partial").exists())
+                self.assertFalse((folder / "versions" / "1.0.0.old").exists())
+
+    def test_links_in_the_install_folder_are_refused(self):
+        # A junction where the installer would look or remove: refused before
+        # anything is written, the link and what it points to are left as they were.
+        target = self.root / "someone"
+        target.mkdir()
+        (target / "sentinel.txt").write_text("keep")
+        self.write_package("1.0.0")
+
+        def in_versions(folder):              # an install, with a junction in versions
+            self.write_current(version="0.9.0", previous=None, managed=False)
+            self.version_folder(self.versions / "0.9.0")
+            self.junction(self.versions / "0.8.0", target)
+
+        def as_versions(folder):              # versions itself is a junction
+            folder.mkdir(parents=True)
+            self.junction(folder / "versions", target)
+
+        def as_staging(folder):               # the copy's working folder is a junction
+            (folder / "versions").mkdir(parents=True)
+            self.junction(folder / "versions" / "1.0.0.partial", target)
+
+        def as_record(folder):                # current.json is a link to a folder
+            folder.mkdir(parents=True)
+            self.junction(folder / "current.json", target)
+
+        for make in (in_versions, as_versions, as_staging, as_record):
+            with self.subTest(make.__name__):
+                folder = self.install if make is in_versions else self.root / make.__name__
+                make(folder)
+                before = snapshot(folder)
+                r = self.run_installer(install=folder)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn(self.LINK, r.stderr)
+                self.assertEqual(snapshot(folder), before)
+                self.assertEqual(sorted(p.name for p in target.iterdir()), ["sentinel.txt"])
+
+    def test_a_link_inside_an_old_version_is_removed_as_a_link(self):
+        # Removing an older version never follows a junction inside it.
+        target = self.root / "someone"
+        target.mkdir()
+        (target / "sentinel.txt").write_text("keep")
+        self.write_package("1.0.0")
+        self.write_current(version="0.9.0", previous="0.8.0", managed=False)
+        for name in ("0.9.0", "0.8.0", "0.7.0"):
+            self.version_folder(self.versions / name)
+        (self.versions / "0.7.0" / "app").mkdir()
+        self.junction(self.versions / "0.7.0" / "app" / "link", target)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.versions / "0.7.0").exists())
+        self.assertEqual((target / "sentinel.txt").read_text(), "keep")
+
+    def test_a_package_version_that_is_not_a_plain_name_is_refused(self):
+        # "..\x" would install beside versions; "0.6.0." names the folder 0.6.0,
+        # because Windows drops a final dot, so the old retention step then removed
+        # the version it had just installed.
+        for version in ("..\\x", "0.6.0.", "", "a/b", ".hidden", "1.0.0.partial"):
+            with self.subTest(version=version):
+                shutil.rmtree(self.install, ignore_errors=True)
+                self.write_package(version)
+                r = self.run_installer()
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn("version", r.stderr)
+                self.assertFalse(self.install.exists())
+                self.assertFalse((self.root / "x").exists())
+
+    def test_current_json_values_that_are_not_plain_names_are_ignored(self):
+        # An update treats them as absent: no previous version is kept for them.
+        self.write_package("1.0.0")
+        for bad in ("..\\x", "0.8.0.", "C:\\Elsewhere"):
+            with self.subTest(bad=bad):
+                shutil.rmtree(self.install, ignore_errors=True)
+                self.write_current(version=bad, previous=None, managed=False)
+                self.version_folder(self.versions / "0.9.0")
+                r = self.run_installer()
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.current()["version"], "1.0.0")
+                self.assertIsNone(self.current()["previous"])
+
+    def test_rollback_refuses_a_previous_version_that_is_not_a_plain_name(self):
+        # -Rollback never looks outside versions or runs anything from there. Each
+        # case has a folder that would run where the value leads.
+        self.write_package("1.0.0")
+        escape = self.install / "x"
+        cases = (("previous", "..\\x"), ("previous", "0.8.0."), ("version", "..\\x"),
+                 ("previous", "0.8.0-link"))
+        for field, bad in cases:
+            with self.subTest(field=field, bad=bad):
+                shutil.rmtree(self.install, ignore_errors=True)
+                record = {"version": "0.9.0", "previous": "0.8.0", "managed": False}
+                record[field] = bad
+                self.write_current(**record)
+                for name in ("0.9.0", "0.8.0"):
+                    self.version_folder(self.versions / name)
+                self.version_folder(escape, "x")
+                if bad == "0.8.0-link":
+                    self.junction(self.versions / bad, self.versions / "0.8.0")
+                before = (self.install / "current.json").read_text()
+                r = self.run_installer("-Rollback")
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertNotIn("GATE RAN", r.stdout)
+                self.assertEqual((self.install / "current.json").read_text(), before)
+
+    def test_rollback_still_goes_back_to_a_plain_previous_version(self):
+        self.write_package("1.0.0")
+        self.write_current(version="0.9.0", previous="0.8.0", managed=True)
+        for name in ("0.9.0", "0.8.0"):
+            self.version_folder(self.versions / name)
+        r = self.run_installer("-Rollback")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GATE RAN", r.stdout)
+        self.assertEqual((self.current()["version"], self.current()["previous"]),
+                         ("0.8.0", "0.9.0"))
+
+    def test_both_scripts_use_the_same_version_name_pattern(self):
+        import re
+
+        def pattern(name, where):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            found = re.findall(where, text)
+            self.assertEqual(len(found), 1, name)
+            return found[0]
+
+        self.assertEqual(pattern("install.ps1", r"(?m)^\$VersionPattern = '([^']+)'$"),
+                         pattern("uninstall.ps1", r"-cnotmatch '([^']+)'"))
 
 
 STUB_APP = '''\

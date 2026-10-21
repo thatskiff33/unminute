@@ -161,6 +161,14 @@ real time, and remove it when the cause is fixed.
   is not `-ErrorAction Stop` can also exit 0 after such an error, so read its stderr, not
   only its exit code. To reproduce: from `pwsh` 7, start Python, and
   from Python start `powershell`.
+- **Removing a folder that may hold a junction (#297).** On Windows PowerShell 5.1.26100,
+  `Remove-Item -Recurse -Force` removed a junction inside a folder as a link and left its
+  target alone (checked 21 October 2026 in a scratch folder); older 5.1 builds are not known.
+  .NET Framework's `[IO.Directory]::Delete(path, $true)` failed on the same folder with
+  "Access to the path ... is denied". So `packaging/install.ps1` removes version folders
+  with its own walk (`Remove-OwnFolder`), which deletes a link as a link and never descends
+  into it; on 20,000 small files it took about as long as `Remove-Item` (6.5 against 6.2
+  seconds on a development laptop).
 
 ## Claude Code hooks on Windows
 
