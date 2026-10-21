@@ -87,7 +87,7 @@ class SplitterTests(unittest.TestCase):
         self.assertAlmostEqual(e1, 3.0 + drafts._windows(drafts.TAIL_S) * w, delta=w)
         self.assertGreater(s2, e1)                       # never the same audio twice
         self.assertAlmostEqual(s2, 4.5 - drafts._windows(drafts.PRE_ROLL_S) * w, delta=w)
-        self.assertLess(e2, 5.0 + drafts.END_SILENCE_S)
+        self.assertAlmostEqual(e2, 5.5 + drafts._windows(drafts.TAIL_S) * w, delta=w)
 
     def test_unbroken_speech_is_cut_at_the_quietest_window_near_the_limit(self):
         dip_at = 7.2                                     # a quieter moment within the search span
@@ -267,16 +267,27 @@ class SessionTests(unittest.TestCase):
         late = ("phrase", 0.0, 1.0, "late words")
 
         class Conn:
+            """The late result, then the pipe closes."""
+            def __init__(self):
+                self.sent = False
+
             def poll(self, timeout):
                 return True
 
             def recv(self):
+                if self.sent:
+                    raise EOFError
+                self.sent = True
                 return late
+
+            def close(self):
+                pass
         conn = Conn()
         s._conn = conn
         s._stopped = True
         s._read_loop(mock.Mock(is_alive=lambda: True), conn)
         self.assertEqual(s.snapshot()["phrases"], [])
+        conn = Conn()
         s._stopped = False
         s._conn = object()                           # replaced by a restarted worker
         s._read_loop(mock.Mock(is_alive=lambda: True), conn)
