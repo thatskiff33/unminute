@@ -394,8 +394,10 @@ function renderIntegrity(info) {
   if (appeared) say(text);              // announced once; the notice itself stays
 }
 
-// The banner's wording says what the organisation asks only when IT set the
-// threshold behind it (C6-5); the app's own default makes no such claim.
+// The banner says what the organisation asks only for "Action required", and
+// only when IT set ActionRequiredDays (C6-5). "Review due" is a nudge, not a
+// deadline, so it never claims a rule, even when IT set ReviewReminderDays
+// (the owner's decision, 22 October 2026).
 function oneOrMany(n, one, many) { return n === 1 ? one : many; }
 function retentionBanner(r) {
   const count = (list, level) => (list || []).filter((x) => x.state === level).length;
@@ -403,19 +405,19 @@ function retentionBanner(r) {
   const action = [count(r.retention, "action_required"), count(r.recordings_waiting, "action_required")];
   const due = [count(r.retention, "due"), count(r.recordings_waiting, "due")];
   const parts = [];
-  let days, managed;
   if (action[0] || action[1]) {
-    [days, managed] = [t.action_days, t.managed.action];
+    const days = t.action_days;
     if (action[0]) parts.push(`${action[0]} ${oneOrMany(action[0], "meeting needs", "meetings need")} action.`);
     if (action[1]) parts.push(`${action[1]} ${oneOrMany(action[1], "recording needs", "recordings need")} action: keep or delete ${oneOrMany(action[1], "it", "them")}.`);
-    if (!managed) parts.push(`Each has waited ${days} days or more.`);
-  } else if (due[0] || due[1]) {
-    [days, managed] = [t.review_days, t.managed.review];
-    if (due[0]) parts.push(`${due[0]} ${oneOrMany(due[0], "meeting has", "meetings have")} waited ${days} days or more for ${oneOrMany(due[0], "its", "their")} next step.`);
-    if (due[1]) parts.push(`${due[1]} ${oneOrMany(due[1], "recording has", "recordings have")} waited ${days} days or more for Keep or Delete.`);
-  } else return null;
-  if (managed) parts.push(`Your organisation asks for each step to be finished within ${days} days.`);
-  return notice(action[0] || action[1] ? "alert" : "hold", parts.join(" "));
+    parts.push(t.managed.action ? `Your organisation asks for each step to be finished within ${days} days.`
+                                : `Each has waited ${days} days or more.`);
+    return notice("alert", parts.join(" "));
+  }
+  if (!(due[0] || due[1])) return null;
+  const days = t.review_days;
+  if (due[0]) parts.push(`${due[0]} ${oneOrMany(due[0], "meeting has", "meetings have")} waited ${days} days or more for ${oneOrMany(due[0], "its", "their")} next step.`);
+  if (due[1]) parts.push(`${due[1]} ${oneOrMany(due[1], "recording has", "recordings have")} waited ${days} days or more for Keep or Delete.`);
+  return notice("hold", parts.join(" "));
 }
 
 function renderReminders(r) {

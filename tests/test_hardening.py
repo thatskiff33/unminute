@@ -201,6 +201,87 @@ class NavigationTests(unittest.TestCase):
         self.assertRegex(script, r"\nfunction renderReminders\(r\) \{")
 
 
+# The retention banner's wording (#111 C6). The owner's decision of 22 October
+# 2026: "Your organisation asks for each step to be finished within N days"
+# appears only for a managed ActionRequiredDays. A managed ReviewReminderDays
+# is a nudge, not a deadline, so "Review due" never claims a rule. The page's
+# own retentionBanner runs in Node.js (as tests/test_level_meter.py does).
+BANNER_CASES = r"""
+const notice = (kind, text) => ({ kind, text });
+const due = (n) => Array.from({ length: n }, () => ({ state: "due" }));
+const act = (n) => Array.from({ length: n }, () => ({ state: "action_required" }));
+// banner(meetings, recordings, review days, action days, [IT set review, IT set action])
+const banner = (retention, waiting, review, action, [mr, ma]) => retentionBanner({
+  retention, recordings_waiting: waiting,
+  thresholds: { review_days: review, action_days: action, managed: { review: mr, action: ma } } });
+const out = {
+  review_managed: banner(due(2), due(1), 7, 0, [true, false]),
+  review_managed_both: banner(due(1), [], 7, 14, [true, true]),
+  review_default: banner(due(1), [], 30, 0, [false, false]),
+  action_managed: banner(act(3), due(1), 7, 14, [true, true]),
+  action_only_managed: banner(act(1), act(2), 30, 60, [false, true]),
+  action_unmanaged: banner(act(1), [], 30, 60, [true, false]),
+  none: banner([], [], 30, 0, [true, true]),
+};
+console.log(JSON.stringify(out));
+"""
+
+
+class RetentionBannerTests(unittest.TestCase):
+    RULE = "Your organisation asks"
+
+    @classmethod
+    def setUpClass(cls):
+        import re
+        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        parts = []
+        for name in ("oneOrMany", "retentionBanner"):
+            found = (re.search(r"^function " + name + r"\(.*\}$", script, re.M)
+                     or re.search(r"^function " + name + r"\(.*?^\}$", script, re.M | re.S))
+            if found is None:
+                raise AssertionError(f"{name} not found at the top level of app.js")
+            parts.append(found.group(0))
+        cls.source = "\n".join(parts) + "\n" + BANNER_CASES
+        cls.node = shutil.which("node")
+
+    def banners(self):
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
+                              text=True, timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_managed_review_threshold_claims_no_organisation_rule(self):
+        out = self.banners()
+        for case in ("review_managed", "review_managed_both"):
+            with self.subTest(case=case):
+                self.assertEqual(out[case]["kind"], "hold")
+                self.assertNotIn(self.RULE, out[case]["text"])
+                self.assertIn("waited 7 days or more", out[case]["text"])
+        self.assertEqual(out["review_managed"]["text"],
+                         "2 meetings have waited 7 days or more for their next step. "
+                         "1 recording has waited 7 days or more for Keep or Delete.")
+
+    def test_the_app_default_review_threshold_claims_no_rule_either(self):
+        text = self.banners()["review_default"]["text"]
+        self.assertEqual(text, "1 meeting has waited 30 days or more for its next step.")
+
+    def test_only_a_managed_action_threshold_states_the_organisation_rule(self):
+        out = self.banners()
+        self.assertEqual(out["action_managed"],
+                         {"kind": "alert", "text": "3 meetings need action. Your organisation "
+                          "asks for each step to be finished within 14 days."})
+        self.assertEqual(out["action_only_managed"]["text"],
+                         "1 meeting needs action. 2 recordings need action: keep or delete "
+                         "them. Your organisation asks for each step to be finished within "
+                         "60 days.")
+        unmanaged = out["action_unmanaged"]["text"]
+        self.assertNotIn(self.RULE, unmanaged)
+        self.assertEqual(unmanaged, "1 meeting needs action. Each has waited 60 days or more.")
+        self.assertIsNone(out["none"])
+
+
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):
     def setUp(self):
