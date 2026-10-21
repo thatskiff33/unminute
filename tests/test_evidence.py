@@ -161,6 +161,7 @@ def report(kind, sha=SHA, **change):
     if kind == "perf":
         ev["run"] = dict(evidence.PERF_RELEASE, quick=False)
         body["machine"] = dict(MACHINE)
+        body["each_run"] = json.loads(json.dumps(EACH_RUN))
     ev.update(change)
     return body
 
@@ -170,7 +171,18 @@ def report(kind, sha=SHA, **change):
 MACHINE = {"cpu": "Synthetic CPU 4000", "cores": 4, "logical_processors": 4,
            "memory_gb": 7.8, "windows": "Windows 11 24H2", "os_build": "10.0.26100.4061",
            "power_plan": "Balanced", "on_mains_power": True, "battery": True,
-           "gpus": [{"name": "Synthetic GPU", "driver": "31.0.1"}], "webview2": "140.0.1.2"}
+           "gpus": [{"name": "Synthetic GPU", "driver": "31.0.1"}], "display_refresh_hz": 60,
+           "webview2": "140.0.1.2"}
+
+
+def drawn():
+    """A visible state's figures in one run, shown drawn (#292)."""
+    return {"cpu_percent_of_one_core": 1.0, "drawing": {"drawn": True, "problems": []}}
+
+
+# Every window measured in a visible state, drawn, as perf_check records it.
+EACH_RUN = [{state: drawn() for state in evidence.PERF_VISIBLE_STATES}
+            for _ in range(3)]
 
 
 class TempDir(unittest.TestCase):
@@ -557,6 +569,7 @@ class MachineEvidenceTests(TempDir):
                  "gpus": [None, "none", [{"name": "Synthetic GPU"}],
                           [{"name": "", "driver": None}], [{"name": "G", "driver": 31}],
                           [{"name": "G", "driver": None, "serial": "x"}], ["G"]],
+                 "display_refresh_hz": [None, 0, 1, "60", True, 59.9],
                  "webview2": [None, ""]}
         for name, values in cases.items():
             for value in values:
@@ -585,7 +598,7 @@ class MachineEvidenceTests(TempDir):
         self.assertEqual(
             "Performance measured on: Synthetic CPU 4000, 4 cores (4 logical processors), "
             "7.8 GB memory, Windows 11 24H2 (10.0.26100.4061), Balanced power plan, on mains "
-            "power, GPU: Synthetic GPU (driver 31.0.1), WebView2 140.0.1.2.",
+            "power, GPU: Synthetic GPU (driver 31.0.1), display at 60 Hz, WebView2 140.0.1.2.",
             out.call_args.args[0])
         line = evidence.machine_line(dict(MACHINE, gpus=[], battery=False))
         self.assertIn("on mains power (no battery), GPU: none,", line)
@@ -593,6 +606,64 @@ class MachineEvidenceTests(TempDir):
                                                                 on_mains_power=False)))
         line = evidence.machine_line(dict(MACHINE, gpus=[{"name": "G", "driver": None}]))
         self.assertIn("GPU: G (driver not reported)", line)
+
+    def test_every_visible_window_must_show_it_was_drawn(self):
+        # #292: a window measured while the display was off or the page not
+        # drawing is not evidence, whatever its figures say.
+        body = report("perf")
+        body["each_run"][1]["recording"]["drawing"] = {"drawn": False,
+                                                       "problems": ["the display was off"]}
+        del body["each_run"][2]["settings"]["drawing"]
+        problems = evidence.check(SHA, self.complete(perf=body))
+        self.assertEqual(["perf.json: perf does not show every visible window drawn on a "
+                          "display that was on (not shown: recording in run 2, settings in "
+                          "run 3)"], problems)
+        for runs in (None, [], "x"):
+            with self.subTest(runs=runs):
+                body = report("perf")
+                body["each_run"] = runs
+                problems = evidence.check(SHA, self.complete(perf=body))
+                self.assertEqual(["perf.json: perf does not show every visible window drawn "
+                                  "on a display that was on (not shown: no runs recorded)"],
+                                 problems)
+
+    def test_a_drawn_flag_must_be_true_itself(self):
+        for value in (None, 1, "true", {"drawn": True}):
+            with self.subTest(value=value):
+                body = report("perf")
+                body["each_run"][0]["meetings"]["drawing"] = {"drawn": value}
+                self.assertEqual(["meetings in run 1"], evidence.perf_not_drawn(body))
+        body = report("perf")
+        body["each_run"][0]["meetings"] = "figures"
+        body["each_run"][1] = None
+        self.assertEqual(["meetings in run 1", "run 2"], evidence.perf_not_drawn(body))
+
+    def test_recording_off_by_policy_has_no_window_to_show(self):
+        body = report("perf")
+        for run in body["each_run"]:
+            del run["recording"]
+        body["not_measured_by_policy"] = ["recording", "recording-minimised"]
+        self.assertEqual([], evidence.perf_not_drawn(body))
+        self.assertEqual([], evidence.check(SHA, self.complete(perf=body)))
+
+    def test_a_missing_visible_state_counts_only_if_policy_names_it(self):
+        # #292 review: a visible state missing from a run is excused only when
+        # the report names it as not measured by policy.
+        for policy in (None, [], ["recording-minimised"], "recording"):
+            with self.subTest(policy=policy):
+                body = report("perf")
+                del body["each_run"][0]["recording"]
+                del body["each_run"][2]["meetings"]
+                if policy is not None:
+                    body["not_measured_by_policy"] = policy
+                self.assertEqual(["recording in run 1", "meetings in run 3"],
+                                 evidence.perf_not_drawn(body))
+        # Policy names recording only: a missing meetings window is still refused.
+        body = report("perf")
+        del body["each_run"][0]["recording"]
+        del body["each_run"][1]["meetings"]
+        body["not_measured_by_policy"] = ["recording", "recording-minimised"]
+        self.assertEqual(["meetings in run 2"], evidence.perf_not_drawn(body))
 
     def test_the_machine_command_refuses_an_incomplete_or_unreadable_report(self):
         for name, body in (("old.json", perf_with()), ("part.json", perf_with(drop=("gpus",))),
