@@ -2162,6 +2162,7 @@ function stopViz() {
   $("rec-level").setAttribute("aria-valuenow", "-60");
   if (viz.raf) cancelAnimationFrame(viz.raf);
   viz.raf = 0; viz.target = null; viz.amp = 0; viz.bands = []; viz.wave = [];
+  restartMeter(viz, meterClock);
 }
 
 // -- the meter's frame rate (#216) --
@@ -2203,6 +2204,18 @@ function meterFrame(clock, t) {
 }
 const meterClock = { prev: 0, frameMs: 0, step: 0, count: 0 };
 
+// The time since the last draw, in seconds (at most 0.1), and the draw's time kept.
+function meterDt(v, t) {
+  const dt = Math.min(0.1, v.last ? (t - v.last) / 1000 : 0.016);
+  v.last = t;
+  return dt;
+}
+
+// After the meter stops or the window is hidden, the next draw starts afresh:
+// one frame's easing rather than a jump most of the way, and a new frame count.
+// The display rate measured so far is kept.
+function restartMeter(v, clock) { v.last = 0; clock.prev = 0; clock.count = 0; }
+
 // The share of the way to move over dt seconds, for a rate per EASE_REF_HZ frame.
 function easeShare(rate, dt) { return 1 - Math.pow(1 - rate, dt * EASE_REF_HZ); }
 function ease(cur, to, rate, dt) { return cur + (to - cur) * easeShare(rate, dt); }
@@ -2212,8 +2225,7 @@ function drawViz(t) {
   if ($("rec-level").hidden || $("rec-card").hidden || state.view !== "meetings") { viz.raf = 0; return; }
   viz.raf = requestAnimationFrame(drawViz);
   if (!meterFrame(meterClock, t)) return;
-  const dt = Math.min(0.1, viz.last ? (t - viz.last) / 1000 : 0.016);
-  viz.last = t;
+  const dt = meterDt(viz, t);
   const dpr = window.devicePixelRatio || 1;
   const w = c.clientWidth, h = c.clientHeight;
   if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
@@ -2605,6 +2617,7 @@ document.addEventListener("visibilitychange", () => {
     clearTimeout(pollTimer);
     pollTimer = null;
     stopRecTimer();
+    restartMeter(viz, meterClock);           // minimised: the meter's frames pause (#216)
   } else {
     state.sinceLists = LIST_REFRESH_POLLS;   // hidden for a while: ages and reviews moved on
     pollNow();

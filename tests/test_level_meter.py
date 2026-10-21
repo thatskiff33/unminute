@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
-HELPERS = ("meterStep", "meterFrame", "easeShare", "ease")
+HELPERS = ("meterStep", "meterFrame", "easeShare", "ease", "meterDt", "restartMeter")
 CONSTANTS = ("METER_HZ", "EASE_REF_HZ")
 
 
@@ -68,6 +68,38 @@ for (const r of [0.3, 0.08, 0.25, 0.35, 0.1]) {
   result.ease[r] = { at_ref: easeShare(r, 1 / EASE_REF_HZ), once, twice,
                      long_gap: ease(0, 1, r, 0.1) };
 }
+// The display changes mid-run (the window moved to another monitor): 120, then
+// 60, then 144 Hz, two seconds each. Draw gaps after each segment's first half second.
+{
+  const clock = { prev: 0, frameMs: 0, step: 0, count: 0 };
+  let t = 1000, i = 0;
+  result.switched = [];
+  for (const hz of [120, 60, 144]) {
+    const drawn = [];
+    for (let k = 0; k < hz * 2; k++, i++) {
+      t += 1000 / hz + [0, 0.2, -0.15, 0.1, -0.2][i % 5];
+      if (meterFrame(clock, t) && k >= hz / 2) drawn.push(k);
+    }
+    result.switched.push({ hz, step: clock.step,
+                           gaps: [...new Set(drawn.slice(1).map((v, k) => v - drawn[k]))] });
+  }
+}
+// Drawing at 60 a second, then the meter stops (or the window is minimised)
+// for five seconds and starts again: the first draw after must not jump.
+{
+  const v = { last: 0 }, clock = { prev: 0, frameMs: 0, step: 0, count: 0 };
+  let t = 1000, dt = 0;
+  for (let k = 0; k < 120; k++) { t += 1000 / 120; if (meterFrame(clock, t)) dt = meterDt(v, t); }
+  const running = dt;
+  restartMeter(v, clock);
+  t += 5000;
+  let after = null;
+  for (let k = 0; k < 4 && after === null; k++) {
+    t += 1000 / 120;
+    if (meterFrame(clock, t)) after = meterDt(v, t);
+  }
+  result.restart = { running, after, share: easeShare(0.3, after), step: clock.step };
+}
 console.log(JSON.stringify(result));
 """
 
@@ -120,6 +152,29 @@ class LevelMeterTests(unittest.TestCase):
                 self.assertAlmostEqual(got["once"], got["twice"], places=12)
                 self.assertLess(got["long_gap"], 1.0)
 
+    def test_a_display_rate_change_settles_on_the_new_step_evenly(self):
+        result = self.simulate()
+        expected = {120: 2, 60: 1, 144: 2}
+        for seg in result["switched"]:
+            with self.subTest(hz=seg["hz"]):
+                self.assertEqual(seg["step"], expected[seg["hz"]])
+                self.assertEqual(seg["gaps"], [expected[seg["hz"]]], "draws must be evenly spaced")
+
+    def test_the_first_draw_after_a_stop_or_minimise_does_not_jump(self):
+        result = self.simulate()["restart"]
+        self.assertAlmostEqual(result["running"], 1 / 60, delta=0.001)
+        # One nominal frame's easing (as on the very first draw), not 0.1 s worth.
+        self.assertAlmostEqual(result["after"], 0.016, places=6)
+        self.assertLess(result["share"], 0.6)
+        self.assertEqual(result["step"], 2, "the measured display rate is kept")
+        # The page restarts the meter when it stops and when the window is hidden.
+        stop = source_of("stopViz")
+        self.assertIn("restartMeter(viz, meterClock);", stop)
+        hidden = re.search(r'addEventListener\("visibilitychange", \(\) => \{\n'
+                           r'  if \(document\.hidden\) \{\n(.*?)\n  \} else', APP_JS, re.S)
+        self.assertIsNotNone(hidden, "the visibilitychange handler was not found")
+        self.assertIn("restartMeter(viz, meterClock);", hidden.group(1))
+
     def test_the_meter_uses_the_helpers(self):
         draw = source_of("drawViz")
         self.assertIn("requestAnimationFrame(drawViz)", draw)
@@ -127,6 +182,7 @@ class LevelMeterTests(unittest.TestCase):
         self.assertLess(draw.index("requestAnimationFrame(drawViz)"),
                         draw.index("meterFrame(meterClock, t)"))
         self.assertLess(draw.index("meterFrame(meterClock, t)"), draw.index("getContext"))
+        self.assertIn("const dt = meterDt(viz, t);", draw)
         calls = re.findall(r"\bease\(([^;]*)\);", APP_JS)
         self.assertGreaterEqual(len(calls), 6)
         for args in calls:
