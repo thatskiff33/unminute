@@ -438,7 +438,7 @@ def main():
         return 1
     # Content-free diagnostics (R9): uncaught errors on any thread and native
     # crashes are recorded in workspace\logs\app.log from here on.
-    unclean = diag.install(ws.log, others=("worker", "gpu-worker", "setup"))
+    unclean = diag.install(ws.log, others=("worker", "gpu-worker", "draft-worker", "setup"))
     diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
     ws.log.write("start", version=package_version(), python=sys.version.split()[0],
                  previous_run_unclean=unclean)

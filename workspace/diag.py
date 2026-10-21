@@ -1,7 +1,8 @@
 # workspace/diag.py
 # Local, content-free diagnostics (R9, #130; docs/RELEASE_STANDARD.md,
 # sections 5 and 6). Each process writes its own small rotating log in the
-# workspace's logs\ folder (app.log, worker.log, gpu-worker.log, setup.log).
+# workspace's logs\ folder (app.log, worker.log, gpu-worker.log,
+# draft-worker.log, setup.log).
 # There is no telemetry: nothing leaves the computer unless the user copies it.
 #
 # A record is one JSON line holding only what this module allows. Each field
@@ -62,7 +63,9 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          "damaged_value", "key_unavailable",
          # #111 C2c (no fields): templates.sealed damaged or busy, or a
          # templates.json kept unconverted or damaged (handoff.Templates)
-         "templates_unreadable"}
+         "templates_unreadable",
+         # #104: a live draft session ended (counts and seconds only, never text)
+         "drafts"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
@@ -70,8 +73,8 @@ KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailabl
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
-           "winerror"}
-LOG_NAME = re.compile(r"(app|worker|gpu-worker|setup)(\.[0-9])?")   # a log file's stem
+           "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s"}
+LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
 BIG = 10 ** 12                  # no number the app writes is this large
 INCIDENT_REPEATS = 3            # the same incident is written this often a run,
 INCIDENTS_MAX = 200             # and no more than this many incidents in all
@@ -107,10 +110,11 @@ FIELDS = {
     "code": _pattern(re.compile(r"U-[0-9A-F]{6}")),
     "area": _set("bridge", "processing", "import", "recording_import", "worker",
                  "worker_start", "setup", "uncaught", "thread", "page", "open",
-                 "audit"),                       # #111 C5: an audit write or check
-    "process": _set("app", "worker", "gpu-worker", "setup"),
+                 "audit",                        # #111 C5: an audit write or check
+                 "drafts"),                      # #104: live drafts while recording
+    "process": _set("app", "worker", "gpu-worker", "draft-worker", "setup"),
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
-    "op": _set("load", "transcribe", "diarize", "exit"),
+    "op": _set("load", "transcribe", "diarize", "exit", "draft"),
     "stream": _set("stdout", "stderr"),
     "event": _set("error", "rejection"),  # a page error (report_ui_error)
     "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)

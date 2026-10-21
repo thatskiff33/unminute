@@ -901,6 +901,91 @@ class ParakeetEngine:
         self._asr = None
 
 
+class DraftEngine:
+    """Live drafts while recording (#104): Parakeet on one short phrase at a
+    time, without its speech-detection wrapper, and Silero scoring a 16 kHz
+    stream 32 ms at a time. Both are checked and loaded from local files
+    exactly as ParakeetEngine is (I1, N1); the full pass is unchanged."""
+
+    device = "cpu"
+    WINDOW = 512             # Silero's step at 16 kHz
+    CONTEXT = 64             # samples of the previous step Silero sees with each one
+
+    def __init__(self, name, cache_dir, threads):
+        self.spec = PARAKEET_MODELS[name]
+        self.cache_dir, self.threads = cache_dir, threads
+        self.precision = self.spec.quantization or "float32"
+        self._asr = self._vad = None
+        self._state = self._context = None
+
+    @property
+    def description(self):
+        return (f"{self.spec.name} drafts (ONNX {self.precision}, {self.device}, "
+                f"revision {self.spec.revision[:7]})")
+
+    def load(self):
+        """Verify then load, entirely from local files. Raises ModelLoadError."""
+        for spec in (self.spec, SILERO_VAD):
+            problems = check_files(spec, model_dir(spec, self.cache_dir))
+            if problems:
+                raise ModelLoadError(
+                    f"{label(spec.name)} cannot be used. {PARAKEET_FIX} "
+                    f"({'; '.join(problems)})")
+        try:
+            import onnx_asr
+            import onnxruntime as rt
+            rt.disable_telemetry_events()   # before any session, in every process
+
+            def options(threads):
+                opts = rt.SessionOptions()
+                opts.intra_op_num_threads = threads
+                opts.inter_op_num_threads = 1
+                # No busy-waiting threads (see ParakeetEngine.load).
+                opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+                return opts
+            cpu = ["CPUExecutionProvider"]
+            self._asr = onnx_asr.load_model(
+                self.spec.onnx_asr_name, model_dir(self.spec, self.cache_dir),
+                quantization=self.spec.quantization, sess_options=options(self.threads),
+                providers=cpu)
+            # The verified Silero file, scored one step at a time (onnx-asr's
+            # own VAD object takes whole recordings only).
+            self._vad = rt.InferenceSession(
+                str(model_dir(SILERO_VAD, self.cache_dir) / "silero_vad.onnx"),
+                sess_options=options(1), providers=cpu)
+        except Exception as exc:
+            raise ModelLoadError(
+                f"{label(self.spec.name)} failed to load. {PARAKEET_FIX} "
+                f"({type(exc).__name__}: {exc})") from exc
+        self.reset()
+        return self
+
+    def reset(self):
+        """Forget the stream so far (a new recording, or after a gap)."""
+        import numpy as np
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros(self.CONTEXT, dtype=np.float32)
+
+    def speech_prob(self, window):
+        """Speech probability of one WINDOW-sample step of 16 kHz audio."""
+        import numpy as np
+        window = np.asarray(window, dtype=np.float32)
+        frame = np.concatenate([self._context, window]).reshape(1, -1)
+        out, self._state = self._vad.run(["output", "stateN"], {
+            "input": frame, "state": self._state,
+            "sr": np.array([SAMPLE_RATE], dtype=np.int64)})
+        self._context = window[-self.CONTEXT:]
+        return float(out[0, 0])
+
+    def transcribe_phrase(self, audio):
+        """The text of one phrase of 16 kHz float32 audio."""
+        import numpy as np
+        if self._asr is None:
+            raise ModelLoadError(f"{label(self.spec.name)} is not loaded.")
+        return str(self._asr.recognize(np.asarray(audio, dtype=np.float32),
+                                       sample_rate=SAMPLE_RATE))
+
+
 # --- Command line ---------------------------------------------------------------
 
 def _main(argv):

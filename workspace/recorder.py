@@ -4,6 +4,9 @@
 #
 #   - Capture runs in PortAudio's callback (via sounddevice). The callback only
 #     copies each block into a bounded queue; a writer thread does all disk work.
+#   - Live drafts (#104, off by default) take a copy of each block from the
+#     writer thread through `tap`, never from the callback. The tap must not
+#     block; if it raises, it is turned off and the recording carries on.
 #   - Audio is written in durable chunks (CHUNK_S seconds of 16-bit mono PCM):
 #     each chunk is written to a temporary file, flushed to disk and renamed,
 #     then the journal (journal.json) is replaced atomically. A crash loses at
@@ -295,6 +298,9 @@ class Recording:
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
         self._writer = None
         self._stream = None
+        # Live drafts (#104): tap(start, block) for each block the writer
+        # takes, start being where it begins in the recording (frames).
+        self.tap = None
         self.journal = {
             "id": self.folder.name, "device": device, "device_name": device_name,
             "rate": self.rate, "started_at": clock(), "state": "recording",
@@ -505,6 +511,7 @@ class Recording:
                 if block is not None:
                     block, stamp, segment = block
                     self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
+                    self._tap_block(block)       # live drafts: the block alone
                     self._buffer.append(block)
                     self._buffered += len(block)
                 elif self._stop.is_set():
@@ -565,6 +572,17 @@ class Recording:
                 self._save_journal()
             except OSError:
                 pass        # the journal on disk still lists every saved chunk
+
+    def _tap_block(self, block):
+        """Hand the block to live drafts. Drafts never affect the recording:
+        a tap that fails is turned off, with nothing in the journal."""
+        tap = self.tap
+        if tap is None:
+            return
+        try:
+            tap(self.journal["frames"] + self._buffered, block)
+        except Exception:
+            self.tap = None
 
     def _frozen(self, tick):
         """The watchdog has missed its beat by more than SLEEP_S: the whole
