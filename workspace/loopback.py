@@ -608,7 +608,7 @@ class LoopbackStream:
     16-bit mono block at LOOPBACK_RATE with the monotonic time of its first
     frame; notify(kind, name) is told "switched" (now following a new default
     output, name given), "reopened" (the same output again after it was
-    interrupted, name given), "no_output" (no output device: silence until one
+    interrupted or after a spell with none, name given), "no_output" (no output device: silence until one
     appears) and "failed" (capture stopped; nothing more arrives). Both are
     called on the reader thread. start() returns once capture is running, or
     raises LoopbackError; stop() and close() may be called more than once."""
@@ -698,6 +698,11 @@ class LoopbackStream:
                 if self._tick() >= due:
                     self._deliver(pacer, pending, lost)
                     pending, lost, due = [], False, self._tick() + POLL_S
+            if pending:
+                # Read before the stop but not yet handed on: delivered, not
+                # dropped (the recorder still takes blocks until its stream
+                # is closed).
+                self._deliver(pacer, pending, lost)
         finally:
             if client is not None:
                 client.close()
@@ -710,6 +715,7 @@ class LoopbackStream:
             client, self.device_name, current = _endpoint_client(api, enumerator)
             if client is None:
                 raise LoopbackError("This computer has no sound output to record.")
+            last = current            # the output last opened, kept while there is none
             pacer = Pacer(LOOPBACK_RATE, self._tick())
             self._opened.set()
             checked = self._tick()
@@ -756,8 +762,10 @@ class LoopbackStream:
                     current = None
                     continue
                 self.device_name = name
-                self._say("reopened" if new_id == current else "switched", name)
-                current = new_id
+                # The same output back (after an interruption, or after a spell
+                # with none) is reopened; any other is a switch.
+                self._say("reopened" if new_id == last else "switched", name)
+                current = last = new_id
         finally:
             if client is not None:
                 client.close()

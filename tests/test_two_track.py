@@ -260,10 +260,13 @@ class FakeClient:
 
 @unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
 class LoopbackEndpointLoopTests(unittest.TestCase):
-    def run_stream(self, opens, default_ids, until, limit=None):
+    def run_stream(self, opens, default_ids, until, limit=None, on_event=None):
         """Run the endpoint reader with fakes until notify has seen `until`
-        (or 10 s pass). opens: what each _endpoint_client call returns or
-        raises; default_ids: a list whose last item is the current default."""
+        (a kind, or a tuple of kinds; or 10 s pass). opens: what each
+        _endpoint_client call returns or raises; default_ids: a list whose last
+        item is the current default. on_event(kind) runs on the reader thread
+        for each notification, after it is recorded."""
+        until = (until,) if isinstance(until, str) else until
         api, events, blocks = FakeApi(), [], []
         clock = iter(i * 0.1 for i in range(10 ** 7))
         done = threading.Event()
@@ -276,7 +279,9 @@ class LoopbackEndpointLoopTests(unittest.TestCase):
 
         def notify(kind, name):
             events.append((kind, name))
-            if kind == until:
+            if on_event is not None:
+                on_event(kind)
+            if kind in until:
                 done.set()
 
         patches = [mock.patch.object(loopback, "_com", lambda: api),
@@ -315,6 +320,32 @@ class LoopbackEndpointLoopTests(unittest.TestCase):
             until="switched")
         self.assertEqual(events, [("switched", "Headset")])
 
+    def test_the_same_output_back_after_none_is_a_reopen_not_a_switch(self):
+        # Round 2 review nit 2: the output goes, none is left, then the same
+        # device comes back. That is the same output reopened, not a switch.
+        first, second = FakeClient(gone_after=3), FakeClient()
+        ids = [None]
+
+        def output_returns(kind):
+            if kind == "no_output":
+                ids.append("dev1")
+
+        stream, events, _, _ = self.run_stream(
+            [(first, "Speakers", "dev1"), (second, "Speakers", "dev1")], ids,
+            until=("reopened", "switched"), on_event=output_returns)
+        self.assertEqual(events, [("no_output", None), ("reopened", "Speakers")])
+        # A different device after none is still a switch.
+        ids[:] = [None]
+
+        def other_returns(kind):
+            if kind == "no_output":
+                ids.append("dev2")
+
+        stream, events, _, _ = self.run_stream(
+            [(FakeClient(gone_after=3), "Speakers", "dev1"), (FakeClient(), "Headset", "dev2")],
+            ids, until=("reopened", "switched"), on_event=other_returns)
+        self.assertEqual(events, [("no_output", None), ("switched", "Headset")])
+
     def test_a_reopen_that_keeps_failing_ends_the_track_after_the_limit(self):
         first = FakeClient(gone_after=2)
         error = loopback.LoopbackError("Computer audio could not be opened.")
@@ -343,6 +374,49 @@ class LoopbackEndpointLoopTests(unittest.TestCase):
                 with self.assertRaises(loopback.LoopbackError):
                     loopback.list_outputs()
             self.assertEqual(sorted(api.released), ["device", "enum"])
+
+
+class FakeProcessClient:
+    """A process-loopback client: one 10 ms block of sound per read."""
+
+    def __init__(self):
+        self.reads, self.closed = 0, False
+
+    def read(self):
+        self.reads += 1
+        return [np.ones(480, np.int16)], False
+
+    def close(self):
+        self.closed = True
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class LoopbackProcessLoopTests(unittest.TestCase):
+    def test_audio_still_waiting_to_be_handed_on_is_delivered_at_stop(self):
+        # Round 2 review nit 3: the process reader hands blocks on once per
+        # POLL_S. Blocks read since the last hand-on are delivered at stop,
+        # not dropped. The clock stands still, so nothing is due before stop.
+        api, blocks, client = FakeApi(), [], FakeProcessClient()
+        api.kernel32 = types.SimpleNamespace(
+            CreateEventW=lambda *a: 7, CloseHandle=lambda h: None,
+            WaitForSingleObject=lambda h, ms: time.sleep(0.002))
+        with mock.patch.object(loopback, "_com", lambda: api), \
+                mock.patch.object(loopback, "_process_client", lambda a, pid, e: client):
+            stream = loopback.LoopbackStream({"kind": "process", "pid": 1234},
+                                             lambda b, s: blocks.append(b),
+                                             lambda kind, name: None, tick=lambda: 0.0)
+            thread = threading.Thread(target=stream._run, daemon=True)
+            thread.start()
+            deadline = time.time() + 10
+            while client.reads < 5 and time.time() < deadline:
+                time.sleep(0.005)
+            stream._stop.set()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(client.closed)
+        self.assertGreaterEqual(client.reads, 5)
+        sound = sum(int(np.count_nonzero(b)) for b in blocks)
+        self.assertEqual(sound, client.reads * 480)
 
 
 # -- mixdown: one mix, lined up ----------------------------------------------------------
@@ -818,7 +892,7 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertEqual(len(meetings), 1)                       # one meeting, one transcript
         self.assertEqual(list((ws.root / "recordings").iterdir()), [])
         self.assertEqual(ws.recording_status()["reports"][-1]["seconds"], 6.0)
-        reader = media.AudioReader(media.audio_path(ws.media, meetings[0]["id"]))
+        reader = media.open_audio(ws.store, ws.media, meetings[0]["id"])   # sealed since C3a
         try:
             audio = reader.read(16000, 64000)                   # 1 s to 4 s, at 16 kHz
         finally:
