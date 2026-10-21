@@ -225,7 +225,9 @@ def _read_audio(audio):
     encrypted file named in a diarize request: (path, key, context), checked
     here. Read block by block (each authenticated) into one float32 array;
     the file is closed before the model runs. An AudioCryptError goes back
-    as an ordinary error: its message never names the file or the key."""
+    as an ordinary error: its message never names the file or the key. The
+    context holds text only, as the meeting audio's does; a context with
+    other parts (C3b's recorder files) widens this check deliberately."""
     if not (isinstance(audio, tuple) and len(audio) == 3):
         raise ValueError("The speaker identification request is not valid.")
     path, key, context = audio

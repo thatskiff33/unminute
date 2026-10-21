@@ -450,6 +450,25 @@ class FallbackTests(unittest.TestCase):
                 speakers._diarize(mock.Mock(), "pyannote", "a", None, 4, "cuda", "site")
         self.assertEqual(calls, ["cuda"])
 
+    def test_damaged_audio_on_the_card_is_not_read_again_on_the_processor(self):
+        # Code review of #281: audio that does not open (#111 C3a) is not the
+        # card's fault, so the pass fails once, with no processor retry.
+        from workspace import speakers
+        from workspace.worker import WorkerError
+        calls = []
+
+        def fake(handle, model, audio, hint, threads, device="cpu", gpu_site=None):
+            calls.append(device)
+            raise WorkerError("AudioCryptError: The audio file is damaged (cut short). "
+                              "(code U-3F2A1B)")
+        handle = mock.Mock()
+        with mock.patch.object(speakers, "worker_diarize", fake):
+            with self.assertRaises(WorkerError) as e:
+                speakers._diarize(handle, "pyannote", "a", None, 4, "cuda", "site")
+        self.assertEqual(calls, ["cuda"])
+        self.assertNotIn("graphics card", str(e.exception))
+        handle.release_gpu.assert_not_called()
+
     def test_a_cpu_failure_after_fallback_keeps_the_gpu_reason(self):
         from workspace import speakers
         from workspace.worker import WorkerCrashed, WorkerError

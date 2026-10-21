@@ -7,6 +7,7 @@
 #   python -m unittest discover -s tests -v
 
 import base64
+import hashlib
 import importlib.util
 import os
 import pickle
@@ -26,6 +27,9 @@ HAVE_NUMPY = all(importlib.util.find_spec(m) for m in ("numpy", "cryptography"))
 HAVE_AV = HAVE_NUMPY and importlib.util.find_spec("av") is not None
 SR = 16000
 BLOCK = 16384                     # audiocrypt.FRAMES_PER_BLOCK
+# Known answer for test_a_decoded_audio_file_has_a_known_answer (key 0..31, file id 32..63,
+# context ("decoded", "0123456789abcdef" * 2), samples 0, 1/8, 2/8, 3/8).
+KAT_SHA256 = "ea192465193e00416af51823d07d59797e6ac74d81f9606f6e9ca30a6c4d7b19"
 
 if HAVE_NUMPY:
     import numpy as np
@@ -89,6 +93,27 @@ class ReaderTests(unittest.TestCase):
         # Changing it would make every stored meeting's audio unreadable.
         self.assertEqual(media.audio_context("0" * 32), ("decoded", "0" * 32))
         self.assertEqual(media.AUDIO_FILE, "audio.uma")
+
+    def test_a_decoded_audio_file_has_a_known_answer(self):
+        # Crypto review of #281: the tuple above does not pin how the context
+        # is encoded into the file key; these bytes do (with the header, the
+        # nonces and the associated data). A change fails here, not on stored
+        # meetings. Fixed key, file id and samples; nothing else is random.
+        mid = "0123456789abcdef" * 2
+        path = self.root / "kat.uma"
+        with mock.patch.object(audiocrypt.secrets, "token_bytes",
+                               return_value=bytes(range(32, 64))):
+            with audiocrypt.AudioWriter(path, self.key, media.audio_context(mid), "float32",
+                                        1, SR) as w:
+                w.write(np.arange(4, dtype=np.float32) / 8)
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), KAT_SHA256)
+        reader = media.AudioReader(path, self.key, media.audio_context(mid))
+        try:
+            np.testing.assert_array_equal(reader.read(0, 4), np.arange(4, dtype=np.float32) / 8)
+        finally:
+            reader.close()
+        with self.assertRaises(audiocrypt.AudioCryptError):     # another meeting's context
+            media.AudioReader(path, self.key, media.audio_context("f" * 32))
 
     def test_reader_matches_the_old_memory_mapped_reader(self):
         samples = noise((3 * BLOCK + 123) / SR)
@@ -261,6 +286,20 @@ class RunTests(unittest.TestCase):
         damaged = {**source, "original_path": "[Could not be read]",
                    "damaged": ("original_path",)}
         self.assertEqual(runner.damaged_audio_note(damaged), runner.AUDIO_DAMAGED_KEPT)
+
+    def test_the_missing_audio_note_depends_on_the_source(self):
+        # Security review of #281: a microphone recording cannot be imported
+        # again, so missing audio says so only when it can.
+        original = self.root / "synthetic-original.wav"
+        original.write_bytes(b"synthetic")
+        _, sid, _ = self.meeting(seconds=30, original_path=str(original))
+        source = self.store.source(sid)
+        self.assertEqual(runner.missing_audio_note(source), runner.AUDIO_MISSING_REIMPORT)
+        self.assertIn("Import the recording again", runner.AUDIO_MISSING_REIMPORT)
+        original.unlink()                                    # deleted or moved since
+        for case in (source, None, {**source, "original_path": None}):
+            self.assertEqual(runner.missing_audio_note(case), runner.AUDIO_MISSING_KEPT)
+        self.assertNotIn("Import", runner.AUDIO_MISSING_KEPT)
 
 
 @unittest.skipUnless(HAVE_AV, "numpy/cryptography/PyAV not installed")

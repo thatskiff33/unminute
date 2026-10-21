@@ -460,6 +460,7 @@ class WorkspaceTests(unittest.TestCase):
         # #111 C3a: the audio file is encrypted under the meeting's audio key;
         # without the key it cannot be read, and a new key is never made.
         from workspace import app as app_module
+        from workspace import runner
         ws = self.open(start=False, speakers=True)
         ws._import_one(self.rec)
         mid = ws.meetings()[0]["id"]
@@ -468,7 +469,8 @@ class WorkspaceTests(unittest.TestCase):
         self.assertTrue(media.audio_path(ws.media, mid).is_file())
         ws.start()
         self.assertTrue(ws.wait_idle(30))
-        self.assertEqual(ws.store.meeting(mid)["last_error"], app_module.AUDIO_MISSING)
+        # A file import whose original is not recorded (#24) cannot be imported again.
+        self.assertEqual(ws.store.meeting(mid)["last_error"], runner.AUDIO_MISSING_KEPT)
         self.assertEqual(ws.store.passage_count(ws.store.active_version(mid)["id"]), 0)
         self.assertEqual(ws.store._all("SELECT purpose FROM content_keys WHERE meeting_id = ? "
                                        "AND purpose = 'audio'", (mid,)), [])
@@ -499,6 +501,59 @@ class WorkspaceTests(unittest.TestCase):
         vid = ws.store.active_version(mid)["id"]
         self.assertEqual([c["failures"] for c in ws.store.chunks(vid)],
                          [0] * len(ws.store.chunks(vid)))
+
+    def assert_only_the_speaker_pass_failed(self, ws, mid, total, statuses):
+        """D4: the finished transcript stays in Review, unchanged, and only the
+        speaker pass records the failure, with fixed wording (P3)."""
+        from workspace import speakers
+        m = ws.store.meeting(mid)
+        self.assertNotEqual(m["phase"], "error")
+        self.assertIsNone(m["last_error"])
+        d = ws.detail(mid)
+        self.assertEqual((d["stage"], d["speakers"]["status"]), ("review", "failed"))
+        self.assertTrue(d["speakers"]["error"].startswith(speakers.AUDIO_UNREADABLE),
+                        d["speakers"]["error"])
+        self.assertNotIn(str(self.root), d["speakers"]["error"])
+        self.assertEqual(ws.transcript(mid)["total"], total)
+        runs = ws.store.speaker_runs(ws.store.active_version(mid)["id"])
+        self.assertEqual([r["status"] for r in runs], statuses)
+
+    def test_a_damaged_audio_header_fails_only_the_speaker_pass(self):
+        # Code review of #281: a header that does not open during a speaker
+        # pass sent a finished transcript back to "Needs attention". Like a
+        # block that does not open during the pass, it fails that pass only.
+        ws = self.open(speakers=False)
+        mid = self.imported(ws)
+        total = ws.transcript(mid)["total"]
+        flip_path = media.audio_path(ws.media, mid)
+        data = bytearray(flip_path.read_bytes())
+        data[20] ^= 1                                        # inside the header
+        flip_path.write_bytes(bytes(data))
+        ws.settings.update(speakers=True)                    # an automatic pass is due
+        ws._wake.set()
+        self.assertTrue(ws.wait_idle(60))
+        self.assert_only_the_speaker_pass_failed(ws, mid, total, ["failed"])
+        ws.rerun_speakers(mid, 2)                            # Identify again: the same
+        self.assertTrue(ws.wait_idle(60))
+        self.assert_only_the_speaker_pass_failed(ws, mid, total, ["failed", "failed"])
+
+    def test_an_audio_key_that_will_not_open_fails_only_the_speaker_pass(self):
+        ws = self.open(speakers=True)
+        mid = self.imported(ws)
+        total = ws.transcript(mid)["total"]
+        with ws.store.tx() as db:                            # one byte of the wrapped key
+            [(rowid, blob)] = db.execute("SELECT rowid, wrapped FROM content_keys WHERE "
+                                         "meeting_id = ? AND purpose = 'audio'",
+                                         (mid,)).fetchall()
+            blob = bytearray(blob)
+            blob[-1] ^= 1
+            db.execute("UPDATE content_keys SET wrapped = ? WHERE rowid = ?",
+                       (bytes(blob), rowid))
+        ws.rerun_speakers(mid, 2)
+        self.assertTrue(ws.wait_idle(60))
+        # The earlier pass's labels stay current; the failed one is the latest.
+        self.assert_only_the_speaker_pass_failed(ws, mid, total, ["done", "failed"])
+        self.assertIn("(code U-", ws.detail(mid)["speakers"]["error"])   # incident: type only
 
     def test_discard_stops_work_and_removes_the_meeting_securely(self):
         import time as _time

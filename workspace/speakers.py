@@ -21,6 +21,10 @@ from workspace.worker import WorkerStopped, gpu_failure
 from workspace.worker import diarize as worker_diarize
 
 MAX_HINT = 20
+# The meeting's audio did not open for a speaker pass (#111 C3a): its header,
+# or its audio key. Fixed text (P3); only that pass fails (D4).
+AUDIO_UNREADABLE = ("Speakers were not identified: the meeting audio could not be read. "
+                    "It may be damaged. The transcript is unaffected.")
 
 
 class SpeakerResult:
@@ -70,6 +74,18 @@ def run_speakers(store, mid, vid, handle, audio, *, threads, hint=None, model="p
         _end(store, rid, "failed", f"Could not save speakers: {exc}"[:300])
         return SpeakerResult.FAILED
     return SpeakerResult.DONE
+
+
+def record_failure(store, vid, why, *, hint=None, skips_seen=None):
+    """A speaker pass whose audio did not open before it started: recorded as
+    a failed run, which waits for the user's Identify again like any failed
+    pass. The transcript and the meeting's phase are untouched (D4), as when
+    a block does not open during the pass. Returns a SpeakerResult."""
+    rid = store.start_speaker_run(vid, hint, skips_seen=skips_seen)
+    if rid is None:
+        return SpeakerResult.SKIPPED      # the user skipped after this pass was chosen
+    _end(store, rid, "failed", why[:300])
+    return SpeakerResult.FAILED
 
 
 def _diarize(handle, model, audio, hint, threads, device, gpu_site):

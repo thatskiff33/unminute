@@ -42,35 +42,50 @@ MAX_ATTEMPTS = 3
 DAMAGED_NOTE = ("This meeting's text could not be saved because part of it could not be "
                 "read. Nothing was changed.")
 
-# The meeting's decoded audio changed or is damaged (#111 C3a). Fixed texts,
-# chosen by source (damaged_audio_note): "Import the recording again" only
-# when that is possible.
+# The meeting's decoded audio changed, is damaged or is missing (#111 C3a).
+# Fixed texts, chosen by source (damaged_audio_note, missing_audio_note):
+# "Import the recording again" only when that is possible.
 AUDIO_DAMAGED_REIMPORT = ("The meeting audio is damaged; it was not transcribed. Import the "
                           "recording again.")
 AUDIO_DAMAGED_KEPT = "The meeting audio is damaged. The transcript so far is kept."
+# Its audio file or audio key is missing: the same choice (missing_audio_note).
+AUDIO_MISSING_REIMPORT = ("The meeting audio is missing from the workspace. Import the "
+                          "recording again.")
+AUDIO_MISSING_KEPT = ("The meeting audio is missing from the workspace. The transcript so far "
+                      "is kept.")
 
 
-def damaged_audio_note(source):
-    """The note for damaged meeting audio: "Import the recording again" only
-    for a file import whose original is still at its recorded path (a local
-    path; kept only with deletion authority, #24). A microphone recording,
-    an original that was deleted or moved, or a path that cannot be read or
-    is not local gets the note that keeps the transcript so far."""
+def can_import_again(source):
+    """Whether the meeting's recording can be imported again: a file import
+    whose original is still at its recorded path (a local path; kept only
+    with deletion authority, #24). Not a microphone recording, an original
+    that was deleted or moved, or a path that cannot be read or is not local."""
     import os
     from pathlib import Path
 
     from workspace import safe_paths
     path = source.get("original_path") if source else None
     if not isinstance(path, str) or not path or "original_path" in source.get("damaged", ()):
-        return AUDIO_DAMAGED_KEPT
+        return False
     try:
         if os.name == "nt":
             safe_paths.check_raw(path)       # never a network or device path
-        if Path(path).is_file():
-            return AUDIO_DAMAGED_REIMPORT
+        return Path(path).is_file()
     except (safe_paths.UnsafePathError, OSError, ValueError):
-        pass
-    return AUDIO_DAMAGED_KEPT
+        return False
+
+
+def damaged_audio_note(source):
+    """The note for damaged meeting audio: "Import the recording again" only
+    when that is possible (can_import_again); otherwise the note that keeps
+    the transcript so far."""
+    return AUDIO_DAMAGED_REIMPORT if can_import_again(source) else AUDIO_DAMAGED_KEPT
+
+
+def missing_audio_note(source):
+    """The note for missing meeting audio (its file or its audio key), chosen
+    as damaged_audio_note is (security review of #281)."""
+    return AUDIO_MISSING_REIMPORT if can_import_again(source) else AUDIO_MISSING_KEPT
 
 
 def _note_error(store, mid, message):
