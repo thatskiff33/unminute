@@ -418,7 +418,7 @@ function retentionBanner(r) {
   return notice(action[0] || action[1] ? "alert" : "hold", parts.join(" "));
 }
 
-async function renderReminders(r) {
+function renderReminders(r) {
   const lines = [];
   const banner = retentionBanner(r);
   if (banner) lines.push(banner);
@@ -2661,8 +2661,16 @@ async function refresh() {
                   state.view !== state.listsView || state.sinceLists >= LIST_REFRESH_POLLS;
     if (lists) {
       // The reminders first, so the rows can carry their retention chips:
-      // the same two calls as before, in the other order.
-      const reminders = state.view === "meetings" ? await call("reminders") : null;
+      // the same two calls as before, in the other order. A failed reminders
+      // call is reported but still lets the list and sidebar count draw.
+      let reminders = null;
+      if (state.view === "meetings") {
+        try {
+          reminders = await call("reminders");
+        } catch (err) {
+          say(String((err && err.message) || err));
+        }
+      }
       await renderLists(reminders);
       if (reminders) renderReminders(reminders);
       state.listsSeen = state.changes;

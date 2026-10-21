@@ -138,7 +138,7 @@ Ordinary unfinished work shows its age and next step on the Meetings page.
 
 A meeting whose next step has waited a while gets a label beside its title on the Meetings page, and a banner at the top says how many are waiting. Nothing is blocked or deleted: the label only says that the meeting is still on this computer and needs you.
 
-- **Review due** appears when the next step has waited 30 days or more, unless your organisation sets another number of days or turns it off.
+- **Review due** appears when the next step has waited 30 days or more, unless your organisation sets another number of days or turns it off. Those meetings move to the top of their group, after any that require action.
 - **Action required** appears only if your organisation turns it on and sets its number of days. Those meetings are listed first in their group, and the banner says what your organisation asks for.
 
 Each step has its own clock:

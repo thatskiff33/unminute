@@ -183,6 +183,23 @@ class NavigationTests(unittest.TestCase):
             self.assertNotRegex(decls, r"display\s*:\s*(inline-)?grid", selector)
             self.assertNotRegex(decls, r"grid-(column|row|area|template)", selector)
 
+    def test_a_reminders_failure_still_draws_the_meeting_list(self):
+        # #111 C6 review: refresh fetches the reminders before the list, so the
+        # rows carry their retention chips. A failed reminders call must not
+        # skip renderLists (the list and sidebar count would go stale), and
+        # renderReminders must be a plain function, so a throw inside it
+        # reaches refresh's catch rather than becoming an unhandled rejection.
+        import re
+        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        body = re.search(r"\nasync function refresh\(\) \{\n(.*?)\n\}\n", script, re.S)
+        self.assertIsNotNone(body, "refresh not found")
+        before_list = body.group(1).split("await renderLists(", 1)[0]
+        own_catch = r"try \{\s*reminders = await call\(\"reminders\"\);\s*\}\s*catch \(err\) \{"
+        self.assertRegex(before_list, own_catch,
+                         "the reminders call must have its own catch before renderLists")
+        self.assertNotRegex(script, r"async function renderReminders\(")
+        self.assertRegex(script, r"\nfunction renderReminders\(r\) \{")
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):
