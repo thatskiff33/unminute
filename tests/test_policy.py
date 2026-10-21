@@ -225,7 +225,7 @@ class ParseTests(unittest.TestCase):
                 return False
         done = OSError(None, "No more data is available", None, policy.ERROR_NO_MORE_ITEMS)
         rows = [("AllowModelDownloads ", 0, winreg.REG_DWORD),
-                ("AllowModelDownlоads", 0, winreg.REG_DWORD),
+                ("AllowModelDownl\u043eads", 0, winreg.REG_DWORD),
                 *((f"Other{i}", 1, winreg.REG_DWORD) for i in range(30)), done]
         with mock.patch.object(winreg, "OpenKey", return_value=Key()), \
                 mock.patch.object(winreg, "EnumValue", side_effect=rows):

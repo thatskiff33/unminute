@@ -203,17 +203,17 @@ class WorkspaceTests(unittest.TestCase):
         # meeting list. Transcript edits keep such characters (not labels).
         from workspace.app import _clean_text
         ws = self.open(start=False)
-        named = self.root / "Board‮v4p.mp3.wav"
+        named = self.root / "Board\u202ev4p.mp3.wav"
         named.write_bytes(self.rec.read_bytes())
         ws._import_one(named)
         [m] = ws.meetings()
         self.assertEqual(m["title"], "Boardv4p.mp3")
-        ws.rename(m["id"], "‮Budget​ review⁦")
+        ws.rename(m["id"], "\u202eBudget\u200b review\u2066")
         self.assertEqual(ws.meetings()[0]["title"], "Budget review")
-        ws.rename(m["id"], "‮​ ")
+        ws.rename(m["id"], "\u202e\u200b ")
         self.assertEqual(ws.meetings()[0]["title"], "Untitled meeting")
-        self.assertEqual(_clean_text("Aroha‮", 40, label=True), "Aroha")
-        self.assertEqual(_clean_text("kept‍", 40), "kept‍")
+        self.assertEqual(_clean_text("Aroha\u202e", 40, label=True), "Aroha")
+        self.assertEqual(_clean_text("kept\u200d", 40), "kept\u200d")
 
     def test_transcribe_again_is_offered_unless_transcribing_reviewed_or_without_audio(self):
         ws = self.open(start=False)
