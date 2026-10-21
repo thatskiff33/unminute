@@ -7,7 +7,10 @@
   entry. It removes only what the installer put in the install folder
   (versions, current.json and this script); if the folder holds anything
   else, or is neither an install nor the folder the uninstall entry names, it
-  removes nothing. When the uninstall entry names another folder that still
+  removes nothing. It never removes through a link or junction: one at
+  versions, current.json or uninstall.ps1 stops it before anything is removed,
+  and one inside a version is removed as a link, leaving what it points to
+  (#297). When the uninstall entry names another folder that still
   holds an install, the shortcut and the entry are that install's, and are
   kept. It does NOT remove the workspace (meetings, holds, settings) or the
   downloaded models: meeting content is only removed through the app's own
@@ -53,13 +56,14 @@ function Write-Warn([string]$Message) {
 # uninstall carries on; anything but success only says to check the setting.
 
 # The current version's folder, if it can run the restore: a plain folder name from
-# current.json (never a path), and a version.json that lists the feature, so an older
-# version never takes the switch for an ordinary start and opens its window.
+# current.json (never a path; \z, unlike $, refuses a final newline), and a
+# version.json that lists the feature, so an older version never takes the switch
+# for an ordinary start and opens its window.
 function Get-LidRestoreVersion {
     $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
     if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) { return $null }
     $version = [string](Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).version
-    if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$') { return $null }
+    if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z') { return $null }
     $target = [IO.Path]::Combine($Options.InstallDir, "versions", $version)
     $info = Get-Content -LiteralPath ([IO.Path]::Combine($target, "version.json")) -Raw | ConvertFrom-Json
     if (@($info.features) -notcontains "restore-lid") { return $null }
@@ -193,6 +197,36 @@ function Invoke-LockRetry([scriptblock]$Action) {
     }
 }
 
+# Removes a folder the installer made without following links (#297): a junction or
+# symbolic link found inside it is removed as a link, and what it points to is left
+# alone. A folder that is itself a link is never removed. Windows PowerShell's own
+# Remove-Item -Recurse is not relied on for this. install.ps1 and uninstall.ps1 have
+# the same functions (tests/test_hardening.py keeps them equal).
+function Test-Link([IO.FileSystemInfo]$Item) {
+    return [bool]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Remove-OwnFolder([string]$Path) {
+    $dir = [IO.DirectoryInfo]::new($Path)
+    if (-not $dir.Exists) { return }
+    if (Test-Link $dir) { throw "A folder to remove is a link or junction, so it was left in place." }
+    Remove-FolderTree $dir
+}
+
+function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
+    foreach ($item in $Dir.GetFileSystemInfos()) {
+        if ($item -is [IO.DirectoryInfo] -and -not (Test-Link $item)) { Remove-FolderTree $item; continue }
+        if (-not (Test-Link $item) -and ($item.Attributes -band [IO.FileAttributes]::ReadOnly)) {
+            $item.Attributes = $item.Attributes -bxor [IO.FileAttributes]::ReadOnly
+        }
+        $item.Delete()                  # a file, or the link itself
+    }
+    if ($Dir.Attributes -band [IO.FileAttributes]::ReadOnly) {
+        $Dir.Attributes = $Dir.Attributes -bxor [IO.FileAttributes]::ReadOnly
+    }
+    $Dir.Delete()
+}
+
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so the checks and the removals below use the same path.
@@ -236,20 +270,27 @@ try {
     # mapped drive) stops the uninstall before anything is removed.
     $own = @("versions", "current.json", "uninstall.ps1")
     if (Test-Path -LiteralPath $Options.InstallDir) {
-        $other = @(Get-ChildItem -LiteralPath $Options.InstallDir -Force | Where-Object { $own -notcontains $_.Name })
+        $items = @(Get-ChildItem -LiteralPath $Options.InstallDir -Force)
+        $other = @($items | Where-Object { $own -notcontains $_.Name })
         if ($other.Count) {
             Stop-Uninstall 1 "The install folder holds $($other.Count) item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
+        }
+        # Nothing is removed through a link or junction, or run from one (#297).
+        if (@($items | Where-Object { Test-Link $_ }).Count) {
+            Stop-Uninstall 1 "The install folder holds a link or junction that $AppName did not put there, so nothing was removed. Remove it, then run this again."
         }
     }
     # Before anything is removed: the installed app puts the lid setting back (#191).
     Restore-LidSetting
     if (Test-Path -LiteralPath $Options.InstallDir) {
-        # The script itself lives in InstallDir: remove the rest first.
+        # The script itself lives in InstallDir: remove the rest first, never through
+        # a link (#297): one inside a version is removed as a link.
         foreach ($name in "versions", "current.json") {
-            $path = Join-Path $Options.InstallDir $name
-            if (Test-Path -LiteralPath $path) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Recurse -Force } }
+            $path = [IO.Path]::Combine($Options.InstallDir, $name)
+            if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } }
+            elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } }
         }
-        Remove-Item -LiteralPath $Options.InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+        try { Remove-OwnFolder $Options.InstallDir } catch { }
     }
     # The shortcut and the entry stay only when the entry names another folder that
     # still holds an install: this one was an older or second install. Checked after
