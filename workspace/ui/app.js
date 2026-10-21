@@ -933,6 +933,12 @@ async function renderTranscript() {
     start += page.items.length;
     if (!page.items.length) break;
   }
+  // A search open: its matches are found before the list is redrawn and shown
+  // with it, so the new rows never appear with the old list's count and
+  // highlights. Search opens every passage (#111), which on a long meeting
+  // takes longer than drawing the rows.
+  const query = $("m-search").value.trim();
+  const hits = query ? (await attempt(() => call("search", mid, query, version)) || []) : [];
   // The user may have started editing, or switched meeting or version, while
   // this was loading: never replace a passage being edited; render later.
   if (state.editing || state.mid !== mid || state.version !== version) {
@@ -951,7 +957,8 @@ async function renderTranscript() {
   state.playingRow = null;
   document.scrollingElement.scrollTop = scroll;
   document.querySelector(".transcript-wrap").scrollTop = paneScroll;
-  if ($("m-search").value) runSearch(false);
+  if (query && $("m-search").value.trim() === query) showHits(query, hits, false);
+  else if ($("m-search").value) runSearch(false);       // changed while this loaded
   updatePlayer();
 }
 
@@ -1078,11 +1085,20 @@ async function undo() {
 
 // -- search --------------------------------------------------------------------
 async function runSearch(jump = true) {
+  const q = $("m-search").value.trim(), mid = state.mid, version = state.version;
+  const hits = q ? (await attempt(() => call("search", mid, q, version)) || []) : [];
+  // Typed on, or another meeting or version opened, meanwhile: these matches
+  // are stale (a newer search follows the typing).
+  if ($("m-search").value.trim() !== q || state.mid !== mid || state.version !== version) return;
+  showHits(q, hits, jump);
+}
+
+// A search's matches shown on the rows drawn: highlighted and counted.
+function showHits(q, hits, jump) {
   for (const li of document.querySelectorAll("#transcript li.hit")) li.classList.remove("hit", "current");
-  const q = $("m-search").value.trim();
   $("m-search").closest(".search").classList.toggle("active", !!q);
   if (!q) { state.hits = []; $("m-hits").textContent = ""; $("m-hit-nav").hidden = true; return; }
-  state.hits = await attempt(() => call("search", state.mid, q, state.version)) || [];
+  state.hits = hits;
   for (const id of state.hits) { const row = rowFor(id); if (row) row.classList.add("hit"); }
   $("m-hits").textContent = state.hits.length ? `${state.hits.length} found` : "No matches";
   $("m-hit-nav").hidden = state.hits.length === 0;

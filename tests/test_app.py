@@ -1057,6 +1057,48 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(hits, [ws.transcript(mid, 4999, 1)["items"][0]["id"]])
         self.assertLess(elapsed, 2.0)
 
+    def test_search_in_a_growing_transcript_finds_the_new_passages(self):
+        # tools/workspace_ui_check.py's growing transcript, without the page:
+        # a long first chunk, a search with no match yet, then the chunk that
+        # matches committed while the meeting is open (every value sealed,
+        # #111). Search finds the new passages, by id in transcript order, in
+        # the edited text where there is an edit.
+        ws = self.open(start=False)
+        ws._import_one(write_wav(self.root / "synthetic-growing.wav", 360))
+        mid = ws.meetings()[0]["id"]
+        vid = ws.store.active_version(mid)["id"]
+        pending = [c["idx"] for c in ws.store.chunks(vid, status="pending")]
+        self.assertGreaterEqual(len(pending), 3)
+
+        def commit(idx, n):
+            chunk = next(c for c in ws.store.chunks(vid) if c["idx"] == idx)
+            start, end = chunk["start_sample"] / SR, chunk["end_sample"] / SR
+            gap = (end - start) / n
+            self.assertTrue(ws.store.commit_chunk(vid, idx, [
+                types.SimpleNamespace(start=start + i * gap, end=start + (i + 0.8) * gap,
+                                      text=f"growing passage {idx}.{i} about the plan", words=())
+                for i in range(n)]))
+
+        first, target, later = pending[0], pending[1], pending[-1]
+        commit(first, 3000)
+        query = f"growing passage {target}."
+        self.assertEqual(ws.search(mid, query), [])
+        commit(later, 20)                               # a later chunk first: still none
+        self.assertEqual(ws.search(mid, query), [])
+        commit(target, 20)
+        rows = ws.transcript(mid, 0, 4000)["items"]
+        new = [r["id"] for r in rows if r["text"].startswith(query)]
+        self.assertEqual(len(new), 20)
+        self.assertEqual(ws.search(mid, query), new)
+        self.assertEqual(ws.search(mid, query.upper()), new)
+        # An edit is what is searched: one new passage edited away, one old one in.
+        old = rows[0]["id"]
+        ws.edit(mid, new[0], "Edited while transcribing")
+        ws.edit(mid, old, f"Now about {query} as well")
+        self.assertEqual(ws.search(mid, query), [old] + new[1:])
+        self.assertEqual(ws.search(mid, "edited while"), [new[0]])
+        self.assertEqual(len(ws.search(mid, "growing passage")), 500)    # store's limit
+
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class ApiTests(unittest.TestCase):
@@ -1312,6 +1354,52 @@ class NativeConfirmationTests(unittest.TestCase):
             self.ws._recording = None
             self.ws._indicate()
         self.assertEqual(shown, [(window, True), (window, False)])
+
+
+def js_function(source, name):
+    """The body of a top-level JavaScript function in source, by its braces
+    (the functions read here have none unbalanced in strings)."""
+    start = source.index("{", source.index(f"function {name}("))
+    depth = 0
+    for i in range(start, len(source)):
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        if depth == 0:
+            return source[start + 1:i]
+    raise ValueError(f"function {name} has no end")
+
+
+class PageSearchTests(unittest.TestCase):
+    """The transcript list redrawn with a search open (a chunk committed while
+    a long meeting is open, tools/workspace_ui_check.py "growing transcript").
+    Since every passage is sealed (#111, schema 2), search opens each one and
+    takes longer than drawing the rows. The page used to draw the new rows and
+    only then start the search, so the rows appeared with the old list's
+    count ("No matches") and highlights until it returned; the real-window
+    check read the count then. The matches are now found before the list is
+    redrawn and shown with it, in the same task."""
+
+    @classmethod
+    def setUpClass(cls):
+        page = (Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js")
+        cls.page = page.read_text(encoding="utf-8")
+
+    def test_a_redraw_shows_its_matches_with_the_rows(self):
+        body = js_function(self.page, "renderTranscript")
+        drawn = body.index("list.replaceChildren(")
+        self.assertIn('call("search", mid, query, version)', body[:drawn],
+                      "the matches are not found before the list is redrawn")
+        after = body[drawn:]
+        self.assertIn("showHits(query, hits, false)", after)
+        self.assertNotIn("await", after, "something is awaited between the rows and their matches")
+        self.assertNotIn("await", js_function(self.page, "showHits"))
+
+    def test_a_search_answered_late_never_replaces_a_newer_one(self):
+        body = js_function(self.page, "runSearch")
+        searched = body.index('call("search", mid, q, version)')
+        stale = body.index('$("m-search").value.trim() !== q || state.mid !== mid '
+                           '|| state.version !== version) return;')
+        self.assertLess(searched, stale)
+        self.assertLess(stale, body.index("showHits(q, hits, jump)"))
 
 
 if __name__ == "__main__":
