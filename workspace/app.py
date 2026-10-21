@@ -440,16 +440,17 @@ class Workspace:
         blocking it. Only the workspace in its own place with the app's key
         protector copies records to the Windows Event Log: a workspace opened
         elsewhere (tests and the check tools) keeps its file only, so test
-        runs add nothing under the app's source. Tests (another protector)
-        also have a record that breaks its rules raise, rather than be
-        refused and logged."""
+        runs add nothing under the app's source. A record that breaks its
+        rules is refused, counted and logged by type; it never raises, in
+        tests too (their fakes need not use the app's ids), so the app tests
+        check that nothing was refused."""
         from workspace.store import SCHEMA_VERSION, under_workspace_root
         real = self.store.protector.name == keystore.APP_PROTECTOR
         if mirror is None and real and os.name == "nt" \
                 and under_workspace_root(self.store.path):
             mirror = audit.EventLogMirror()
         log = audit.AuditLog(self.root / "audit", mirror=mirror, log=self.log,
-                             new_workspace=self.store.new_root, strict=not real)
+                             new_workspace=self.store.new_root)
         locked = self.store.locked
         if locked is not None:
             log.record("locked", reason=locked.reason, winerror=locked.code)
@@ -2655,22 +2656,29 @@ class Workspace:
             raise WorkspaceError("Choose what to copy.")
         out = self._checked(mid, tid, kind, expected, anonymise)
         sequence = self._handoff(clipboard.copy_text, out[kind])
-        self.audit.record("handoff_copied", what=kind, **self._handoff_fields(mid, out))
+        self._record_handoff("handoff_copied", mid, out, what=kind)
         minutes = self.policy.current().get("ClipboardClearMinutes")
         if minutes:
             self._schedule_clipboard_clear(sequence, minutes * 60)
         return {"chars": len(out[kind]), "long": out["long"] and kind == "combined",
                 "clears_in_minutes": minutes or None}
 
-    @staticmethod
-    def _handoff_fields(mid, out):
-        """What the audit log keeps of a handoff: the meeting, whether the
-        template is a built-in one (possibly edited) or the user's own, and
-        counts. Never the template's text or anything copied (#111 C5)."""
-        return {"meeting": mid,
-                "template": "built_in" if out["template"]["id"] in handoff.BUILTIN else "custom",
-                "names_replaced": bool(out["anonymised"]), "omitted": out["omitted"],
-                "redactions": out["redactions"]}
+    def _record_handoff(self, kind, mid, out, **extra):
+        """The audit record of a handoff that left the app: the meeting,
+        whether the template is a built-in one (possibly edited) or the
+        user's own, and counts. Never the template's text or anything copied
+        (#111 C5). A handoff whose details cannot be read for the record is
+        logged as an incident and still goes ahead."""
+        try:
+            fields = {"meeting": mid,
+                      "template": ("built_in" if out["template"]["id"] in handoff.BUILTIN
+                                   else "custom"),
+                      "names_replaced": bool(out["anonymised"]), "omitted": out["omitted"],
+                      "redactions": out["redactions"], **extra}
+        except (KeyError, TypeError) as exc:
+            self.log.incident("audit", exc)
+            return
+        self.audit.record(kind, **fields)
 
     # -- copy and open the assistant (#109) ---------------------------------------------
 
@@ -2874,7 +2882,7 @@ class Workspace:
         except OSError as exc:
             reason = exc.strerror or "file error"
             raise WorkspaceError(f"Could not save the file: {reason}.") from exc
-        self.audit.record("handoff_saved", **self._handoff_fields(mid, out))
+        self._record_handoff("handoff_saved", mid, out)
         return {"chars": len(out["markdown"]), "name": target.name}
 
     # -- setup (#19) ----------------------------------------------------------------------

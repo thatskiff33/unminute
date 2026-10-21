@@ -11,6 +11,7 @@
   "workspace/app.py",
   "workspace/asr_engines.py",
   "workspace/audiocrypt.py",
+  "workspace/audit.py",
   "workspace/chunking.py",
   "workspace/cleanup.py",
   "workspace/clipboard.py",

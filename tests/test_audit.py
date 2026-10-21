@@ -720,6 +720,7 @@ class WorkspaceAuditTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(120))
         ws.start_recording(3, consent=record_)
         ws.discard_recording()
+        self.assertEqual(ws.audit.stats["refused"], 0)    # every call site keeps the rules
         ws.close()
         self.ws = None
         folder = self.root / "ws" / "audit"
@@ -796,6 +797,7 @@ class WorkspaceAuditTests(unittest.TestCase):
         ws.retry_cleanup("e" * 32)
         ws.remove_folder("e" * 32)
         self.assertEqual(self.audit_kinds(), before + ["folder_added"])
+        self.assertEqual(ws.audit.stats["refused"], 0)
 
     def test_confirm_and_retry_cleanup_are_recorded_only_when_they_change_a_job(self):
         from workspace import cleanup
@@ -865,7 +867,7 @@ class WorkspaceAuditTests(unittest.TestCase):
                           allow_test_engines=True, battery=False, protector=like_real)
         try:
             self.assertIsNone(other.audit.mirror)
-            self.assertFalse(other.audit.strict)
+            self.assertFalse(other.audit.strict)          # refused and logged, never raised
             with mock.patch("workspace.store.under_workspace_root", return_value=True), \
                     mock.patch.object(audit, "EventLogMirror", return_value="windows"), \
                     mock.patch.object(audit, "AuditLog") as made:
