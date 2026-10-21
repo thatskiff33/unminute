@@ -22,10 +22,12 @@
 # user (compare_event_log).
 #
 # Segments rotate at SEGMENT_BYTES; past MAX_BYTES the oldest is deleted and a
-# segment_dropped record says which (so deleting old segments by hand shows).
+# segment_dropped record says which, by number and last line (so deleting old
+# segments by hand shows while the drop records around it are kept).
 # A line cut short by a crash is left as it is: the next record starts a new
-# segment with tail_damaged. Page-reachable kinds are rate-limited, and what
-# is held back is counted (suppressed). A failed write never blocks or undoes
+# segment with tail_damaged. Every kind but the internal ones is rate-limited
+# (those the page reaches, and also imports and the cleanup loop's records),
+# and what is held back is counted (suppressed). A failed write never blocks or undoes
 # the action that was recorded: it is counted, and write_failed says how many
 # at the next write.
 #
@@ -49,13 +51,15 @@ SOURCE = "Unminute"                  # the Event Log source (unregistered: per-u
 SEGMENT_BYTES = 1 << 20              # a segment rotates at 1 MB
 MAX_BYTES = 16 << 20                 # the folder keeps at most 16 MB (about 80,000 records)
 TAIL_BYTES = 64 * 1024               # how much of the newest segment is read at open
-RATE_PER_KIND_MINUTE = 20            # page-reachable kinds: records a minute, per kind
+RATE_PER_KIND_MINUTE = 20            # LIMITED kinds: records a minute, per kind
 RATE_TOTAL_HOUR = 200                # ...and all of them together, an hour
 MIRROR_RETRY_S = 60.0                # a failing Event Log is tried again this often
 CLOSE_DRAIN_S = 2.0                  # at close, the mirror queue is drained for this long
 ZERO = "0" * 64                      # prev of a chain's first record
 BIG = 10 ** 12
-SEGMENT = re.compile(r"audit-([0-9]{6})\.jsonl\Z")
+# Six digits, or more without a leading zero (past 999999), so no two names
+# share a number.
+SEGMENT = re.compile(r"audit-([0-9]{6}|[1-9][0-9]{6,11})\.jsonl\Z")
 HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 MIRROR_TEXT = re.compile(r"Unminute audit v1 chain=([0-9a-f]{32}) seq=([0-9]{1,12}) "
@@ -151,8 +155,8 @@ KINDS = {
     "folder_removed": (1602, INFO, {"folder": _id, "had_authority": _bool}),
     "tail_damaged": (1900, WARNING, {"bytes": _count}),
     "write_failed": (1901, WARNING, {"count": _count}),
-    "segment_dropped": (1902, WARNING, {"first_seq": _opt_count, "last_seq": _count,
-                                        "last_hash": _hash}),
+    "segment_dropped": (1902, WARNING, {"segment": _count, "first_seq": _opt_count,
+                                        "last_seq": _count, "last_hash": _hash}),
     "mirror_gap": (1903, WARNING, {"first_seq": _count, "last_seq": _count}),
     "suppressed": (1904, WARNING, {"of_kind": None, "count": _count}),   # of_kind: LIMITED
 }
@@ -309,13 +313,17 @@ def _scan(folder):
 
 def verify(folder):
     """Check the whole log. Content-free counts: result "ok", "broken",
-    "empty" or "unreadable"; records, chains (chains started here), segments,
-    first_seq and last_seq (oldest and newest kept), head (the newest whole
-    line's hash), broken_at and reason (where and why it breaks), tail
-    ("unfinished": the newest segment ends in a line with no line end, which
-    the app may be writing; checked as a cut-short line at the next open)."""
-    out = {"result": "empty", "records": 0, "chains": 0, "segments": 0, "first_seq": None,
-           "last_seq": None, "head": None, "broken_at": None, "reason": None, "tail": None}
+    "empty" or "unreadable"; records, chains (chains started here), starts
+    (those chain starts by their `previous`: "missing" or "unreadable" means
+    the history before it is gone), segments, first_seq and last_seq (oldest
+    and newest kept), head (the newest whole line's hash), broken_at and
+    reason (where and why it breaks), tail ("unfinished": the newest segment
+    ends in a line with no line end, which the app may be writing; checked
+    as a cut-short line at the next open)."""
+    out = {"result": "empty", "records": 0, "chains": 0,
+           "starts": {"first_use": 0, "missing": 0, "unreadable": 0}, "segments": 0,
+           "first_seq": None, "last_seq": None, "head": None, "broken_at": None,
+           "reason": None, "tail": None}
     try:
         scanned = _scan(folder)
     except OSError:
@@ -324,7 +332,7 @@ def verify(folder):
     nonempty = [i for i, (_, lines, torn) in enumerate(scanned) if lines or torn]
     newest = nonempty[-1] if nonempty else -1
     first = chain = seq = head = expect_torn = None
-    drop = None                                   # the newest segment_dropped record
+    drops = []                                    # segment_dropped records, oldest first
 
     def broken(at, reason):
         return {**out, "result": "broken", "broken_at": at, "reason": reason}
@@ -339,6 +347,7 @@ def verify(folder):
                 if record["seq"] != 1 or record["prev"] != ZERO:
                     return broken(record["seq"], "chain_start")
                 out["chains"] += 1
+                out["starts"][record["previous"]] += 1
                 expect_torn = None                # a new chain starts afresh
             else:
                 if first is not None:             # the oldest kept record is checked below
@@ -359,7 +368,7 @@ def verify(folder):
             chain, seq, head = record["chain"], record["seq"], line_hash(line)
             out["records"] += 1
             if kind == "segment_dropped":
-                drop = record
+                drops.append(record)
         if torn:
             if i == newest:
                 out["tail"] = "unfinished"
@@ -371,9 +380,21 @@ def verify(folder):
         return out                                # empty (or only an unfinished line)
     if expect_torn is not None:
         return broken(seq + 1, "torn")
+    # Every segment before the oldest kept one was dropped at the cap, and
+    # each drop is recorded (C5-4): the kept drop records name consecutive
+    # segment numbers, the newest of them the one just before the oldest
+    # kept segment (or there is none, and the oldest is segment 1). A
+    # segment deleted by hand leaves a number no record names, also once a
+    # later cap drop has run, or before a later chain's first record.
+    for older, newer in zip(drops, drops[1:], strict=False):
+        if newer["segment"] != older["segment"] + 1:
+            return broken(newer["seq"], "front_truncated")
+    if scanned[0][0] != (drops[-1]["segment"] + 1 if drops else 1):
+        return broken(first["seq"], "front_truncated")
+    drop = drops[-1] if drops else None
     if first["kind"] != "chain_start":
-        # The oldest segments were dropped at the cap: the newest drop record
-        # must name exactly the line before the oldest kept one (C5-4).
+        # The newest drop record must name exactly the line before the
+        # oldest kept one.
         if drop is None or drop["last_seq"] != first["seq"] - 1 \
                 or drop["last_hash"] != first["prev"]:
             return broken(first["seq"], "front_truncated")
@@ -432,9 +453,12 @@ def token_user():
 class EventLogMirror:
     """Writes each record's copy to the Windows Application log under
     `source` (unregistered for per-user installs: Windows uses the
-    Application log and shows the text without a description). The user's
-    SID is passed, so Windows records who acted. report() raises OSError when
-    Windows refuses; the AuditLog counts that and tries again later."""
+    Application log and shows the text without a description). The process
+    user's SID is passed (ReportEventW's lpUserSid), and Event Viewer shows
+    it as the account: the writer supplies it, so it attributes the app's
+    own entries but does not prove who wrote an entry. report() raises
+    OSError when Windows refuses; the AuditLog counts that and tries again
+    later."""
 
     def __init__(self, source=SOURCE):
         self.source = source
@@ -537,14 +561,17 @@ def _entries(xml_text, provider):
 
 
 def compare_event_log(folder, source=None, provider=SOURCE, read=None):
-    """Check the file against its Event Log copy (C5-2). For each chain in
-    both, from the oldest seq the file still holds: missing_in_log (file
-    records with no entry, outside a mirror_gap range), missing_in_file
-    (entries whose seq the file does not have, including any past its last
-    record), mismatched (same seq, another line hash: an edited or rebuilt
-    chain); unmatched (entries that do not parse, or name a chain the file
-    does not have). result "match", "differs", "no_log" (no entry) or
-    "unreadable". Counts only: no line, id or SID."""
+    """Check the file against its Event Log copy (C5-2): missing_in_log
+    (file records with no entry, outside a mirror_gap range, from the oldest
+    file record that has one, in file order across chains, so records made
+    up under a new chain count too), missing_in_file (entries of a chain in
+    the file, from the oldest seq the file still holds, whose seq the file
+    does not have, including any past its last record), mismatched (same
+    seq, another line hash: an edited or rebuilt chain); unmatched (entries
+    that do not parse, or name a chain the file does not have: also any
+    other account's on this computer, or other devices' in an exported
+    file). result "match", "differs", "no_log" (no entry) or "unreadable".
+    Counts only: no line, id or SID."""
     out = {"result": "unreadable", "entries": 0, "missing_in_log": 0, "missing_in_file": 0,
            "mismatched": 0, "unmatched": 0}
     try:
@@ -556,16 +583,17 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None):
     out["entries"] = len(entries)
     if not entries:
         return {**out, "result": "no_log"}
-    lines, gaps = {}, {}
+    lines, gaps, order = {}, {}, []
     for _, records, _ in scanned:
         for record, line in records:
             if record is None:
                 continue
             lines.setdefault(record["chain"], {})[record["seq"]] = line_hash(line)
+            order.append((record["chain"], record["seq"]))
             if record["kind"] == "mirror_gap":
                 gaps.setdefault(record["chain"], []).append(
                     (record["first_seq"], record["last_seq"]))
-    logged = {}
+    logged = set()
     for entry in entries:
         if entry is None or entry[0] not in lines:
             out["unmatched"] += 1
@@ -578,13 +606,12 @@ def compare_event_log(folder, source=None, provider=SOURCE, read=None):
             out["missing_in_file"] += 1
         elif lines[chain][seq] != sha:
             out["mismatched"] += 1
-        logged.setdefault(chain, set()).add(seq)
-    for chain, seqs in logged.items():
-        start = min(seqs)
-        for seq in lines[chain]:
-            if seq >= start and seq not in seqs and not any(
-                    a <= seq <= b for a, b in gaps.get(chain, ())):
-                out["missing_in_log"] += 1
+        logged.add((chain, seq))
+    start = next((i for i, key in enumerate(order) if key in logged), len(order))
+    for chain, seq in order[start:]:
+        if (chain, seq) not in logged and not any(
+                a <= seq <= b for a, b in gaps.get(chain, ())):
+            out["missing_in_log"] += 1
     differs = any(out[k] for k in ("missing_in_log", "missing_in_file", "mismatched",
                                    "unmatched"))
     return {**out, "result": "differs" if differs else "match"}
@@ -615,6 +642,8 @@ class AuditLog:
         self._loaded = False                 # the tail is read at the first record
         self._first_load = True
         self._pending = []                   # records owed before the next one (kind, fields)
+        self._owed_drops = []                # segment_dropped records not yet written (kept
+                                             # across a reload: the segment is already gone)
         self._chain = self._head = None
         self._seq = 0
         self._number = 0                     # the segment written to
@@ -631,6 +660,7 @@ class AuditLog:
         self._failing_since = None           # wall-clock time the mirror began to fail
         self._retry_at = None
         self._gap = None                     # [chain, first seq, last seq] without a copy
+        self._inflight = None                # (chain, seq) the mirror thread is reporting
         self.stats = {"written": 0, "failed_writes": 0, "dropped_segments": 0,
                       "suppressed": 0, "refused": 0, "unmirrored": 0}
 
@@ -662,9 +692,10 @@ class AuditLog:
 
     def close(self):
         """Write held-back counts, then drain the mirror for at most
-        CLOSE_DRAIN_S; what is left is recorded as a mirror_gap that covers
-        itself (written now rather than at the next start: no other state is
-        kept)."""
+        CLOSE_DRAIN_S; what is left (and a copy still being reported) is
+        recorded as a mirror_gap that covers itself and any record owed
+        before it (written now rather than at the next start: no other state
+        is kept)."""
         try:
             with self._lock:
                 if self._closed:
@@ -673,9 +704,11 @@ class AuditLog:
         except Exception as exc:
             self._incident(exc)
         thread = self._mirror_thread
+        alive = False
         if thread is not None:
             self._queue.put(None)
             thread.join(CLOSE_DRAIN_S)
+            alive = thread.is_alive()
         try:
             with self._lock:
                 self._closed = True
@@ -691,11 +724,18 @@ class AuditLog:
                 seqs = [item[1] for item in left if item[0] == self._chain]
                 if gap is not None and gap[0] == self._chain:
                     seqs += [gap[1], gap[2]]
+                if alive and self._inflight is not None and self._inflight[0] == self._chain:
+                    seqs.append(self._inflight[1])    # it may yet fail, after this record
                 if seqs:
                     self.stats["unmirrored"] += len(left)
                     first = min(seqs)
-                    self._write("mirror_gap", {"first_seq": first, "last_seq": self._seq + 1},
+                    # last_seq is this record's own seq, worked out after any
+                    # owed record (write_failed, tail_damaged) is written.
+                    self._write("mirror_gap",
+                                lambda: {"first_seq": first, "last_seq": self._seq + 1},
                                 mirror=False)
+                if alive:
+                    self._queue.put(None)             # so the thread ends once Windows answers
         except Exception as exc:
             self._incident(exc)
         if self.mirror is not None and hasattr(self.mirror, "close") and (
@@ -773,7 +813,8 @@ class AuditLog:
         self._loaded = True
 
     def _write(self, kind, fields, mirror=True):
-        """Under the lock: any owed records, then this one. A failure is
+        """Under the lock: any owed records, then this one (fields, or a
+        callable giving them once the owed records are written). A failure is
         counted, and the tail is read again before the next write (a partial
         line then starts a new segment)."""
         try:
@@ -783,10 +824,11 @@ class AuditLog:
             while self._pending:
                 self._append(*self._pending[0])
                 self._pending.pop(0)
+            self._write_owed_drops()
             if self._failed and kind != "write_failed":
                 self._append("write_failed", {"count": self._failed})
                 self._failed = 0
-            self._append(kind, fields, mirror)
+            self._append(kind, fields() if callable(fields) else fields, mirror)
         except OSError as exc:
             self._loaded = False
             self._failed += 1
@@ -807,40 +849,59 @@ class AuditLog:
         if self._size and self._size + len(line) + 1 > SEGMENT_BYTES:
             self._number, self._size = self._number + 1, 0
         path = self.folder / _segment_name(self._number)
+        unsynced = None
         with open(path, "ab") as f:
             f.write(line + b"\n")
             f.flush()
-            os.fsync(f.fileno())
+            try:
+                os.fsync(f.fileno())
+            except OSError as exc:
+                # The whole line is written; only forcing it to disk failed.
+                # It stays a written record (the next one links to it, and
+                # it gets its Event Log copy), never a failed write.
+                unsynced = exc
         self._seq, self._head = record["seq"], line_hash(line)
         self._size += len(line) + 1
         self._total += len(line) + 1
         self.stats["written"] += 1
         if mirror and self.mirror is not None:
             event_id, level, _ = KINDS[kind]
+            if kind == "chain_start" and fields["previous"] != "first_use":
+                level = WARNING              # the history before it is gone (C5 design 5)
             self._queue.put((self._chain, self._seq, event_id, level,
                              mirror_text(record, self._head)))
             if self._mirror_thread is None:
                 self._mirror_thread = threading.Thread(target=self._mirror_loop, daemon=True,
                                                        name="audit-mirror")
                 self._mirror_thread.start()
+        if unsynced is not None:
+            self._incident(unsynced)
 
     def _cap(self):
         """Past MAX_BYTES, delete the oldest segments (never the one being
-        written) and record each: segment_dropped names its last line, so
-        verify can tell a drop from a hand deletion (C5-4)."""
+        written) and record each: segment_dropped names its number and the
+        line before the next kept record, so verify can tell a drop from a
+        hand deletion (C5-4). A segment with no whole line (only a line cut
+        short, or nothing) is dropped too, naming the whole line before the
+        next segment's first record. A drop record that cannot be written
+        yet is owed and written before the next record."""
         while self._total > MAX_BYTES:
             try:
                 segs = [s for s in segments(self.folder) if s[0] != self._number]
                 if not segs:
                     return
-                path = segs[0][1]
+                number, path = segs[0]
                 lines = path.read_bytes().split(b"\n")
                 lines.pop()                       # a cut-short line, or nothing
                 records = [(parse(b), b) for b in lines if b]
-                if not records:
-                    raise OSError("an oldest segment with no whole line")
-                first = records[0][0]
-                last = records[-1]
+                if records:
+                    first, (last, last_line) = records[0][0], records[-1]
+                    fields = {"first_seq": first["seq"] if first else None,
+                              "last_seq": last["seq"] if last else 0,
+                              "last_hash": line_hash(last_line)}
+                else:
+                    last_seq, last_hash = self._before_segment(number)
+                    fields = {"first_seq": None, "last_seq": last_seq, "last_hash": last_hash}
                 size = path.stat().st_size
                 path.unlink()
             except OSError as exc:
@@ -848,35 +909,66 @@ class AuditLog:
                 return
             self._total -= size
             self.stats["dropped_segments"] += 1
-            self._append("segment_dropped",
-                         {"first_seq": first["seq"] if first else None,
-                          "last_seq": last[0]["seq"] if last[0] else 0,
-                          "last_hash": line_hash(last[1])})
+            self._owed_drops.append({"segment": number, **fields})
+            self._write_owed_drops()
+
+    def _before_segment(self, number):
+        """(seq, hash) of the whole line just before segment `number`'s
+        successors, from the first whole record after it: its seq - 1 and
+        its prev ((0, ZERO) when that record starts a chain or none is
+        found)."""
+        for later, path in segments(self.folder):
+            if later <= number:
+                continue
+            data = path.read_bytes()
+            cut = data.find(b"\n")
+            if cut < 0:
+                continue                          # only a line cut short here, too
+            record = parse(data[:cut])
+            if record is not None:
+                return record["seq"] - 1, record["prev"]
+            break
+        return 0, ZERO
+
+    def _write_owed_drops(self):
+        while self._owed_drops:
+            self._append("segment_dropped", self._owed_drops[0])
+            self._owed_drops.pop(0)
 
     # -- the mirror thread -----------------------------------------------------------------
 
     def _mirror_loop(self):
+        """The mirror's state (_gap, _failing_since, _inflight) changes only
+        under the log's lock, which close() reads it under; report() itself
+        runs outside the lock, so writers never wait for Windows."""
         while True:
             item = self._queue.get()
             if item is None:
                 return
             chain, seq, event_id, level, text = item
-            if self._failing_since is not None and self.timer() < self._retry_at:
-                self._add_gap(chain, seq)
-                continue
+            with self._lock:
+                if self._failing_since is not None and self.timer() < self._retry_at:
+                    self._add_gap(chain, seq)
+                    continue
+                self._inflight = (chain, seq)
             try:
                 self.mirror.report(event_id, level, text)
             except Exception as exc:
-                if self._failing_since is None:
-                    self._failing_since = int(self.clock())
-                    self._incident(exc)
-                self._retry_at = self.timer() + MIRROR_RETRY_S
-                self._add_gap(chain, seq)
+                with self._lock:
+                    self._inflight = None
+                    if self._failing_since is None:
+                        self._failing_since = int(self.clock())
+                        self._incident(exc)
+                    self._retry_at = self.timer() + MIRROR_RETRY_S
+                    self._add_gap(chain, seq)
                 continue
-            if self._failing_since is not None:
-                gap, self._gap, self._failing_since = self._gap, None, None
-                if gap is not None and gap[0] == chain:
-                    self.record("mirror_gap", first_seq=gap[1], last_seq=gap[2])
+            with self._lock:
+                self._inflight = None
+                gap = None
+                if self._failing_since is not None:
+                    gap, self._gap, self._failing_since = self._gap, None, None
+            if gap is not None and gap[0] == chain:
+                self.record("mirror_gap", first_seq=gap[1], last_seq=gap[2])
 
     def _add_gap(self, chain, seq):
         self.stats["unmirrored"] += 1

@@ -34,7 +34,8 @@ Privacy
   review for Codex.
 - **P3** Errors, `--status`, receipts, diagnostics, and the audit log and its Event Log entries
   carry no content, names, identifying paths or tokens; the user's SID that Windows attaches to
-  an Event Log entry is not text the app writes (the user's decision, 21 October 2026, #111).
+  an Event Log entry is not text the app writes, and the audit log's random ids stay in its
+  local file, never in its Event Log entries (the user's decisions, 21 October 2026, #111).
   Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`,
   `tests/test_audit.py`.
 

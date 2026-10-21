@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -217,6 +218,18 @@ class StartTests(Base):
         self.assertEqual((new[0]["kind"], new[0]["previous"]), ("chain_start", "unreadable"))
         self.assertEqual(audit.verify(self.folder)["result"], "broken")   # the bad line stays
 
+    def test_verify_says_why_each_chain_started(self):
+        """Deleting the whole folder verifies, but says the history before
+        it is gone (the security review): starts counts each reason."""
+        self.fill(3, self.log(new_workspace=True)).close()
+        self.assertEqual(audit.verify(self.folder)["starts"],
+                         {"first_use": 1, "missing": 0, "unreadable": 0})
+        shutil.rmtree(self.folder)
+        self.fill(2).close()
+        r = audit.verify(self.folder)
+        self.assertEqual((r["result"], r["chains"], r["starts"]),
+                         ("ok", 1, {"first_use": 0, "missing": 1, "unreadable": 0}))
+
 
 class TornTailTests(Base):
     def torn(self, extra=b'{"at":17'):
@@ -287,6 +300,83 @@ class RotationTests(Base):
             self.fill(30).close()
         audit.segments(self.folder)[0][1].unlink()
         self.assertEqual(audit.verify(self.folder)["reason"], "front_truncated")
+
+    def capped(self):
+        return mock.patch.multiple(audit, SEGMENT_BYTES=2000, MAX_BYTES=6000)
+
+    def test_a_hand_deletion_still_shows_after_the_next_cap_drop(self):
+        """The app's next drop names the segment after the deleted one: the
+        drop records' numbers then skip one (C5-4, the crypto review)."""
+        with self.capped():
+            self.fill(200).close()
+            deleted = audit.segments(self.folder)[0][0]
+            audit.segments(self.folder)[0][1].unlink()
+            log = self.log()
+            while audit.segments(self.folder)[0][0] == deleted + 1:
+                log.record("app_start", version=None, schema=1)   # until the cap drops it
+            log.close()
+        dropped = [r["segment"] for r in records(self.folder) if r["kind"] == "segment_dropped"]
+        self.assertEqual(dropped[-2:], [deleted - 1, deleted + 1])
+        r = audit.verify(self.folder)
+        self.assertEqual((r["result"], r["reason"]), ("broken", "front_truncated"))
+
+    def test_deleting_everything_before_a_later_chain_is_front_truncation(self):
+        with mock.patch.object(audit, "SEGMENT_BYTES", 2000):
+            self.fill(30).close()
+        newest = audit.segments(self.folder)[-1][1]
+        newest.write_bytes(newest.read_bytes() + b"not a record\n")
+        self.fill(5).close()                         # a new chain, unreadable, in a new segment
+        segs = audit.segments(self.folder)
+        self.assertEqual(audit.verify(self.folder)["reason"], "format")   # the bad line
+        for _, path in segs[:-1]:
+            path.unlink()
+        r = audit.verify(self.folder)
+        self.assertEqual((r["result"], r["reason"]), ("broken", "front_truncated"))
+
+    def test_a_segment_with_only_a_cut_short_line_is_dropped_at_the_cap(self):
+        """A cut-short first write after a rotation leaves a segment with no
+        whole line. Once it is the oldest, the cap still drops it, and the
+        log stays within the cap and verifies (the code review's probe)."""
+        with self.capped():
+            self.fill(20).close()
+            number = audit.segments(self.folder)[-1][0] + 1
+            planted = self.folder / audit._segment_name(number)
+            planted.write_bytes(b'{"at":17')       # as a cut-short first line leaves it
+            log = self.fill(300)
+            log.close()
+        self.assertFalse(planted.exists())
+        segs = audit.segments(self.folder)
+        self.assertLessEqual(sum(p.stat().st_size for _, p in segs), 6000 + 2000)
+        self.assertEqual(log.stats["dropped_segments"], segs[0][0] - 1)
+        result = audit.verify(self.folder)
+        self.assertEqual(result["result"], "ok", result)
+
+    def test_a_drop_record_that_cannot_be_written_yet_is_owed(self):
+        with self.capped():
+            log = self.fill(40)
+            real = log._append
+            failed = []
+
+            def append(kind, fields, mirror=True):
+                if kind == "segment_dropped" and not failed:
+                    failed.append(kind)
+                    raise OSError(28, "No space left")
+                return real(kind, fields, mirror)
+            log._append = append
+            while not failed:
+                log.record("app_start", version=None, schema=1)
+            self.fill(5, log)                        # the owed record comes first
+            log.close()
+        drops = [r["segment"] for r in records(self.folder) if r["kind"] == "segment_dropped"]
+        self.assertEqual(drops, list(range(drops[0], drops[0] + len(drops))))
+        self.assertEqual(audit.verify(self.folder)["result"], "ok")
+
+    def test_segment_numbers_past_six_digits(self):
+        self.folder.mkdir()
+        for name in (audit._segment_name(999_999), audit._segment_name(1_000_000),
+                     "audit-0000001.jsonl", "audit-1.jsonl"):
+            (self.folder / name).write_bytes(b"")
+        self.assertEqual([n for n, _ in audit.segments(self.folder)], [999_999, 1_000_000])
 
 
 class FieldRuleTests(Base):
@@ -403,7 +493,82 @@ class MirrorTests(Base):
             for value in (MEETING, HOLD):
                 self.assertNotIn(value, text)
         self.assertEqual([e[0] for e in mirror.sent], [1000, 1210, 1400])
-        self.assertEqual(mirror.sent[0][1], audit.INFO)
+        self.assertEqual([e[1] for e in mirror.sent], [audit.WARNING, audit.INFO, audit.INFO])
+
+    def test_chain_start_is_a_warning_unless_it_is_first_use(self):
+        """A chain restarted because the folder was missing or unreadable is
+        the tamper signal IT alerts on: a warning, as the docs say."""
+        found = {}
+        for previous in ("first_use", "missing", "unreadable"):
+            with self.subTest(previous=previous):
+                shutil.rmtree(self.folder, ignore_errors=True)
+                if previous == "unreadable":
+                    self.fill(2).close()
+                    [(_, path)] = audit.segments(self.folder)
+                    path.write_bytes(path.read_bytes() + b"not a record\n")
+                mirror = FakeMirror()
+                log = self.log(mirror=mirror, new_workspace=previous == "first_use")
+                log.record("damage_continued")
+                log.close()
+                [start] = [e for e in mirror.sent if e[0] == 1000]
+                found[previous] = start[1]
+        self.assertEqual(found, {"first_use": audit.INFO, "missing": audit.WARNING,
+                                 "unreadable": audit.WARNING})
+
+    def test_a_failed_fsync_after_a_whole_write_is_a_written_record(self):
+        """Only forcing the line to disk failed: it is a written record, with
+        its Event Log copy, never counted as a failed write."""
+        mirror = FakeMirror()
+        log = self.log(mirror=mirror)
+        log.record("damage_continued")
+        with mock.patch.object(audit.os, "fsync", side_effect=OSError(5, "I/O")):
+            self.assertTrue(log.record("meeting_discarded", meeting=MEETING))
+        log.record("damage_continued")
+        log.close()
+        self.assertNotIn("write_failed", kinds(self.folder))
+        self.assertEqual(log.stats["failed_writes"], 0)
+        texts = [e[2] for e in mirror.sent]
+        self.assertEqual(len(texts), len(lines(self.folder)))
+        report = audit.compare_event_log(self.folder, read=lambda s, p: event_xml(texts))
+        self.assertEqual(report["result"], "match", report)
+        self.assertEqual(audit.verify(self.folder)["result"], "ok")
+
+    def test_the_close_gap_covers_a_record_owed_before_it(self):
+        """A failing mirror and a failed write at close: write_failed is
+        written first, and the gap still ends at its own record."""
+        mirror = FakeMirror()
+        log = self.log(mirror=mirror)
+        log.record("damage_continued")                       # seq 1, 2: mirrored
+        self.wait(lambda: len(mirror.sent) == 2)
+        mirror.failing = True
+        log.record("damage_continued")                       # seq 3: no copy
+        self.wait(lambda: log.stats["unmirrored"] == 1)
+        with mock.patch("builtins.open", side_effect=OSError(28, "No space left")):
+            self.assertFalse(log.record("damage_continued"))  # not written: owed
+        log.close()
+        rs = records(self.folder)
+        self.assertEqual([r["kind"] for r in rs[-2:]], ["write_failed", "mirror_gap"])
+        gap = rs[-1]
+        self.assertEqual((gap["first_seq"], gap["last_seq"], gap["seq"]), (3, 5, 5))
+        texts = [e[2] for e in mirror.sent]
+        report = audit.compare_event_log(self.folder, read=lambda s, p: event_xml(texts))
+        self.assertEqual(report["result"], "match", report)
+
+    def test_a_copy_still_being_reported_at_close_is_in_the_gap(self):
+        release = threading.Event()
+
+        class Stuck(FakeMirror):
+            def report(self, event_id, level, text):
+                release.wait(5)
+                raise OSError("the event log refused it")
+        log = self.log(mirror=Stuck())
+        for _ in range(3):
+            log.record("damage_continued")                   # seq 1 in flight, 2 to 4 queued
+        with mock.patch.object(audit, "CLOSE_DRAIN_S", 0.2):
+            log.close()
+        release.set()
+        [gap] = [r for r in records(self.folder) if r["kind"] == "mirror_gap"]
+        self.assertEqual((gap["first_seq"], gap["last_seq"]), (1, gap["seq"]))
 
     def test_a_failing_mirror_never_stops_the_file_and_the_gap_is_recorded(self):
         mirror = FakeMirror()
@@ -482,6 +647,26 @@ class CompareTests(Base):
         self.assertEqual(audit.verify(self.folder)["result"], "ok")
         r = self.compare(self.texts)
         self.assertEqual((r["result"], r["missing_in_file"], r["mismatched"]), ("differs", 3, 0))
+
+    def test_records_made_up_under_a_new_chain_differ(self):
+        """A chain that is only in the file, after records the Event Log
+        holds, is missing from the log (the crypto review's probe)."""
+        chain = "e" * 32
+        made_up = [{"v": 1, "chain": chain, "seq": 1, "at": 1, "kind": "chain_start",
+                    "prev": audit.ZERO, "previous": "unreadable"},
+                   {"v": 1, "chain": chain, "seq": 2, "at": 1, "kind": "transcript_reviewed",
+                    "prev": None, "meeting": MEETING, "job": JOB}]
+        out, prev = [], audit.ZERO
+        for record in made_up:
+            record["prev"] = prev
+            line = audit._canonical(record).encode()
+            prev = audit.line_hash(line)
+            out.append(line)
+        number = audit.segments(self.folder)[-1][0] + 1
+        (self.folder / audit._segment_name(number)).write_bytes(b"\n".join(out) + b"\n")
+        self.assertEqual(audit.verify(self.folder)["result"], "ok")
+        r = self.compare(self.texts)
+        self.assertEqual((r["result"], r["missing_in_log"]), ("differs", 2))
 
     def test_an_entry_someone_else_wrote_is_unmatched(self):
         r = self.compare(self.texts + ["Unminute audit v1 nothing to see"])
@@ -836,6 +1021,71 @@ class WorkspaceAuditTests(unittest.TestCase):
         self.assertEqual([r["kind"] for r in rs], ["chain_start", "app_start", "locked"])
         self.assertEqual((rs[-1]["reason"], rs[-1]["winerror"]), ("windows", 13))
         self.assertEqual(rs[0]["previous"], "first_use")
+
+    def test_a_watched_folder_import_names_its_folder(self):
+        ws = self.open()
+        watch = self.root / "watch"
+        watch.mkdir()
+        fid = ws.add_watched_folder(str(watch), False)
+        ws.set_folder_authority(fid, delete_originals=True, confirmed=True)
+        mid = ws._import_one(write_wav(watch / "a.wav", 5), folder_id=fid)
+        [r] = [r for r in records(ws.root / "audit") if r["kind"] == "meeting_imported"]
+        self.assertEqual((r["meeting"], r["source"], r["folder"], r["recording"],
+                          r["seconds"], r["delete_original"]),
+                         (mid, "folder", fid, None, 5, True))
+
+    def crashed_recording(self, ws, holder, seconds):
+        """A recording the app did not stop (as test_recorder's crash tests)."""
+        from workspace import consent
+        ws.start_recording(3, consent=consent.recording_record())
+        holder["stream"].feed(seconds)
+        rec = ws._recording
+        time.sleep(0.6)
+        ws._recording = None
+        rec._stop.set()
+        rec._writer.join(5)
+        journal = json.loads((rec.folder / "journal.json").read_text())
+        journal["state"] = "recording"
+        (rec.folder / "journal.json").write_text(json.dumps(journal))
+        return rec.folder.name
+
+    def reopen(self, holder):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_recorder import opener
+        if self.ws is not None:
+            self.ws.close()
+        ws = self.open()
+        ws.settings.update(microphone=True)
+        ws.open_stream = opener(holder)
+        ws.start()
+        self.assertTrue(ws.wait_idle(120))
+        return ws
+
+    def test_a_recovered_recording_and_a_deleted_one_are_recorded(self):
+        holder = {}
+        ws = self.reopen(holder)
+        kept = self.crashed_recording(ws, holder, 3)
+        ws = self.reopen(holder)                            # the next start finds it
+        waiting = ws.recording_status()["reports"][-1]
+        self.assertTrue(waiting.get("recovered"), waiting)
+        ws.retry_recording_import(waiting["id"])            # Keep and transcribe
+        self.assertTrue(ws.wait_idle(120))
+        deleted = self.crashed_recording(ws, holder, 2)
+        ws = self.reopen(holder)
+        waiting = ws.recording_status()["reports"][-1]
+        ws.delete_pending_recording(waiting["id"])
+        ws.close()
+        self.ws = None
+        rs = records(self.root / "ws" / "audit")
+        ended = [(r["recording"], r["result"]) for r in rs if r["kind"] == "recording_ended"]
+        self.assertEqual(ended, [(kept, "recovered")])
+        [imported] = [r for r in rs if r["kind"] == "meeting_imported"]
+        self.assertEqual((imported["source"], imported["recording"]), ("recording", kept))
+        self.assertEqual([r["recording"] for r in rs if r["kind"] == "recording_deleted"],
+                         [deleted])
+        self.assertEqual([r["recording"] for r in rs if r["kind"] == "recording_started"],
+                         [kept, deleted])
+        self.assertEqual(audit.verify(self.root / "ws" / "audit")["result"], "ok")
 
     def test_damage_continued_is_recorded(self):
         ws = self.open()
