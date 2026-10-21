@@ -279,7 +279,9 @@ class ConsentAnswerTests(unittest.TestCase):
         from unittest import mock
 
         from workspace import api, consent, diag
-        ws = mock.Mock()
+        # An unlocked Workspace (#111 C4a): the bridge gate refuses unless
+        # ws.locked is None, and a bare Mock's attribute is not None.
+        ws = mock.Mock(locked=None)
         ws.consent_required.return_value = True
         ws.start_recording.side_effect = lambda index, name, consent=None: {"started": True}
         confirm, asked = perf_check.consent_answerer(consent.RECORDING_TITLE)

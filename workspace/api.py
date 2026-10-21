@@ -9,6 +9,8 @@
 #     file dialog or a native drop, which pywebview resolves in Python.
 
 import base64
+import functools
+import inspect
 import io
 import math
 import sys
@@ -19,7 +21,7 @@ import wave
 import numpy as np
 
 from workspace import cleanup, consent, diag
-from workspace.app import AUDIO_EXTENSIONS, WorkspaceError
+from workspace.app import AUDIO_EXTENSIONS, LOCKED_TEXT, WorkspaceError
 from workspace.media import SAMPLE_RATE
 
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
@@ -44,6 +46,15 @@ API_METHODS = frozenset({
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
     "close_app", "report_ui_error", "copy_diagnostics", "continue_despite_damage",
 })
+
+# What the page may still call while the workspace is locked (#111 C4a): the
+# status, Copy details for IT, the recovery help page, closing, page errors
+# and zoom. None of them reads or writes content. Every other method returns
+# LOCKED_TEXT without calling the Workspace (make_api's gate), and a drop is
+# ignored (enable_drop). The page can never unlock it: closing and opening
+# Unminute tries the key again.
+LOCKED_METHODS = frozenset({"status", "recording_status", "copy_diagnostics", "open_help",
+                            "close_app", "report_ui_error", "zoom"})
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
 
@@ -482,8 +493,25 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  copy_diagnostics=copy_diagnostics,
                  continue_despite_damage=continue_despite_damage)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
+    assert LOCKED_METHODS <= set(names)
+    names = {name: fn if name in LOCKED_METHODS else _gated(ws, fn)
+             for name, fn in names.items()}
     Api = type("Api", (), {"__slots__": (), **names})
     return Api()
+
+
+def _gated(ws, fn):
+    """fn, refused while the workspace is locked (#111 C4a): the Workspace is
+    not called, and the page gets the fixed locked text. Read at each call:
+    a Workspace opens locked or not, and stays so until the app closes. The
+    signature is fn's, which pywebview reads to build the page's stubs."""
+    @functools.wraps(fn)
+    def gate(self, *args, **kwargs):
+        if ws.locked is not None:
+            return {"ok": False, "error": LOCKED_TEXT}
+        return fn(self, *args, **kwargs)
+    gate.__signature__ = inspect.signature(fn)
+    return gate
 
 
 def enable_drop(window, ws):
@@ -497,7 +525,7 @@ def enable_drop(window, ws):
     def on_drop(event):
         files = (event.get("dataTransfer") or {}).get("files") or []
         paths = [f.get("pywebviewFullPath") for f in files if f.get("pywebviewFullPath")]
-        if paths:
+        if paths and ws.locked is None:          # nothing is imported while locked (C4a)
             ws.import_paths(paths)
 
     window.dom.document.events.dragover += DOMEventHandler(lambda e: None, True, True)

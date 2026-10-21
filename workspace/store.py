@@ -836,8 +836,10 @@ class Store:
         on_unavailable: "raise" (KeyUnavailable when the key
         cannot be used) or "lock" (the store stays open read-only, with
         self.locked holding the KeyUnavailable: plain reads work, nothing is
-        sealed, opened or written; C4 uses it). Creating or migrating a
-        workspace always raises when the key cannot be protected."""
+        sealed, opened or written; the app's own start uses it, #111 C4a).
+        Rows with no schema version open locked too ("missing"). Creating or
+        migrating a workspace always raises when the key cannot be protected:
+        there is no content to show."""
         if on_unavailable not in ("raise", "lock"):
             raise ValueError("on_unavailable is 'raise' or 'lock'")
         self.protector = protector if protector is not None else keystore.DpapiProtector()
@@ -881,7 +883,17 @@ class Store:
             # Read before anything is written: a database that is refused
             # (rows with no version, a key that cannot be used) is left
             # byte for byte as it was, so the journal mode is set only after.
-            made = self._open_schema(housekeeping) or made
+            try:
+                made = self._open_schema(housekeeping) or made
+            except KeyUnavailable as exc:
+                # Rows with no version ("missing", #111 C4a): content whose key
+                # is unknown opens locked like any other key failure. A key
+                # that cannot be protected for a new or migrated workspace
+                # ("windows") always raises: there is no content to show.
+                if on_unavailable == "raise" or exc.reason != "missing":
+                    raise
+                self._lock_down(exc)
+                return
             try:
                 self.keyring = self._unlock(made)
             except KeyUnavailable as exc:

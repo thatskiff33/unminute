@@ -70,7 +70,7 @@ CI proves the code parses, the unit tests pass and the pins resolve. It does not
 1. Check the release against [RELEASE_STANDARD.md](RELEASE_STANDARD.md). Part B lists each gate, where it runs and whether it is automated yet.
 2. The merged commit is built and checked locally with `--release` before it is tagged ("Cutting a release", step 2).
 3. The package is tested from its draft release, before anything is public ("Cutting a release", step 3).
-4. **Phase C (#111) ships as one release.** From C2b-2 (schema 2) until C4b sets `PHASE_C_COMPLETE = True` in `workspace/keystore.py`, no release can be prepared from `main`: `tools/changelog.py` refuses ("Phase C (#111) is not complete: no release can be prepared from this commit."), and `tests/test_consistency.py` fails a change to `VERSION` while the constant is `False` (`PHASE_C_FROZEN_VERSION`, 0.5.0-preview.3). The last release before Phase C is v0.5.0-preview.3, tagged on 2558c5e. By the owner's decision of 19 Oct 2026 there is no matching check in `release.yml`.
+4. **Phase C (#111) ships as one release.** From C2b-2 (schema 2) until C7 sets `PHASE_C_COMPLETE = True` in `workspace/keystore.py`, no release can be prepared from `main`: `tools/changelog.py` refuses ("Phase C (#111) is not complete: no release can be prepared from this commit."), and `tests/test_consistency.py` fails a change to `VERSION` while the constant is `False` (`PHASE_C_FROZEN_VERSION`, 0.5.0-preview.3). The last release before Phase C is v0.5.0-preview.3, tagged on 2558c5e. By the owner's decision of 19 Oct 2026 there is no matching check in `release.yml`.
 
 ## Cutting a release
 

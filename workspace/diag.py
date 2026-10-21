@@ -64,6 +64,8 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # templates.json kept unconverted or damaged (handoff.Templates)
          "templates_unreadable"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
+KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
+KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
 # The number and true/false fields the app writes (FIELDS has the text ones).
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
@@ -113,7 +115,7 @@ FIELDS = {
     "result": _set("ok", "failed", "skipped", "continued"),   # a database check (R11)
     # #111 C2b-2: why the workspace key could not be used (store.KeyUnavailable),
     # and where a sealed value did not open (store.CONTENT_COLUMNS, logical names)
-    "reason": _set("windows", "key", "protector", "missing"),
+    "reason": _set(*KEY_REASONS),
     "table": _set("meetings", "reviewed_snapshots", "sources", "segments", "edits",
                   "edit_history", "speaker_runs", "speaker_corrections", "handoff_options",
                   "holds", "recording_sources", "watched_folders", "intake_meta"),
@@ -674,19 +676,78 @@ def integrity_state(folder):
 def record_integrity(folder, result, code=None):
     """Keep the result of a database check for the next start, --status and
     --health: written in full or not at all. Never raises."""
+    _write_state(folder, INTEGRITY_FILE, {"result": result, "code": code})
+
+
+def _write_state(folder, name, state):
+    """A small state file in folder, written in full or not at all, with the
+    time added. Never raises."""
     folder = Path(folder)
-    state = {"result": result, "code": code,
-             "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    tmp = folder / (INTEGRITY_FILE + ".tmp")
+    state = {**state, "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+    tmp = folder / (name + ".tmp")
     try:
         folder.mkdir(exist_ok=True)
         with open(tmp, "w", encoding="ascii") as f:
             json.dump(state, f)
             f.flush()
             os.fsync(f.fileno())
-        tmp.replace(folder / INTEGRITY_FILE)
+        tmp.replace(folder / name)
     except OSError:
         pass
+
+
+def windows_error(value):
+    """A Windows error number as the app records and shows it
+    (dpapi.DpapiError.code: a 32-bit value, signed or not), or None. Used
+    for keys.json, Copy diagnostics and status() alike (#111 C4a)."""
+    if isinstance(value, int) and not isinstance(value, bool) and -2**31 <= value < 2**32:
+        return value
+    return None
+
+
+def keys_state(folder):
+    """The workspace key's state at the app's last start (#111 C4a), from
+    <logs>\\keys.json: {"result": "ok" | "locked", "reason": one of
+    KEY_REASONS or None, "winerror": the Windows error number or None,
+    "code": "U-..." or None, "t": time or None}, or None if none was
+    recorded (or the file cannot be read). Each value is checked: anything
+    else reads as None. Read by --status and --health, which never unlock
+    the key themselves (Intune may run --health as SYSTEM, where this
+    user's key cannot be unlocked). Copy diagnostics uses the running
+    app's own state instead."""
+    try:
+        with open(Path(folder) / KEYS_FILE, "rb") as f:
+            raw = json.loads(f.read(500).decode("ascii"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(raw, dict) or raw.get("result") not in ("ok", "locked"):
+        return None
+    locked = raw["result"] == "locked"
+    code, t = raw.get("code"), raw.get("t")
+    return {"result": raw["result"],
+            "reason": raw.get("reason") if locked and raw.get("reason") in KEY_REASONS
+            else None,
+            "winerror": windows_error(raw.get("winerror")) if locked else None,
+            "code": code if locked and FIELDS["code"](code) == code else None,
+            "t": t if isinstance(t, str) and re.fullmatch(
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else None}
+
+
+def record_keys(folder, result, reason=None, winerror=None, code=None):
+    """Keep the key's state at this start for --status and --health
+    (#111 C4a): "ok", or "locked" with the reason, the Windows
+    error number and the incident code. Fixed words and numbers only (P3).
+    An "ok" already recorded is not written again. Never raises."""
+    if result == "ok":
+        last = keys_state(folder)
+        if last is not None and last["result"] == "ok":
+            return
+        _write_state(folder, KEYS_FILE, {"result": "ok"})
+        return
+    _write_state(folder, KEYS_FILE, {
+        "result": "locked", "reason": reason if reason in KEY_REASONS else None,
+        "winerror": windows_error(winerror),
+        "code": code if FIELDS["code"](code) == code else None})
 
 
 def recent_crashes(folder, days=7, now=None):
