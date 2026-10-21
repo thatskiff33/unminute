@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 
@@ -440,6 +441,7 @@ class SchemaOneMigrationTests(unittest.TestCase):
         for name in ("old one.wav", "old two.wav"):
             (self.folder / name).write_bytes(b"RIFF synthetic " + name.encode())
             self.files.append(self.folder / name)
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
 
     def tearDown(self):
         self.tmp.cleanup()

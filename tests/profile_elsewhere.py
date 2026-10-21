@@ -1,6 +1,6 @@
 # Watched-folder tests keep their folders in %TEMP%, which on Windows is
-# inside AppData, and a folder anywhere in AppData cannot be watched (#111
-# D2, intake._broad). start(case) gives intake._broad a user profile and app
+# inside AppData, and a folder anywhere in AppData cannot be watched, nor is
+# it scanned (#111 D2, intake._broad). start(case) gives intake._broad a user profile and app
 # data folders on a path that holds none of those folders, for the length of
 # one test. It patches only what intake._broad reads (intake._environ), not
 # os.environ, which the test key protector's guard reads (keyprotect.py).

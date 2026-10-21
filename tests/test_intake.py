@@ -42,12 +42,25 @@ def wav(path, seconds=1.0, seed=0):
     return path
 
 
+def _in_real_app_data(path):
+    """path is inside this computer's AppData, %APPDATA% or %LOCALAPPDATA%
+    (worked out here, not by intake._broad). %TEMP% is, unless moved."""
+    def norm(p):
+        return Path(os.path.normcase(str(p))).resolve()
+    p = norm(path)
+    roots = [Path(v) / "AppData" if name == "USERPROFILE" else Path(v)
+             for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
+             if (v := os.environ.get(name)) and os.path.isabs(v)]
+    return any(p == r or r in p.parents for r in map(norm, roots))
+
+
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class BroadFolderTests(unittest.TestCase):
     """Folders too broad to watch (#111 D2). These set the real environment
-    variables (self.root is in %TEMP%, inside the real AppData, so each case
-    names a profile and app data folders that do not hold it)."""
+    variables (self.root is in %TEMP%, which is usually inside the real
+    AppData, so each case names a profile and app data folders that do not
+    hold it)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -66,9 +79,19 @@ class BroadFolderTests(unittest.TestCase):
 
     def test_refuses_broad_or_missing_folders(self):
         for bad in (Path(self.root.anchor), Path(os.environ.get("USERPROFILE", self.root.anchor)),
-                    self.root / "missing", self.root):     # self.root: in %TEMP%, in AppData
+                    self.root / "missing"):
             with self.assertRaises(IntakeError, msg=str(bad)):
                 intake.add_folder(self.store, str(bad))
+        # self.root is in %TEMP%: inside AppData by default, so refused as it
+        # is; on a computer whose %TEMP% is elsewhere, refused once
+        # %LOCALAPPDATA% holds it. Either way a folder in it is refused.
+        apart = Path(self.root.anchor) / "UnminuteTestProfile"     # holds neither
+        env = {} if _in_real_app_data(self.root) else {
+            "USERPROFILE": str(apart), "APPDATA": str(apart / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(self.root.parent)}
+        with mock.patch.dict(os.environ, env):
+            with self.assertRaises(IntakeError, msg=str(self.root)):
+                intake.add_folder(self.store, str(self.root))
         with mock.patch.dict(os.environ, self.elsewhere):
             intake.add_folder(self.store, str(self.folder))
             with self.assertRaises(IntakeError):
@@ -187,6 +210,34 @@ class IntakeTests(unittest.TestCase):
                 intake.add_folder(self.store, str(other))
         self.assertNotIsInstance(caught.exception, IntakeError)
         self.assertEqual([], intake.folders(self.store))
+
+    def test_a_folder_watched_before_and_now_refused_is_not_scanned(self):
+        # #111 D2 review (round 2, info): a folder inside AppData watched by an
+        # earlier version, which refused less, kept being scanned. Each scan
+        # checks the folder again: one now refused is not read, and its note
+        # is the fixed refusal message (no path or name, P3).
+        wav(self.folder / "before.wav")
+        fid = intake.add_folder(self.store, str(self.folder), include_existing=True)
+        elsewhere = Path(self.root.anchor) / "UnminuteTestProfile"
+        now_refused = {"USERPROFILE": str(elsewhere),
+                       "APPDATA": str(elsewhere / "AppData" / "Roaming"),
+                       "LOCALAPPDATA": str(self.root)}     # holds the watched folder
+        with mock.patch.object(intake, "_environ", lambda: {**os.environ, **now_refused}):
+            self.assertTrue(intake._broad(str(self.folder)))
+            for _ in range(2):
+                stats = self.scan()
+                self.assertEqual(1, stats["errors"])
+                self.assertEqual((0, 0), (stats["queued"], stats["waiting"]))
+        self.assertEqual([], self.queued)
+        self.assertEqual([], self.store._all("SELECT key FROM intake_seen WHERE folder_id = ?",
+                                             (fid,)))
+        note = intake.folders(self.store)[0]["last_error"]
+        self.assertEqual(intake.BROAD_FOLDER_NOTE, note)
+        self.assertNotIn(self.root.name, note)
+        # No longer refused (here the environment is as before): checked again.
+        self.settle()
+        self.assertEqual([p.name for p in self.queued], ["before.wav"])
+        self.assertIsNone(intake.folders(self.store)[0]["last_error"])
 
     def test_existing_files_only_when_asked(self):
         wav(self.folder / "before.wav")

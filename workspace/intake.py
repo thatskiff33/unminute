@@ -56,6 +56,14 @@ class IntakeError(ValueError):
     """A refused folder (message is safe to show)."""
 
 
+# Why a folder is refused as too broad (_broad): when it is added, and as the
+# note of a folder watched before it was refused, which is no longer checked.
+# Fixed text: no path or name (P3).
+BROAD_FOLDER_NOTE = ("Choose a specific folder for recordings. A whole drive, your user folder "
+                     "or a folder that holds it, and Windows, program and app data folders "
+                     "cannot be watched.")
+
+
 def _salt(store):
     """(salt, restarted): see store.intake_salt."""
     return store.intake_salt()
@@ -143,9 +151,7 @@ def add_folder(store, path, include_existing=False):
         raise IntakeError("Network folders cannot be watched. Choose a folder on this "
                           "computer (synced folders such as OneDrive are fine).") from exc
     if _broad(real):
-        raise IntakeError("Choose a specific folder for recordings. A whole drive, your user "
-                          "folder or a folder that holds it, and Windows, program and app "
-                          "data folders cannot be watched.")
+        raise IntakeError(BROAD_FOLDER_NOTE)
     from workspace.store import new_id
     fid = new_id()
     if not store.add_folder(fid, real, include_existing):
@@ -403,6 +409,13 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
         if f.get("damaged"):
             # Its location cannot be read: never scanned, never a deletion root.
             _folder_note(store, f["id"], now, FOLDER_UNREADABLE_NOTE)
+            stats["errors"] += 1
+            continue
+        if _broad(f["path"]):
+            # Watched before it was refused (an earlier version refused less,
+            # or the profile or app data folders moved): checked at each scan,
+            # and not read while refused. Its rows stay as they are.
+            _folder_note(store, f["id"], now, BROAD_FOLDER_NOTE)
             stats["errors"] += 1
             continue
         root = Path(f["path"])

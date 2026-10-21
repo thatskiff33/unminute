@@ -554,6 +554,7 @@ class DamagedValueTests(unittest.TestCase):
         self.s = open_store(self.root / "workspace.db")
         self.log = diag.Log(self.root / "logs", "app")
         self.s.log = self.log
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
 
     def tearDown(self):
         self.s.close()
