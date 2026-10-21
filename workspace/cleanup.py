@@ -171,15 +171,26 @@ def render_reviewed(store, vid):
 
 # -- running jobs ---------------------------------------------------------------------
 
-def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
+def run_job(store, jid, media_root, *, quiesce=None, original_roots=(), on_event=None):
     """Perform one cleanup job. `quiesce()` must stop the worker and release
     file handles; `original_roots` are the folders an original may be deleted
     from (deletion authority, #24). Returns a JobResult; a failure leaves the
-    job 'failed' with its reason, to be retried."""
+    job 'failed' with its reason, to be retried.
+
+    on_event(kind, **fields) (the audit log, #111 C5) is told cleanup_started
+    once the attempt is committed and before anything is removed, so a crash
+    cannot hide a deletion, and cleanup_done once the receipt is committed.
+    cleanup_started is told for a pending job (its first attempt, or the
+    first after Confirm or a hold) and after Try again (a failed job whose
+    last_attempt_at was cleared), never for the processing loop's automatic
+    retry of a failed job every minute, which would flood the log (#289
+    review; the orchestrator's default of 21 Oct 2026, no new kind).
+    An on_event that raises never changes the job's result."""
     job = store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
     if job is None or job["state"] not in ("pending", "failed"):
         return JobResult.NOTHING_PENDING     # finished, or awaiting confirmation after a hold
     mid, phase = job["meeting_id"], job["phase"]
+    announce = job["state"] == "pending" or job["last_attempt_at"] is None
     if is_held(store, mid, phase):
         _mark(store, jid, "pending", HELD_NOTE)
         return JobResult.HELD
@@ -206,10 +217,12 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
         if held:
             _mark(store, jid, "pending", HELD_NOTE)
             return JobResult.HELD
+        if announce:
+            _notify(on_event, "cleanup_started", meeting=mid, phase=phase, job=jid)
         if phase == AUDIO:
-            notes = _remove_audio(store, mid, Path(media_root), original_roots)
+            notes, deleted, kept = _remove_audio(store, mid, Path(media_root), original_roots)
         else:
-            notes = _remove_transcript(store, mid, Path(media_root))
+            notes, deleted, kept = _remove_transcript(store, mid, Path(media_root)), 0, 0
     except HeldDuringCleanup:
         _mark(store, jid, "pending", HELD_NOTE)
         return JobResult.HELD
@@ -219,7 +232,20 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=()):
     # Success: the job row is replaced by a minimal receipt (#18).
     with store.tx() as db:
         record_receipt(db, job, result=f"{phase} removed" + (f"; {notes}" if notes else ""))
+    _notify(on_event, "cleanup_done", meeting=mid, phase=phase, job=jid,
+            originals_deleted=deleted, originals_kept=kept)
     return JobResult.DONE
+
+
+def _notify(on_event, kind, **fields):
+    """Tell the audit log; whatever it does, the cleanup carries on."""
+    if on_event is None:
+        return
+    try:
+        on_event(kind, **fields)
+    except Exception as exc:
+        from workspace import diag
+        diag.incident("audit", exc)
 
 
 def resume_pending(store, media_root, *, quiesce=None, original_roots=()):
@@ -278,6 +304,8 @@ def _mark(store, jid, state, error):
 
 
 def _remove_audio(store, mid, media_root, original_roots):
+    """(notes, originals deleted, originals kept). The counts come from
+    _remove_original's fixed outcomes, never from the receipt's text."""
     folder = media.meeting_folder(media_root, mid)
     if folder.exists():
         shutil.rmtree(folder)         # raises on a locked file: job stays 'failed'
@@ -289,7 +317,22 @@ def _remove_audio(store, mid, media_root, original_roots):
         # The audio key and the recording's details go in the same
         # transaction (#111 C2b-2); the text key stays for the transcript.
         store.remove_audio_keys(db, mid)
-    return "; ".join(n for n in notes if n) or None
+    deleted = sum(n == ORIGINAL_DELETED for n in notes)
+    kept = sum(n in ORIGINAL_KEPT for n in notes)
+    return "; ".join(n for n in notes if n) or None, deleted, kept
+
+
+# What _remove_original can return besides None (no authority: never
+# touched). "Already gone" is neither deleted nor kept.
+ORIGINAL_DELETED = "Original deleted."
+ORIGINAL_GONE = "Original already gone."
+KEPT_UNREADABLE = "Original kept: its location could not be read."
+KEPT_NOT_LOCAL = "Original kept: not a local file path."
+KEPT_OUTSIDE = "Original kept: not in a folder the app may delete from."
+KEPT_LINK = "Original kept: it is a link, not the recording itself."
+KEPT_CHANGED = "Original kept: the file changed since it was imported."
+ORIGINAL_KEPT = frozenset({KEPT_UNREADABLE, KEPT_NOT_LOCAL, KEPT_OUTSIDE, KEPT_LINK,
+                           KEPT_CHANGED})
 
 
 def _remove_original(store, src, roots):
@@ -300,28 +343,28 @@ def _remove_original(store, src, roots):
     if not src["delete_original"] or not path:
         return None                                   # no authority: never touched
     if "original_path" in src.get("damaged", ()):
-        return "Original kept: its location could not be read."
+        return KEPT_UNREADABLE
     try:
         if os.name == "nt":             # Windows path rules (the app is Windows-only)
             safe_paths.check_raw(path)  # never a network, device or stream path
     except safe_paths.UnsafePathError:
-        return "Original kept: not a local file path."
+        return KEPT_NOT_LOCAL
     p = Path(path)
     if not roots or not any(_inside(p, Path(r)) for r in roots):
-        return "Original kept: not in a folder the app may delete from."
+        return KEPT_OUTSIDE
     try:
         st = p.lstat()
     except FileNotFoundError:
-        return "Original already gone."
+        return ORIGINAL_GONE
     # A link or junction: deleting it would leave the recording itself behind.
     reparse = getattr(st, "st_file_attributes", 0) & safe_paths.FILE_ATTRIBUTE_REPARSE_POINT
     if p.is_symlink() or reparse:
-        return "Original kept: it is a link, not the recording itself."
+        return KEPT_LINK
     if (st.st_size, st.st_mtime_ns) != (src["original_size"], src["original_mtime_ns"]) \
             or not store.same_fingerprint("original", sha256_file(p), src["original_fp"]):
-        return "Original kept: the file changed since it was imported."
+        return KEPT_CHANGED
     p.unlink()
-    return "Original deleted."
+    return ORIGINAL_DELETED
 
 
 def _inside(p, root):

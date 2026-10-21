@@ -428,7 +428,9 @@ INVARIANT_GUARDS = {
                                         "test_configured_command_blocks_through_powershell"]},
     "P3": {"tests/test_workers.py": ["test_error_text_has_no_paths"],
            "tests/test_app.py": ["test_refused_imports_explain_without_paths"],
-           "tests/test_diagnostics.py": ["test_markers_never_reach_the_logs", "RecordTests"]},
+           "tests/test_diagnostics.py": ["test_markers_never_reach_the_logs", "RecordTests"],
+           "tests/test_audit.py": ["test_markers_never_reach_the_audit_log", "FieldRuleTests",
+                                   "test_the_mirror_gets_each_record_in_order_without_ids"]},
     "N1": {"tests/test_offline_guard.py": [
         "test_switches_are_forced_off_even_if_the_user_enabled_them", "NetworkGuardTests"],
            "tests/test_workers.py": ["test_worker_cannot_reach_the_network"],
