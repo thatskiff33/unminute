@@ -27,6 +27,13 @@
 #   --gate        run by the installer from the NEW package before an update:
 #                 may this version take over the existing workspace? (#26)
 #                 Prints JSON; exit 0 allowed, 5 wait (with reasons), 6 refused.
+#   --verify-audit  check the audit log's hash chain (#111 C5), run as the
+#                 signed-in user: JSON counts only. --event-log also compares it
+#                 with the Unminute entries in the local Application log, and
+#                 --event-log-file <path> with an exported .evtx file instead.
+#                 Exit 0 when the chain is ok (and matches, if compared), 1
+#                 otherwise. Needs no key and reads no database. Run as SYSTEM
+#                 it reads nothing: {"result": "system_account"}, exit 1.
 #   --restore-lid run by the uninstaller before it removes anything (#191): puts
 #                 back a lid action the app left at "Do nothing" (a crash, then
 #                 no start), with the app's own rules (power.restore_only).
@@ -77,10 +84,11 @@ def status(root=None):
     state at the app's last start (#111 C4a), "ok", "locked" or "unchecked",
     read from logs/keys.json and never by unlocking the key (no DPAPI call:
     Intune may run this as SYSTEM); lock_reason and lock_code (the Windows
-    error number) while locked."""
+    error number) while locked. audit_seq: the audit log's newest sequence
+    number, from its end only (#111 C5)."""
     import sqlite3
 
-    from workspace import diag
+    from workspace import audit, diag
     from workspace.store import default_root
     root = Path(root or default_root()).absolute()
     db = root / "workspace.db"
@@ -93,7 +101,8 @@ def status(root=None):
            "recordings": _count_folders(root / "recordings"),   # not yet in a meeting
            "keys": keys["result"] if keys else "unchecked",
            "lock_reason": keys["reason"] if locked else None,
-           "lock_code": keys["winerror"] if locked else None}
+           "lock_code": keys["winerror"] if locked else None,
+           "audit_seq": audit.tail_seq(root / "audit")}
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
         try:
@@ -200,45 +209,41 @@ def _system_account():
     """Is this process running as Local System (S-1-5-18)? Intune runs a
     script there unless it is set to use the logged-on credentials. None if
     Windows cannot say (so --health never reports healthy on a guess); False
-    off Windows."""
-    import ctypes
-    from ctypes import wintypes
+    off Windows. The token's user is read by audit.token_user, which the
+    audit log's Event Log copy also uses (#111 C5)."""
+    from workspace import audit
+    user = audit.token_user()
+    if user is None or user is False:
+        return user
+    return user[1] == "S-1-5-18"
+
+
+def verify_audit(argv, root=None):
+    """--verify-audit (#111 C5): (result, exit code). Counts and states only.
+    Run as SYSTEM, or when Windows cannot say who runs it, nothing is read."""
+    account = _system_account()
+    if account is None:
+        return {"result": "account_unknown"}, 1
+    if account:
+        return {"result": "system_account"}, 1
+    from workspace import audit
+    from workspace.store import StoreError, default_root
     try:
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    except AttributeError:                      # not Windows (tests on Linux)
-        return False
-    except OSError:
-        return None
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD,
-                                          ctypes.POINTER(wintypes.HANDLE))
-    advapi32.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
-                                             wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
-    advapi32.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p,
-                                                ctypes.POINTER(ctypes.c_wchar_p))
-    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
-    token = wintypes.HANDLE()
-    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008,   # TOKEN_QUERY
-                                     ctypes.byref(token)):
-        return None
-    try:
-        size = wintypes.DWORD()
-        advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))  # TokenUser
-        buffer = ctypes.create_string_buffer(size.value)
-        if not size.value or not advapi32.GetTokenInformation(
-                token, 1, buffer, size, ctypes.byref(size)):
-            return None
-        sid = ctypes.c_void_p.from_buffer(buffer).value   # TOKEN_USER.User.Sid
-        text = ctypes.c_wchar_p()
-        if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
-            return None
-        try:
-            return text.value == "S-1-5-18"
-        finally:
-            kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
-    finally:
-        kernel32.CloseHandle(token)
+        folder = Path(root or default_root()) / "audit"
+    except StoreError:
+        return {"result": "location"}, 1    # missing, synced, redirected or broken (#219, #266)
+    out = audit.verify(folder)
+    ok = out["result"] == "ok"
+    source = None
+    if "--event-log-file" in argv:
+        at = argv.index("--event-log-file") + 1
+        if at >= len(argv) or not Path(argv[at]).is_file():
+            return {**out, "event_log": {"result": "no_file"}}, 1
+        source = str(Path(argv[at]).absolute())
+    if source or "--event-log" in argv:
+        out["event_log"] = audit.compare_event_log(folder, source=source)
+        ok = ok and out["event_log"]["result"] == "match"
+    return out, 0 if ok else 1
 
 
 def restore_lid():
@@ -371,6 +376,10 @@ def main():
         return 0
     if "--self-test" in sys.argv:
         return self_test()
+    if "--verify-audit" in sys.argv:
+        result, code = verify_audit(sys.argv)
+        print(json.dumps(result))
+        return code
     if "--health" in sys.argv:
         result = health()                   # never raises: no traceback on stderr
         print(json.dumps(result))

@@ -17,6 +17,10 @@ This guide covers the packaged workspace.
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
 
+## What Unminute records about your work
+
+Unminute keeps a log of what is done with each meeting: when it was imported or recorded (and that you confirmed everyone was told), when you confirmed the transcript review and the final save, when you copied, saved or opened a handoff, when holds were placed, kept or released, when watched folders and permission to delete originals changed, and when anything was deleted. Each entry says what kind of action it was and when, with the app's own reference numbers. It never holds titles, names, transcript text, file or folder names, or hold reasons. A fingerprint of each entry, with your Windows account, is also written to the Windows event log, which your organisation's IT team may collect.
+
 ## Getting started
 
 1. **Install.** Your IT team may install the app for you. Otherwise, run `install.cmd` from the package. It installs for your Windows account only and needs no administrator rights.

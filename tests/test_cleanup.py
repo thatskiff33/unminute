@@ -286,6 +286,65 @@ class CleanupTests(unittest.TestCase):
                 self.assertNotIn(blob, f.read_bytes(), f.name)
         self.store = Store(self.db_path, protector=keyprotect.TestProtector())
 
+    # -- the audit log (#111 C5) ------------------------------------------------------------
+
+    def audio_key(self, mid):
+        try:
+            self.store.meeting_key(mid, "audio")
+            return True
+        except Exception:
+            return False
+
+    def test_the_audit_log_hears_of_cleanup_before_anything_is_removed(self):
+        mid, _, original = self.make_meeting(authority=True)
+        events = []
+
+        def on_event(kind, **fields):        # what is still there when each is told
+            receipts = self.store._one("SELECT COUNT(*) AS n FROM receipts")["n"]
+            events.append((kind, fields, (self.media / mid).exists(), original.exists(),
+                           self.audio_key(mid), receipts))
+        jid = cleanup.confirm_transcript_reviewed(self.store, mid)
+        self.assertEqual(self.run_job(jid, original_roots=[self.intake], on_event=on_event),
+                         JobResult.DONE)
+        started, done = events
+        self.assertEqual(started, ("cleanup_started", {"meeting": mid, "phase": "audio",
+                                                       "job": jid}, True, True, True, 0))
+        self.assertEqual(done, ("cleanup_done", {"meeting": mid, "phase": "audio", "job": jid,
+                                                 "originals_deleted": 1, "originals_kept": 0},
+                                False, False, False, 1))
+        # Kept originals are counted from the fixed outcomes, not the receipt.
+        mid, _, original = self.make_meeting(authority=True)
+        events.clear()
+        self.run_job(cleanup.confirm_transcript_reviewed(self.store, mid),
+                     original_roots=[self.root / "elsewhere"], on_event=on_event)
+        self.assertEqual((events[1][1]["originals_deleted"], events[1][1]["originals_kept"]),
+                         (0, 1))
+        events.clear()
+        jid = cleanup.confirm_final_saved(self.store, mid)
+        self.run_job(jid, on_event=on_event)
+        self.assertEqual([(e[0], e[1]["phase"]) for e in events],
+                         [("cleanup_started", "transcript"), ("cleanup_done", "transcript")])
+        self.assertEqual((events[1][1]["originals_deleted"], events[1][1]["originals_kept"]),
+                         (0, 0))
+
+    def test_a_held_job_tells_the_audit_log_nothing(self):
+        events = []
+        self.add_hold("audio")
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        self.assertEqual(self.run_job(jid, on_event=lambda k, **f: events.append(k)),
+                         JobResult.HELD)
+        self.assertEqual(self.run_job(jid, quiesce=self.add_hold,
+                                      on_event=lambda k, **f: events.append(k)), JobResult.HELD)
+        self.assertEqual(events, [])
+
+    def test_an_audit_log_that_raises_never_changes_the_result(self):
+        def broken(kind, **fields):
+            raise RuntimeError("the audit log failed")
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        self.assertEqual(self.run_job(jid, on_event=broken), JobResult.DONE)
+        self.assertFalse((self.media / self.mid).exists())
+        self.assertIsNone(self.job(jid))                  # the receipt replaced it
+
 
 if __name__ == "__main__":
     unittest.main()

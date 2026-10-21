@@ -106,7 +106,8 @@ def _frames(value):
 FIELDS = {
     "code": _pattern(re.compile(r"U-[0-9A-F]{6}")),
     "area": _set("bridge", "processing", "import", "recording_import", "worker",
-                 "worker_start", "setup", "uncaught", "thread", "page", "open"),
+                 "worker_start", "setup", "uncaught", "thread", "page", "open",
+                 "audit"),                       # #111 C5: an audit write or check
     "process": _set("app", "worker", "gpu-worker", "setup"),
     "job": _set("transcribe", "speakers", "rerun", "cleanup"),
     "op": _set("load", "transcribe", "diarize", "exit"),

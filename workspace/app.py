@@ -24,8 +24,8 @@ import time
 from pathlib import Path
 
 from workspace import asr_engines
-from workspace import (cleanup, clipboard, credentials, diag, engines, gpu, handoff, holds,
-                       intake,
+from workspace import (audit, cleanup, clipboard, credentials, diag, engines, gpu, handoff,
+                       holds, intake, keystore,
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -295,7 +295,7 @@ class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
                  policy_reader=None, check_integrity=False, lid_switch=None, protector=None,
-                 on_unavailable="raise", opener=None):
+                 on_unavailable="raise", opener=None, audit_mirror=None):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
@@ -311,7 +311,9 @@ class Workspace:
         nothing is read but counts, nothing is written, and every job,
         import, scan, recording and the start-up upkeep waits.
         opener: tests and the UI check tools only; called with the assistant's
-        address instead of asking Windows to open it (copy_and_open_assistant)."""
+        address instead of asking Windows to open it (copy_and_open_assistant).
+        audit_mirror: tests only; receives the audit log's Event Log copies
+        instead of Windows (#111 C5)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
@@ -345,6 +347,7 @@ class Workspace:
         self._record_keys()
         if not held and self.locked is None:
             self._integrity_ok.set()
+        self.audit = self._open_audit(audit_mirror)
         self.settings = Settings(self.root / "settings.json",
                                  allow_test_engines=allow_test_engines)
         # Handoff templates are built at their first use, not here (#111 C2c):
@@ -431,6 +434,35 @@ class Workspace:
         diag.record_keys(self.log.folder, "locked", self.locked.reason, self.locked.code,
                          self._lock_code)
 
+    def _open_audit(self, mirror):
+        """The audit log (#111 C5): content-free records of how meetings are
+        handled, each written after its action has committed, and never
+        blocking it. Only the workspace in its own place with the app's key
+        protector copies records to the Windows Event Log: a workspace opened
+        elsewhere (tests and the check tools) keeps its file only, so test
+        runs add nothing under the app's source. Tests (another protector)
+        also have a record that breaks its rules raise, rather than be
+        refused and logged."""
+        from workspace.store import SCHEMA_VERSION, under_workspace_root
+        real = self.store.protector.name == keystore.APP_PROTECTOR
+        if mirror is None and real and os.name == "nt" \
+                and under_workspace_root(self.store.path):
+            mirror = audit.EventLogMirror()
+        log = audit.AuditLog(self.root / "audit", mirror=mirror, log=self.log,
+                             new_workspace=self.store.new_root, strict=not real)
+        locked = self.store.locked
+        if locked is not None:
+            log.record("locked", reason=locked.reason, winerror=locked.code)
+        else:
+            from workspace import update
+            try:
+                version = str(update.package_version())
+            except Exception:
+                version = None
+            log.record("app_start", schema=SCHEMA_VERSION,
+                       version=version if audit.valid_version(version) else None)
+        return log
+
     def _check_database(self, check_integrity):
         """The database check (R11), before the store opens: after the app
         last ended without closing (its run marker is still there: __main__
@@ -506,6 +538,7 @@ class Workspace:
             self._indicate()
             try:
                 rec.stop()
+                self._recording_ended(rec, "saved")
             except recorder.RecorderError:
                 pass                     # its folder is recovered at the next start
         self._flush_clipboard_clears()
@@ -520,6 +553,7 @@ class Workspace:
             # A folder scan may be hashing a large file; it stops between files.
             t.join(60 if t.name == "workspace-watch" else 15)
         self.store.close()
+        self.audit.close()
 
     # -- Settings and Setup data (R7b) -------------------------------------------------
 
@@ -745,19 +779,28 @@ class Workspace:
         journal = recorder.read_journal(folder)
         return journal is None or journal.get("state") == "recording"
 
-    def _import_one(self, path, folder_id=None, title=None):
+    def _import_one(self, path, folder_id=None, title=None, recording=None):
+        """recording: the recording's id when this imports a microphone
+        recording (the audit log ties its confirmation to the meeting)."""
         title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
         mid, sid = media.import_recording(self.store, self.media, path, title)
         # Authority comes only from the folder's explicit setting (#24); the
         # original's location is kept only when it may be deleted.
-        self.store.set_source_intake(sid, folder_id, may_delete=bool(
-            folder_id and intake.authority_for(self.store, folder_id)
-            and self._allowed("AllowDeleteOriginals")))
+        may_delete = bool(folder_id and intake.authority_for(self.store, folder_id)
+                          and self._allowed("AllowDeleteOriginals"))
+        self.store.set_source_intake(sid, folder_id, may_delete=may_delete)
         try:
             self._plan_version(mid, sid)
         except BaseException:
             self._discard_import(mid)       # nothing half-imported is left behind
             raise
+        length = self.store._one("SELECT samples, sample_rate FROM sources WHERE id = ?", (sid,))
+        self.audit.record("meeting_imported", meeting=mid,
+                          source="recording" if recording else "folder" if folder_id else "file",
+                          folder=folder_id, recording=recording,
+                          seconds=(length["samples"] // length["sample_rate"]
+                                   if length and length["sample_rate"] else 0),
+                          delete_original=may_delete)
         return mid
 
     # -- microphone recording (#30) ---------------------------------------------------
@@ -845,9 +888,24 @@ class Workspace:
             with self._lock:
                 self._rec_starting = False
             self._wake.set()                 # if it failed, processing carries on
+        self.audit.record("recording_started", recording=rec.folder.name,
+                          consent="confirmed" if consent is not None else "not_required",
+                          wording=consent.get("wording") if consent is not None else None,
+                          method=("app-window" if consent is not None
+                                  and consent.get("method") == "app-window" else None))
         threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
                          name="recorder-watch").start()
         return rec.status()
+
+    def _recording_ended(self, rec, result):
+        """The audit record for a recording that stopped and was saved, or
+        was discarded (#111 C5)."""
+        try:
+            seconds = int(rec.status()["seconds"] or 0)
+        except Exception:
+            seconds = 0
+        self.audit.record("recording_ended", recording=rec.folder.name, result=result,
+                          seconds=max(0, seconds))
 
     def _watch_recording(self, rec):
         """A recording that stops itself (lost device, full disk, time limit)
@@ -873,6 +931,7 @@ class Workspace:
                               "events": list(rec.journal["events"]),
                               "note": str(exc), "pending": rec.folder.name})
             return                       # imported at the next start
+        self._recording_ended(rec, "saved")
         self._imports.put(("__recording__", str(rec.folder)))
         self._wake.set()
 
@@ -921,6 +980,7 @@ class Workspace:
                                      "try again, or stop and save it.") from exc
             self._recording = None                # the watcher will not import it now
         self._indicate()
+        self._recording_ended(rec, "discarded")
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
                   "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}
@@ -1010,6 +1070,8 @@ class Workspace:
                                  "that may be using it, then try again.")
         self._hung.pop(folder.name, None)
         self.discard_recording_report(rid)
+        if audit.HEX32.fullmatch(folder.name):     # the recording's id (recorder.new_folder)
+            self.audit.record("recording_deleted", recording=folder.name)
 
     def _import_recording_folder(self, folder, ask=False):
         """Turn a saved (or crash-recovered) recording into a meeting, then
@@ -1075,7 +1137,8 @@ class Workspace:
                 return
             title = time.strftime("Recording %Y-%m-%d %H:%M",
                                   time.localtime(journal.get("started_at") or time.time()))
-            mid = self._import_one(str(wav), None, title)
+            recording_id = folder.name if audit.HEX32.fullmatch(folder.name) else None
+            mid = self._import_one(str(wav), None, title, recording=recording_id)
         except Exception as exc:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
             code = (None if full or _expected_import_error(exc)
@@ -1090,6 +1153,9 @@ class Workspace:
         # Record which recording this meeting came from, then mark the folder
         # as imported before removing it: either one stops a second import.
         report.update(title=title, meeting=mid, recording_id=folder.name)
+        if interrupted and recording_id:          # the app did not stop it: recovered
+            self.audit.record("recording_ended", recording=recording_id, result="recovered",
+                              seconds=max(0, int(seconds)))
         try:
             # The consent confirmation stays with the meeting (#111 A6).
             sidecar = {**report, **({"consent": journal["consent"]}
@@ -1240,6 +1306,7 @@ class Workspace:
             fid = intake.add_folder(self.store, path, include_existing)
         except intake.IntakeError as exc:
             raise WorkspaceError(str(exc)) from exc
+        self.audit.record("folder_added", folder=fid, existing=include_existing)
         self.scan_now()
         return fid
 
@@ -1264,13 +1331,23 @@ class Workspace:
             raise WorkspaceError("Allowing the app to delete originals needs your confirmation "
                                  "in Windows.")
         if delete_originals is not None:
+            before = intake.authority_for(self.store, fid)
             intake.set_delete_originals(self.store, fid, delete_originals)
+            after = intake.authority_for(self.store, fid)
+            if after != before:                   # changed: granted (confirmed) or withdrawn
+                self.audit.record("delete_authority", folder=fid, granted=after)
         if fetch_cloud is not None:
             intake.set_fetch_cloud(self.store, fid, fetch_cloud)
             self.scan_now()
 
     def remove_folder(self, fid):
-        intake.remove_folder(self.store, _hold_id(fid))
+        fid = _hold_id(fid)
+        row = self.store._one("SELECT delete_originals FROM watched_folders WHERE id = ?",
+                              (fid,))
+        intake.remove_folder(self.store, fid)
+        if row is not None and audit.HEX32.fullmatch(fid):
+            self.audit.record("folder_removed", folder=fid,
+                              had_authority=bool(row["delete_originals"]))
 
     def scan_now(self):
         self._not_locked()
@@ -1390,7 +1467,7 @@ class Workspace:
             roots = (intake.deletion_roots(self.store, mid)
                      if self._allowed("AllowDeleteOriginals") else [])
             cleanup.run_job(self.store, ref, self.media, quiesce=self.handle.shutdown,
-                            original_roots=roots)
+                            original_roots=roots, on_event=self.audit.record)
             return
         if self._closing.is_set():
             return                          # never start a worker during shutdown
@@ -2280,6 +2357,7 @@ class Workspace:
                                           f"{'supported' if info.get('driver_ok') else 'too old'}"
                                           if info else "none found"))
         lines.append(f"Crashes in the last 7 days: {diag.recent_crashes(self.log.folder)}")
+        lines.append(self._audit_line())
         checked = diag.integrity_state(self.log.folder)       # values it has checked
         if checked is None:
             lines.append("Database check: not run")
@@ -2290,6 +2368,31 @@ class Workspace:
         lines += [json.dumps(r, separators=(",", ":"))
                   for r in diag.shareable_records(self.log.folder, limit=40)]
         return "\n".join(lines) + "\n"
+
+    def _audit_line(self):
+        """Copy diagnostics' audit log line: numbers and states only (#111 C5)."""
+        try:
+            a = self.audit.summary()
+        except Exception:
+            return "Audit log: ?"
+
+        def number(v):
+            return v if isinstance(v, int) and not isinstance(v, bool) else "?"
+        if a["mirror"] == "ok":
+            mirror = "Event Log copy ok"
+        elif a["mirror"] == "off":
+            mirror = "no Event Log copy"
+        else:
+            since = a["failing_since"]
+            when = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+                    if isinstance(since, int) else "?")
+            mirror = f"Event Log copy failing since {when}"
+        seq = "none" if a["seq"] is None else number(a["seq"])
+        return (f"Audit log: newest seq {seq}; {number(a['written'])} written this run; "
+                f"{mirror} ({number(a['unmirrored'])} without a copy); failed writes "
+                f"{number(a['failed_writes'])}; segments dropped "
+                f"{number(a['dropped_segments'])}; suppressed {number(a['suppressed'])}; "
+                f"refused {number(a['refused'])}")
 
     def copy_diagnostics(self):
         """Copy diagnostics to the clipboard (kept out of clipboard history and
@@ -2315,6 +2418,7 @@ class Workspace:
                 return
             self._integrity = {"state": "continued", "code": self._integrity["code"]}
         self.log.write("integrity", result="continued", code=self._integrity["code"])
+        self.audit.record("damage_continued")
         try:
             self.store.mark_interrupted()
             self._upkeep(discard=False)       # nothing removed on a damaged database
@@ -2551,11 +2655,22 @@ class Workspace:
             raise WorkspaceError("Choose what to copy.")
         out = self._checked(mid, tid, kind, expected, anonymise)
         sequence = self._handoff(clipboard.copy_text, out[kind])
+        self.audit.record("handoff_copied", what=kind, **self._handoff_fields(mid, out))
         minutes = self.policy.current().get("ClipboardClearMinutes")
         if minutes:
             self._schedule_clipboard_clear(sequence, minutes * 60)
         return {"chars": len(out[kind]), "long": out["long"] and kind == "combined",
                 "clears_in_minutes": minutes or None}
+
+    @staticmethod
+    def _handoff_fields(mid, out):
+        """What the audit log keeps of a handoff: the meeting, whether the
+        template is a built-in one (possibly edited) or the user's own, and
+        counts. Never the template's text or anything copied (#111 C5)."""
+        return {"meeting": mid,
+                "template": "built_in" if out["template"]["id"] in handoff.BUILTIN else "custom",
+                "names_replaced": bool(out["anonymised"]), "omitted": out["omitted"],
+                "redactions": out["redactions"]}
 
     # -- copy and open the assistant (#109) ---------------------------------------------
 
@@ -2644,6 +2759,10 @@ class Workspace:
             opened = True
         except OSError:
             opened = False                 # the copy stays; the page says to open it by hand
+        if opened:
+            self.audit.record("assistant_opened", meeting=mid,
+                              assistant=("default" if assistant == handoff.DEFAULT_ASSISTANT
+                                         else "policy"))
         return {**copied, "opened": opened, **self._assistant_shown(assistant)}
 
     def _schedule_clipboard_clear(self, sequence, delay_s):
@@ -2755,6 +2874,7 @@ class Workspace:
         except OSError as exc:
             reason = exc.strerror or "file error"
             raise WorkspaceError(f"Could not save the file: {reason}.") from exc
+        self.audit.record("handoff_saved", **self._handoff_fields(mid, out))
         return {"chars": len(out["markdown"]), "name": target.name}
 
     # -- setup (#19) ----------------------------------------------------------------------
@@ -2933,15 +3053,35 @@ class Workspace:
     def add_hold(self, mid, scope, reason):
         self._meeting(mid)
         try:
-            return holds.add_hold(self.store, mid, scope, _clean_text(reason, 500))
+            hid = holds.add_hold(self.store, mid, scope, _clean_text(reason, 500))
         except holds.HoldError as exc:
             raise WorkspaceError(str(exc)) from exc
+        self.audit.record("hold_placed", meeting=mid, hold=hid, scope=scope)   # never the reason
+        return hid
+
+    def _hold_row(self, hid):
+        """A hold's plain columns (never its reason), or None."""
+        return self.store._one("SELECT meeting_id, scope, released_at FROM holds WHERE id = ?",
+                               (hid,))
 
     def release_hold(self, hold_id):
-        return holds.release_hold(self.store, _hold_id(hold_id))
+        hid = _hold_id(hold_id)
+        before = self._hold_row(hid)
+        jobs = holds.release_hold(self.store, hid)
+        after = self._hold_row(hid)
+        if before is not None and before["released_at"] is None \
+                and after is not None and after["released_at"] is not None:
+            self.audit.record("hold_released", meeting=before["meeting_id"], hold=hid,
+                              scope=before["scope"])
+        return jobs
 
     def keep_hold(self, hold_id):
-        holds.mark_reviewed(self.store, _hold_id(hold_id))
+        hid = _hold_id(hold_id)
+        holds.mark_reviewed(self.store, hid)
+        row = self._hold_row(hid)
+        if row is not None and row["released_at"] is None:
+            self.audit.record("hold_kept", meeting=row["meeting_id"], hold=hid,
+                              scope=row["scope"])
 
     def confirm_reviewed(self, mid):
         self._meeting(mid)
@@ -2951,6 +3091,7 @@ class Workspace:
             jid = cleanup.confirm_transcript_reviewed(self.store, mid)
         except cleanup.CleanupError as exc:
             raise WorkspaceError(str(exc)) from exc
+        self.audit.record("transcript_reviewed", meeting=mid, job=jid)
         self._wake.set()
         return jid
 
@@ -2974,6 +3115,7 @@ class Workspace:
                 cleanup.discard(self.store, mid, unfinished=not importing)
             except cleanup.CleanupError as exc:
                 raise WorkspaceError(str(exc)) from exc
+        self.audit.record("meeting_discarded", meeting=mid)
         self._wake.set()
 
     def confirm_final_saved(self, mid):
@@ -2982,19 +3124,36 @@ class Workspace:
             jid = cleanup.confirm_final_saved(self.store, mid)
         except cleanup.CleanupError as exc:
             raise WorkspaceError(str(exc)) from exc
+        self.audit.record("final_saved", meeting=mid, job=jid)
         self._wake.set()
         return jid
 
+    def _job_row(self, jid):
+        return self.store._one("SELECT meeting_id, phase, state FROM cleanup_jobs WHERE id = ?",
+                               (jid,))
+
     def confirm_cleanup(self, job_id):
         """Explicit confirmation for cleanup that waited on a released hold."""
-        holds.confirm_pending_cleanup(self.store, _hold_id(job_id))
+        jid = _hold_id(job_id)
+        before = self._job_row(jid)
+        holds.confirm_pending_cleanup(self.store, jid)
+        after = self._job_row(jid)
+        if before is not None and before["state"] == "awaiting_confirmation" \
+                and after is not None and after["state"] == "pending":
+            self.audit.record("cleanup_confirmed", meeting=before["meeting_id"],
+                              phase=before["phase"], job=jid)
         self._wake.set()
 
     def retry_cleanup(self, job_id):
         """The user's "Try again" for a failed cleanup: run it on the next pass."""
+        jid = _hold_id(job_id)
         with self.store.tx() as db:
-            db.execute("UPDATE cleanup_jobs SET last_attempt_at = NULL WHERE id = ? AND "
-                       "state = 'failed'", (_hold_id(job_id),))
+            changed = db.execute("UPDATE cleanup_jobs SET last_attempt_at = NULL WHERE id = ? "
+                                 "AND state = 'failed'", (jid,)).rowcount
+        row = self._job_row(jid) if changed else None
+        if row is not None:
+            self.audit.record("cleanup_retry", meeting=row["meeting_id"], phase=row["phase"],
+                              job=jid)
         self._wake.set()
 
 

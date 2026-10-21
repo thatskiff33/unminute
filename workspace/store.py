@@ -855,6 +855,9 @@ class Store:
         self._lock.on_release = self._take_damage
         self.locked = None          # the KeyUnavailable while locked (on_unavailable="lock")
         self.keyring = None
+        # This open made the workspace's root key: a new database, a rebuilt
+        # stub or the 1 to 2 migration (the audit log's first_use, #111 C5).
+        self.new_root = False
         self.codec = None
         self.log = None             # diagnostics (Workspace sets its log); else diag's current one
         self._wrapped = {}          # meeting id -> wrapped text key (one load, then kept)
@@ -894,6 +897,7 @@ class Store:
                     raise
                 self._lock_down(exc)
                 return
+            self.new_root = made is not None
             try:
                 self.keyring = self._unlock(made)
             except KeyUnavailable as exc:

@@ -32,8 +32,11 @@ Privacy
   rather than a security boundary: it blocks the common ways to read, list, search or copy
   the data, and its known gaps are in the hook's header and `docs/SECURITY_MODEL.md` T34;
   review for Codex.
-- **P3** Errors, `--status`, receipts and diagnostics carry no content, names, identifying paths
-  or tokens. Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`.
+- **P3** Errors, `--status`, receipts, diagnostics, and the audit log and its Event Log entries
+  carry no content, names, identifying paths or tokens; the user's SID that Windows attaches to
+  an Event Log entry is not text the app writes (the user's decision, 21 October 2026, #111).
+  Guard: `tests/test_workers.py`, `tests/test_app.py`, `tests/test_diagnostics.py`,
+  `tests/test_audit.py`.
 
 Network, secrets and integrity
 
@@ -171,7 +174,7 @@ changes; or GitHub owner settings.
 | Imports, decoding, paths, watched folders | `docs/SECURITY_MODEL.md` T2 to T5, T28; `docs/INTAKE.md`; `docs/WORKSPACE_DESIGN.md` |
 | Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
 | Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
-| Store, jobs, workers, speakers, cleanup, holds, updates | `docs/WORKSPACE_DESIGN.md` |
+| Store, jobs, workers, speakers, cleanup, holds, the audit log, updates | `docs/WORKSPACE_DESIGN.md` |
 | Installer, package, install identity, policy | `docs/PACKAGING.md` |
 | Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
