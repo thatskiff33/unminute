@@ -42,6 +42,12 @@ CASES = [
     {"name": "home-drop", "board": "Home-Drop.dc.html", "app": "home-drop"},
     {"name": "home-states", "board": "Home-States.dc.html", "app": "home-states", "h": 1180},
     {"name": "recording-states", "board": "Recording-States.dc.html", "app": "", "h": 1180},
+    # Retention reminders (#111 C6): the banner's wording with IT's thresholds
+    # and with the app's own default (C6-5).
+    {"name": "home-retention", "board": "Home-Retention.dc.html", "app": "home-retention",
+     "h": 900, "props": {"policy": "managed"}},
+    {"name": "home-retention-default", "board": "Home-Retention.dc.html",
+     "app": "home-retention-default", "h": 900, "props": {"policy": "default"}},
     {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
     {"name": "meeting-transcribing", "app": "meeting-transcribing",
      "board": "Meeting-Transcribing.dc.html"},

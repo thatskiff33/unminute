@@ -514,7 +514,8 @@
     transcript: { "m-garden": GARDEN },
     recording: { enabled: true, display: "flow", recording: null, reports: [] },
     status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet", integrity: null },
-    reminders: { holds_due: [], awaiting_confirmation: [] },
+    reminders: { holds_due: [], awaiting_confirmation: [], retention: [], recordings_waiting: [],
+                 thresholds: { review_days: 30, action_days: 0, managed: { review: false, action: false } } },
   };
 
   // -- scenarios -----------------------------------------------------------------------
@@ -603,6 +604,11 @@
       },
       steps: [],
     },
+    // Retention reminders (#111 C6), as Workspace.reminders reports them.
+    // IT's thresholds (Review due at 7 days, Action required at 14), and the
+    // app's own default (Review due at 30, Action required off).
+    "home-retention": { change: (d) => retention(d, true), steps: [] },
+    "home-retention-default": { change: (d) => retention(d, false), steps: [] },
     help: { steps: [show("help")] },
     // Meeting review: playing from 0:24, so the passage is highlighted. The
     // slowest speed keeps the clock at 0:24 while the page is captured.
@@ -758,6 +764,32 @@
   function firstRun(d) {
     d.setup = { onboarded: false, speech_ready: true };
     d.cards = d.cards.map((c) => (c.role === "speakers" ? { ...c, state: "missing", status: "Not downloaded." } : c));
+  }
+  function retention(d, managed) {
+    // Oldest first, as the app lists them: the page puts action required
+    // first, then review due, in each group.
+    d.meetings = [
+      row({ id: "m-quarterly", title: "Quarterly planning (sample)", stage: "handoff", age_days: 41,
+            duration_s: 2520, speaker_count: 4, audio_available: false }),
+      row({ id: "m-strategy", title: "Strategy day (sample)", stage: "cleanup", age_days: 35,
+            cleanup: [{ id: "j2", phase: "transcript", state: "failed",
+                        note: "a file is in use. Close it and try again." }] }),
+      row({ id: "m-budget", title: "Budget review (sample)", stage: "review", age_days: 33, speaker_count: 3 }),
+      row({ id: "m-site", title: "Site visit notes (sample)", stage: "inbox", progress: 0, age_days: 31,
+            can_retranscribe: false, error: "Could not be transcribed: the recording could not be read." }),
+      row({ id: "m-team", title: "Team catch-up (sample)", stage: "review", age_days: 9 }),
+      row({ id: "m-garden", title: "Community garden planning (sample)", stage: "review",
+            duration_s: 1085, speaker_count: 2 }),
+    ];
+    // Each step has its own clock: the quarterly meeting was reviewed 10 days ago.
+    const steps = [["m-quarterly", "hand_off", 10], ["m-strategy", "cleanup_unfinished", 35],
+                   ["m-budget", "review", 33], ["m-site", "review", 31], ["m-team", "review", 9]];
+    const [review, action] = managed ? [7, 14] : [30, 0];
+    const level = (days) => action && days >= action ? "action_required" : review && days >= review ? "due" : null;
+    d.reminders.thresholds = { review_days: review, action_days: action,
+                               managed: { review: managed, action: managed } };
+    d.reminders.retention = steps.filter(([, , days]) => level(days)).map(([meeting, step, days]) => (
+      { meeting, title: d.meetings.find((m) => m.id === meeting).title, step, days, state: level(days) }));
   }
   function reviewed(d) {
     d.detail["m-garden"] = meeting({ stage: "handoff", reviewed_at: at(15, 12), audio_available: false,

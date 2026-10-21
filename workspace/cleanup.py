@@ -27,7 +27,9 @@ import time
 from pathlib import Path
 
 from workspace import media, safe_paths
-from workspace.holds import record_receipt
+# hold_scopes lives in holds so that the retention reminders (#111 C6) use the
+# same rule without loading this module's media code: one rule, one place.
+from workspace.holds import hold_scopes, record_receipt
 from workspace.media import sha256_file
 from workspace.store import (DAMAGE_CODES, DAMAGED_REFUSAL, DamagedContent, StoreError,
                              compaction_marker, mark_compaction_owed, new_id)
@@ -280,12 +282,6 @@ def _reason(exc):
     if isinstance(exc, OSError):
         return f"{type(exc).__name__}: {exc.strerror or 'file error'}"[:300]
     return f"{type(exc).__name__}: {exc}"[:300]
-
-
-def hold_scopes(phase):
-    """Hold scopes that block a cleanup phase. Transcript cleanup removes
-    everything that remains, so any hold blocks it."""
-    return ("all", AUDIO, TRANSCRIPT) if phase == TRANSCRIPT else ("all", phase)
 
 
 def _held(db, mid, phase):

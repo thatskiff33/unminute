@@ -127,11 +127,32 @@ Anyone can **hold** a meeting's audio, transcript or everything, with a reason, 
 
 - stops the matching cleanup until it is released;
 - never expires by itself;
-- is listed for review every 30 days while the app is open (a closed app sends no reminders).
+- is listed for review every 30 days while the app is open (a closed app sends no reminders);
+- stops the retention reminder for the steps whose cleanup it blocks (see "Retention reminders").
 
 Releasing a hold deletes nothing by itself. The cleanup it was blocking waits for you to confirm it again.
 
-Ordinary unfinished work shows its age and next step on the Meetings page. There are no scheduled reminders.
+Ordinary unfinished work shows its age and next step on the Meetings page.
+
+## Retention reminders
+
+A meeting whose next step has waited a while gets a label beside its title on the Meetings page, and a banner at the top says how many are waiting. Nothing is blocked or deleted: the label only says that the meeting is still on this computer and needs you.
+
+- **Review due** appears when the next step has waited 30 days or more, unless your organisation sets another number of days or turns it off.
+- **Action required** appears only if your organisation turns it on and sets its number of days. Those meetings are listed first in their group, and the banner says what your organisation asks for.
+
+Each step has its own clock:
+
+- **Review the transcript** (including meetings still transcribing, paused or needing attention): from when the recording was imported.
+- **Hand off, then confirm the final output is saved:** from when you confirmed the transcript was reviewed.
+- **Confirm a cleanup after a hold was released:** from when the hold was released.
+- **A cleanup that did not finish:** from when you confirmed it.
+
+The label goes when you finish the step, when you discard the meeting, or when you place a hold that stops the cleanup the step leads to. A hold on the audio or everything stops the review step's label, because confirming the review removes the audio. Any hold stops the handoff step's label, because the final confirmation removes everything. A hold on the transcript alone does not stop the review step's label. Your IT team can see how many held meetings are past the limit, but not which ones.
+
+A recording that was interrupted and still waits for **Keep** or **Delete** counts too.
+
+Reminders show only while the app is open. A closed app sends no reminders and does not pretend to; your IT team may check for meetings that need action through its device management.
 
 ## Updates
 
