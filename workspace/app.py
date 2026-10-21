@@ -86,6 +86,7 @@ DEFAULT_SETTINGS = {
     "battery_override": False,                     # process automatically on battery
     "onboarded": False,                            # guided setup finished or skipped (#19)
     "microphone": False,                           # microphone recording (#30), off by default
+    "computer_audio": False,                       # computer audio as a second track (#108)
     "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
     "recording_display": "flow",                   # flow | spectrum | wave, while recording
     "lid_override": False,                         # lid "Do nothing" while recording (#172)
@@ -98,6 +99,14 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 # gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
                "Ask your IT team.")
+
+# Computer audio (#108) is back-end groundwork until the recording confirmation
+# names people on the call (wording version 2) and the page has its switch:
+# until then no recording opens a computer track, whatever the setting says.
+# Tests turn it on to exercise the path.
+COMPUTER_AUDIO_STARTS = False
+COMPUTER_POLICY_STOP = ("Your organisation turned off computer audio. Only the microphone "
+                        "is recorded from here.")
 
 
 class WorkspaceError(ValueError):
@@ -235,7 +244,7 @@ class Settings:
                 or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
             raise WorkspaceError("Unknown speech model.")
         if (key in ("speakers", "battery_override", "onboarded", "microphone",
-                    "gpu_speakers", "lid_override")
+                    "computer_audio", "gpu_speakers", "lid_override")
                 and not isinstance(value, bool)):
             raise WorkspaceError("Expected on or off.")
 
@@ -411,6 +420,7 @@ class Workspace:
         self._recording_reports = []       # finished or recovered recordings (no content)
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
+        self.open_loopback = None          # computer audio: loopback.open_loopback; tests a fake
         if not held and self.locked is None:
             self._upkeep()
         if start:
@@ -768,6 +778,25 @@ class Workspace:
         if not self.settings["microphone"]:
             raise WorkspaceError("Microphone recording is turned off in Settings.")
 
+    def _computer_audio_allowed(self):
+        """Policy allows computer audio: both keys, since it is only ever
+        recorded beside the microphone. An unreadable key grants nothing."""
+        return (self._allowed("AllowMicrophoneRecording")
+                and self._allowed("AllowComputerAudioRecording"))
+
+    def _computer_track(self):
+        """The computer track for a recording about to start, or None: only
+        when the app opens computer tracks at all (COMPUTER_AUDIO_STARTS), the
+        user's switch is on (off by default) and policy allows it. The source
+        is the Windows default output (the meeting-app source needs a choice
+        of app on the page, a later slice)."""
+        if not (COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
+                and self._computer_audio_allowed()):
+            return None
+        from workspace import loopback       # only when a recording needs it
+        return {"open": self.open_loopback or loopback.open_loopback,
+                "source": {"kind": loopback.ENDPOINT}, "rate": loopback.LOOPBACK_RATE}
+
     def microphone_devices(self):
         self._need_microphone()
         try:
@@ -831,7 +860,8 @@ class Workspace:
             choice = self._device(device, name)
             rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
                                      choice.get("label") or choice["name"], choice["rate"],
-                                     open_stream=self.open_stream)
+                                     open_stream=self.open_stream,
+                                     computer=self._computer_track())
             if consent is not None:
                 rec.journal["consent"] = dict(consent)     # saved with the journal
             try:
@@ -887,6 +917,8 @@ class Workspace:
             raise WorkspaceError("Nothing is being recorded.")
         if not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
+        if self._recording.computer_on and not self._computer_audio_allowed():
+            self._recording.stop_computer(COMPUTER_POLICY_STOP)   # the microphone resumes
         self._recording.resume()
         return self._recording.status()
 
@@ -1022,7 +1054,8 @@ class Workspace:
                 pass                             # tried again at the next start
             return
         journal = recorder.read_journal(folder)
-        has_audio = any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
+        has_audio = (any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
+                     or any(folder.glob(f"{recorder.COMPUTER_PREFIX}*.pcm")))
         if journal is None and not (folder / "journal.json").exists() and not has_audio:
             try:                         # an empty leftover (removal stopped at the end)
                 recorder.remove_folder(folder)
@@ -1044,6 +1077,16 @@ class Workspace:
             except OSError:
                 pass                     # tried again at the next start
             return
+        if recorder.journal_format(journal) not in (1, recorder.JOURNAL_FORMAT):
+            # Saved by a newer version (or damaged): importing what this version
+            # understands could leave a track out. Keep it all and say so.
+            self._add_report({"title": None, "seconds": 0, "events": [],
+                              "note": "This recording was saved in a form this version of "
+                                      "Unminute cannot read, perhaps by a newer version. The "
+                                      "audio is kept. Update Unminute, then choose Try again, "
+                                      "or Delete it if you do not need it.",
+                              "pending": folder.name})
+            return
         if ask and journal.get("state") == "recording":
             # The app closed or crashed while recording: nothing is transcribed
             # until the user chooses to keep it.
@@ -1058,7 +1101,7 @@ class Workspace:
         report = {"title": None, "seconds": 0, "events": events,
                   "device": journal.get("device_name")}
         try:
-            wav, seconds = recorder.assemble_wav(folder, journal)
+            wav, seconds = recorder.assemble_wav(folder, journal, notes=events)
             report["seconds"] = round(seconds, 1)
             interrupted = journal.get("state") == "recording"   # the app did not stop it
             missing = (recorder.missing_tail_seconds(folder, journal, seconds)
@@ -2404,6 +2447,8 @@ class Workspace:
         effective = dict(self.settings.values)
         if not self._allowed("AllowMicrophoneRecording"):
             effective["microphone"] = False
+        if not (self._computer_audio_allowed() and effective["microphone"]):
+            effective["computer_audio"] = False
         if not self._allowed("AllowGpuComponent"):
             effective["gpu_speakers"] = False
         lid_managed = self._display_value("lid_managed", self.lid.managed)
@@ -2438,6 +2483,14 @@ class Workspace:
             raise WorkspaceError("Expected settings.")
         if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
+        if changes.get("computer_audio") is True:
+            if not self._computer_audio_allowed():
+                raise WorkspaceError(MANAGED_OFF.format(what="Computer audio recording"))
+            if not changes.get("microphone", self.settings["microphone"]):
+                raise WorkspaceError("Turn on microphone recording first: computer audio is "
+                                     "recorded beside the microphone.")
+        if changes.get("microphone") is False:
+            changes = {**changes, "computer_audio": False}    # never without the microphone
         if changes.get("gpu_speakers") is True and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
         if changes.get("lid_override") is True:
@@ -2722,10 +2775,16 @@ class Workspace:
         except Exception:
             pass
         stop = not p.get("AllowMicrophoneRecording") and not p.unreadable
-        if stop and self._recording is not None:
-            self._finish_recording(self._recording, event=(
+        rec = self._recording
+        if stop and rec is not None:
+            self._finish_recording(rec, event=(
                 "policy_stop", "Stopped because your organisation turned off microphone "
                                "recording"))
+        elif (rec is not None and rec.computer_on and not p.unreadable
+              and not p.get("AllowComputerAudioRecording")):
+            # Only the computer track stops; the microphone carries on. Like
+            # the microphone, an unreadable key does not cut a track short.
+            rec.stop_computer(COMPUTER_POLICY_STOP)
 
     def handoff_folder(self):
         """Where the handoff Save dialog starts: the organisation's folder if

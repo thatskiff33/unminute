@@ -108,8 +108,8 @@ Compatibility, installation and policy
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
-  a governed area (downloads, GPU, microphone, watched folders, network drives, handoff,
-  clipboard) reads it, and an unreadable policy grants nothing. Guard: `tests/test_policy.py`.
+  a governed area (downloads, GPU, microphone, computer audio, watched folders, network
+  drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard: `tests/test_policy.py`.
 
 Evidence
 
