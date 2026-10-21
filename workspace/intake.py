@@ -134,9 +134,9 @@ def add_folder(store, path, include_existing=False):
         raise IntakeError("Network folders cannot be watched. Choose a folder on this "
                           "computer (synced folders such as OneDrive are fine).") from exc
     if _broad(real):
-        raise IntakeError("Choose a specific folder for recordings, not a whole drive, your "
-                          "whole user folder or a folder that holds it, or a Windows, "
-                          "program or app data folder.")
+        raise IntakeError("Choose a specific folder for recordings. A whole drive, your user "
+                          "folder or a folder that holds it, and Windows, program and app "
+                          "data folders cannot be watched.")
     from workspace.store import new_id
     fid = new_id()
     if not store.add_folder(fid, real, include_existing):

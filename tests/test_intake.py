@@ -239,7 +239,7 @@ class IntakeTests(unittest.TestCase):
         wav(self.folder / "history.wav", seed=33)
         intake.add_folder(self.store, str(self.folder))
         real = intake._walk
-        intake._walk = lambda root, ext, stop=None: ([], False, [])       # e.g. sync re-initialising
+        intake._walk = lambda root, ext, stop=None: ([], False, [])   # e.g. sync re-initialising
         try:
             self.scan()
         finally:
