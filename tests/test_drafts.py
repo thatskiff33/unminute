@@ -345,6 +345,25 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(marker.exists())
         self.assertGreater(self.phrases(s)[0]["start"], 2.0)   # placed after the gap
 
+    def test_audio_during_a_restart_waits_for_the_new_worker(self):
+        # Found by a full local run: audio that arrived while the crashed
+        # worker was being replaced was dropped, not held for the new one.
+        marker = self.root / "crashed"
+        with mock.patch.dict(os.environ, {"UNMINUTE_TEST_MARKER": str(marker)}):
+            s = self.session("draft_crash_once")
+            real_start = s._start_process
+
+            def slow_start():
+                time.sleep(1.0)
+                real_start()
+            s._start_process = slow_start
+            end = self.play(s, self.speech(1))
+            self.assertTrue(wait_for(lambda: marker.exists() and s._conn is None))
+            self.play(s, self.speech(1), start=end + 16000)     # while it restarts
+            self.assertTrue(wait_for(lambda: self.phrases(s), timeout=30))
+        self.assertEqual(s.restarts, 1)
+        self.assertGreater(self.phrases(s)[0]["start"], 3.0)    # the audio played meanwhile
+
     def test_a_second_crash_ends_drafts(self):
         s = self.session("draft_crash_always")
         end = self.play(s, self.speech(1))

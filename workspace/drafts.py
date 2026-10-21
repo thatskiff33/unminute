@@ -429,9 +429,9 @@ class DraftSession:
         proc.start()
         child.close()
         parent.send(("start", self.rate))
-        self._proc, self._conn = proc, parent
         self._ready.clear()
         self.state = STARTING
+        self._proc, self._conn = proc, parent
         reader = threading.Thread(target=self._read_loop, args=(proc, parent),
                                   name="draft-reader", daemon=True)
         reader.start()
@@ -579,12 +579,15 @@ class DraftSession:
         # Not before the worker is ready (it reads nothing while it loads), and
         # never after a stop. A worker that is gone loses this audio, not the
         # recording.
-        while not self._ready.wait(0.2):
+        # A worker being restarted (after a crash, or on mains power again)
+        # is waited for: the tap holds the audio meanwhile.
+        while True:
             if self._stopped or not self._feeding:
                 return False
-        conn = self._conn
-        if conn is None or self._stopped or not self._feeding:
-            return False
+            if self._ready.wait(0.2):
+                conn = self._conn
+                if conn is not None:
+                    break
         try:
             conn.send(msg)
             return True
@@ -663,6 +666,8 @@ class DraftSession:
             if self._stopped or self._conn is not conn:
                 return
             self._proc = self._conn = None
+            self._ready.clear()              # the feeder waits for the next worker
+            self.state = STARTING
         self._end_process(proc, conn, died=True)
         with self._lock:
             if self._stopped or self._proc is not None:
