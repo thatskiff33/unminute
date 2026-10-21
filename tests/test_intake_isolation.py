@@ -1,7 +1,8 @@
 # Untrusted recordings (#111 slice A3): decoding in a contained child process
 # (plain process, Windows job, Low integrity, checked binary replies), FFmpeg
-# limited to the supported demuxers and local files, and the length and disk
-# limits enforced by the app.
+# limited to the supported demuxers, their audio decoders and local files,
+# input sample rates of 4 kHz to 384 kHz, and the length, size-ratio and disk
+# limits enforced by the app (D2 red team, part 2).
 #   python -m unittest discover -s tests -v
 
 import importlib.util
@@ -39,18 +40,22 @@ def tone_wav(path, seconds=1.0, rate=16000):
     return path
 
 
-def encode(path, fmt, codec, video=False, rate=16000):
-    """A one-second synthetic tone in any container PyAV can write."""
+def encode(path, fmt, codec, video=False, rate=16000, seconds=1, silent=False):
+    """A synthetic tone (or digital silence) in any container PyAV can write,
+    with a video track if `video` is True (H.264) or a video encoder's name."""
     import av
     import numpy as np
-    tone = (0.2 * np.sin(2 * np.pi * 440 * np.arange(16000) / 16000)).astype(np.float32)
+    n = int(16000 * seconds)
+    tone = (0.2 * np.sin(2 * np.pi * 440 * np.arange(n) / 16000)).astype(np.float32)
+    if silent:
+        tone = np.zeros(n, np.float32)
     with av.open(str(path), "w", format=fmt) as out:
         a = out.add_stream(codec, rate=48000 if codec == "libopus" else rate)
         a.layout = "mono"
         if codec == "wmav2":
             a.bit_rate = 64000              # the encoder refuses its default
         if video:
-            v = out.add_stream("libx264", rate=10)
+            v = out.add_stream("libx264" if video is True else video, rate=10)
             v.width, v.height, v.pix_fmt = 64, 64, "yuv420p"
         res = av.AudioResampler(format=a.codec_context.format.name, layout="mono", rate=a.rate)
         frame = av.AudioFrame.from_ndarray(tone.reshape(1, -1), format="flt", layout="mono")
@@ -68,6 +73,63 @@ def encode(path, fmt, codec, video=False, rate=16000):
                     out.mux(p)
             for p in v.encode(None):
                 out.mux(p)
+    return path
+
+
+def with_id3_picture(path, mp3, mime, image):
+    """`mp3` (a path) with an ID3v2.3 tag holding one picture (APIC frame)."""
+    body = b"\x00" + mime + b"\x00\x03cover\x00" + image
+    frame = b"APIC" + struct.pack(">I", len(body)) + b"\x00\x00" + body
+    size = len(frame)
+    syncsafe = bytes([(size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F])
+    Path(path).write_bytes(b"ID3\x03\x00\x00" + syncsafe + frame + Path(mp3).read_bytes())
+    return path
+
+
+def with_flac_picture(path, flac, mime, image):
+    """`flac` (a path) with a PICTURE metadata block after its STREAMINFO."""
+    data = Path(flac).read_bytes()
+    info_len = struct.unpack(">I", b"\0" + data[5:8])[0]
+    info = bytearray(data[4:8 + info_len])
+    last = info[0] & 0x80
+    info[0] &= 0x7F                              # STREAMINFO is no longer the last block
+    pic = (struct.pack(">II", 3, len(mime)) + mime + struct.pack(">I", 5) + b"cover"
+           + struct.pack(">IIIII", 16, 16, 32, 0, len(image)) + image)
+    head = bytes([0x06 | last]) + struct.pack(">I", len(pic))[1:]
+    Path(path).write_bytes(b"fLaC" + bytes(info) + head + pic + data[8 + info_len:])
+    return path
+
+
+def _crc8(data):
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+    return crc
+
+
+def _crc16(data):
+    crc = 0
+    for b in data:
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x8005) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def silent_flac(path, frames, rate=4000, block=65535):
+    """A valid FLAC file of digital silence in the largest blocks FLAC allows:
+    each 13-byte frame holds `block` samples (16 s at 4 kHz). frames < 128."""
+    info = struct.pack(">HH", block, block) + b"\0" * 6
+    fields = (rate << 44) | (15 << 36) | (frames * block)         # rate, mono, 16-bit, samples
+    info += fields.to_bytes(8, "big") + b"\0" * 16                 # no MD5
+    out = b"fLaC" + bytes([0x80]) + len(info).to_bytes(3, "big") + info
+    for n in range(frames):
+        head = bytes([0xFF, 0xF8, 0x70, 0x08, n]) + struct.pack(">H", block - 1)
+        body = head + bytes([_crc8(head)]) + b"\x00\x00\x00"       # CONSTANT subframe, 0
+        out += body + struct.pack(">H", _crc16(body))
+    Path(path).write_bytes(out)
     return path
 
 
@@ -146,6 +208,108 @@ class DecoderTests(unittest.TestCase):
         allowed = set(decode_child.OPEN_OPTIONS["format_whitelist"].split(","))
         for risky in ("hls", "concat", "rtsp", "rtp", "sdp", "dash", "image2", "tee", "data"):
             self.assertNotIn(risky, allowed)
+
+    def test_the_decoder_list_names_only_audio_decoders(self):
+        import av
+
+        from workspace import decode_child
+        names = decode_child.OPEN_OPTIONS["codec_whitelist"].split(",")
+        self.assertEqual(names, decode_child.AUDIO_DECODERS.split(","))
+        for name in names:
+            with self.subTest(name=name):
+                self.assertEqual(av.Codec(name, "r").type, "audio")
+
+    def test_cover_art_and_video_tracks_never_reach_their_decoders(self):
+        # Opening a file probes every stream. Before the decoder list, a video
+        # track's decoder and an MP3's or FLAC's cover-art image decoder parsed
+        # the file's bytes before the app chose the audio (D2 red team, part
+        # 2, finding 1). Now FFmpeg refuses them, and the audio still decodes.
+        import av
+
+        from workspace import decode_child, media
+        mp3 = encode(self.root / "plain.mp3", "mp3", "libmp3lame")
+        flac = encode(self.root / "plain.flac", "flac", "flac")
+        tiff = b"II*\x00\x08\x00\x00\x00\x0a\x00" + bytes(range(256)) * 16
+        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + bytes(range(256)) * 16
+        cases = {"tiff": with_id3_picture(self.root / "cover.mp3", mp3, b"image/tiff", tiff),
+                 "png": with_flac_picture(self.root / "cover.flac", flac, b"image/png", png),
+                 "mpeg4": encode(self.root / "video.mkv", "matroska", "flac", video="mpeg4")}
+        for decoder, src in cases.items():
+            with self.subTest(src=src.name):
+                level = av.logging.get_level()
+                av.logging.set_level(av.logging.DEBUG)
+                try:
+                    with av.logging.Capture(True) as logs:
+                        decode_child.decode(str(src), lambda kind, payload=b"": None)
+                finally:
+                    av.logging.set_level(level)
+                said = [m for _, name, m in logs if (name or "").split(" @")[0] == decoder]
+                self.assertTrue(said, decoder)
+                for message in said:
+                    self.assertIn("not on whitelist", message)
+                samples = media.decode(src, io.BytesIO())
+                self.assertGreater(samples, 12000)
+
+    def test_an_audio_codec_outside_the_list_is_refused(self):
+        from workspace import media
+        src = encode(self.root / "yamaha.wav", "wav", "adpcm_yamaha")
+        with self.assertRaises(media.DecodeError) as ctx:
+            media.decode(src, io.BytesIO())
+        self.assertEqual(str(ctx.exception), media._GENERIC)
+
+    def test_a_stream_with_no_decoder_is_refused_not_crashed(self):
+        # PyAV 17 leaves codec_context as None when FFmpeg has no decoder for
+        # the stream; decoding it crashed the decoder process (finding 4).
+        from workspace import media
+        good = tone_wav(self.root / "tone.wav").read_bytes()
+        for name, offset, value in (("bits-zero.wav", 34, 0), ("format-7777.wav", 20, 0x7777)):
+            with self.subTest(name=name):
+                data = bytearray(good)
+                struct.pack_into("<H", data, offset, value)
+                src = self.root / name
+                src.write_bytes(bytes(data))
+                with self.assertRaises(media.DecodeError) as ctx:
+                    media.decode(src, io.BytesIO())
+                self.assertEqual(str(ctx.exception), media._GENERIC)
+
+    def test_sample_rates_outside_4_to_384_khz_are_refused(self):
+        # A header claiming 1 Hz made each stored sample 16,000 output
+        # samples: 86 KB decoded to 12 hours (finding 3).
+        from workspace import media
+        for rate in (1, 3999, 384001):
+            with self.subTest(rate=rate):
+                src = tone_wav(self.root / f"r{rate}.wav", seconds=0.01, rate=16000)
+                data = bytearray(src.read_bytes())
+                struct.pack_into("<II", data, 24, rate, rate * 2)
+                src.write_bytes(bytes(data))
+                with self.assertRaises(media.DecodeError) as ctx:
+                    media.decode(src, io.BytesIO())
+                self.assertEqual(str(ctx.exception), media._GENERIC)
+        for rate in (4000, 384000):
+            with self.subTest(rate=rate):
+                src = tone_wav(self.root / f"ok{rate}.wav", seconds=0.5, rate=rate)
+                samples = media.decode(src, io.BytesIO())
+                self.assertAlmostEqual(samples, 8000, delta=100)
+
+    def test_a_small_file_cannot_decode_to_hours(self):
+        # 432 bytes of valid FLAC (silence in 16-second blocks at 4 kHz)
+        # holds over 8 minutes: more than one second per 16 bytes of file.
+        from workspace import decode_child, media
+        src = silent_flac(self.root / "dense.flac", frames=30)
+        self.assertGreater(30 * 65535 / 4000, src.stat().st_size / 16)     # seconds
+        with self.assertRaises(media.DecodeError) as ctx:
+            media.decode_to_file(src, self.root / "dense.uma", bytes(32), ("decoded", "m"))
+        self.assertEqual(str(ctx.exception), media.MESSAGES[decode_child.E_TOO_DENSE])
+        self.assertFalse((self.root / "dense.partial").exists())
+        self.assertFalse((self.root / "dense.uma").exists())
+
+    def test_digital_silence_from_real_encoders_is_within_the_limit(self):
+        # The densest encoder measured: AAC at 8 kHz, about 64 bytes a second
+        # of digital silence. A minute of it still imports.
+        from workspace import media
+        src = encode(self.root / "quiet.m4a", "ipod", "aac", rate=8000, seconds=60, silent=True)
+        samples = media.decode(src, io.BytesIO())
+        self.assertAlmostEqual(samples, 60 * 16000, delta=4000)
 
 
 def multichannel_wav(path, data, rate, mask=None):
@@ -381,6 +545,17 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(media.DecodeError) as ctx:
             self.collect(frames((b"A", audio), (b"A", audio), (b"D", b"")), max_samples=1500)
         self.assertIn("longer than 12 hours", str(ctx.exception))
+
+    def test_the_app_enforces_the_limit_for_the_files_size(self):
+        # Whatever the decoder reports, a file decodes to at most one second
+        # of audio per 16 bytes (D2 red team, part 2, finding 3).
+        from workspace import decode_child, media
+        self.assertEqual(decode_child.max_samples_for(16 * 60), 60 * 16000)
+        self.assertEqual(decode_child.max_samples_for(1 << 40), decode_child.MAX_DECODED_S * 16000)
+        audio = b"\0" * 4000
+        with self.assertRaises(media.DecodeError) as ctx:
+            self.collect(frames((b"A", audio), (b"A", audio), (b"D", b"")), dense_limit=1500)
+        self.assertEqual(str(ctx.exception), media.MESSAGES[decode_child.E_TOO_DENSE])
 
     def test_the_app_keeps_free_disk_space(self):
         from workspace import media

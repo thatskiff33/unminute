@@ -17,8 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
-from workspace.decode_child import (E_MEMORY, E_NO_AUDIO, E_SETUP, E_TOO_LONG, LOW_INTEGRITY,
-                                    MAX_DECODED_S)
+from workspace.decode_child import (E_MEMORY, E_NO_AUDIO, E_SETUP, E_TOO_DENSE, E_TOO_LONG,
+                                    LOW_INTEGRITY, MAX_DECODED_S, max_samples_for)
 
 SAMPLE_RATE = 16000
 AUDIO_FILE = "audio.uma"
@@ -52,8 +52,11 @@ def sha256_file(path, chunk=8 << 20):
 #   - never trusts: replies are fixed binary frames, checked here; this
 #     process writes (encrypts) the audio itself and enforces the length and
 #     disk limits.
-# FFmpeg in the decoder may only use the supported recording types' demuxers
-# and the local file protocol (decode_child.OPEN_OPTIONS).
+# FFmpeg in the decoder may only use the supported recording types' demuxers,
+# their audio decoders and the local file protocol (decode_child.OPEN_OPTIONS).
+# Input sample rates outside 4 kHz to 384 kHz are refused, and a file may
+# decode to at most one second of audio per 16 bytes of its size
+# (decode_child.max_samples_for), enforced here as well as in the decoder.
 
 DISK_RESERVE = 1 << 30             # never fill the disk: keep 1 GB free
 DECODER_MEMORY = 2 << 30           # job memory limit for the decode process
@@ -68,6 +71,8 @@ MESSAGES = {
     E_MEMORY: "The recording needs more memory to decode than this app allows. It may be "
               "damaged.",
     E_SETUP: "The recording could not be decoded safely on this computer. Ask your IT team.",
+    E_TOO_DENSE: "The recording holds far more audio than a file of its size can. It may be "
+                 "damaged.",
 }
 last_decoder_integrity = None      # what the last decoder reported (tests, diagnostics)
 
@@ -182,10 +187,11 @@ def _error(kind, payload):
 
 
 def _collect(next_frame, out, max_samples=MAX_DECODED_S * SAMPLE_RATE, reserve=DISK_RESERVE,
-             folder=None):
+             folder=None, dense_limit=None):
     """Write the decoder's audio frames to `out` (anything with write(bytes))
     until it reports done. Returns the number of samples. Every limit is
-    enforced here, whatever the decoder does."""
+    enforced here, whatever the decoder does: `dense_limit` is the most
+    samples the source file's size allows (decode_child.max_samples_for)."""
     samples = since_check = 0
     while True:
         kind, payload = next_frame()
@@ -196,6 +202,8 @@ def _collect(next_frame, out, max_samples=MAX_DECODED_S * SAMPLE_RATE, reserve=D
         samples += len(payload) // 4
         if samples > max_samples:
             raise DecodeError(MESSAGES[E_TOO_LONG])
+        if dense_limit is not None and samples > dense_limit:
+            raise DecodeError(MESSAGES[E_TOO_DENSE])
         out.write(payload)
         since_check += len(payload)
         if folder is not None and since_check >= _CHECK_EVERY:
@@ -225,6 +233,10 @@ def decode(src, out, folder=None):
     import subprocess
 
     from workspace import decode_child, jobs
+    try:
+        dense_limit = max_samples_for(os.path.getsize(src))
+    except OSError as exc:
+        raise DecodeError(_GENERIC) from exc
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
     # -X disable-remote-debug: no other process can make the decoder run code
@@ -255,7 +267,8 @@ def decode(src, out, folder=None):
                 raise DecodeError(MESSAGES[E_SETUP])    # not sandboxed: never give it the file
         proc.stdin.write((json.dumps({"src": str(src)}) + "\n").encode("utf-8"))
         proc.stdin.flush()
-        samples = _collect(lambda: frames.next(IDLE_TIMEOUT_S), out, folder=folder)
+        samples = _collect(lambda: frames.next(IDLE_TIMEOUT_S), out, folder=folder,
+                           dense_limit=dense_limit)
         if samples == 0:
             raise DecodeError("The file contains no audio.")
         return samples
