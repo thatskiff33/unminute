@@ -355,6 +355,10 @@ async function renderLists(reminders) {
 
 async function renderStatus() {
   const s = await call("status");
+  if (s.locked) {                      // locked after all (a first status() that failed)
+    renderLocked(s.locked);
+    return;
+  }
   state.mode = s.mode;
   state.changes = s.changes;
   state.wasActive = state.active;      // one more fast poll across the gap between jobs
@@ -447,21 +451,18 @@ function retentionBanner(r) {
 // only this screen, asks for nothing else (no list, meeting or setting, so no
 // title or name can appear) and never polls: only closing and opening
 // Unminute can change the state. Fixed words and codes, shown as text.
+// The paragraph is two short sentences, what happened and that nothing is
+// lost (the owner, 22 Oct 2026); what to do is in IT's steps and the guide.
 const LOCKED_MISMATCH = "Unminute's key does not match its workspace, so it cannot open your " +
-  "meetings. Nothing has been deleted. Copy the details for your IT team.";
+  "meetings.";
 const LOCKED_REASONS = {
-  windows: "Windows could not unlock Unminute's encryption key for your account on this " +
-    "computer. This can happen after IT resets your password, or if your Windows profile is " +
-    "damaged. Your meetings are still on this computer, encrypted, and nothing has been " +
-    "deleted. Close Unminute, sign out of Windows and back in, then open Unminute again. If " +
-    "it is still locked, copy the details for your IT team.",
+  windows: "Windows could not unlock Unminute's encryption key for your account on this computer.",
   key: LOCKED_MISMATCH,
   protector: LOCKED_MISMATCH,
-  missing: "Unminute's key record is missing from its workspace, so it cannot open your " +
-    "meetings. Nothing has been deleted. Copy the details for your IT team.",
+  missing: "Unminute's key record is missing from its workspace, so it cannot open your meetings.",
 };
-const LOCKED_OTHER = "Unminute cannot use its encryption key, so it cannot open your meetings. " +
-  "Nothing has been deleted. Copy the details for your IT team.";
+const LOCKED_OTHER = "Unminute cannot use its encryption key, so it cannot open your meetings.";
+const LOCKED_KEPT = "Your meetings are still on this computer, and nothing has been deleted.";
 
 // A Windows error number as Windows tools show it: 0x8009000B for -2146893813.
 const hex32 = (n) => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(8, "0");
@@ -478,10 +479,12 @@ function renderLocked(info) {
   for (const v of VIEWS) $(`view-${v}`).hidden = true;
   document.body.dataset.view = "locked";
   $("view-locked").hidden = false;
-  const damage = info.damage
-    ? ` Unminute also found damage in its workspace database (code ${info.damage}).` : "";
+  say("");                              // nothing left from a usual start
+  // The damage code itself is in the codes below.
+  const damage = info.damage ? " Unminute also found damage in its workspace database." : "";
   // The alert is announced once, as it is filled in.
-  $("locked-reason").textContent = (LOCKED_REASONS[info.reason] || LOCKED_OTHER) + damage;
+  $("locked-reason").textContent =
+    `${LOCKED_REASONS[info.reason] || LOCKED_OTHER}${damage} ${LOCKED_KEPT}`;
   const codes = [["Code", info.code]];
   if (Number.isInteger(info.win_error))
     codes.push(["Windows error", `${info.win_error} (${hex32(info.win_error)})`]);
@@ -3001,6 +3004,7 @@ async function refresh() {
   refreshing = true;
   try {
     await renderStatus();
+    if (state.locked) return;          // only the locked screen from here (#111 C4b)
     // The meeting list and reminders only when Python reports a change, the
     // view changed, or every LIST_REFRESH_POLLS polls anyway (ages and hold
     // reviews depend on the time). Counted in polls, not by the clock: the

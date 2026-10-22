@@ -702,6 +702,12 @@
       },
       steps: [],
     },
+    // The same, but the page's first status() fails, so it starts as usual and
+    // its next status (the first refresh) must still end on the locked screen.
+    "locked-after-error": {
+      change: (d) => { SCENARIOS.locked.change(d); d.failStatus = 1; },
+      steps: [],
+    },
     // Meeting review: playing from 0:24, so the passage is highlighted. The
     // slowest speed keeps the clock at 0:24 while the page is captured.
     meeting: { steps: openAndPlay() },
@@ -1011,6 +1017,10 @@
     get: (_, method) => async (...args) => {
       perf.calls[method] = (perf.calls[method] || 0) + 1;
       perf.allCalls[method] = (perf.allCalls[method] || 0) + 1;
+      if (method === "status" && data.failStatus > 0) {    // locked-after-error
+        data.failStatus -= 1;
+        return { ok: false, error: "The request failed." };
+      }
       // As the app's bridge gate (api.make_api): while locked, only these.
       if (data.locked && !LOCKED_METHODS.has(method)) return { ok: false, error: LOCKED_TEXT };
       const fn = handlers[method];

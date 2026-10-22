@@ -330,10 +330,6 @@ class EdgeTimeoutTests(unittest.TestCase):
         self.assertEqual(2, design_check.NOT_MEASURED)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LockedTests(unittest.TestCase):
     # The locked screen (#111 C4b): asked for the status only, called only
     # what the app allows while locked, and then nothing at all (no poll, no
@@ -371,3 +367,24 @@ class LockedTests(unittest.TestCase):
             problems = ui_idle_check.locked_problems(dict(self.QUIET, **change), allowed)
             self.assertEqual(1, len(problems), change)
             self.assertIn(words, problems[0])
+
+    def test_after_a_failed_first_status_the_start_may_ask_but_must_end_locked(self):
+        # Review of 7b28de1: the first status() fails, so the page starts as
+        # usual and asks for what the bridge then refuses; the next status
+        # must still end on the locked screen, quiet. Its own label.
+        late = dict(self.QUIET, all_calls={"status": 2, "setup_state": 1, "meetings": 1})
+        self.assertEqual([], ui_idle_check.locked_problems(late, None, "locked after an error"))
+        self.assertEqual([], ui_idle_check.locked_problems(
+            late, None, "locked after an error", status_calls=2))
+        for change, words in (({"locked_shown": False}, "not shown"),
+                              ({"bridge_calls_per_minute": 12}, "bridge calls a minute"),
+                              ({"all_calls": {"status": 1}}, "asked for the status 1 time")):
+            problems = ui_idle_check.locked_problems(
+                dict(late, **change), None, "locked after an error", status_calls=2)
+            self.assertEqual(1, len(problems), change)
+            self.assertTrue(problems[0].startswith("locked after an error: "), problems[0])
+            self.assertIn(words, problems[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

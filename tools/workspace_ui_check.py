@@ -1374,7 +1374,8 @@ def locked_problems(lk):
         problems.append("locked screen heading not focused")
     if lk.get("reason") != "windows" or "0x8009000B" not in (lk.get("codes") or "") \
             or "U-" not in (lk.get("codes") or "") \
-            or "sign out of Windows" not in (lk.get("reason_text") or ""):
+            or not (lk.get("reason_text") or "").startswith("Windows could not unlock") \
+            or "nothing has been deleted" not in (lk.get("reason_text") or ""):
         problems.append("locked screen reason or codes")
     calls = set(lk.get("calls") or [])
     if calls - api.LOCKED_METHODS or "status" not in calls:
