@@ -85,13 +85,13 @@ RELEASE_WINDOW_S = evidence.PERF_RELEASE["window_s"]
 VISIBLE_STATES = evidence.PERF_VISIBLE_STATES
 # The level meter draws while recording with the window in view: on every
 # display frame up to METER_MAX_HZ, then on every Nth frame for about that rate
-# (#294; METER_HZ in workspace/ui/app.js, about 30 a second since the owner's
-# decision of 22 Oct 2026, #216). Its draws are counted, not the page's frames,
+# (#294; METER_HZ in workspace/ui/app.js, about 60 a second: the owner's
+# decision of 23 Oct 2026, #216). Its draws are counted, not the page's frames,
 # and a window counts only if it drew at least half its expected rate
 # (min_meter_draws()) and was never undrawn for longer than MAX_UNDRAWN_S at a
-# stretch. The half follows the meter's own rate, so the bar moved with it.
+# stretch.
 DRAWING_STATES = ("recording",)
-METER_MAX_HZ = 30
+METER_MAX_HZ = 60
 MAX_UNDRAWN_S = 5.0
 # GUID_SESSION_DISPLAY_STATUS's values. A dimmed display still draws every frame.
 DISPLAY_STATES = {0: "off", 1: "on", 2: "dimmed"}
@@ -139,8 +139,8 @@ counts only if the display stayed on (Windows' display status for the
 session), the session was not locked and showed no screen saver, and the page
 was visible and drew: at least one frame in every such window, and while
 recording, the level display drawn at least half as often as it should be
-(it draws on every display frame up to about 30 a second: so at least 15 a
-second on a 30 Hz or faster display, 12 on a 24 Hz one; 30 Hz is assumed if
+(it draws on every display frame up to about 60 a second: so at least 30 a
+second on a 60 Hz or faster display, 24 on a 48 Hz one; 60 Hz is assumed if
 the rate is not known), with no stretch longer than 5 s undrawn. The page's
 frames are counted by a wrapper the tool puts around requestAnimationFrame in
 its own window, and the level display's draws by a wrapper around clearRect
@@ -526,7 +526,7 @@ def refresh_rate(hz):
 def min_meter_draws(refresh_hz):
     """The fewest level-display draws a second that show it was drawn: half
     of what it draws on this display (every frame, at most about METER_MAX_HZ;
-    #294, #216). A display whose rate is not known is taken as METER_MAX_HZ."""
+    #294). A display whose rate is not known is taken as METER_MAX_HZ."""
     hz = refresh_rate(refresh_hz) or METER_MAX_HZ
     return round(min(METER_MAX_HZ, hz) / 2, 1)
 
