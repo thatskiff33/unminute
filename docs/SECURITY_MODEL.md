@@ -2,7 +2,7 @@
 
 This document describes how Unminute protects meeting recordings and transcripts: what it protects, from whom, the controls in place, the controls planned and the risks that remain. Its threat IDs are referenced by the security hardening slices in #111. Each slice updates this document when it lands, and the matching row of [CONTROL_MATRIX.md](CONTROL_MATRIX.md), which maps each threat to its guard tests and evidence (a test fails when the two disagree on threats or planned slices).
 
-It started from v0.4.3 (tag commit `579746f`). As each #111 slice merges, its controls move from "Planned" to "In place" (merged so far: A0 to A7, B1 to B4, B8a, B9, C1, C2a, C2b-1, C2b-2, C2c, C3a, C3b, C3c, C4a, C5, and D2's decoder limits). A control described as planned names the #111 slice that delivers it and does not exist yet. Nothing here is a certification. It records what the software does and takes no position on any law; that assessment belongs to each organisation that deploys it.
+It started from v0.4.3 (tag commit `579746f`). As each #111 slice merges, its controls move from "Planned" to "In place" (merged so far: A0 to A7, B1 to B4, B8a, B9, C1, C2a, C2b-1, C2b-2, C2c, C3a, C3b, C3c, C4a, C4b, C5, and D2's decoder limits). A control described as planned names the #111 slice that delivers it and does not exist yet. Nothing here is a certification. It records what the software does and takes no position on any law; that assessment belongs to each organisation that deploys it.
 
 ## Summary
 
