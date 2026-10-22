@@ -26,13 +26,19 @@
 # each check leaves out. It does not replace testing with screen-reader users
 # and pilot users (#27), and passing it is not conformance.
 #
-#   python tools/accessibility_check.py <report.json>
+#   python tools/accessibility_check.py <report.json> [--colour-mode both]
+#
+# By default the page is audited in the PC's own colour mode. --colour-mode
+# light or dark draws it in that mode instead, and both audits each view in
+# light and then in dark (reported as "<view> (light)" and "<view> (dark)").
+# The checks are the same in every mode; a mode the page does not switch to
+# stops the run.
 #
 # Against an installed or extracted package, as release evidence
 # (tools/evidence.py), with that package's own Python:
 #
 #   <v>\runtime\python.exe -I -B -X disable-remote-debug tools\accessibility_check.py
-#       <report.json> --app <v>\app --zip <the zip it came from>
+#       <report.json> --app <v>\app --zip <the zip it came from> --colour-mode both
 
 import argparse
 import json
@@ -273,7 +279,8 @@ for (const t of under) {
   if (clash) smallTargets.push(`${desc(t.el)} ${t.r.width.toFixed(0)}x${t.r.height.toFixed(0)}`);
 }
 // 2.5.3: a control named by aria-label or aria-labelledby has its visible label
-// (its letters and digits, ignoring case and punctuation) in that name.
+// in that name, as whole words (letters and digits, ignoring case and
+// punctuation), so a label that is only part of a word in the name fails.
 const words = (t) => (t || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const shownText = (root) => {
   let out = '';
@@ -293,7 +300,8 @@ for (const el of controls) {
   const own = ['BUTTON', 'A', 'SUMMARY'].includes(el.tagName) ||
     el.getAttribute('role') === 'button';
   const label = words(own ? shownText(el) : [...(el.labels || [])].map(shownText).join(' '));
-  if (label && !words(nameOf(el)).includes(label)) labelNotInName.push(desc(el));
+  if (label && !(' ' + words(nameOf(el)) + ' ').includes(' ' + label + ' '))
+    labelNotInName.push(desc(el));
 }
 // 1.1.1 (in part): every image has a text alternative (alt="" for decoration).
 const noAlt = [...document.querySelectorAll('img, input[type=image], svg[role=img], [role=img]')]
@@ -303,7 +311,8 @@ const noAlt = [...document.querySelectorAll('img, input[type=image], svg[role=im
   .map(desc);
 // 1.4.12: with the WCAG text spacing applied, no text is newly cut off by a box
 // that hides its overflow (overlapping text, and text cut off before, are not
-// measured).
+// measured). The spacing comes off again even if the measuring fails, so the
+// page (and every later view) is audited as it is drawn.
 const clipped = () => {
   const out = new Set();
   for (const el of document.querySelectorAll('body *')) {
@@ -320,9 +329,10 @@ const spacing = document.createElement('style');
 spacing.textContent = '*, *::before, *::after { line-height: 1.5 !important; ' +
   'letter-spacing: 0.12em !important; word-spacing: 0.16em !important; } ' +
   'p { margin-bottom: 2em !important; }';
+let textSpacing;
 document.head.append(spacing);
-const textSpacing = [...clipped()].filter(el => !before.has(el)).map(desc);
-spacing.remove();
+try { textSpacing = [...clipped()].filter(el => !before.has(el)).map(desc); }
+finally { spacing.remove(); }
 // Status badges: must carry words, not only colour.
 const colourOnly = [...document.querySelectorAll('.badge, .status, .dot, [class*="state"]')]
   .filter(el => visible(el) && !el.textContent.trim() && !nameOf(el)).map(desc);
@@ -346,6 +356,61 @@ CHECKS = {
     "no_alt": "1.1.1", "text_spacing_cut_off": "1.4.12", "change_on_focus": "3.2.1",
     "colour_only": "1.4.1",
 }
+
+# The colour mode the page is drawn in (prefers-color-scheme).
+COLOUR_MODE = "return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';"
+
+# --colour-mode: the modes each view is audited in, in order. "system" leaves
+# the page in the PC's own colour mode (Windows' app mode) and is the default.
+COLOUR_CHOICES = ("system", "light", "dark", "both")
+_MODES = {"system": [None], "light": ["light"], "dark": ["dark"], "both": ["light", "dark"]}
+
+
+def colour_modes(choice):
+    """The colour modes to audit each view in: None is the PC's own."""
+    return list(_MODES[choice])
+
+
+def colour_mode_shown(asked, shown):
+    """The mode the page shows, checked against the one asked for (None: the
+    PC's own, either). A mode the page did not switch to stops the run, so a
+    report never claims a mode that was not audited."""
+    if shown not in ("light", "dark") or (asked and shown != asked):
+        raise RuntimeError(f"colour mode asked for: {asked or 'system'}; the page shows: "
+                           f"{shown!r}")
+    return shown
+
+
+def view_key(name, shown, modes):
+    """A view's name in the report: with both modes, each is its own view."""
+    return f"{name} ({shown})" if len(modes) > 1 else name
+
+
+def set_colour_mode(window, mode):
+    """WebView2's preferred colour scheme for the page (prefers-color-scheme):
+    "light", "dark", or None for the PC's own. It changes only the media query
+    the page reads; the page's styles and checks are the same."""
+    from Microsoft.Web.WebView2.Core import CoreWebView2PreferredColorScheme as Scheme
+    from System import Action
+    form = window.native
+    control = form.browser.webview
+    scheme = {None: Scheme.Auto, "light": Scheme.Light, "dark": Scheme.Dark}[mode]
+
+    def apply():
+        control.CoreWebView2.Profile.PreferredColorScheme = scheme
+    form.Invoke(Action(apply))          # WebView2 must be used on the UI thread
+
+
+def show_colour_mode(window, mode):
+    """Draw the page in a colour mode (None: leave it in the PC's own) and
+    return the mode it shows."""
+    import time
+
+    from workspace_ui_check import evaluate
+    if mode:
+        set_colour_mode(window, mode)
+        time.sleep(0.5)
+    return colour_mode_shown(mode, evaluate(window, COLOUR_MODE))
 
 PAGE = ("return {lang: document.documentElement.lang, title: document.title, "
         "live_status: document.getElementById('status')?.getAttribute('aria-live')};")
@@ -426,7 +491,7 @@ def reflow(window):
     return out
 
 
-def checks(window, ws, mid, report):
+def checks(window, ws, mid, report, modes=(None,)):
     import time
 
     from workspace_ui_check import WAIT, evaluate
@@ -473,13 +538,17 @@ def checks(window, ws, mid, report):
                               "document.getElementById('m-primary').click(); await wait(2500);",
         }
         report["views"] = {}
+        # Each view is opened once and audited in each colour mode asked for.
         for name, go in views.items():
             evaluate(window, WAIT + go + "return true;")
-            audit = evaluate(window, AUDIT)
-            audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
-                                                     "'dialog[open]')].map(d => d.id);")
-            audit["reflow"] = reflow(window)
-            report["views"][name] = audit
+            for mode in modes:
+                shown = show_colour_mode(window, mode)
+                audit = evaluate(window, AUDIT)
+                audit["colour_mode"] = shown
+                audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
+                                                         "'dialog[open]')].map(d => d.id);")
+                audit["reflow"] = reflow(window)
+                report["views"][view_key(name, shown, modes)] = audit
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -501,10 +570,14 @@ def main():
                     "that package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
     ap.add_argument("--zip", help="the zip that package came from: records it as release "
                     "evidence (tools/evidence.py); exit 1 unless that evidence passes")
+    ap.add_argument("--colour-mode", choices=COLOUR_CHOICES, default=COLOUR_CHOICES[0],
+                    help="the colour mode to audit the page in: the PC's own (system, the "
+                    "default), light, dark, or both (each view in light, then dark)")
     args = ap.parse_args()
+    modes = colour_modes(args.colour_mode)
     before = evidence.prepare(ap, args, APP if args.app else None)
     out = Path(args.report)
-    report = {}
+    report = {"colour_mode": args.colour_mode}
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         ws = Workspace(root / "ws", root / "models", start=False,
@@ -529,7 +602,7 @@ def main():
         finally:
             webview.create_window = real
         holder["window"] = window
-        shell.run(checks, (window, ws, mid, report))
+        shell.run(checks, (window, ws, mid, report, modes))
         ws.close()
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
