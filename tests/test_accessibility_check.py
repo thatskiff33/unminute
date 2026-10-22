@@ -508,6 +508,23 @@ class ReportTests(unittest.TestCase):
                     {**self.ZOOM, "page": self.PAGE, "views": {"meeting": {key: ["button"]}}})
                 self.assertEqual([f"meeting: {key} (1)"], found)
 
+    def test_the_locked_screen_fails_unless_audited_with_focus_on_its_heading(self):
+        # #111 C4b: the locked screen runs in a process of its own, in the
+        # same colour modes; its views fail the run as every other view's do.
+        locked = accessibility_check.locked_findings
+        views = {"locked screen (light)": {}, "locked screen (dark)": {}}
+        self.assertEqual([], locked({"heading_focused": True, "views": views}))
+        self.assertEqual(["locked screen: focus did not start on its heading"],
+                         locked({"heading_focused": False, "views": views}))
+        for report in ({}, {"heading_focused": True, "views": {}},
+                       {"heading_focused": True, "views": views, "error": "RuntimeError: x"}):
+            with self.subTest(report=report):
+                self.assertTrue(locked(report)[0].startswith("locked screen not audited"))
+        found = accessibility_check.findings(
+            {**self.ZOOM, "page": self.PAGE,
+             "views": {**views, "locked screen (dark)": {"low_contrast": ["p 3.10"]}}})
+        self.assertEqual(["locked screen (dark): low_contrast (1)"], found)
+
 
 if __name__ == "__main__":
     unittest.main()

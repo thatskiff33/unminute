@@ -11,13 +11,16 @@
 # report once it is (#171). A fourth opens a long meeting while it is being
 # transcribed and counts what the page fetches and draws as passages arrive,
 # with an earlier chunk done again, an edit, speakers and a search on the way;
-# the rows shown must then be each passage once, in order (#127). The last two
+# the rows shown must then be each passage once, in order (#127). The next two
 # open the Meetings page with a recording going (#340), visible and hidden, on a
 # simulated 120 Hz display (fixtures.js: headless Edge runs almost no animation
 # frames under virtual time), and count the clock and level polls and the level
 # meter's draws: about METER_HZ a second while visible (workspace/ui/app.js; the
 # owner's decision of 23 Oct 2026, #216), none while hidden, and drawing again
-# within a second of being shown.
+# within a second of being shown. The last shows the locked screen (#111 C4b)
+# and leaves it for a minute: it must ask for the status, call only what the
+# app allows while locked, then make no bridge call and keep no timer, with no
+# meeting title on the page.
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
@@ -27,6 +30,7 @@
 # Python packages.
 
 import argparse
+import ast
 import http.server
 import json
 import re
@@ -50,6 +54,7 @@ DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd 
 # The level meter's draws a second may be this share either side of METER_HZ.
 METER_TOLERANCE = 0.1
 APP_JS = design_check.UI / "app.js"
+LOCKED_SCENARIO = "locked"   # the locked screen (#111 C4b)
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
 EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
@@ -124,6 +129,61 @@ def transcribing_problems(result):
         problems.append(f"transcribing: the whole list was redrawn after steps "
                         f"{result.get('redraw_steps')}, not {result.get('expected_redraw_steps')} "
                         "(an earlier chunk done again, speakers identified, a search open)")
+    return problems
+
+
+def locked_methods():
+    """api.LOCKED_METHODS, read from workspace/api.py's source: this check
+    imports no app module (they need packages it does without)."""
+    tree = ast.parse((ROOT / "workspace" / "api.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and getattr(node.targets[0], "id", None) == "LOCKED_METHODS"):
+            return set(ast.literal_eval(node.value.args[0]))
+    raise RuntimeError("workspace/api.py has no LOCKED_METHODS")
+
+
+def run_locked(base, page_ms):
+    """What the locked screen did over page_ms of page time (fixtures.js,
+    locked mode)."""
+    out = final_dom(f"{base}/app/index.html?perf=locked&ms={page_ms}#{LOCKED_SCENARIO}",
+                    page_ms + 15000)
+    found = RESULT.search(out.stdout or "")
+    if not found:
+        raise RuntimeError(f"Edge returned no locked result (exit {out.returncode}). "
+                           f"stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
+    import html
+    return json.loads(html.unescape(found.group(1)))
+
+
+def locked_problems(result, allowed):
+    """Reasons the locked screen was wrong: not shown, a meeting title on the
+    page, a call the app refuses while locked (allowed: api.LOCKED_METHODS),
+    no status asked for, or anything at all while it sat there (a bridge
+    call, a timer, an interval or an animation frame): only closing and
+    opening Unminute can change a locked workspace, so nothing polls."""
+    problems = []
+    if result.get("page_errors"):
+        problems.append(f"locked: the page threw: {'; '.join(result['page_errors'][:3])}")
+    if result.get("locked_shown") is not True:
+        problems.append("locked: the locked screen was not shown, or not on its own")
+    if result.get("sample_titles_shown"):
+        problems.append(f"locked: the page shows a meeting title "
+                        f"({', '.join(result['sample_titles_shown'][:3])})")
+    for metric, words in (("bridge_calls_per_minute", "bridge calls a minute"),
+                          ("timeouts_per_minute", "timers a minute"),
+                          ("live_intervals", "interval(s) running"),
+                          ("pending_animation_frames", "animation frame(s) pending")):
+        value = result.get(metric)
+        if value != 0:
+            problems.append(f"locked: {'not reported' if value is None else value} {words}, "
+                            "not 0")
+    calls = set(result.get("all_calls") or {})
+    if calls - set(allowed):
+        problems.append(f"locked: the page called {', '.join(sorted(calls - set(allowed)))}, "
+                        "which the app refuses while locked")
+    if "status" not in calls:
+        problems.append("locked: the page never asked for the status")
     return problems
 
 
@@ -277,6 +337,7 @@ def main():
         growing = run_transcribing(base)
         recording = {mode: run_page(base, mode, args.page_ms, RECORDING_SCENARIO, DISPLAY_HZ)
                      for mode in MODES}
+        locked = run_locked(base, args.page_ms)
     finally:
         server.shutdown()
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
@@ -285,9 +346,11 @@ def main():
             + [(f"recording {m}", k, v, r) for m, k, v, r in
                compare(recording, budgets["ui_recording"]["ratchets"])])
     problems = (sanity(results) + early_problems(early) + transcribing_problems(growing)
-                + recording_problems(recording, meter_hz()))
+                + recording_problems(recording, meter_hz())
+                + locked_problems(locked, locked_methods()))
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
               "early_error": early, "transcribing": growing, "recording": recording,
+              "locked": locked,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -312,6 +375,10 @@ def main():
               f"{r.get('timeouts_per_minute')} timeouts/min, {r.get('live_intervals')} "
               f"interval(s), fastest {r.get('fastest_interval_ms')} ms, meter "
               f"{r.get('meter_draws_per_second')} draws/s at {r.get('display_hz')} Hz")
+    print(f"locked: {locked.get('bridge_calls_per_minute')} bridge calls/min, "
+          f"{locked.get('timeouts_per_minute')} timeouts/min, "
+          f"{locked.get('live_intervals')} interval(s); called "
+          f"{', '.join(sorted(locked.get('all_calls') or {})) or 'nothing'}")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:

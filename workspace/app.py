@@ -2462,6 +2462,10 @@ class Workspace:
             m = meetings.get(row["id"])
             if m is None:
                 continue
+            # Columns of the meeting that did not open, from the titles read
+            # above: never a read per meeting (#111 C4b). Not for the page.
+            row = dict(row)
+            damaged = row.pop("damaged", ())
             v = versions.get(row["id"])
             c = chunks.get(v["id"]) if v else None
             done, total = (c["done"], c["total"]) if c else (0, 0)
@@ -2473,7 +2477,7 @@ class Workspace:
                         "cleanup": [{"id": j["id"], "phase": j["phase"], "state": j["state"],
                                      "note": j["error"]} for j in jobs.get(row["id"], [])],
                         "progress": round(100 * done / total) if total else 0,
-                        "paused": bool(m["paused"]), "error": self._error_note(m),
+                        "paused": bool(m["paused"]), "error": self._error_note(m, damaged),
                         "busy": busy or None, "stage": stage,
                         # No version and no import running: an import that did
                         # not finish (kept by a hold, or after Continue anyway).

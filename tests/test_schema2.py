@@ -735,7 +735,15 @@ class DamagedValueTests(unittest.TestCase):
                        battery=False, policy_reader=lambda: ({}, ()),
                        protector=keyprotect.TestProtector())
         try:
-            shown = {m["id"]: m["error"] for m in ws.meetings()}
+            # The list works it out from the titles it already read, without
+            # reading a meeting at a time (#276 carry-forward, done in C4b).
+            real, opened = ws.store.meeting, []
+            ws.store.meeting = lambda m: opened.append(m) or real(m)
+            try:
+                shown = {m["id"]: m["error"] for m in ws.meetings()}
+            finally:
+                ws.store.meeting = real
+            self.assertEqual([], opened)
             self.assertEqual({mid: runner.DAMAGED_NOTE, other: None}, shown)
             self.assertEqual(runner.DAMAGED_NOTE, ws.detail(mid)["error"])
             self.assertIsNone(ws.detail(other)["error"])

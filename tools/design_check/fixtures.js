@@ -6,6 +6,12 @@
 // All names and text are the fictional sample meeting used on the boards.
 "use strict";
 (() => {
+  // What the app's bridge answers while the workspace is locked (#111 C4b):
+  // workspace/api.py LOCKED_METHODS, and workspace/app.py LOCKED_TEXT for the
+  // rest. tests/test_consistency.py keeps both equal to the app's.
+  const LOCKED_METHODS = new Set(["status", "recording_status", "copy_diagnostics", "open_help",
+                                  "close_app", "report_ui_error", "zoom"]);
+  const LOCKED_TEXT = "Unminute is locked: Windows could not unlock its key on this computer. Ask your IT team.";
   // -- perf mode (tools/ui_idle_check.py) ------------------------------------------
   // index.html?perf=visible|hidden&ms=60000 counts what the idle page does over
   // ms of page time: bridge calls per method, timers, animation frames,
@@ -21,7 +27,8 @@
   // draws: with the simulated display below, the frames in which the level
   // meter's canvas (#rec-canvas) was cleared for drawing, one count per frame,
   // as tools/perf_check.py counts them in the real window.
-  const perf = { calls: {}, timeouts: 0, rebuilds: 0, errors: [],
+  // allCalls: every bridge call since the page loaded, never reset (locked mode).
+  const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [],
                  intervals: new Map(), pendingFrames: new Set(), draws: 0, drawnFrame: -1 };
   // The simulated display (perf mode with &display=Hz). Headless Edge runs
   // almost no animation frames while virtual time skips ahead, so the meter's
@@ -116,6 +123,7 @@
   }
   function perfMeasure() {
     if (perfMode === "transcribing") { growMeasure(); return; }
+    if (perfMode === "locked") { lockedMeasure(); return; }
     const ms = Number(query.get("ms")) || 60000;
     const groups = document.getElementById("groups");
     if (groups) {
@@ -191,6 +199,40 @@
     out.id = "perf-result";
     out.textContent = JSON.stringify(result);
     document.body.append(out);
+  }
+
+  // -- locked mode (tools/ui_idle_check.py, #111 C4b) -------------------------------
+  // index.html?perf=locked&ms=60000#locked: the locked screen left alone for ms
+  // of page time. It must make no bridge call and keep no timer then, and from
+  // the start call only what the app allows while locked (allCalls), with no
+  // sample meeting's title anywhere in the page.
+  function lockedMeasure() {
+    const ms = Number(query.get("ms")) || 60000;
+    perf.calls = {}; perf.timeouts = 0;
+    realSetTimeout(() => {
+      const seen = snapshot();
+      const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
+      const view = document.getElementById("view-locked");
+      const others = [...document.querySelectorAll(".view")].filter((v) => v !== view && !v.hidden);
+      const text = document.body.textContent;
+      const result = {
+        mode: "locked", page_ms: ms,
+        calls_per_minute: Object.fromEntries(Object.entries(seen.calls).map(([k, v]) => [k, perMinute(v)])),
+        bridge_calls_per_minute: perMinute(total(seen.calls)),
+        timeouts_per_minute: perMinute(seen.timeouts),
+        live_intervals: seen.intervals.length,
+        pending_animation_frames: seen.frames,
+        all_calls: { ...perf.allCalls },
+        locked_shown: !!view && !view.hidden && !others.length
+          && document.getElementById("sidebar").hidden,
+        sample_titles_shown: SAMPLE_TITLES.filter((t) => text.includes(t)),
+        page_errors: perf.errors,
+      };
+      const out = document.createElement("pre");
+      out.id = "perf-result";
+      out.textContent = JSON.stringify(result);
+      document.body.append(out);
+    }, ms);
   }
 
   // -- transcribing mode (tools/ui_idle_check.py, #127) -----------------------------
@@ -604,6 +646,16 @@
       steps: [],
     },
     help: { steps: [show("help")] },
+    // #111 C4b: Windows would not unlock the workspace key. The bridge then
+    // answers only the methods the app allows while locked (api.LOCKED_METHODS).
+    locked: {
+      change: (d) => {
+        d.status = { ...d.status, message: "Locked", integrity: null,
+                     locked: { reason: "windows", code: "U-3F9A2C", win_error: -2146893813, damage: null } };
+        d.locked = true;
+      },
+      steps: [],
+    },
     // Meeting review: playing from 0:24, so the passage is highlighted. The
     // slowest speed keeps the clock at 0:24 while the page is captured.
     meeting: { steps: openAndPlay() },
@@ -759,6 +811,8 @@
     return [openGarden, () => { window.workspace.play(24, 26); }, wait(500),
             () => { document.getElementById("player").playbackRate = 0.0625; }];
   }
+  const SAMPLE_TITLES = [...new Set([...data.meetings.map((m) => m.title),
+                                       ...Object.values(data.detail).map((m) => m.title)])];
   const name = location.hash.slice(1) || "home";
   const scenario = SCENARIOS[name] || { steps: [] };
   if (scenario.change) scenario.change(data);
@@ -794,6 +848,8 @@
     },
     continue_despite_damage: () => null,
     copy_diagnostics: () => ({ chars: 1200 }),
+    open_help: () => null,
+    close_app: () => null,
     recording_status: () => {
       // While "recording", each poll reports the next of the board's levels.
       if (data.levels && data.recording.recording) {
@@ -836,6 +892,9 @@
   const api = new Proxy({}, {
     get: (_, method) => async (...args) => {
       perf.calls[method] = (perf.calls[method] || 0) + 1;
+      perf.allCalls[method] = (perf.allCalls[method] || 0) + 1;
+      // As the app's bridge gate (api.make_api): while locked, only these.
+      if (data.locked && !LOCKED_METHODS.has(method)) return { ok: false, error: LOCKED_TEXT };
       const fn = handlers[method];
       if (!fn) return { ok: false, error: `The design check has no sample data for ${String(method)}.` };
       return { ok: true, value: fn(...args) };
