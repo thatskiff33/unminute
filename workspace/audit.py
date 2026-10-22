@@ -156,8 +156,7 @@ KINDS = {
     "folder_removed": (1602, INFO, {"folder": _id, "had_authority": _bool}),
     # Offboarding (#111 B8, B8-4): written and copied to the Event Log before
     # the workspace, with this file, is removed. Yes or no only.
-    "offboarded": (1700, INFO, {"locked": _bool, "models": _bool, "token": _bool,
-                                "earlier_token": _bool}),
+    "offboarded": (1700, INFO, {"locked": _bool, "models": _bool, "token": _bool}),
     "tail_damaged": (1900, WARNING, {"bytes": _count}),
     "write_failed": (1901, WARNING, {"count": _count}),
     "segment_dropped": (1902, WARNING, {"segment": _count, "first_seq": _opt_count,
@@ -736,11 +735,14 @@ class AuditLog:
         CLOSE_DRAIN_S; what is left (and a copy still being reported) is
         recorded as a mirror_gap that covers itself and any record owed
         before it (written now rather than at the next start: no other state
-        is kept)."""
+        is kept). Returns True when a record may lack its copy: that
+        mirror_gap was owed (written or not), or close itself failed.
+        Offboarding never counts its record as copied then."""
+        gapped = False
         try:
             with self._lock:
                 if self._closed:
-                    return
+                    return False
                 self._flush_suppressed(None)
         except Exception as exc:
             self._incident(exc)
@@ -772,12 +774,14 @@ class AuditLog:
                     first = min(seqs)
                     # last_seq is this record's own seq, worked out after any
                     # owed record (write_failed, tail_damaged) is written.
+                    gapped = True       # owed even when writing it failed
                     self._write("mirror_gap",
                                 lambda: {"first_seq": first, "last_seq": self._seq + 1},
                                 mirror=False)
                 if alive:
                     self._queue.put(None)             # so the thread ends once Windows answers
         except Exception as exc:
+            gapped = True                             # the copies' state is not known
             self._incident(exc)
         if self.mirror is not None and hasattr(self.mirror, "close") and (
                 thread is None or not thread.is_alive()):
@@ -785,6 +789,7 @@ class AuditLog:
                 self.mirror.close()
             except Exception:
                 pass
+        return gapped
 
     def summary(self):
         """For Copy diagnostics: counts and states only."""

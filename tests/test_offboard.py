@@ -13,8 +13,11 @@
 #   - Run as Local System, or as an account Windows cannot name: refused.
 #   - A file in use stops the run (exit 1); a rerun finishes, and a folder
 #     left part-removed is finished first.
-#   - Nothing outside %LOCALAPPDATA%\Unminute changes but the earlier token;
-#     the earlier version's folders are reported, never opened or removed.
+#   - Nothing outside %LOCALAPPDATA%\Unminute changes. Other entries in it
+#     (a workspace IT renamed, say) are left alone and counted (others_left,
+#     exit 4); the earlier version's data is never looked at (22 Oct 2026).
+#   - A copy of the offboarded record still being reported at close (a
+#     mirror_gap) stops the run before anything is removed.
 # Synthetic workspaces in temporary folders with the test key protector, fake
 # credentials, a fake lid and a fake Event Log; the one Credential Manager
 # test uses scratch names only.
@@ -109,13 +112,11 @@ class Base(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.appdata = Path(self._tmp.name) / "AppData" / "Local"
         self.appdata.mkdir(parents=True)
-        # The earlier version's folders, by stand-in names (B8-3 is dormant in
-        # the shipped module: offboard.EARLIER_FOLDERS).
-        self.where = offboard.Where(self.appdata, earlier=("old-app/workspace", "old-models"))
+        self.where = offboard.Where(self.appdata)
         self.ws = self.where.workspace
         self.events = []
         self.mirror = FakeMirror(self.events)
-        self.creds = FakeCredentials(self.events, {"Scratch/Current", "Scratch/Earlier"})
+        self.creds = FakeCredentials(self.events, {"Scratch/Current"})
         self.lid_result = "none"
         # Beside Unminute: must never change.
         (self.appdata / "Programs" / "Unminute").mkdir(parents=True)
@@ -136,8 +137,7 @@ class Base(unittest.TestCase):
         return offboard.run(self.where, remove, account=account,
                             session_running=lambda: running,
                             mirror=self.mirror if mirror == "fake" else mirror,
-                            tokens=("Scratch/Current",), earlier_tokens=("Scratch/Earlier",),
-                            creds=self.creds, lid=self.lid)
+                            tokens=("Scratch/Current",), creds=self.creds, lid=self.lid)
 
     def make_workspace(self, models=True):
         """An empty workspace with every kind of file a used one has."""
@@ -281,17 +281,6 @@ class ReportTests(Base):
         self.assertEqual(tree(self.appdata), before)
         self.assertEqual(self.events, [])
 
-    def test_the_earlier_version_is_reported_and_never_opened(self):
-        earlier = self.appdata / "old-app" / "workspace"
-        earlier.mkdir(parents=True)
-        (self.appdata / "old-models").mkdir()
-        with mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read")), \
-                mock.patch.object(sqlite3, "connect", side_effect=AssertionError("opened")):
-            out, code = self.run_(remove=False)
-        self.assertEqual(out["earlier_version"], {"workspace": True, "models": True,
-                                                  "token": True})
-        self.assertEqual(code, 0)
-
 
 class RefusalTests(Base):
     def test_local_system_and_an_unknown_account_read_nothing(self):
@@ -405,8 +394,7 @@ class RefusalTests(Base):
             return "none"
         out, code = offboard.run(self.where, True, account=False,
                                  session_running=lambda: False, mirror=self.mirror,
-                                 tokens=("Scratch/Current",),
-                                 earlier_tokens=("Scratch/Earlier",), creds=self.creds, lid=lid)
+                                 tokens=("Scratch/Current",), creds=self.creds, lid=lid)
         self.assertEqual((out["result"], out["blockers"], code),
                          ("blocked", {"meetings": 1}, offboard.BLOCKED))
         con = sqlite3.connect(self.ws / "workspace.db")
@@ -434,10 +422,6 @@ class RefusalTests(Base):
 class RemovalTests(Base):
     def test_an_empty_workspace_models_and_tokens_are_removed_in_order(self):
         self.make_workspace()
-        earlier = self.appdata / "old-app" / "workspace"
-        earlier.mkdir(parents=True)
-        (earlier / "keep.bin").write_bytes(b"earlier")
-        (self.appdata / "old-models").mkdir()
         outside = self.outside()
         order = []
         real_erase = store.erase_root_key
@@ -451,19 +435,15 @@ class RemovalTests(Base):
         self.assertEqual((out["result"], out.get("step"), code), ("offboarded", None, 0))
         self.assertFalse(os.path.lexists(self.where.base))       # Unminute itself, now empty
         self.assertEqual(self.outside(), outside)                # beside it: as it was
-        self.assertEqual((earlier / "keep.bin").read_bytes(), b"earlier")
         kinds = [e[0] for e in self.events]
         self.assertEqual(kinds[0], "lid")                        # the lid first
         self.assertEqual(self.events[0][2], False)               # asked with the app closed
         self.assertIn(("mirror", "offboarded"), self.events)
         self.assertLess(kinds.index("mirror"), kinds.index("token"))
         self.assertEqual(order, ["erase"])
-        self.assertEqual(self.creds.stored, set())               # both tokens
-        self.assertEqual(out["removed"], {"workspace": True, "models": True, "token": True,
-                                          "earlier_token": True})
-        self.assertEqual(out["workspace"], "none")
-        self.assertEqual(out["earlier_version"], {"workspace": True, "models": True,
-                                                  "token": False})
+        self.assertEqual(self.creds.stored, set())
+        self.assertEqual(out["removed"], {"workspace": True, "models": True, "token": True})
+        self.assertEqual((out["workspace"], out["others"]), ("none", 0))
         self.assertTrue(out["residuals"])
         self.assertTrue(all(isinstance(r, str) for r in out["residuals"]))
 
@@ -542,12 +522,66 @@ class RemovalTests(Base):
         other = self.where.base / "workspace.offboarding-not-ours"
         other.mkdir()
         out, code = self.run_(remove=False)
-        self.assertEqual(out["leftover"], 1)
+        self.assertEqual((out["leftover"], out.get("others")), (1, 1))
         out, code = self.run_()
-        self.assertEqual(code, 0)
+        self.assertEqual((out["result"], out.get("others"), code), ("others_left", 1, 4))
         self.assertFalse(os.path.lexists(aside))
         self.assertTrue(other.exists())                          # only the app's own names
         self.assertTrue(self.where.base.exists())                # not empty: kept
+
+    def test_other_entries_left_in_unminute_are_counted_and_never_a_clean_result(self):
+        # A workspace IT renamed by the guide's steps ("workspace-damaged")
+        # still holds meetings: offboarding leaves it alone (C1), and says how
+        # many entries it left, without naming them (P3).
+        self.make_workspace()
+        renamed = self.where.base / "workspace-damaged"
+        (renamed / "media").mkdir(parents=True)
+        (renamed / "workspace.db").write_bytes(MARKER.encode())
+        (self.where.base / "notes.txt").write_bytes(b"x")
+        out, code = self.run_(remove=False)
+        self.assertEqual((out["result"], out.get("others"), code), ("others_left", 2, 4))
+        out, code = self.run_()
+        self.assertEqual((out["result"], out.get("others"), code), ("others_left", 2, 4))
+        self.assertTrue(out["removed"]["workspace"])
+        self.assertFalse(os.path.lexists(self.ws))
+        self.assertEqual((renamed / "workspace.db").read_bytes(), MARKER.encode())
+        self.assertEqual((self.where.base / "notes.txt").read_bytes(), b"x")
+        text = json.dumps(out)
+        for name in ("workspace-damaged", "notes", MARKER):
+            self.assertNotIn(name, text)
+        # Once IT has dealt with them, a rerun is clean and removes Unminute.
+        offboard.remove_tree(renamed)
+        (self.where.base / "notes.txt").unlink()
+        out, code = self.run_()
+        self.assertEqual((out["result"], out.get("others"), code), ("offboarded", 0, 0))
+        self.assertFalse(os.path.lexists(self.where.base))
+
+    def test_a_copy_still_being_reported_at_close_is_never_counted_as_copied(self):
+        # The Event Log is slow: close() stops waiting and records the
+        # offboarded record's copy as a mirror_gap. Nothing may be removed.
+        import threading
+        self.make_workspace()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Slow(FakeMirror):
+            def report(inner, event_id, level, text):
+                if "kind=offboarded" in text:
+                    release.wait(30)
+                super().report(event_id, level, text)
+        with mock.patch.object(audit, "CLOSE_DRAIN_S", 0.2):
+            out, code = self.run_(mirror=Slow(self.events))
+        self.assertEqual((out["result"], out.get("step"), code), ("failed", "audit",
+                                                                   offboard.FAILED))
+        kinds = [json.loads(line)["kind"] for p in sorted((self.ws / "audit").iterdir())
+                 for line in p.read_text().splitlines()]
+        self.assertEqual(kinds[-2:], ["offboarded", "mirror_gap"])
+        con = sqlite3.connect(self.ws / "workspace.db")
+        try:
+            self.assertEqual(con.execute("SELECT COUNT(*) FROM crypto_meta").fetchone()[0], 1)
+        finally:
+            con.close()
+        self.assertTrue(self.creds.stored)
 
     @unittest.skipUnless(os.name == "nt", "Windows keeps an open file from being removed")
     def test_a_file_in_use_stops_the_run_and_a_rerun_finishes(self):
@@ -628,18 +662,16 @@ class RootKeyEraseTests(unittest.TestCase):
 class CredentialManagerTests(Base):
     def test_scratch_tokens_are_removed_from_credential_manager(self):
         from workspace import credentials
-        names = (f"UnminuteTest/B8a-{uuid.uuid4().hex}", f"UnminuteTest/B8a-{uuid.uuid4().hex}")
+        names = (f"UnminuteTest/B8a-{uuid.uuid4().hex}",)
         for name in names:
             credentials.save_token("hf_synthetic_test_value", target=name)
         try:
             out, code = offboard.run(self.where, True, account=False,
                                      session_running=lambda: False, mirror=self.mirror,
-                                     tokens=names[:1], earlier_tokens=names[1:],
-                                     creds=credentials, lid=self.lid)
+                                     tokens=names, creds=credentials, lid=self.lid)
             self.assertEqual(code, 0)
             self.assertFalse(any(credentials.has_token(n) for n in names))
             self.assertEqual(out["removed"]["token"], True)
-            self.assertEqual(out["removed"]["earlier_token"], True)
         finally:
             for name in names:
                 credentials.remove_token(name)
@@ -686,20 +718,20 @@ class CommandLineTests(unittest.TestCase):
     def test_the_real_names(self):
         from workspace import credentials
         self.assertEqual(offboard.TOKENS, (credentials.TARGET,))
-        # B8-3 is dormant until the owner agrees the earlier names may be
-        # named in shipped code (tests/test_consistency.py, K1): nothing of
-        # the earlier version is looked at.
-        self.assertEqual((offboard.EARLIER_TOKENS, offboard.EARLIER_FOLDERS), ((), ()))
-        self.assertEqual(offboard.Where(Path("C:/x")).earlier, ())
-        self.assertIn("offboarded", audit.KINDS)
+        self.assertEqual(offboard.OTHERS_LEFT, 4)
+        # The earlier version's data is not looked at (the owner's decision of
+        # 22 Oct 2026, replacing B8-3): no field, record or token for it.
+        self.assertEqual(set(audit.KINDS["offboarded"][2]), {"locked", "models", "token"})
+        self.assertFalse([n for n in vars(offboard) if "EARLIER" in n.upper()])
 
-    def test_without_the_earlier_names_the_report_says_not_checked(self):
+    def test_the_report_has_no_earlier_version_field(self):
         with tempfile.TemporaryDirectory() as tmp:
             creds = FakeCredentials([], set())
             out, code = offboard.run(offboard.Where(Path(tmp)), False, account=False,
                                      session_running=lambda: False, creds=creds,
                                      lid=lambda p, r: "none")
-        self.assertEqual((out["earlier_version"], code), (None, 0))
+        self.assertEqual((out["result"], code), ("ok", 0))
+        self.assertNotIn("earlier_version", out)
 
 
 if __name__ == "__main__":

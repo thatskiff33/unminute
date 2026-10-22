@@ -9,16 +9,11 @@
 # What is covered: the workspace (%LOCALAPPDATA%\Unminute\workspace) as a
 # whole, the per-user models (Unminute\models), the Hugging Face token, and
 # the lid record (put back first, with the app's own rules). The program
-# itself is the uninstaller's (B8b, uninstall.ps1 -Offboard).
-#
-# The earlier version's data (0.4.3 and before, B8-3: its workspace and
-# models reported, never opened or removed; only its token removed) is
-# supported but dormant: EARLIER_FOLDERS and EARLIER_TOKENS are empty,
-# because tests/test_consistency.py keeps the names from before the rename
-# out of shipped code (K1, #136), and naming them needs the owner's
-# agreement to a narrow exemption there (AGENTS.md E2). Until then the
-# report says "earlier_version": null and nothing of the earlier version
-# is touched.
+# itself is the uninstaller's (B8b, uninstall.ps1 -Offboard). The earlier
+# version's data (0.4.3 and before) is not looked at (the owner's decision
+# of 22 Oct 2026, replacing B8-3). Anything else in Unminute (for example a
+# workspace IT renamed by the guide's steps) is left alone and counted
+# (`others`): the result is then others_left, exit 4, never a clean one.
 #
 # Nothing here deletes meeting content or expires a hold (C1, C2, C4): the
 # workspace is removed only when nothing the update gate counts is left
@@ -27,7 +22,7 @@
 # crash left; check the blockers; put the lid back; write the offboarded
 # audit record and its Event Log copy; erase the root key and empty the
 # database's log; rename the workspace aside, so the app never opens a
-# half-removed one; delete it; then the models, the tokens and Unminute
+# half-removed one; delete it; then the models, the token and Unminute
 # itself if empty. A link at Unminute or Unminute\workspace is refused: the
 # real data is elsewhere and is IT's to remove. Links inside, and a models
 # folder IT redirected, are removed as links, never followed.
@@ -45,10 +40,8 @@ from pathlib import Path
 
 from workspace import diag, update
 
-OK, FAILED, ACCOUNT, RUNNING, BLOCKED, REFUSED = 0, 1, 2, 3, 5, 6
+OK, FAILED, ACCOUNT, RUNNING, OTHERS_LEFT, BLOCKED, REFUSED = 0, 1, 2, 3, 4, 5, 6
 TOKENS = ("Unminute/HuggingFaceToken",)              # credentials.TARGET (K1)
-EARLIER_TOKENS = ()             # B8-3, dormant (see above): the earlier token's name
-EARLIER_FOLDERS = ()            # B8-3, dormant: (workspace, models) under %LOCALAPPDATA%
 ASIDE = re.compile(r"workspace\.offboarding-[0-9a-f]{32}\Z")
 WAIT_S = 30.0                    # a file in use is waited for this long, then exit 1
 MIB = 1 << 20
@@ -63,22 +56,17 @@ RESIDUALS = (
     "space until it is overwritten.",
     "Event Log entries (the audit log's copy) cannot be removed for one user; they follow "
     "the organisation's log retention.",
-    "Data that version 0.4.3 or earlier left (its own workspace, models and token) is not "
-    "removed: IT removes it by hand.",
 )
 
 
 class Where:
-    """The folders offboarding looks at, from %LOCALAPPDATA% (`appdata`).
-    earlier: the earlier version's (workspace, models), relative to it, or
-    () when they are not looked at."""
+    """The folders offboarding looks at, from %LOCALAPPDATA% (`appdata`)."""
 
-    def __init__(self, appdata, earlier=EARLIER_FOLDERS):
+    def __init__(self, appdata):
         self.appdata = Path(appdata)
         self.base = self.appdata / "Unminute"                 # K1 names
         self.workspace = self.base / "workspace"
         self.models = self.base / "models"
-        self.earlier = tuple(self.appdata / f for f in earlier)
 
 
 # -- links and removal -----------------------------------------------------------------
@@ -186,6 +174,21 @@ def _leftovers(where):
         return []
 
 
+def _others(where):
+    """How many entries in Unminute are not offboarding's to remove (not the
+    workspace, the models or a leftover of its own): for example a workspace
+    IT renamed by the guide's steps. Counted, never named or opened (P3, C1).
+    None when Unminute is there but cannot be listed."""
+    if not os.path.lexists(where.base):
+        return 0
+    ours = {where.workspace.name, where.models.name}
+    try:
+        return sum(1 for p in where.base.iterdir()
+                   if p.name not in ours and not ASIDE.fullmatch(p.name))
+    except OSError:
+        return None
+
+
 def _blockers(ws):
     """{kind: count} of what the update gate counts (B8-1). A database that
     cannot be read blocks as unreadable: never treated as empty."""
@@ -265,21 +268,16 @@ def _running(ws, session_running, holding=False):
     return not holding and _lock_held(ws)
 
 
-def assess(where, session_running, creds, names=(TOKENS, EARLIER_TOKENS)):
-    """The report's facts: counts, states and yes or no. names: the token
-    names (current, earlier); tests give scratch ones."""
+def assess(where, session_running, creds, tokens=TOKENS):
+    """The report's facts: counts, states and yes or no. tokens: the token
+    names; tests give scratch ones."""
     ws = where.workspace
     out = {"workspace": "none", "blockers": {}, "leftover": len(_leftovers(where)),
+           "others": _others(where),
            "models_mb": 0, "models_link": is_link(where.models),
-           "token": any(creds.has_token(t) for t in names[0]),
+           "token": any(creds.has_token(t) for t in tokens),
            "lid_record": os.path.lexists(ws / "power_restore.json"),
-           "running": False,
-           "earlier_version": None}
-    if where.earlier:
-        # Present or not only: nothing inside is opened (P2).
-        out["earlier_version"] = {"workspace": os.path.lexists(where.earlier[0]),
-                                  "models": os.path.lexists(where.earlier[1]),
-                                  "token": any(creds.has_token(t) for t in names[1])}
+           "running": False}
     if os.path.lexists(where.models) and not out["models_link"]:
         size = _size(where.models)
         out["models_mb"] = (size + MIB - 1) // MIB
@@ -312,17 +310,25 @@ def _refused(where):
 def _record(ws, mirror, facts):
     """The offboarded audit record, before anything is removed (B8-4): written
     to the workspace's audit file and, when a mirror is given, reported to
-    the Event Log. Whether both happened."""
+    the Event Log. Whether both happened: a mirror_gap written at close (a
+    copy still being reported when close stopped waiting, or one owed)
+    means the copy is not known to have been made."""
     from workspace import audit
     log = audit.AuditLog(ws / "audit", mirror=mirror)
     written = log.record("offboarded", **facts)
-    log.close()
-    return written and (mirror is None or (log.stats["unmirrored"] == 0
+    gap = log.close()
+    return written and (mirror is None or (not gap and log.stats["unmirrored"] == 0
                                            and log.summary()["mirror"] == "ok"))
 
 
+def _others_left(facts):
+    """Other entries stay in Unminute, or it cannot be listed: never a clean
+    result."""
+    return facts["others"] is None or facts["others"] > 0
+
+
 def run(where, remove, *, account, session_running, mirror=None, tokens=TOKENS,
-        earlier_tokens=EARLIER_TOKENS, creds=None, lid=None):
+        creds=None, lid=None):
     """--offboard-report (remove False) or --offboard (remove True): (result,
     exit code). account: audit.token_user's answer reduced to True (Local
     System), False (a user) or None (Windows cannot say). session_running:
@@ -339,15 +345,17 @@ def run(where, remove, *, account, session_running, mirror=None, tokens=TOKENS,
         from workspace import credentials as creds
     if lid is None:
         from workspace.power import restore_only as lid
-    names = (tuple(tokens), tuple(earlier_tokens))
-    facts = assess(where, session_running, creds, names)
+    tokens = tuple(tokens)
+    facts = assess(where, session_running, creds, tokens)
     if facts["running"]:
         return {"result": "running", **facts}, RUNNING
     if not remove:
         if facts["blockers"]:
             return {"result": "blocked", **facts}, BLOCKED
+        if _others_left(facts):
+            return {"result": "others_left", **facts}, OTHERS_LEFT
         return {"result": "ok", **facts}, OK
-    return _remove(where, facts, session_running, mirror, creds, lid, names)
+    return _remove(where, facts, session_running, mirror, creds, lid, tokens)
 
 
 def _failed(step, facts):
@@ -367,9 +375,7 @@ def _prepare(where, facts, session_running, mirror, lid):
         return _failed("lid", facts)
     record = {"locked": facts["workspace"] == "locked_empty",
               "models": os.path.lexists(where.models),
-              "token": facts["token"],
-              "earlier_token": bool(facts["earlier_version"]
-                                    and facts["earlier_version"]["token"])}
+              "token": facts["token"]}
     try:
         if not _record(ws, mirror, record):
             return _failed("audit", facts)
@@ -393,7 +399,7 @@ def _prepare(where, facts, session_running, mirror, lid):
     return None
 
 
-def _remove(where, facts, session_running, mirror, creds, lid, names):
+def _remove(where, facts, session_running, mirror, creds, lid, tokens):
     ws = where.workspace
     # A removal a crash or a file in use stopped part-way was checked and
     # erased then: finish it first (C1: intent persists).
@@ -404,7 +410,7 @@ def _remove(where, facts, session_running, mirror, creds, lid, names):
         return _failed("leftover", facts)
     if facts["blockers"]:
         return {"result": "blocked", **facts}, BLOCKED
-    removed = {"workspace": False, "models": False, "token": False, "earlier_token": False}
+    removed = {"workspace": False, "models": False, "token": False}
     if os.path.lexists(ws):
         made = not os.path.lexists(ws / LOCK)
         try:
@@ -416,6 +422,11 @@ def _remove(where, facts, session_running, mirror, creds, lid, names):
         try:
             outcome = _prepare(where, facts, session_running, mirror, lid)
         finally:
+            # Released before the rename: Windows will not rename a folder
+            # with a file open in it. An app started in this gap finds no
+            # root key and opens the workspace locked, holding its files:
+            # the rename fails after WAIT_S (exit 1, step rename), and a
+            # rerun with the app closed finishes. Nothing readable is left.
             os.close(held)
         if outcome is not None:
             if made:                    # a stopped run leaves the workspace as it found it
@@ -440,17 +451,18 @@ def _remove(where, facts, session_running, mirror, creds, lid, names):
             return _failed("models", facts)
         removed["models"] = True
     try:
-        for t in names[0]:
+        for t in tokens:
             removed["token"] = bool(creds.remove_token(t)) or removed["token"]
-        for t in names[1]:
-            removed["earlier_token"] = bool(creds.remove_token(t)) or removed["earlier_token"]
     except Exception:
         return _failed("token", facts)
     try:
         os.rmdir(where.base)            # only if now empty
     except OSError:
         pass
-    after = assess(where, session_running, creds, names)
+    after = assess(where, session_running, creds, tokens)
     after["models_link"] = facts["models_link"]          # what was removed was a link
-    return {"result": "offboarded", **after, "removed": removed,
-            "residuals": list(RESIDUALS)}, OK
+    # Anything else in Unminute (a renamed workspace, say) is left alone (C1)
+    # and counted: never reported as a clean result.
+    result, code = ("others_left", OTHERS_LEFT) if _others_left(after) else ("offboarded", OK)
+    return {"result": result, **after, "removed": removed,
+            "residuals": list(RESIDUALS)}, code

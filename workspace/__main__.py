@@ -44,9 +44,10 @@
 #   --offboard-report  what Unminute keeps for this Windows user (#111 B8),
 #                 run as the user: one line of JSON with counts and yes or no
 #                 (the workspace's state and blockers, models, token, lid
-#                 record, the earlier version's data). Exit 0 nothing to
+#                 record, other entries in Unminute). Exit 0 nothing to
 #                 remove or all removable, 2 run as Local System (or Windows
-#                 cannot say who), 3 the app is open, 5 blocked (meetings,
+#                 cannot say who), 3 the app is open, 4 other entries in
+#                 Unminute are left alone (counted, never named), 5 blocked (meetings,
 #                 holds, cleanup, recordings or audio left), 6 the location
 #                 is refused (a link at Unminute or Unminute\workspace).
 #   --offboard    removes it when nothing blocks, with the app closed: the lid
