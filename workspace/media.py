@@ -7,6 +7,10 @@
 #     <media>/audio.uma; the whole file is authenticated once, at import;
 #   - engines then read slices of it (AudioReader), each block authenticated
 #     as it is read. No plain copy of the decoded audio is ever written.
+# A microphone recording (#30) has no original file: its encrypted chunks
+# are opened and checked in this process (workspace/recorder.py) and streamed
+# to the decoder over its stdin as one WAV (import_stream, #111 C3b), so no
+# plain recording.wav is ever written.
 # Nothing in a media path comes from the source file's name. audiocrypt is
 # imported inside the functions that use it (window-process module budget).
 
@@ -166,15 +170,69 @@ class _Frames:
 TOO_SLOW = "Decoding the recording took far longer than it should. It may be damaged."
 
 
-def _deadline_s(src):
+def _deadline_s(src=None, size=None):
     """The longest a whole decode may take: 15 minutes plus 1 second per MB.
     Decoding runs many times faster than real time, so only a stuck or
     hostile decoder gets near this."""
-    try:
-        size = os.path.getsize(src)
-    except OSError:
-        size = 0
+    if size is None:
+        try:
+            size = os.path.getsize(src)
+        except OSError:
+            size = 0
     return 900 + size / (1 << 20)
+
+
+WAV_HEADER_BYTES = 44
+MAX_WAV_DATA = 0xFFFFFFFF - 36          # a WAV header's sizes are 32-bit
+
+
+class WavFeed:
+    """A recording streamed to the decoder over its stdin as one WAV (#111
+    C3b): a 44-byte header (PCM, mono, 16-bit, exact sizes), then the audio's
+    blocks. audio: anything with rate, frames and blocks() yielding
+    little-endian int16 bytes (recorder.RecordingAudio). The feeder thread
+    hashes the PCM as it goes (the recording's identity, sha256) and counts
+    it, so a stream that does not match its header is refused."""
+
+    def __init__(self, audio):
+        import struct
+        self.audio = audio
+        self.rate = int(audio.rate)
+        self.data_bytes = int(audio.frames) * 2
+        if self.data_bytes > MAX_WAV_DATA:
+            raise DecodeError(MESSAGES[E_TOO_LONG])
+        self.size = WAV_HEADER_BYTES + self.data_bytes
+        self.header = (b"RIFF" + struct.pack("<I", 36 + self.data_bytes) + b"WAVE"
+                       + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, self.rate,
+                                                self.rate * 2, 2, 16)
+                       + b"data" + struct.pack("<I", self.data_bytes))
+        self.sha256 = None
+        self.sent = 0
+        self.error = None
+
+    def write_to(self, pipe):
+        """Write the whole WAV to pipe and close it (the decoder sees the
+        end). Runs on the feeder thread; any exception is kept in error."""
+        h = hashlib.sha256()
+        try:
+            pipe.write(self.header)
+            for block in self.audio.blocks():
+                if self.sent + len(block) > self.data_bytes:
+                    raise DecodeError(SAVE_FAILED)        # more audio than the header says
+                h.update(block)
+                pipe.write(block)
+                self.sent += len(block)
+            if self.sent != self.data_bytes:
+                raise DecodeError(SAVE_FAILED)
+            pipe.flush()
+            self.sha256 = h.hexdigest()
+        except BaseException as exc:          # raised again by decode(), on its thread
+            self.error = exc
+        finally:
+            try:
+                pipe.close()
+            except OSError:
+                pass
 
 
 def _error(kind, payload):
@@ -220,23 +278,31 @@ def _python():
     return getattr(sys, "_base_executable", None) or sys.executable
 
 
-def decode(src, out, folder=None):
+def decode(src, out, folder=None, feed=None):
     """Decode `src` in the contained decoder process, writing raw float32
     16 kHz mono to `out` (anything with write(bytes)). Returns the number of
     samples. folder: where the output goes, for the free-space checks.
-    Raises DecodeError with a safe message. The app writes only through
-    decode_to_file (encrypted); tools that compare engines on public clips
-    pass their own plain writer."""
+    feed: a WavFeed instead of src (#111 C3b): the decoder reads the WAV
+    from its stdin, written by a feeder thread (never this thread: it reads
+    the decoder's output, and the two pipes would deadlock). Raises
+    DecodeError with a safe message, or the feed's own error (for example
+    AudioCryptError when a chunk changed after it was checked). The app
+    writes only through decode_to_file (encrypted); tools that compare
+    engines on public clips pass their own plain writer."""
     global last_decoder_integrity
     import json
     import struct
     import subprocess
+    import threading
 
     from workspace import decode_child, jobs
-    try:
-        dense_limit = max_samples_for(os.path.getsize(src))
-    except OSError as exc:
-        raise DecodeError(_GENERIC) from exc
+    if feed is not None:
+        dense_limit = max_samples_for(feed.size)
+    else:
+        try:
+            dense_limit = max_samples_for(os.path.getsize(src))
+        except OSError as exc:
+            raise DecodeError(_GENERIC) from exc
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
     # -X disable-remote-debug: no other process can make the decoder run code
@@ -246,13 +312,14 @@ def decode(src, out, folder=None):
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.DEVNULL, creationflags=flags, env=env)
     import time
-    job, frames = None, None
+    job, frames, feeder = None, None, None
     try:
         try:
             job = jobs.contain(proc.pid, DECODER_MEMORY)
         except jobs.JobError as exc:
             raise DecodeError(MESSAGES[E_SETUP]) from exc
-        frames = _Frames(proc.stdout, deadline=time.monotonic() + _deadline_s(src))
+        frames = _Frames(proc.stdout, deadline=time.monotonic() + (
+            _deadline_s(size=feed.size) if feed is not None else _deadline_s(src)))
         proc.stdin.write((json.dumps(sys.path) + "\n").encode("utf-8"))
         proc.stdin.flush()
         kind, payload = frames.next(READY_TIMEOUT_S)
@@ -265,16 +332,36 @@ def decode(src, out, folder=None):
             last_decoder_integrity = max(last_decoder_integrity, actual)
             if last_decoder_integrity > LOW_INTEGRITY:
                 raise DecodeError(MESSAGES[E_SETUP])    # not sandboxed: never give it the file
-        proc.stdin.write((json.dumps({"src": str(src)}) + "\n").encode("utf-8"))
+        request = ({"stdin": "wav", "bytes": feed.size} if feed is not None
+                   else {"src": str(src)})
+        proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
         proc.stdin.flush()
+        if feed is not None:
+            feeder = threading.Thread(target=feed.write_to, args=(proc.stdin,), daemon=True,
+                                      name="decoder-feed")
+            feeder.start()
         samples = _collect(lambda: frames.next(IDLE_TIMEOUT_S), out, folder=folder,
                            dense_limit=dense_limit)
+        if feed is not None:
+            # The decoder said it is done, so it read to the end of the stream.
+            feeder.join(IDLE_TIMEOUT_S)
+            if feeder.is_alive():
+                raise DecodeError(TOO_SLOW)
+            if feed.error is not None:
+                raise feed.error
         if samples == 0:
             raise DecodeError("The file contains no audio.")
         return samples
     except OSError as exc:          # broken pipe and the like: the decoder went away
         raise DecodeError("The recording could not be decoded (the decoder stopped). It may "
                           "be damaged.") from exc
+    except DecodeError:
+        # The feed's own failure (a chunk that changed after it was checked)
+        # explains a decoder that stopped early better than the decoder can.
+        if feed is not None and feed.error is not None \
+                and not isinstance(feed.error, (OSError, DecodeError)):
+            raise feed.error from None
+        raise
     finally:
         # Stop the decoder first: the reader thread may be blocked reading its
         # output, and closing the pipe would wait for that read. Once the
@@ -293,6 +380,8 @@ def decode(src, out, folder=None):
             pass
         if frames is not None:
             frames.join(5)                       # its read ends once the process is gone
+        if feeder is not None:
+            feeder.join(10)                      # its write fails once the process is gone
         for pipe in (proc.stdin, proc.stdout):
             try:
                 pipe.close()
@@ -300,12 +389,13 @@ def decode(src, out, folder=None):
                 pass
 
 
-def decode_to_file(src, dest, key, context):
-    """Decode `src` in the contained decoder process to `dest`, encrypted
-    (audiocrypt, float32, mono, 16 kHz) under `key` with `context`. Written
-    as `dest`'s ".partial" file, finished (last block sealed, flushed to
-    disk), then renamed. Returns (samples, the file's random id). Raises
-    DecodeError with a safe message; a failed decode leaves no file."""
+def decode_to_file(src, dest, key, context, feed=None):
+    """Decode `src` (or a WavFeed, feed) in the contained decoder process to
+    `dest`, encrypted (audiocrypt, float32, mono, 16 kHz) under `key` with
+    `context`. Written as `dest`'s ".partial" file, finished (last block
+    sealed, flushed to disk), then renamed. Returns (samples, the file's
+    random id). Raises DecodeError with a safe message; a failed decode
+    leaves no file."""
     from workspace import audiocrypt
     tmp = Path(dest).with_suffix(".partial")
     if _free_bytes(tmp.parent) < DISK_RESERVE:
@@ -317,7 +407,7 @@ def decode_to_file(src, dest, key, context):
     out = audiocrypt.AudioWriter(tmp, key, context, "float32", 1, SAMPLE_RATE)
     ok = False
     try:
-        samples = decode(src, out, folder=tmp.parent)
+        samples = decode(src, out, folder=tmp.parent, feed=feed)
         out.close()                              # seals the last block, fsyncs
         ok = True
     finally:
@@ -455,6 +545,51 @@ def import_recording(store, media_root, src_path, title=None):
                                original_mtime_ns=before.st_mtime_ns,
                                audio_id=file_id.hex(), samples=samples,
                                sample_rate=SAMPLE_RATE)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        try:
+            store.delete_new_meeting(mid)
+        except Exception:
+            pass
+        raise
+    return mid, sid
+
+
+def import_stream(store, media_root, audio, title, recording):
+    """Create a meeting from a microphone recording (#30, #111 C3b) with no
+    original file: audio (recorder.RecordingAudio) is streamed to the
+    contained decoder over its stdin as one WAV, decoded and saved encrypted
+    as for any import, and authenticated in full once. recording:
+    (recording_id, info JSON text) for add_source, whose transaction also
+    stores the sealed recording_sources row and deletes the recording's key
+    (the chunks left behind can then never be opened). The PCM's SHA-256 is
+    the source's identity (fingerprinted by the store). A failed import
+    leaves nothing behind, as import_recording. Returns (meeting_id, source_id)."""
+    import shutil
+    feed = WavFeed(audio)
+    mid = store.create_meeting(title or "Untitled meeting")
+    folder = meeting_folder(media_root, mid)
+    try:
+        folder.mkdir(parents=True, exist_ok=False)
+        samples, file_id = decode_to_file(None, folder / AUDIO_FILE,
+                                          store.meeting_key(mid, "audio"), audio_context(mid),
+                                          feed=feed)
+        try:
+            reader = open_audio(store, media_root, mid)
+            try:
+                saved = reader.verify()
+            finally:
+                reader.close()
+        except Exception as exc:
+            if not damaged_audio(exc):
+                raise
+            saved = None
+        if saved != samples:
+            raise DecodeError(SAVE_FAILED)
+        sid = store.add_source(mid, original_path=None, original_sha256=feed.sha256,
+                               original_size=feed.data_bytes, original_mtime_ns=0,
+                               audio_id=file_id.hex(), samples=samples,
+                               sample_rate=SAMPLE_RATE, recording=recording)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         try:

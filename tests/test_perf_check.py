@@ -250,7 +250,8 @@ class PacedStreamTests(unittest.TestCase):
             rec = recorder.Recording(
                 Path(tmp) / "rec", 0, "Synthetic input", 16000,
                 open_stream=lambda device, rate, cb, done: perf_check.PacedStream(
-                    rate, cb, done, blocks=perf_check.synthetic_blocks(rate, seconds=1)))
+                    rate, cb, done, blocks=perf_check.synthetic_blocks(rate, seconds=1)),
+                key=bytes(range(32)))
             rec.start()
             time.sleep(1.5)
             self.assertEqual("recording", rec.status()["state"])

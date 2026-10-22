@@ -862,6 +862,31 @@ class ErasePointTests(unittest.TestCase):
         with self.assertRaises(KeyMissing):
             self.s.recording_key("rec-1")
 
+    def test_an_import_deletes_its_recording_key_in_the_same_transaction(self):
+        # #111 C3b: the source, its sealed recording row and the deletion of
+        # the recording's key commit together, so a crash cannot leave a
+        # meeting whose recording could be imported again, or a key that
+        # outlives the import.
+        count = lambda t: self.s._one(f"SELECT COUNT(*) FROM {t}")[0]   # noqa: E731
+        self.s.create_recording_key("rec-1")
+        self.s.create_recording_key("rec-2")
+        mid = self.s.create_meeting("synthetic recording")
+        self.s.add_source(mid, original_path=None, original_sha256=H, original_size=1,
+                          original_mtime_ns=0, audio_id=H, samples=SR, sample_rate=SR,
+                          recording=("rec-1", '{"device": "x"}'))
+        self.assertEqual(self.s.recording_key_ids(), ["rec-2"])
+        self.assertTrue(self.s.recording_imported("rec-1"))
+        # A failure inside the transaction (here the recording row is refused:
+        # rec-1 already made a meeting) keeps the key and adds no source.
+        self.s.create_recording_key("rec-1")
+        other = self.s.create_meeting("synthetic second")
+        with self.assertRaises(StoreError):
+            self.s.add_source(other, original_path=None, original_sha256=H, original_size=1,
+                              original_mtime_ns=0, audio_id=H, samples=SR, sample_rate=SR,
+                              recording=("rec-1", "{}"))
+        self.assertEqual(self.s.recording_key_ids(), ["rec-1", "rec-2"])
+        self.assertEqual((count("sources"), count("recording_sources")), (1, 1))
+
     def test_the_erase_checkpoint_waits_for_a_reader(self):
         self.s.create_recording_key("rec-1")
         reader = sqlite3.connect(self.root / "workspace.db", check_same_thread=False)

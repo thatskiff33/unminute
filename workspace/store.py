@@ -1413,6 +1413,16 @@ class Store:
             except vault.VaultError:
                 raise DamagedContent() from None
 
+    def recording_key_ids(self):
+        """The ids of the recordings that have a key (plain; for the start-up
+        sweep of keys whose recording folder is gone). Refused while locked:
+        no key row is read or changed then (#111 C4a, design 7.2)."""
+        with self._lock:
+            if self.locked is not None:
+                raise self.locked
+            return [r["recording_id"] for r in self._all(
+                "SELECT recording_id FROM recording_keys ORDER BY recording_id")]
+
     def destroy_recording_key(self, recording_id):
         """Delete a recording's key (secure_delete), then empty the write-ahead
         log (erase_checkpoint). Returns whether the log was emptied."""
@@ -1598,7 +1608,11 @@ class Store:
         """A meeting's source. original_sha256 (hex) is kept as its
         fingerprint (original_fp). audio_id: the decoded audio's SHA-256 (hex)
         until C3a. recording: (recording_id, info JSON text) for a microphone
-        recording (#30, used from C3b), stored in the same transaction."""
+        recording (#30, #111 C3b): in the same transaction its sealed
+        recording_sources row is stored and its recording key deleted, so the
+        import and the key's deletion commit together (no second import, and
+        the chunks left behind can never be opened). The caller then empties
+        the write-ahead log (erase_checkpoint)."""
         sid = new_id()
         with self.tx() as db:
             db.execute("INSERT INTO sources (id, meeting_id, original_path_sealed, original_fp, "
@@ -1614,6 +1628,8 @@ class Store:
                            "info_sealed) VALUES (?, ?, ?)",
                            (mid, recording_id,
                             self._seal(mid, "recording_sources", "info", (mid,), info)))
+                db.execute("DELETE FROM recording_keys WHERE recording_id = ?",
+                           (recording_id,))
         return sid
 
     def recording_imported(self, recording_id):

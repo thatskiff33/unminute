@@ -1,8 +1,10 @@
 # workspace/mixdown.py
 # The one mix of a two-track recording (#108): microphone and computer audio
-# become one mono WAV at the microphone's rate, which is imported through the
-# sandboxed decoder like any recording and transcribed once (the owner's
-# decision 10). The decoder still makes the only 16 kHz conversion (I2).
+# become one mono 16-bit stream at the microphone's rate, which is streamed
+# to the sandboxed decoder like any recording and transcribed once (the
+# owner's decision 10). The decoder still makes the only 16 kHz conversion
+# (I2). The mix is made in memory, block by block, from the encrypted chunks
+# (workspace/recorder.TrackAudio, #111 C3b): nothing plain is written.
 #
 #   1. Line up the tracks. Each track's timing marks ([frame, monotonic time,
 #      segment], workspace/recorder.py) are split into segments at each resume
@@ -22,8 +24,6 @@
 # 8-hour recording. numpy only.
 
 import math
-import wave
-from pathlib import Path
 
 import numpy as np
 
@@ -108,35 +108,10 @@ def nominal(frames, rate, t0=0.0):
     return [Segment(0, int(frames), t0, 1.0 / float(rate))] if frames else []
 
 
-class TrackReader:
-    """Reads frames [a, b) of a track from its chunk files, as float32; zeros
-    beyond what was saved."""
-
-    def __init__(self, folder, files):
-        self.folder = Path(folder)
-        self.files = []
-        pos = 0
-        for name, frames in files:
-            self.files.append((name, pos, int(frames)))
-            pos += int(frames)
-        self.frames = pos
-
-    def read(self, a, b):
-        out = np.zeros(max(0, b - a), dtype=np.float32)
-        for name, start, n in self.files:
-            lo, hi = max(a, start), min(b, start + n)
-            if lo >= hi:
-                continue
-            with open(self.folder / name, "rb") as f:
-                f.seek((lo - start) * 2)
-                data = np.frombuffer(f.read((hi - lo) * 2), dtype="<i2")
-            out[lo - a: lo - a + len(data)] = data.astype(np.float32)
-        return out
-
-
 def computer_at(times, lines, reader):
     """The computer track's samples at these monotonic times (float32),
-    read by linear interpolation; silence where it has none."""
+    read by linear interpolation; silence where it has none. reader: the
+    track (.read(a, b) gives frames [a, b) as float32 sample values)."""
     out = np.zeros(len(times), dtype=np.float32)
     if not len(times):
         return out
@@ -160,43 +135,43 @@ def computer_at(times, lines, reader):
     return out
 
 
-def write_mix(folder, journal, out, notes):
-    """Write the one mix of a two-track recording to out (mono 16-bit WAV
-    at the microphone's rate). Returns (path, seconds); events about the
-    mix are appended to notes (a fallback is never silent)."""
-    from workspace import recorder
-    folder, out = Path(folder), Path(out)
-    rate = int(journal["rate"])
-    track = journal["tracks"][recorder.COMPUTER]
-    crate = int(track["rate"])
-    mic = TrackReader(folder, recorder.track_files(folder, journal.get("chunks", []), "chunk-"))
-    comp = TrackReader(folder, recorder.track_files(folder, track.get("chunks", []),
-                                                    recorder.COMPUTER_PREFIX))
-    try:
-        mic_lines, mic_off = segments(journal.get("marks"), mic.frames, rate)
-        comp_lines, comp_off = (segments(track.get("marks"), comp.frames, crate)
-                                if comp.frames else ([], False))
-        if mic_off or comp_off:
-            notes.append({"kind": "mix_drift", "at_s": 0.0, "seconds": None,
-                          "note": "The clocks of the microphone and the computer audio could "
-                                  "not be compared, so a slow drift between them was not "
-                                  "corrected."})
-    except MixError:
-        mic_lines, comp_lines = nominal(mic.frames, rate), nominal(comp.frames, crate)
-        notes.append({"kind": "mix_by_start", "at_s": 0.0, "seconds": None,
-                      "note": "The microphone and computer audio were lined up by when they "
-                              "started only; they may be slightly out of step."})
-    step = max(1, int(BLOCK_S * rate))
-    with wave.open(str(out), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        for seg in mic_lines:
+class Mix:
+    """The one mix of a two-track recording, at the microphone's rate. The
+    tracks are lined up when it is made (events about that go to notes at
+    once, so they are known before the import); blocks() then mixes and
+    yields little-endian int16 bytes, BLOCK_S at a time. mic and comp: the
+    tracks (recorder.TrackAudio: .frames, .read(a, b))."""
+
+    def __init__(self, journal, mic, comp, notes):
+        from workspace import recorder
+        self.mic, self.comp = mic, comp
+        self.rate = rate = int(journal["rate"])
+        crate = int(journal["tracks"][recorder.COMPUTER]["rate"])
+        track = journal["tracks"][recorder.COMPUTER]
+        self.frames = mic.frames
+        try:
+            self.mic_lines, mic_off = segments(journal.get("marks"), mic.frames, rate)
+            self.comp_lines, comp_off = (segments(track.get("marks"), comp.frames, crate)
+                                         if comp.frames else ([], False))
+            if mic_off or comp_off:
+                notes.append({"kind": "mix_drift", "at_s": 0.0, "seconds": None,
+                              "note": "The clocks of the microphone and the computer audio "
+                                      "could not be compared, so a slow drift between them "
+                                      "was not corrected."})
+        except MixError:
+            self.mic_lines = nominal(mic.frames, rate)
+            self.comp_lines = nominal(comp.frames, crate)
+            notes.append({"kind": "mix_by_start", "at_s": 0.0, "seconds": None,
+                          "note": "The microphone and computer audio were lined up by when "
+                                  "they started only; they may be slightly out of step."})
+
+    def blocks(self):
+        step = max(1, int(BLOCK_S * self.rate))
+        for seg in self.mic_lines:
             for a in range(seg.start, seg.end, step):
                 b = min(seg.end, a + step)
-                voice = mic.read(a, b)
+                voice = self.mic.read(a, b)
                 times = seg.time(np.arange(a, b, dtype=np.float64))
-                other = computer_at(times, comp_lines, comp)
+                other = computer_at(times, self.comp_lines, self.comp)
                 mix = np.clip(np.round((voice + other) / 2.0), -32768, 32767)
-                w.writeframes(mix.astype("<i2").tobytes())
-    return out, mic.frames / rate
+                yield mix.astype("<i2").tobytes()

@@ -1,6 +1,8 @@
 # Microphone recording (#30) with a fake audio stream: durable chunks, pause,
 # overrun and full-queue reporting, device loss, a full disk, crash recovery,
 # and the workspace flow (heavy work waits; the recording becomes a meeting).
+# Since #111 C3b every chunk is encrypted under the recording's key, the
+# recording reaches the decoder over its stdin, and no plain audio is written.
 #   python -m unittest discover -s tests -v
 
 import importlib.util
@@ -10,7 +12,6 @@ import sys
 import tempfile
 import time
 import unittest
-import wave
 from pathlib import Path
 from unittest import mock
 
@@ -32,6 +33,28 @@ if HAVE_DEPS:
 
 # What the bridge passes after the app's own confirmation (#111 A6).
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
+KEY = bytes(range(32))           # a recording's key in the recorder's own tests
+
+
+def saved(folder, journal, key=KEY):
+    """What a saved recording holds, as the import streams it (int16 at the
+    journal's rate), its length in seconds and the problems reported."""
+    notes = []
+    audio = recorder.open_recording(folder, journal, key, notes)
+    pcm = np.frombuffer(b"".join(audio.blocks()), dtype="<i2")
+    return pcm, audio.seconds, notes
+
+
+def files_holding(root, needle):
+    """Every file under root whose bytes contain needle (names only)."""
+    found = []
+    for path in Path(root).rglob("*"):
+        try:
+            if path.is_file() and needle in path.read_bytes():
+                found.append(path.name)
+        except OSError:
+            pass
+    return found
 
 
 class FakeStream:
@@ -69,11 +92,6 @@ def opener(holder):
     return open_stream
 
 
-def wav_frames(path):
-    with wave.open(str(path), "rb") as w:
-        return w.getnframes(), w.getframerate()
-
-
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class RecordingTests(unittest.TestCase):
     def setUp(self):
@@ -93,7 +111,7 @@ class RecordingTests(unittest.TestCase):
 
     def start(self):
         rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
-                                              open_stream=opener(self.holder)))
+                                              open_stream=opener(self.holder), key=KEY))
         return rec, self.holder["stream"]
 
     def test_every_frame_is_saved_in_durable_chunks(self):
@@ -121,8 +139,8 @@ class RecordingTests(unittest.TestCase):
         self.assertIsNone(rec.status()["viz"])            # nothing of the sound kept after stop
         self.assertEqual(journal["state"], "stopped")
         self.assertGreaterEqual(len(journal["chunks"]), 3)
-        wav, seconds = recorder.assemble_wav(rec.folder, journal)
-        self.assertEqual(wav_frames(wav), (s.fed, RATE))
+        pcm, seconds, notes = saved(rec.folder, journal)
+        self.assertEqual((len(pcm), seconds, notes), (s.fed, s.fed / RATE, []))
         self.assertEqual(journal["events"], [])
 
     def test_display_data_is_worked_out_only_when_asked_for(self):
@@ -158,12 +176,13 @@ class RecordingTests(unittest.TestCase):
         rec.resume()
         s.feed(1)
         journal = rec.stop()
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertAlmostEqual(seconds, 3.0, places=1)
         self.assertEqual([e["kind"] for e in journal["events"]], ["paused", "resumed"])
 
     def test_overrun_and_full_queue_are_reported_never_silent(self):
-        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}))
+        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}),
+                                 key=KEY)
         rec._queue.maxsize = 2                       # writer not started: queue fills
         block = np.zeros((1600, 1), dtype=np.int16)
         status = type("S", (), {"input_overflow": True})()
@@ -184,7 +203,7 @@ class RecordingTests(unittest.TestCase):
         journal = rec.stop()
         self.assertEqual(journal["state"], "device_lost")
         self.assertIn("did not switch", journal["events"][-1]["note"])
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertAlmostEqual(seconds, 6.0, places=1)
 
     def test_an_overrun_at_the_moment_of_disconnection_is_part_of_it(self):
@@ -204,7 +223,7 @@ class RecordingTests(unittest.TestCase):
         overflow = type("S", (), {"input_overflow": True})()
         for before, expected in ((0, ["overrun", "device_lost"]), (30, ["device_lost"])):
             rec = recorder.Recording(self.root / f"rec{before}", 0, "Mic", RATE,
-                                     open_stream=opener({}))
+                                     open_stream=opener({}), key=KEY)
             for _ in range(before):                  # blocks before the overrun
                 rec._callback(block, 1600, None, None)
             rec._callback(block, 1600, None, overflow)
@@ -236,7 +255,8 @@ class RecordingTests(unittest.TestCase):
         self.asleep = [0.0]
         rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
                                               open_stream=opener(self.holder),
-                                              tick=lambda: time.monotonic() + self.asleep[0]))
+                                              tick=lambda: time.monotonic() + self.asleep[0],
+                                              key=KEY))
         return rec, self.holder["stream"]
 
     def wait_stopped(self, rec, seconds=10):
@@ -286,7 +306,7 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(journal["state"], "slept")
         self.assertEqual([e["kind"] for e in journal["events"]], ["sleep"])
         self.assertIn("went to sleep", journal["events"][0]["note"])
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertAlmostEqual(seconds, 2.0, places=1)    # everything before it is kept
 
     def test_audio_resuming_after_sleep_is_not_joined_on(self):
@@ -301,7 +321,7 @@ class RecordingTests(unittest.TestCase):
             self.assertTrue(rec.stopped)
         journal = rec.stop()
         self.assertEqual(journal["state"], "slept")
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertAlmostEqual(seconds, 2.0, places=1)    # only the audio before the sleep
 
     def test_driver_ending_the_stream_after_sleep_is_sleep(self):
@@ -337,7 +357,7 @@ class RecordingTests(unittest.TestCase):
         s.feed(1)
         journal = rec.stop()
         self.assertEqual(journal["state"], "stopped")
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertAlmostEqual(seconds, 2.0, places=1)
 
     def test_sleep_closes_the_stream_at_once(self):
@@ -355,15 +375,14 @@ class RecordingTests(unittest.TestCase):
     def test_a_slow_save_is_not_mistaken_for_sleep(self):
         # A microphone lost while a chunk takes longer than the silence limit
         # to save is a lost microphone: a slow save does not delay the watchdog.
-        real = recorder._write_atomic
+        real = recorder._write_chunk
 
-        def slow(path, data):
-            if path.suffix == ".pcm":
-                time.sleep(1.0)
-            real(path, data)
+        def slow(*args):
+            time.sleep(1.0)
+            real(*args)
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1), \
-                mock.patch.object(recorder, "_write_atomic", slow):
+                mock.patch.object(recorder, "_write_chunk", slow):
             rec, s = self.start()
             s.feed(6)                        # the 5 s chunk is saved slowly
             self.wait_stopped(rec)
@@ -375,7 +394,7 @@ class RecordingTests(unittest.TestCase):
         # audio never stops. Journal times follow the wall clock; gaps do not.
         offset = [0.0]
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
-                                 clock=lambda: time.time() + offset[0])
+                                 clock=lambda: time.time() + offset[0], key=KEY)
         self.assertIs(rec._tick, time.monotonic)          # the default the app relies on
         # #269: a silence limit well above the real 0.2 s between feeds (a slow
         # runner cannot reach it) and well below each 5 s jump of the clock.
@@ -416,7 +435,7 @@ class RecordingTests(unittest.TestCase):
     def test_setting_the_clock_back_does_not_pause_the_silence_check(self):
         offset = [0.0]
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
-                                 clock=lambda: time.time() + offset[0])
+                                 clock=lambda: time.time() + offset[0], key=KEY)
         with mock.patch.object(recorder, "SILENT_DEVICE_S", 0.6), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
             self.started(rec)
@@ -431,7 +450,7 @@ class RecordingTests(unittest.TestCase):
         # wall clock, set back an hour, the limit would never be reached.
         offset = [0.0]
         rec = recorder.Recording(self.root / "rec", 3, "Mic", RATE, open_stream=opener(self.holder),
-                                 clock=lambda: time.time() + offset[0])
+                                 clock=lambda: time.time() + offset[0], key=KEY)
         with mock.patch.object(recorder, "MAX_HOURS", 1 / 3600), \
                 mock.patch.object(recorder, "HEARTBEAT_S", 0.1):
             began = time.monotonic()
@@ -488,14 +507,15 @@ class RecordingTests(unittest.TestCase):
         self.assertIn("lid", [e["kind"] for e in rec.stop()["events"]])
 
     def test_a_lost_device_is_reported_once(self):
-        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}))
+        rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}),
+                                 key=KEY)
         rec._device_lost()
         rec._device_lost()                       # the driver and the silence check both
         self.assertEqual([e["kind"] for e in rec.journal["events"]], ["device_lost"])
         import threading                         # and at the same moment
         for n in range(20):
             rec = recorder.Recording(self.root / f"race{n}", 0, "Mic", RATE,
-                                     open_stream=opener({}))
+                                     open_stream=opener({}), key=KEY)
             gate = threading.Barrier(6)
 
             def lose(r=rec, g=gate):
@@ -595,7 +615,7 @@ class RecordingTests(unittest.TestCase):
         # A slow microphone start: audio can arrive before the watchdog starts.
         asleep = [0.0]
         rec = recorder.Recording(self.root / "rec", 0, "Mic", RATE, open_stream=opener({}),
-                                 tick=lambda: time.monotonic() + asleep[0])
+                                 tick=lambda: time.monotonic() + asleep[0], key=KEY)
         asleep[0] += 600
         rec._callback(np.zeros((1600, 1), dtype=np.int16), 1600, None, None)
         self.assertEqual(rec.journal["state"], "recording")
@@ -633,17 +653,16 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_full_disk_keeps_earlier_chunks_and_reports_the_loss(self):
-        real = recorder._write_atomic
+        real = recorder._write_chunk
         calls = {"n": 0}
 
-        def failing(path, data):
-            if path.suffix == ".pcm":
-                calls["n"] += 1
-                if calls["n"] >= 2:
-                    raise OSError(28, "No space left on device")
-            return real(path, data)
+        def failing(*args):
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise OSError(28, "No space left on device")
+            return real(*args)
 
-        with mock.patch.object(recorder, "_write_atomic", failing):
+        with mock.patch.object(recorder, "_write_chunk", failing):
             rec, s = self.start()
             s.feed(12)
             deadline = time.time() + 10
@@ -655,7 +674,7 @@ class RecordingTests(unittest.TestCase):
         self.assertEqual(last["kind"], "disk_full")
         self.assertGreater(last["seconds"], 0)
         self.assertEqual(len(journal["chunks"]), 1)        # the chunk saved before is kept
-        _, seconds = recorder.assemble_wav(rec.folder, journal)
+        _, seconds, _ = saved(rec.folder, journal)
         self.assertEqual(seconds, recorder.CHUNK_S)
 
     def test_crash_recovery_finds_saved_audio_and_estimates_the_gap(self):
@@ -669,16 +688,221 @@ class RecordingTests(unittest.TestCase):
         journal["state"] = "recording"                # as a crash leaves it
         (folder / "journal.json").write_text(json.dumps(journal))
         # A chunk renamed into place but not yet in the journal is complete;
-        # a temporary file is not.
-        (folder / "chunk-999999.pcm").write_bytes(np.zeros(RATE, "<i2").tobytes())
-        (folder / "chunk-999998.pcm.tmp").write_bytes(b"\x01" * 1001)
+        # a temporary file is not, and is deleted (never opened: #111 C3b).
+        n = len(journal["chunks"])
+        recorder._write_chunk(folder / recorder.chunk_name(recorder.MICROPHONE, n),
+                              np.zeros(RATE, "<i2").tobytes(), KEY,
+                              recorder.chunk_context(folder.name, recorder.MICROPHONE, n), RATE)
+        (folder / "chunk-999998.uma.tmp").write_bytes(b"\x01" * 1001)
         (folder / "heartbeat").write_text(str(journal["started_at"] + 20))
         found = recorder.unfinished(self.root)
         self.assertEqual([f for f, _ in found], [folder])
-        wav, seconds = recorder.assemble_wav(folder, found[0][1])
+        _, seconds, notes = saved(folder, found[0][1])
+        self.assertEqual(notes, [])
+        self.assertFalse((folder / "chunk-999998.uma.tmp").exists())
         self.assertAlmostEqual(seconds, 12.0, places=1)    # 11 s fed, plus the extra chunk
         missing = recorder.missing_tail_seconds(folder, found[0][1], seconds)
         self.assertAlmostEqual(missing, 8.0, places=0)
+
+
+def marker(start=800, n=32):
+    """Bytes the fake stream's audio holds as plain PCM (samples start to
+    start + n of its 220 Hz tone): found in a file only if audio was
+    written in the clear."""
+    t = (np.arange(n) + start) / RATE
+    return (np.sin(2 * np.pi * 220 * t) * 8000).astype("<i2").tobytes()
+
+
+# Known answer for test_a_chunk_has_a_known_answer (key 0..31, file id 32..63,
+# context chunk_context("0123456789abcdef" * 2, "microphone", 7), samples 0..3).
+CHUNK_KAT_SHA256 = "c517bc557e291378789b04e9dde95e350bc2256abd7aee345005528d56b43bc1"
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class EncryptedChunkTests(unittest.TestCase):
+    """#111 C3b: every chunk is its own encrypted file under the recording's
+    key, bound to its recording, track and place; nothing plain is written."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.holder = {}
+
+    def start(self, name="rec"):
+        rec = recorder.Recording(self.root / name, 3, "Mic", RATE,
+                                 open_stream=opener(self.holder), key=KEY)
+        rec.start()
+        self.addCleanup(rec.stop)
+        return rec, self.holder["stream"]
+
+    def wait_for(self, condition, seconds=10):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return condition()
+
+    def test_chunks_are_encrypted_files_and_no_plain_audio_is_written(self):
+        rec, s = self.start()
+        s.feed(6)
+        self.assertTrue(self.wait_for(lambda: (rec.folder / "chunk-000000.uma").exists()))
+        self.assertEqual(files_holding(self.root, marker()), [])      # while recording
+        journal = rec.stop()
+        names = sorted(p.name for p in rec.folder.iterdir())
+        self.assertEqual(names, ["chunk-000000.uma", "chunk-000001.uma", "heartbeat",
+                                 "journal.json"])
+        for name in names[:2]:
+            self.assertEqual((rec.folder / name).read_bytes()[:4], b"UMA1")
+        self.assertEqual(files_holding(self.root, marker()), [])      # after stop
+        self.assertEqual(files_holding(self.root, KEY), [])            # no key in any file
+        pcm, seconds, notes = saved(rec.folder, journal)               # yet it is all there
+        self.assertIn(marker(), pcm.tobytes())
+        self.assertEqual((len(pcm), notes), (s.fed, []))
+        self.assertEqual(list(self.root.rglob("recording.wav")), [])
+        self.assertEqual(files_holding(self.root, marker()), [])      # reading wrote nothing
+
+    def test_a_chunk_has_a_known_answer(self):
+        # Pins how a chunk's context goes into its file key (with the header,
+        # nonces and associated data): a change fails here, not on saved
+        # recordings. Fixed key, file id and samples.
+        from workspace import audiocrypt
+        self.assertEqual(recorder.chunk_context("r1", recorder.COMPUTER, 3),
+                         ("recording", "r1", "computer", 3))
+        self.assertEqual(recorder.chunk_name(recorder.COMPUTER, 3), "sys-000003.uma")
+        path = self.root / "chunk-000007.uma"
+        with mock.patch.object(audiocrypt.secrets, "token_bytes",
+                               return_value=bytes(range(32, 64))):
+            recorder._write_chunk(path, np.arange(4, dtype="<i2").tobytes(), KEY,
+                                  recorder.chunk_context("0123456789abcdef" * 2,
+                                                         recorder.MICROPHONE, 7), RATE)
+        import hashlib
+        self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), CHUNK_KAT_SHA256)
+
+    def test_a_stale_temporary_file_does_not_stop_the_first_chunk(self):
+        rec, s = self.start()
+        (rec.folder / "chunk-000000.uma.tmp").write_bytes(b"\x01" * 1001)   # an earlier try
+        s.feed(6)
+        journal = rec.stop()
+        self.assertEqual((journal["state"], journal["events"]), ("stopped", []))
+        self.assertEqual(len(journal["chunks"]), 2)
+        self.assertEqual(len(saved(rec.folder, journal)[0]), s.fed)
+        self.assertEqual(list(rec.folder.glob("*.tmp")), [])
+
+    def test_a_retry_writes_a_new_file_with_a_new_id(self):
+        # No nonce is used twice: a failed write is never resumed; the retry
+        # starts a new file, with a new random id and so a new key.
+        from workspace import audiocrypt
+        ids, calls = [], {"n": 0}
+        real_init, real_write = audiocrypt.AudioWriter.__init__, audiocrypt.AudioWriter.write
+
+        def init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            ids.append(self.file_id)
+
+        def write(self, data):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(13, "held by another program")
+            return real_write(self, data)
+        with mock.patch.object(audiocrypt.AudioWriter, "__init__", init), \
+                mock.patch.object(audiocrypt.AudioWriter, "write", write), \
+                mock.patch.object(recorder, "_retrying", _retry_now):
+            rec, s = self.start()
+            s.feed(6)
+            journal = rec.stop()
+        self.assertEqual(journal["events"], [])
+        self.assertEqual(len(ids), 3)                     # two tries for the first chunk
+        with audiocrypt.AudioReader(rec.folder / "chunk-000000.uma", KEY,
+                                    recorder.chunk_context(rec.folder.name,
+                                                           recorder.MICROPHONE, 0)) as r:
+            self.assertEqual(r.file_id, ids[1])
+            self.assertNotEqual(r.file_id, ids[0])
+        self.assertEqual(len(saved(rec.folder, journal)[0]), s.fed)
+
+    def test_a_damaged_or_swapped_chunk_becomes_silence_and_is_reported(self):
+        rec, s = self.start()
+        s.feed(16)
+        journal = rec.stop()
+        self.assertEqual([c["frames"] for c in journal["chunks"]],
+                         [5 * RATE, 5 * RATE, 5 * RATE, RATE])
+        f = rec.folder
+        (f / "chunk-000001.uma").write_bytes((f / "chunk-000002.uma").read_bytes())  # swapped
+        data = bytearray((f / "chunk-000003.uma").read_bytes())
+        data[len(data) // 2] ^= 1                                                     # damaged
+        (f / "chunk-000003.uma").write_bytes(bytes(data))
+        pcm, seconds, notes = saved(f, journal)
+        self.assertEqual(len(pcm), s.fed)                 # later times still match
+        self.assertTrue(pcm[: 5 * RATE].any())
+        self.assertFalse(pcm[5 * RATE: 10 * RATE].any())  # silence of its listed length
+        self.assertTrue(pcm[10 * RATE: 15 * RATE].any())
+        self.assertFalse(pcm[15 * RATE:].any())
+        self.assertEqual([(n["kind"], n["at_s"], n["seconds"]) for n in notes],
+                         [("damaged", 5.0, 5.0), ("damaged", 15.0, 1.0)])
+        self.assertIn("could not be read", notes[0]["note"])
+
+    def test_chunks_are_never_taken_out_of_order_or_from_elsewhere(self):
+        a, s = self.start("a")
+        s.feed(11)
+        journal = a.stop()
+        b, s2 = self.start("b")
+        s2.feed(1)
+        journal_b = b.stop()
+        # A chunk of another recording (same key: the context differs), a
+        # chunk of the other track, a reordered journal and a name that
+        # points outside the folder: none is ever read as this place's audio.
+        (b.folder / "chunk-000000.uma").write_bytes((a.folder / "chunk-000000.uma").read_bytes())
+        self.assertFalse(saved(b.folder, journal_b)[0].any())
+        sys_chunk = a.folder / "sys-000000.uma"
+        recorder._write_chunk(sys_chunk, np.full(RATE, 1000, "<i2").tobytes(), KEY,
+                              recorder.chunk_context(a.folder.name, recorder.COMPUTER, 0), RATE)
+        (b.folder / "chunk-000000.uma").write_bytes(sys_chunk.read_bytes())
+        self.assertFalse(saved(b.folder, journal_b)[0].any())
+        sys_chunk.unlink()
+        reordered = dict(journal, chunks=[journal["chunks"][1], journal["chunks"][0],
+                                          journal["chunks"][2]])
+        pcm, _, notes = saved(a.folder, reordered)
+        self.assertFalse(pcm[: 10 * RATE].any())
+        self.assertEqual([n["at_s"] for n in notes], [0.0, 5.0])
+        (self.root / "outside.uma").write_bytes((a.folder / "chunk-000000.uma").read_bytes())
+        escaped = dict(journal, chunks=[{"file": "..\\outside.uma", "frames": 5 * RATE}])
+        pcm, _, notes = saved(a.folder, escaped)
+        self.assertFalse(pcm[: 5 * RATE].any())
+        self.assertEqual(notes[0]["kind"], "damaged")
+
+    def test_no_plain_writer_is_left_in_the_recording_path(self):
+        # Static: the recorder, the mixer and the import write no WAV and no
+        # raw PCM (the plain writer is for the journal alone), and the
+        # recorder never opens an unfinished file (allow_incomplete).
+        import re
+        root = Path(__file__).resolve().parents[1] / "workspace"
+        found = []
+        for name in ("recorder.py", "mixdown.py", "media.py", "app.py"):
+            text = (root / name).read_text(encoding="utf-8")
+            if name != "app.py" and re.search(r"import wave|wave\.open", text):
+                found.append((name, "wave"))
+            for call in re.findall(r"(?<!def )_write_atomic\(([^,]*),", text):
+                if "journal.json" not in call:
+                    found.append((name, call.strip()))
+            if re.search(r"allow_incomplete\s*=", text):
+                found.append((name, "allow_incomplete"))
+        self.assertEqual(found, [])
+
+    def test_a_wrong_key_reads_nothing(self):
+        rec, s = self.start()
+        s.feed(6)
+        journal = rec.stop()
+        audio = recorder.open_recording(rec.folder, journal, bytes(32), [])
+        self.assertFalse(audio.readable)
+
+
+def _retry_now(fn, attempts=3):
+    """recorder._retrying without its wait."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except OSError:
+            if i == attempts - 1:
+                raise
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
@@ -763,8 +987,10 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(shown, [True, False])
         self.assertTrue(self.ws.wait_idle(120))
         [m] = self.ws.meetings()                       # kept with the imported meeting
-        sidecar = json.loads((self.ws.media / m["id"] / "recording.json").read_text("utf-8"))
-        self.assertEqual(sidecar["consent"], CONSENT)
+        info = json.loads(self.ws.store.recording_info(m["id"]))   # sealed (#111 C3b)
+        self.assertEqual(info["consent"], CONSENT)
+        self.assertEqual(info["sources"], ["microphone"])
+        self.assertFalse((self.ws.media / m["id"] / "recording.json").exists())
 
     def test_policy_can_turn_the_confirmation_off(self):
         self.ws.close()
@@ -1096,7 +1322,8 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(len(meetings), 1)
         self.assertTrue(meetings[0]["title"].startswith("Recording "))
         self.assertEqual(list((self.ws.root / "recordings").iterdir()), [])
-        self.assertTrue((self.ws.media / meetings[0]["id"] / "recording.json").is_file())
+        self.assertIsNotNone(self.ws.store.recording_info(meetings[0]["id"]))
+        self.assertEqual(self.ws.store.recording_key_ids(), [])     # erased with the import
         self.assertEqual(self.ws.recording_status()["reports"][-1]["seconds"], 8.0)
         self.assertTrue(self.ws.transcript(meetings[0]["id"])["items"])  # then transcribed
 
@@ -1166,6 +1393,7 @@ class WorkspaceRecordingTests(unittest.TestCase):
         with locked, self.assertRaises(WorkspaceError):               # and it says so
             self.ws.delete_pending_recording(waiting["id"])
         self.assertTrue(recorder.is_discarded(rec.folder))      # so it is never offered again
+        self.assertEqual(self.ws.store.recording_key_ids(), [])  # its key went first (C3b)
         self.ws.close()
         self.ws = self.make()
         self.ws.start()
@@ -1345,6 +1573,188 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(len(gap), 1)
         self.assertGreater(gap[0]["seconds"], 15)
         self.assertEqual(len(self.ws.meetings()), 1)
+
+    # -- #111 C3b: encrypted chunks, the recording over stdin, crypto-erase --------------
+
+    def wait_for(self, condition, seconds=10):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return condition()
+
+    def wrapped_key(self, rid):
+        """The recording key's wrapped bytes, checkpointed into the main
+        database file, so a test can look for them in the files later."""
+        row = self.ws.store._one("SELECT wrapped FROM recording_keys WHERE recording_id = ?",
+                                 (rid,))
+        with self.ws.store._lock:
+            self.ws.store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        wrapped = bytes(row["wrapped"])
+        self.assertIn(wrapped, (self.ws.root / "workspace.db").read_bytes())
+        return wrapped
+
+    def in_database_files(self, needle):
+        found = []
+        for name in ("workspace.db", "workspace.db-wal"):
+            path = self.ws.root / name
+            if path.exists() and needle in path.read_bytes():
+                found.append(name)
+        return found
+
+    def test_no_plain_audio_ever_and_the_meeting_holds_what_was_recorded(self):
+        # End to end through the real recorder path (a fake input device), the
+        # real sandboxed decoder fed over its stdin, and the encrypted import.
+        from workspace import media
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3, consent=CONSENT)
+        stream, folder = self.holder["stream"], self.ws._recording.folder
+        stream.feed(7)
+        self.assertTrue(self.wait_for(lambda: (folder / "chunk-000000.uma").exists()))
+        scans = [files_holding(self.ws.root, marker())]               # while recording
+        real = recorder.RecordingAudio.blocks
+
+        def blocks(audio):
+            for i, block in enumerate(real(audio)):
+                if i == 0:                                            # while the decoder is fed
+                    scans.append(files_holding(self.ws.root, marker()))
+                    scans.append([p.name for p in self.ws.root.rglob("recording.wav")])
+                yield block
+        with mock.patch.object(recorder.RecordingAudio, "blocks", blocks):
+            self.ws.stop_recording()
+            self.assertTrue(self.ws.wait_idle(120))
+        scans.append(files_holding(self.ws.root, marker()))           # after the import
+        self.assertEqual(scans, [[]] * 4)
+        [m] = self.ws.meetings()
+        reader = media.open_audio(self.ws.store, self.ws.media, m["id"])
+        try:
+            decoded = reader.read(0, len(reader))
+        finally:
+            reader.close()
+        t = np.arange(stream.fed) / RATE
+        fed = (np.sin(2 * np.pi * 220 * t) * 8000).astype(np.int16) / 32768.0
+        self.assertEqual(len(decoded), stream.fed)                    # 16 kHz in, 16 kHz out
+        self.assertLess(float(np.max(np.abs(decoded - fed))), 1e-3)
+        self.assertTrue(self.ws.transcript(m["id"])["items"])
+
+    def test_the_recording_key_is_erased_with_the_import(self):
+        from workspace.store import KeyMissing
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3, consent=CONSENT)
+        rid = self.ws._recording.folder.name
+        self.holder["stream"].feed(3)
+        wrapped = self.wrapped_key(rid)
+        self.assertEqual(self.ws.store.recording_key_ids(), [rid])
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.wait_idle(120))
+        self.assertEqual(len(self.ws.meetings()), 1)
+        self.assertEqual(self.in_database_files(wrapped), [])       # not in the log either
+        with self.assertRaises(KeyMissing):
+            self.ws.store.recording_key(rid)
+        self.assertTrue(self.ws.store.recording_imported(rid))
+
+    def test_a_discard_erases_the_key_before_any_file_is_deleted(self):
+        from workspace import audiocrypt
+        from workspace.store import KeyMissing
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws.start_recording(3, consent=CONSENT)
+        folder = self.ws._recording.folder
+        self.holder["stream"].feed(6)
+        self.assertTrue(self.wait_for(lambda: (folder / "chunk-000000.uma").exists()))
+        wrapped = self.wrapped_key(folder.name)
+        seen = {}
+
+        def stops_after_one(f):                     # a file is held: removal stops
+            seen["keys"] = self.ws.store.recording_key_ids()
+            seen["database"] = self.in_database_files(wrapped)
+            (Path(f) / "chunk-000000.uma").unlink()
+            raise OSError(32, "in use")
+        with mock.patch.object(recorder, "remove_folder", stops_after_one):
+            with self.assertRaises(WorkspaceError):
+                self.ws.discard_recording()
+        self.assertEqual(seen, {"keys": [], "database": []})       # before the first file went
+        with self.assertRaises(KeyMissing):
+            self.ws.store.recording_key(folder.name)
+        left = folder / "chunk-000001.uma"
+        self.assertTrue(left.exists())
+        with self.assertRaises(audiocrypt.AudioCryptError):        # not with any key it had
+            audiocrypt.AudioReader(left, bytes(32), recorder.chunk_context(
+                folder.name, recorder.MICROPHONE, 1))
+        self.ws.close()
+        self.ws = self.make()                                      # the next start deletes it
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.ws.meetings(), [])
+
+    def test_keys_without_a_folder_go_and_folders_without_their_key_stay(self):
+        from workspace.store import KeyMissing
+        rec_root = self.ws.root / "recordings"
+        orphan = "f" * 32                      # a crash between the key and the folder
+        self.ws.store.create_recording_key(orphan)
+        keyless, wrong = rec_root / ("e" * 32), rec_root / ("d" * 32)
+        self.ws.store.create_recording_key(wrong.name)    # not the key it was saved under
+        for folder in (keyless, wrong):
+            rec = recorder.Recording(folder, 3, "Mic", RATE, open_stream=opener(self.holder),
+                                     key=KEY)
+            rec.start()
+            self.holder["stream"].feed(2)
+            rec.stop()
+        self.ws.close()
+        self.ws = self.make()
+        self.ws.settings.update(microphone=True)
+        self.assertEqual(self.ws.store.recording_key_ids(), [wrong.name])   # the orphan went
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertEqual(self.ws.meetings(), [])
+        self.assertTrue(keyless.is_dir() and wrong.is_dir())             # never deleted
+        reports = self.ws.recording_status()["reports"]
+        self.assertEqual(sorted(r["pending"] for r in reports), [wrong.name, keyless.name])
+        for r in reports:
+            self.assertIn("could not be read", r["note"])
+        self.assertEqual(self.ws.store.recording_key_ids(), [wrong.name])   # kept with it
+        with self.assertRaises(KeyMissing):
+            self.ws.store.recording_key(keyless.name)
+        for r in reports:                                                 # the user's Delete
+            self.ws.delete_pending_recording(r["id"])
+        self.assertEqual(self.ws.store.recording_key_ids(), [])
+        self.assertEqual(list(rec_root.iterdir()), [])
+
+    def test_a_failure_after_the_import_leaves_no_meeting_and_no_rows(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws._plan_version = mock.Mock(side_effect=RuntimeError("planning failed"))
+        self.ws.start_recording(3, consent=CONSENT)
+        rid = self.ws._recording.folder.name
+        self.holder["stream"].feed(3)
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.wait_idle(120))
+        self.assertEqual(self.ws.meetings(), [])
+        q = self.ws.store._one
+        self.assertEqual([q(f"SELECT COUNT(*) FROM {t}")[0] for t in
+                          ("meetings", "sources", "content_keys", "recording_sources",
+                           "recording_keys")], [0, 0, 0, 0, 0])
+        report = self.ws.recording_status()["reports"][-1]
+        self.assertEqual(report["pending"], rid)                  # reported; its key went
+        del self.ws._plan_version
+        self.ws.retry_recording_import(report["id"])
+        self.assertTrue(self.ws.wait_idle(60))
+        self.assertIn("could not be read", self.ws.recording_status()["reports"][-1]["note"])
+        self.assertEqual(self.ws.meetings(), [])
+
+    def test_a_start_that_fails_leaves_no_key(self):
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+
+        def broken(device, rate, callback, finished):
+            raise OSError("the device went")
+        self.ws.open_stream = broken
+        with self.assertRaises(WorkspaceError):
+            self.ws.start_recording(3, consent=CONSENT)
+        self.assertEqual(self.ws.store.recording_key_ids(), [])
+        self.assertFalse(any((self.ws.root / "recordings").glob("*")))
 
 
 if __name__ == "__main__":

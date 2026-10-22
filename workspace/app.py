@@ -33,7 +33,7 @@ from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import (DAMAGED_REFUSAL, DamagedContent, KeyMissing, Store, StoreError,
-                             default_root, quick_check_file)
+                             default_root, mark_compaction_owed, quick_check_file)
 from workspace.worker import GpuWhisperEngine, WorkerEngine, WorkerHandle, safe_message
 
 AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
@@ -543,8 +543,46 @@ class Workspace:
         finished meeting look unfinished; a start whose check passes does it."""
         self._reconcile_imports(discard)
         intake.recover(self.store)
-        if discard:                       # a sound database: owed compaction (#198)
-            cleanup.compact_deferred(self.store)
+        if discard:                       # a sound database
+            self._sweep_recording_keys()
+            cleanup.compact_deferred(self.store)       # owed compaction (#198)
+
+    def _sweep_recording_keys(self):
+        """Delete the key of a recording whose folder is gone (#111 C3b): a
+        crash between making the key and the folder, or after a folder was
+        removed. A folder whose key is missing is kept and reported when it
+        is imported, never deleted here. Runs only at a sound, unlocked start
+        (never while locked: no key row is read or changed then, C4a design
+        7.2), before any recording can start."""
+        if self.locked is not None:
+            return
+        try:
+            ids = self.store.recording_key_ids()
+        except StoreError:
+            return
+        gone = [rid for rid in ids
+                if not (audit.HEX32.fullmatch(rid) and (self.recordings / rid).is_dir())]
+        for rid in gone:
+            self._forget_recording_key(rid)
+
+    def _forget_recording_key(self, recording_id):
+        """Crypto-erase a recording (#111 C3b): delete its key row, then empty
+        the write-ahead log, before any of its files is deleted, so the
+        chunks left behind (on disk, or in freed clusters) can never be
+        opened. A log that stays busy is compacted at the next sound start
+        (compact.pending). Never while locked. Returns whether a key went."""
+        if self.locked is not None:
+            return False
+        try:
+            if recording_id not in self.store.recording_key_ids():
+                return False
+            emptied = self.store.destroy_recording_key(recording_id)
+        except StoreError as exc:
+            self.log.incident("recording_key", exc)
+            return False
+        if not emptied:
+            mark_compaction_owed(self.store.path)
+        return True
 
     # -- lifecycle --------------------------------------------------------------------
 
@@ -822,12 +860,20 @@ class Workspace:
         journal = recorder.read_journal(folder)
         return journal is None or journal.get("state") == "recording"
 
-    def _import_one(self, path, folder_id=None, title=None, recording=None):
+    def _import_one(self, path, folder_id=None, title=None, recording=None, stream=None):
         """recording: the recording's id when this imports a microphone
-        recording (the audit log ties its confirmation to the meeting)."""
-        title = (title or _plain_label(Path(path).stem).strip()[:MAX_TITLE_CHARS]
-                 or "Untitled meeting")
-        mid, sid = media.import_recording(self.store, self.media, path, title)
+        recording (the audit log ties its confirmation to the meeting).
+        stream: for a microphone recording (#111 C3b), (audio, (recording
+        folder id, info JSON)) in place of path: the audio is streamed to the
+        decoder (media.import_stream), and the recording's key is deleted with
+        the import's commit."""
+        if stream is not None:
+            audio, row = stream
+            mid, sid = media.import_stream(self.store, self.media, audio, title, row)
+        else:
+            title = (title or _plain_label(Path(path).stem).strip()[:MAX_TITLE_CHARS]
+                     or "Untitled meeting")
+            mid, sid = media.import_recording(self.store, self.media, path, title)
         # Authority comes only from the folder's explicit setting (#24); the
         # original's location is kept only when it may be deleted.
         may_delete = bool(folder_id and intake.authority_for(self.store, folder_id)
@@ -936,16 +982,26 @@ class Workspace:
                 self._yielded = True
                 self.handle.stop_now()
             choice = self._device(device, name)
-            rec = recorder.Recording(recorder.new_folder(self.recordings), choice["index"],
-                                     choice.get("label") or choice["name"], choice["rate"],
-                                     open_stream=self.open_stream,
-                                     computer=self._computer_track())
-            if consent is not None:
-                rec.journal["consent"] = dict(consent)     # saved with the journal
+            # The recording's key (#111 C3b) is made and stored, wrapped, before
+            # its folder or stream: a crash in between leaves a key with no
+            # folder, which the next start deletes (_sweep_recording_keys).
+            folder = recorder.new_folder(self.recordings)
+            key = self.store.create_recording_key(folder.name)
             try:
+                rec = recorder.Recording(folder, choice["index"],
+                                         choice.get("label") or choice["name"], choice["rate"],
+                                         open_stream=self.open_stream,
+                                         computer=self._computer_track(), key=key)
+                if consent is not None:
+                    rec.journal["consent"] = dict(consent)     # saved with the journal
                 rec.start()
-            except recorder.RecorderError as exc:
-                raise WorkspaceError(str(exc)) from exc
+            except BaseException as exc:
+                self._forget_recording_key(folder.name)    # the start removed the folder
+                if isinstance(exc, recorder.RecorderError):
+                    raise WorkspaceError(str(exc)) from exc
+                raise
+            finally:
+                key = None
             with self._lock:
                 self._recording = rec
             self._indicate()
@@ -1054,6 +1110,9 @@ class Workspace:
         self._indicate()
         self._recording_ended(rec, "discarded")
         self._end_drafts(rec)                     # its draft text goes with it
+        # Its key goes first (#111 C3b): whatever is left on disk can never be
+        # opened, even if the files cannot all be deleted yet.
+        self._forget_recording_key(rec.folder.name)
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
                   "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}
@@ -1259,6 +1318,7 @@ class Workspace:
             recorder.mark_discarded(folder)      # is deleted at the next start, never imported
         except OSError:
             pass
+        self._forget_recording_key(folder.name)  # first: what is left can never be opened
         import shutil
         shutil.rmtree(folder, ignore_errors=True)
         if folder.exists():
@@ -1272,17 +1332,26 @@ class Workspace:
     def _import_recording_folder(self, folder, ask=False):
         """Turn a saved (or crash-recovered) recording into a meeting, then
         remove the recording folder. Failures are reported and the folder is
-        kept, to be tried again (Try again, or the next start)."""
+        kept, to be tried again (Try again, or the next start).
+
+        Encrypted (#111 C3b): the chunks are opened under the recording's key
+        and checked in full (recorder.open_recording), and the recording is
+        streamed to the sandboxed decoder over its stdin; no plain copy is
+        written. The import's commit stores the sealed recording_sources row
+        and deletes the key, then the write-ahead log is emptied. Before any
+        folder of a recording is deleted (discarded, or nothing recorded) its
+        key goes first, so whatever is left can never be opened."""
         if recorder.is_discarded(folder):        # the user discarded it: delete, never import
+            self._forget_recording_key(folder.name)
             try:
                 recorder.remove_folder(folder)
             except OSError:
                 pass                             # tried again at the next start
             return
         journal = recorder.read_journal(folder)
-        has_audio = (any(folder.glob("chunk-*.pcm")) or (folder / "recording.wav").exists()
-                     or any(folder.glob(f"{recorder.COMPUTER_PREFIX}*.pcm")))
-        if journal is None and not (folder / "journal.json").exists() and not has_audio:
+        if journal is None and not (folder / "journal.json").exists() \
+                and not recorder.has_audio(folder):
+            self._forget_recording_key(folder.name)
             try:                         # an empty leftover (removal stopped at the end)
                 recorder.remove_folder(folder)
             except OSError:
@@ -1297,7 +1366,7 @@ class Workspace:
                                       "again, or Delete it if you do not need it.",
                               "pending": folder.name})
             return
-        if journal.get("state") == "imported" or self._already_imported(folder.name):
+        if journal.get("state") == "imported" or self.store.recording_imported(folder.name):
             try:                         # already a meeting: finish removing the folder
                 recorder.remove_folder(folder)
             except OSError:
@@ -1326,8 +1395,22 @@ class Workspace:
         events = [e for e in journal.get("events", []) if e["kind"] not in ("paused", "resumed")]
         report = {"title": None, "seconds": 0, "events": events,
                   "device": journal.get("device_name")}
+        unreadable = {"title": None, "seconds": 0, "events": [], "pending": folder.name,
+                      "note": "The recording could not be read. The saved files are kept; "
+                              "choose Delete if you do not need them."}
         try:
-            wav, seconds = recorder.assemble_wav(folder, journal, notes=events)
+            key = self.store.recording_key(folder.name)
+        except DamagedContent:                   # KeyMissing too: nothing can be opened
+            self._add_report(unreadable)
+            return
+        mid = audio = None
+        try:
+            audio = recorder.open_recording(folder, journal, key, events)
+            key = None
+            if not audio.readable:               # no chunk opened: kept, never deleted
+                self._add_report(unreadable)
+                return
+            seconds = audio.seconds
             report["seconds"] = round(seconds, 1)
             interrupted = journal.get("state") == "recording"   # the app did not stop it
             missing = (recorder.missing_tail_seconds(folder, journal, seconds)
@@ -1339,61 +1422,73 @@ class Workspace:
                                        f"{missing:.0f} s at the end could not be saved."})
             if seconds < 0.5:
                 report["note"] = "Nothing was recorded."
+                audio.close()
+                self._forget_recording_key(folder.name)
                 recorder.remove_folder(folder)
                 self._add_report(report)
                 return
             title = time.strftime("Recording %Y-%m-%d %H:%M",
                                   time.localtime(journal.get("started_at") or time.time()))
             recording_id = folder.name if audit.HEX32.fullmatch(folder.name) else None
-            mid = self._import_one(str(wav), None, title, recording=recording_id)
+            # Which recording the meeting came from and its details, sealed in
+            # the database with the import (recording_sources): the consent
+            # confirmation stays with the meeting (#111 A6) until audio
+            # cleanup, as recording.json did.
+            info = {**report, "title": title, "recording_id": folder.name,
+                    "sources": [recorder.MICROPHONE]
+                    + ([recorder.COMPUTER] if audio.computer is not None else []),
+                    **({"consent": journal["consent"]} if "consent" in journal else {})}
+            mid = self._import_one(None, None, title, recording=recording_id,
+                                   stream=(audio, (folder.name, json.dumps(info))))
         except Exception as exc:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
-            code = (None if full or _expected_import_error(exc)
+            changed = media.damaged_audio(exc)  # a chunk changed after it was checked
+            code = (None if full or changed or _expected_import_error(exc)
                     else self.log.incident("recording_import", exc))
             report["note"] = ("It could not be imported yet: " +
                               ("the disk is full. Free some space, then choose Try again."
-                               if full else _import_message(exc, code)) +
+                               if full else
+                               "part of the saved audio changed while it was read. Choose "
+                               "Try again." if changed else _import_message(exc, code)) +
                               " The saved audio is kept.")
             report["pending"] = folder.name
             self._add_report(report)
             return
-        # Record which recording this meeting came from, then mark the folder
-        # as imported before removing it: either one stops a second import.
+        finally:
+            if audio is not None:
+                audio.close()
+            # The import's commit deleted the key: empty the write-ahead log
+            # now (also when a later step failed and the meeting was removed).
+            self._erase_if_key_gone(folder.name)
+        # Mark the folder as imported before removing it; the recording_sources
+        # row, committed with the import, also stops a second import.
         report.update(title=title, meeting=mid, recording_id=folder.name)
         if interrupted and recording_id:          # the app did not stop it: recovered
             self.audit.record("recording_ended", recording=recording_id, result="recovered",
                               seconds=max(0, int(seconds)))
-        try:
-            # The consent confirmation stays with the meeting (#111 A6).
-            sidecar = {**report, **({"consent": journal["consent"]}
-                                    if "consent" in journal else {})}
-            recorder._retrying(lambda: recorder._write_atomic(
-                media.meeting_folder(self.media, mid) / "recording.json",
-                json.dumps(sidecar, indent=1).encode("utf-8")))
-        except OSError:
-            pass
         journal.update(state="imported", meeting=mid)
         try:
             recorder._retrying(lambda: recorder._write_atomic(
                 folder / "journal.json", json.dumps(journal).encode("utf-8")))
         except OSError:
-            pass                              # the sidecar above still prevents a duplicate
+            pass                              # the recording_sources row still prevents a duplicate
         try:
             recorder.remove_folder(folder)    # the meeting now holds the audio
         except OSError:
             pass                              # finished at the next start
         self._add_report(report)
 
-    def _already_imported(self, recording_id):
-        """True if a meeting was already made from this recording folder."""
-        for sidecar in self.media.glob("*/recording.json"):
-            try:
-                if json.loads(sidecar.read_text(encoding="utf-8")).get(
-                        "recording_id") == recording_id:
-                    return True
-            except (OSError, ValueError):
-                continue
-        return False
+    def _erase_if_key_gone(self, recording_id):
+        """After an import attempt: if the import's commit deleted the
+        recording's key, empty the write-ahead log (erase_checkpoint), or
+        leave the compaction owed when it stays busy."""
+        try:
+            if recording_id in self.store.recording_key_ids():
+                return
+            if not self.store.erase_checkpoint():
+                mark_compaction_owed(self.store.path)
+        except StoreError:
+            pass
 
     def _plan_version(self, mid, sid):
         reader = media.open_audio(self.store, self.media, mid)
