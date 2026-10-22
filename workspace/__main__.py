@@ -610,7 +610,7 @@ def _open_failed(exc):
             code = last["code"]                 # recorded already (this start's own check)
         else:
             code = diag.new_code()
-            diag.record_integrity(logs, "failed", code)
+            diag.record_integrity(logs, "failed", code, log=log)
             log.write("integrity", result="failed", code=code)
         return (f"Unminute found damage in its workspace database and cannot open it "
                 f"(code {code}). Ask your IT team: the steps are in the Unminute user "

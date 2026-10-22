@@ -24,6 +24,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -323,6 +324,25 @@ class LockedStartTests(unittest.TestCase):
         self.assertNotIn(str(2**40), text)
         self.assertIsNone(diag.keys_state(self.root / "logs")["winerror"])
 
+    def test_a_keys_file_that_cannot_be_written_is_in_the_app_log(self):
+        # #311: the app passes its log, so Copy diagnostics shows that
+        # keys.json (which --status and --health read) is out of date.
+        self.fill()
+        real = Path.replace
+
+        def replace(path, target):
+            if path.name == diag.KEYS_FILE + ".tmp":
+                raise PermissionError(13, "held")
+            return real(path, target)
+
+        with mock.patch.object(Path, "replace", replace), \
+                mock.patch.object(diag, "STATE_RETRIES_S", ()):
+            ws = self.locked()
+        self.assertEqual("ok", diag.keys_state(ws.log.folder)["result"])    # the earlier start's
+        self.assertEqual([("keys", "PermissionError")],
+                         [(e["file"], e["error"]) for e in self.events(ws, "state_unwritten")])
+        self.close(ws)
+
     # -- work is held ----------------------------------------------------------------
 
     def test_work_waits_and_requests_are_refused(self):
@@ -595,6 +615,66 @@ class KeysFileTests(unittest.TestCase):
         with mock.patch("os.fsync", side_effect=OSError("disk")):
             diag.record_keys(self.folder, "locked", "key")       # never raises
         diag.record_keys(Path(self.tmp.name) / "gone" / "logs", "ok")   # nor here
+
+    def test_a_file_held_open_for_a_moment_is_still_written(self):
+        # #311: another process (an antivirus or indexer scan, --status)
+        # holding keys.json open without sharing deletion makes Windows refuse
+        # the rename. Held here for 0.15 s by an ordinary open: the write is
+        # tried again and lands, so the next reader sees this start's state.
+        diag.record_keys(self.folder, "ok")
+        held = open(self.folder / diag.KEYS_FILE, "rb")
+        timer = threading.Timer(0.15, held.close)
+        timer.start()
+        try:
+            diag.record_keys(self.folder, "locked", "protector", None, "U-ABC123")
+        finally:
+            timer.cancel()
+            held.close()
+        state = diag.keys_state(self.folder)
+        self.assertEqual(("locked", "protector", "U-ABC123"),
+                         (state["result"], state["reason"], state["code"]))
+        self.assertEqual([diag.KEYS_FILE], [p.name for p in self.folder.iterdir()])
+
+    def test_a_write_that_still_fails_is_logged_without_content(self):
+        # Held for longer than the retries: the earlier file stays as it was,
+        # no temporary file is left, and the log says which file and the
+        # exception type only (P3), never the message or a path.
+        diag.record_integrity(self.folder, "ok")
+        before = (self.folder / diag.INTEGRITY_FILE).read_bytes()
+        log = diag.Log(self.folder, "app")
+        real = Path.replace
+        refused = PermissionError(13, f"{MARKER} held", str(self.folder))
+
+        def replace(path, target):
+            if path.name.endswith(".tmp"):
+                raise refused
+            return real(path, target)
+
+        with mock.patch.object(Path, "replace", replace), \
+                mock.patch("workspace.diag.time.sleep") as slept:
+            self.assertFalse(diag._write_state(self.folder, diag.INTEGRITY_FILE,
+                                               {"result": "failed", "code": "U-ABCDEF"}, log))
+            diag.record_keys(self.folder, "locked", "key", log=log)
+        self.assertEqual(list(diag.STATE_RETRIES_S) * 2,
+                         [c.args[0] for c in slept.call_args_list])
+        self.assertLess(sum(diag.STATE_RETRIES_S), 1.0)          # bounded: under a second
+        self.assertEqual(before, (self.folder / diag.INTEGRITY_FILE).read_bytes())
+        self.assertIsNone(diag.keys_state(self.folder))
+        self.assertEqual([], list(self.folder.glob("*.tmp")))
+        records = [r for r in diag.shareable_records(self.folder)
+                   if r["kind"] == "state_unwritten"]
+        self.assertEqual([("integrity", "PermissionError"), ("keys", "PermissionError")],
+                         [(r["file"], r["error"]) for r in records])
+        text = (self.folder / "app.log").read_text(encoding="ascii")
+        self.assertNotIn(MARKER, text)
+        self.assertNotIn(self.tmp.name, text)
+        # Anything but a file held open (a full disk) is not tried again.
+        with mock.patch("os.fsync", side_effect=OSError(28, "full")), \
+                mock.patch("workspace.diag.time.sleep") as slept:
+            diag.record_keys(self.folder, "ok", log=log)
+        self.assertEqual([], slept.call_args_list)
+        self.assertEqual("keys", diag.shareable_records(self.folder)[-1]["file"])
+        self.assertEqual([], list(self.folder.glob("*.tmp")))
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
