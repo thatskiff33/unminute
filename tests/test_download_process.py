@@ -22,15 +22,18 @@ HAVE_DOWNLOAD_LIBS = all(importlib.util.find_spec(m) for m in ("huggingface_hub"
 
 
 class FakeURL:
-    def __init__(self, scheme, host):
-        self.scheme, self.host = scheme, host
+    def __init__(self, scheme, host, port=None):
+        self.scheme, self.host, self.port = scheme, host, port
         self.raw_host = host.encode("ascii")       # httpx: the exact bytes sent
 
 
 class FakeRequest:
     def __init__(self, url):
         scheme, rest = url.split("://", 1)
-        self.url = FakeURL(scheme, rest.split("/", 1)[0])
+        host, _, port = rest.split("/", 1)[0].partition(":")
+        # httpx gives None for the scheme's standard port.
+        port = None if not port or (scheme, port) == ("https", "443") else int(port)
+        self.url = FakeURL(scheme, host, port)
 
 
 class RequestCheckTests(unittest.TestCase):
@@ -57,6 +60,40 @@ class RequestCheckTests(unittest.TestCase):
                     "https://download.pytorch.org.evil.example/x"):
             with self.assertRaises(og.NetworkBlockedError, msg=url):
                 self.setup._check_request(FakeRequest(url))
+
+    def test_only_the_standard_https_port_is_allowed(self):
+        # #111 D2 (red-team part 2, finding 11): any port passed.
+        self.setup._check_request(FakeRequest("https://huggingface.co:443/x"))
+        for url in ("https://huggingface.co:8443/x", "https://download-r2.pytorch.org:80/x"):
+            with self.assertRaises(og.NetworkBlockedError, msg=url):
+                self.setup._check_request(FakeRequest(url))
+        if HAVE_DOWNLOAD_LIBS:                     # httpx's own URL, as the hook sees it
+            import httpx
+            self.setup._check_request(httpx.Request("GET", "https://huggingface.co:443/x"))
+            with self.assertRaises(og.NetworkBlockedError):
+                self.setup._check_request(httpx.Request("GET", "https://huggingface.co:8443/x"))
+
+    def test_a_component_redirect_is_checked_by_its_decoded_path(self):
+        # #111 D2 (red-team part 2, finding 11): a string comparison followed
+        # <prefix>/../../escaped.
+        from workspace import gpu
+        prefix = gpu.DOWNLOAD_HOST                  # https://download-r2.pytorch.org/whl/cu130/
+        self.assertTrue(self.setup._within(prefix + "torch.whl", prefix))
+        self.assertTrue(self.setup._within(prefix + "sub/torch.whl?sig=1", prefix))
+        self.assertTrue(self.setup._within(
+            "https://download-r2.pytorch.org:443/whl/cu130/torch.whl", prefix))
+        redirect = self.setup._SameHost(prefix)
+        for target in (prefix + "../../escaped", prefix + "%2e%2e/%2E%2E/escaped",
+                       prefix + "./torch.whl", prefix + "..%5c..%5cescaped",
+                       "https://download-r2.pytorch.org:8443/whl/cu130/torch.whl",
+                       "https://user@download-r2.pytorch.org/whl/cu130/torch.whl",
+                       "https://download-r2.pytorch.org:x/whl/cu130/torch.whl",
+                       "https://download-r2.pytorch.org/whl/cu130x/torch.whl"):
+            self.assertFalse(self.setup._within(target, prefix), target)
+            with self.assertRaises(self.setup.SetupError, msg=target):
+                redirect.redirect_request(None, None, 302, "Found", {}, target)
+        with self.assertRaises(self.setup.SetupError):     # refused before any request
+            self.setup._fetch(prefix + "../../escaped", "unused", 1)
 
     def test_a_refused_address_has_its_own_message(self):
         try:

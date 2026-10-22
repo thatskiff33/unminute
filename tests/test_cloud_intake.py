@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -30,6 +31,7 @@ if HAVE_DEPS:
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class CloudTests(unittest.TestCase):
     def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.folder = self.root / "OneDrive - Org" / "Recordings"
@@ -112,6 +114,9 @@ class CloudTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DEPS and os.name == "nt", "Windows paths")
 class AuthorityFlowTests(unittest.TestCase):
+    def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
+
     def run_flow(self, authority, revoke_before_cleanup=False, replace=False):
         from workspace import app
         tmp = tempfile.TemporaryDirectory()
@@ -193,6 +198,9 @@ class SyncedSourceTests(unittest.TestCase):
     Teams saves recordings to OneDrive, so one there must still import by hand
     and through a watched folder, with the app opening its default workspace
     while the OneDrive variables name the synced folder."""
+
+    def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
 
     def test_a_recording_in_onedrive_still_imports_and_is_watched(self):
         from unittest import mock

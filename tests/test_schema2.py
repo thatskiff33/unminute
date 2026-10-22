@@ -35,6 +35,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av", "cryptography"))
 SR = 16000
@@ -553,6 +554,7 @@ class DamagedValueTests(unittest.TestCase):
         self.s = open_store(self.root / "workspace.db")
         self.log = diag.Log(self.root / "logs", "app")
         self.s.log = self.log
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
 
     def tearDown(self):
         self.s.close()
@@ -883,6 +885,7 @@ class ErasePointTests(unittest.TestCase):
 class FolderIdentityTests(unittest.TestCase):
 
     def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.s = open_store(self.root / "workspace.db")

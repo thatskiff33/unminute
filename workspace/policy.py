@@ -15,7 +15,6 @@
 #     REFRESH_S seconds, so a change made by IT applies without a restart.
 # Stdlib only (winreg).
 
-import os
 import re
 import sys
 import threading
@@ -79,9 +78,10 @@ class Policy:
     """The managed values in force. get() returns the policy value if the
     organisation set a valid one, else the app default."""
 
-    def __init__(self, values=None, invalid=()):
+    def __init__(self, values=None, invalid=(), unrecognised=()):
         self.values = dict(values or {})
         self.invalid = tuple(invalid)
+        self.unrecognised = tuple(unrecognised)
 
     def managed(self, name):
         return name in self.values or name in self.invalid
@@ -101,9 +101,32 @@ class Policy:
         return not self.values and self.invalid == UNREADABLE
 
     def summary(self):
-        """For Settings: which values are managed (no paths)."""
+        """For Settings: which values are managed (no paths), and the names
+        of values under the key that Unminute does not recognise (shown_name;
+        never their data), so a mistyped name can be found."""
         return {"managed": sorted(set(self.values) | set(self.invalid)),
-                "invalid": sorted(self.invalid)}
+                "invalid": sorted(self.invalid),
+                "unrecognised": sorted(shown_name(n) for n in self.unrecognised)}
+
+
+UNRECOGNISED_MAX = 20           # names kept from one read
+SHOWN_NAME_MAX = 64             # characters of each name shown
+
+
+def _shown_char(ch):
+    if "!" <= ch <= "~" and ch != "\\":
+        return ch
+    o = ord(ch)
+    return f"\\x{o:02x}" if o < 0x100 else f"\\u{o:04x}" if o < 0x10000 else f"\\U{o:08x}"
+
+
+def shown_name(name):
+    r"""A value name as text anyone can read: every character other than
+    printable ASCII (a space, a backslash, a Cyrillic letter that looks
+    Latin, an invisible format character) is shown as an escape such as
+    \x20 or \u043e, and a long name is cut short."""
+    text = "".join(_shown_char(ch) for ch in str(name))
+    return text if len(text) <= SHOWN_NAME_MAX else text[:SHOWN_NAME_MAX - 3] + "..."
 
 
 NAME_MAX = 30
@@ -185,7 +208,7 @@ def _parse(name, value, regtype):
         return value
     if regtype not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) or not isinstance(value, str):
         raise ValueError(name)
-    path = os.path.expandvars(value) if regtype == winreg.REG_EXPAND_SZ else value
+    path = _expand(value) if regtype == winreg.REG_EXPAND_SZ else value
     if len(path) > 400:
         raise ValueError(name)
     # Drive-letter paths only (a mapped drive is fine), the same rule as the
@@ -198,19 +221,41 @@ def _parse(name, value, regtype):
     return path
 
 
+def _expand(value):
+    """Expand %NAME% as Windows does for a REG_EXPAND_SZ value
+    (ExpandEnvironmentStringsW): only %NAME%, never $NAME or ${NAME}, which
+    os.path.expandvars would also expand (#111 D2). A name that is not set
+    stays as it is, so the path check that follows refuses it."""
+    import ctypes
+    from ctypes import wintypes
+    expand = ctypes.WinDLL("kernel32", use_last_error=True).ExpandEnvironmentStringsW
+    expand.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    expand.restype = wintypes.DWORD
+    size = expand(value, None, 0)
+    if not size:
+        raise ValueError("HandoffDefaultFolder")
+    buffer = ctypes.create_unicode_buffer(size)
+    if not 0 < expand(value, buffer, size) <= size:
+        raise ValueError("HandoffDefaultFolder")
+    return buffer.value
+
+
 def read_registry():
-    """(values, invalid) from HKLM\\SOFTWARE\\Policies\\Unminute."""
+    """(values, invalid, unrecognised) from HKLM\\SOFTWARE\\Policies\\Unminute.
+    unrecognised: the names of values that are not Unminute's (at most
+    UNRECOGNISED_MAX). Their data is ignored, and they grant or withhold
+    nothing."""
     if sys.platform != "win32":
-        return {}, ()
+        return {}, (), ()
     import winreg
-    values, invalid = {}, []
+    values, invalid, unrecognised = {}, [], []
     try:
         key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, POLICY_KEY, 0,
                              winreg.KEY_READ | winreg.KEY_WOW64_64KEY)
     except FileNotFoundError:
-        return {}, ()                        # no policy at all
+        return {}, (), ()                    # no policy at all
     except OSError:
-        return {}, UNREADABLE                # there, but unreadable: nothing is granted
+        return {}, UNREADABLE, ()            # there, but unreadable: nothing is granted
     with key:
         i = 0
         while True:
@@ -219,16 +264,21 @@ def read_registry():
             except OSError as exc:
                 if getattr(exc, "winerror", None) == ERROR_NO_MORE_ITEMS:
                     break
-                return {}, UNREADABLE        # a partial read could miss a restriction
+                return {}, UNREADABLE, ()    # a partial read could miss a restriction
             i += 1
             match = next((n for n in SPEC if n.lower() == name.lower()), None)
             if match is None:
-                continue                     # unknown names are not ours to judge
+                # Not ours to judge, but listed (#111 D2): a mistyped name
+                # (a trailing space, a lookalike letter) would otherwise be
+                # ignored with nothing to show it.
+                if len(unrecognised) < UNRECOGNISED_MAX:
+                    unrecognised.append(name)
+                continue
             try:
                 values[match] = _parse(match, value, regtype)
             except ValueError:
                 invalid.append(match)
-    return values, tuple(invalid)
+    return values, tuple(invalid), tuple(unrecognised)
 
 
 class PolicySource:
@@ -240,9 +290,10 @@ class PolicySource:
         self._policy, self._read_at = None, None
 
     def refresh(self):
-        values, invalid = self._reader()
+        # A reader gives (values, invalid) or (values, invalid, unrecognised).
+        policy = Policy(*self._reader())
         with self._lock:
-            self._policy, self._read_at = Policy(values, invalid), self._clock()
+            self._policy, self._read_at = policy, self._clock()
             return self._policy
 
     def current(self):

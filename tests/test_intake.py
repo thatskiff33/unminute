@@ -2,8 +2,10 @@
 # Synthetic files only; the hasher is real (SHA-256), imports are recorded.
 #   python -m unittest discover -s tests -v
 
+import contextlib
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -14,9 +16,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 EXT = (".wav", ".mp3", ".m4a")
+EXTENDED = "\\\\?\\"                 # a Windows extended-length path prefix
 BIG = 1 << 30
 
 if HAVE_DEPS:
@@ -38,6 +42,128 @@ def wav(path, seconds=1.0, seed=0):
     return path
 
 
+def _in_real_app_data(path):
+    """path is inside this computer's AppData, %APPDATA% or %LOCALAPPDATA%
+    (worked out here, not by intake._broad). %TEMP% is, unless moved."""
+    def norm(p):
+        return Path(os.path.normcase(str(p))).resolve()
+    p = norm(path)
+    roots = [Path(v) / "AppData" if name == "USERPROFILE" else Path(v)
+             for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
+             if (v := os.environ.get(name)) and os.path.isabs(v)]
+    return any(p == r or r in p.parents for r in map(norm, roots))
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+@unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
+class BroadFolderTests(unittest.TestCase):
+    """Folders too broad to watch (#111 D2). These set the real environment
+    variables (self.root is in %TEMP%, which is usually inside the real
+    AppData, so each case names a profile and app data folders that do not
+    hold it)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.folder = self.root / "Recordings"
+        self.folder.mkdir()
+        self.store = Store(self.root / "ws" / "workspace.db", protector=keyprotect.TestProtector())
+        elsewhere = self.root / "Elsewhere" / "someone"
+        self.elsewhere = {"USERPROFILE": str(elsewhere),
+                          "APPDATA": str(elsewhere / "AppData" / "Roaming"),
+                          "LOCALAPPDATA": str(elsewhere / "AppData" / "Local")}
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_refuses_broad_or_missing_folders(self):
+        for bad in (Path(self.root.anchor), Path(os.environ.get("USERPROFILE", self.root.anchor)),
+                    self.root / "missing"):
+            with self.assertRaises(IntakeError, msg=str(bad)):
+                intake.add_folder(self.store, str(bad))
+        # self.root is in %TEMP%: inside AppData by default, so refused as it
+        # is; on a computer whose %TEMP% is elsewhere, refused once
+        # %LOCALAPPDATA% holds it. Either way a folder in it is refused.
+        apart = Path(self.root.anchor) / "UnminuteTestProfile"     # holds neither
+        env = {} if _in_real_app_data(self.root) else {
+            "USERPROFILE": str(apart), "APPDATA": str(apart / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(self.root.parent)}
+        with mock.patch.dict(os.environ, env):
+            with self.assertRaises(IntakeError, msg=str(self.root)):
+                intake.add_folder(self.store, str(self.root))
+        with mock.patch.dict(os.environ, self.elsewhere):
+            intake.add_folder(self.store, str(self.folder))
+            with self.assertRaises(IntakeError):
+                intake.add_folder(self.store, str(self.folder))   # already watched
+
+    def test_refuses_folders_that_hold_the_profile_or_app_data(self):
+        # #111 D2 (red-team part 2, finding 6): the folder holding every
+        # profile, and AppData with the app's own data folder, could be watched.
+        profile = self.root / "Users" / "someone"
+        appdata = profile / "AppData"
+        local = appdata / "Local"
+        for d in (local / "Unminute" / "workspace", appdata / "Roaming",
+                  appdata / "LocalLow", profile / "Documents" / "Recordings"):
+            d.mkdir(parents=True)
+        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
+               "LOCALAPPDATA": str(local)}
+        with mock.patch.dict(os.environ, env):
+            for bad in (self.root / "Users", profile, appdata, local, appdata / "Roaming",
+                        appdata / "LocalLow", local / "Unminute", local / "Unminute" / "workspace"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(profile / "Documents" / "Recordings"))
+        # A local app data folder redirected elsewhere: what holds it is refused too.
+        data = self.root / "Data"
+        (data / "Local" / "Unminute").mkdir(parents=True)
+        (data / "Shared").mkdir()
+        with mock.patch.dict(os.environ, {**self.elsewhere, "LOCALAPPDATA": str(data / "Local")}):
+            for bad in (data, data / "Local", data / "Local" / "Unminute"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(data / "Shared"))
+        self.assertEqual(len(intake.folders(self.store)), 2)
+
+    def test_refuses_every_folder_inside_app_data(self):
+        # #111 D2 review (round 1, low): only AppData and its direct children
+        # were refused, so the old data folder (%LOCALAPPDATA%\whisper\workspace,
+        # which keeps real content), Temp and other apps' data could be watched.
+        # The whole AppData tree is refused, and so is anything inside a
+        # redirected %APPDATA% or %LOCALAPPDATA%.
+        profile = self.root / "Users" / "someone"
+        appdata = profile / "AppData"
+        local = appdata / "Local"
+        inside = (local / "whisper" / "workspace", local / "whisper", local / "Temp",
+                  local / "Temp" / "Recordings", appdata / "Roaming" / "SomeApp" / "Audio",
+                  appdata / "LocalLow" / "SomeApp", appdata / "Other")
+        for d in inside:
+            d.mkdir(parents=True, exist_ok=True)
+        (profile / "Documents" / "Recordings").mkdir(parents=True)
+        env = {"USERPROFILE": str(profile), "APPDATA": str(appdata / "Roaming"),
+               "LOCALAPPDATA": str(local)}
+        with mock.patch.dict(os.environ, env):
+            for bad in inside:
+                with self.assertRaises(IntakeError, msg=str(bad)) as caught:
+                    intake.add_folder(self.store, str(bad))
+                # The usual broad-folder message: no path or name in it (P3).
+                self.assertIn("app data folders cannot be watched", str(caught.exception))
+                self.assertNotIn("someone", str(caught.exception))
+            intake.add_folder(self.store, str(profile / "Documents" / "Recordings"))
+        # Redirected app data folders outside the profile: their trees too.
+        roaming, local2 = self.root / "Redirected" / "Roaming", self.root / "Data" / "Local"
+        shared = self.root / "Data" / "Shared"
+        for d in (roaming / "SomeApp", local2 / "Temp" / "Recordings", shared):
+            d.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {**self.elsewhere, "APPDATA": str(roaming),
+                                          "LOCALAPPDATA": str(local2)}):
+            for bad in (roaming / "SomeApp", local2 / "Temp", local2 / "Temp" / "Recordings"):
+                with self.assertRaises(IntakeError, msg=str(bad)):
+                    intake.add_folder(self.store, str(bad))
+            intake.add_folder(self.store, str(shared))
+        self.assertEqual(len(intake.folders(self.store)), 2)
+
+
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class IntakeTests(unittest.TestCase):
@@ -53,6 +179,7 @@ class IntakeTests(unittest.TestCase):
         self.saved_recent = intake.STABLE_RECENT_S
         intake.STABLE_RECENT_S = 0          # simulated clock; recency has its own test
         self.import_ok = True
+        profile_elsewhere.start(self)       # self.root is in %TEMP%, inside AppData
 
     def tearDown(self):
         intake.STABLE_RECENT_S = self.saved_recent
@@ -73,15 +200,6 @@ class IntakeTests(unittest.TestCase):
         self.scan()
         return self.scan()
 
-    def test_refuses_broad_or_missing_folders(self):
-        for bad in (Path(self.root.anchor), Path(os.environ.get("USERPROFILE", self.root.anchor)),
-                    self.root / "missing"):
-            with self.assertRaises(IntakeError):
-                intake.add_folder(self.store, str(bad))
-        intake.add_folder(self.store, str(self.folder))
-        with self.assertRaises(IntakeError):
-            intake.add_folder(self.store, str(self.folder))       # already watched
-
     def test_only_a_duplicate_is_called_already_watched(self):
         # Any other failure (here a full disk) is not "already watched" (#111 C2a).
         from workspace.store import StoreError
@@ -92,6 +210,34 @@ class IntakeTests(unittest.TestCase):
                 intake.add_folder(self.store, str(other))
         self.assertNotIsInstance(caught.exception, IntakeError)
         self.assertEqual([], intake.folders(self.store))
+
+    def test_a_folder_watched_before_and_now_refused_is_not_scanned(self):
+        # #111 D2 review (round 2, info): a folder inside AppData watched by an
+        # earlier version, which refused less, kept being scanned. Each scan
+        # checks the folder again: one now refused is not read, and its note
+        # is the fixed refusal message (no path or name, P3).
+        wav(self.folder / "before.wav")
+        fid = intake.add_folder(self.store, str(self.folder), include_existing=True)
+        elsewhere = Path(self.root.anchor) / "UnminuteTestProfile"
+        now_refused = {"USERPROFILE": str(elsewhere),
+                       "APPDATA": str(elsewhere / "AppData" / "Roaming"),
+                       "LOCALAPPDATA": str(self.root)}     # holds the watched folder
+        with mock.patch.object(intake, "_environ", lambda: {**os.environ, **now_refused}):
+            self.assertTrue(intake._broad(str(self.folder)))
+            for _ in range(2):
+                stats = self.scan()
+                self.assertEqual(1, stats["errors"])
+                self.assertEqual((0, 0), (stats["queued"], stats["waiting"]))
+        self.assertEqual([], self.queued)
+        self.assertEqual([], self.store._all("SELECT key FROM intake_seen WHERE folder_id = ?",
+                                             (fid,)))
+        note = intake.folders(self.store)[0]["last_error"]
+        self.assertEqual(intake.BROAD_FOLDER_NOTE, note)
+        self.assertNotIn(self.root.name, note)
+        # No longer refused (here the environment is as before): checked again.
+        self.settle()
+        self.assertEqual([p.name for p in self.queued], ["before.wav"])
+        self.assertIsNone(intake.folders(self.store)[0]["last_error"])
 
     def test_existing_files_only_when_asked(self):
         wav(self.folder / "before.wav")
@@ -207,7 +353,7 @@ class IntakeTests(unittest.TestCase):
         wav(self.folder / "history.wav", seed=33)
         intake.add_folder(self.store, str(self.folder))
         real = intake._walk
-        intake._walk = lambda root, ext, stop=None: ([], False)       # e.g. sync re-initialising
+        intake._walk = lambda root, ext, stop=None: ([], False, [])   # e.g. sync re-initialising
         try:
             self.scan()
         finally:
@@ -215,6 +361,83 @@ class IntakeTests(unittest.TestCase):
         self.assertFalse(intake.folders(self.store)[0]["baseline_done"])
         self.settle()
         self.assertEqual(self.queued, [])                           # history not imported
+
+    def long_paths(self, limit):
+        """Act as Windows without long paths turned on: a plain path of
+        `limit` characters or more cannot be listed or read, while its
+        extended form can. The same whatever this computer's setting is."""
+        real_scandir, real_stat = os.scandir, os.stat
+
+        def plain(path):
+            text = os.fspath(path)
+            if not isinstance(text, str):
+                return path
+            if text.startswith(EXTENDED):
+                return text[len(EXTENDED):]
+            if len(text) >= limit:
+                raise FileNotFoundError(3, "The system cannot find the path specified")
+            return text
+
+        def scandir(path="."):
+            return real_scandir(plain(path))
+
+        def stat(path, *args, **kw):
+            return real_stat(path if isinstance(path, int) else plain(path), *args, **kw)
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(os, "scandir", scandir))
+        stack.enter_context(mock.patch.object(os, "stat", stat))
+        stack.enter_context(mock.patch.object(intake, "_LONG_PATHS", True, create=True))
+        return stack
+
+    def test_a_path_too_long_for_windows_does_not_stop_the_baseline(self):
+        # #111 D2 (red-team part 2, finding 5): one folder past MAX_PATH made
+        # the walk incomplete, so the baseline was never recorded and nothing
+        # was ever imported from the folder.
+        wav(self.folder / "history.wav", seed=40)
+        deep = self.folder / ("d" * 30) / ("e" * 30)
+        old = wav(deep / "deep history.wav", seed=41)
+        intake.add_folder(self.store, str(self.folder))
+        limit = len(str(deep))
+        with self.long_paths(limit):
+            self.settle()
+        [f] = intake.folders(self.store)
+        self.assertTrue(f["baseline_done"])
+        self.assertIsNone(f["last_error"])
+        self.assertEqual(self.queued, [])                         # a baseline imports nothing
+        wav(self.folder / "new.wav", seed=42)
+        wav(deep / "new deep.wav", seed=43)
+        with self.long_paths(limit):
+            self.settle()
+        self.assertEqual([p.name for p in self.queued], ["new.wav"])
+        self.assertEqual(intake.folders(self.store)[0]["last_error"], intake._too_long_note(1))
+        # Moved to a shorter path: the old recording is still not new, and the
+        # new one is imported.
+        old.rename(self.folder / old.name)
+        (deep / "new deep.wav").rename(self.folder / "new deep.wav")
+        with self.long_paths(limit):
+            self.settle()
+        self.assertEqual(sorted(p.name for p in self.queued), ["new deep.wav", "new.wav"])
+        self.assertIsNone(intake.folders(self.store)[0]["last_error"])
+
+    def test_a_real_long_path_does_not_stop_the_baseline(self):
+        # The same on this computer's file system, whatever its long path
+        # setting: with long paths off, the deep file is listed by the
+        # extended form and counted; with them on, it is an ordinary file.
+        top = self.folder / ("e" * 120)
+        deep = top / ("f" * 120)
+        os.makedirs(EXTENDED + str(deep))
+        try:
+            with open(EXTENDED + str(deep / "deep history.wav"), "wb") as f:
+                f.write(b"RIFF")
+            wav(self.folder / "history.wav", seed=44)
+            intake.add_folder(self.store, str(self.folder))
+            self.settle()
+            self.assertTrue(intake.folders(self.store)[0]["baseline_done"])
+            wav(self.folder / "new.wav", seed=45)
+            self.settle()
+            self.assertEqual([p.name for p in self.queued], ["new.wav"])
+        finally:
+            shutil.rmtree(EXTENDED + str(top))
 
     def count_transactions(self):
         """Patch the store so each transaction is counted (R7: each one is a
@@ -466,7 +689,7 @@ class IntakeTests(unittest.TestCase):
         intake.add_folder(self.store, str(self.folder))
         self.settle()
         real = intake._walk
-        intake._walk = lambda root, ext, stop=None: ([], False)
+        intake._walk = lambda root, ext, stop=None: ([], False, [])
         try:
             self.scan()
         finally:
@@ -528,6 +751,9 @@ class IntakeTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DEPS and os.name == "nt", "Windows paths")
 class WorkspaceIntakeTests(unittest.TestCase):
+    def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
+
     def test_new_recording_in_a_watched_folder_becomes_a_meeting(self):
         from workspace import app
         with tempfile.TemporaryDirectory() as tmp:

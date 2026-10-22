@@ -21,6 +21,7 @@ import queue
 import re
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from workspace import asr_engines
@@ -148,10 +149,27 @@ def _model_note(name, state, downloads_allowed=True):
             "choose another speech model.")
 
 
-def _clean_text(text, limit):
+_JOINERS = "\u200c\u200d"          # zero-width non-joiner and joiner (_plain_label)
+
+
+def _plain_label(text):
+    """A title or speaker name without invisible format characters (Unicode
+    category Cf): a right-to-left override (U+202E) could make the meeting
+    list show a disguised name (#111 D2). The zero-width non-joiner and
+    joiner (U+200C, U+200D) stay: Persian and Indic scripts need them for
+    correct spelling, and they do not reorder text. The handoff file name
+    strips format characters too (handoff.title_filename)."""
+    return "".join(ch for ch in text
+                   if ch in _JOINERS or unicodedata.category(ch) != "Cf")
+
+
+def _clean_text(text, limit, label=False):
+    """Text from the page: control characters other than line breaks and
+    tabs go and, for a title or speaker name (label), format characters too."""
     if not isinstance(text, str):
         raise WorkspaceError("Expected text.")
-    text = "".join(ch for ch in text if ch in "\n\t" or ch >= " ").strip()
+    text = "".join(ch for ch in text if ch in "\n\t" or ch >= " ")
+    text = (_plain_label(text) if label else text).strip()
     if len(text) > limit:
         raise WorkspaceError(f"That is too long (limit {limit} characters).")
     return text
@@ -807,7 +825,8 @@ class Workspace:
     def _import_one(self, path, folder_id=None, title=None, recording=None):
         """recording: the recording's id when this imports a microphone
         recording (the audit log ties its confirmation to the meeting)."""
-        title = title or Path(path).stem[:MAX_TITLE_CHARS] or "Untitled meeting"
+        title = (title or _plain_label(Path(path).stem).strip()[:MAX_TITLE_CHARS]
+                 or "Untitled meeting")
         mid, sid = media.import_recording(self.store, self.media, path, title)
         # Authority comes only from the folder's explicit setting (#24); the
         # original's location is kept only when it may be deleted.
@@ -1916,7 +1935,7 @@ class Workspace:
 
     def rename(self, mid, title):
         self._meeting(mid)
-        title = _clean_text(title, MAX_TITLE_CHARS) or "Untitled meeting"
+        title = _clean_text(title, MAX_TITLE_CHARS, label=True) or "Untitled meeting"
         self.store.rename_meeting(mid, title)
 
     def rerun_speakers(self, mid, count=None):
@@ -2168,7 +2187,7 @@ class Workspace:
     def rename_speaker(self, mid, label, name):
         vid = self._naming_version(mid)
         self._naming(speaker_names.rename, self.store, vid, label,
-                     _clean_text(name, speaker_names.MAX_NAME))
+                     _clean_text(name, speaker_names.MAX_NAME, label=True))
 
     def merge_speakers(self, mid, label, into):
         vid = self._naming_version(mid)
@@ -2509,8 +2528,12 @@ class Workspace:
                                  if policy.SPEC[name][0] in ("path", "name", "url")
                                  else str(p.get(name)))
                    for name in p.summary()["managed"] if name in policy.SPEC]
+        # How many value names Unminute does not recognise (#111 D2): a count
+        # only, since a name is text IT typed (policy summary() lists them).
+        unknown = len(p.unrecognised)
         lines.append("Managed policy: " + (", ".join(managed) if managed else "none")
-                     + ("; unreadable" if p.unreadable else ""))
+                     + ("; unreadable" if p.unreadable else "")
+                     + (f"; names not recognised: {unknown}" if unknown else ""))
         # The key's state (#111 C4a), with the codes IT needs while locked.
         lines.append(_key_line(self.locked, self._lock_code))
         try:

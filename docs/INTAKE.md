@@ -22,8 +22,9 @@ How watching works:
 - **No double imports.** A recording already imported, from any folder or by hand, is not imported again for 120 days. A file saved over with different content is imported. **Import recordings…** always works, so you can deliberately transcribe something again.
 - **Narrow, local folders only.**
   - Watch a specific recordings folder on this computer. Synced folders such as OneDrive are fine.
-  - Whole drives, the whole user folder and network folders (including mapped drives) are refused.
+  - These are refused: whole drives; your user folder and any folder that holds it (such as `C:\Users`); the Windows and program folders; `AppData` and every folder inside it (such as `Temp`, other apps' data and the old `%LOCALAPPDATA%\whisper` data folder), and everything inside a redirected `%APPDATA%` or `%LOCALAPPDATA%`; Unminute's own data folder (`%LOCALAPPDATA%\Unminute`), anything inside it and any folder that holds it; and network folders (including mapped drives). A folder watched before it was refused (by an earlier version, which refused less) is checked again at each scan: while it is refused it is not read, and its note gives the same message.
   - The app looks at most two subfolder levels deep, and does not follow links or junctions.
+  - **Very long paths.** Unless long paths are turned on in Windows, Windows cannot open a file whose full path is 260 characters or longer. Such a recording is not imported, and the folder's note says how many there are; the rest of the folder is checked and imported as usual. Moving the recording to a folder with a shorter path imports it, unless it was already there when the folder was added without its existing recordings. Importing such a file by hand says its path is too long.
   - Folders are checked one after another. A large cloud file being downloaded can delay checks of other folders.
 
 The app keeps a small record of what it has seen in each folder so it does not import things twice:

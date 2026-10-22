@@ -77,6 +77,27 @@ NETWORK_MESSAGE = ("Recordings on network drives are not accepted. Copy the reco
                    "this computer first (synced folders such as OneDrive are fine).")
 
 
+MAX_PATH = 260
+TOO_LONG_MESSAGE = ("The file's path is too long for Windows to open. Move it to a folder "
+                    "with a shorter path, then try again.")
+
+
+def _too_long(real):
+    """The file exists but Windows cannot open it by this path: it is
+    MAX_PATH characters or more and long paths are not turned on. Asked by
+    the extended form (\\\\?\\), which only reads the file's details, and
+    only for a drive-letter path (check_raw), never a network one."""
+    text = str(real)
+    if os.name != "nt" or len(text) < MAX_PATH:
+        return False
+    try:
+        check_raw(text)
+        os.stat("\\\\?\\" + text)
+        return True
+    except (UnsafePathError, OSError):
+        return False
+
+
 def _drive_type(text):
     """Windows drive type of the path's drive letter (DRIVE_REMOTE for a
     mapped network drive); None elsewhere."""
@@ -135,6 +156,8 @@ def validate_input_file(path, allowed_ext, max_bytes, roots=None, allow_cloud=Fa
     try:
         st = os.stat(real)
     except OSError as exc:
+        if _too_long(real):
+            raise UnsafePathError(TOO_LONG_MESSAGE) from exc
         raise UnsafePathError("The file could not be found.") from exc
     if not stat.S_ISREG(st.st_mode):
         raise UnsafePathError("Only regular files can be imported.")

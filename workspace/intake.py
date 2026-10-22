@@ -56,6 +56,14 @@ class IntakeError(ValueError):
     """A refused folder (message is safe to show)."""
 
 
+# Why a folder is refused as too broad (_broad): when it is added, and as the
+# note of a folder watched before it was refused, which is no longer checked.
+# Fixed text: no path or name (P3).
+BROAD_FOLDER_NOTE = ("Choose a specific folder for recordings. A whole drive, your user folder "
+                     "or a folder that holds it, and Windows, program and app data folders "
+                     "cannot be watched.")
+
+
 def _salt(store):
     """(salt, restarted): see store.intake_salt."""
     return store.intake_salt()
@@ -77,15 +85,50 @@ def _key(salt, path):
     return hmac.new(salt, os.path.normcase(str(path)).encode("utf-8"), "sha256").hexdigest()
 
 
+def _norm(path):
+    return Path(os.path.normcase(str(path))).resolve()
+
+
+def _inside(child, parent):
+    """child is parent or lies inside it (both normalised by _norm)."""
+    return child == parent or parent in child.parents
+
+
+def _environ():
+    """The environment _broad reads. A function so the tests, whose folders
+    sit in %TEMP% (inside AppData), can give it a profile elsewhere without
+    changing os.environ, which the test key protector's guard reads."""
+    return os.environ
+
+
 def _broad(path):
-    """Folders too broad to watch: a drive root, the user profile itself,
-    or the Windows and program folders."""
-    p = Path(os.path.normcase(str(path))).resolve()
+    """Folders too broad to watch (#111 D2): a drive root; the user profile
+    or any folder that holds it (C:\\Users holds every profile); the whole
+    AppData tree (AppData and every folder inside it, such as Temp, other
+    apps' data and the old %LOCALAPPDATA%\\whisper data folder, which keeps
+    real content) and everything inside a redirected %APPDATA% or
+    %LOCALAPPDATA%; any folder that holds the app's own data folder
+    (%LOCALAPPDATA%\\Unminute) or lies inside it; and the Windows and program
+    folders. Environment variables that are not set are skipped."""
+    p = _norm(path)
     if p == Path(p.anchor):
         return True
-    for name in ("USERPROFILE", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)"):
-        v = os.environ.get(name)
-        if v and p == Path(os.path.normcase(v)).resolve():
+    environ = _environ()
+    env = {name: _norm(v) for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot",
+                                       "ProgramFiles", "ProgramFiles(x86)")
+           if (v := environ.get(name)) and os.path.isabs(v)}
+    if any(p == env.get(n) for n in ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)")):
+        return True
+    if any(_inside(p, env[n]) for n in ("APPDATA", "LOCALAPPDATA") if n in env):
+        return True
+    profile = env.get("USERPROFILE")
+    if profile is not None:
+        if _inside(profile, p) or _inside(p, _norm(Path(profile) / "AppData")):
+            return True
+    local = env.get("LOCALAPPDATA")
+    if local is not None:
+        data = _norm(Path(local) / "Unminute")     # the data folder's name (K1)
+        if _inside(data, p) or _inside(p, data):
             return True
     return False
 
@@ -108,8 +151,7 @@ def add_folder(store, path, include_existing=False):
         raise IntakeError("Network folders cannot be watched. Choose a folder on this "
                           "computer (synced folders such as OneDrive are fine).") from exc
     if _broad(real):
-        raise IntakeError("Choose a specific folder for recordings, not a whole drive or "
-                          "your whole user folder.")
+        raise IntakeError(BROAD_FOLDER_NOTE)
     from workspace.store import new_id
     fid = new_id()
     if not store.add_folder(fid, real, include_existing):
@@ -162,35 +204,77 @@ def remove_folder(store, fid):
     store.remove_folder(fid)
 
 
+# Windows without long paths turned on (LongPathsEnabled 0, the default)
+# cannot open a path of MAX_PATH characters or more by its plain form, but
+# can by its extended form (\\?\C:\...). The walk lists such folders by the
+# extended form so one deep path never stops a folder's baseline (#111 D2);
+# files there are counted, not imported. Tests turn this on to act as Windows.
+_LONG_PATHS = os.name == "nt"
+MAX_PATH = 260
+
+
+def _extended(path):
+    """The extended form of a path inside a watched folder. Used only to list
+    folders and read file sizes and times: the folder's own path passed
+    check_raw when it was added, and its real path is stored, so this is
+    always a local drive path with no . or .. parts."""
+    return "\\\\?\\" + str(path)
+
+
+def _openable(path):
+    """Whether this file can be opened by its plain path (a short path always
+    can; a long one only where Windows allows long paths)."""
+    if len(str(path)) < MAX_PATH:
+        return True
+    try:
+        os.stat(path)
+        return True
+    except OSError:
+        return False
+
+
 def _walk(root, extensions, stop=None):
-    """(files, complete): files with a recording extension, at most MAX_DEPTH
-    levels down, never following links or junctions. complete is False if any
-    folder could not be read or MAX_FILES was reached: the caller must not
-    treat files it did not see as gone."""
-    out, stack, complete = [], [(Path(root), 0)], True
+    """(files, complete, far): files with a recording extension, at most
+    MAX_DEPTH levels down, never following links or junctions. far holds
+    those whose plain path Windows cannot open (too long); they are not in
+    files. complete is False if any folder could not be read even by its
+    extended form, or MAX_FILES was reached: the caller must not treat files
+    it did not see as gone."""
+    out, far, stack, complete = [], [], [(Path(root), 0, False)], True
     while stack:
-        if len(out) >= MAX_FILES or (stop and stop()):
-            return out, False
-        folder, depth = stack.pop()
-        try:
-            entries = list(os.scandir(folder))
-        except OSError:
-            complete = False
-            continue
+        if len(out) + len(far) >= MAX_FILES or (stop and stop()):
+            return out, False, far
+        folder, depth, long = stack.pop()
+        entries = None
+        if not long:
+            try:
+                entries = list(os.scandir(folder))
+            except OSError:
+                if not _LONG_PATHS:
+                    complete = False
+                    continue
+                long = True              # perhaps too long: try the extended form
+        if entries is None:
+            try:
+                entries = list(os.scandir(_extended(folder)))
+            except OSError:
+                complete = False
+                continue
         for e in entries:
             try:
                 if e.is_symlink() or e.is_junction():
                     continue
+                path = folder / e.name
                 if e.is_dir(follow_symlinks=False):
                     if depth < MAX_DEPTH:
-                        stack.append((Path(e.path), depth + 1))
+                        stack.append((path, depth + 1, long))
                 elif e.is_file(follow_symlinks=False) and \
                         os.path.splitext(e.name)[1].lower() in extensions:
-                    out.append(Path(e.path))
+                    (far if long or not _openable(path) else out).append(path)
             except OSError:
                 complete = False
                 continue
-    return out, complete
+    return out, complete, far
 
 
 def already_imported(store, content_fp):
@@ -303,7 +387,10 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
     """Reconcile every active folder once. `enqueue(path, folder_id, key,
     content_fp)` queues an import; the app reports back with import_finished().
     hasher(path) returns the file's SHA-256 (hex). Returns {"queued",
-    "waiting", "duplicates", "cloud", "errors"}, and "notice" (fixed text)
+    "waiting", "duplicates", "cloud", "errors"} for this scan only (the app
+    keeps the latest, never a total, so a problem that lasts, such as an
+    unreadable file or a path too long to open, counts once in each scan),
+    and "notice" (fixed text)
     when the record of the files seen had to be started again
     (store.intake_salt): each folder's note says so too, until that folder's
     next successful import (import_finished)."""
@@ -324,13 +411,20 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
             _folder_note(store, f["id"], now, FOLDER_UNREADABLE_NOTE)
             stats["errors"] += 1
             continue
+        if _broad(f["path"]):
+            # Watched before it was refused (an earlier version refused less,
+            # or the profile or app data folders moved): checked at each scan,
+            # and not read while refused. Its rows stay as they are.
+            _folder_note(store, f["id"], now, BROAD_FOLDER_NOTE)
+            stats["errors"] += 1
+            continue
         root = Path(f["path"])
         if not root.is_dir():
             _folder_note(store, f["id"], now, "The folder is not available (disconnected, "
                                               "renamed or offline). It will be checked again.")
             stats["errors"] += 1
             continue
-        files, complete = _walk(root, extensions, stop)
+        files, complete, far = _walk(root, extensions, stop)
         if stop and stop():
             break                        # closing or turned off, not unreadable: no note
         baseline = not f["baseline_done"] and not f["include_existing"]
@@ -352,7 +446,16 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
             key = _key(salt, path)
             present.add(key)
             stats_files.append((path, key, (st.st_size, st.st_mtime_ns,
-                                            getattr(st, "st_ino", 0))))
+                                            getattr(st, "st_ino", 0)), True))
+        for path in far:
+            try:
+                st = os.stat(_extended(path) if _LONG_PATHS else path)
+            except OSError:
+                continue
+            key = _key(salt, path)
+            present.add(key)
+            stats_files.append((path, key, (st.st_size, st.st_mtime_ns,
+                                            getattr(st, "st_ino", 0)), False))
         # Moves and renames inside the folder keep their state (same file ID
         # and size), so an old recording renamed today is not "new".
         missing = {(r["file_id"], r["size"]): r for k, r in seen.items()
@@ -362,12 +465,30 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
         # are committed early only before an import is queued, because the
         # import updates its row when it finishes. No transaction is held
         # while a file is checked or hashed.
-        writes, stopped, held = [], False, False
-        for path, key, ident in stats_files:
+        writes, stopped, held, too_long = [], False, False, 0
+        for path, key, ident, openable in stats_files:
             if stop and stop():
                 stopped = True
                 break
             row = seen.get(key)
+            if not openable:
+                # Windows cannot open it by its path: never imported from
+                # here. A baseline, or a move from a path that was seen,
+                # keeps its row, so moving it to a shorter path later does
+                # not make an old recording look new. Otherwise it is counted
+                # in the folder's note, and imported once moved somewhere shorter.
+                if row is not None:
+                    _touch(writes, f["id"], key, now)
+                    continue
+                moved = missing.pop((ident[2], ident[0]), None) if ident[2] else None
+                if moved is not None and moved["state"] not in RETRY_STATES:
+                    _put(writes, f["id"], key, ident, moved["state"], now)
+                elif baseline:
+                    _put(writes, f["id"], key, ident, "baseline", now)
+                else:
+                    too_long += 1
+                    stats["errors"] += 1
+                continue
             if row is None:
                 moved = missing.pop((ident[2], ident[0]), None) if ident[2] else None
                 if moved is not None:
@@ -465,9 +586,11 @@ def scan(store, extensions, max_bytes, enqueue, now=None, hasher=None, stop=None
                 gone = [k for k in seen if k not in present]
                 db.executemany("DELETE FROM intake_seen WHERE folder_id = ? AND key = ?",
                                [(f["id"], k) for k in gone])
-            note = (None if complete
-                    else "Part of the folder could not be read; it will be checked again.")
-            _set_note(db, f["id"], now, note, done=True)    # keeps a restart note
+            notes = [] if complete else ["Part of the folder could not be read; it will be "
+                                         "checked again."]
+            if too_long:
+                notes.append(_too_long_note(too_long))
+            _set_note(db, f["id"], now, " ".join(notes) or None, done=True)  # keeps a restart note
     purge(store, now)
     return stats
 
@@ -481,6 +604,15 @@ _PUT = ("INSERT INTO intake_seen (folder_id, key, size, mtime_ns, file_id, state
 FOLDER_UNREADABLE_NOTE = ("This folder's location could not be read, so it is not checked. "
                           "Remove it and add it again.")
 _TOUCH = "UPDATE intake_seen SET last_seen = ? WHERE folder_id = ? AND key = ?"
+
+
+def _too_long_note(n):
+    """A folder's note for recordings Windows cannot open by their path (a count only)."""
+    if n == 1:
+        return ("1 recording here has a path too long for Windows to open, so it was not "
+                "imported. Move it to a folder with a shorter path.")
+    return (f"{n} recordings here have paths too long for Windows to open, so they were "
+            "not imported. Move them to a folder with a shorter path.")
 
 
 def _put(writes, fid, key, ident, state, now, content=None):

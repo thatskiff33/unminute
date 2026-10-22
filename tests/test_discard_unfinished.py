@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
@@ -32,6 +33,7 @@ MEETING_TABLES = ("sources", "versions", "cleanup_jobs", "holds", "reviewed_snap
 @unittest.skipUnless(os.name == "nt", "imports use Windows path rules (the app is Windows-only)")
 class DiscardUnfinishedTests(unittest.TestCase):
     def setUp(self):
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.ws = None

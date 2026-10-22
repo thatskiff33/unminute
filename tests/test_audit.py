@@ -24,6 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
+import profile_elsewhere  # noqa: E402
 
 from workspace import audit  # noqa: E402
 
@@ -1002,6 +1003,7 @@ class WorkspaceAuditTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.mirror = FakeMirror()
         self.opened = []
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
         for patcher in (mock.patch.object(recorder, "list_devices", lambda: self.DEVICES),
                         mock.patch("workspace.clipboard.copy_text", return_value=1),
                         mock.patch("workspace.clipboard.clear_if_unchanged")):
