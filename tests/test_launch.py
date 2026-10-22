@@ -8,6 +8,7 @@
 # Windows session of the same user out. Synthetic installs and workspaces
 # only; nothing here starts a real app or reads the user's workspace.
 
+import errno
 import importlib.util
 import json
 import os
@@ -459,6 +460,25 @@ class LockTests(unittest.TestCase):
         held.release()                               # twice is harmless
         self.assertEqual((self.root / instance.NAME).read_bytes(), b"")
 
+    def test_only_a_held_lock_is_reported_as_another_session(self):
+        # Round 1 review (P3): a lock call that fails for any other reason is
+        # not "open in another session"; it stays an OSError, which the app's
+        # start turns into its IT message, and the file is closed either way.
+        for code in (errno.EACCES, errno.EAGAIN):
+            with self.subTest(errno=code), \
+                    mock.patch.object(instance, "_lock", side_effect=OSError(code, "held")), \
+                    self.assertRaises(instance.Held):
+                instance.acquire(self.root)
+        for code in (errno.EIO, errno.EBADF, errno.ENOLCK):
+            with self.subTest(errno=code), \
+                    mock.patch.object(instance, "_lock", side_effect=OSError(code, "other")), \
+                    self.assertRaises(OSError) as caught:
+                instance.acquire(self.root)
+            self.assertNotIsInstance(caught.exception, instance.Held)
+            self.assertEqual(caught.exception.errno, code)
+        (self.root / instance.NAME).unlink()         # every handle was closed
+        instance.acquire(self.root).release()
+
     def test_another_process_sees_the_lock_this_one_holds(self):
         probe = textwrap.dedent(f"""
             import sys; sys.path.insert(0, {str(ROOT)!r})
@@ -525,6 +545,19 @@ class WorkspaceLockTests(unittest.TestCase):
         finally:
             ws.close()
         instance.acquire(self.root).release()                # closing let it go
+
+    def test_a_lock_that_fails_for_another_reason_stops_the_start_naming_it(self):
+        # Round 1 review (P3): an I/O error on the lock is not reported as the
+        # app being open in another session, and the store never opens.
+        from workspace.store import StoreError
+        with mock.patch.object(instance, "_lock", side_effect=OSError(errno.EIO, "I/O")), \
+                mock.patch("workspace.app.Store", side_effect=AssertionError("store built")) \
+                as built, self.assertRaises(StoreError) as caught:
+            self.open(instance_lock=True)
+        built.assert_not_called()
+        self.assertIn("Ask your IT team.", str(caught.exception))
+        self.assertNotIn("another Windows session", str(caught.exception))
+        self.assertFalse((self.root / "workspace.db").exists())
 
     def test_tests_and_tools_that_do_not_ask_take_no_lock(self):
         ws = self.open()
