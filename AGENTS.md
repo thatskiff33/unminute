@@ -179,11 +179,11 @@ changes; or GitHub owner settings.
 | Network, downloads, models, the token | `docs/SECURITY_MODEL.md` T10 to T13; `docs/MODEL_MANIFEST.md` (a test keeps it equal to the code) |
 | Engines and GPU | `docs/ENGINE_EVALUATION.md`; `docs/RELEASE_CHECKLIST.md` (GPU sections); `docs/SECURITY_MODEL.md` T25 |
 | Store, jobs, workers, speakers, cleanup, holds, the audit log, updates | `docs/WORKSPACE_DESIGN.md` |
-| Installer, package, install identity, policy | `docs/PACKAGING.md` |
+| Installer, package, install identity, policy | `docs/PACKAGING.md`; `docs/IT_DEPLOYMENT.md` (IT's view, with its policy list tested against the ADMX) |
 | Dependencies, workflows, releases (only when authorised) | `docs/RELEASING.md`; `docs/RELEASE_CHECKLIST.md`; `docs/VALIDATION_RUNBOOK.md` |
 | Gates, budgets, performance | `docs/RELEASE_STANDARD.md` (Part B lists every gate); `docs/perf-budgets.json`; `tests/budgets.json` |
 | UI appearance and user-facing behaviour | `docs/design/boards/` with `tools/design_check.py`; `docs/WORKSPACE_GUIDE.md`; `docs/screenshots/` |
-| Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it); `SECURITY.md` |
+| Security threats and controls | `docs/SECURITY_MODEL.md` (each #111 slice updates it, with its row in `docs/CONTROL_MATRIX.md`); `SECURITY.md`; `docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md` (facts only, no legal position) |
 | Encryption and keys (`workspace/vault.py`, `workspace/audiocrypt.py`, `workspace/dpapi.py`, `workspace/keystore.py`); meeting content in the database (`store.CONTENT_COLUMNS`, sealed since schema 2: only `workspace/store.py` names them, or the key tables, in SQL, through its codec) | `docs/ENCRYPTION.md`; `docs/WORKSPACE_DESIGN.md` "Content columns"; `docs/SECURITY_MODEL.md` T6 to T8; `tests/test_content_access.py`; `tests/test_schema2.py` |
 | Tooling traps, flaky checks, Windows and WebView2 quirks | `docs/DEVELOPER_NOTES.md` |
 

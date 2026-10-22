@@ -78,6 +78,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 1. With NVDA or Narrator, complete import, review, naming speakers, handoff and both cleanup confirmations by keyboard only.
 2. Repeat with a Windows contrast theme turned on.
 3. Note anything unlabelled, unannounced or unreadable.
+4. Check the WCAG 2.2 AA criteria the automated check leaves out, listed in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), "Accessibility against WCAG 2.2 AA". Include a recording in progress and the confirmation windows the app draws outside the page (recording, deletion authority, discard). Record each criterion as passed, failed or not checked. From the next release, the automatable ones move into `tools/accessibility_check.py` (#298, a gate for that release), and this pass covers the rest.
 
 **Pilot users:**
 1. Recruit at least three nontechnical people, each on a standard-user profile.

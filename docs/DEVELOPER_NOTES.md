@@ -207,6 +207,13 @@ real time, and remove it when the cause is fixed.
   They need an unlocked screen: on a locked one the app's confirmation windows cannot be
   answered, so `workspace_ui_check.py` closes them after 20 s and fails ("is the screen
   locked?").
+- **`PrivacyDraftTests`** in `tests/test_consistency.py` fails on any Markdown file (all but
+  `CHANGELOG.md` and `changelog.d/`; `docs/history/` included) that uses a word in
+  `LEGAL_WORDS`: words that take a position on the law or name an outside review step, which
+  the docs leave to each deploying organisation (the owner's rule). A factual phrase can trip
+  it, such as the name of a Windows exception in a crash note: reword it (give the exception
+  code instead). Never loosen the pattern or exempt a doc to make a change pass (AGENTS.md,
+  E2); ask the user.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 

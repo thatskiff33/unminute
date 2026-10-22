@@ -572,5 +572,212 @@ class AgentInstructionTests(unittest.TestCase):
                                     "a synthetic fixture needs an agreed exception here")
 
 
+def section(text, heading):
+    """The body of a '## heading' section, up to the next '## ' heading."""
+    start = text.index(f"\n## {heading}\n")
+    end = text.find("\n## ", start + 1)
+    return text[start:] if end == -1 else text[start:end]
+
+
+def table_rows(text, id_pattern):
+    """{first cell: cells} for each table row in text whose first cell matches id_pattern."""
+    rows = {}
+    for line in text.splitlines():
+        match = re.match(rf"^\| ({id_pattern}) \|", line)
+        if match:
+            if match.group(1) in rows:
+                raise AssertionError(f"two rows for {match.group(1)}")
+            rows[match.group(1)] = [c.strip() for c in line.strip().strip("|").split(" | ")]
+    return rows
+
+
+def heading_anchors(text):
+    """GitHub's anchors for the headings in a Markdown file."""
+    anchors = set()
+    for heading in re.findall(r"^#{1,6} (.+)$", text, re.MULTILINE):
+        slug = re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+        anchors.add(slug)
+    return anchors
+
+
+# A #111 slice, such as B6, C3, C3a or C2b-2. A lettered slice has no word boundary
+# between its digit and its letter, so the letter and part number are matched too.
+SLICE = re.compile(r"\b[A-D]\d{1,2}[a-z]?(?:-\d+)?\b")
+TEST_FILE = re.compile(r"`(tests/[\w/]+\.py)`")
+
+
+class ControlMatrixTests(unittest.TestCase):
+    """docs/CONTROL_MATRIX.md has one row for each AGENTS.md invariant and each
+    SECURITY_MODEL.md threat, names their guards, and carries their planned slices
+    (#111 D1), so it cannot drift from either."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read("docs/CONTROL_MATRIX.md")
+        cls.invariants = table_rows(section(cls.text, "Invariants"), r"[A-Z]\d+")
+        cls.threats = table_rows(section(cls.text, "Threats"), r"T\d+")
+        model = section(read("docs/SECURITY_MODEL.md"), "Threats and controls")
+        cls.model = table_rows(model, r"T\d+")
+
+    def test_one_row_per_invariant(self):
+        self.assertEqual(set(self.invariants), set(INVARIANT_GUARDS),
+                         "CONTROL_MATRIX.md's invariants differ from AGENTS.md's")
+
+    def test_invariant_guards_match_agents_md(self):
+        for ident, cells in self.invariants.items():
+            with self.subTest(invariant=ident):
+                guard = cells[3]
+                self.assertEqual(set(TEST_FILE.findall(guard)), set(INVARIANT_GUARDS[ident]),
+                                 f"{ident}: CONTROL_MATRIX.md and INVARIANT_GUARDS name "
+                                 "different guard files")
+                if not INVARIANT_GUARDS[ident]:
+                    self.assertIn("Review", guard, f"{ident} has no guard test: say Review")
+
+    def test_one_row_per_threat(self):
+        self.assertGreaterEqual(len(self.model), 30, "the threat row pattern no longer matches")
+        self.assertEqual(set(self.threats), set(self.model),
+                         "CONTROL_MATRIX.md's threats differ from SECURITY_MODEL.md's")
+
+    def test_every_threat_names_a_guard_or_review(self):
+        for ident, cells in self.threats.items():
+            with self.subTest(threat=ident):
+                self.assertEqual(len(cells), 6, f"{ident}: the row needs six cells")
+                guard = cells[3]
+                self.assertTrue(TEST_FILE.search(guard) or "Review" in guard,
+                                f"{ident} names no guard test and does not say Review")
+
+    def test_planned_slices_are_carried(self):
+        # Both ways: a slice SECURITY_MODEL.md plans is in the matrix, and a slice the
+        # matrix still shows as planned is still planned there (not delivered or dropped).
+        for ident, cells in self.model.items():
+            with self.subTest(threat=ident):
+                planned = set(SLICE.findall(cells[4]))
+                carried = set(SLICE.findall(self.threats.get(ident, [""] * 6)[4]))
+                self.assertEqual(set(), planned - carried,
+                                 f"{ident}: SECURITY_MODEL.md plans slices the matrix omits")
+                self.assertEqual(set(), carried - planned,
+                                 f"{ident}: the matrix plans slices SECURITY_MODEL.md does not")
+
+    def test_named_paths_exist(self):
+        missing = [token for token in set(re.findall(r"`([^`\s]+)`", self.text))
+                   if token.split("/")[0] in REPO_FOLDERS and "/" in token
+                   and not (ROOT / token).exists()]
+        self.assertEqual([], sorted(missing), "CONTROL_MATRIX.md names paths that do not exist")
+
+
+class DeploymentGuideTests(unittest.TestCase):
+    """docs/IT_DEPLOYMENT.md: its policy list is the ADMX template's, and its incident
+    runbook reaches the withdrawal runbook and --health (#111 D1, folded from #121)."""
+
+    NEW_DOCS = ("docs/IT_DEPLOYMENT.md", "docs/CONTROL_MATRIX.md",
+                "docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md", "docs/WORKSPACE_GUIDE.md")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = read("docs/IT_DEPLOYMENT.md")
+
+    def test_policy_list_matches_the_admx_template(self):
+        import xml.etree.ElementTree as ET
+        ns = "{http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions}"
+        admx = ET.fromstring(read("packaging/policy/Unminute.admx").encode("utf-8"))
+        adml = ET.fromstring(read("packaging/policy/en-US/Unminute.adml").encode("utf-8"))
+        strings = {s.get("id"): s.text for s in adml.iter(ns + "string")}
+        template = {}
+        for policy in admx.iter(ns + "policy"):
+            label = one(r"^\$\(string\.(\w+)\)$", policy.get("displayName"), "display name")
+            template[policy.get("name")] = strings[label]
+        self.assertGreaterEqual(len(template), 10, "the ADMX pattern no longer matches")
+        rows = table_rows(section(self.text, "Managed policy"), r"`\w+`")
+        listed = {name.strip("`"): cells[1] for name, cells in rows.items()}
+        self.assertEqual(listed, template,
+                         "IT_DEPLOYMENT.md's policy list differs from packaging/policy")
+
+    def test_not_set_column_matches_packaging(self):
+        # Most Allow values grant when not set: IT must not read an unset value as off.
+        packaging = read("docs/PACKAGING.md").split("### Managed settings (policy)", 1)[1]
+        packaging = packaging.split("\n#", 1)[0]
+        expected = {name.strip("`"): cells[2]
+                    for name, cells in table_rows(packaging, r"`\w+`").items()}
+        rows = table_rows(section(self.text, "Managed policy"), r"`\w+`")
+        listed = {name.strip("`"): cells[3] for name, cells in rows.items()}
+        self.assertGreaterEqual(len(expected), 10, "PACKAGING.md's policy table no longer matches")
+        self.assertEqual(listed, expected,
+                         "IT_DEPLOYMENT.md's Not set column differs from PACKAGING.md's")
+
+    def test_incident_runbook_links_withdrawal_and_health(self):
+        incidents = section(self.text, "Incidents")
+        self.assertIn("(RELEASING.md#withdrawing-a-bad-release)", incidents)
+        self.assertIn("(#health-monitoring-with---health)", incidents)
+        self.assertIn("(PACKAGING.md#managed-deployment-intune)", incidents)
+
+    def test_anchor_links_resolve(self):
+        # The repo-wide link test skips anchors; these docs lean on them.
+        broken = []
+        for doc in self.NEW_DOCS:
+            text = read(doc)
+            for target, anchor in re.findall(r"\]\(([^)#\s]*)#([^)\s]+)\)", text):
+                path = (ROOT / doc).parent / target if target else ROOT / doc
+                if path.suffix == ".md" and anchor not in heading_anchors(
+                        path.read_text(encoding="utf-8")):
+                    broken.append(f"{doc}: {target}#{anchor}")
+        self.assertEqual([], broken)
+
+
+# Words that take a legal position or name an adviser step.
+LEGAL_WORDS = re.compile(r"\b(?:un)?lawful(?:ly|ness)?\b|\b(?:il)?legal(?:ly|ity)?\b"
+                         r"|\bPrivacy Act\b|\bCrimes Act\b|\bIPPs?\b|\badvis[eo]rs?\b",
+                         re.IGNORECASE)
+
+
+class PrivacyDraftTests(unittest.TestCase):
+    """The privacy impact assessment draft states facts only: the deploying
+    organisation decides the legal position (the owner's rule), so the draft says
+    it is a draft and takes no position. The other docs stay silent on it too."""
+
+    def test_marked_as_a_draft_with_no_legal_position(self):
+        text = read("docs/PRIVACY_IMPACT_ASSESSMENT_DRAFT.md")
+        self.assertIn("**Status: draft.**", text.split("\n## ", 1)[0])
+        found = LEGAL_WORDS.findall(text)
+        self.assertEqual([], found, "the draft takes no legal position and names no "
+                                    "adviser step; leave that to the organisation")
+
+    def test_no_doc_takes_a_legal_position_or_names_an_adviser_step(self):
+        # AGENTS.md states the rule itself, so it is the one doc allowed the words.
+        found = {doc: LEGAL_WORDS.findall(read(doc)) for doc in DocsTests.DOCS
+                 if doc != "AGENTS.md"}
+        self.assertEqual({}, {doc: words for doc, words in found.items() if words},
+                         "docs describe what the app does and stay silent on the legal "
+                         "position, with no adviser step (the owner's rule)")
+
+
+class AccessibilityTargetTests(unittest.TestCase):
+    """The accessibility target is WCAG 2.2 AA (owner decision, 21 Oct 2026, #121),
+    and no doc names another WCAG version."""
+
+    def test_the_standard_names_wcag_2_2_aa(self):
+        criterion = one(r"^\*\*Criterion\.\*\* (WCAG [^\n]*)$",
+                        section(read("docs/RELEASE_STANDARD.md"), "Part A. The standard")
+                        .split("### 12. Accessibility", 1)[1].split("\n### ", 1)[0],
+                        "accessibility criterion")
+        self.assertTrue(criterion.startswith("WCAG 2.2 AA"), criterion)
+
+    def test_the_tool_extension_gates_the_next_release(self):
+        # Owner decision, 22 Oct 2026: #298 (the automatable WCAG 2.2 AA criteria in
+        # tools/accessibility_check.py) is a gate for the next release. The pull request
+        # that lands #298 updates this test with the wording.
+        standard = read("docs/RELEASE_STANDARD.md")
+        wcag = standard.split("### Accessibility against WCAG 2.2 AA", 1)[1].split("\n### ", 1)[0]
+        self.assertIn("#298, which is a gate for the next release", wcag)
+        before = section(read("docs/RELEASING.md"), "Before cutting a release")
+        self.assertRegex(before, r"(?m)^\d+\. \*\*The accessibility check covers WCAG 2\.2 AA "
+                                 r"where it can \(#298\)\.\*\* .*gate for the next release")
+
+    def test_no_doc_names_another_wcag_version(self):
+        for doc in DocsTests.DOCS:
+            with self.subTest(doc=doc):
+                versions = set(re.findall(r"WCAG (\d\.\d)", read(doc)))
+                self.assertLessEqual(versions, {"2.2"}, f"{doc} names another WCAG version")
+
+
 if __name__ == "__main__":
     unittest.main()

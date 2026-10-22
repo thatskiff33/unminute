@@ -9,6 +9,8 @@ This guide covers the preassembled package from #11:
 
 Updates and the empty-workspace migration gate are #26.
 
+For IT, [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md) brings this guide together with health monitoring, offboarding and incidents, and links back here for each detail.
+
 ## What the package contains
 
 One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<version>.zip.sha256`.

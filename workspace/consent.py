@@ -12,9 +12,7 @@
 # (a statement the person must tick first).
 #
 # The recording wording is versioned: a recording keeps the version it was
-# confirmed with. It is a draft, to confirm with the firm's privacy adviser
-# (Privacy Act 2020 IPP 3; the recording position under the Crimes Act, to
-# confirm). Stdlib only.
+# confirmed with. Stdlib only.
 
 import time
 import unicodedata
