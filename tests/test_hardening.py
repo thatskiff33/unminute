@@ -3076,6 +3076,138 @@ class InstallerIsolationTests(unittest.TestCase):
         self.assertEqual(found, [], "an installer run outside run_installer")
 
 
+# The machine scripts' Program Files, as both define it (MachineModeScriptTests).
+MACHINE_PROGRAM_FILES = ('function Get-ProgramFilesFolder '
+                         '{ return [Environment]::GetFolderPath("ProgramFiles") }')
+
+
+@WINDOWS_ONLY
+class MachineModeScriptTests(unittest.TestCase):
+    """#111 B6b: what of machine mode runs for real without administrator rights.
+    The machine install and uninstall themselves are tested in tests/powershell
+    (Machine.Tests.ps1) with elevation, Program Files, HKLM and the folder's
+    permissions stood in; a real System-context install is a manual check (#189,
+    E1). Here: the per-user installer's refusal beside a machine install, the
+    switches that need -Machine, a run without elevation, and the machine section
+    both scripts share."""
+
+    MAIN, PROGRAMS, KEY, TEST_KEY = StagedCopyTests.MAIN, StagedCopyTests.PROGRAMS, \
+        StagedCopyTests.KEY, StagedCopyTests.TEST_KEY
+    setUp = InstallFolderScopeTests.setUp
+    installer_copy = InstallFolderScopeTests.installer_copy
+    write_package = InstallFolderScopeTests.write_package
+    run_copy = StagedCopyTests.run_copy
+    variant = StagedCopyTests.variant
+    EVERYONE = "already installed for everyone on this computer"
+
+    def test_a_per_user_install_is_refused_beside_a_machine_install(self):
+        self.write_package("1.0.0")
+        copy = self.variant("install-beside.ps1", self.MAIN,
+                            "function Test-MachineInstalled { $true }")
+        r = self.run_copy(copy=copy)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(self.EVERYONE, r.stderr)
+        self.assertFalse(self.install.exists())
+        # Also a rollback: nothing of the per-user install changes.
+        r = self.run_copy(copy=copy, extra="-Rollback")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertFalse(self.install.exists())
+
+    def test_a_registry_that_cannot_be_read_does_not_stop_a_per_user_install(self):
+        self.write_package("1.0.0")
+        copy = self.variant("install-unreadable.ps1", self.MAIN,
+                            'function Test-MachineInstalled { throw "denied" }')
+        r = self.run_copy(copy=copy)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue((self.install / "versions" / "1.0.0").is_dir())
+
+    def test_the_real_check_finds_no_machine_install_here(self):
+        # Read only, in the 64-bit view. A computer with a machine install of
+        # Unminute would fail every per-user installer test, so say so plainly.
+        check = (f". '{self.copy}'; if (Test-MachineInstalled) {{ 'machine' }} else {{ 'none' }}")
+        r = subprocess.run([windows_powershell.executable(), "-NoProfile", "-ExecutionPolicy",
+                            "Bypass", "-Command", check], capture_output=True, text=True,
+                           timeout=120, cwd=self.root,
+                           env=windows_powershell.environment({"LOCALAPPDATA": str(self.local),
+                                                               "APPDATA": str(self.appdata)}))
+        self.assertEqual(r.stdout.strip(), "none", r.stdout + r.stderr)
+
+    def test_remove_slot_needs_machine(self):
+        self.write_package("1.0.0")
+        r = self.run_copy(extra="-RemoveSlot 0.9.0")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("-RemoveSlot is for a machine install", r.stderr)
+        self.assertFalse(self.install.exists())
+
+    def test_a_machine_run_without_administrator_rights_changes_nothing(self):
+        # The real elevation check, without stand-ins. Program Files is pointed at a
+        # temporary folder all the same, so this run could never reach the real one.
+        import ctypes
+        fake = self.root / "Program Files"
+        fake.mkdir()
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            # Elevated (as CI runs): a -Machine run would pass this check and go on
+            # to write this computer's HKLM and Start menu, so it is not made; the
+            # check's own answer is compared instead.
+            check = f". '{self.copy}'; Test-Elevated"
+            r = subprocess.run([windows_powershell.executable(), "-NoProfile", "-ExecutionPolicy",
+                                "Bypass", "-Command", check], capture_output=True, text=True,
+                               timeout=120, cwd=self.root,
+                               env=windows_powershell.environment({
+                                   "LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}))
+            self.assertEqual(r.stdout.strip(), "True", r.stdout + r.stderr)
+            return
+        text = self.copy.read_text(encoding="utf-8")
+        real = MACHINE_PROGRAM_FILES
+        self.assertEqual(text.count(real), 1)
+        stand_in = f"function Get-ProgramFilesFolder {{ return '{fake}' }}"
+        copy = self.root / "install-machine.ps1"
+        copy.write_text(text.replace(real, stand_in), encoding="utf-8")
+        zpath = self.root / "Unminute-1.0.0.zip"
+        zpath.write_bytes(b"not read")
+        for name in ("install", "uninstall"):
+            with self.subTest(name):
+                script = copy if name == "install" else self.uninstall_copy(fake)
+                call = (f"& '{script}' -Machine -Silent" +
+                        (f" -Package '{zpath}'" if name == "install" else ""))
+                r = subprocess.run([windows_powershell.executable(), "-NoProfile",
+                                    "-ExecutionPolicy", "Bypass", "-Command",
+                                    f"{call}; exit $LASTEXITCODE"],
+                                   capture_output=True, text=True, timeout=120, cwd=self.root,
+                                   env=windows_powershell.environment({
+                                       "LOCALAPPDATA": str(self.local),
+                                       "APPDATA": str(self.appdata)}))
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("needs administrator rights", r.stderr)
+                self.assertEqual(list(fake.iterdir()), [])
+
+    def uninstall_copy(self, fake):
+        text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+        real = MACHINE_PROGRAM_FILES
+        self.assertEqual(text.count(real), 1)
+        stand_in = f"function Get-ProgramFilesFolder {{ return '{fake}' }}"
+        copy = self.root / "uninstall-machine.ps1"
+        copy.write_text(text.replace(real, stand_in), encoding="utf-8")
+        return copy
+
+    def test_both_scripts_have_the_same_machine_section(self):
+        def section(name):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            start = text.index("# -- machine mode, shared (#111 B6b) --")
+            end = text.index("# -- end of the shared machine section --")
+            return text[start:end]
+        self.assertEqual(section("install.ps1"), section("uninstall.ps1"))
+        shared = section("uninstall.ps1")
+        for function in ("Get-MachineRoot", "Test-MachineRootSecurity", "Get-AclChangeCount",
+                         "Test-OwnJunction", "Remove-Junction"):
+            self.assertIn(f"function {function}", shared)
+        # Junctions are removed as links only, never with Remove-Item -Recurse.
+        self.assertIn("[IO.Directory]::Delete($Path, $false)", shared)
+        for name in ("install.ps1", "uninstall.ps1"):
+            text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
+            self.assertNotRegex(text, r"Remove-Item[^\n]*(current|Junction)[^\n]*-Recurse")
+
+
 STUB_APP = '''\
 # A stand-in for the app: records how the uninstaller started it, then acts as told.
 import json, os, sys, time
