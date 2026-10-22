@@ -52,9 +52,10 @@ def over(colour, background):
 
 
 def luminance(rgb):
+    # WCAG 2.2 relative luminance (sRGB): linear at or below 0.04045.
     def channel(v):
         v /= 255
-        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
     r, g, b = (channel(v) for v in rgb)
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
 
@@ -80,6 +81,14 @@ def rules(css, selector_part):
     css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
     return [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
             if selector_part in sel]
+
+
+class LuminanceTests(unittest.TestCase):
+    def test_the_srgb_threshold_is_wcag_2_2s(self):
+        # A blended channel can fall between the WCAG 2.0 threshold (0.03928)
+        # and the WCAG 2.2 one (0.04045); there it is linear.
+        v = 10.2      # 0.0400 of full scale
+        self.assertAlmostEqual(v / 255 / 12.92, luminance((v, v, v)), places=12)
 
 
 class ControlBorderContrastTests(unittest.TestCase):
