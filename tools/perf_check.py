@@ -24,6 +24,9 @@
 # keeps the display on for its own duration, and each window measured with the
 # window on screen counts only if the display stayed on, the session unlocked
 # and the page drawing (drawing_report()); otherwise the run stops, exit 2.
+#
+# Before the windowed runs, a release run measures the sealed store once, with
+# no window (#111 C7, the C2b-2 design's section 4.8): measure_store().
 
 import argparse
 import json
@@ -95,6 +98,17 @@ METER_MAX_HZ = 30
 MAX_UNDRAWN_S = 5.0
 # GUID_SESSION_DISPLAY_STATUS's values. A dimmed display still draws every frame.
 DISPLAY_STATES = {0: "off", 1: "on", 2: "dimmed"}
+# The store step (#111 C7): no window, run once, in its own throwaway folder.
+STORE_MEETINGS = 500               # meetings in the workspace whose open is timed
+STORE_PASSAGES = 5000              # passages in the long meeting (tests/test_app.py's)
+STORE_OPENS = 10                   # opens timed, median
+STORE_READS = 5                    # listings, pages and searches timed, median
+STORE_TIMEOUT_S = 3600
+STORE_FIGURES = evidence.PERF_STORE_FIGURES
+# Machines whose figures can be compared (--compare): these fields must match.
+COMPARABLE = ("cpu", "cores", "logical_processors", "memory_gb", "power_plan",
+              "on_mains_power")
+NOT_COMPARABLE = "not comparable"
 DRAWN_DISPLAY = ("on", "dimmed")
 HELP = """
 States, in order: meetings (the Meetings view, 3 synthetic meetings), settings
@@ -120,7 +134,9 @@ and the report says so ("recording_consent").
 
 Before the first state it times start-up to interactive (imports, then window
 creation until the meeting list has rendered; interpreter start and opening
-the workspace are left out) and waits for the worker to unload. With
+the workspace are left out) and waits for the worker to unload. It also
+reports "workspace_s" in "startup": opening the run's new workspace (Windows
+Data Protection and the keys; measured, no budget yet). With
 --leak-minutes it holds the Meetings view that long, once, in the last run,
 after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
@@ -176,10 +192,24 @@ not measured; 2 the window could not be measured (it did not start, did not
 respond, lost its recording, was not drawn in a visible state, or left
 processes outside the measuring job).
 
+Store step (#111 C7): before the windowed runs, once and with no window, in
+its own throwaway folder with the app's own key protection, the sealed store
+is measured ("store"): opening a workspace with 0 and with 500 meetings
+(median of 10 opens each), listing the 500 meetings, and, for one meeting of
+5,000 passages, a page of 1,000 passages and a search (median of 5 each) and
+the database's size. Seeded with synthetic text and audio through the app's
+own import. Measured, no budget yet (docs/perf-budgets.json). --quick leaves
+it out; release evidence needs it (tools/evidence.py).
+
+--compare <report>: a local copy of an earlier release's evidence-perf.json
+(nothing is fetched). Figures present in both reports are listed side by
+side ("compared"), with both machines; if the machines differ in processor,
+cores, memory, power plan or mains power, each figure is "not comparable".
+
 Release run (docs/RELEASING.md): 3 runs, 60 s settle, 300 s windows and
---leak-minutes 30, about two and a quarter hours. --quick is 1 run, 20 s
-settle and 60 s windows (about 10 minutes), for before-and-after checks during
-development.
+--leak-minutes 30, about two and a quarter hours, plus the store step.
+--quick is 1 run, 20 s settle and 60 s windows (about 10 minutes), for
+before-and-after checks during development.
 """
 
 
@@ -252,6 +282,54 @@ def propose(figures, margin=0.2):
         if limits:
             out[state] = limits
     return out
+
+
+def machines_differ(now, earlier):
+    """The COMPARABLE fields in which two machines differ (empty when the
+    figures can be compared). A field missing from either counts as different."""
+    now = now if isinstance(now, dict) else {}
+    earlier = earlier if isinstance(earlier, dict) else {}
+    return [f for f in COMPARABLE
+            if now.get(f) is None or earlier.get(f) is None or now.get(f) != earlier.get(f)]
+
+
+def _figures(report):
+    """(state, metric) -> value for every numeric median and store figure."""
+    out = {}
+    for state, metrics in (report.get("median") or {}).items():
+        for metric, value in (metrics or {}).items():
+            if _number(value):
+                out[(state, metric)] = value
+    for metric, value in (report.get("store") or {}).items():
+        if _number(value):
+            out[("store", metric)] = value
+    return out
+
+
+def compare_reports(now, earlier):
+    """The figures present in both reports, side by side, and both machines.
+    Each figure is "not comparable" when the machines differ (machines_differ)."""
+    differ = machines_differ(now.get("machine"), earlier.get("machine"))
+    a, b = _figures(now), _figures(earlier)
+    figures = []
+    for key in sorted(set(a) & set(b)):
+        row = {"state": key[0], "metric": key[1], "now": a[key], "earlier": b[key]}
+        if differ:
+            row["change_percent"] = NOT_COMPARABLE
+        elif b[key]:
+            row["change_percent"] = round((a[key] - b[key]) / b[key] * 100, 1)
+        figures.append(row)
+    return {"machines_differ_in": differ,
+            "machine_now": now.get("machine"), "machine_earlier": earlier.get("machine"),
+            "earlier_app": (earlier.get("environment") or {}).get("app"),
+            "only_now": len(set(a) - set(b)), "compared": figures}
+
+
+def store_problems(store):
+    """What the store step left out (empty when it measured everything)."""
+    if not isinstance(store, dict):
+        return ["the store step did not run"]
+    return [f for f in STORE_FIGURES if not _number(store.get(f))]
 
 
 # -- the recording states (pure apart from PacedStream's thread; tested) --------------
@@ -1252,7 +1330,7 @@ def one_run(args, settle, window, leak_minutes=0, display=None, refresh_hz=None)
         threading.Thread(target=pump, daemon=True).start()
         ready = read(READY_TIMEOUT_S)
         result["startup"] = {k: ready[k] for k in ("imports_s", "window_to_interactive_s",
-                                                   "startup_s")}
+                                                   "startup_s", "workspace_s") if k in ready}
         # Idle means after the worker has unloaded. Waiting for it also measures
         # the standard's "gone within its idle time plus 5 s" (section 3). A
         # worker that does not unload is recorded at the wait limit, so it fails
@@ -1379,6 +1457,12 @@ def parent(args):
             report["display"]["refresh_hz_before_kept_on"] = before
             if hz is not None and "display_refresh_hz" in machine:
                 machine["display_refresh_hz"] = hz
+        if not args.quick:            # once, no window, before the windowed runs (#111 C7)
+            print("store step (no window)", flush=True)
+            report["store"] = store_step(args)
+            missing = store_problems(report["store"])
+            if missing:
+                raise RuntimeError(f"the store step did not measure {', '.join(missing)}")
         for n in range(runs):
             print(f"run {n + 1} of {runs}", flush=True)
             last = n == runs - 1
@@ -1414,6 +1498,8 @@ def parent(args):
     report["not_measured"] = [{"state": s, "metric": m} for s, m in missing]
     report["not_asked_for"] = list(skip)
     report["proposed_budgets_plus_20_percent"] = propose(figures)
+    if getattr(args, "compare", None):
+        report["comparison"] = compare_reports(report, earlier_report(args.compare))
     Path(args.report).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report["median"], indent=2))
     for s, m, v, b in over:
@@ -1429,11 +1515,151 @@ def parent(args):
               "still checked as drawn.")
     if skip:
         print(f"Not compared: the leak check needs --leak-minutes {LEAK_BUDGET_MINUTES} or more.")
+    if report.get("store"):
+        print("store step (measured; no budget yet): " + json.dumps(report["store"]))
+    comparison = report.get("comparison")
+    if comparison and comparison["machines_differ_in"]:
+        print("Compared with the earlier report: not comparable, the machines differ in "
+              + ", ".join(comparison["machines_differ_in"]))
     if not budgets:
         print("NO BUDGETS YET")
     elif not over and not missing:
         print("WITHIN BUDGET")
     return 1 if over or missing else 0
+
+
+def earlier_report(path):
+    """An earlier release's evidence-perf.json, a local file only (--compare)."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a performance report")
+    return data
+
+
+def store_step(args):
+    """Run measure_store() once in a child (the package's runtime, as the
+    window child runs), in a throwaway folder removed afterwards."""
+    workdir = Path(tempfile.mkdtemp(prefix="unminute-store-"))
+    command, env = child_command(args, workdir)
+    command[command.index("--child")] = "--store-child"
+    try:
+        r = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                           env=env, timeout=STORE_TIMEOUT_S)
+        found = [json.loads(line[len(PREFIX):]) for line in r.stdout.splitlines()
+                 if line.startswith(PREFIX)]
+        if r.returncode or not found:
+            raise RuntimeError(f"the store step failed (exit {r.returncode}): "
+                               f"{r.stderr[-800:]}")
+        return found[-1]
+    finally:
+        for _ in range(10):
+            shutil.rmtree(workdir, ignore_errors=True)
+            if not workdir.exists():
+                break
+            time.sleep(0.5)
+
+
+def _median(fn, times):
+    out = []
+    for _ in range(times):
+        t = time.perf_counter()
+        fn()
+        out.append(time.perf_counter() - t)
+    return round(statistics.median(out), 4)
+
+
+def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_PASSAGES,
+                  opens=STORE_OPENS, reads=STORE_READS):
+    """The C2b-2 design's section 4.8 figures (#111 C7), with no window:
+    Workspace open time with 0 and with `meetings` meetings (median of
+    `opens`), listing them, and for one meeting of `passages` passages a page
+    of 1,000 and a search (median of `reads`), and that database's size.
+    Seeded through the app's import (synthetic noise) and the store (synthetic
+    text). protector: tests only; the app's own (Windows Data Protection)
+    otherwise. Returns figures only."""
+    import types
+    import wave
+
+    import numpy as np
+
+    from workspace.app import DB_FILE, Workspace
+    root = Path(root)
+    models = root / "models"
+    rng = np.random.default_rng(11)
+
+    def synthetic(path, seconds):
+        with wave.open(str(path), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes((rng.standard_normal(int(16000 * seconds)) * 300)
+                          .astype("<i2").tobytes())
+
+    def workspace(folder):
+        return Workspace(folder, models, start=False, battery=False, protector=protector)
+
+    def open_time(folder):
+        def once():
+            workspace(folder).close()
+        return _median(once, opens)
+
+    out = {}
+    empty = root / "empty"
+    workspace(empty).close()                  # made (and its key) before timing
+    out["open_0_meetings_s"] = open_time(empty)
+
+    many = root / "many"
+    ws = workspace(many)
+    try:
+        for i in range(meetings):
+            path = root / f"synthetic-{i}.wav"
+            synthetic(path, 1)
+            ws._import_one(path)
+            path.unlink()
+        out["listing_500_meetings_s"] = _median(ws.meetings, reads)
+    finally:
+        ws.close()
+    out["open_500_meetings_s"] = open_time(many)
+
+    long = root / "long"
+    ws = workspace(long)
+    try:
+        path = root / "synthetic-long.wav"
+        synthetic(path, 60)
+        ws._import_one(path)
+        path.unlink()
+        mid = ws.meetings()[0]["id"]
+        vid = ws.store.active_version(mid)["id"]
+        idx = ws.store.chunks(vid, status="pending")[0]["idx"]
+        ws.store.commit_chunk(vid, idx, [
+            types.SimpleNamespace(start=i * 3.0, end=i * 3.0 + 2.5,
+                                  text=f"passage {i} with some words", words=())
+            for i in range(passages)])
+        start = max(0, passages - 1000)
+        out["page_5000_passages_s"] = _median(lambda: ws.transcript(mid, start, 1000), reads)
+        out["search_5000_passages_s"] = _median(
+            lambda: ws.search(mid, f"passage {passages - 1}"), reads)
+    finally:
+        ws.close()
+    size = sum(p.stat().st_size for p in long.glob(DB_FILE + "*") if p.is_file())
+    out["database_5000_passages_mb"] = round(size / 2**20, 2)
+    out["meetings"], out["passages"] = meetings, passages
+    return out
+
+
+def store_child(args):
+    """--store-child: measure_store() in this process, figures on stdout."""
+    app = Path(args.app) if args.app else ROOT
+    evidence.add_app(app)
+    from workspace import offline_guard     # as the app itself starts
+    offline_guard.disable_telemetry()
+    offline_guard.install()
+    if args.app:
+        evidence.require_app_modules(app)
+    figures = measure_store(Path(args.workdir))
+    sys.stdout.write(PREFIX + json.dumps(figures) + "\n")
+    sys.stdout.flush()
+    return 0
 
 
 # -- the child: the real window on synthetic meetings ----------------------------------
@@ -1479,8 +1705,10 @@ def child(args):
 
     fake = "test:fake_worker_engines:"
     root = Path(args.workdir)          # made and removed by the parent
+    opening = time.perf_counter()
     ws = Workspace(root / "ws", root / "models", start=False, allow_test_engines=True,
                    battery=False)
+    workspace_s = time.perf_counter() - opening      # a new workspace: keys made too
     ws.open_stream = open_synthetic
     try:
         ws.settings.update(model=fake + "sentences", speakers=False, onboarded=True)
@@ -1530,6 +1758,7 @@ def child(args):
                 log("meetings shown")
                 send(imports_s=round(imports_s, 2), window_to_interactive_s=round(interactive, 2),
                      startup_s=round(imports_s + interactive, 2),
+                     workspace_s=round(workspace_s, 3),
                      recording_allowed=ws.managed()["allow"]["AllowMicrophoneRecording"],
                      **worker)
                 # The frame counter (#292), after start-up is timed, before any state.
@@ -1645,13 +1874,23 @@ def main():
                         "package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
     parser.add_argument("--zip", help="the package zip installed at --app: records it as release "
                         "evidence (tools/evidence.py); exit 1 unless that evidence passes")
+    parser.add_argument("--compare", help="a local copy of an earlier release's "
+                        "evidence-perf.json: list the figures both have, side by side")
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--store-child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--workdir", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.child:
         return child(args)
+    if args.store_child:
+        return store_child(args)
     if not args.report:
         parser.error("give a report path")
+    if args.compare:                    # a bad file stops now, not after the run
+        try:
+            earlier_report(args.compare)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--compare: {exc}")
     before = evidence.prepare(parser, args, Path(args.app) if args.app else None)
     rc = parent(args)
     if args.zip:
