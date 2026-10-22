@@ -139,12 +139,22 @@ const ringRatio = (el, s) => {
 // Focus indicator: keyboard-style focus on each control and compare styles.
 // The same pass checks that the focused control is not hidden (2.4.11), its
 // ring's contrast (1.4.11) and that focusing it opens or navigates nothing (3.2.1).
+// While the window does not have keyboard focus (another window is in front)
+// the browser draws no focus style at all, so nothing can be measured: the
+// pass stops and says so (focus_not_measured) rather than report every
+// control as having no focus indicator (#298).
 const noFocusRing = [], focusObscured = [], lowContrastFocus = [], changeOnFocus = [];
+const focusNotMeasured = [];
 const focusable = [];
 for (const el of controls.filter(e => !e.disabled && e.tabIndex >= 0).slice(0, 80)) {
   const was = where();
   el.focus({focusVisible: true});
   if (where() !== was) changeOnFocus.push(desc(el));
+  if (!document.hasFocus()) {
+    focusNotMeasured.push('the window lost keyboard focus at ' + desc(el) +
+                          ': keep it in front and run again');
+    break;
+  }
   const s = getComputedStyle(el);
   const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) ||
                (s.boxShadow && s.boxShadow !== 'none');
@@ -348,7 +358,8 @@ return {controls: controls.length, unnamed, untabbable, pointer_only: pointerOnl
         keyboard_trap: keyboardTrap, focus_obscured: focusObscured,
         low_contrast_focus: lowContrastFocus, low_contrast_boundary: lowContrastBoundary,
         small_targets: smallTargets, label_not_in_name: labelNotInName, no_alt: noAlt,
-        text_spacing_cut_off: textSpacing.slice(0, 40), change_on_focus: changeOnFocus};
+        text_spacing_cut_off: textSpacing.slice(0, 40), change_on_focus: changeOnFocus,
+        focus_not_measured: focusNotMeasured};
 """
 
 # Each list in a view's audit that must be empty, with the criterion it serves.
@@ -358,7 +369,7 @@ CHECKS = {
     "focus_obscured": "2.4.11", "low_contrast": "1.4.3", "low_contrast_focus": "1.4.11",
     "low_contrast_boundary": "1.4.11", "small_targets": "2.5.8", "label_not_in_name": "2.5.3",
     "no_alt": "1.1.1", "text_spacing_cut_off": "1.4.12", "change_on_focus": "3.2.1",
-    "colour_only": "1.4.1",
+    "colour_only": "1.4.1", "focus_not_measured": "2.4.7",
 }
 
 # The colour mode the page is drawn in (prefers-color-scheme).

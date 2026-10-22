@@ -208,8 +208,9 @@ real time, and remove it when the cause is fixed.
 - **`tools/design_check.py`** runs headless Edge with a 120 s timeout, and times out when another
   session runs headless Edge at the same time. Rerun the missed cases one at a time. The "names"
   case varies slightly between runs on `main` itself.
-- **`tools/accessibility_check.py`** can report `no_focus_ring` when its window loses focus.
-  Rerun before treating it as real.
+- **`tools/accessibility_check.py`** fails a view with `focus_not_measured` when its window loses
+  keyboard focus during the focus pass (another window came to the front): Edge then draws no
+  focus style at all. Keep the window in front and rerun; it is not a page fault.
 - **Clipboard tests** skip as "clipboard busy" while another app holds the clipboard.
 - **A busy clipboard in `tools/workspace_ui_check.py` (#342).** The app waits about a second
   for a clipboard another program holds, then reports "The clipboard is in use by another

@@ -106,6 +106,10 @@ FIXTURES = {
     # 1.1.1 Non-text Content (in part)
     "image_no_alt": f'<img src="{GIF}" width="20" height="20">',
     "image_alt": f'<img src="{GIF}" alt="" width="20" height="20">',
+    # 2.4.7 with the window not in front: the browser draws no focus style,
+    # so the audit cannot measure the ring (see SETUP).
+    "window_not_focused": '<style>button:focus-visible { outline: 2px solid #1a1a1a; }</style>'
+                          '<button class="gap">One</button><button>Two</button>',
     # 3.2.1 On Focus
     "opens_on_focus": '<button onfocus="document.getElementById(\'d\').show()">Opens</button>'
                       '<dialog id="d" aria-label="Pop-up">Synthetic</dialog>',
@@ -113,6 +117,8 @@ FIXTURES = {
 
 # Script run after a fragment is shown, before the audit.
 SETUP = {
+    # Another window in front: the document reports that it has no focus.
+    "window_not_focused": "document.hasFocus = () => false;",
     # The box's text throws once the text spacing is applied, so the audit
     # fails with the spacing still on the page unless it takes it off anyway.
     "spacing_fails": "Object.defineProperty(document.getElementById('boom'), 'innerText', "
@@ -129,6 +135,7 @@ window.addEventListener('load', async () => {
   const colour = new Function(COLOUR_MODE)();
   for (const [name, fragment] of Object.entries(FIXTURES)) {
     document.body.innerHTML = BASE + fragment;
+    delete document.hasFocus;          // a SETUP may have replaced it for its fragment
     if (SETUP[name]) new Function(SETUP[name])();
     window.scrollTo(0, 0);
     document.body.getBoundingClientRect();
@@ -267,6 +274,16 @@ class AuditTests(unittest.TestCase):
     def test_images_need_a_text_alternative(self):
         self.assertEqual(["img"], self.flagged("image_no_alt", "no_alt"))
         self.assertEqual([], self.flagged("image_alt", "no_alt"))
+
+    def test_a_window_without_focus_is_not_measured(self):
+        # Every control would look ringless; the audit says it measured
+        # nothing instead, and that fails the run (#298).
+        r = self.result("window_not_focused")
+        self.assertEqual([], r["no_focus_ring"])
+        self.assertEqual(1, len(r["focus_not_measured"]))
+        self.assertIn("keyboard focus", r["focus_not_measured"][0])
+        self.assertIn("focus_not_measured", accessibility_check.CHECKS)
+        self.assertEqual([], self.flagged("dark_ring", "focus_not_measured"))
 
     def test_focus_opens_nothing(self):
         self.assertEqual(["button"], self.flagged("opens_on_focus", "change_on_focus"))
