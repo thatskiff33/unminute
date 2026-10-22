@@ -94,6 +94,16 @@ real time, and remove it when the cause is fixed.
   covered, `BM_CLICK` with no mouse or key event. That test holds a named mutex
   (`Local\UnminuteTickTest`), because concurrent suites on one machine would put their
   stand-ins at the same place on screen and cover each other.
+- **A page without window focus gets no `blur` event.** Chromium's `focus()` and `blur()` move
+  `document.activeElement` whatever the window, but send the focus and blur events only while
+  the page has focus (`document.hasFocus()`). The page ends a transcript edit on the span's
+  `blur`, so a bare `blur()` from `tools/workspace_ui_check.py` in a window left behind the
+  user's left the edit open, and the growing-transcript step `after_edit` failed with no rows
+  appended (21 Oct 2026, #308). The check now ends edits with `blurLikeFocused` (`BLUR_JS`),
+  which dispatches the blur a focused window would deliver when the page has no focus, and
+  records `focused` in each step it reports. Headless Edge shows the same rule: a page has no
+  focus while it loads, then gains it. `tests/test_ui_check_focus.py` runs the step against a
+  stand-in for the rule.
 - **The scripted confirmation rules each have a native script only they can pass.** In
   `tools/workspace_ui_check.py`, keys (Shift posted to the focused Cancel) and clicks on the
   text before the action is available must restart the wait ("keys wait again", "clicks wait

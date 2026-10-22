@@ -85,6 +85,20 @@ def evaluate(window, js, timeout=60):
 
 
 WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
+# Ends an edit as a person leaving the passage would (#308). Chromium sends
+# `blur` only while the page has focus, and a check started from a terminal
+# often cannot bring its window to the front (docs/DEVELOPER_NOTES.md), so the
+# page's stopEditing would never run. Then the event a focused window would
+# deliver is dispatched here. The page's listener runs once, so this is
+# harmless if the native event fired. Returns whether the page had focus, for
+# the step's report. Focus itself needs no help: focus() and blur() move
+# document.activeElement whether or not the window has focus.
+BLUR_JS = """
+    const blurLikeFocused = (el) => {
+        const focused = document.hasFocus();
+        el.blur();
+        if (!focused) el.dispatchEvent(new FocusEvent('blur'));
+        return focused; };"""
 
 
 def page_dialogs():
@@ -543,12 +557,12 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
             {c for c in shell.blocked_calls if c.startswith(("permission", "screen"))})
         report["page_dialogs"]["microphone_refusals"] = shell.blocked_calls.count(
             "permission Microphone")
-        report["edit_autosave"] = evaluate(window, WAIT + """
+        report["edit_autosave"] = evaluate(window, WAIT + BLUR_JS + """
             const span = document.querySelectorAll('#transcript .text')[0];
             span.click(); span.textContent = 'Edited in the page'; span.dispatchEvent(new
                 Event('input'));
-            await wait(1500); span.blur(); await wait(500);
-            return {status: document.getElementById('status').textContent,
+            await wait(1500); const focused = blurLikeFocused(span); await wait(500);
+            return {focused, status: document.getElementById('status').textContent,
                     edited_class: span.classList.contains('edited'),
                     undo_enabled: !document.getElementById('m-undo').disabled};""")
         report["edit_in_db"] = ws.transcript(mid)["items"][0]["text"]
@@ -702,8 +716,11 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
 GROW_FIRST = 3000      # passages in the growing meeting's first chunk
 GROW_MORE = 20         # passages in each chunk after it
 GROW_TEXT = "Edited while transcribing"
+# The growing transcript's edit ends (grow_update's `first`, #308): unfocused
+# or not, the page must see the blur, so the rows held back can be appended.
+GROW_END_EDIT = "focused = blurLikeFocused(g.span); await wait(1500);"
 # Page helpers for the growing transcript: the rows shown, and a wait for a condition.
-GROW_JS = WAIT + """
+GROW_JS = WAIT + BLUR_JS + """
     const rows = () => document.querySelectorAll('#transcript > li');
     const until = async (ok, ms = 20000) => {
         const end = performance.now() + ms;
@@ -719,15 +736,17 @@ def grow_update(window, expect, extra="", first=""):
     `expect` rows: how long that took, what it drew, and whether it redrew
     the whole list. `extra` adds fields (JavaScript, `name: value, ...`).
     `first` (JavaScript) runs after the starting counts are taken, so rows a
-    page poll draws during it still count towards this step."""
+    page poll draws during it still count towards this step; it may set
+    `focused` to the page's focus at the moment that matters to the step."""
     return evaluate(window, GROW_JS + f"""
         const added = g.added, redraws = g.redraws;
+        let focused = document.hasFocus();
         {first}
         const t = performance.now();
         await window.workspace.refresh();
         const ok = await until(() => rows().length === {expect});
         await frames();
-        return {{ok, rows: rows().length, ms: Math.round(performance.now() - t),
+        return {{ok, focused, rows: rows().length, ms: Math.round(performance.now() - t),
                  added: g.added - added, redrawn: g.redraws > redraws, {extra}}};""")
 
 
@@ -773,7 +792,7 @@ def growing_checks(window, ws, grow_mid):
                 window.__grow.added += r.addedNodes.length;
                 if (r.removedNodes.length) window.__grow.redraws++; }} }})
                 .observe(list, {{childList: true}});
-            return {{rows: rows().length, ms}};""", timeout=90))
+            return {{rows: rows().length, ms, focused: document.hasFocus()}};""", timeout=90))
         pending = [c["idx"] for c in ws.store.chunks(vid, status="pending")]
         for n in (1, 2):                        # more passages at the end: appended
             commit_passages(ws, grow_mid, pending.pop(0), GROW_MORE)
@@ -790,14 +809,15 @@ def growing_checks(window, ws, grow_mid):
         step("while_editing", evaluate(window, GROW_JS + f"""
             const added = g.added, redraws = g.redraws;
             await window.workspace.refresh(); await wait(1500);
-            return {{rows: rows().length, held: rows().length === {shown} && g.added === added
+            return {{rows: rows().length, focused: document.hasFocus(),
+                     held: rows().length === {shown} && g.added === added
                      && g.redraws === redraws && document.activeElement === g.span}};"""))
         # The edit ends. A page poll may append the held-back rows during the
         # wait, so the step's starting counts are taken before the blur.
         shown += GROW_MORE
         step("after_edit", grow_update(
             window, shown, f"kept: edited().textContent === '{GROW_TEXT}'",
-            first="g.span.blur(); await wait(1500);"))
+            first=GROW_END_EDIT))
         out["edit_saved"] = real(grow_mid, 1, 1)["items"][0]["text"] == GROW_TEXT
         # Undo the edit, then more passages: the undone text stays.
         out["undone"] = evaluate(window, GROW_JS + """
@@ -845,7 +865,8 @@ def growing_checks(window, ws, grow_mid):
             await window.workspace.refresh();
             const labelled = await until(() => !!document.querySelector('#transcript .who'));
             await frames();
-            return {labelled, redrawn: g.redraws > g.redrawsBeforeSpeakers,
+            return {labelled, focused: document.hasFocus(),
+                    redrawn: g.redraws > g.redrawsBeforeSpeakers,
                     turns: document.querySelectorAll('#transcript li.turn').length,
                     ids: [...rows()].map(li => Number(li.dataset.id))};"""))
         out["speakers"]["in_order"] = out["speakers"].pop("ids") == ws.store.passage_ids(vid)
@@ -863,7 +884,9 @@ def growing_problems(gr):
     for name in ("append_1", "append_2", "after_edit", "after_undo", "later_chunk"):
         s = gr.get(name) or {}
         if not (s.get("ok") and s.get("redrawn") is False and s.get("added") == GROW_MORE):
-            bad.append(f"{name}: new passages were not appended")
+            # Whether the window had focus, so a failure shows that cause (#308).
+            focus = " (the window had no focus)" if s.get("focused") is False else ""
+            bad.append(f"{name}: new passages were not appended{focus}")
     if not (gr.get("while_editing") or {}).get("held"):
         bad.append("rows were drawn while a passage was being edited")
     if not ((gr.get("after_edit") or {}).get("kept") and gr.get("edit_saved")):
@@ -941,6 +964,9 @@ def failed_meeting_checks(window, ws, fail_mid):
         // added first; the select keeps the focus, so a poll does not refill it.
         // So transcribeAgain's "chosen model has a label" branch goes uncovered:
         // a real ready model would need a download, and this check stays offline (N2).
+        // The page reads document.activeElement here, not focus events, so an
+        // unfocused window needs no help (BLUR_JS).
+        out.focused = document.hasFocus();
         sel.focus();
         sel.append(new Option('Synthetic test model', {json.dumps(READY_MODEL)}));
         sel.value = {json.dumps(READY_MODEL)};
