@@ -41,6 +41,19 @@
 #                 Prints {"lid": state}; exit 0 put back or nothing waiting,
 #                 1 not put back now, 2 damaged record (left as it is), 3 the
 #                 app is open (power.RESTORE_CODES). No content or paths.
+#   --offboard-report  what Unminute keeps for this Windows user (#111 B8),
+#                 run as the user: one line of JSON with counts and yes or no
+#                 (the workspace's state and blockers, models, token, lid
+#                 record, the earlier version's data). Exit 0 nothing to
+#                 remove or all removable, 2 run as Local System (or Windows
+#                 cannot say who), 3 the app is open, 5 blocked (meetings,
+#                 holds, cleanup, recordings or audio left), 6 the location
+#                 is refused (a link at Unminute or Unminute\workspace).
+#   --offboard    removes it when nothing blocks, with the app closed: the lid
+#                 is put back, an offboarded audit record goes to the Event
+#                 Log, the root key is erased, then the workspace, models and
+#                 token are removed (docs/PACKAGING.md, "Offboarding"). Exit
+#                 codes as above, and 1 when a step failed (run it again).
 #
 # A window start first runs the launcher pass (workspace/launch.py, #111 B5):
 # in machine mode it decides which installed version opens this user's
@@ -271,6 +284,39 @@ def verify_audit(argv, root=None):
     return out, 0 if ok else 1
 
 
+def offboard(argv):
+    """--offboard-report and --offboard (#111 B8): (result, exit code). Run
+    as Local System, or when Windows cannot say who runs it, nothing is
+    read. A location the app itself refuses (synced, on a network drive, a
+    broken link) is refused here too. --offboard holds the app's
+    single-instance mutex while it runs, so the app cannot start in this
+    session meanwhile."""
+    import os
+
+    from workspace import audit
+    from workspace import offboard as ob
+    account = _system_account()
+    if account is None:
+        return {"result": "account_unknown"}, ob.ACCOUNT
+    if account:
+        return {"result": "system_account"}, ob.ACCOUNT
+    from workspace.store import StoreError, default_root, local_appdata
+    try:
+        default_root()                          # the app's own refusals (#219, #266)
+        appdata = local_appdata()
+    except StoreError:
+        return {"result": "refused"}, ob.REFUSED
+    remove = "--offboard" in argv
+    if remove:
+        held = _single_instance()
+        session_running = (lambda: True) if held is None else (lambda: False)
+    else:
+        session_running = _app_running
+    mirror = audit.EventLogMirror() if os.name == "nt" else None
+    return ob.run(ob.Where(appdata), remove, account=False, session_running=session_running,
+                  mirror=mirror)
+
+
 def restore_lid():
     """--restore-lid (#191): the lid restore only, at the workspace the app
     itself uses. Returns a state in power.RESTORE_CODES; never raises."""
@@ -391,6 +437,13 @@ def main():
         state = restore_lid()
         print(json.dumps({"lid": state}))
         return RESTORE_CODES[state]
+    if "--offboard-report" in sys.argv or "--offboard" in sys.argv:
+        try:
+            result, code = offboard(sys.argv)
+        except Exception:                   # never a traceback (it holds folders)
+            result, code = {"result": "failed", "step": "unexpected"}, 1
+        print(json.dumps(result))
+        return code
     from workspace.store import StoreError
     if "--status" in sys.argv:
         try:

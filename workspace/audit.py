@@ -154,6 +154,10 @@ KINDS = {
     "folder_added": (1600, INFO, {"folder": _id, "existing": _bool}),
     "delete_authority": (1601, INFO, {"folder": _id, "granted": _bool}),
     "folder_removed": (1602, INFO, {"folder": _id, "had_authority": _bool}),
+    # Offboarding (#111 B8, B8-4): written and copied to the Event Log before
+    # the workspace, with this file, is removed. Yes or no only.
+    "offboarded": (1700, INFO, {"locked": _bool, "models": _bool, "token": _bool,
+                                "earlier_token": _bool}),
     "tail_damaged": (1900, WARNING, {"bytes": _count}),
     "write_failed": (1901, WARNING, {"count": _count}),
     "segment_dropped": (1902, WARNING, {"segment": _count, "first_seq": _opt_count,
@@ -161,9 +165,9 @@ KINDS = {
     "mirror_gap": (1903, WARNING, {"first_seq": _count, "last_seq": _count}),
     "suppressed": (1904, WARNING, {"of_kind": None, "count": _count}),   # of_kind: LIMITED
 }
-# Written by the log itself or at start: never rate-limited.
+# Written by the log itself, at start or by offboarding: never rate-limited.
 INTERNAL = frozenset({"chain_start", "app_start", "locked", "tail_damaged", "write_failed",
-                      "segment_dropped", "mirror_gap", "suppressed"})
+                      "segment_dropped", "mirror_gap", "suppressed", "offboarded"})
 # Written by the app for imports and deletions: never reduced to a count (the
 # owner's decision of 21 Oct 2026, #111), so a page flood or a legitimate burst
 # never hides which meeting was imported or deleted. Failed cleanups are not
