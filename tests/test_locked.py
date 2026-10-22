@@ -449,6 +449,39 @@ class LockedStartTests(unittest.TestCase):
         self.assertIn("media", kinds)
         self.assertEqual(before, self.snapshot())
 
+    def test_a_cleanup_job_run_directly_while_locked_waits_untouched(self):
+        # #111 C3c: the crypto-erase never runs while locked (C4a design 7.2;
+        # the owner's decision of 21 Oct 2026). The processing loop is held
+        # (above); a direct call returns before reading the job: no hold or
+        # key row is read, no key destroyed, no checkpoint made, no worker
+        # stopped, nothing told to the audit log and no file deleted.
+        self.fill()
+        before = self.snapshot()
+        ws = self.locked()
+        jobs = [r["id"] for r in ws.store._all("SELECT id FROM cleanup_jobs")]
+        self.assertEqual(2, len(jobs))                   # fill() discarded one meeting
+        targets = ("workspace.store.Store.remove_audio_keys",
+                   "workspace.store.Store.destroy_keys",
+                   "workspace.store.Store.erase_checkpoint", "workspace.cleanup._held",
+                   "workspace.cleanup.compact", "shutil.rmtree")
+        patches = [mock.patch(t, side_effect=AssertionError(t)) for t in targets]
+        spies = [p.start() for p in patches]
+        told = mock.Mock()
+        try:
+            for jid in jobs:
+                self.assertEqual(cleanup.JobResult.WAITING,
+                                 cleanup.run_job(ws.store, jid, ws.media, quiesce=told,
+                                                 on_event=told))
+        finally:
+            for p in patches:
+                p.stop()
+        for target, spy in zip(targets, spies, strict=True):
+            self.assertFalse(spy.called, target)
+        told.assert_not_called()
+        self.assertEqual(0, ws.store.db.total_changes)
+        self.close(ws)
+        self.assertEqual(before, self.snapshot())
+
     def test_the_cleanup_count_leaves_out_cleanup_owed_a_new_confirmation(self):
         # Round 2 review nit: a job that a released hold moved to
         # awaiting_confirmation needs the user to confirm again, so its

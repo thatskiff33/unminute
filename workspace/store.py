@@ -1492,13 +1492,28 @@ class Store:
         active or released, is kept (StoreError; #193, invariant C2:
         releasing a hold deletes nothing, and a released hold's row is never
         left without its meeting). It stays listed as an import that did not
-        finish, and only the user's Discard removes it."""
+        finish, and only the user's Discard removes it. Once the keys are
+        deleted, the write-ahead log is emptied (_erase_or_owe, #111 C3c)."""
         with self.tx() as db:
             if db.execute("SELECT 1 FROM sources WHERE meeting_id = ?", (mid,)).fetchone():
                 raise StoreError("Meeting has content; use cleanup (#17).")
             if db.execute("SELECT 1 FROM holds WHERE meeting_id = ?", (mid,)).fetchone():
                 raise StoreError("A retention hold keeps this meeting.")
             self.delete_meeting_row(db, mid)
+        self._erase_or_owe()
+
+    def _erase_or_owe(self):
+        """After a transaction that destroyed keys outside a cleanup job (a
+        failed or abandoned import): empty the write-ahead log
+        (erase_checkpoint), or, while a reader keeps it busy, leave the
+        compaction owed (compact.pending) for the next sound start. The
+        removal itself has succeeded either way (#111 C3c, design 6.1), so
+        a marker that cannot be made is not an error here."""
+        if not self.erase_checkpoint():
+            try:
+                mark_compaction_owed(self.path)
+            except OSError:
+                pass
 
     # -- deleting a meeting: only here (tests/test_content_access.py checks that
     #    no other module deletes rows from a table with content) ----------------
@@ -1563,7 +1578,8 @@ class Store:
         app's own copy of the audio inside the transaction: if it raises (a
         locked file), the rows are rolled back, so the meeting stays listed
         and the next start tries again; never a folder of decoded audio with
-        no record of it. Returns whether it removed the meeting."""
+        no record of it. Once committed, the write-ahead log is emptied
+        (_erase_or_owe, #111 C3c). Returns whether it removed the meeting."""
         with self._lock, self.tx() as db:
             if (db.execute("SELECT 1 FROM holds WHERE meeting_id = ?", (mid,)).fetchone()
                     or db.execute("SELECT 1 FROM versions WHERE meeting_id = ?",
@@ -1571,6 +1587,7 @@ class Store:
                 return False
             self.delete_meeting_row(db, mid)
             remove_folder()
+        self._erase_or_owe()
         return True
 
     # -- reading meetings ----------------------------------------------------------
