@@ -18,16 +18,20 @@ onnxruntime==1.30.0
 # wheel for CPython 3.14 on Windows (workspace/gpu.py); for 2.13.0 it publishes
 # none. torchcodec 0.12 and later work with torch 2.11 and later, and torchaudio
 # 2.11 does not pin torch.
-pyannote-audio==4.0.4
+pyannote-audio==4.0.7
 torch==2.14.1
 torchaudio==2.11.0
-torchcodec==0.14.0
+torchcodec==0.17.0
 # Security floor for a dependency of pyannote.audio (CVE-2026-58659, #118).
 pytorch-lightning>=2.6.6
 
 # Media, audio and arrays
-av==17.1.0
-numpy==2.4.6
+# PyAV 18.1.0 and later fix a process crash when a stream has no decoder
+# (PyAV-Org/PyAV#2344, #310); workspace/decode_child.py still refuses such a
+# stream first (#302). 19.0.2 also fixes a double free when decoding audio with
+# a custom channel layout, so it was taken inside the cooldown as a security fix.
+av==19.0.2
+numpy==2.5.4
 sounddevice==0.5.6
 
 # Encryption at rest (#111 phase C): AES-256-GCM and HKDF from pyca's OpenSSL
@@ -36,8 +40,12 @@ sounddevice==0.5.6
 cryptography==50.0.2
 
 # Model downloads (the separate download process)
-huggingface_hub==1.18.0
-truststore==0.10.4
+huggingface_hub==1.33.0
+truststore==0.10.5
+# hf-xet is huggingface_hub's dependency, switched off at run time
+# (HF_HUB_DISABLE_XET in workspace/setup.py). Held at 1.6.0: 1.7.0 adds
+# client-side telemetry reports (owner decision, 21 Oct 2026, #180).
+hf-xet==1.6.0
 
 # The window. proxy_tools, which pywebview needs, has no published wheel: its
 # pinned wheel is in packaging/wheels (tools/lock.py and the build find it there).

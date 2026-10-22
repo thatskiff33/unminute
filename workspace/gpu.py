@@ -88,10 +88,13 @@ WHISPER_LICENCE = ("NVIDIA CUDA Toolkit licence (cuBLAS), published by NVIDIA on
 # the win_amd64 file), and checked against the downloaded file. 12.8.4.1 is
 # the cuBLAS of the CUDA 12.8.1 toolkit CTranslate2 4.8.0's Windows wheels are
 # built with (python/tools/prepare_build_environment_windows.sh at v4.8.0).
+# CTranslate2 4.8.3 (re-lock, #180) builds with the same toolkit (that script
+# at v4.8.3), and its ctranslate2.dll still names cublas64_12.dll as its only
+# CUDA library besides the driver's nvcuda.dll (checked 22 October 2026).
 # record_sha256 is the SHA-256 of the wheel's own RECORD, read from that file.
 # A CTranslate2 upgrade must check which cuBLAS it loads before this changes
 # (tests/test_consistency.py ties the two).
-WHISPER_CTRANSLATE2 = "4.8.0"
+WHISPER_CTRANSLATE2 = "4.8.3"
 WHISPER_WHEELS = (
     {"name": "nvidia_cublas_cu12", "version": "12.8.4.1", "size": 567544208,
      "url": "https://files.pythonhosted.org/packages/70/61/"
