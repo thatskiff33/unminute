@@ -4,8 +4,7 @@
 # invariants P1 and P2):
 #   - file tools may not touch a repo's extracted/ folder (old transcripts) or the
 #     live workspace (%LOCALAPPDATA%\Unminute\workspace, or that data folder other
-#     than its models, and the old %LOCALAPPDATA%\whisper folder, whose workspace
-#     keeps real content until deleted), however the path is spelt: short (8.3)
+#     than its models), however the path is spelt: short (8.3)
 #     names, junctions such as "Local Settings", \\?\ and \\localhost\C$ forms and
 #     trailing dots are resolved first;
 #   - shell commands (Bash, PowerShell, Monitor) may not name either of them as
@@ -60,11 +59,12 @@
 # backtick escaped with a backslash in a message is text (a Markdown code span);
 # one that is not is run, and checked.
 # Two layers run on every call (#221). main's earlier check runs first, unchanged in
-# what it blocks: whisper\workspace anywhere, and Unminute\workspace after local
-# AppData, a variable, a substitution, a wildcard folder name or a climb, or as a
-# path of its own (so this hook blocks everything main did, apart from text that
-# is only written: message options, -Value, quoted heredocs and here-strings, and
-# such text read back later in the same command, a known gap below).
+# what it blocks for Unminute\workspace: after local AppData, a variable, a
+# substitution, a wildcard folder name or a climb, or as a path of its own (so this
+# hook blocks everything main did, apart from text that is only written: message
+# options, -Value, quoted heredocs and here-strings, and such text read back later
+# in the same command, a known gap below). The patterns for the data folder from
+# before the rename were retired once the owner confirmed it deleted (#136).
 # The deeper checks described above follow. Any error while checking blocks the
 # call (exit 2), never only warns; the input is read as UTF-8, as Claude Code sends
 # it (#221 round 2). Claude Code lets a call through when a hook runs past its
@@ -218,10 +218,8 @@ MEDIA_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac", ".o
 
 # -- the first layer: main's reviewed checks (#207), unchanged in what they block ------
 # They run before the deeper checks below, so this hook blocks everything main's did
-# (#221: no regression against main). Only the two #207 round 8 nits widen them.
-
-# The old workspace however the path is written: whisper\workspace after any folder.
-PLAIN_OLD_WORKSPACE = re.compile(r"(?<![\w-])whisper[\\/]+workspace(?![\w-])", re.IGNORECASE)
+# (#221: no regression against main). Only the two #207 round 8 nits widen them, and
+# only the retired pre-rename folder's pattern has gone from them (#136).
 
 
 def unminute_workspace_pattern(local_appdata):
@@ -275,7 +273,7 @@ PLAIN_PATTERN = re.compile(r"(?<![\w-])(?:-e|--regexp|-pattern|-simplematch)(?:\
 
 
 def _plain_names_workspace(text):
-    return bool(PLAIN_OLD_WORKSPACE.search(text) or UNMINUTE_WORKSPACE.search(text))
+    return bool(UNMINUTE_WORKSPACE.search(text))
 
 
 def _plain_shell(command):
@@ -332,29 +330,24 @@ def _local_appdata():
     return "(?:" + "|".join(forms) + ")"
 
 
-# The data folders, however the path is written. The new one is %LOCALAPPDATA%\Unminute,
-# beside the models agents may use: that folder is blocked, except its models, but
-# only next to local AppData, allowing a few characters of shell syntax between them
-# (Join-Path, "$(...)", concatenation, a list of path parts in code). A clone of this
-# repository is a folder named unminute holding the workspace package, so the name
-# alone is not enough. The old one is %LOCALAPPDATA%\whisper, blocked whole (its
-# whisper-models sibling is not), and its workspace anywhere: whisper\workspace (or
-# its short name, WORKSP~1), or "whisper", "workspace" as parts of a path in code.
+# The data folder, however the path is written: %LOCALAPPDATA%\Unminute, beside the
+# models agents may use. That folder is blocked, except its models, but only next to
+# local AppData, allowing a few characters of shell syntax between them (Join-Path,
+# "$(...)", concatenation, a list of path parts in code). A clone of this repository
+# is a folder named unminute holding the workspace package, so the name alone is not
+# enough.
 LOCAL_APPDATA = _local_appdata()
 # models is allowed, but not a path that climbs out of it (models\..\workspace),
 # whether the .. is in the same word or the next path part.
 UP_NEXT = r"(?:[\\/]|['\"]\s*[,/+]?\s*r?['\"]|\s+)\.\.(?:[\\/'\"\s]|$)"
 DATA_FOLDER = (r"Unminute(?!\w)(?![\\/'\",\s]{1,4}models(?!\w)"
                r"(?![^\s'\"]*?" + UP_NEXT + r"))")
-OLD_FOLDER = r"whisper(?![\w-])"
 # A backtick closes a bash substitution: `cygpath $LOCALAPPDATA`/Unminute (#221).
 SEPARATOR = r"[%}\)\]'\"`\s+,\\/.]{1,10}"
-LIVE_WORKSPACE = re.compile(
-    r"(?<![\w-])whisper(?:[\\/]+|['\"]\s*[,/]\s*['\"])(?:workspace(?!\w)|WORKSP~\d)"
-    r"|" + LOCAL_APPDATA + SEPARATOR + r"(?:" + DATA_FOLDER + "|" + OLD_FOLDER + ")",
-    re.IGNORECASE)
-DATA_NAMES = ("unminute", "whisper")
-# A wildcard (or a {a,b} brace list) straight after local AppData (Unmin*, *, w*)
+LIVE_WORKSPACE = re.compile(LOCAL_APPDATA + SEPARATOR + r"(?:" + DATA_FOLDER + ")",
+                            re.IGNORECASE)
+DATA_NAMES = ("unminute",)
+# A wildcard (or a {a,b} brace list) straight after local AppData (Unmin*, *, U*)
 # that could stand for a data folder, unless what follows it is models. A variable
 # there ($d, ${d}, %d%, a loop's) stands for any name too, and a ) or backtick
 # ends the name ($(ls -d .../Unm*)/workspace) (R13b round 5 review).
@@ -366,7 +359,7 @@ UNKNOWN_NAME = re.compile(r"\$\{[^}]*\}?|\$\(.*|\$(?:env:)?\w+|%\w+%?", re.IGNOR
 # name as a path of its own: together in one command (a pipeline, Join-Path
 # -ChildPath, split arguments) they build the data folder.
 BARE_LOCAL = re.compile(LOCAL_APPDATA + r"[%}\)\]'\"`]*(?=[\s|;),`]|$)", re.IGNORECASE)
-DATA_WORD = re.compile(r"(?<![\w.\\/:$%~-])(?:" + DATA_FOLDER + "|" + OLD_FOLDER + ")",
+DATA_WORD = re.compile(r"(?<![\w.\\/:$%~-])(?:" + DATA_FOLDER + ")",
                        re.IGNORECASE)
 # Other names for folders in and beside local AppData, so that $env:TEMP\.. or
 # $env:APPDATA\..\Local are seen for what they reach. TEMP is in local AppData
@@ -704,13 +697,12 @@ def _canonical(path):
 
 
 def _data_folders():
-    """This user's data folders, canonical: the new one (with the name of the part
-    agents may use) and the old one."""
+    """This user's data folders, canonical, each with the name of the part agents may
+    use: %LOCALAPPDATA%\\Unminute and its models."""
     local = os.environ.get("LOCALAPPDATA", "")
     if not local:
         return ()
-    return ((_canonical(ntpath.join(local, "Unminute")), "models"),
-            (_canonical(ntpath.join(local, "whisper")), None))
+    return ((_canonical(ntpath.join(local, "Unminute")), "models"),)
 
 
 DATA_FOLDERS = _data_folders()
@@ -788,8 +780,7 @@ def _glob_reaches_data(start, pattern):
                     if not fnmatch.fnmatchcase(below[i], part):
                         break
                     continue
-                # Past the data folder: only models may follow (the old folder has
-                # none, so allowing it there lists nothing).
+                # Past the data folder: only models may follow.
                 if part != "models":
                     return True
                 break

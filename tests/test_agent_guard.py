@@ -147,10 +147,7 @@ class FileToolTests(unittest.TestCase):
         local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
         for path in (local + r"\Unminute\workspace\workspace.db",
                      "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
-                     # the old folder keeps real content until the user deletes it
-                     local + r"\whisper\workspace\workspace.db",
-                     "C:/Users/someone/AppData/Local/whisper/workspace/media/1/audio.f32",
-                     local + r"\whisper\WORKSP~1\workspace.db",     # its 8.3 short name
+                     local + r"\Unminute\WORKSP~1\workspace.db",    # an 8.3 short name
                      # a damaged workspace renamed aside, as the guide says
                      local + r"\Unminute\workspace-damaged\workspace.db",
                      # device, long-path and network forms of the same folder
@@ -184,15 +181,14 @@ class FileToolTests(unittest.TestCase):
                                             file_path=local + r"\Unminute\models\a\..\b.json")))
 
     def test_unminute_workspace_is_blocked(self):
-        # The renamed data folder (#136), in the forms the old one is checked in
-        # above. The old folder stays covered: it keeps real content until deleted.
+        # The renamed data folder (#136), with each file tool.
         local = os.environ.get("LOCALAPPDATA", r"C:\Users\someone\AppData\Local")
         for path in (local + r"\Unminute\workspace\workspace.db",
                      "C:/Users/someone/AppData/Local/Unminute/workspace/media/1/audio.f32",
                      r"C:\Users\someone\AppData\Local\unminute\WORKSPACE",
                      "~/AppData/Local/Unminute/workspace/settings.json",
                      r"C:\Users\someone\AppData\Local\Temp\..\Unminute\workspace\workspace.db",
-                     # A "." segment before it (main blocks these for the old folder).
+                     # A "." segment before it.
                      r".\Unminute\workspace\a.json",
                      "./Unminute/workspace/a.json",
                      r"C:\Users\s\AppData\Local\.\Unminute\workspace\workspace.db"):
@@ -201,7 +197,7 @@ class FileToolTests(unittest.TestCase):
                             tool("Grep", pattern="anything", path=path)):
                 with self.subTest(payload=payload):
                     self.assertIsNotNone(guard.decide(payload))
-        # A Glob pattern naming it after a wildcard, as main blocks for the old folder.
+        # A Glob pattern naming it after a wildcard.
         self.assertIsNotNone(guard.decide(tool("Glob", pattern="**/Unminute/workspace/**",
                                                path=r"C:\Users\someone\AppData\Local")))
 
@@ -391,21 +387,29 @@ class FileToolTests(unittest.TestCase):
         self.assertIsNone(guard.decide(tool("Glob", path=str(ROOT),
                                             pattern="{" + names + "}/workspace/*")))
 
-    def test_the_old_data_folder_is_blocked_whole(self):
-        # %LOCALAPPDATA%\whisper holds the old workspace's real meetings until the
-        # user deletes it; its whisper-models sibling is only models (R13b review).
+    def test_the_retired_pre_rename_folder_is_an_ordinary_folder(self):
+        # The data folder from before the rename (%LOCALAPPDATA%\whisper) was
+        # blocked until the owner confirmed it deleted on the only install
+        # (#136, 22 Oct 2026); it is now an ordinary folder in local AppData. A
+        # wildcard that could stand for Unminute is still blocked.
         local = r"C:\Users\someone\AppData\Local"
         for payload in (tool("Glob", path=local + r"\whisper", pattern="work*/*.json"),
                         tool("Glob", path=local, pattern="whisper/*/*.json"),
                         tool("Glob", path=local, pattern="w*/workspace/*"),
                         tool("Grep", pattern="budget", path=local + r"\whisper"),
-                        tool("Read", file_path=local + r"\whisper\settings.json")):
-            with self.subTest(payload=payload):
-                self.assertIsNotNone(guard.decide(payload))
-        for payload in (tool("Read", file_path=local + r"\whisper-models\a.json"),
-                        tool("Glob", path=local + r"\whisper-models", pattern="**/*.json")):
+                        tool("Read", file_path=local + r"\whisper\settings.json"),
+                        tool("Read", file_path=local + r"\whisper\workspace\workspace.db"),
+                        tool("Read", file_path=local + r"\whisper-models\a.json")):
             with self.subTest(payload=payload):
                 self.assertIsNone(guard.decide(payload))
+        for payload in (tool("Glob", path=local, pattern="?nminute/workspace/*"),
+                        tool("Glob", path=local, pattern="*/workspace/*")):
+            with self.subTest(payload=payload):
+                self.assertIsNotNone(guard.decide(payload))
+        for command in (r"Get-Content $env:LOCALAPPDATA\whisper\workspace\settings.json",
+                        r"rg -n budget $env:LOCALAPPDATA\whisper"):
+            with self.subTest(command=command):
+                self.assertIsNone(guard.decide(shell(command, "PowerShell")))
 
     def test_other_spellings_of_local_appdata_are_seen(self):
         # Windows opens all of these as local AppData (R13b review): device and
@@ -428,7 +432,6 @@ class FileToolTests(unittest.TestCase):
                                                r"\workspace\a.db"),
                         tool("Read", file_path=r"C:\Users\x\AppData.\Local\Unminute"
                                                r"\workspace\a.db"),
-                        tool("Read", file_path=local + r"\whisper.\workspace\a.db"),
                         tool("Read", file_path=local + r"\Unminute.\workspace\a.db"),
                         tool("Glob", path=r"C:\Users\someone",
                              pattern="AppData/*/Unminute/workspace/*"),
@@ -511,12 +514,10 @@ class ShellTests(unittest.TestCase):
                         r"type extracted\notes.md",
                         "ls extracted",
                         "git add -f extracted",
-                        r"Get-Content $env:LOCALAPPDATA\whisper\workspace\workspace.db",
                         r"Get-Content $env:LOCALAPPDATA\Unminute\workspace\workspace.db",
                         r'Get-Content "%LOCALAPPDATA%\Unminute\workspace\settings.json"',
                         "sqlite3 ~/AppData/Local/Unminute/workspace/workspace.db .dump",
-                        r'Get-Content "$env:LOCALAPPDATA\whisper\workspace\settings.json"',
-                        "sqlite3 ~/AppData/Local/whisper/workspace/workspace.db .dump",
+                        r'Get-Content "$env:LOCALAPPDATA\Unminute\workspace\settings.json"',
                         "rg -n budget extracted/",
                         'grep -r "x" "extracted/"',
                         r"Select-String -Pattern 'x' -Path extracted\notes.md",
@@ -532,7 +533,6 @@ class ShellTests(unittest.TestCase):
                         r" + '\Unminute\workspace\settings.json')",
                         "python -c \"import os; print(open(os.path.join(os.environ['LOCALAPPDATA'],"
                         " 'Unminute', 'workspace', 'settings.json')).read())\"",
-                        "python -c \"os.listdir(os.path.join(x, 'whisper', 'workspace'))\"",
                         r"Get-ChildItem $env:LOCALAPPDATA\Unminute\workspace-damaged",
                         # ...or the data folder around it, searched or listed whole
                         r"rg -n budget $env:LOCALAPPDATA\Unminute",
@@ -546,7 +546,6 @@ class ShellTests(unittest.TestCase):
                         r"Get-Content $env:LOCALAPPDATA\Unminute\models\..\workspace\a.json",
                         r"cd $env:LOCALAPPDATA\Unminute\models; Get-Content ..\workspace\a.json",
                         r"git -C $env:LOCALAPPDATA\Unminute\models diff --no-index ..\workspace\a",
-                        r"Get-Content $env:LOCALAPPDATA\whisper\models\..\workspace\a.json",
                         # ...or through another folder, or another name for local AppData
                         r"Get-Content $env:LOCALAPPDATA\Temp\..\Unminute\workspace\a.json",
                         r"Get-Content $env:TEMP\..\Unminute\workspace\a.json",
@@ -569,15 +568,13 @@ class ShellTests(unittest.TestCase):
                         r'git commit -F "%LOCALAPPDATA%\Unminute\workspace\a.txt"',
                         r'gh api repos/o/r/issues -F "body=@%LOCALAPPDATA%\Unminute\workspace\a"',
                         r"gh api repos/o/r --field body=@$env:LOCALAPPDATA\Unminute\workspace",
-                        # the old data folder, whole (R13b review)
-                        r"Get-Content $env:LOCALAPPDATA\whisper\works*\settings.json",
-                        r"Get-Content $env:LOCALAPPDATA\whisper\*\settings.json",
-                        "cat ~/AppData/Local/whisper/w*/settings.json",
-                        r"rg -n budget $env:LOCALAPPDATA\whisper",
-                        r"Get-ChildItem -Recurse $env:LOCALAPPDATA\whisper",
+                        # the data folder, whole, past a wildcard (R13b review)
+                        r"Get-Content $env:LOCALAPPDATA\Unminute\works*\settings.json",
+                        r"Get-Content $env:LOCALAPPDATA\Unminute\*\settings.json",
+                        "cat ~/AppData/Local/Unminute/w*/settings.json",
                         # trailing dots, which Windows drops
                         r"Get-Content $env:LOCALAPPDATA.\Unminute\workspace\a.json",
-                        r"Get-Content $env:LOCALAPPDATA\whisper.\workspace\a.json",
+                        r"Get-Content $env:LOCALAPPDATA\Unminute.\workspace\a.json",
                         r"Get-Content C:\Users\x\AppData\Local.\Unminute\workspace\a.json",
                         r'Get-Content "$env:USERPROFILE\Local Settings\Unminute\workspace\a.json"',
                         # split across arguments, a pipeline or a string prefix
@@ -645,8 +642,7 @@ class ShellTests(unittest.TestCase):
                         r"Get-Content ([Environment]::GetFolderPath('LocalApplicationData')"
                         r" + '\Unminute\workspace\settings.json')",
                         "rg -n budget ~/AppData/Local/Unminute/workspace",
-                        # Main's old pattern blocks any folder before whisper\workspace;
-                        # the new one takes any variable or substitution there.
+                        # Any variable or substitution before Unminute\workspace.
                         "d=$LOCALAPPDATA; cat $d/Unminute/workspace/settings.json",
                         "cat \"${d}\"/Unminute/workspace/settings.json",
                         'cat "$(cygpath -u "$LOCALAPPDATA")/Unminute/workspace/settings.json"',
@@ -655,8 +651,7 @@ class ShellTests(unittest.TestCase):
                         r"Get-Content LOCALAPPDATA\Unminute\workspace\settings.json",
                         r"Get-Content $env:TEMP\..\Unminute\workspace\settings.json",
                         "python tools/run_tests.py && cat ~/AppData/Local/Unminute/workspace/a",
-                        # A "." segment or a * wildcard straight before it: main blocks
-                        # these forms for the old folder.
+                        # A "." segment or a * wildcard straight before it.
                         r"cd $env:LOCALAPPDATA; Get-Content .\Unminute\workspace\a.json",
                         r"Push-Location $env:LOCALAPPDATA; gc .\Unminute\workspace\a",
                         "cd ~/AppData/Local && cat ./Unminute/workspace/a.json",
@@ -664,8 +659,7 @@ class ShellTests(unittest.TestCase):
                         r"Get-ChildItem -Path $env:LOCALAPPDATA -Recurse"
                         r" | ? FullName -like '*Unminute\workspace*'",
                         # A bound parameter (-Path:), a redirect, a ? wildcard, a
-                        # drive-relative path or a cmd substring expansion before it:
-                        # main blocks these forms for the old folder too.
+                        # drive-relative path or a cmd substring expansion before it.
                         r"cd $env:LOCALAPPDATA; Get-Content -Path:.\Unminute\workspace\a.json",
                         r"cd $env:LOCALAPPDATA; gci -LiteralPath:Unminute\workspace -Recurse",
                         r"Join-Path -Path $env:LOCALAPPDATA -ChildPath:Unminute\workspace",
@@ -792,10 +786,9 @@ class ShellTests(unittest.TestCase):
                         'git commit -m "Ignore *.wav and *.mp4"',
                         'git commit -m "Add a note on where extracted text goes"',
                         'grep -rn "extracted/" .gitignore',
-                        r'rg -n "whisper\\workspace" workspace',
-                        r"Select-String -Path AGENTS.md -Pattern 'whisper\\workspace'",
+                        r'rg -n "Unminute\\workspace" workspace',
+                        r"Select-String -Path AGENTS.md -Pattern 'Unminute\\workspace'",
                         'git log -S "extracted/" --oneline',
-                        r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\whisper\workspace"',
                         r'gh pr create --title "G" --body "P2: %LOCALAPPDATA%\Unminute\workspace"',
                         r'rg -n "LOCALAPPDATA\\Unminute\\workspace" docs',
                         "git commit -F - <<'EOF'\nStop staging *.wav files in extracted/\nEOF",
@@ -806,7 +799,7 @@ class ShellTests(unittest.TestCase):
                         # patterns (R13b round 2 review)
                         'rg -n "LOCALAPPDATA" docs | rg Unminute',
                         'rg -n "LOCALAPPDATA|Unminute" docs',
-                        "git grep -n LOCALAPPDATA -- docs | Select-String whisper",
+                        "git grep -n LOCALAPPDATA -- docs | Select-String Unminute",
                         "grep -rn LOCALAPPDATA docs | grep -i unminute",
                         "gh pr view 207 --json body --jq .body | Select-String 'LOCALAPPDATA', "
                         "'Unminute'",
@@ -832,8 +825,6 @@ class ShellTests(unittest.TestCase):
                         "gh pr comment 207 --body $b",
                         # ...and in double quotes (R13b round 2 review)
                         '$b = "P2 covers %LOCALAPPDATA%\\Unminute\\workspace"; '
-                        "gh pr comment 207 --body $b",
-                        '$b = "P2 covers %LOCALAPPDATA%\\whisper\\workspace"; '
                         "gh pr comment 207 --body $b"):
             with self.subTest(command=command):
                 self.assertIsNone(guard.decide(shell(command, "PowerShell")))
@@ -941,7 +932,7 @@ class ShellTests(unittest.TestCase):
         for command, name in (
                 ('ls -t "C:/Users/someone/AppData/Local/Unminute/workspace"', "Bash"),
                 ('cat -b "C:/Users/someone/AppData/Local/Unminute/workspace/a.json"', "Bash"),
-                ("sort -m 'C:/Users/someone/AppData/Local/whisper/workspace/a.txt'", "Bash"),
+                ("sort -m 'C:/Users/someone/AppData/Local/Unminute/workspace/a.txt'", "Bash"),
                 (f'Get-Item -t "{data}\\a.json"', "PowerShell"),
                 (f'Set-ItemProperty -Path HKCU:\\x -Name y -Value "{data}"', "PowerShell"),
                 (f"gh-tool -f 'k={data}\\a.json'", "Bash")):
@@ -1197,7 +1188,7 @@ class ShellTests(unittest.TestCase):
                 self.assertIsNone(guard.decide(shell(command, name)))
 
     def test_other_tools_are_allowed(self):
-        self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ whisper/workspace")))
+        self.assertIsNone(guard.decide(tool("WebSearch", query="extracted/ Unminute/workspace")))
 
 
 class RoundFiveTests(unittest.TestCase):
@@ -1265,7 +1256,7 @@ class RoundFiveTests(unittest.TestCase):
 
     def test_compact_assignments_in_interpreter_code_are_checked(self):
         # A ;-separated statement that is only an assignment (d=json.load(...)) is
-        # checked, for both data folders.
+        # checked.
         data = r"C:\Users\someone\AppData\Local"
         with profile_guard() as fresh:
             self.check(fresh, blocked=(
@@ -1273,7 +1264,7 @@ class RoundFiveTests(unittest.TestCase):
                  f"\\settings.json'));print(d)\"", "Bash"),
                 (f"python -c \"import json;d=json.load(open(r'{data}\\Unminute\\workspace"
                  f"\\settings.json'));print(d)\"", "PowerShell"),
-                (f"python -c \"import sqlite3;c=sqlite3.connect(r'{data}\\whisper\\workspace"
+                (f"python -c \"import sqlite3;c=sqlite3.connect(r'{data}\\Unminute\\workspace"
                  f"\\workspace.db');print(c)\"", "Bash"),
                 ("python -c \"import os;p=os.path.join(os.environ['LOCALAPPDATA'],'Unminute',"
                  "'workspace');print(os.listdir(p))\"", "Bash"),
@@ -1299,7 +1290,7 @@ class RoundFiveTests(unittest.TestCase):
                  "Bash"),
                 ("git diff --no-index -b 'C:/Users/someone/AppData/Local/Unminute/workspace/"
                  "a.json' b.json", "Bash"),
-                ('git diff --no-index -t "C:/Users/someone/AppData/Local/whisper/workspace/'
+                ('git diff --no-index -t "C:/Users/someone/AppData/Local/Unminute/workspace/'
                  'a.json" b.json', "Bash"),
                 ('git commit -t "C:/Users/someone/AppData/Local/Unminute/workspace/a.txt"',
                  "Bash")),
@@ -1425,7 +1416,7 @@ class HardeningTests(unittest.TestCase):
         with profile_guard() as fresh:
             self.check(fresh, blocked=(
                 ('cat "`cygpath -u $LOCALAPPDATA`/Unminute/settings.json"', "Bash"),
-                ("cat `cygpath -u $LOCALAPPDATA`/whisper/settings.json", "Bash"),
+                ("cat `cygpath -u $LOCALAPPDATA`/Unminute/settings.json", "Bash"),
                 ('ls "`cygpath -u "$LOCALAPPDATA"`/Unminute"', "Bash"),
                 ("ls -R `cygpath $LOCALAPPDATA`/Unmin*", "Bash")),
                 allowed=(
@@ -2153,9 +2144,8 @@ class SettingsTests(unittest.TestCase):
     def test_settings_deny_private_paths_and_run_the_hook(self):
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         deny = settings["permissions"]["deny"]
-        self.assertIn("Read(./extracted/**)", deny)
-        self.assertTrue(any("whisper/workspace" in rule for rule in deny))
-        for rule in ("Read(~/AppData/Local/Unminute/workspace/**)",
+        for rule in ("Read(./extracted/**)", "Edit(./extracted/**)",
+                     "Read(~/AppData/Local/Unminute/workspace/**)",
                      "Edit(~/AppData/Local/Unminute/workspace/**)"):
             self.assertIn(rule, deny)
         hooks = [hook for entry in settings["hooks"]["PreToolUse"] for hook in entry["hooks"]]
