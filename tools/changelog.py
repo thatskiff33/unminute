@@ -26,7 +26,8 @@
 # explains the format and is not a fragment. Stdlib only.
 #
 # Phase C (#111) ships as one release: while workspace/keystore.py says
-# PHASE_C_COMPLETE = False, no release can be prepared (release() refuses;
+# PHASE_C_COMPLETE = False (from C2b-2 until C7 set it), no release can be
+# prepared (release() refuses;
 # --preview and --check still work). The constant is read by parsing the file,
 # never by importing the app. tests/test_consistency.py also pins VERSION to
 # PHASE_C_FROZEN_VERSION meanwhile, so a hand-written release-prep fails CI.
