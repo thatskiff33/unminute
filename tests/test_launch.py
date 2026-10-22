@@ -1,5 +1,8 @@
 # tests/test_launch.py
-# The launcher pass and the workspace lock (#111 B5a).
+# The launcher pass and the workspace lock (#111 B5a); the first-start check,
+# the full check before a migration, the "update waiting" message,
+# finish-only mode, the --health fields and removing unused graphics card
+# components (#111 B5b).
 #   python tools/run_tests.py
 #
 # The launcher (workspace/launch.py, update.launch_decision and read_slots)
@@ -8,6 +11,7 @@
 # Windows session of the same user out. Synthetic installs and workspaces
 # only; nothing here starts a real app or reads the user's workspace.
 
+import contextlib
 import errno
 import importlib.util
 import json
@@ -28,7 +32,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import keyprotect  # noqa: E402
 
-from workspace import instance, launch, update  # noqa: E402
+from workspace import diag, instance, launch, launchcheck, update  # noqa: E402
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av", "cryptography"))
 
@@ -118,9 +122,10 @@ class RecordTests(unittest.TestCase):
         self.write(self.good())
         state, rec = update.read_slots(self.root)
         self.assertEqual(state, "ok")
-        self.assertEqual(rec["slots"], {"3.0": {"schema": 3, "seq": 9},
-                                        "2.1": {"schema": 2, "seq": 8},
-                                        "0.5.0": {"schema": None, "seq": 1}})
+        self.assertEqual(rec["slots"], {
+            "3.0": {"schema": 3, "seq": 9, "installed": "2027-02-02T01:00:00Z"},
+            "2.1": {"schema": 2, "seq": 8, "installed": "2027-01-01T01:00:00Z"},
+            "0.5.0": {"schema": None, "seq": 1, "installed": None}})
         self.assertEqual((rec["version"], rec["previous"]), ("3.0", "2.1"))
 
     def test_no_file_and_format_1(self):
@@ -197,26 +202,36 @@ class InstallLayout:
     """A synthetic install: <root>\\versions\\<v>\\{app\\workspace, runtime}
     with version.json, and current.json format 2."""
 
-    def __init__(self, base, slots, current, previous=None):
+    def __init__(self, base, slots, current, previous=None, features=(), gpu=None):
         self.root = Path(base) / "Unminute"
         self.versions = self.root / "versions"
+        self.features, self.gpu = list(features), gpu
         for name, schema in slots.items():
             self.version(name, schema)
-        entries = {}
+        self.entries = {}
         for seq, (name, schema) in enumerate(slots.items(), 1):
-            entries[name] = {"seq": seq, **({"schema": schema} if schema else {})}
+            self.entries[name] = {"seq": seq, "installed": f"2027-01-{seq:02d}T01:00:00Z",
+                                  **({"schema": schema} if schema else {})}
+        self.current, self.previous = current, previous
+        self.write()
+
+    def write(self):
         (self.root / "current.json").write_text(json.dumps(
-            {"format": 2, "version": current, "path": str(self.versions / current),
-             "previous": previous, "managed": True, "slots": entries}), encoding="utf-8-sig")
+            {"format": 2, "version": self.current, "path": str(self.versions / self.current),
+             "previous": self.previous, "managed": True, "slots": self.entries}),
+            encoding="utf-8-sig")
 
     def version(self, name, schema, stated=None):
         slot = self.versions / name
         (slot / "app" / "workspace").mkdir(parents=True, exist_ok=True)
         (slot / "runtime").mkdir(exist_ok=True)
         (slot / "runtime" / "pythonw.exe").write_bytes(b"synthetic")
-        info = {"name": "Unminute", "version": stated or name}
+        info = {"name": "Unminute", "version": stated or name, "features": self.features}
         if schema:
             info["schema"] = schema
+        if self.gpu is not None:
+            info["gpu_components"] = self.gpu.get(name, []) if isinstance(self.gpu, dict) \
+                else list(self.gpu)
         (slot / "version.json").write_text(json.dumps(info), encoding="utf-8")
 
     def here(self, name):
@@ -248,17 +263,20 @@ class PassTests(unittest.TestCase):
         self.base = Path(os.path.realpath(tmp.name))
         self.layout = InstallLayout(self.base, self.SLOTS, "3.0", previous="2.1")
         self.started = []
+        no_windows(self)
 
     def popen(self, argv, **kwargs):
         self.started.append((argv, kwargs))
 
     def run_pass(self, slot="3.0", argv=("workspace",), workspace=(3,), deployment=MACHINE,
-                 executable=None):
+                 executable=None, checks=None, show=None, today="2026-10-23"):
         with FakeWorkspace(*workspace).patch():
             return launch.start(list(argv), here=self.layout.here(slot),
                                 executable=executable or self.layout.exe(slot),
                                 popen=self.popen, deployment=deployment,
-                                workspace_db=self.base / "workspace.db")
+                                workspace_db=self.base / "workspace.db",
+                                checks=checks or FakeChecks(), notice=FakeNotice,
+                                show=show or self.fail, today=today)
 
     def assert_started(self, slot, role):
         self.assertEqual(len(self.started), 1, self.started)
@@ -290,7 +308,10 @@ class PassTests(unittest.TestCase):
 
     def test_blockers_hand_over_to_the_newest_version_of_the_older_format(self):
         found = [{"kind": "meetings", "count": 2, "message": "2 meetings are still here."}]
-        self.assertEqual(self.run_pass(workspace=(2, found)), launch.Outcome(exit=0))
+        shown = []                                       # B5b: the daily message first
+        self.assertEqual(self.run_pass(workspace=(2, found), show=shown.append),
+                         launch.Outcome(exit=0))
+        self.assertEqual(shown, [launch.WAITING.format(version="2.1")])
         self.assert_started("2.1", "compat")
 
     def test_no_version_of_the_older_format_shows_the_message_with_counts(self):
@@ -315,14 +336,16 @@ class PassTests(unittest.TestCase):
                 out = launch.start(["workspace"], here=self.layout.here("3.0"),
                                    executable=self.layout.exe("3.0"), popen=self.popen,
                                    deployment=MACHINE,
-                                   workspace_db=self.base / "workspace.db")
+                                   workspace_db=self.base / "workspace.db",
+                                   checks=FakeChecks(), notice=FakeNotice, show=self.fail)
             self.assertEqual(out, launch.Outcome(role="current"))
         # A real, damaged database file: unreadable, never an older format.
         db = self.base / "workspace.db"
         db.write_bytes(b"not a database" * 100)
         out = launch.start(["workspace"], here=self.layout.here("2.1"),
                            executable=self.layout.exe("2.1"), popen=self.popen,
-                           deployment=MACHINE, workspace_db=db)
+                           deployment=MACHINE, workspace_db=db, checks=FakeChecks(),
+                           notice=FakeNotice, show=self.fail)
         self.assertEqual(out, launch.Outcome(exit=0))
         self.assert_started("3.0", "current")
 
@@ -393,6 +416,48 @@ class PassTests(unittest.TestCase):
         out = self.run_pass(workspace=(2, found))
         self.assertEqual((out.exit, out.message), (1, launch.IT_MESSAGE))
         self.assertEqual(self.started, [])
+
+
+class FakeChecks:
+    """launchcheck.Checks in tests: each version's (result, part) by its
+    folder name, ok by default; every call is recorded."""
+
+    def __init__(self, light=None, full=None):
+        self.light_results, self.full_results = dict(light or {}), dict(full or {})
+        self.calls = []
+
+    @staticmethod
+    def _name(exe):
+        return Path(exe).parents[1].name
+
+    def light(self, exe, app):
+        self.calls.append(("light", self._name(exe)))
+        return self.light_results.get(self._name(exe), ("ok", None))
+
+    def full(self, exe, app):
+        self.calls.append(("full", self._name(exe)))
+        return self.full_results.get(self._name(exe), ("ok", None))
+
+
+class FakeNotice:
+    """launchcheck.Notice in tests: records that it was open."""
+    opened = 0
+
+    def __enter__(self):
+        FakeNotice.opened += 1
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def no_windows(case):
+    """No test may show a real message box or notice: fail if one would."""
+    for target, name in ((launch, "_inform"), (launchcheck, "Notice")):
+        patcher = mock.patch.object(target, name,
+                                    side_effect=AssertionError(f"a real {name} was shown"))
+        patcher.start()
+        case.addCleanup(patcher.stop)
 
 
 HOLD = textwrap.dedent("""
@@ -593,9 +658,634 @@ class WorkspaceLockTests(unittest.TestCase):
         self.assertFalse((self.root / "workspace.db").exists())
 
 
+class CheckTests(unittest.TestCase):
+    """B5b: the light check at a version's first start, its fault classes and
+    fallback, the full check before a migration, the daily "update waiting"
+    message and logs\\launch.json (the owner's decisions B5-2, B5-5, B5-6)."""
+
+    # 2.9 and 3.0 share the current format; 2.1 is the older one.
+    SLOTS = {"2.1": 2, "2.9": 3, "3.0": 3}
+    BLOCKERS = [{"kind": "meetings", "count": 1, "message": "1 meeting is still here."}]
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(os.path.realpath(tmp.name))
+        self.layout = InstallLayout(self.base, self.SLOTS, "3.0", previous="2.9",
+                                    features=["gate", "launch-gate", launchcheck.FEATURE])
+        self.ws = self.base / "workspace"
+        (self.ws / "logs").mkdir(parents=True)
+        self.started, self.shown = [], []
+        FakeNotice.opened = 0
+        no_windows(self)
+
+    def run_pass(self, checks, workspace=(3,), slot="3.0", argv=("workspace",),
+                 today="2026-10-23"):
+        self.started, self.shown = [], []
+        with FakeWorkspace(*workspace).patch():
+            return launch.start(list(argv), here=self.layout.here(slot),
+                                executable=self.layout.exe(slot),
+                                popen=lambda argv, **kw: self.started.append(argv),
+                                deployment=MACHINE, workspace_db=self.ws / "workspace.db",
+                                checks=checks, notice=FakeNotice, show=self.shown.append,
+                                today=today)
+
+    def started_as(self):
+        self.assertEqual(len(self.started), 1, self.started)
+        argv = self.started[0]
+        return Path(argv[0]).parents[1].name, argv[-1]
+
+    def record(self):
+        return json.loads((self.ws / "logs" / "launch.json").read_text(encoding="ascii"))
+
+    def test_the_first_start_runs_the_light_check_once_and_records_it(self):
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+        self.assertEqual(checks.calls, [("light", "3.0")])
+        entry = self.record()["slots"]["3.0"]
+        self.assertEqual((entry["result"], entry["installed"]), ("ok", "2027-01-03T01:00:00Z"))
+        self.assertEqual((self.record()["last_role"], self.record()["last_check"]),
+                         ("current", "ok"))
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+        self.assertEqual(checks.calls, [])                 # a pass is not repeated
+        self.assertEqual(self.shown, [])
+
+    def test_a_slot_fault_falls_back_to_the_newest_other_version_of_its_format(self):
+        checks = FakeChecks(light={"3.0": ("slot_fault", "webview")})
+        self.assertEqual(self.run_pass(checks), launch.Outcome(exit=0))
+        self.assertEqual(self.started_as(), ("2.9", "fallback"))
+        self.assertEqual(checks.calls, [("light", "3.0"), ("light", "2.9")])
+        rec = self.record()
+        code = rec["slots"]["3.0"]["code"]
+        self.assertRegex(code, r"\AU-[0-9A-F]{6}\Z")
+        self.assertEqual((rec["slots"]["3.0"]["result"], rec["last_role"], rec["last_check"]),
+                         ("slot_fault", "fallback", "slot_fault"))
+        self.assertEqual(self.shown, [launch.FALLBACK.format(code=code, version="2.9")])
+        # Not tried again, and the message not shown again, until a repair.
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome(exit=0))
+        self.assertEqual(self.started_as(), ("2.9", "fallback"))
+        self.assertEqual((checks.calls, self.shown), ([], []))
+        self.layout.entries["3.0"]["installed"] = "2027-03-01T01:00:00Z"    # repaired
+        self.layout.write()
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+        self.assertEqual(checks.calls, [("light", "3.0")])
+        self.assertEqual(self.record()["last_check"], "ok")
+
+    def test_an_environment_fault_never_falls_back_and_is_checked_at_every_start(self):
+        for _ in range(2):
+            checks = FakeChecks(light={"3.0": ("env_fault", "dpapi")})
+            # The current version opens and shows its own locked screen.
+            self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+            self.assertEqual(checks.calls, [("light", "3.0")])
+            self.assertEqual((self.started, self.shown), ([], []))
+            self.assertEqual(self.record()["last_check"], "env_fault")
+
+    def test_with_no_version_to_fall_back_to_nothing_opens(self):
+        del self.layout.entries["2.9"]
+        self.layout.write()
+        checks = FakeChecks(light={"3.0": ("slot_fault", "import")})
+        out = self.run_pass(checks)
+        code = self.record()["slots"]["3.0"]["code"]
+        self.assertEqual(out, launch.Outcome(exit=1, message=launch.FAILED.format(code=code)))
+        self.assertIn("Ask your IT team.", out.message)
+        self.assertEqual(self.started, [])
+
+    def test_a_fallback_never_targets_an_older_format(self):
+        # 2.1 is installed, but with no workspace (or the same format) a
+        # fallback to it would make or keep a workspace the update cannot take.
+        del self.layout.entries["2.9"]
+        self.layout.write()
+        for workspace in ((None,), (3,), (2, ())):
+            with self.subTest(workspace=workspace):
+                checks = FakeChecks(light={"3.0": ("slot_fault", "import")})
+                self.assertEqual(self.run_pass(checks, workspace=workspace).exit, 1)
+                self.assertNotIn(("light", "2.1"), checks.calls)
+                self.assertEqual(self.started, [])
+
+    def test_the_full_check_runs_before_a_migration_whatever_the_record_says(self):
+        # A forged record claiming every check passed changes nothing.
+        (self.ws / "logs" / "launch.json").write_text(json.dumps(
+            {"slots": {"3.0": {"installed": "2027-01-03T01:00:00Z", "result": "ok"}},
+             "last_role": "current", "last_check": "ok"}), encoding="ascii")
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks, workspace=(2, ())), launch.Outcome(role="current"))
+        self.assertEqual(checks.calls, [("full", "3.0")])
+        self.assertEqual(FakeNotice.opened, 1)
+        checks = FakeChecks()
+        self.run_pass(checks, workspace=(2, ()))
+        self.assertEqual(checks.calls, [("full", "3.0")])   # every migrating start
+        # No migration: no full check.
+        checks = FakeChecks()
+        self.run_pass(checks, workspace=(3,))
+        self.assertEqual(checks.calls, [])
+
+    def test_a_failed_full_check_never_migrates(self):
+        never = mock.patch("workspace.store.Store", side_effect=AssertionError("store built"))
+        with never:
+            checks = FakeChecks(full={"3.0": ("env_fault", "dpapi")})
+            out = self.run_pass(checks, workspace=(2, ()))
+            code = re.search(r"code (U-[0-9A-F]{6})", out.message).group(1)
+            self.assertEqual(out, launch.Outcome(exit=1,
+                                                 message=launch.NOT_READY.format(code=code)))
+            self.assertEqual(self.started, [])
+            # A slot fault falls back to another version of the current
+            # format, which gets its own full check before it migrates.
+            checks = FakeChecks(full={"3.0": ("slot_fault", "self_test")})
+            self.assertEqual(self.run_pass(checks, workspace=(2, ())), launch.Outcome(exit=0))
+            self.assertEqual(self.started_as(), ("2.9", "fallback"))
+            # 3.0's light check passed at the first start above: not repeated.
+            self.assertEqual(checks.calls, [("full", "3.0"), ("light", "2.9"),
+                                            ("full", "2.9")])
+            checks = FakeChecks(full={"3.0": ("slot_fault", "self_test"),
+                                      "2.9": ("slot_fault", "hung")})
+            self.assertEqual(self.run_pass(checks, workspace=(2, ())).exit, 1)
+            self.assertEqual(self.started, [])
+
+    def test_the_update_waiting_message_is_shown_once_a_day_before_the_hand_over(self):
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks, workspace=(2, self.BLOCKERS)),
+                         launch.Outcome(exit=0))
+        self.assertEqual(self.started_as(), ("2.1", "compat"))
+        self.assertEqual(self.shown, [launch.WAITING.format(version="2.1")])
+        self.assertEqual(checks.calls, [("light", "2.1")])    # the version that will open
+        self.assertEqual(self.record()["waiting_shown"], "2026-10-23")
+        self.assertEqual(self.record()["last_role"], "compat")
+        self.run_pass(FakeChecks(), workspace=(2, self.BLOCKERS))
+        self.assertEqual(self.shown, [])                     # the same day
+        self.run_pass(FakeChecks(), workspace=(2, self.BLOCKERS), today="2026-10-24")
+        self.assertEqual(self.shown, [launch.WAITING.format(version="2.1")])
+
+    def test_a_version_from_before_b5b_is_never_started_with_the_check(self):
+        for name, schema in self.SLOTS.items():
+            self.layout.features = ["gate", "launch-gate"]
+            self.layout.version(name, schema)
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+        self.assertEqual(checks.calls, [])
+        self.assertIsNone(self.record()["last_check"])
+
+    def test_a_hand_over_start_checks_nothing(self):
+        checks = FakeChecks(light={"2.1": ("slot_fault", "import")})
+        out = self.run_pass(checks, slot="2.1", argv=("workspace", "--slot", "compat"))
+        self.assertEqual(out, launch.Outcome(role="compat"))
+        self.assertEqual(checks.calls, [])
+
+    def test_the_record_is_written_in_full_or_not_at_all(self):
+        self.run_pass(FakeChecks())
+        before = (self.ws / "logs" / "launch.json").read_bytes()
+        with mock.patch.object(Path, "replace", side_effect=OSError("synthetic")), \
+                mock.patch.object(diag, "STATE_RETRIES_S", ()):
+            self.run_pass(FakeChecks(light={"3.0": ("env_fault", "dpapi")}))
+        self.assertEqual((self.ws / "logs" / "launch.json").read_bytes(), before)
+        self.assertEqual([p.name for p in (self.ws / "logs").glob("launch.json*")],
+                         ["launch.json"])
+
+    def test_a_damaged_record_reads_as_none_and_holds_no_content(self):
+        for raw in ("{", "[1]", json.dumps({"slots": {"..\\x": {"result": "ok"}},
+                                            "last_role": "newer", "last_check": "fine",
+                                            "waiting_shown": "C:\\x"})):
+            with self.subTest(raw=raw[:20]):
+                (self.ws / "logs" / "launch.json").write_text(raw, encoding="ascii")
+                book = launchcheck.Book(self.ws / "logs")
+                self.assertEqual((book.slots, book.last_role, book.last_check,
+                                  book.waiting_shown), ({}, None, None, None))
+                self.assertEqual(launchcheck.health_state(self.ws / "logs"),
+                                 {"slot": "none", "update_waiting": False,
+                                  "self_check": "unknown"})
+
+
+class ChildCheckTests(unittest.TestCase):
+    """The checks' own processes: what run_light and run_full make of what
+    the child says, and the light check's fault classes."""
+
+    def runner(self, code=0, out="", raises=None):
+        def run(argv, **kw):
+            self.argv, self.kw = argv, kw
+            if raises:
+                raise raises
+            return subprocess.CompletedProcess(argv, code, out, "")
+        return run
+
+    def test_the_light_check_runs_the_versions_own_runtime_with_a_limit(self):
+        result = launchcheck.run_light("C:\\v\\runtime\\pythonw.exe", "C:\\v\\app",
+                                       self.runner(0, 'noise\n{"result": "ok", "part": null}\n'))
+        self.assertEqual(result, ("ok", None))
+        self.assertEqual(self.argv, ["C:\\v\\runtime\\pythonw.exe", *update.LAUNCH_ARGS,
+                                     "--launch-check"])
+        self.assertEqual((self.kw["cwd"], self.kw["timeout"]),
+                         ("C:\\v\\app", launchcheck.LIGHT_LIMIT_S))
+
+    def test_what_the_light_check_reports(self):
+        cases = (
+            (self.runner(1, '{"result": "env_fault", "part": "dpapi"}'), ("env_fault", "dpapi")),
+            (self.runner(1, '{"result": "slot_fault", "part": "guard"}'), ("slot_fault", "guard")),
+            (self.runner(raises=subprocess.TimeoutExpired("x", 30)), ("slot_fault", "hung")),
+            (self.runner(raises=OSError("no runtime")), ("slot_fault", "hung")),
+            (self.runner(0, ""), ("slot_fault", "no_answer")),
+            (self.runner(0, "Traceback (most recent call last)"), ("slot_fault", "no_answer")),
+            (self.runner(0, '{"result": "fine"}'), ("slot_fault", "no_answer")),
+            (self.runner(0, '{"result": "ok", "part": "C:\\\\x"}'), ("slot_fault", "no_answer")),
+            (self.runner(3, '{"result": "ok", "part": null}'), ("slot_fault", "no_answer")),
+        )
+        for runner, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(launchcheck.run_light("x", "y", runner), expected)
+
+    def test_what_the_full_check_reports(self):
+        ok = "ok      import numpy\nok      dpapi round trip\nPASS\n"
+        dpapi = "ok      import numpy\nFAILED  dpapi round trip: -2146893813\nFAIL\n"
+        both = "FAILED  import torch: OSError: x\nFAILED  dpapi round trip: 5\nFAIL\n"
+        cases = ((self.runner(0, ok), ("ok", None)),
+                 (self.runner(1, dpapi), ("env_fault", "dpapi")),
+                 (self.runner(1, both), ("slot_fault", "self_test")),
+                 (self.runner(1, "FAIL\n"), ("slot_fault", "self_test")),
+                 (self.runner(0, ""), ("slot_fault", "self_test")),
+                 (self.runner(raises=subprocess.TimeoutExpired("x", 180)), ("slot_fault", "hung")))
+        for runner, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(launchcheck.run_full("x", "y", runner), expected)
+        launchcheck.run_full("x", "y", self.runner(0, ok))
+        self.assertEqual(self.argv[-1], "--self-test")
+        self.assertEqual(self.kw["timeout"], launchcheck.FULL_LIMIT_S)
+
+    def test_the_fault_classes(self):
+        good = lambda: (True, "dpapi round trip")              # noqa: E731
+        bad = mock.Mock(return_value=(False, "dpapi round trip: 5"))
+        with mock.patch("importlib.import_module"), \
+                mock.patch.object(launchcheck, "_guard_holds", return_value=True):
+            self.assertEqual(launchcheck.light_check(good), {"result": "ok", "part": None})
+            self.assertEqual(launchcheck.light_check(bad), {"result": "env_fault",
+                                                            "part": "dpapi"})
+        for failing, part in (("workspace.app", "import"),
+                              ("webview.platforms.edgechromium", "webview")):
+            def imp(name, failing=failing):
+                if name == failing:
+                    raise ImportError("synthetic")
+            bad.reset_mock()
+            with self.subTest(part=part), mock.patch("importlib.import_module", side_effect=imp):
+                self.assertEqual(launchcheck.light_check(bad),
+                                 {"result": "slot_fault", "part": part})
+                bad.assert_not_called()                  # a slot fault is reported first
+        with mock.patch("importlib.import_module"), \
+                mock.patch.object(launchcheck, "_guard_holds", return_value=False):
+            self.assertEqual(launchcheck.light_check(bad), {"result": "slot_fault",
+                                                            "part": "guard"})
+
+    @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS
+                         and importlib.util.find_spec("webview"), "Windows app dependencies")
+    def test_the_switch_prints_one_result_and_opens_nothing(self):
+        # The real child, as the launcher starts it, without a window, a
+        # database or a key (no workspace is named: it has none to open).
+        r = subprocess.run([sys.executable, "-B", "-m", "workspace", "--launch-check"],
+                           cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+        answer = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(answer, {"result": "ok", "part": None}, r.stderr[-2000:])
+        self.assertEqual(r.returncode, 0)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+class HealthTests(unittest.TestCase):
+    """--health's launcher fields (#111 B5b): states only; a fallback or a
+    fault needs attention, an update waiting does not."""
+
+    def test_the_launchers_fields(self):
+        from workspace import __main__ as main
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            (root / "logs").mkdir(parents=True)
+
+            def health(**state):
+                if state:
+                    (root / "logs" / "launch.json").write_text(json.dumps(state),
+                                                               encoding="ascii")
+                with mock.patch.object(main, "_system_account", return_value=False), \
+                        mock.patch.object(main, "_app_running", return_value=False):
+                    report = main.health(root)
+                return (report["slot"], report["update_waiting"], report["self_check"],
+                        report["healthy"])
+            self.assertEqual(health(), ("none", False, "unknown", True))      # per-user
+            self.assertEqual(health(last_role="current", last_check="ok"),
+                             ("current", False, "ok", True))
+            self.assertEqual(health(last_role="compat", last_check="ok"),
+                             ("compat", True, "ok", True))                  # workload
+            self.assertEqual(health(last_role="fallback", last_check="slot_fault"),
+                             ("fallback", False, "slot_fault", False))
+            self.assertEqual(health(last_role="current", last_check="env_fault"),
+                             ("current", False, "env_fault", False))
+            self.assertEqual(health(last_role="newer", last_check="C:\\x"),
+                             ("none", False, "unknown", True))
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+class FinishOnlyTests(unittest.TestCase):
+    """Finish-only mode (#111 B5b, the owner's decision B5-7): a version
+    opened as compat refuses new imports, intake and recordings, in the
+    bridge and in the Workspace; review, editing, handoff, cleanup and holds
+    work."""
+
+    def setUp(self):
+        import profile_elsewhere
+        from test_app import fake, write_wav
+        profile_elsewhere.start(self)       # folders in %TEMP%, inside AppData (#111 D2)
+
+        from workspace import api
+        from workspace.app import Workspace
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.ws = Workspace(self.root / "ws", self.root / "models", start=False,
+                            allow_test_engines=True, battery=False, finish_only=True,
+                            protector=keyprotect.TestProtector())
+        self.addCleanup(self.ws.close)
+        self.ws.settings.update(model=fake("sentences"), speakers=False)
+        self.ws._import_one(write_wav(self.root / "a.wav", 20))   # made before the update
+        self.mid = self.ws.meetings()[0]["id"]
+        # Processing goes on in finish-only mode: a meeting is transcribed.
+        job = self.ws._next_work()
+        for _ in range(20):
+            if not job:
+                break
+            self.ws._run(*job)
+            job = self.ws._next_work()
+        self.wav = write_wav(self.root / "b.wav", 5)
+        self.api = api.make_api(self.ws, confirm=lambda question: True, decline_pause_s=0)
+
+    def test_new_meetings_are_refused_by_the_bridge_without_calling_the_workspace(self):
+        from workspace import api
+        from workspace.app import FINISH_ONLY_TEXT
+        self.assertEqual(api.FINISH_ONLY_REFUSED,
+                         {"import_dialog", "start_recording", "scan_now"})
+        self.assertTrue(api.FINISH_ONLY_REFUSED <= api.API_METHODS - api.LOCKED_METHODS)
+        refused = {"ok": False, "error": FINISH_ONLY_TEXT}
+        with mock.patch.object(self.ws, "import_paths") as imported, \
+                mock.patch.object(self.ws, "start_recording") as recorded, \
+                mock.patch.object(self.ws, "check_can_record") as checked:
+            self.assertEqual(self.api.import_dialog(), refused)
+            self.assertEqual(self.api.start_recording(0, "Microphone"), refused)
+            self.assertEqual(self.api.scan_now(), refused)
+        imported.assert_not_called()
+        recorded.assert_not_called()
+        checked.assert_not_called()
+        self.assertTrue(self.api.status()["value"]["finish_only"])
+
+    def test_the_workspace_refuses_them_itself(self):
+        from workspace.app import FINISH_ONLY_TEXT, WorkspaceError
+        for call in (lambda: self.ws.import_paths([str(self.wav)]),
+                     lambda: self.ws.start_recording(0, "Microphone", consent=None),
+                     lambda: self.ws.check_can_record(0, "Microphone"),
+                     self.ws.scan_now):
+            with self.assertRaises(WorkspaceError) as caught:
+                call()
+            self.assertEqual(str(caught.exception), FINISH_ONLY_TEXT)
+        self.assertEqual(self.ws._imports.unfinished_tasks, 0)
+
+    @unittest.skipUnless(importlib.util.find_spec("webview"), "pywebview not installed")
+    def test_a_drop_imports_nothing(self):
+        from workspace import api
+
+        class Events:
+            def __init__(self):
+                self.handlers = []
+
+            def __iadd__(self, handler):
+                self.handlers.append(handler)
+                return self
+        window = mock.Mock()
+        window._drop_enabled = False
+        window.dom.document.events.dragover = Events()
+        window.dom.document.events.drop = drops = Events()
+        with mock.patch.object(self.ws, "import_paths") as imported:
+            api.enable_drop(window, self.ws)
+            drops.handlers[0].callback(
+                {"dataTransfer": {"files": [{"pywebviewFullPath": str(self.wav)}]}})
+        imported.assert_not_called()
+
+    def test_watched_folders_stay_configured_and_are_not_scanned(self):
+        from workspace import intake
+        folder = self.root / "watched"
+        folder.mkdir()
+        fid = self.ws.add_watched_folder(str(folder), True)      # a setting: kept
+        self.assertTrue(fid)
+        with mock.patch.object(intake, "scan", side_effect=AssertionError("scanned")):
+            self.ws._scan_folders()
+        self.assertEqual(self.ws.last_scan, {"finish_only": True})
+        self.assertEqual(len(self.ws.watched_folders()["folders"]), 1)
+
+    def test_review_editing_handoff_cleanup_and_holds_work(self):
+        page = self.api
+        first = page.transcript(self.mid)["value"]["items"][0]
+        self.assertTrue(page.edit(self.mid, first["id"], "Edited while finishing")["ok"])
+        self.assertTrue(page.rename(self.mid, "Finishing")["ok"])
+        hold = page.add_hold(self.mid, "all", "Synthetic reason")
+        self.assertTrue(hold["ok"], hold)
+        self.assertTrue(page.release_hold(hold["value"])["ok"])
+        self.assertTrue(page.confirm_reviewed(self.mid)["ok"])
+        tid = page.handoff_templates()["value"][0]["id"]
+        self.assertTrue(page.handoff_preview(self.mid, tid)["ok"])
+        self.assertTrue(page.confirm_final_saved(self.mid)["ok"])
+        self.assertTrue(page.settings()["ok"])
+
+    def test_the_page_shows_the_banner_and_hides_record_and_import(self):
+        from workspace.app import FINISH_ONLY_BANNER
+        js = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        html = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
+        css = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
+        text = re.search(r'const FINISH_ONLY_TEXT = "([^"]*)" \+\s*"([^"]*)";', js)
+        self.assertEqual(text.group(1) + text.group(2), FINISH_ONLY_BANNER)
+        self.assertIn('id="finish-only"', html)
+        self.assertIn("renderFinishOnly(s.finish_only)", js)
+        self.assertIn(".start.finish-only { display: none; }", css)
+
+
+class GpuUpkeepTests(unittest.TestCase):
+    """Unused graphics card components (#111 B5b, the owner's decision B5-4):
+    removed when no installed version names them and this user has one
+    install; links refused; never while busy; current version only."""
+
+    def setUp(self):
+        from workspace import gpu
+        self.gpu = gpu
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(os.path.realpath(tmp.name))
+        self.cache = self.base / "models"
+        self.folders = {}
+        for name in ("torch-2.13.0-cu130", "torch-2.13.0-cu130.invalid-0a1b2c",
+                     "torch-2.13.0-cu130.partial", gpu.VERSION, gpu.WHISPER_VERSION,
+                     "torch-2.14.1-cu130.invalid-00ff", "cublas-12.6-cu12"):
+            folder = self.cache / "gpu" / name
+            (folder / "site").mkdir(parents=True)
+            (folder / "site" / "lib.dll").write_bytes(b"x" * 1000)
+            self.folders[name] = folder
+
+    def layout(self, gpu_lists):
+        return InstallLayout(self.base, {"0.9": 2, "1.0": 2}, "1.0", previous="0.9",
+                             gpu=gpu_lists)
+
+    def test_the_keep_list_is_every_installed_versions_components(self):
+        g = self.gpu
+        lay = self.layout({"0.9": ["torch-2.13.0-cu130", "cublas-12.6-cu12"],
+                           "1.0": [g.VERSION, g.WHISPER_VERSION]})
+        self.assertEqual(update.gpu_keep(lay.root), {"torch-2.13.0-cu130", "cublas-12.6-cu12",
+                                                     g.VERSION, g.WHISPER_VERSION})
+        for bad in ([], None, ["..\\x"], "torch", [1]):
+            with self.subTest(bad=bad):
+                lay = self.layout({"0.9": bad, "1.0": [g.VERSION]})
+                if bad is None:
+                    info = json.loads((lay.versions / "0.9" / "version.json").read_text())
+                    info.pop("gpu_components")
+                    (lay.versions / "0.9" / "version.json").write_text(json.dumps(info))
+                self.assertIsNone(update.gpu_keep(lay.root))     # keep everything
+        (lay.root / "current.json").write_text('{"version": "1.0"}')     # format 1
+        self.assertIsNone(update.gpu_keep(lay.root))
+
+    def test_superseded_copies_are_removed_and_the_rest_kept(self):
+        g = self.gpu
+        log = mock.Mock()
+        removed = g.remove_superseded(self.cache, {g.VERSION, g.WHISPER_VERSION}, log=log)
+        self.assertEqual(sorted(v for v, _ in removed),
+                         ["cublas-12.6-cu12", "torch-2.13.0-cu130", "torch-2.13.0-cu130",
+                          "torch-2.13.0-cu130"])
+        self.assertTrue(all(size == 1000 for _, size in removed))
+        left = sorted(p.name for p in (self.cache / "gpu").iterdir())
+        self.assertEqual(left, sorted([g.VERSION, g.WHISPER_VERSION,
+                                       "torch-2.14.1-cu130.invalid-00ff"]))
+        for call in log.write.call_args_list:
+            self.assertEqual(call.args[0], "gpu_removed")
+            self.assertEqual(set(call.kwargs), {"component", "bytes"})
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions")
+    def test_a_link_is_never_followed(self):
+        import _winapi
+        g = self.gpu
+        outside = self.base / "outside"
+        outside.mkdir()
+        (outside / "sentinel.txt").write_text("keep")
+        # A junction named like an old component, and one inside an old copy.
+        _winapi.CreateJunction(str(outside), str(self.cache / "gpu" / "torch-1.0-cu118"))
+        _winapi.CreateJunction(str(outside), str(self.folders["cublas-12.6-cu12"] / "site" / "x"))
+        g.remove_superseded(self.cache, {g.VERSION, g.WHISPER_VERSION})
+        self.assertEqual((outside / "sentinel.txt").read_text(), "keep")
+        self.assertTrue(os.path.lexists(self.cache / "gpu" / "torch-1.0-cu118"))
+        self.assertFalse(self.folders["cublas-12.6-cu12"].exists())
+        os.rmdir(self.cache / "gpu" / "torch-1.0-cu118")
+        # A link at the gpu folder itself: nothing at all.
+        moved = self.base / "real-gpu"
+        (self.cache / "gpu").rename(moved)
+        _winapi.CreateJunction(str(moved), str(self.cache / "gpu"))
+        self.addCleanup(lambda: os.path.lexists(self.cache / "gpu")
+                        and os.rmdir(self.cache / "gpu"))
+        (moved / "torch-0.1-cu100").mkdir()
+        self.assertEqual(g.remove_superseded(self.cache, {g.VERSION}), [])
+        self.assertTrue((moved / "torch-0.1-cu100").is_dir())
+
+    def test_the_other_install_is_looked_for_in_the_other_hive(self):
+        if sys.platform != "win32":
+            self.assertIsNone(update.other_install("self-service"))
+            return
+        import winreg
+        seen = []
+
+        def opener(found):
+            def open_key(hive, key, reserved, access):
+                seen.append((hive, key, access))
+                if found is True:
+                    return mock.Mock()
+                raise found
+            return open_key
+        self.assertTrue(update.other_install("self-service", opener(True)))
+        self.assertEqual(seen[-1], (winreg.HKEY_LOCAL_MACHINE, update.UNINSTALL_KEY,
+                                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY))
+        self.assertFalse(update.other_install("machine", opener(FileNotFoundError())))
+        self.assertEqual(seen[-1][0], winreg.HKEY_CURRENT_USER)
+        self.assertIsNone(update.other_install("managed", opener(PermissionError())))
+        self.assertEqual(update.UNINSTALL_KEY,
+                         r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute")
+
+    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+    def test_the_workspace_removes_only_with_one_install_and_when_idle(self):
+        from workspace.app import Workspace
+        g = self.gpu
+        lay = self.layout({"0.9": [g.VERSION], "1.0": [g.VERSION, g.WHISPER_VERSION]})
+        ws = Workspace(self.base / "ws", self.cache, start=False, battery=False,
+                       protector=keyprotect.TestProtector())
+        self.addCleanup(ws.close)
+        old = self.folders["torch-2.13.0-cu130"]
+        for other in (True, None):                    # another install, or cannot tell
+            with mock.patch.object(update, "other_install", return_value=other) as asked:
+                self.assertEqual(ws.remove_unused_gpu(lay.root, "self-service"), [])
+            asked.assert_called_once_with("self-service")
+            self.assertTrue(old.is_dir())
+        with mock.patch.object(ws.downloads, "busy", return_value=True):
+            self.assertEqual(ws.remove_unused_gpu(lay.root, "self-service", False), [])
+        ws._gpu_pass = True
+        self.assertEqual(ws.remove_unused_gpu(lay.root, "self-service", False), [])
+        ws._gpu_pass = False
+        self.assertTrue(old.is_dir())
+        lay2 = self.layout({"0.9": None, "1.0": [g.VERSION]})          # unknown: keep
+        info = json.loads((lay2.versions / "0.9" / "version.json").read_text())
+        info.pop("gpu_components", None)
+        (lay2.versions / "0.9" / "version.json").write_text(json.dumps(info))
+        self.assertEqual(ws.remove_unused_gpu(lay2.root, "self-service", False), [])
+        self.assertTrue(old.is_dir())
+        lay = self.layout({"0.9": [g.VERSION], "1.0": [g.VERSION, g.WHISPER_VERSION]})
+        removed = ws.remove_unused_gpu(lay.root, "self-service", False)
+        self.assertIn("torch-2.13.0-cu130", [v for v, _ in removed])
+        self.assertFalse(old.exists())
+        self.assertTrue(self.folders[g.VERSION].is_dir())
+        logged = (self.base / "ws" / "logs" / "app.log").read_text(encoding="ascii")
+        self.assertIn('"kind":"gpu_removed"', logged)
+        self.assertIn('"why":"other_install"', logged)
+        self.assertNotIn(str(self.base), logged)
+
+    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+    def test_only_the_current_version_starts_the_upkeep(self):
+        # The app's own start (__main__.main) as each role, up to the window.
+        from workspace import __main__ as main
+        from workspace import app as app_module
+        from workspace import diag, shell
+        real = app_module.Workspace
+        made = []
+
+        def here(*a, **kw):                   # the app's own call, on this test's folder
+            kw.pop("cache_dir", None)
+            made.append(real(self.base / "ws", self.cache, start=False, battery=False,
+                             protector=keyprotect.TestProtector(), **kw))
+            return made[-1]
+        for role, upkeep in ((None, True), ("current", True), ("compat", False),
+                             ("fallback", False)):
+            with self.subTest(role=role), contextlib.ExitStack() as stack:
+                for target, name, kw in (
+                        (app_module, "Workspace", {"side_effect": here}),
+                        (launch, "start", {"return_value": launch.Outcome(role=role)}),
+                        (main, "_single_instance", {"return_value": True}),
+                        (main, "model_cache", {"return_value": self.cache}),
+                        (diag, "install", {"return_value": False}),
+                        (diag, "summarise_output", {}),
+                        (shell, "create_window", {"side_effect": RuntimeError("the window")}),
+                        (sys, "argv", {"new": ["workspace"]})):
+                    stack.enter_context(mock.patch.object(target, name, **kw))
+                started = stack.enter_context(mock.patch.object(real, "start_gpu_upkeep"))
+                try:
+                    with self.assertRaisesRegex(RuntimeError, "the window"):
+                        main.main()
+                finally:
+                    made.pop().close()
+                self.assertEqual(started.called, upkeep)
+                self.assertEqual(made, [])
+        # A locked workspace starts none.
+        ws = mock.Mock(locked=RuntimeError("locked"))
+        with mock.patch("threading.Thread") as thread:
+            real.start_gpu_upkeep(ws)
+        thread.assert_not_called()
+
+
 class ImportTests(unittest.TestCase):
     def test_the_pass_and_the_lock_import_only_the_standard_library(self):
-        for name in ("launch.py", "instance.py"):
+        for name in ("launch.py", "instance.py", "launchcheck.py"):
             text = (ROOT / "workspace" / name).read_text(encoding="utf-8")
             imports = re.findall(r"(?m)^\s*(?:from|import) ([\w.]+)", text)
             outside = {i.partition(".")[0] for i in imports} - set(sys.stdlib_module_names)
