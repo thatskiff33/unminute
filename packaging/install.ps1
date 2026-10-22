@@ -465,9 +465,79 @@ function Install-Version([string]$Root, [string]$Version) {
     return $target
 }
 
+# -- current.json, format 2 (#111 B5) ---------------------------------------------------
+
+# current.json records, beside version, path, previous and managed (all that older
+# readers use), each kept version's storage format and install order:
+#   {"format": 2, "version": ..., "path": ..., "previous": ..., "managed": ...,
+#    "slots": {"<version>": {"schema": 2, "seq": 3, "installed": "<UTC time>"}, ...}}
+# schema comes from the version's own version.json; a version from before B5 states
+# none, and is then recorded without one (unknown: the launcher never hands a workspace
+# to it). seq is a whole number given when a version is first installed, one more than
+# the highest so far, and kept when it is installed again (installed then changes), so
+# "newest" is the highest seq and nothing compares version names. workspace/update.py
+# (read_slots) reads it.
+
+# The storage format a version's version.json states, or $null when it states none.
+function Get-VersionSchema([string]$Folder) {
+    try { $info = Get-Content -LiteralPath (Join-Path $Folder "version.json") -Raw | ConvertFrom-Json } catch { return $null }
+    $schema = $info.schema
+    if (($schema -is [int] -or $schema -is [long]) -and $schema -gt 0) { return [long]$schema }
+    return $null
+}
+
+# The slots to record for the versions in $Order (oldest first), from the existing
+# record $Was. A version it already lists keeps its seq and installed time, except
+# $Fresh (the version being installed now), whose installed time is now. Any other is
+# given the next seq, in that order: a format 1 record (before B5) lists none, so its
+# previous version, then its current one, are numbered first. Only versions the
+# installer made are recorded.
+function Get-SlotRecord($Was, [string[]]$Order, [string]$Fresh) {
+    $known = @{}
+    if ($Was -and ($Was.format -is [int] -or $Was.format -is [long]) -and $Was.format -eq 2 -and
+        $Was.slots -is [Management.Automation.PSCustomObject]) {
+        foreach ($p in $Was.slots.PSObject.Properties) {
+            $seq = $p.Value.seq
+            if ((Test-VersionName $p.Name) -and ($seq -is [int] -or $seq -is [long]) -and $seq -gt 0) {
+                $known[$p.Name] = $p.Value
+            }
+        }
+    }
+    $high = [long]0
+    foreach ($entry in $known.Values) { if ([long]$entry.seq -gt $high) { $high = [long]$entry.seq } }
+    $now = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
+    $slots = [ordered]@{}
+    foreach ($name in $Order) {
+        if (-not $name -or $slots.Contains($name)) { continue }
+        $folder = [IO.DirectoryInfo]::new((Join-Path $Options.InstallDir "versions\$name"))
+        if (-not (Test-OwnVersion $folder)) { continue }
+        $entry = [ordered]@{}
+        $schema = Get-VersionSchema $folder.FullName
+        if ($schema) { $entry.schema = $schema }
+        if ($known.ContainsKey($name)) {
+            $entry.seq = [long]$known[$name].seq
+            $installed = [string]$known[$name].installed
+            $entry.installed = if ($name -ceq $Fresh -or -not $installed) { $now } else { $installed }
+        } else {
+            $high++
+            $entry.seq = $high
+            $entry.installed = $now
+        }
+        $slots[$name] = $entry
+    }
+    return $slots
+}
+
+function Write-CurrentRecord([string]$File, [string]$Version, [string]$Target, $Previous, [bool]$Managed, $Slots) {
+    [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous
+                managed = $Managed; slots = $Slots } |
+        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $File -Encoding UTF8
+}
+
 function Set-CurrentVersion([string]$Target, [string]$Version) {
     $currentFile = Join-Path $Options.InstallDir "current.json"
     $previous = $null
+    $was = $null
     if (Test-Path -LiteralPath $currentFile) {
         $was = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
         # A value that is not a plain version name is ignored (#297). Reinstalling the
@@ -476,12 +546,12 @@ function Set-CurrentVersion([string]$Target, [string]$Version) {
         $previous = if ($wasVersion -and $wasVersion -eq $Version) { Get-VersionValue $was.previous } else { $wasVersion }
     }
     $managed = [bool]$Options.Managed
-    if (-not $managed -and -not $Options.SelfService -and (Test-Path -LiteralPath $currentFile)) {
+    if (-not $managed -and -not $Options.SelfService -and $was) {
         # An IT-managed installation stays managed across updates.
-        $managed = [bool](Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).managed
+        $managed = [bool]$was.managed
     }
-    @{ version = $Version; path = $Target; previous = $previous; managed = $managed } |
-        ConvertTo-Json | Set-Content -LiteralPath $currentFile -Encoding UTF8
+    $slots = Get-SlotRecord $was @($previous, $Version) $Version
+    Write-CurrentRecord $currentFile $Version $Target $previous $managed $slots
     # Keep the current and the previous version (for rollback, #26); remove older ones,
     # but only versions the installer made, never through a link (#297). Anything else
     # is left in place and counted, without names. Working folders (.partial, .old)
@@ -659,9 +729,9 @@ function Invoke-Rollback {
         Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$version") -Schema 1
     }
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
-    @{ version = $previous; path = $target; previous = $version
-       managed = [bool]$current.managed } | ConvertTo-Json |
-        Set-Content -LiteralPath $currentFile -Encoding UTF8
+    # Format 2 (#111 B5): both versions keep their seq and installed time.
+    $slots = Get-SlotRecord $current @($previous, $version) $null
+    Write-CurrentRecord $currentFile $previous $target $version ([bool]$current.managed) $slots
     New-Shortcut $target
     Register-Uninstall $target $previous
     Write-Step "$(Get-VersionAppName $target) is back on version $previous."

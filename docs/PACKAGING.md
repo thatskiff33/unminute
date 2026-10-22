@@ -20,7 +20,7 @@ One versioned zip, `Unminute-<version>.zip`, and its checksum file, `Unminute-<v
 | `runtime/` | A private CPython 3.14 runtime: the official embeddable package from python.org, with the hash-locked wheels from `requirements.txt` installed, less what the app never uses (step 3 below), and every module precompiled. A `._pth` file fixes the import path, and the app starts with `-I`, so the runtime ignores `PYTHON*` variables, user site-packages and any other Python on the machine. |
 | `app/` | `workspace/` (including `asr_engines.py` and `offline_guard.py`), precompiled. Tests are not included. |
 | `install.cmd`, `install.ps1`, `uninstall.ps1` | The per-user installer and uninstaller. |
-| `version.json` | The version, build time (the source commit's time, so a rebuild is identical), Python version and source commit; whether it is a release build (`release`) and, for a development build, whether the working tree had no changes (`clean`). |
+| `version.json` | The version, build time (the source commit's time, so a rebuild is identical), Python version and source commit; whether it is a release build (`release`) and, for a development build, whether the working tree had no changes (`clean`); the workspace storage format it uses (`schema`, since #111 B5a); and the switches installers may rely on (`features`: `gate`, `restore-lid`, and `launch-gate` for the launcher pass and `--slot`). |
 | `package-manifest.json` | The size and SHA-256 of every file. The installer checks all of them. |
 | `sbom.cdx.json` | A CycloneDX software bill of materials: the runtime and every bundled package, with the exact wheel file, its SHA-256 and its licence. The same file is published beside the zip as `Unminute-<version>.cdx.json`. |
 | `THIRD_PARTY_NOTICES.txt` | Every bundled component, its licence, where its licence texts are in the package, and the native libraries (DLLs) it bundles, with their signers. The build fails if it names a file that is not in the package. Licence texts for some bundled native libraries are not included yet (#176). |
@@ -150,6 +150,29 @@ Rules:
 - `-SelfService` switches an IT-managed installation back to self-service updates.
 
 Settings > Updates in the app shows the deployment mode and anything that would hold up a storage-format update.
+
+### The install record, `current.json` (#111 B5a)
+
+Every install and rollback writes `current.json` in the install folder. Since B5a it is format 2:
+
+```
+{"format": 2, "version": "0.7.0", "path": "<InstallDir>\\versions\\0.7.0", "previous": "0.6.1", "managed": true,
+ "slots": {"0.6.1": {"schema": 2, "seq": 8, "installed": "2027-01-10T22:00:00Z"},
+           "0.7.0": {"schema": 3, "seq": 9, "installed": "2027-02-02T01:00:00Z"}}}
+```
+
+- `version`, `path`, `previous` and `managed` are as before. The uninstaller and the app's deployment check read only these, so they read either format.
+- `slots` lists each kept version the installer made. `schema` is the storage format the version's own `version.json` states: a package built since B5a carries it (read from `workspace/store.py` at build time, never by importing the app), and a version from before B5a states none, so it is recorded without one and is never handed a workspace. `seq` is its install order: one more than the highest so far when the version is first installed, and kept when it is installed again, so "newest" never depends on comparing version names. `installed` is when it was last installed or repaired (UTC).
+- A `current.json` without `format` (written before B5a) is read as before. The next install or rollback writes format 2 and numbers the previous version first.
+- `-Rollback` writes format 2 too, keeping each version's number and install time.
+- Per-user retention is unchanged: the current and the previous version.
+- It is still written in place. Writing it atomically is part of B6a.
+
+### Launch-time hand-over (machine mode, #111 B5a)
+
+Per-user installs keep the install-time gate above (exit code 5; the owner's decision B5-1 of 21 October 2026). Machine mode (B6, not built yet) installs as SYSTEM, which sees no user's workspace, so there the decision moves to each user's start: the app reads `current.json` and the storage format and blockers of the user's own workspace (plain values, no key), and opens the current version, or, while an older workspace still holds anything the gate counts, the newest kept version of that workspace's format (finish-only mode follows in B5b). A workspace from a newer version is never handed to one (strict withdrawal, the owner's decision B5-8): the user sees "ask your IT team" until a fixed version is installed. A workspace that cannot be read always opens the current version. Another version is started only by its real path, as a plain folder directly inside `versions` whose `version.json` matches the record; anything else starts nothing and shows a message naming IT. The rules are in [WORKSPACE_DESIGN.md](WORKSPACE_DESIGN.md), "Launch". In a per-user or source install the pass does nothing.
+
+Machine-mode retention (applied by B6b, the owner's decisions B5-3 and B5-8 of 21 October 2026, "bounded disk"): besides the current and previous versions, one older version is kept for an earlier storage format, and it is replaced at the next storage-format change rather than kept for every format (B6b sets the exact rule). A user whose workspace is still on a format no kept version uses, with content in it, therefore has no version to open it, and sees the IT message with the blockers' counts. A downgrade or withdrawal removes the newer version. The uninstall refusal for the one kept older version (B6-11) still applies.
 
 To go back to the previous installed version, run:
 
