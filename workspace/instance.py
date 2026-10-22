@@ -13,11 +13,17 @@
 # releases the lock when the process ends, even after a crash. Standard
 # library only.
 
+import errno
 import os
 
 NAME = "instance.lock"
 MESSAGE = ("Unminute is already open in another Windows session of yours. "
            "Close it there first.")
+
+# The errors a non-blocking lock gives when another process holds the byte:
+# EACCES from msvcrt.locking on Windows; EACCES or EAGAIN from lockf. Any
+# other error is not "open elsewhere" and is raised as it is (P3).
+_HELD = frozenset({errno.EACCES, errno.EAGAIN})
 
 if os.name == "nt":
     import msvcrt
@@ -69,13 +75,16 @@ class Lock:
 def acquire(root):
     """Lock root\\instance.lock for this process. Returns a Lock; raises Held
     when another process holds it, and OSError when the file cannot be
-    opened at all. The handle is not inherited by child processes."""
+    opened or locked for any other reason. The handle is not inherited by
+    child processes."""
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
     fd = os.open(os.path.join(root, NAME), flags, 0o600)
     try:
         os.lseek(fd, 0, os.SEEK_SET)
         _lock(fd)
-    except OSError:
+    except OSError as exc:
         os.close(fd)
-        raise Held() from None
+        if exc.errno in _HELD:
+            raise Held() from None
+        raise
     return Lock(fd)

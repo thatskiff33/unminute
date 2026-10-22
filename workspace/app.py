@@ -655,12 +655,13 @@ class Workspace:
 
     def _take_instance(self):
         """The workspace lock. instance.Held when another process holds it;
-        a lock file that cannot be opened at all stops the start too, rather
-        than open the workspace unguarded (no path in the message, P3)."""
+        a lock file that cannot be opened or locked for any other reason
+        stops the start too, rather than open the workspace unguarded (no
+        path in the message, P3)."""
         try:
             return instance.acquire(self.root)
         except OSError:
-            raise StoreError("Unminute could not open its workspace's lock file, so it "
+            raise StoreError("Unminute could not use its workspace's lock file, so it "
                              "did not open the workspace. Ask your IT team.") from None
 
     # -- Settings and Setup data (R7b) -------------------------------------------------
