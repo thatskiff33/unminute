@@ -25,8 +25,7 @@ Privacy
   PRs, issues); fixtures are synthetic or public. Guard: `tests/test_consistency.py` (tracked
   media only) and the PR template; partial.
 - **P2** Agents never open, print or summarise real content: `extracted/`, the live workspace
-  (`%LOCALAPPDATA%\Unminute\workspace`, and the old `%LOCALAPPDATA%\whisper\workspace`,
-  which keeps real content until the user deletes it) or real recordings. Use `--status`
+  (`%LOCALAPPDATA%\Unminute\workspace`) or real recordings. Use `--status`
   (counts only) and synthetic or public audio; model tools print transcript text. Guard: the
   deny rules and hook in `.claude/settings.json` (`tests/test_agent_guard.py`), a guard rail
   rather than a security boundary: it blocks the common ways to read, list, search or copy
