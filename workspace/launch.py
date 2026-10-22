@@ -7,8 +7,11 @@
 # The decision is machine mode only (the owner's decision B5-1, 21 Oct
 # 2026). A per-user install keeps the install-time gate (install.ps1 waits
 # with exit 5), so it never hands its workspace to another version for that.
-# update.deployment() reports "machine" only once B6b's machine trust test
-# passes, so until then no install makes the decision.
+# update.deployment() reports "machine" only for an install by install.ps1
+# -Machine that passes the machine trust test (update.machine_trusted, #111
+# B6b): Program Files' known folder, an administrator owner, and no right for
+# this user to change it. Otherwise this pass carries on in the version that
+# was started.
 #
 # Per-user (the owner's decision of 23 Oct 2026, _per_user): only B5b's
 # light check of the version that was started, at its first start for this
@@ -18,6 +21,15 @@
 # no "update waiting" message. Whatever the check cannot be sure of (a
 # damaged record, a version it does not list, a folder that does not match
 # it) starts as before.
+#
+# Machine mode's Start menu entry starts %ProgramFiles%\Unminute\current, a
+# junction to the current version. Step 3 then always re-launches from the
+# version's real folder before anything else is imported, so the app, its
+# workers and the decode child (sys.executable, sys._base_executable) all run
+# from one version, even if an install switches the junction meanwhile. The
+# short-lived support switches (--status, --health and the like) are not
+# re-launched: started through current, they finish in whichever version it
+# pointed at.
 #
 # In machine mode:
 #   1. --slot <role> (set only by a hand-over): no second decision. The

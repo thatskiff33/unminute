@@ -45,17 +45,202 @@ NON_CONTENT = {"schema_version", "receipts", "sqlite_sequence",
                "crypto_meta"}
 
 
-def deployment(app_file=None):
-    """How this copy was installed: {"version", "mode": managed|self-service|source}."""
+def deployment(app_file=None, trusted=None):
+    """How this copy was installed: {"version", "mode":
+    machine|managed|self-service|source}. "machine" (#111 B6b) only when
+    current.json says so ("mode": "machine", written by install.ps1 -Machine)
+    and the install passes machine_trusted(); a claim that fails it reads as
+    the record's managed or self-service mode, with "machine_refused": True so
+    the app can log it (P3: no path or name). trusted stands in for
+    machine_trusted in tests."""
     here = Path(app_file or __file__).resolve()
     try:
         install_root = here.parents[4]           # <root>/versions/<v>/app/workspace/x.py
         # Windows PowerShell writes UTF-8 with a byte-order mark.
         current = json.loads((install_root / "current.json").read_text(encoding="utf-8-sig"))
-        return {"version": current.get("version"),
-                "mode": "managed" if current.get("managed") else "self-service"}
-    except (OSError, ValueError, IndexError):
+        found = {"version": current.get("version"),
+                 "mode": "managed" if current.get("managed") else "self-service"}
+    except (OSError, ValueError, IndexError, AttributeError):
         return {"version": None, "mode": "source"}
+    if current.get("mode") == "machine":
+        if (trusted or machine_trusted)(install_root):
+            found["mode"] = "machine"
+        else:
+            found["machine_refused"] = True
+    return found
+
+
+# -- The machine trust test (#111 B6b, design 5.2) -----------------------------------
+#
+# Machine mode changes what the app relies on (the launcher's hand-over between
+# installed versions now; machine-wide models in B7), so a copy is "machine"
+# only when all of these hold, whatever its current.json says:
+#   1. its install folder, fully resolved, is FOLDERID_ProgramFiles\Unminute, as
+#      Windows' known folder gives it (never an environment variable), and that
+#      known folder is itself a real folder (no junction or link on the way);
+#   2. the install folder's owner is Administrators or SYSTEM;
+#   3. this process's user cannot change it: an AccessCheck against this
+#      process's token grants no right to add, delete or change permissions.
+# A per-user install that writes "machine" into its own current.json fails 1 and
+# 3. Any error fails the test (it never grants). An elevated administrator also
+# fails 3; the app runs without elevation.
+
+MACHINE_FOLDER = "Unminute"
+OWNERS = ("S-1-5-32-544", "S-1-5-18")     # Administrators, SYSTEM
+# FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_WRITE_EA, FILE_DELETE_CHILD,
+# FILE_WRITE_ATTRIBUTES, DELETE, WRITE_DAC, WRITE_OWNER.
+CHANGE_RIGHTS = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000
+_FOLDERID_PROGRAM_FILES = "{905E63B6-C1BF-494E-B29C-65B732D3D21A}"
+
+
+def machine_trusted(install_root, *, program_files=None, owner=None, can_change=None):
+    """The machine trust test above. program_files, owner and can_change stand
+    in for _program_files, _owner_sid and _can_change in tests."""
+    try:
+        known = (program_files or _program_files)()
+        if not known or os.path.normcase(os.path.realpath(known)) != os.path.normcase(
+                os.path.abspath(known)):
+            return False
+        root = os.path.realpath(install_root)
+        if os.path.normcase(root) != os.path.normcase(os.path.join(os.path.abspath(known),
+                                                                   MACHINE_FOLDER)):
+            return False
+        if (owner or _owner_sid)(root) not in OWNERS:
+            return False
+        return not (can_change or _can_change)(root)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _windows():
+    if os.name != "nt":
+        raise OSError("not Windows")
+    import ctypes
+    from ctypes import wintypes
+    return ctypes, wintypes
+
+
+def _program_files():
+    """FOLDERID_ProgramFiles from SHGetKnownFolderPath (in a 64-bit process,
+    C:\\Program Files)."""
+    ctypes, wintypes = _windows()
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD),
+                    ("d", ctypes.c_ubyte * 8)]
+
+    guid = GUID()
+    ole32 = ctypes.WinDLL("ole32")
+    ole32.CLSIDFromString.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(GUID))
+    if ole32.CLSIDFromString(_FOLDERID_PROGRAM_FILES, ctypes.byref(guid)) != 0:
+        raise OSError("known folder id")
+    path = ctypes.c_wchar_p()
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.SHGetKnownFolderPath.argtypes = (ctypes.POINTER(GUID), wintypes.DWORD,
+                                             wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p))
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(path)) != 0:
+        raise OSError("known folder")
+    try:
+        return path.value
+    finally:
+        ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
+        ole32.CoTaskMemFree(ctypes.cast(path, ctypes.c_void_p))
+
+
+def _security(path, what):
+    """The folder's security descriptor (owner, group and permissions as asked)
+    as bytes, from GetFileSecurityW."""
+    ctypes, wintypes = _windows()
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi32.GetFileSecurityW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+                                          wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    advapi32.GetFileSecurityW.restype = wintypes.BOOL
+    needed = wintypes.DWORD(0)
+    advapi32.GetFileSecurityW(str(path), what, None, 0, ctypes.byref(needed))
+    if not needed.value or needed.value > 1 << 20:
+        raise OSError("security descriptor")
+    buffer = ctypes.create_string_buffer(needed.value)
+    if not advapi32.GetFileSecurityW(str(path), what, buffer, needed, ctypes.byref(needed)):
+        raise OSError("security descriptor")
+    return buffer.raw
+
+
+def _owner_sid(path):
+    """The folder's owner as a SID string (S-1-...)."""
+    ctypes, wintypes = _windows()
+    raw = _security(path, 0x1)                          # OWNER_SECURITY_INFORMATION
+    buffer = ctypes.create_string_buffer(raw, len(raw))
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    advapi32.GetSecurityDescriptorOwner.argtypes = (ctypes.c_void_p,
+                                                    ctypes.POINTER(ctypes.c_void_p),
+                                                    ctypes.POINTER(wintypes.BOOL))
+    advapi32.ConvertSidToStringSidW.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p))
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    sid, defaulted = ctypes.c_void_p(), wintypes.BOOL()
+    if not advapi32.GetSecurityDescriptorOwner(buffer, ctypes.byref(sid), ctypes.byref(defaulted)) \
+            or not sid.value:
+        raise OSError("owner")
+    text = ctypes.c_wchar_p()
+    if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        raise OSError("owner")
+    try:
+        return text.value
+    finally:
+        kernel32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+
+
+def _can_change(path):
+    """Whether this process's user may add to, delete or change the
+    permissions of the folder."""
+    return _grants_change(_security(path, 0x1 | 0x2 | 0x4))   # owner, group, DACL
+
+
+def _grants_change(descriptor):
+    """Whether a security descriptor (bytes, self-relative) grants this
+    process's token any of CHANGE_RIGHTS: AccessCheck with MAXIMUM_ALLOWED
+    against an impersonation copy of the process token."""
+    ctypes, wintypes = _windows()
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+
+    class GENERIC_MAPPING(ctypes.Structure):
+        _fields_ = [("read", wintypes.DWORD), ("write", wintypes.DWORD),
+                    ("execute", wintypes.DWORD), ("all", wintypes.DWORD)]
+
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    advapi32.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD,
+                                          ctypes.POINTER(wintypes.HANDLE))
+    advapi32.DuplicateToken.argtypes = (wintypes.HANDLE, ctypes.c_int,
+                                        ctypes.POINTER(wintypes.HANDLE))
+    advapi32.AccessCheck.argtypes = (ctypes.c_void_p, wintypes.HANDLE, wintypes.DWORD,
+                                     ctypes.POINTER(GENERIC_MAPPING), ctypes.c_void_p,
+                                     ctypes.POINTER(wintypes.DWORD),
+                                     ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.BOOL))
+    sd = ctypes.create_string_buffer(descriptor, len(descriptor))
+    token, copy = wintypes.HANDLE(), wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008 | 0x0002,
+                                     ctypes.byref(token)):      # TOKEN_QUERY | TOKEN_DUPLICATE
+        raise OSError("token")
+    try:
+        if not advapi32.DuplicateToken(token, 2, ctypes.byref(copy)):   # SecurityImpersonation
+            raise OSError("token")
+        try:
+            mapping = GENERIC_MAPPING(0x120089, 0x120116, 0x1200A0, 0x1F01FF)   # FILE_GENERIC_*
+            privileges = ctypes.create_string_buffer(1024)
+            size = wintypes.DWORD(len(privileges))
+            granted, status = wintypes.DWORD(0), wintypes.BOOL(False)
+            if not advapi32.AccessCheck(sd, copy, 0x02000000, ctypes.byref(mapping), privileges,
+                                        ctypes.byref(size), ctypes.byref(granted),
+                                        ctypes.byref(status)):   # MAXIMUM_ALLOWED
+                raise OSError("access check")
+            return bool(status.value) and bool(granted.value & CHANGE_RIGHTS)
+        finally:
+            kernel32.CloseHandle(copy)
+    finally:
+        kernel32.CloseHandle(token)
 
 
 def package_version():
@@ -306,7 +491,7 @@ ROLES = ("current", "compat", "fallback")
 # keeps them equal): letters and digits, then also . + _ -, at most 64
 # characters, no final dot (Windows drops it) and not a working folder's name.
 _VERSION_NAME = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")
-_WORKING = re.compile(r"\.(partial|old)\Z")
+_WORKING = re.compile(r"\.(partial|old|retired)\Z")     # .retired: machine mode (#111 B6b)
 _RECORD_MAX = 64 * 1024                 # current.json and version.json are far smaller
 _INSTALLED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 

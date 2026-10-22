@@ -234,7 +234,8 @@ class InstallIdentityTests(unittest.TestCase):
         # K1 (#111 B6a): packaging/identity.json mirrors the names, never replaces
         # them, so the names stay literals here and changing the file alone fails.
         # The machine names (B6b) joined K1 with the owner's approval (21 October
-        # 2026, confirmed 22 October 2026, #111); the scripts do not use them yet.
+        # 2026, confirmed 22 October 2026, #111); install.ps1 -Machine and
+        # uninstall.ps1 -Machine use them.
         identity = json.loads(read("packaging/identity.json"))
         self.assertEqual(identity["name"], "Unminute")
         self.assertEqual(identity["earlier_names"], ["Whisper Transcriber", "Meeting Workspace"])
@@ -264,11 +265,19 @@ class InstallIdentityTests(unittest.TestCase):
                 "uninstall_key": r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
                                  r"\Unminute",
                 "launch_junction": "current",
-                "event_source": "Unminute"}})
+                "launch_junction_working": ["current.new", "current.old"],
+                "staging_folder": "staging-<32 hex digits>",
+                "shortcut": "Unminute.lnk",
+                "event_source": "Unminute",
+                "event_source_key": r"HKLM\SYSTEM\CurrentControlSet\Services\EventLog"
+                                    r"\Application\Unminute",
+                "event_message_file": "EventLogMessages.dll"}})
         self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
                           for script, modes in identity["exit_codes"].items()},
-                         {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"]},
-                          "uninstall.ps1": {"user": ["0", "1", "2", "3", "5", "6"]}})
+                         {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"],
+                                          "machine": ["0", "1", "2", "3", "4"]},
+                          "uninstall.ps1": {"user": ["0", "1", "2", "3", "5", "6"],
+                                            "machine": ["0", "1", "2", "3", "4", "5"]}})
         # Repository only: the build copies named files, so it never ships.
         self.assertNotIn("identity.json", read("tools/build_package.py"))
 
@@ -302,10 +311,36 @@ class InstallIdentityTests(unittest.TestCase):
                 logs = re.findall(r'"([^"]+)"', one(r'^\$LogNames = @\(([^)]+)\)$', text,
                                                     "$LogNames"))
                 self.assertEqual(identity["install_log"], [f"logs\\{n}" for n in logs])
-                # Every exit code the script can give, and no other, is listed.
+                # Every exit code the script can give, in either mode, and no
+                # other, is listed.
                 used = set(re.findall(r"\bStop-(?:Install|Uninstall) (\d)\b", text))
                 used |= set(re.findall(r"(?m)^\s*exit (\d)\b", text))
-                self.assertEqual(used, set(identity["exit_codes"][script]["user"]))
+                codes = identity["exit_codes"][script]
+                self.assertEqual(used, set(codes["user"]) | set(codes["machine"]))
+                # The machine names (#111 B6b), each a literal in both scripts.
+                machine = identity["modes"]["machine"]
+                self.assertEqual(machine["uninstall_key"].replace("HKLM", "HKLM:", 1),
+                                 one(r'^\$MachineRegKey = "([^"]+)"$', text, "$MachineRegKey"))
+                self.assertEqual(machine["event_source_key"].replace("HKLM", "HKLM:", 1),
+                                 one(r'^\$EventSourceKey = "([^"]+)"$', text, "$EventSourceKey"))
+                self.assertEqual(machine["install_folder"], "%ProgramFiles%\\" + one(
+                    r'^\$MachineFolderName = "([^"]+)"$', text, "$MachineFolderName"))
+                self.assertEqual(machine["launch_junction"],
+                                 one(r'^\$JunctionName = "([^"]+)"$', text, "$JunctionName"))
+                self.assertEqual([machine["launch_junction"], *machine["launch_junction_working"]],
+                                 re.findall(r'"([^"]+)"', one(r'^\$JunctionNames = @\(([^)]+)\)$',
+                                                              text, "$JunctionNames")))
+                self.assertEqual(r"^staging-[0-9a-f]{32}\z",
+                                 one(r"^\$StagingPattern = '([^']+)'$", text, "$StagingPattern"))
+                self.assertIn('"$AppName.lnk"', text)
+                self.assertIn('"EventLogMessages.dll"', text)
+        self.assertEqual(identity["modes"]["machine"]["uninstall_key"].split("\\", 1)[1],
+                         one(r'^\$MachineRegSubKey = "([^"]+)"$', self.install,
+                             "$MachineRegSubKey"))
+        from workspace import update
+        self.assertEqual(identity["modes"]["machine"]["install_folder"],
+                         "%ProgramFiles%\\" + update.MACHINE_FOLDER)
+        self.assertEqual(identity["modes"]["machine"]["event_source"], identity["event_source"])
         self.assertEqual(identity["app_id"], one(r'^\$AppId = "([^"]+)"', self.install, "$AppId"))
         self.assertEqual({identity["icon"]}, {Path(p).name for p in re.findall(
             r'"app\\([^"]+\.ico)"', self.install)})

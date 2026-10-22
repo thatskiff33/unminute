@@ -50,10 +50,42 @@
   location is refused (missing, synced, on a network drive, or a data folder
   link that cannot be reached; #219, #266).
 
+  A per-user install is refused (exit 2) once Unminute is installed for
+  everyone on this computer (the 64-bit HKLM uninstall entry; #111 B6-1).
+
+  MACHINE MODE (-Machine, #111 B6b): run by IT as SYSTEM (Intune, System
+  context) in a 64-bit, elevated Windows PowerShell, with -Package only (never a
+  loose folder) and never -InstallDir. It installs to %ProgramFiles%\Unminute,
+  a folder only administrators can change: created with its own permissions
+  (owner Administrators; full control for SYSTEM and Administrators; read and
+  run for Users and ALL APPLICATION PACKAGES), and checked at every run, with
+  every folder beneath it, for another owner, an explicit entry or a protected
+  list (exit 4; never repaired silently). The package is unpacked inside that
+  folder (staging-<32 hex digits>), never in a temporary folder, and no Python
+  runs during the install. The Start menu entry for all users starts
+  %ProgramFiles%\Unminute\current, a junction to the current version, which
+  the app leaves at once for the version's real folder (workspace/launch.py).
+  Kept versions: the current one, the previous one, and the newest version of
+  the storage format immediately before the current one, for people whose
+  workspace still holds meetings in that format (the owner's decisions of 21
+  and 22 October 2026). Installing a version with an older storage format
+  removes every newer one. It refuses while the app runs for anyone on the
+  computer (exit 3; Intune retries). It registers the HKLM uninstall entry
+  (Intune detection), the Start menu entry and the Event Log source, and never
+  reads or writes a user's profile. -Machine -Rollback switches back to the
+  previous version; -Machine -RemoveSlot <version> removes a kept version that
+  is not current.
+  Machine exit codes: 0 installed, 1 failed, 2 not allowed (a 32-bit or
+  non-elevated run, a refused switch, a package that states no storage format,
+  or prerequisites missing), 3 the app is running, 4 the package failed
+  verification or the install folder's permissions have changed.
+
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Silent
+.EXAMPLE
+  %SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Machine -Package Unminute-0.7.0.zip -Silent
 #>
 [CmdletBinding()]
 param(
@@ -63,16 +95,18 @@ param(
     [switch]$SkipShortcut,
     [switch]$Managed,
     [switch]$SelfService,
-    [switch]$Rollback
+    [switch]$Rollback,
+    [switch]$Machine,
+    [string]$RemoveSlot = ""
 )
 
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
-             Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
+             Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback
+             Machine = [bool]$Machine; RemoveSlot = $RemoveSlot
+             InstallDirGiven = $PSBoundParameters.ContainsKey("InstallDir") }
 $AppName = "Unminute"
-# The install mode, as the log records it. Machine mode follows in #111 B6b.
-$Mode = "user"
 $script:TempExtract = $null
 $script:StagedCopy = $null           # versions\<version>.partial while this run owns it
 $script:InstallLock = $null
@@ -132,7 +166,8 @@ function Write-InstallLog([string]$Result, [int]$Code = -1) {
     if (-not $script:LogFile) { return }
     try {
         $time = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
-        $line = "$time mode=$Mode version=$($script:LogVersion) step=$($script:LogStep) result=$Result"
+        $mode = if ($Options.Machine) { "machine" } else { "user" }
+        $line = "$time mode=$mode version=$($script:LogVersion) step=$($script:LogStep) result=$Result"
         if ($Code -ge 0) { $line += " code=$Code" }
         $line += " elapsed_ms=$($script:LogClock.ElapsedMilliseconds)"
         if ($script:LogError) { $line += " error=$($script:LogError)" }
@@ -191,9 +226,12 @@ function Test-Prerequisite {
         Stop-Install 2 "$AppName needs Windows 10 version 1809 or later (this is build $build)."
     }
     $webview = $null
-    foreach ($key in @("HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Client",
-                       "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2Client",
-                       "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$WebView2Client")) {
+    # Machine mode needs the machine-wide runtime: a copy in one user's profile
+    # serves only that user (#111 B6b).
+    $keys = @("HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Client",
+              "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2Client")
+    if (-not $Options.Machine) { $keys += "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$WebView2Client" }
+    foreach ($key in $keys) {
         try { $webview = (Get-ItemProperty -LiteralPath $key -Name pv).pv } catch { }
         if ($webview -and $webview -ne "0.0.0.0") { break }
     }
@@ -226,7 +264,8 @@ function Test-Hardware {
     if ($below.Count) {
         $message = "This computer has " + ($below -join " and ") + ". $AppName may be slow " +
             "or run out of memory on long meetings. Recommended: 8 cores and 16 GB."
-        if ($Options.Silent) {
+        # Nobody is at the keyboard of a machine install (SYSTEM): warn only.
+        if ($Options.Silent -or $Options.Machine) {
             [Console]::Error.WriteLine("Warning: $message")
             return
         }
@@ -241,6 +280,9 @@ function Test-Hardware {
 }
 
 # -- package -------------------------------------------------------------------------
+
+# A whole random GUID as 32 hex digits (the tests stand it in).
+function New-RandomName { return [guid]::NewGuid().ToString("N") }
 
 function Get-PackageRoot {
     if (-not $Options.Package) { return $PSScriptRoot }
@@ -259,8 +301,14 @@ function Get-PackageRoot {
     # for Windows PowerShell's 260 characters: um and 32 hex digits, the package's
     # folder and its paths of at most 140 characters under a user's temporary folder.
     # Nothing runs from here: the files are copied into the install folder and
-    # verified there.
-    $temp = Join-Path ([IO.Path]::GetTempPath()) ("um" + [guid]::NewGuid().ToString("N"))
+    # verified there. Machine mode unpacks inside its own folder, which only
+    # administrators can change, as staging-<32 hex digits>: never in SYSTEM's
+    # temporary folder, C:\Windows\Temp or Intune's cache (#111 B6b, T22).
+    $temp = if ($Options.Machine) {
+        Join-Path $Options.InstallDir ("staging-" + (New-RandomName))
+    } else {
+        Join-Path ([IO.Path]::GetTempPath()) ("um" + (New-RandomName))
+    }
     if ([IO.Directory]::Exists($temp) -or [IO.File]::Exists($temp)) {
         Stop-Install 1 "The temporary folder for extracting the package already exists, so nothing was installed. Run this again."
     }
@@ -268,8 +316,9 @@ function Get-PackageRoot {
     Write-Step "Extracting..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem     # much faster than Expand-Archive
     [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $temp)
-    $root = Get-ChildItem -LiteralPath $temp -Directory | Select-Object -First 1
-    return $root.FullName
+    $root = @([IO.DirectoryInfo]::new($temp).GetDirectories())
+    if ($root.Count -ne 1) { Stop-Install 4 "The package does not hold one folder, so nothing was installed." }
+    return $root[0].FullName
 }
 
 $NoLinkMessage = "The package contains a link or junction, so nothing was installed."
@@ -279,19 +328,29 @@ $NoLinkMessage = "The package contains a link or junction, so nothing was instal
 # entry's own attributes: a link or junction anywhere (the folder itself included)
 # stops the run with exit 4, and nothing behind it is listed or read (#111 B6a).
 # Windows PowerShell's Get-ChildItem -Recurse is not relied on for this.
-function Get-PackageListing([string]$Root) {
+# In machine mode the same walk also checks each entry's permissions: an explicit
+# entry or a protected list on any file or folder of the copy (anything but what it
+# inherits from the install folder) stops the run with exit 4 (#111 B6b, B6-7).
+# -NoStop: return $null instead of stopping (a same-version repair's check).
+function Get-PackageListing([string]$Root, [switch]$NoStop) {
+    $script:ListingProblem = $null
     $top = [IO.DirectoryInfo]::new($Root)
-    if (Test-Link $top) { Stop-Install 4 $NoLinkMessage }
+    if (Test-Link $top) { $script:ListingProblem = $NoLinkMessage }
     $skip = $top.FullName.TrimEnd("\").Length + 1
     $files = [Collections.Generic.Dictionary[string, IO.FileInfo]]::new([StringComparer]::Ordinal)
     $todo = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
-    $todo.Push($top)
-    while ($todo.Count) {
+    if (-not $script:ListingProblem) { $todo.Push($top) }
+    while ($todo.Count -and -not $script:ListingProblem) {
         foreach ($item in $todo.Pop().GetFileSystemInfos()) {
-            if (Test-Link $item) { Stop-Install 4 $NoLinkMessage }
+            if (Test-Link $item) { $script:ListingProblem = $NoLinkMessage; break }
+            if ($Options.Machine -and (Test-AclChanged $item)) { $script:ListingProblem = $PermissionMessage; break }
             if ($item -is [IO.DirectoryInfo]) { $todo.Push($item); continue }
             $files[$item.FullName.Substring($skip).Replace("\", "/")] = $item
         }
+    }
+    if ($script:ListingProblem) {
+        if ($NoStop) { return $null }
+        Stop-Install 4 $script:ListingProblem
     }
     return , $files
 }
@@ -309,37 +368,53 @@ function Assert-NoLink([string]$Root) {
 # not that name, and Test-Path, which ignores case, is not used. Nothing may be added
 # either: an extra file (a planted .pth or module) would be loaded by the app.
 function Test-PackageFile([string]$Root) {
-    $files = Get-PackageListing $Root
+    $problem = Get-PackageProblem $Root
+    if ($problem) { Stop-Install 4 $problem }
+}
+
+# What Test-PackageFile finds wrong with the files under $Root, or $null when they
+# match the manifest. Machine mode also asks it of an installed version (a
+# same-version repair, a rollback) without stopping.
+function Get-PackageProblem([string]$Root) {
+    $files = Get-PackageListing $Root -NoStop
+    if ($null -eq $files) { return $script:ListingProblem }
     $manifestFile = $null
     if (-not $files.TryGetValue("package-manifest.json", [ref]$manifestFile)) {
-        Stop-Install 4 "package-manifest.json is missing."
+        return "package-manifest.json is missing."
     }
     try { $manifest = [IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json }
-    catch { Stop-Install 4 "package-manifest.json cannot be read." }
+    catch { return "package-manifest.json cannot be read." }
     $entries = @($manifest.PSObject.Properties)
     $listed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($entry in $entries) { [void]$listed.Add($entry.Name) }
     foreach ($rel in $files.Keys) {
         if ($rel -cne "package-manifest.json" -and -not $listed.Contains($rel)) {
-            Stop-Install 4 "The package contains a file that is not in its manifest: $rel"
+            return "The package contains a file that is not in its manifest: $rel"
         }
     }
     Write-Step "Verifying $($entries.Count) files..."
     foreach ($entry in $entries) {
         $file = $null
-        if (-not $files.TryGetValue($entry.Name, [ref]$file)) { Stop-Install 4 "A package file is missing: $($entry.Name)" }
+        if (-not $files.TryGetValue($entry.Name, [ref]$file)) { return "A package file is missing: $($entry.Name)" }
         $expected = @($entry.Value)
         if ($file.Length -ne [long]$expected[0] -or (Get-FileSha256 $file.FullName) -ne [string]$expected[1]) {
-            Stop-Install 4 "A package file does not match its checksum: $($entry.Name)"
+            return "A package file does not match its checksum: $($entry.Name)"
         }
     }
+    return $null
 }
 
 function Test-AppRunning {
     $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
         try { $_.Path -and $_.Path.StartsWith($Options.InstallDir.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase) } catch { $false }
     }
-    if ($running) { Stop-Install 3 "$AppName is running. Close it (and let any processing finish), then run this again." }
+    if (-not $running) { return }
+    # Machine mode: a process of any user, in any session, started from the install
+    # folder (the owner's decision of 21 October 2026: refuse while the app runs).
+    if ($Options.Machine) {
+        Stop-Install 3 "$AppName is running on this computer, so nothing was changed. Run this again once nobody has it open (Intune retries)."
+    }
+    Stop-Install 3 "$AppName is running. Close it (and let any processing finish), then run this again."
 }
 
 # -- the install folder (#297) ---------------------------------------------------------
@@ -347,13 +422,14 @@ function Test-AppRunning {
 # A version becomes a folder name under versions, so the package's version and the
 # values in current.json must be plain names first: the uninstaller's pattern
 # (tests/test_hardening.py keeps the two equal), no final dot (Windows drops it, so
-# 0.6.0. would name the folder 0.6.0), and not a working folder's name. The patterns
-# end in \z, not $, which also matches before a final newline ("1.0.0`n").
+# 0.6.0. would name the folder 0.6.0), and not a working folder's name (.retired:
+# a version machine mode is removing, #111 B6b). The patterns end in \z, not $,
+# which also matches before a final newline ("1.0.0`n").
 $VersionPattern = '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z'
 
 function Test-VersionName([string]$Name) {
     return ($Name -cmatch $VersionPattern) -and -not $Name.EndsWith(".") -and
-        $Name -notmatch '\.(partial|old)\z'
+        $Name -notmatch '\.(partial|old|retired)\z'
 }
 
 # A version from current.json, or $null when it is missing or not a plain name.
@@ -403,10 +479,11 @@ function Test-OwnVersion([IO.DirectoryInfo]$Dir) {
     return ([string]$info.version) -ceq $Dir.Name
 }
 
-# A working folder the installer made: <version>.partial (a copy in progress) or
-# <version>.old (a version being replaced by itself), not a link.
+# A working folder the installer made: <version>.partial (a copy in progress),
+# <version>.old (a version being replaced by itself) or <version>.retired (a version
+# machine mode no longer keeps, being removed), not a link.
 function Test-OwnWorkingFolder([IO.DirectoryInfo]$Dir) {
-    if ((Test-Link $Dir) -or $Dir.Name -notmatch '^(.+)\.(partial|old)\z') { return $false }
+    if ((Test-Link $Dir) -or $Dir.Name -notmatch '^(.+)\.(partial|old|retired)\z') { return $false }
     return Test-VersionName $Matches[1]
 }
 
@@ -444,6 +521,9 @@ function Test-InstallRecord([IO.FileInfo]$File) {
 # those names, directly inside versions or inside logs is refused in every case.
 # Checked before anything is written; the messages name no path. An install keeps
 # whatever else is in it: the installer never removes that.
+# Machine mode also accepts its own entries (#111 B6b): the junctions current,
+# current.new and current.old, each pointing at a version folder inside versions
+# (Test-OwnJunction), and staging-<32 hex digits> folders left by a stopped run.
 function Assert-InstallFolder([string]$Dir) {
     $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
     if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
@@ -453,7 +533,13 @@ function Assert-InstallFolder([string]$Dir) {
     $foreign = 0; $links = 0; $complete = 0; $strays = 0
     foreach ($item in $folder.GetFileSystemInfos()) {
         $isDir = $item -is [IO.DirectoryInfo]
-        if ($OwnEntries -notcontains $item.Name) { $foreign++ }
+        if ($Options.Machine -and $JunctionNames -ccontains $item.Name) {
+            if (-not (Test-OwnJunction $item $folder.FullName)) { $links++ }
+        }
+        elseif ($Options.Machine -and $item.Name -cmatch $StagingPattern) {
+            if (Test-Link $item) { $links++ } elseif (-not $isDir) { $foreign++ }
+        }
+        elseif ($OwnEntries -notcontains $item.Name) { $foreign++ }
         elseif (Test-Link $item) { $links++ }
         elseif ($isDir -ne (@("versions", "logs") -contains $item.Name)) { $foreign++ }
         elseif ($item.Name -eq "current.json") {
@@ -665,10 +751,14 @@ function Get-SlotRecord($Was, [string[]]$Order, [string]$Fresh) {
     return $slots
 }
 
+# Machine mode adds "mode": "machine". The app believes it only when its machine
+# trust test passes (workspace/update.py, machine_trusted): a per-user install that
+# writes it into its own current.json gains nothing (#111 B6b).
 function Write-CurrentRecord([string]$File, [string]$Version, [string]$Target, $Previous, [bool]$Managed, $Slots) {
-    $text = [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous
-                        managed = $Managed; slots = $Slots } | ConvertTo-Json -Depth 5
-    Save-RecordFile $File $text
+    $record = [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous; managed = $Managed }
+    if ($Options.Machine) { $record.mode = "machine" }
+    $record.slots = $Slots
+    Save-RecordFile $File ($record | ConvertTo-Json -Depth 5)
 }
 
 # current.json is replaced whole or not at all (#111 B6a): the new text goes to
@@ -842,8 +932,14 @@ function New-Shortcut([string]$Target) {
     Update-PinnedShortcut $Target
     if ($Options.SkipShortcut) { return }
     $name = Get-VersionAppName $Target
+    Save-AppShortcut (Join-Path $ProgramsFolder "$name.lnk") $Target
+}
+
+# The Start menu entry at $LnkPath, starting the app from $Target (a version's
+# folder, or machine mode's current junction) with $LaunchArgs.
+function Save-AppShortcut([string]$LnkPath, [string]$Target) {
     $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut((Join-Path $ProgramsFolder "$name.lnk"))
+    $link = $shell.CreateShortcut($LnkPath)
     $link.TargetPath = Join-Path $Target "runtime\pythonw.exe"
     $link.Arguments = $LaunchArgs
     $link.WorkingDirectory = Join-Path $Target "app"
@@ -892,22 +988,564 @@ function Update-PinnedShortcut([string]$Target, [string[]]$Folders = @()) {
     }
 }
 
+# The uninstall entry (Intune's detection reads DisplayVersion). Machine mode
+# (#111 B6b): the HKLM entry in the 64-bit view (the run is 64-bit, Assert-MachineContext),
+# an uninstall command with -Machine, and the icon through the current junction,
+# which never moves.
 function Register-Uninstall([string]$Target, [string]$Version) {
     $sizeKb = [int]((Get-ChildItem -LiteralPath $Target -Recurse -File | Measure-Object Length -Sum).Sum / 1KB)
-    $uninstall = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`" -InstallDir `"$($Options.InstallDir)`""
-    New-Item -Path $RegKey -Force | Out-Null
+    $script = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $Options.InstallDir 'uninstall.ps1')`""
+    if ($Options.Machine) {
+        $key = Get-MachineRegKey
+        $uninstall = "$script -Machine"
+        $icon = Join-Path (Join-Path $Options.InstallDir $JunctionName) "app\unminute.ico"
+    } else {
+        $key = $RegKey
+        $uninstall = "$script -InstallDir `"$($Options.InstallDir)`""
+        $icon = Join-Path $Target "app\unminute.ico"
+    }
+    New-Item -Path $key -Force | Out-Null
     $values = @{
         DisplayName = (Get-VersionAppName $Target); DisplayVersion = $Version; Publisher = "Unminute project"
         InstallLocation = $Options.InstallDir; UninstallString = $uninstall
         QuietUninstallString = "$uninstall -Silent"; EstimatedSize = $sizeKb
         NoModify = 1; NoRepair = 1
     }
-    $icon = Join-Path $Target "app\unminute.ico"
     if (Test-Path -LiteralPath $icon) { $values.DisplayIcon = $icon }
     foreach ($k in $values.Keys) {
         $type = if ($values[$k] -is [int]) { "DWord" } else { "String" }
-        New-ItemProperty -Path $RegKey -Name $k -Value $values[$k] -PropertyType $type -Force | Out-Null
+        New-ItemProperty -Path $key -Name $k -Value $values[$k] -PropertyType $type -Force | Out-Null
     }
+}
+
+# -- machine mode, shared (#111 B6b) ----------------------------------------------------
+# install.ps1 and uninstall.ps1 have this whole section, unchanged
+# (tests/test_hardening.py keeps the two equal), and packaging/identity.json mirrors
+# its names. Every name stays a literal here: no file is read to decide what is
+# installed, checked or removed (the owner's decision B6-10).
+
+# %ProgramFiles%\Unminute, from Windows' known folder in a 64-bit process, never from
+# an environment variable; its machine-wide uninstall entry, in the 64-bit
+# registry view.
+$MachineFolderName = "Unminute"
+$MachineRegKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# The Event Log source, registered by the install with .NET's EventLogMessages.dll (a
+# Windows file: no new binary) and removed by the uninstall (the owner's decision of
+# 21 October 2026). workspace/audit.py writes as this source.
+$EventSourceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Unminute"
+# The stable launch path (a junction to the current version), and the two names a
+# switch of version uses for a moment.
+$JunctionName = "current"
+$JunctionNames = @("current", "current.new", "current.old")
+$StagingPattern = '^staging-[0-9a-f]{32}\z'
+# The install folder's permissions: owner Administrators (or SYSTEM); full control
+# for SYSTEM and Administrators; read and run for Users and ALL APPLICATION
+# PACKAGES; nothing inherited from Program Files; everything beneath inherits them.
+$AdministratorsSid = "S-1-5-32-544"
+$SystemSid = "S-1-5-18"
+$UsersSid = "S-1-5-32-545"
+$AppPackagesSid = "S-1-15-2-1"
+$PermissionMessage = "The install folder's permissions have changed, so nothing was changed. Ask IT to check this computer."
+
+# What the run and the computer are. The Pester tests stand these in.
+function Test-Elevated {
+    $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+function Test-64BitProcess { return [Environment]::Is64BitProcess }
+function Get-ProgramFilesFolder { return [Environment]::GetFolderPath("ProgramFiles") }
+function Get-CommonProgramsFolder { return [Environment]::GetFolderPath("CommonPrograms") }
+function Get-MachineRegKey { return $MachineRegKey }
+function Get-EventSourceKey { return $EventSourceKey }
+function Get-FolderSecurity([string]$Path) { return [IO.DirectoryInfo]::new($Path).GetAccessControl() }
+
+# The machine install folder: Unminute in Program Files, which must be a folder on a
+# drive letter and not a link; $null otherwise.
+function Get-MachineRoot {
+    $programFiles = [string](Get-ProgramFilesFolder)
+    if ($programFiles -notmatch '^[A-Za-z]:\\') { return $null }
+    $parent = [IO.DirectoryInfo]::new($programFiles)
+    if (-not $parent.Exists -or (Test-Link $parent)) { return $null }
+    return [IO.Path]::Combine($parent.FullName.TrimEnd("\"), $MachineFolderName)
+}
+
+# The four entries every machine install folder has, each for the folder, its
+# subfolders and files.
+function Get-MachineRule {
+    $full = [Security.AccessControl.FileSystemRights]::FullControl
+    $read = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    return @(@($SystemSid, $full), @($AdministratorsSid, $full), @($UsersSid, $read), @($AppPackagesSid, $read))
+}
+
+# Those permissions as a list to create the folder with, owned by $OwnerSid
+# (Administrators; the tests pass their own account, which they may set).
+function Get-MachineRootSecurity([string]$OwnerSid = $AdministratorsSid) {
+    $security = New-Object Security.AccessControl.DirectorySecurity
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner([Security.Principal.SecurityIdentifier]::new($OwnerSid))
+    $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    foreach ($rule in Get-MachineRule) {
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($rule[0]), $rule[1], $inherit,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    return $security
+}
+
+# True only when $Security is exactly those permissions: owned by one of $Owners,
+# protected (nothing inherited), and the four entries with nothing else.
+function Test-MachineRootSecurity([Security.AccessControl.DirectorySecurity]$Security,
+                                  [string[]]$Owners = @($AdministratorsSid, $SystemSid)) {
+    $owner = $Security.GetOwner([Security.Principal.SecurityIdentifier])
+    if (-not $owner -or $Owners -notcontains $owner.Value -or -not $Security.AreAccessRulesProtected) { return $false }
+    $sync = [Security.AccessControl.FileSystemRights]::Synchronize
+    $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    $found = @(foreach ($rule in $Security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IsInherited -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.InheritanceFlags -ne $inherit -or $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+            "other"
+        } else {
+            "$($rule.IdentityReference.Value)=$([int]($rule.FileSystemRights -bor $sync))"
+        }
+    })
+    $wanted = @(foreach ($rule in Get-MachineRule) { "$($rule[0])=$([int]($rule[1] -bor $sync))" })
+    return (($found | Sort-Object) -join ",") -ceq (($wanted | Sort-Object) -join ",")
+}
+
+# True when $Item has permissions of its own: an explicit entry, or a protected list
+# that inherits nothing from the install folder.
+function Test-AclChanged([IO.FileSystemInfo]$Item) {
+    $security = $Item.GetAccessControl()
+    return $security.AreAccessRulesProtected -or
+        @($security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count -gt 0
+}
+
+# How many folders beneath $Root have permissions of their own (never walking
+# through a link): every one should only inherit the install folder's.
+function Get-AclChangeCount([string]$Root) {
+    $count = 0
+    $todo = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $todo.Push([IO.DirectoryInfo]::new($Root))
+    while ($todo.Count) {
+        foreach ($dir in $todo.Pop().GetDirectories()) {
+            if (Test-Link $dir) { continue }
+            if (Test-AclChanged $dir) { $count++ }
+            $todo.Push($dir)
+        }
+    }
+    return $count
+}
+
+# The folder a junction points at, or $null for anything that is not a junction.
+function Get-LinkTarget([string]$Path) {
+    try {
+        $item = Get-Item -LiteralPath $Path -Force
+        if ($item.LinkType -ne "Junction") { return $null }
+        return [string]@($item.Target)[0]
+    } catch { return $null }
+}
+
+# One of machine mode's junctions: a junction (not a symbolic link) to a folder
+# directly inside <Root>\versions with a plain version name.
+function Test-OwnJunction([IO.FileSystemInfo]$Item, [string]$Root) {
+    if ($Item -isnot [IO.DirectoryInfo] -or -not (Test-Link $Item)) { return $false }
+    $target = Get-LinkTarget $Item.FullName
+    if (-not $target) { return $false }
+    $target = $target.TrimEnd("\")
+    $name = [IO.Path]::GetFileName($target)
+    $versions = [IO.Path]::Combine($Root.TrimEnd("\"), "versions")
+    return [string]::Equals([IO.Path]::GetDirectoryName($target), $versions, [StringComparison]::OrdinalIgnoreCase) -and
+        ($name -cmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z') -and -not $name.EndsWith(".") -and
+        $name -notmatch '\.(partial|old|retired)\z'
+}
+
+# Removes a junction as a link, with [IO.Directory]::Delete($Path, $false): what it
+# points to is kept. Never Remove-Item -Recurse. Anything at that name that is not
+# a link stops the run, untouched.
+function Remove-Junction([string]$Path) {
+    $item = [IO.DirectoryInfo]::new($Path)
+    if (-not $item.Exists -and -not [IO.File]::Exists($Path)) { return }
+    if (-not (Test-Link $item)) { throw "A launch link is not a link, so it was left in place." }
+    [IO.Directory]::Delete($Path, $false)
+}
+
+# The Event Log's own message file in .NET Framework, which shows each entry's text.
+function Get-EventMessageFile {
+    $path = [IO.Path]::Combine([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory(), "EventLogMessages.dll")
+    if ([IO.File]::Exists($path)) { return $path }
+    return $null
+}
+
+# -- end of the shared machine section ----------------------------------------------------
+
+# -- machine mode: the install (#111 B6b) ---------------------------------------------
+
+# The machine uninstall entry as a registry path, for the per-user refusal.
+$MachineRegSubKey = "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+
+# Unminute installed for everyone on this computer: the uninstall entry in the
+# 64-bit view of HKLM, read through RegistryView.Registry64 so a 32-bit Windows
+# PowerShell sees it too (#111 B6-1). The tests read a stand-in key in HKCU.
+function Test-MachineInstalled([Microsoft.Win32.RegistryHive]$Hive = [Microsoft.Win32.RegistryHive]::LocalMachine,
+                               [string]$SubKey = $MachineRegSubKey) {
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($Hive, [Microsoft.Win32.RegistryView]::Registry64)
+    try {
+        $key = $base.OpenSubKey($SubKey)
+        if ($null -eq $key) { return $false }
+        $key.Dispose()
+        return $true
+    } finally { $base.Dispose() }
+}
+
+# A machine install runs in a 64-bit, elevated Windows PowerShell (Intune's System
+# context), from a package zip, into Program Files only. Anything else stops it
+# with exit 2 before anything is read or written.
+function Assert-MachineContext {
+    if (-not (Test-64BitProcess)) {
+        Stop-Install 2 ("A machine install needs 64-bit Windows PowerShell, so nothing was installed. Start it with " +
+            "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe (from a 32-bit host) or " +
+            "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe.")
+    }
+    if (-not (Test-Elevated)) {
+        Stop-Install 2 "A machine install needs administrator rights (Intune's System context), so nothing was installed."
+    }
+    if ($Options.InstallDirGiven) {
+        Stop-Install 2 "A machine install always goes to Program Files, so -InstallDir cannot be used with -Machine."
+    }
+    if ($Options.SelfService) {
+        Stop-Install 2 "A machine install is managed by IT, so -SelfService cannot be used with -Machine."
+    }
+    if ($Options.Rollback -and $Options.RemoveSlot) {
+        Stop-Install 2 "Use -Rollback or -RemoveSlot, not both."
+    }
+    if (($Options.Rollback -or $Options.RemoveSlot) -and $Options.Package) {
+        Stop-Install 2 "-Rollback and -RemoveSlot use what is installed, so -Package cannot be used with them."
+    }
+    if (-not ($Options.Rollback -or $Options.RemoveSlot) -and -not $Options.Package) {
+        Stop-Install 2 "A machine install takes a package zip with -Package (and its .sha256 file), never a folder."
+    }
+}
+
+# The install folder's permissions, at every run before anything is written: the
+# folder's own (owner and entries, exactly) and those of every folder beneath it
+# (only what they inherit). Anything else stops the run with exit 4: something with
+# administrator rights changed it, so it is never repaired silently (#111 B6-7).
+function Assert-MachinePermission([string]$Root) {
+    if (-not (Test-MachineRootSecurity (Get-FolderSecurity $Root)) -or (Get-AclChangeCount $Root) -gt 0) {
+        Stop-Install 4 $PermissionMessage
+    }
+}
+
+# Creates the install folder with its permissions (Get-MachineRootSecurity).
+function New-MachineRoot([string]$Root) {
+    [void][IO.Directory]::CreateDirectory($Root, (Get-MachineRootSecurity))
+}
+
+function Read-InstallRecord([string]$File) {
+    if (-not [IO.File]::Exists($File)) { return $null }
+    try { return Get-Content -LiteralPath $File -Raw | ConvertFrom-Json } catch { return $null }
+}
+
+# Unpacked packages left by a run that stopped (staging-<32 hex digits>): removed,
+# never through a link. Only administrators can write in the install folder.
+function Remove-StagingLeftover {
+    foreach ($dir in [IO.DirectoryInfo]::new($Options.InstallDir).GetDirectories()) {
+        if ($dir.Name -cmatch $StagingPattern -and -not (Test-Link $dir)) { Remove-OwnFolder $dir.FullName }
+    }
+}
+
+# Points the current junction at versions\<Version>: a new junction current.new;
+# current renamed to current.old; current.new renamed to current; current.old
+# removed as a link. A stop at any step is put right by the next run
+# (Repair-CurrentLink), from current.json, which is written after this.
+function Set-CurrentLink([string]$Version) {
+    $root = $Options.InstallDir
+    $new = [IO.Path]::Combine($root, "current.new")
+    $old = [IO.Path]::Combine($root, "current.old")
+    $current = [IO.Path]::Combine($root, $JunctionName)
+    Remove-Junction $new
+    Remove-Junction $old
+    New-Item -ItemType Junction -Path $new -Target ([IO.Path]::Combine($root, "versions", $Version)) | Out-Null
+    $item = [IO.DirectoryInfo]::new($current)
+    if ($item.Exists -or [IO.File]::Exists($current)) {
+        if (-not (Test-Link $item)) { throw "The launch link is not a link, so it was left in place." }
+        [IO.Directory]::Move($current, $old)
+    }
+    [IO.Directory]::Move($new, $current)
+    Remove-Junction $old
+}
+
+# A switch that stopped part way: current.new goes, current points at the version
+# current.json names (if that version is installed), then current.old goes.
+function Repair-CurrentLink {
+    $root = $Options.InstallDir
+    Remove-Junction ([IO.Path]::Combine($root, "current.new"))
+    $record = Read-InstallRecord ([IO.Path]::Combine($root, "current.json"))
+    $version = if ($record) { Get-VersionValue $record.version } else { $null }
+    if ($version) {
+        $slot = [IO.Path]::Combine($root, "versions", $version)
+        $target = Get-LinkTarget ([IO.Path]::Combine($root, $JunctionName))
+        if ((Test-OwnVersion ([IO.DirectoryInfo]::new($slot))) -and
+            -not ($target -and [string]::Equals($target.TrimEnd("\"), $slot, [StringComparison]::OrdinalIgnoreCase))) {
+            Set-CurrentLink $version
+        }
+    }
+    Remove-Junction ([IO.Path]::Combine($root, "current.old"))
+}
+
+# Unpacks into the install folder (Get-PackageRoot), then moves the package's folder
+# to versions\<version>.partial (the same drive: a rename, not a second copy) and
+# verifies it there, permissions included (Get-PackageListing). Returns the folder.
+function New-MachineStagedCopy([string]$Root, [string]$Version) {
+    $versions = [IO.Path]::Combine($Options.InstallDir, "versions")
+    [void][IO.Directory]::CreateDirectory($versions)
+    $staging = [IO.Path]::Combine($versions, "$Version.partial")
+    Remove-OwnFolder $staging
+    $script:StagedCopy = $staging
+    # A virus scan of the files just unpacked holds them open for a moment (#239).
+    Invoke-LockRetry { [IO.Directory]::Move($Root, $staging) }
+    Test-PackageFile $staging
+    return $staging
+}
+
+# Removes a version machine mode no longer keeps: renamed to <version>.retired
+# first, so a version removed part way is never taken for an installed one, then
+# removed without following links. A rename refused because a file is in use
+# throws, and the version stays for the next install to try again.
+function Remove-RetiredSlot([string]$Name) {
+    $dir = [IO.Path]::Combine($Options.InstallDir, "versions", $Name)
+    $retired = "$dir.retired"
+    Remove-OwnFolder $retired
+    Invoke-LockRetry { [IO.Directory]::Move($dir, $retired) }
+    Remove-OwnFolder $retired
+}
+
+# The versions installed, with their storage format (null when a version states none).
+function Get-InstalledSlot {
+    $found = [ordered]@{}
+    $versions = [IO.DirectoryInfo]::new([IO.Path]::Combine($Options.InstallDir, "versions"))
+    if (-not $versions.Exists) { return $found }
+    foreach ($dir in $versions.GetDirectories()) {
+        if (Test-OwnVersion $dir) { $found[$dir.Name] = Get-VersionSchema $dir.FullName }
+    }
+    return $found
+}
+
+# Each version's seq in the record $Was (format 2), as a hashtable.
+function Get-SlotSeq($Was) {
+    $seq = @{}
+    if ($Was -and ($Was.format -is [int] -or $Was.format -is [long]) -and $Was.format -eq 2 -and
+        $Was.slots -is [Management.Automation.PSCustomObject]) {
+        foreach ($p in $Was.slots.PSObject.Properties) {
+            $value = $p.Value.seq
+            if (($value -is [int] -or $value -is [long]) -and $value -gt 0) { $seq[$p.Name] = [long]$value }
+        }
+    }
+    return $seq
+}
+
+# Makes $Version current in current.json (format 2, "mode": "machine") and keeps
+# (the owner's decisions of 21 and 22 October 2026, "bounded disk"):
+#   - the current version;
+#   - the previous one ($Previous), unless its storage format is newer;
+#   - the newest version (highest seq) of the storage format immediately before the
+#     current one: the highest format below the current one that is installed. The
+#     launcher hands a workspace that still holds meetings in that format to it
+#     (workspace/launch.py); it is replaced at the next storage-format change.
+# A downgrade is strict: every version with a newer storage format than the current
+# one is removed, and people whose workspace it already changed are told to ask IT.
+# Every other version is removed (Remove-RetiredSlot), only versions the installer
+# made and never through a link; working folders are removed; anything else is left
+# and counted, without names (P3). $Fresh: the version installed now (its installed
+# time changes).
+function Set-MachineVersion([string]$Version, [string]$Previous, [string]$Fresh) {
+    $versions = [IO.Path]::Combine($Options.InstallDir, "versions")
+    $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
+    $was = Read-InstallRecord $currentFile
+    $seq = Get-SlotSeq $was
+    $slots = Get-InstalledSlot
+    $schema = $slots[$Version]
+    $kept = @($Version)
+    # The previous version: $Previous, or, when that one goes (a newer storage
+    # format), the one the record already kept as previous.
+    $candidates = @($Previous)
+    if ($was) { $candidates += Get-VersionValue $was.previous }
+    $Previous = $null
+    foreach ($name in $candidates) {
+        if ($name -and $name -cne $Version -and $slots.Contains($name) -and
+            -not ($schema -and $slots[$name] -and $slots[$name] -gt $schema)) {
+            $Previous = $name
+            $kept += $name
+            break
+        }
+    }
+    $older = @($slots.Keys | Where-Object { $_ -cne $Version -and $schema -and $slots[$_] -and $slots[$_] -lt $schema })
+    if ($older.Count) {
+        $format = ($older | ForEach-Object { $slots[$_] } | Measure-Object -Maximum).Maximum
+        $newest = $older | Where-Object { $slots[$_] -eq $format } |
+            Sort-Object { if ($seq.ContainsKey($_)) { $seq[$_] } else { [long]0 } } | Select-Object -Last 1
+        if ($kept -cnotcontains $newest) { $kept += $newest }
+    }
+    # Oldest first, so a version the record does not list yet (the new one) is
+    # numbered after the others.
+    $order = @($kept | Sort-Object { if ($seq.ContainsKey($_)) { $seq[$_] } else { [long]::MaxValue } })
+    $record = Get-SlotRecord $was $order $Fresh
+    Write-CurrentRecord $currentFile $Version ([IO.Path]::Combine($versions, $Version)) $Previous $true $record
+    $left = 0; $busy = 0
+    foreach ($dir in [IO.DirectoryInfo]::new($versions).GetDirectories()) {
+        if ($kept -ccontains $dir.Name) { continue }
+        if (Test-OwnVersion $dir) {
+            try { Remove-RetiredSlot $dir.Name } catch { $busy++ }
+        } elseif (Test-OwnWorkingFolder $dir) {
+            try { Remove-OwnFolder $dir.FullName } catch { $busy++ }
+        } else { $left++ }
+    }
+    if ($busy) { Write-Warn "$busy earlier version(s) could not be removed now; the next install tries again." }
+    if ($left) { Write-Warn "$left folder(s) in the versions folder were not made by $AppName, so they were left in place." }
+}
+
+# The Event Log source (#111 C5, B6-6): the Application log's key for Unminute,
+# naming .NET's EventLogMessages.dll, so Event Viewer shows each entry's text.
+# A failure only warns: the app writes its entries either way.
+function Register-EventSource {
+    try {
+        $file = Get-EventMessageFile
+        if (-not $file) { Write-Warn "The Event Log message file was not found, so the Event Log source was not registered."; return }
+        $key = Get-EventSourceKey
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name EventMessageFile -Value $file -PropertyType ExpandString -Force | Out-Null
+    } catch { Write-Warn "The Event Log source could not be registered." }
+}
+
+# The Start menu entry for all users (through the current junction, so pins made
+# from it keep working across updates and SYSTEM never writes in a profile), the
+# HKLM uninstall entry and the Event Log source.
+function Register-Machine([string]$Target, [string]$Version) {
+    if (-not $Options.SkipShortcut) {
+        Save-AppShortcut (Join-Path (Get-CommonProgramsFolder) "$AppName.lnk") ([IO.Path]::Combine($Options.InstallDir, $JunctionName))
+    }
+    Register-Uninstall $Target $Version
+    Register-EventSource
+}
+
+# From here the run writes in the install folder: the lock, the log, leftovers
+# removed, and a switch that stopped part way put right. Nothing changes while the
+# app runs for anyone (exit 3).
+function Start-MachineRun([string]$Step) {
+    Start-InstallRun $Step
+    Test-AppRunning
+    Remove-StagingLeftover
+    Repair-CurrentLink
+}
+
+function Invoke-MachineInstall {
+    Assert-MachineContext
+    $root = Get-MachineRoot
+    if (-not $root) { Stop-Install 2 "The Program Files folder could not be found, so nothing was installed." }
+    $Options.InstallDir = $root
+    $Options.Managed = $true
+    $folder = [IO.DirectoryInfo]::new($root)
+    if ([IO.File]::Exists($root) -or ($folder.Exists -and (Test-Link $folder))) { Stop-Install 4 $PermissionMessage }
+    if ($folder.Exists) { Assert-MachinePermission $root }
+    Assert-InstallFolder $root
+    if ($Options.Rollback) { Invoke-MachineRollback; return }
+    if ($Options.RemoveSlot) { Invoke-MachineRemoveSlot; return }
+    Test-Prerequisite
+    if (-not $folder.Exists) {
+        New-MachineRoot $root
+        Assert-MachinePermission $root
+    }
+    Start-MachineRun "start"
+    $package = Get-PackageRoot
+    # Before anything in the package is read or moved: no link or junction in it.
+    Assert-NoLink $package
+    $version = [string](Get-Content -LiteralPath (Join-Path $package "version.json") -Raw | ConvertFrom-Json).version
+    if (-not (Test-VersionName $version)) {
+        Stop-Install 4 "The package's version.json does not hold a valid version, so nothing was installed."
+    }
+    $script:LogVersion = $version
+    if (-not (Get-VersionSchema $package)) {
+        Stop-Install 2 "This package does not state its storage format, so it cannot be installed for everyone on this computer. Use a newer package."
+    }
+    Write-Step "Installing $AppName $version for everyone on this computer..."
+    Set-InstallStep "copy"
+    $target = [IO.Path]::Combine($root, "versions", $version)
+    if ((Test-OwnVersion ([IO.DirectoryInfo]::new($target))) -and -not (Get-PackageProblem $target)) {
+        # The same version, intact: nothing is copied, the rest is registered again.
+        Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $root "uninstall.ps1") -Force
+    } else {
+        $staging = New-MachineStagedCopy $package $version
+        Set-InstallStep "switch"
+        $target = Install-Version $staging $version
+    }
+    Set-InstallStep "switch"
+    $was = Read-InstallRecord ([IO.Path]::Combine($root, "current.json"))
+    $wasVersion = if ($was) { Get-VersionValue $was.version } else { $null }
+    $previous = if ($wasVersion -and $wasVersion -ceq $version) { Get-VersionValue $was.previous } else { $wasVersion }
+    Set-CurrentLink $version
+    Set-MachineVersion $version $previous $version
+    Set-InstallStep "register"
+    Register-Machine $target $version
+    $script:LogStep = "done"
+    Write-InstallLog "ok" 0
+    Write-Step "$AppName $version is installed for everyone on this computer."
+}
+
+# -Machine -Rollback: the previous version becomes current again if it still
+# matches its manifest. No Python runs (each user's start decides about their
+# workspace, workspace/launch.py); a newer storage format left behind is removed.
+function Invoke-MachineRollback {
+    $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
+    if (-not [IO.File]::Exists($currentFile)) { Stop-Install 1 "$AppName is not installed for everyone on this computer." }
+    Start-MachineRun "rollback"
+    $record = Read-InstallRecord $currentFile
+    $previous = if ($record) { Get-VersionValue $record.previous } else { $null }
+    $version = if ($record) { Get-VersionValue $record.version } else { $null }
+    if (-not $previous) { Stop-Install 1 "There is no previous version to go back to." }
+    if (-not $version) { Stop-Install 1 "The install record does not name a valid current version, so there is nothing to go back from." }
+    $target = [IO.Path]::Combine($Options.InstallDir, "versions", $previous)
+    if (-not (Test-OwnVersion ([IO.DirectoryInfo]::new($target)))) { Stop-Install 1 "The previous version is no longer installed." }
+    $script:LogVersion = $previous
+    Test-PackageFile $target
+    Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
+    Set-CurrentLink $previous
+    Set-MachineVersion $previous $version $null
+    Register-Machine $target $previous
+    $script:LogStep = "done"
+    Write-InstallLog "ok" 0
+    Write-Step "$AppName is back on version $previous for everyone on this computer."
+}
+
+# -Machine -RemoveSlot <version>: IT removes a kept version, never the current one.
+function Invoke-MachineRemoveSlot {
+    $name = [string]$Options.RemoveSlot
+    if (-not (Test-VersionName $name)) { Stop-Install 2 "-RemoveSlot needs a version name, such as 0.6.1." }
+    $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
+    if (-not [IO.File]::Exists($currentFile)) { Stop-Install 1 "$AppName is not installed for everyone on this computer." }
+    Start-MachineRun "remove-slot"
+    $record = Read-InstallRecord $currentFile
+    $version = if ($record) { Get-VersionValue $record.version } else { $null }
+    if (-not $version) { Stop-Install 1 "The install record does not name a valid current version, so nothing was removed." }
+    if ($name -ceq $version) { Stop-Install 2 "Version $name is the current version, so it was not removed." }
+    if (-not (Test-OwnVersion ([IO.DirectoryInfo]::new([IO.Path]::Combine($Options.InstallDir, "versions", $name))))) {
+        Stop-Install 1 "Version $name is not installed."
+    }
+    $script:LogVersion = $name
+    $previous = Get-VersionValue $record.previous
+    if ($previous -ceq $name) { $previous = $null }
+    $seq = Get-SlotSeq $record
+    $order = @($seq.Keys | Where-Object { $_ -cne $name } | Sort-Object { $seq[$_] })
+    if ($order -cnotcontains $version) { $order += $version }
+    $slots = Get-SlotRecord $record $order $null
+    Write-CurrentRecord $currentFile $version ([IO.Path]::Combine($Options.InstallDir, "versions", $version)) $previous $true $slots
+    try { Remove-RetiredSlot $name }
+    catch {
+        if (Test-TransientLock $_.Exception) { Stop-Install 3 "A file of version $name is in use, so it was not removed yet. Run this again later." }
+        throw
+    }
+    $script:LogStep = "done"
+    Write-InstallLog "ok" 0
+    Write-Step "Version $name was removed."
 }
 
 # -- main ---------------------------------------------------------------------------
@@ -958,11 +1596,37 @@ function Invoke-Rollback {
     exit 0
 }
 
+# Whatever a run leaves when it ends, finished or not: a copy that did not become
+# the installed version and the unpacked package are removed (never through a
+# link), and the lock is let go (#111 B6a).
+function Clear-InstallRun {
+    if ($script:StagedCopy) { try { Remove-OwnFolder $script:StagedCopy } catch { } }
+    $script:StagedCopy = $null
+    if ($script:TempExtract) { try { Remove-OwnFolder $script:TempExtract } catch { } }
+    $script:TempExtract = $null
+    Exit-InstallLock
+}
+
 # Dot-sourced (the Pester tests in tests/powershell): the functions above are defined
 # and nothing runs.
 if ($MyInvocation.InvocationName -eq ".") { return }
 
 try {
+    # Machine mode (#111 B6b) has its own checks and folder, and never runs Python.
+    if ($Options.Machine) {
+        Invoke-MachineInstall
+        exit 0
+    }
+    if ($Options.RemoveSlot) { Stop-Install 2 "-RemoveSlot is for a machine install (-Machine) only." }
+    # Not beside a machine install (#111 B6-1): one computer has one Unminute. A
+    # failure to read the registry does not stop the install (this is a convenience,
+    # not a control: an older package's installer has no such check).
+    $everyone = $false
+    try { $everyone = Test-MachineInstalled } catch { }
+    if ($everyone) {
+        Stop-Install 2 ("$AppName is already installed for everyone on this computer by your IT team, so it " +
+            "was not installed for you as well. Open it from the Start menu.")
+    }
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so every check, copy and removal, and the registered
     # uninstall command, use the same full path.
@@ -1022,9 +1686,5 @@ try {
 } finally {
     # A copy that did not become the installed version is removed (never through a
     # link), so a failed run changes nothing else (#111 B6a).
-    if ($script:StagedCopy) { try { Remove-OwnFolder $script:StagedCopy } catch { } }
-    if ($script:TempExtract -and (Test-Path -LiteralPath $script:TempExtract)) {
-        Remove-Item -LiteralPath $script:TempExtract -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Exit-InstallLock
+    Clear-InstallRun
 }

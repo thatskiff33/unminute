@@ -250,7 +250,7 @@ Both Codex and Claude Code read the shared [agent guidelines](AGENTS.md) nativel
 | `workspace/` | Unminute: SQLite state, durable chunked processing, managed workers, cleanup and holds, intake, recording, the pywebview shell (`workspace/ui/`, with Archivo bundled under its OFL licence) |
 | `workspace/asr_engines.py` | Shared engine interface for Parakeet and Whisper; model manifests, verified install and repair |
 | `workspace/offline_guard.py` | Forces library telemetry off and refuses non-local network access outside deliberate downloads |
-| `packaging/` | Per-user installer and uninstaller for the package |
+| `packaging/` | Installer and uninstaller for the package: per user, or for everyone on a computer with `-Machine` (on `main`, not in a release yet) |
 | `tools/build_package.py` | Builds the versioned zip with a private CPython 3.14 runtime |
 | `tools/make_icon.py` | Draws the app icon with Pillow: `python tools/make_icon.py unminute.ico preview.png` |
 | `tools/` | Real-engine checks, UI and accessibility checks, the design comparison (`tools/design_check.py`), benchmarks |

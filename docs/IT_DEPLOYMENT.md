@@ -27,11 +27,14 @@ Unminute assumes these are in place ([SECURITY_MODEL.md](SECURITY_MODEL.md), "Sc
 | Synced folders | A recording in a watched folder that syncs (for example OneDrive) is already in that service. Deleting an original from a synced folder, where the user has granted that, syncs the deletion too (to confirm). Very broad folders cannot be watched at all: a whole drive, the user's folder and the Windows and program folders, and on `main` also the folder that holds every user's profile (such as `C:\Users`), `AppData` and every folder in it, and Unminute's own data folder (**Not in v0.5.0-preview.3**; [INTAKE.md](INTAKE.md)) | T5, T28 |
 | Forwarding the Windows Application log off the device (**Not in v0.5.0-preview.3**) | The app copies each audit record's hash to the Application log. On the device, a standard user can typically write to that log, and it overwrites its oldest events when full, so without forwarding the copy detects casual edits of the audit file only. Forwarded (Windows Event Forwarding or a SIEM), it is the stronger record. Standard users' rights to the log, and its size and retention on your baseline, are to confirm (#189). See "Audit log" below | T20 |
 
-Planned, not available yet: a per-machine install that standard users cannot change (B6) and machine-wide models staged by IT (B7). A firewall rule that blocks the app's runtime is part of B7; until models are staged by IT it would also block model downloads, which run in the same runtime.
+On `main`, a per-machine install that standard users cannot change (B6b, **Not in v0.5.0-preview.3**; "Install modes" below). Planned, not available yet: machine-wide models staged by IT (B7). A firewall rule that blocks the app's runtime is part of B7; until models are staged by IT it would also block model downloads, which run in the same runtime.
 
 ## Install modes
 
-Only a per-user install exists. It goes into `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` and needs no administrator rights. Exit codes and every check the installer makes are in [PACKAGING.md](PACKAGING.md), "Installing (self-service)".
+Two install modes. Use one per computer.
+
+- **Per user.** It goes into `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` and needs no administrator rights. Exit codes and every check the installer makes are in [PACKAGING.md](PACKAGING.md), "Installing (self-service)". A current per-user installer refuses (exit code 2) once a machine install exists; an older package's installer does not check, so stop per-user installs on managed computers with application control (AppLocker or WDAC).
+- **For everyone on the computer (machine mode, #111 B6b, Not in v0.5.0-preview.3).** `install.ps1 -Machine -Package <zip>`, run as SYSTEM by Intune in a 64-bit Windows PowerShell, installs to `%ProgramFiles%\Unminute`, which only administrators can change: the app's code, including its policy, encryption and audit code, is then out of the user's reach (the model cache and GPU components stay in the user's profile until B7). Each user's workspace and models stay in their own `%LOCALAPPDATA%\Unminute`. The installer checks the folder's permissions at every run, never runs Python or reads a profile, and refuses while anyone has the app open (exit code 3, retry). It keeps the current and previous versions and the newest version of the storage format immediately before the current one, for users whose workspace still holds meetings in it; each user's start picks the version that can open their workspace. Details, exit codes and the Intune settings: [PACKAGING.md](PACKAGING.md), "Installing for everyone on a computer" and "Machine install in System context".
 
 | Mode | How | Notes |
 | --- | --- | --- |
@@ -39,6 +42,7 @@ Only a per-user install exists. It goes into `%LOCALAPPDATA%\Programs\Unminute\v
 | Unattended | `install.ps1 -Silent` | Below the minimum hardware it records the warning and continues |
 | Intune Win32 app | Install behaviour **User**, `install.ps1 -Silent` | See "Intune app" below. System context would see no user's workspace |
 | IT-managed updates | Add `-Managed` | The app then says "Updates are managed by your IT team". `-SelfService` switches back |
+| Intune Win32 app, machine (B6b) | Install behaviour **System**, `install.ps1 -Machine -Package <zip> -Silent` from the 64-bit Windows PowerShell | See "Intune app" below. No install-time workspace check: each user's start decides |
 | Roll back | `install.ps1 -Rollback` from the current version's folder | Refused if the previous version cannot open the workspace |
 
 Users never install Python, Git, FFmpeg or GPU tools.
@@ -49,7 +53,7 @@ A custom `-InstallDir` must be new, empty or an existing Unminute install. A fol
 
 Once the per-machine install (B6) ships, a current per-user installer refuses to install when a machine-wide install exists. An older package's installer has no such check, and a user can always run one, so on a managed computer a user can still put a per-user copy in their own profile. That copy runs from a folder the user can change ([SECURITY_MODEL.md](SECURITY_MODEL.md) T24), and IT does not update it. Unminute has no policy value for this. Per-user copies on managed computers are a residual, and the control is IT's application control: AppLocker, or App Control for Business (formerly Windows Defender Application Control, WDAC). This was the owner's decision B6-12, 21 October 2026 (#111).
 
-**Nothing in this section has been tested.** B6 is not built yet, and no rule below has been run on a managed computer. Every rule is marked "to confirm", and the checks are in the validation tracker (#189, sitting 3). Statements about Windows and Intune come from the Microsoft Learn pages listed under "Microsoft sources" at the end of this section, read on 22 October 2026, and are cited by number (M1 and so on).
+**Nothing in this section has been tested.** The machine-wide install (B6b) has not yet been run on a managed computer, and neither has any rule below. Every rule is marked "to confirm", and the checks are in the validation tracker (#189, sitting 3). Statements about Windows and Intune come from the Microsoft Learn pages listed under "Microsoft sources" at the end of this section, read on 22 October 2026, and are cited by number (M1 and so on).
 
 ### What to stop and what to allow
 
@@ -57,7 +61,7 @@ Once the per-machine install (B6) ships, a current per-user installer refuses to
 | --- | --- | --- |
 | Per-user copy: stop | `%LOCALAPPDATA%\Programs\Unminute`, with each version in `versions\<version>` | `runtime\pythonw.exe` and `runtime\python.exe` (the app, its child processes and command-line switches such as `--health`), the runtime's DLLs and `.pyd` modules, and `uninstall.ps1` |
 | Per-user installer: stop | Wherever the user extracts the zip; with `-Package`, `%TEMP%` | `install.cmd` and `install.ps1`, and the package's own `runtime\python.exe`, which the installer runs from outside the install folder for its update check (T22) |
-| Machine-wide install (B6): allow | `%ProgramFiles%\Unminute` (the layout inside it is set by B6) | The same runtime and app files |
+| Machine-wide install (B6): allow | `%ProgramFiles%\Unminute`, with each version in `versions\<version>` and the `current` junction pointing at one (B6b) | The same runtime and app files |
 | GPU components | `%LOCALAPPDATA%\Unminute\models`, per user in both modes (#111, B7) | NVIDIA and PyTorch DLLs and `.pyd` modules, loaded by the app's GPU workers |
 
 **Write rules by location or origin, not by file.** A per-user copy and the machine-wide install of the same version hold the same files: the package's, checked against its manifest. The runtime's `python.exe`, `pythonw.exe` and `python314.dll` carry the Python Software Foundation's signature ([PACKAGING.md](PACKAGING.md), "Building").
@@ -171,7 +175,18 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 5. Detection rule: the registry value `DisplayVersion` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
 6. Requirements: Windows 10 1809 or later, x64, and the WebView2 runtime.
 
-The scripts are not signed, and the install and uninstall commands run them with `-ExecutionPolicy Bypass`: an accepted risk (the owner's decision of 22 October 2026, SECURITY_MODEL.md T22). An environment that enforces `AllSigned` cannot run them as shipped; [PACKAGING.md](PACKAGING.md), "Signing and trust", lists the options for signing them yourself.
+For the machine install (B6b, **Not in v0.5.0-preview.3**), the full settings are in [PACKAGING.md](PACKAGING.md), "Machine install in System context". In short:
+
+1. Verify the release, then package the zip itself with its `.sha256` file and that version's `install.ps1` (from inside the zip).
+2. Install behaviour: **System**. Install command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Machine -Package Unminute-<version>.zip -Silent`.
+3. Uninstall command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ProgramW6432%\Unminute\uninstall.ps1" -Machine -Silent`. It refuses (exit code 5) while a version kept for an earlier storage format is installed; add `-IncludeKeptSlots` only to decommission.
+4. Return codes: map 3 (the app is open for someone) to Retry, and 1, 2 and 4 to Failed. Code 4 also means the install folder's permissions have changed: check the computer.
+5. Detection rule: `DisplayVersion` under `HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
+6. Updates: new content and detection version for the same Win32 app, or supersedence **without** "Uninstall previous version", which would remove the version kept for users still on the earlier storage format.
+
+Both routes are still to be run through Intune on a managed device, including whether the Intune Management Extension starts a 32-bit Windows PowerShell (#189).
+
+The scripts are not signed, and both routes run them with `-ExecutionPolicy Bypass`: an accepted risk (the owner's decision of 22 October 2026, SECURITY_MODEL.md T22). An environment that enforces `AllSigned` cannot run them as shipped; [PACKAGING.md](PACKAGING.md), "Signing and trust", lists the options for signing them yourself.
 
 Coming from 0.4.3 or earlier is not an update in place: users finish with the earlier version first. The order, and how to supersede the earlier app in Intune, are in [PACKAGING.md](PACKAGING.md), "Updates".
 
@@ -204,7 +219,7 @@ Policy values live under `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute` and ove
 
 Value names are not case-sensitive. A name the app does not recognise (a misspelling, a trailing space or a lookalike letter) grants and withholds nothing, so check names against the template. On `main` the app keeps the first 20 such names, never their data. Settings lists them near the top of the page (a trailing space shows as `\x20`, #300), and Copy diagnostics says how many there are (**Not in v0.5.0-preview.3**). In a `HandoffDefaultFolder` set as an expandable string, `main` expands only `%NAME%` variables, as Windows does ([PACKAGING.md](PACKAGING.md), "Managed settings (policy)").
 
-The app enforces these values in its own code. Until the per-machine install (B6), that code sits in the user's profile, so someone able to change files there could remove the checks: policy is not enforced against a determined user. The policy key itself stays admin-only.
+The app enforces these values in its own code. In a per-user install that code sits in the user's profile, so someone able to change files there could remove the checks: policy is not enforced against a determined user. In a machine install (B6b, **Not in v0.5.0-preview.3**) the code is in `%ProgramFiles%\Unminute`, which standard users cannot change; a user can still run their own code with the app's runtime, which application control cannot stop once the runtime is allowed (#304). The policy key itself stays admin-only.
 
 ## Health monitoring with `--health`
 
@@ -224,6 +239,8 @@ $version = (Get-Content -LiteralPath $current -Raw | ConvertFrom-Json).path
 & (Join-Path $version 'runtime\python.exe') -I -B -m workspace --health
 exit $LASTEXITCODE
 ```
+
+For a machine install (B6b), read `current.json` from `%ProgramFiles%\Unminute` instead (`Join-Path $env:ProgramW6432 'Unminute\current.json'`), still running as the signed-in user.
 
 | `--health` shows | What it means | What to do |
 | --- | --- | --- |
@@ -245,7 +262,7 @@ When the app cannot unlock its encryption key (**Not in v0.5.0-preview.3**), it 
 
 **Not in v0.5.0-preview.3.** The app keeps a content-free, hash-chained audit log in `%LOCALAPPDATA%\Unminute\workspace\audit\`. It records imports and recordings (with the recording confirmation's outcome and wording version), the review and final confirmations, discards, holds, handoffs, watched folders, changes to delete-originals authority, and each cleanup. Each record carries the kind of action, the time, the app's own random ids, fixed words and counts, never text, titles, names, folders or hold reasons. It is always on, with no policy value (the owner's decision, 21 Oct 2026). It is capped at 16 MB: past that the oldest 1 MB segment is deleted, and a record says so. It is not in the database, so an update that waits for an empty workspace keeps it. The full description is in [PACKAGING.md](PACKAGING.md#the-audit-log-and-its-event-log-copy-111-c5) and SECURITY_MODEL.md T20.
 
-- **The Event Log copy.** Each record's chain, sequence number, kind and SHA-256, never an id, go to the Windows Application log under the source `Unminute`, with the signed-in user's SID. The source is not registered (installs are per user), so Event Viewer shows the text without a description and a SIEM reads it from `EventData`. The event IDs and levels are in PACKAGING.md. Forward the log off the device for the stronger record (see "Controls Unminute relies on IT for" above).
+- **The Event Log copy.** Each record's chain, sequence number, kind and SHA-256, never an id, go to the Windows Application log under the source `Unminute`, with the signed-in user's SID. A per-user install does not register the source, so Event Viewer shows the text without a description and a SIEM reads it from `EventData`; a machine install (B6b) registers it, so Event Viewer shows the text, and its uninstall removes the registration again. The event IDs and levels are in PACKAGING.md. Forward the log off the device for the stronger record (see "Controls Unminute relies on IT for" above).
 - **Checking it.** Run, as the signed-in user (never as SYSTEM, as for `--health`), from the installed version folder:
 
   ```
@@ -285,7 +302,7 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 
 | Incident | First steps | Runbook |
 | --- | --- | --- |
-| A release has a severity 1 issue (content lost or exposed, the core task broken, updates blocked) | The maintainer withdraws it: the previous good release becomes the default download, and the bad release's notes carry a warning. IT stops assigning the bad version. Installs are per user until B6, so each one rolls back with `install.ps1 -Rollback`, unless the bad version changed the storage format, in which case the fix is forward | [Withdrawing a bad release](RELEASING.md#withdrawing-a-bad-release); severity is defined in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), section 14 |
+| A release has a severity 1 issue (content lost or exposed, the core task broken, updates blocked) | The maintainer withdraws it: the previous good release becomes the default download, and the bad release's notes carry a warning. IT stops assigning the bad version. A per-user install rolls back with `install.ps1 -Rollback`, unless the bad version changed the storage format, in which case the fix is forward. A machine install (B6b) goes back by assigning the previous version, or `install.ps1 -Machine -Rollback`; going back to an earlier storage format removes the newer version, and users whose workspace it changed see "ask your IT team" until a fix ships | [Withdrawing a bad release](RELEASING.md#withdrawing-a-bad-release); severity is defined in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), section 14 |
 | Many devices report unhealthy after an update | Read `--health` across devices: crashes, damage, a locked workspace or location. Ask affected users for **Copy diagnostics** | [Health monitoring](#health-monitoring-with---health) above; [PACKAGING.md](PACKAGING.md#managed-deployment-intune) for the fields |
 | One user's workspace is damaged or will not open | Follow the user guide's recovery steps; there are no backups, by design | [If Unminute finds damage](WORKSPACE_GUIDE.md#if-unminute-finds-damage) |
 | The app cannot unlock its key (**Not in v0.5.0-preview.3**) | `--health` shows `locked`. Ask for **Copy diagnostics**, which still works while locked, and the code; `--status` still works | [If Unminute cannot unlock its workspace](WORKSPACE_GUIDE.md#if-unminute-cannot-unlock-its-workspace) |
@@ -295,10 +312,10 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 
 ## Not available yet
 
-- A per-machine install in Program Files that standard users cannot change (B6), with a launch-time update gate and first-launch fallback (B5).
+- For a machine install: finish-only mode for a workspace opened by the kept older version, the daily "update waiting" message and the first-launch fallback (B5b). Until B5b lands, that older version opens such a workspace normally.
 - Machine-wide models staged by IT, and the runtime firewall rule (B7).
 - The switch to record computer audio beside the microphone (#108). The recording support and `AllowComputerAudioRecording` are on `main`, but no version shows the switch yet.
 - Draft text while recording (#104). On `main`: the draft on the recording card, a warning about screen sharing with Hide draft, the Settings switch (off by default) and `AllowLiveDrafts`; with computer audio (#108, later), a choice of the microphone or both tracks mixed.
 - A locked screen in the window when the key cannot be unlocked (C4b; until then the usual window opens with every request refused).
 - A decoder process that cannot read the workspace (#299). Today it runs at Low integrity, which stops it writing the user's files but not reading them.
-- Code signing of the zip and the installer scripts. Releases from 0.5.0 carry signed build provenance and an SBOM attestation instead; signing options are in [PACKAGING.md](PACKAGING.md), "Signing and trust".
+- Code signing of the zip and the installer scripts. Not planned: running them unsigned with `-ExecutionPolicy Bypass` is an accepted risk (the owner's decision of 22 October 2026, T22). Releases from 0.5.0 carry signed build provenance and an SBOM attestation instead; signing options are in [PACKAGING.md](PACKAGING.md), "Signing and trust".
