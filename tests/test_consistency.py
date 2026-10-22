@@ -763,11 +763,12 @@ class AccessibilityTargetTests(unittest.TestCase):
 
     def test_the_tool_extension_gates_the_next_release(self):
         # Owner decision, 22 Oct 2026: #298 (the automatable WCAG 2.2 AA criteria in
-        # tools/accessibility_check.py) is a gate for the next release. The pull request
-        # that lands #298 updates this test with the wording.
+        # tools/accessibility_check.py) is a gate for the next release. The wording is
+        # the post-#298 text (the checks are in the tool; the gate still stands).
         standard = read("docs/RELEASE_STANDARD.md")
         wcag = standard.split("### Accessibility against WCAG 2.2 AA", 1)[1].split("\n### ", 1)[0]
-        self.assertIn("#298, which is a gate for the next release", wcag)
+        self.assertIn("These checks (#298) are a gate for the next release "
+                      "(owner decision, 22 October 2026).", wcag)
         before = section(read("docs/RELEASING.md"), "Before cutting a release")
         self.assertRegex(before, r"(?m)^\d+\. \*\*The accessibility check covers WCAG 2\.2 AA "
                                  r"where it can \(#298\)\.\*\* .*gate for the next release")
