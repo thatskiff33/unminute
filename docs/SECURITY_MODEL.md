@@ -215,7 +215,7 @@ In place since C2b-2 (schema 2): the content columns of `workspace.db` (titles, 
 - **Content after it leaves the app.** Once text is on the clipboard or in a saved file, the firm's other controls apply.
 - **A recording's journal.** While a microphone recording waits to be imported, its journal stays plain: times, events and the device names, which can name a person ("Alex's headset"). It holds no audio or words and goes with the folder. The owner accepted this as a documented limit (22 Oct 2026).
 - **The page file and hibernation file.** Windows may write memory to disk. BitLocker protects these.
-- **Forensic erasure.** On SSDs, ordinary deletion does not guarantee the old blocks are erased. Crypto-erase makes leftover encrypted data unreadable instead, once every copy of that meeting's wrapped key is gone (the sealed text since C2b-2, the decoded audio since C3a; the recorder's chunks from C3b): a copy of the whole workspace taken before cleanup can still be opened by this Windows user ([ENCRYPTION.md](ENCRYPTION.md)).
+- **Forensic erasure.** On SSDs, ordinary deletion does not guarantee the old blocks are erased. Crypto-erase makes leftover encrypted data unreadable instead, once every copy of the wrapped key is gone (a meeting's keys at cleanup since C2b-2 and C3a, a microphone recording's key since C3b; C3c, planned, moves the audio key's destruction first in each cleanup): a copy of the whole workspace taken before cleanup can still be opened by this Windows user ([ENCRYPTION.md](ENCRYPTION.md)).
 
 ## Reporting a vulnerability
 
