@@ -29,6 +29,27 @@ class PackageTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_version_json_states_the_storage_format_from_the_app_source(self):
+        # #111 B5: read with ast from the packaged store.py, never by importing it.
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "workspace" / "store.py").read_text(encoding="utf-8")
+        found = [line for line in text.splitlines() if line.startswith("SCHEMA_VERSION = ")]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(bp.schema_version(root / "workspace" / "store.py"),
+                         int(found[0].split("=")[1]))
+        for body in ("SCHEMA_VERSION = '2'", "SCHEMA_VERSION = True", "SCHEMA_VERSION = 0",
+                     "X = 2", "SCHEMA_VERSION = 2; SCHEMA_VERSION = 3", "def (",
+                     "SCHEMA_VERSION = 1 + 1"):
+            with self.subTest(body=body):
+                bad = self.root / "store.py"
+                bad.write_text(body, encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    bp.schema_version(bad)
+        with self.assertRaises(SystemExit):
+            bp.schema_version(self.root / "missing.py")
+        build = (root / "tools" / "build_package.py").read_text(encoding="utf-8")
+        self.assertIn('"schema": schema_version(folder / "app" / "workspace" / "store.py")', build)
+
     def test_pth_isolates_the_runtime(self):
         rt = self.root / "runtime"
         rt.mkdir()

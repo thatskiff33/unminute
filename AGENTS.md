@@ -76,7 +76,7 @@ Durability
   `tests/test_workspace_core.py`.
 - **D2** An explicit pause stays paused after a restart. Guard: `tests/test_workspace_core.py`.
 - **D3** One app instance owns the state; the workspace is never in a synced or network folder.
-  Guard: `tests/test_hardening.py`.
+  Guard: `tests/test_hardening.py`, `tests/test_launch.py` (the workspace lock, every session).
 - **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
   transcript usable. A GPU failure falls back to the processor and says so; the model,
   precision and committed text never change silently. Guard: `tests/test_workers.py`,
