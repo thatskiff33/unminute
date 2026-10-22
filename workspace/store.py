@@ -1413,6 +1413,28 @@ class Store:
             except vault.VaultError:
                 raise DamagedContent() from None
 
+    def meeting_recording_key(self, mid):
+        """The id of the microphone recording a meeting came from while its
+        recording key is still there (imported, first version not yet set
+        up), or None. Refused while locked (#111 C4a)."""
+        with self._lock:
+            if self.locked is not None:
+                raise self.locked
+            row = self._one("SELECT r.recording_id FROM recording_sources r JOIN "
+                            "recording_keys k ON k.recording_id = r.recording_id "
+                            "WHERE r.meeting_id = ?", (mid,))
+            return row[0] if row else None
+
+    def recording_key_ids(self):
+        """The ids of the recordings that have a key (plain; for the start-up
+        sweep of keys whose recording folder is gone). Refused while locked:
+        no key row is read or changed then (#111 C4a, design 7.2)."""
+        with self._lock:
+            if self.locked is not None:
+                raise self.locked
+            return [r["recording_id"] for r in self._all(
+                "SELECT recording_id FROM recording_keys ORDER BY recording_id")]
+
     def destroy_recording_key(self, recording_id):
         """Delete a recording's key (secure_delete), then empty the write-ahead
         log (erase_checkpoint). Returns whether the log was emptied."""
@@ -1598,7 +1620,11 @@ class Store:
         """A meeting's source. original_sha256 (hex) is kept as its
         fingerprint (original_fp). audio_id: the decoded audio's SHA-256 (hex)
         until C3a. recording: (recording_id, info JSON text) for a microphone
-        recording (#30, used from C3b), stored in the same transaction."""
+        recording (#30, #111 C3b): its sealed recording_sources row is stored
+        in the same transaction, so no second import can follow. Its recording
+        key is kept until the meeting's first version is set up
+        (ensure_version), so a failure in between can be tried again (the
+        owner's decision, 22 Oct 2026)."""
         sid = new_id()
         with self.tx() as db:
             db.execute("INSERT INTO sources (id, meeting_id, original_path_sealed, original_fp, "
@@ -1677,7 +1703,13 @@ class Store:
         """Return the active version for exactly these inputs, creating it (and
         superseding any other active version) if anything differs. The check
         and the creation are one transaction. chunk_plan is a list of
-        (start, end, ctx_start, ctx_end) in samples."""
+        (start, end, ctx_start, ctx_end) in samples.
+
+        The transaction that creates a version also deletes the recording key
+        of the microphone recording the meeting came from, if it is still
+        there (#111 C3b): the meeting's first version finishes its set-up, and
+        the recording's chunks are not needed after that. The caller then
+        empties the write-ahead log (erase_checkpoint; app._plan_version)."""
         chash = config_hash(config)
         with self.tx() as db:
             row = db.execute(
@@ -1698,6 +1730,8 @@ class Store:
             db.executemany("INSERT INTO chunks (version_id, idx, start_sample, end_sample, "
                            "ctx_start, ctx_end) VALUES (?,?,?,?,?,?)",
                            [(vid, i, *c) for i, c in enumerate(chunk_plan)])
+            db.execute("DELETE FROM recording_keys WHERE recording_id IN (SELECT recording_id "
+                       "FROM recording_sources WHERE meeting_id = ?)", (mid,))
         return vid
 
     def version(self, vid):

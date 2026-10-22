@@ -15,7 +15,15 @@
 #
 # Protocol, on stdin and stdout only (nothing is ever unpickled):
 #   app -> decoder  line 1: JSON list, the sys.path to use (read by BOOT)
-#                   line 2: JSON {"src": "<path>"}, sent only after READY
+#                   line 2, sent only after READY, one of:
+#                     JSON {"src": "<path>"}: decode that file;
+#                     JSON {"stdin": "wav", "bytes": N} (#111 C3b): a microphone
+#                     recording follows on stdin, a WAV stream of N bytes,
+#                     read with the same "wav" demuxer and limits. No plain
+#                     copy of the recording is written for it.
+#                   Line 2 is read from the binary stream (sys.stdin.buffer):
+#                   the text wrapper reads ahead and would take audio bytes.
+#                   Line 1 is safe in text: nothing else is sent before READY.
 #   decoder -> app  frames of 1 type byte + 4-byte little-endian length + payload:
 #                   b"R" ready, payload: 4-byte integrity level (0x1000 = Low)
 #                   b"A" audio, payload: float32 little-endian 16 kHz mono samples
@@ -164,9 +172,33 @@ def lower_integrity():
         k32.CloseHandle(token)
 
 
-def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
-    """Decode `src` to 16 kHz mono float32 and pass the bytes to send() in
-    frames. Raises DecodeFailed with an E_ code.
+MAX_REQUEST_BYTES = 1 << 16             # line 2 (a path, or the stream's size)
+MIN_WAV_BYTES = 44                        # a WAV header with no audio
+
+
+def read_request(stream):
+    """Line 2 from the binary stdin: ("file", path) or ("stdin", size).
+    Raises ValueError for anything else."""
+    import json
+    line = stream.readline(MAX_REQUEST_BYTES)
+    if not line.endswith(b"\n"):
+        raise ValueError("request")
+    req = json.loads(line)
+    if not isinstance(req, dict):
+        raise ValueError("request")
+    if set(req) == {"src"} and isinstance(req["src"], str):
+        return "file", req["src"]
+    size = req.get("bytes")
+    if (set(req) == {"stdin", "bytes"} and req["stdin"] == "wav" and isinstance(size, int)
+            and not isinstance(size, bool) and MIN_WAV_BYTES <= size <= 0xFFFFFFFF + 8):
+        return "stdin", size
+    raise ValueError("request")
+
+
+def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE, size=None):
+    """Decode `src` (a path, or with size a binary stream holding a WAV of
+    size bytes: the recorder's stdin form) to 16 kHz mono float32 and pass
+    the bytes to send() in frames. Raises DecodeFailed with an E_ code.
 
     Channels are mixed with equal weights (the arithmetic mean, #220), not
     by FFmpeg's surround matrix. That matrix treats channels as speaker
@@ -177,16 +209,39 @@ def decode(src, send, max_samples=MAX_DECODED_S * SAMPLE_RATE):
     gain: before resampling it never exceeds the loudest channel. The 16 kHz
     resampler that follows can still overshoot full scale slightly on
     full-scale input, exactly as it does for a mono file."""
-    from fractions import Fraction
-
     import os
+    if size is None:
+        with open(src, "rb") as fh:
+            # The file's own size bounds how much audio it may decode to.
+            return _decode(fh, os.fstat(fh.fileno()).st_size, None, send, max_samples)
+    # A stream is not seekable and carries no name: the demuxer is named
+    # (wav, already on the list), never guessed from the data.
+    return _decode(_Stream(src), size, "wav", send, max_samples)
+
+
+class _Stream:
+    """A pipe as FFmpeg should see it: read only, never seekable. Windows
+    reports a pipe as seekable (the C runtime's lseek does not fail on one),
+    and PyAV would then seek it and fail."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def read(self, n=-1):
+        return self._raw.read(n)
+
+    def seekable(self):
+        return False
+
+
+def _decode(fh, size, fmt, send, max_samples):
+    from fractions import Fraction
 
     import av
     import numpy as np
     pending, total = bytearray(), 0
-    with open(src, "rb") as fh, av.open(fh, options=OPEN_OPTIONS) as container:
-        # The file's own size bounds how much audio it may decode to.
-        dense_limit = max_samples_for(os.fstat(fh.fileno()).st_size)
+    with av.open(fh, format=fmt, options=OPEN_OPTIONS) as container:
+        dense_limit = max_samples_for(size)
         stream = next((s for s in container.streams if s.type == "audio"), None)
         if stream is None:
             raise DecodeFailed(E_NO_AUDIO)
@@ -266,7 +321,6 @@ class DecodeFailed(Exception):
 
 
 def main():
-    import json
     import os
     # numpy's maths library reserves memory per thread when it loads; one
     # thread is plenty for resampling and keeps the job's memory limit honest.
@@ -295,14 +349,15 @@ def main():
         return
     send(b"R", struct.pack("<I", level or 0))
     try:
-        src = json.loads(sys.stdin.readline())["src"]
-        if not isinstance(src, str):
-            raise ValueError
+        kind, what = read_request(sys.stdin.buffer)
     except Exception:
         send(b"E", bytes([E_SETUP]))
         return
     try:
-        decode(src, send)
+        if kind == "file":
+            decode(what, send)
+        else:
+            decode(sys.stdin.buffer, send, size=what)
         send(b"D")
     except DecodeFailed as exc:
         send(b"E", bytes([exc.code]))

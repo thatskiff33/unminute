@@ -7,22 +7,35 @@
 #   - Live drafts (#104, off by default) take a copy of each block from the
 #     writer thread through `tap`, never from the callback. The tap must not
 #     block; if it raises, it is turned off and the recording carries on.
-#   - Audio is written in durable chunks (CHUNK_S seconds of 16-bit mono PCM):
-#     each chunk is written to a temporary file, flushed to disk and renamed,
-#     then the journal (journal.json) is replaced atomically. A crash loses at
-#     most the chunk being filled plus what was queued.
+#   - Audio is written in durable chunks (CHUNK_S seconds of 16-bit mono PCM),
+#     each its own encrypted file (workspace/audiocrypt.py, #111 C3b) under the
+#     recording's key: written to a temporary file, finished (last block
+#     sealed, flushed to disk) and renamed, then the journal (journal.json) is
+#     replaced atomically. A crash loses at most the chunk being filled plus
+#     what was queued. A retry deletes a stale temporary file first and starts
+#     a new file (a new file id, so a new key: no nonce is used twice).
+#   - The recording's key is made by the app and kept, wrapped, in the
+#     database (recording_keys), never in a file beside the chunks; this class
+#     only ever holds the raw key in memory. No plain audio is written: not a
+#     chunk, not recording.wav.
 #   - Nothing is ever silently dropped or switched: an overrun, a full queue,
 #     a lost device or a full disk is recorded in the journal with its time and,
 #     where known, its length, and shown to the user. A lost device stops the
 #     recording; it never moves to another device.
-#   - On stop, the chunks become one WAV file that is imported like any other
-#     recording (same review, cleanup and hold lifecycle), then the recording
-#     folder is removed. If the app closed while recording, the next start
-#     recovers what was saved and reports the interval that may be missing.
+#   - On stop, the chunks are opened and checked (open_recording) and streamed
+#     to the sandboxed decoder as one WAV over its stdin (workspace/media.py),
+#     then imported like any other recording (same review, cleanup and hold
+#     lifecycle), and the recording folder is removed. If the app closed while
+#     recording, the next start recovers what was saved and reports the
+#     interval that may be missing. Only finished (renamed) chunks are ever
+#     opened, so recovery never needs allow_incomplete: a temporary file is
+#     an unfinished chunk and is deleted.
 #
 # Computer audio (#108, groundwork; off unless the app asks for it): a second
 # track, captured by workspace/loopback.py, with its own queue and its own
-# chunk files (sys-NNNNNN.pcm) saved by the same writer thread. The journal
+# chunk files (sys-NNNNNN.uma, under the same key, with the track in each
+# chunk's context, so a chunk cannot be swapped between tracks) saved by the
+# same writer thread. The journal
 # then has "format": 2, a "tracks" entry for it, and timing marks for both
 # tracks; a microphone-only journal is unchanged (format 1, no format field).
 # Silence on the computer track is normal (nothing playing), so the lost-device
@@ -30,7 +43,8 @@
 # follows the Windows default output when it changes, with an event (the
 # owner's decision 6); a computer track that fails stops on its own and the
 # microphone carries on. On stop the two tracks become ONE mix
-# (workspace/mixdown.py), which is transcribed once (decision 10).
+# (workspace/mixdown.py), made in memory as it is streamed to the decoder and
+# transcribed once (decision 10).
 #
 # No audio leaves the computer; the recording folder lives inside the workspace.
 
@@ -41,8 +55,8 @@ import queue
 import shutil
 import threading
 import time
+import re
 import uuid
-import wave
 from pathlib import Path
 
 import numpy as np
@@ -71,8 +85,12 @@ MAX_HOURS = 8                # a forgotten recording stops itself
 # only) and 2 (with a computer track). A newer one is kept, never half-imported.
 JOURNAL_FORMAT = 2
 MARK_EVERY_S = 30            # a timing mark at least this often, per track
+MICROPHONE = "microphone"
 COMPUTER = "computer"
+MIC_PREFIX = "chunk-"        # the microphone track's chunk files
 COMPUTER_PREFIX = "sys-"     # the computer track's chunk files
+CHUNK_SUFFIX = ".uma"        # an encrypted audio file (workspace/audiocrypt.py)
+TRACKS = {MICROPHONE: MIC_PREFIX, COMPUTER: COMPUTER_PREFIX}
 # Live drafts (#104): put in the writer's queue at a pause, after the blocks
 # captured before it, so the draft's phrase in progress ends at the pause.
 _PAUSED = object()
@@ -214,6 +232,33 @@ def _write_atomic(path, data):
     os.replace(tmp, path)
 
 
+def chunk_name(track, n):
+    """The file name of a track's chunk n."""
+    return f"{TRACKS[track]}{n:06d}{CHUNK_SUFFIX}"
+
+
+def chunk_context(recording_id, track, n):
+    """The context a recorder chunk is sealed under (after its random file
+    id, docs/ENCRYPTION.md "Audio files"): the recording, the track and the
+    chunk's number, so a chunk cannot be moved to another recording, track
+    or place. Pinned by a test: changing it makes saved recordings unreadable."""
+    return ("recording", str(recording_id), track, int(n))
+
+
+def _write_chunk(path, pcm, key, context, rate):
+    """One durable encrypted chunk (16-bit mono): a new temporary file,
+    finished (its last block sealed, flushed to disk), then renamed. A stale
+    temporary file from an earlier try is deleted first: the writer only
+    ever creates a new file, with a new random id and so a new key, so a
+    retry never reuses a nonce. The caller retries (_retrying)."""
+    from workspace import audiocrypt
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    with audiocrypt.AudioWriter(tmp, key, context, "int16", 1, rate) as w:
+        w.write(pcm)
+    os.replace(tmp, path)
+
+
 # The recording display: a few numbers per block for the page to draw. Only the
 # latest 100 ms block is held for it, while recording, and it is dropped on
 # pause, stop and device loss. Bands are log-spaced across the speech range; the
@@ -269,13 +314,25 @@ class Recording:
     a fake in tests."""
 
     def __init__(self, folder, device, device_name, rate, open_stream=_sounddevice_stream,
-                 clock=time.time, tick=time.monotonic, computer=None):
+                 clock=time.time, tick=time.monotonic, computer=None, *, key):
         """computer: None (the microphone only), or a dict for a second
         track: {"open": open_loopback(source, callback, notify), "source":
         the loopback source, "rate": its rate, "block_s": how often it
-        delivers a block (sizes its queue to QUEUE_S, as the microphone's)}."""
+        delivers a block (sizes its queue to QUEUE_S, as the microphone's)}.
+        key: the recording's 32-byte key (#111 C3b). The app makes it and
+        keeps it wrapped in the database; this class never sees the database
+        and holds the key in memory only, until the writer has finished."""
+        from workspace import audiocrypt
         self.folder = Path(folder)
         self.rate = int(rate)
+        if not isinstance(key, bytes) or len(key) != 32:
+            raise ValueError("a recording needs its 32-byte key")
+        rates = [self.rate] + ([int(computer["rate"])] if computer is not None else [])
+        if any(r not in audiocrypt.RATES for r in rates):
+            raise RecorderError("This microphone's sample rate is not supported. Choose "
+                                "another microphone, or change its format in Windows "
+                                "sound settings.")
+        self._key = key
         self._clock = clock               # wall clock: journal times only
         self._tick = tick                 # gaps and silence: changing the time cannot move it
         self._open_stream = open_stream
@@ -465,8 +522,10 @@ class Recording:
         if not self._buffered:
             return
         pcm = np.concatenate(self._buffer).astype("<i2").tobytes()
-        name = f"chunk-{len(self.journal['chunks']):06d}.pcm"
-        _retrying(lambda: _write_atomic(self.folder / name, pcm))
+        n = len(self.journal["chunks"])
+        name = chunk_name(MICROPHONE, n)
+        context = chunk_context(self.journal["id"], MICROPHONE, n)
+        _retrying(lambda: _write_chunk(self.folder / name, pcm, self._key, context, self.rate))
         with self._lock:
             self.journal["chunks"].append({"file": name, "frames": self._buffered})
             self.journal["frames"] += self._buffered
@@ -482,8 +541,10 @@ class Recording:
             return
         entry = self.journal["tracks"][COMPUTER]
         pcm = np.concatenate(track.buffer).astype("<i2").tobytes()
-        name = f"{COMPUTER_PREFIX}{len(entry['chunks']):06d}.pcm"
-        _retrying(lambda: _write_atomic(self.folder / name, pcm))
+        n = len(entry["chunks"])
+        name = chunk_name(COMPUTER, n)
+        context = chunk_context(self.journal["id"], COMPUTER, n)
+        _retrying(lambda: _write_chunk(self.folder / name, pcm, self._key, context, track.rate))
         with self._lock:
             entry["chunks"].append({"file": name, "frames": track.buffered})
             entry["frames"] += track.buffered
@@ -775,6 +836,7 @@ class Recording:
                 raise RecorderError("Saving the recording did not finish. It is kept and "
                                     "will be imported when the app next starts.")
         self._display_block = self._viz_cache = None    # nothing of the sound is kept
+        self._key = None                  # the writer has finished: no more chunks
         if self.journal["state"] == "recording":
             self.journal["state"] = "stopped"
         if self._computer is not None:
@@ -901,10 +963,18 @@ class _ComputerTrack:
                     pass
 
 
-# -- after recording: assemble, recover ---------------------------------------------
+# -- after recording: open, check, stream, recover -----------------------------------
 
 JOURNAL_READ_TRIES = 5      # a journal locked for a moment (an antivirus scan, a save)
 JOURNAL_READ_WAIT_S = 0.1
+# A listed chunk claiming more frames than this is not believed (the journal
+# is a plain file): the writer flushes at CHUNK_S plus at most a block.
+MAX_CHUNK_S = 60
+READ_BLOCK_S = 10           # seconds streamed at a time (bounded memory)
+DAMAGED_NOTES = {
+    MICROPHONE: "A piece of the recording could not be read (damaged) and was left out.",
+    COMPUTER: "A piece of the computer audio could not be read (damaged) and was left out.",
+}
 
 
 def read_journal(folder):
@@ -930,43 +1000,215 @@ def journal_format(journal):
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def track_files(folder, chunks, prefix):
-    """[(file name, frames)] for a track: the chunks the journal lists, then
-    chunk files renamed into place (so fully written) but not yet listed.
-    Temporary files are not included."""
+def has_audio(folder):
+    """Whether a recording folder holds any saved audio: encrypted chunks,
+    or the plain files of a version before #111 C3b (kept and reported,
+    never deleted as an empty leftover)."""
     folder = Path(folder)
-    listed = [(c["file"], int(c["frames"])) for c in chunks]
-    names = {name for name, _ in listed}
-    extra = sorted(p.name for p in folder.glob(f"{prefix}*.pcm") if p.name not in names)
-    return listed + [(name, (folder / name).stat().st_size // 2) for name in extra]
+    return any(any(folder.glob(f"{prefix}*{suffix}"))
+               for prefix in TRACKS.values() for suffix in (CHUNK_SUFFIX, ".pcm")) \
+        or (folder / "recording.wav").exists()
 
 
-def assemble_wav(folder, journal, notes=None):
-    """Join the saved chunks into recording.wav. Chunk files that were renamed
-    into place (so fully written) but not yet listed in the journal are
-    included; temporary files are not. Returns (path, seconds). With a
-    computer track (format 2), recording.wav is the ONE mix of both tracks
-    that is transcribed (workspace/mixdown.py); events about the mix are
-    appended to notes."""
+def remove_stale(folder):
+    """Delete unfinished chunks (*.tmp): an interrupted write, never imported
+    (only finished, renamed chunks are opened). Returns how many went."""
+    gone = 0
+    for p in Path(folder).glob("*.tmp"):
+        try:
+            p.unlink()
+            gone += 1
+        except OSError:
+            pass                  # held for a moment: goes with the folder
+    return gone
+
+
+class _Piece:
+    __slots__ = ("name", "index", "frames", "ok")
+
+    def __init__(self, name, index, frames, ok):
+        self.name, self.index, self.frames, self.ok = name, index, frames, ok
+
+
+class TrackAudio:
+    """One track of a saved recording: its chunks in order, each checked in
+    full when opened (verify), with an unreadable listed chunk standing in as
+    silence of its listed length, so later times still match. Reads decrypt
+    a chunk at a time (one file open at once); every block is authenticated
+    again as it is read, and a chunk that changed since it was checked fails
+    the read (AudioCryptError) rather than giving other audio."""
+
+    def __init__(self, folder, key, recording_id, track, rate, pieces):
+        self.folder, self._key = Path(folder), key
+        self.recording_id, self.track, self.rate = str(recording_id), track, int(rate)
+        self.pieces = pieces
+        self.frames = sum(p.frames for p in pieces)
+        self.readable = any(p.ok for p in pieces)
+        self._open = (None, None)          # (piece name, its reader)
+
+    def _reader(self, piece):
+        from workspace import audiocrypt
+        name, reader = self._open
+        if name == piece.name:
+            return reader
+        self.close()
+        reader = audiocrypt.AudioReader(self.folder / piece.name, self._key,
+                                        chunk_context(self.recording_id, self.track,
+                                                      piece.index))
+        if (reader.sample_format, reader.channels, reader.rate, reader.frames) != \
+                ("int16", 1, self.rate, piece.frames):
+            reader.close()
+            raise audiocrypt.AudioCryptError("The audio file is damaged (header).")
+        self._open = (piece.name, reader)
+        return reader
+
+    def pcm(self, a, b):
+        """Frames [a, b) as int16 (zeros where a chunk was unreadable or
+        beyond the track)."""
+        out = np.zeros(max(0, b - a), dtype="<i2")
+        pos = 0
+        for piece in self.pieces:
+            lo, hi = max(a, pos), min(b, pos + piece.frames)
+            if lo < hi and piece.ok:
+                self._reader(piece).readinto(out[lo - a:hi - a], lo - pos)
+            pos += piece.frames
+            if pos >= b:
+                break
+        return out
+
+    def read(self, a, b):
+        """Frames [a, b) as float32 sample values (the mixer's form)."""
+        return self.pcm(a, b).astype(np.float32)
+
+    def blocks(self, step=None):
+        """The whole track as little-endian int16 bytes, a block at a time."""
+        step = max(1, int(step or READ_BLOCK_S * self.rate))
+        try:
+            for a in range(0, self.frames, step):
+                yield self.pcm(a, min(self.frames, a + step)).tobytes()
+        finally:
+            self.close()
+
+    def close(self):
+        name, reader = self._open
+        self._open = (None, None)
+        if reader is not None:
+            reader.close()
+
+
+def _check_piece(folder, key, recording_id, track, rate, name, frames=None, first=0):
+    """(index, frames, ok) for a chunk file: opened under its own context and
+    checked in full (verify). frames: what the journal lists (None for a chunk
+    renamed into place but not yet listed). A listed chunk must be the one
+    written at its place in the list (index == first); an unlisted one must
+    come after (index >= first), so nothing is imported out of order."""
+    from workspace import audiocrypt
+    m = re.fullmatch(re.escape(TRACKS[track]) + r"(\d{6})" + re.escape(CHUNK_SUFFIX),
+                     str(name))
+    if m is None:                          # not a name this version writes
+        return None, frames or 0, False
+    index = int(m.group(1))
+    if index < first or (frames is not None and index != first):
+        return index, frames or 0, False
+    try:
+        with audiocrypt.AudioReader(Path(folder) / name, key,
+                                    chunk_context(recording_id, track, index)) as r:
+            fine = (r.sample_format, r.channels, r.rate) == ("int16", 1, int(rate))
+            got = r.verify() if fine else 0
+    except (audiocrypt.AudioCryptError, OSError, ValueError):
+        return index, frames or 0, False
+    if not fine or (frames is not None and got != frames):
+        return index, frames or 0, False
+    return index, got, True
+
+
+def open_track(folder, journal_track, key, recording_id, track, rate, problems):
+    """A track's saved audio (TrackAudio): the chunks the journal lists,
+    then chunks renamed into place (so finished) but not yet listed, in name
+    order. Each is checked in full; one that does not open becomes silence
+    of its listed length (an unlisted one is left out, its length unknown),
+    and each is reported in problems (content-free events)."""
     folder = Path(folder)
-    if journal_format(journal) == 2 and COMPUTER in (journal.get("tracks") or {}):
-        from workspace import mixdown
-        return mixdown.write_mix(folder, journal, folder / "recording.wav",
-                                 notes if notes is not None else [])
-    listed = [c["file"] for c in journal.get("chunks", [])]
-    extra = sorted(p.name for p in folder.glob("chunk-*.pcm") if p.name not in listed)
-    out = folder / "recording.wav"
-    frames = 0
-    with wave.open(str(out), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(int(journal["rate"]))
-        for name in listed + extra:
-            data = (folder / name).read_bytes()
-            data = data[: len(data) - len(data) % 2]
-            w.writeframes(data)
-            frames += len(data) // 2
-    return out, frames / int(journal["rate"])
+    prefix = TRACKS[track]
+    listed, seen = [], set()
+    for c in journal_track.get("chunks", []) or []:
+        name = c.get("file") if isinstance(c, dict) else None
+        name = name if isinstance(name, str) else None
+        frames = c.get("frames") if isinstance(c, dict) else None
+        if not isinstance(frames, int) or isinstance(frames, bool) \
+                or not 0 <= frames <= MAX_CHUNK_S * int(rate):
+            frames = 0
+        listed.append((name, frames))
+        seen.add(name)
+    extra = sorted(p.name for p in folder.glob(f"{prefix}*{CHUNK_SUFFIX}")
+                   if p.name not in seen)
+    pieces, pos, after = [], 0, len(listed)
+    for i, (name, frames) in enumerate(listed + [(n, None) for n in extra]):
+        index, got, ok = _check_piece(folder, key, recording_id, track, rate, name, frames,
+                                      first=i if frames is not None else after)
+        if ok and frames is None:
+            after = index + 1
+        if not ok:
+            problems.append({"kind": "damaged", "at_s": round(pos / int(rate), 1),
+                             "seconds": round(got / int(rate), 1) if frames is not None
+                             else None, "note": DAMAGED_NOTES[track]})
+            if frames is None:
+                continue                   # unlisted: its length is unknown, left out
+        pieces.append(_Piece(name, index, got, ok))
+        pos += got
+    return TrackAudio(folder, key, recording_id, track, rate, pieces)
+
+
+class RecordingAudio:
+    """A saved recording, opened and checked, ready to stream: the
+    microphone track alone, or the ONE mix of both tracks (format 2,
+    workspace/mixdown.py) made in memory block by block. Nothing plain is
+    written. rate and frames are the microphone's; readable is False when no
+    chunk of any track could be read."""
+
+    def __init__(self, mic, computer, journal, notes):
+        self.mic, self.computer = mic, computer
+        self.rate, self.frames = mic.rate, mic.frames
+        self.readable = mic.readable or (computer is not None and computer.readable)
+        self._mix = None
+        if computer is not None:
+            from workspace import mixdown
+            self._mix = mixdown.Mix(journal, mic, computer, notes)
+
+    @property
+    def seconds(self):
+        return self.frames / self.rate
+
+    def blocks(self):
+        """Little-endian int16 mono at self.rate, a block at a time."""
+        try:
+            if self._mix is None:
+                yield from self.mic.blocks()
+            else:
+                yield from self._mix.blocks()
+        finally:
+            self.close()
+
+    def close(self):
+        self.mic.close()
+        if self.computer is not None:
+            self.computer.close()
+
+
+def open_recording(folder, journal, key, notes):
+    """Open a saved recording for import (#111 C3b): unfinished chunks
+    (*.tmp) are deleted, every finished chunk is opened with its own context
+    and checked in full, and what could not be read is added to notes. With
+    a computer track (format 2), the result streams the one mix."""
+    remove_stale(folder)
+    rid = Path(folder).name
+    mic = open_track(folder, journal, key, rid, MICROPHONE, int(journal["rate"]), notes)
+    computer = None
+    track = ((journal.get("tracks") or {}).get(COMPUTER)
+             if journal_format(journal) == 2 else None)
+    if isinstance(track, dict):
+        computer = open_track(folder, track, key, rid, COMPUTER, int(track["rate"]), notes)
+    return RecordingAudio(mic, computer, journal, notes)
 
 
 def unfinished(root):

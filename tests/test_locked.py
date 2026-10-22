@@ -392,7 +392,9 @@ class LockedStartTests(unittest.TestCase):
         # playback and for Transcribe again. While locked none of them runs
         # (design 7.2): the processing thread is held, and a direct call is
         # refused by the store before any file or key is opened. No key row
-        # is destroyed or made, and the update gate reads no key.
+        # is destroyed or made, and the update gate reads no key. C3b: the
+        # sweep of recording keys whose folder is gone (fill() leaves one)
+        # and the erase before a recording folder is deleted do not run.
         ids = self.fill()
         before = self.snapshot()
         targets = ("workspace.store.Store.meeting_key", "workspace.store.Store.destroy_keys",
@@ -400,6 +402,7 @@ class LockedStartTests(unittest.TestCase):
                    "workspace.store.Store.recording_key",
                    "workspace.store.Store.create_recording_key",
                    "workspace.store.Store.destroy_recording_key",
+                   "workspace.store.Store.recording_key_ids",        # C3b's sweep and erase
                    "workspace.media.open_audio", "workspace.media.audio_ref",
                    "workspace.media.AudioReader", "workspace.speakers.run_speakers",
                    "workspace.speakers.record_failure", "workspace.cleanup.run_job",
@@ -431,6 +434,13 @@ class LockedStartTests(unittest.TestCase):
                 with self.assertRaises(KeyUnavailable):
                     call()
         reader.assert_not_called()
+        # C3b: the erase before a recording folder goes and the sweep of keys
+        # whose folder is gone read no key row while locked.
+        with mock.patch("workspace.store.Store.recording_key_ids",
+                        side_effect=AssertionError("read")) as ids:
+            self.assertFalse(ws._forget_recording_key("c" * 32))
+            ws._sweep_recording_keys()
+        ids.assert_not_called()
         self.close(ws)
         # The update gate on the locked workspace: plain columns only.
         with mock.patch("workspace.dpapi.unprotect", side_effect=AssertionError("dpapi")), \

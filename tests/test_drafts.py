@@ -519,7 +519,7 @@ class TapTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.holder = {}
         self.rec = recorder.Recording(Path(self.tmp.name) / "rec", 3, "Test microphone", 16000,
-                                      open_stream=opener(self.holder))
+                                      open_stream=opener(self.holder), key=bytes(range(32)))
 
     def test_the_tap_gets_every_block_with_its_place_in_the_recording(self):
         seen = []
@@ -600,7 +600,8 @@ class TapTests(unittest.TestCase):
         rec = recorder.Recording(Path(self.tmp.name) / "two", 3, "Test microphone", 16000,
                                  open_stream=opener(self.holder),
                                  computer={"open": open_loopback,
-                                           "source": {"kind": "endpoint"}, "rate": 48000})
+                                           "source": {"kind": "endpoint"}, "rate": 48000},
+                                 key=bytes(range(32)))
         seen = []
         rec.tap = lambda start, block: seen.append((start, len(block)))
         rec.start()
@@ -613,6 +614,12 @@ class TapTests(unittest.TestCase):
         self.assertEqual(journal["tracks"]["computer"]["frames"], 48000)   # saved, not tapped
         self.assertEqual(seen, [(i * 1600, 1600) for i in range(10)])
         self.assertEqual(journal["frames"], 16000)
+        # The tap takes the audio in memory; on disk both tracks are sealed
+        # (#111 C3b): no file holds either track's samples in the clear.
+        for needle in (tone(1.0)[800:832].astype("<i2").tobytes(),
+                       comp[800:832].astype("<i2").tobytes()):
+            self.assertEqual([p.name for p in Path(self.tmp.name).rglob("*")
+                              if p.is_file() and needle in p.read_bytes()], [])
 
     def test_a_pause_marker_is_not_counted_as_queued_audio(self):
         # The marker that ends the draft's phrase at a pause takes a place in
@@ -816,7 +823,7 @@ class WorkspaceDraftTests(unittest.TestCase):
         # Memory only: the recording folder holds what it always did.
         names = {p.name for p in rec.folder.iterdir()}
         self.assertLessEqual(names, {"journal.json", "heartbeat"} | {
-            n for n in names if n.startswith("chunk-") and n.endswith(".pcm")})
+            n for n in names if n.startswith("chunk-") and n.endswith(".uma")})
         proc = session._proc
         self.ws.stop_recording()
         # The draft worker has ended and its text is gone before the import.

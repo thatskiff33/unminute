@@ -2,7 +2,8 @@
 # (plain process, Windows job, Low integrity, checked binary replies), FFmpeg
 # limited to the supported demuxers, their audio decoders and local files,
 # input sample rates of 4 kHz to 384 kHz, and the length, size-ratio and disk
-# limits enforced by the app (D2 red team, part 2).
+# limits enforced by the app (D2 red team, part 2). A microphone recording is
+# fed to the same decoder over its stdin as one WAV (#111 C3b).
 #   python -m unittest discover -s tests -v
 
 import importlib.util
@@ -332,6 +333,139 @@ class DecoderTests(unittest.TestCase):
         src = encode(self.root / "quiet.m4a", "ipod", "aac", rate=8000, seconds=60, silent=True)
         samples = media.decode(src, io.BytesIO())
         self.assertAlmostEqual(samples, 60 * 16000, delta=4000)
+
+
+class ArrayAudio:
+    """A recording held in memory, streamed as the recorder's import does
+    (rate, frames, blocks() of little-endian int16 bytes)."""
+
+    def __init__(self, samples, rate, block_s=10, fail_after=None, short=0):
+        self.samples, self.rate = samples, rate
+        self.frames = len(samples) + short          # short: claims more than it holds
+        self._step, self._fail_after = int(block_s * rate), fail_after
+
+    def blocks(self):
+        for i, a in enumerate(range(0, len(self.samples), self._step)):
+            if self._fail_after is not None and i == self._fail_after:
+                from workspace import audiocrypt
+                raise audiocrypt.AudioCryptError("The audio file is damaged (cut short).")
+            yield self.samples[a:a + self._step].astype("<i2").tobytes()
+
+
+class Counting:
+    """An output that keeps only how much was written and the first bytes."""
+
+    def __init__(self, keep=1 << 20):
+        self.n, self.head, self._keep = 0, bytearray(), keep
+
+    def write(self, data):
+        self.n += len(data)
+        if len(self.head) < self._keep:
+            self.head += data[: self._keep - len(self.head)]
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class StdinDecoderTests(unittest.TestCase):
+    """#111 C3b: a microphone recording reaches the contained decoder over
+    its stdin as one WAV, so no plain recording.wav is written; the same
+    demuxer, decoders, limits and sandbox apply."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def speech(self, seconds, rate):
+        import numpy as np
+        rng = np.random.default_rng(111)
+        t = np.arange(int(seconds * rate)) / rate
+        x = 0.2 * np.sin(2 * np.pi * 180 * t) * (1 + np.sin(2 * np.pi * 3 * t))
+        return np.clip((x + 0.02 * rng.standard_normal(len(t))) * 32767,
+                       -32768, 32767).astype("<i2")
+
+    def test_stdin_decode_equals_the_file_decode(self):
+        from workspace import media
+        for rate in (16000, 44100, 48000):
+            pcm = self.speech(3.0, rate)
+            path = self.root / f"r{rate}.wav"
+            with wave.open(str(path), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(rate)
+                w.writeframes(pcm.tobytes())
+            from_file, from_stdin = io.BytesIO(), io.BytesIO()
+            n1 = media.decode(path, from_file)
+            n2 = media.decode(None, from_stdin, feed=media.WavFeed(ArrayAudio(pcm, rate)))
+            self.assertEqual(n1, n2, rate)
+            self.assertEqual(from_file.getvalue(), from_stdin.getvalue(), rate)   # bit for bit
+            if WINDOWS:
+                self.assertEqual(media.last_decoder_integrity, 0x1000)          # Low
+
+    def test_the_feed_hashes_and_counts_what_it_sends(self):
+        import hashlib
+
+        from workspace import media
+        pcm = self.speech(1.0, 16000)
+        feed = media.WavFeed(ArrayAudio(pcm, 16000))
+        media.decode(None, io.BytesIO(), feed=feed)
+        self.assertEqual(feed.sha256, hashlib.sha256(pcm.tobytes()).hexdigest())
+        self.assertEqual((feed.sent, feed.size), (len(pcm) * 2, 44 + len(pcm) * 2))
+
+    def test_ten_minutes_through_stdin_without_a_deadlock(self):
+        # The feeder writes stdin on its own thread while this thread reads
+        # the decoder's frames (queue of 8): neither can block the other.
+        from workspace import media
+        rate = 48000
+        pcm = self.speech(600.0, rate)
+        out = Counting()
+        samples = media.decode(None, out, feed=media.WavFeed(ArrayAudio(pcm, rate)))
+        self.assertEqual(out.n, samples * 4)
+        self.assertLess(abs(samples - 600 * 16000), 16)
+
+    def test_a_feed_that_fails_midway_fails_the_decode(self):
+        from workspace import audiocrypt, media
+        pcm = self.speech(30.0, 16000)
+        with self.assertRaises(audiocrypt.AudioCryptError):   # never a shorter import
+            media.decode(None, io.BytesIO(),
+                         feed=media.WavFeed(ArrayAudio(pcm, 16000, fail_after=1)))
+        with self.assertRaises(media.DecodeError):             # less than the header says
+            media.decode(None, io.BytesIO(),
+                         feed=media.WavFeed(ArrayAudio(pcm, 16000, short=16000)))
+
+    def test_too_long_for_a_wav_header_is_refused_before_decoding(self):
+        from workspace import media
+        audio = type("Huge", (), {"rate": 48000, "frames": (0xFFFFFFFF - 36) // 2 + 1})()
+        with self.assertRaisesRegex(media.DecodeError, "longer than 12 hours"):
+            media.WavFeed(audio)
+
+    def test_the_request_line_is_checked(self):
+        from workspace import decode_child
+        ok = {b'{"src": "C:/x.wav"}\n': ("file", "C:/x.wav"),
+              b'{"stdin": "wav", "bytes": 44}\n': ("stdin", 44)}
+        for line, expected in ok.items():
+            self.assertEqual(decode_child.read_request(io.BytesIO(line + b"RIFF")), expected)
+        for line in (b'{"stdin": "mp3", "bytes": 100}\n', b'{"stdin": "wav", "bytes": true}\n',
+                     b'{"stdin": "wav", "bytes": 10}\n', b'{"stdin": "wav"}\n',
+                     b'{"stdin": "wav", "bytes": 100, "src": "x"}\n', b'{"src": 1}\n',
+                     b'["src"]\n', b'{"src": "x"}', b'{"src": "' + b"a" * 70000 + b'"}\n'):
+            with self.assertRaises(ValueError, msg=line[:40]):
+                decode_child.read_request(io.BytesIO(line))
+
+    def test_the_stream_is_never_seeked(self):
+        # Windows reports a pipe as seekable; PyAV then seeks it and fails.
+        from workspace import decode_child
+        stream = decode_child._Stream(io.BytesIO(b"abc"))
+        self.assertFalse(stream.seekable())
+        self.assertFalse(hasattr(stream, "seek"))
+        self.assertEqual(stream.read(2), b"ab")
+
+    def test_the_format_and_decoder_lists_are_unchanged(self):
+        # C3b adds no demuxer (a raw PCM one would widen the list, E2): the
+        # stream is a WAV, read by the "wav" demuxer already allowed.
+        from workspace import decode_child
+        self.assertEqual(decode_child.DEMUXERS,
+                         "wav,mp3,mov,mp4,m4a,matroska,webm,flac,ogg,aac,asf,avi")
+        self.assertEqual(decode_child.OPEN_OPTIONS["format_whitelist"], decode_child.DEMUXERS)
 
 
 def multichannel_wav(path, data, rate, mask=None):

@@ -5,7 +5,8 @@
 #   - workspace/recorder.py: the two-track journal (format 2), the computer
 #     track's chunks, marks and events, and its rules (silence is not a lost
 #     device; a failure or policy stops that track only);
-#   - workspace/mixdown.py: drift and offset corrected, resampled, ONE mix;
+#   - workspace/mixdown.py: drift and offset corrected, resampled, ONE mix,
+#     made in memory from the encrypted chunks (#111 C3b);
 #   - workspace/app.py: the policy key and the user's switch, and the import
 #     of a two-track recording as one meeting.
 #   python tools/run_tests.py
@@ -19,7 +20,6 @@ import threading
 import time
 import types
 import unittest
-import wave
 from pathlib import Path
 from unittest import mock
 
@@ -36,6 +36,7 @@ RATE = 16000
 CRATE = 48000
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
 ROOT = Path(__file__).resolve().parents[1]
+KEY = bytes(range(32))           # a recording's key in these tests (#111 C3b)
 
 if HAVE_NUMPY:
     import numpy as np
@@ -421,15 +422,37 @@ class LoopbackProcessLoopTests(unittest.TestCase):
 
 # -- mixdown: one mix, lined up ----------------------------------------------------------
 
-def write_track(folder, prefix, samples, chunk_s, rate):
-    """Chunk files and their journal entries for a synthetic track."""
+def write_track(folder, track, samples, chunk_s, rate):
+    """Encrypted chunk files and their journal entries for a synthetic track,
+    as the recorder writes them (#111 C3b)."""
     chunks, step = [], int(chunk_s * rate)
     for i, a in enumerate(range(0, len(samples), step)):
-        name = f"{prefix}{i:06d}.pcm"
+        name = recorder.chunk_name(track, i)
         part = samples[a:a + step].astype("<i2")
-        (Path(folder) / name).write_bytes(part.tobytes())
+        recorder._write_chunk(Path(folder) / name, part.tobytes(), KEY,
+                              recorder.chunk_context(Path(folder).name, track, i), rate)
         chunks.append({"file": name, "frames": len(part)})
     return chunks
+
+
+def mix(folder, journal, notes):
+    """The one mix as the import streams it: (int16 samples, seconds)."""
+    audio = recorder.open_recording(folder, journal, KEY, notes)
+    return np.frombuffer(b"".join(audio.blocks()), dtype="<i2"), audio.seconds
+
+
+class ArrayTrack:
+    """A track held in memory, for the mixer's line-up alone."""
+
+    def __init__(self, samples):
+        self.samples = samples.astype(np.float32)
+        self.frames = len(samples)
+
+    def read(self, a, b):
+        out = np.zeros(max(0, b - a), dtype=np.float32)
+        part = self.samples[max(0, a):b]
+        out[:len(part)] = part
+        return out
 
 
 def peaks(x, rate, threshold):
@@ -454,10 +477,10 @@ class MixdownTests(unittest.TestCase):
 
     def journal(self, mic, comp, mic_marks, comp_marks):
         return {"rate": RATE, "format": 2, "marks": mic_marks,
-                "chunks": write_track(self.folder, "chunk-", mic, 5, RATE),
+                "chunks": write_track(self.folder, recorder.MICROPHONE, mic, 5, RATE),
                 "tracks": {"computer": {"rate": CRATE, "marks": comp_marks,
-                                        "chunks": write_track(self.folder, "sys-", comp, 5,
-                                                              CRATE)}}}
+                                        "chunks": write_track(self.folder, recorder.COMPUTER,
+                                                              comp, 5, CRATE)}}}
 
     def drifting(self, seconds=200, ppm=100.0, offset=0.25):
         """The microphone from t=1000 at its nominal rate; the computer from
@@ -482,14 +505,11 @@ class MixdownTests(unittest.TestCase):
         mic, comp, mm, cm, times = self.drifting()
         journal = self.journal(mic, comp, mm, cm)
         notes = []
-        out, seconds = mixdown.write_mix(self.folder, journal, self.folder / "mix.wav", notes)
+        mixed, seconds = mix(self.folder, journal, notes)
         self.assertEqual(notes, [])
         self.assertAlmostEqual(seconds, 200.0)
-        with wave.open(str(out), "rb") as w:
-            self.assertEqual((w.getnchannels(), w.getframerate(), w.getnframes()),
-                             (1, RATE, len(mic)))
-            mix = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
-        found = peaks(mix, RATE, 3000)
+        self.assertEqual(len(mixed), len(mic))
+        found = peaks(mixed, RATE, 3000)
         self.assertEqual(len(found), len(times))
         for frame, t in zip(found, times, strict=True):
             self.assertLess(abs(frame / RATE - (t - 1000.0)), 0.010)
@@ -499,8 +519,7 @@ class MixdownTests(unittest.TestCase):
         # about 19 ms by the last pulse, so the fit above is what corrects it.
         mic, comp, mm, cm, times = self.drifting()
         lines = mixdown.nominal(len(comp), CRATE, t0=1000.25)
-        reader = mixdown.TrackReader(self.folder, [("c.pcm", len(comp))])
-        (self.folder / "c.pcm").write_bytes(comp.astype("<i2").tobytes())
+        reader = ArrayTrack(comp)
         t = 1000.0 + np.arange(len(mic)) / RATE
         found = peaks(mixdown.computer_at(t, lines, reader), RATE, 3000)
         self.assertGreater(abs(found[-1] / RATE - (times[-1] - 1000.0)), 0.015)
@@ -516,10 +535,8 @@ class MixdownTests(unittest.TestCase):
         comp_marks = [[0, 1000.0, 1], [10 * CRATE, 1015.5, 1]]
         journal = self.journal(mic, comp, mic_marks, comp_marks)
         notes = []
-        out, _ = mixdown.write_mix(self.folder, journal, self.folder / "mix.wav", notes)
-        with wave.open(str(out), "rb") as w:
-            mix = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
-        found = peaks(mix, RATE, 6000)
+        mixed, _ = mix(self.folder, journal, notes)
+        found = peaks(mixed, RATE, 6000)
         self.assertEqual(len(found), 2)
         self.assertLess(abs(found[0] / RATE - 5.0), 0.005)
         self.assertLess(abs(found[1] / RATE - 14.5), 0.005)     # 1019.5 is 4.5 s into part two
@@ -528,12 +545,10 @@ class MixdownTests(unittest.TestCase):
         mic = np.full(4 * RATE, 1000, np.int16)
         comp = np.full(2 * CRATE, 3000, np.int16)                 # the computer stops at 2 s
         journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
-        out, seconds = mixdown.write_mix(self.folder, journal, self.folder / "m.wav", [])
-        with wave.open(str(out), "rb") as w:
-            mix = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
+        mixed, seconds = mix(self.folder, journal, [])
         self.assertEqual(seconds, 4.0)
-        self.assertTrue(np.all(mix[100:2 * RATE - 100] == 2000))  # (1000 + 3000) / 2
-        self.assertTrue(np.all(mix[2 * RATE + 100:] == 500))      # 1000 / 2: the computer is silent
+        self.assertTrue(np.all(mixed[100:2 * RATE - 100] == 2000))  # (1000 + 3000) / 2
+        self.assertTrue(np.all(mixed[2 * RATE + 100:] == 500))      # 1000 / 2: computer silent
 
     def test_marks_that_cannot_be_used_fall_back_to_start_times_and_say_so(self):
         mic = np.full(2 * RATE, 1000, np.int16)
@@ -544,12 +559,10 @@ class MixdownTests(unittest.TestCase):
                                       ([[0, 5.0, 1]], [[0, float("nan"), 1]])):
             notes = []
             journal = self.journal(mic, comp, mic_marks, comp_marks)
-            out, seconds = mixdown.write_mix(self.folder, journal, self.folder / "m.wav", notes)
+            mixed, seconds = mix(self.folder, journal, notes)
             self.assertEqual(seconds, 2.0)
             self.assertEqual([n["kind"] for n in notes], ["mix_by_start"])
-            with wave.open(str(out), "rb") as w:
-                mix = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
-            self.assertTrue(np.all(mix[100:-100] == 2000))
+            self.assertTrue(np.all(mixed[100:-100] == 2000))
 
     def test_an_implausible_clock_keeps_the_nominal_rate_and_says_so(self):
         mic = np.zeros(60 * RATE, np.int16)
@@ -557,9 +570,25 @@ class MixdownTests(unittest.TestCase):
         mic_marks = [[0, 0.0, 1], [30 * RATE, 30.0, 0]]
         comp_marks = [[0, 0.0, 1], [30 * CRATE, 33.0, 0]]          # 10 % slow: not a clock drift
         notes = []
-        mixdown.write_mix(self.folder, self.journal(mic, comp, mic_marks, comp_marks),
-                          self.folder / "m.wav", notes)
+        mix(self.folder, self.journal(mic, comp, mic_marks, comp_marks), notes)
         self.assertEqual([n["kind"] for n in notes], ["mix_drift"])
+
+    def test_a_chunk_of_one_track_is_never_read_as_the_other(self):
+        # Both tracks are sealed under the same key, with the track in each
+        # chunk's context: a chunk swapped between them does not open.
+        mic = np.full(2 * RATE, 1000, np.int16)
+        comp = np.full(2 * CRATE, 3000, np.int16)
+        journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
+        # The same recording, place, rate and length: only the track differs.
+        recorder._write_chunk(self.folder / "swap.uma", mic.tobytes(), KEY,
+                              recorder.chunk_context(self.folder.name, recorder.COMPUTER, 0),
+                              RATE)
+        (self.folder / "swap.uma").replace(self.folder / "chunk-000000.uma")
+        notes = []
+        mixed, seconds = mix(self.folder, journal, notes)
+        self.assertEqual(seconds, 2.0)
+        self.assertEqual([n["kind"] for n in notes], ["damaged"])
+        self.assertTrue(np.all(mixed[100:-100] == 1500))   # silence for the microphone
 
 
 # -- the recorder's two tracks ------------------------------------------------------------
@@ -577,14 +606,14 @@ class TwoTrackRecordingTests(unittest.TestCase):
             self.root / "rec", 3, "Test microphone", RATE,
             open_stream=opener(self.holder, "mic", FakeMic),
             computer={"open": opener(self.holder, "comp", FakeLoopback, fail=fail),
-                      "source": {"kind": "endpoint"}, "rate": CRATE})
+                      "source": {"kind": "endpoint"}, "rate": CRATE}, key=KEY)
         rec.start()
         self.addCleanup(rec.stop)
         return rec, self.holder["mic"], self.holder["comp"]
 
     def test_a_microphone_only_journal_is_unchanged(self):
         rec = recorder.Recording(self.root / "mic", 3, "Mic", RATE,
-                                 open_stream=opener(self.holder, "mic", FakeMic))
+                                 open_stream=opener(self.holder, "mic", FakeMic), key=KEY)
         rec.start()
         self.addCleanup(rec.stop)
         self.holder["mic"].feed(1)
@@ -593,7 +622,7 @@ class TwoTrackRecordingTests(unittest.TestCase):
             self.assertNotIn(key, journal)
         self.assertIsNone(rec.status()["computer"])
         self.assertEqual(sorted(p.name for p in rec.folder.iterdir()),
-                         ["chunk-000000.pcm", "heartbeat", "journal.json"])
+                         ["chunk-000000.uma", "heartbeat", "journal.json"])
 
     def test_both_tracks_are_saved_in_durable_chunks_with_a_format_2_journal(self):
         rec, mic, comp = self.start()
@@ -612,17 +641,15 @@ class TwoTrackRecordingTests(unittest.TestCase):
                          ({"kind": "endpoint"}, CRATE, "stopped", "Test speakers"))
         self.assertEqual(track["frames"], comp.fed)
         self.assertEqual(journal["frames"], mic.fed)
-        self.assertEqual([c["file"] for c in track["chunks"]], ["sys-000000.pcm", "sys-000001.pcm"])
+        self.assertEqual([c["file"] for c in track["chunks"]], ["sys-000000.uma", "sys-000001.uma"])
         self.assertEqual(journal["marks"][0][0::2], [0, 1])       # the first block starts a segment
         self.assertEqual(track["marks"][0][0::2], [0, 1])
         on_disk = json.loads((rec.folder / "journal.json").read_text("utf-8"))
         self.assertEqual(on_disk["tracks"]["computer"]["frames"], comp.fed)
-        wav, seconds = recorder.assemble_wav(rec.folder, journal)
+        mixed, seconds = mix(rec.folder, journal, [])
         self.assertAlmostEqual(seconds, 6.0)
-        with wave.open(str(wav), "rb") as w:
-            self.assertEqual((w.getframerate(), w.getnframes()), (RATE, mic.fed))
-            mix = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(np.float32)
-        spectrum = np.abs(np.fft.rfft(mix[RATE:3 * RATE]))
+        self.assertEqual(len(mixed), mic.fed)
+        spectrum = np.abs(np.fft.rfft(mixed[RATE:3 * RATE].astype(np.float32)))
         freqs = np.fft.rfftfreq(2 * RATE, 1 / RATE)
         level = lambda hz: spectrum[np.argmin(np.abs(freqs - hz))]  # noqa: E731
         self.assertGreater(level(220), 100 * level(600))           # the microphone's tone
@@ -704,7 +731,7 @@ class TwoTrackRecordingTests(unittest.TestCase):
             self.root / "q", 3, "Mic", RATE, open_stream=opener(self.holder, "mic", FakeMic),
             computer={"open": opener(self.holder, "comp", FakeLoopback),
                       "source": {"kind": "endpoint"}, "rate": CRATE,
-                      "block_s": loopback.POLL_S})
+                      "block_s": loopback.POLL_S}, key=KEY)
         self.assertAlmostEqual(rec._computer.queue.maxsize * loopback.POLL_S,
                                rec._queue.maxsize * recorder.BLOCK_S)
         self.assertAlmostEqual(rec._queue.maxsize * recorder.BLOCK_S, recorder.QUEUE_S)
@@ -718,11 +745,11 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertEqual(journal["tracks"]["computer"]["device_name"], "Speakers")
 
     def test_a_full_disk_stops_both_tracks_and_counts_the_computers_unsaved_audio(self):
-        def full(path, data):
+        def full(*args):
             raise OSError(28, "No space left on device")
         rec, mic, comp = self.start()
         mic.feed(0.5)
-        with mock.patch.object(recorder, "_write_atomic", full):
+        with mock.patch.object(recorder, "_write_chunk", full):
             comp.feed(5.5)                    # its first chunk cannot be saved
             deadline = time.time() + 10
             while rec.journal["state"] != "failed" and time.time() < deadline:
@@ -763,14 +790,21 @@ class TwoTrackRecordingTests(unittest.TestCase):
         rec._stop.set()                       # the process "dies"
         rec._writer.join(5)
         folder = rec.folder
-        (folder / "sys-999999.pcm").write_bytes(np.zeros(CRATE, "<i2").tobytes())
-        (folder / "sys-999998.pcm.tmp").write_bytes(b"\x01" * 1001)
         journal = recorder.read_journal(folder)
-        files = recorder.track_files(folder, journal["tracks"]["computer"]["chunks"], "sys-")
-        self.assertEqual(files[-1], ("sys-999999.pcm", CRATE))
-        self.assertNotIn("sys-999998.pcm.tmp", [f for f, _ in files])
-        wav, seconds = recorder.assemble_wav(folder, journal)
-        self.assertAlmostEqual(seconds, journal["frames"] / RATE)
+        listed = journal["tracks"]["computer"]["chunks"]
+        recorder._write_chunk(folder / "sys-999999.uma", np.zeros(CRATE, "<i2").tobytes(), KEY,
+                              recorder.chunk_context(folder.name, recorder.COMPUTER, 999999),
+                              CRATE)
+        (folder / "sys-999998.uma.tmp").write_bytes(b"\x01" * 1001)
+        notes = []
+        audio = recorder.open_recording(folder, journal, KEY, notes)
+        self.assertEqual(notes, [])
+        self.assertEqual(audio.computer.pieces[-1].name, "sys-999999.uma")
+        self.assertEqual(audio.computer.frames, sum(c["frames"] for c in listed) + CRATE)
+        self.assertFalse((folder / "sys-999998.uma.tmp").exists())
+        mixed = b"".join(audio.blocks())
+        self.assertAlmostEqual(audio.seconds, journal["frames"] / RATE)
+        self.assertEqual(len(mixed), 2 * journal["frames"])
         recorder.remove_folder(folder)
         self.assertFalse(folder.exists())
 
@@ -903,6 +937,9 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertGreater(level(220), 50 * level(600))            # the microphone
         self.assertGreater(level(1000), 50 * level(600))           # and the computer, mixed
         self.assertTrue(ws.transcript(meetings[0]["id"])["items"])
+        info = json.loads(ws.store.recording_info(meetings[0]["id"]))   # sealed (#111 C3b)
+        self.assertEqual(info["sources"], ["microphone", "computer"])
+        self.assertEqual(ws.store.recording_key_ids(), [])
 
     def test_policy_turned_off_mid_recording_stops_only_the_computer_track(self):
         from workspace import policy
@@ -956,7 +993,7 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         comp.feed(6)
         folder = ws._recording.folder
         time.sleep(0.5)
-        self.assertTrue(any(folder.glob("sys-*.pcm")))
+        self.assertTrue(any(folder.glob("sys-*.uma")))
         ws.discard_recording()
         self.assertFalse(folder.exists())
         self.assertTrue(ws.wait_idle(60))

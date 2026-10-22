@@ -660,6 +660,52 @@ class IntegrityTests(unittest.TestCase):
         self.assertTrue(ws.recording_status()["reports"][-1]["recovered"])
         self.assertFalse(ws._integrity_ok.is_set())          # still held
 
+    def test_a_discarded_or_empty_recording_is_left_alone_while_held(self):
+        # A recovered folder that only reports is handled while damage holds
+        # work. Removing a discarded or empty one deletes its recording key
+        # first (#111 C3b), a write, so it waits for a sound start (R11).
+        from workspace import recorder
+        names = ("a" * 32, "b" * 32)
+
+        def leftovers(ws):
+            discarded, empty = (ws.recordings / n for n in names)
+            discarded.mkdir(parents=True)
+            (discarded / "chunk-000000.uma").write_bytes(b"\x00" * 64)
+            (discarded / "journal.json").write_text(json.dumps(
+                {"state": "recording", "rate": SR, "frames": SR, "started_at": time.time(),
+                 "chunks": []}), encoding="utf-8")
+            recorder.mark_discarded(discarded)
+            empty.mkdir()
+            for n in names:
+                ws.store.create_recording_key(n)
+        self.unclean(prepare=leftovers)
+        with mock.patch("workspace.app.quick_check_file", return_value=False):
+            ws = self.open(check_integrity=True)
+        real, seen, done = ws._import_recording_folder, [], threading.Event()
+
+        def handled(folder, ask=False):
+            try:
+                return real(folder, ask)
+            finally:
+                seen.append(folder.name)
+                if len(seen) == len(names):
+                    done.set()
+        ws._import_recording_folder = handled
+        changes = ws.store.db.total_changes
+        ws.start()
+        self.assertTrue(done.wait(20))
+        self.assertEqual(sorted(seen), sorted(names))
+        self.assertEqual(ws.store.db.total_changes, changes)          # nothing written
+        self.assertEqual(ws.store.recording_key_ids(), sorted(names))
+        self.assertTrue(all((ws.recordings / n).is_dir() for n in names))
+        self.assertFalse(ws._integrity_ok.is_set())                  # still held
+        ws.close()
+        ws = self.open()                                             # a sound start
+        self.assertEqual(ws.store.recording_key_ids(), sorted(names))   # folders still there
+        ws.start()
+        self.assertTrue(until(lambda: not any((ws.recordings / n).exists() for n in names)))
+        self.assertEqual(ws.store.recording_key_ids(), [])
+
     def test_a_recovered_recording_that_would_import_waits(self):
         def stopped_recording(ws):
             folder = ws.recordings / "synthetic-stopped"
