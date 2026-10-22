@@ -91,6 +91,16 @@ class BudgetTests(unittest.TestCase):
             for metric, limit in limits.items():
                 self.assertTrue(limit is None or limit > 0, f"{state} {metric}")
 
+    def test_every_measured_state_has_a_cpu_budget(self):
+        # #216: the recording states were measured with no budget, so a release
+        # run could not fail on them. The owner set their budgets on 23 Oct 2026
+        # from a release-mode run; every state perf_check measures now has one.
+        path = ROOT / "docs" / "perf-budgets.json"
+        budgets = json.loads(path.read_text(encoding="utf-8"))["budgets"]
+        for state in perf_check.STATES:
+            limit = budgets.get(state, {}).get("cpu_percent_of_one_core")
+            self.assertIsNotNone(limit, f"{state}: no CPU budget in {path.name}")
+
 
 class ParentTests(unittest.TestCase):
     def test_a_failing_environment_probe_is_not_measured_not_a_traceback(self):
