@@ -189,9 +189,14 @@ Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md). [
 
 ## If Unminute cannot unlock its workspace
 
-Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute opens locked and shows only a screen headed **Unminute is locked**: it does not read your meetings, change your meetings or settings (it only records the problem in its logs), make a new key over it or show anything unencrypted, and processing, imports, recording and cleanup wait. Your meetings are kept as they were. The screen says why it is locked, shows the codes your IT team needs, and has three buttons: **Copy details for IT**, **How to recover** (opens this guide in your browser) and **Close Unminute**. It shows no meeting, and nothing on it changes until you open Unminute again. Close Unminute, sign out of Windows and back in, then open Unminute again: if Windows can unlock the key by then, everything carries on, including any cleanup you had confirmed. If it is still locked, select **Copy details for IT** and paste the details into your support request. They hold no meeting content.
+Unminute encrypts the meetings in its workspace with a key that Windows keeps for your account on this computer. If Windows will not unlock that key, Unminute opens locked and shows only a screen headed **Unminute is locked**. It says in two sentences what happened and that your meetings are still on this computer, with nothing deleted. It shows the codes your IT team needs and IT's steps, and has three buttons: **Copy details for IT**, **How to recover** (opens this guide in your browser) and **Close Unminute**. It shows no meeting, and nothing on it changes until you open Unminute again. While it is locked, Unminute does not read your meetings, change your meetings or settings (it only records the problem in its logs), make a new key over it or show anything unencrypted, and processing, imports, recording and cleanup wait. Your meetings are kept as they were.
 
-![The locked screen: why Unminute is locked, the codes for IT, three buttons and IT's steps (sample codes)](screenshots/workspace-locked.png)
+![The locked screen: what happened, the codes for IT, three buttons and IT's steps (sample codes)](screenshots/workspace-locked.png)
+
+To recover:
+
+1. Select **Close Unminute**, sign out of Windows and back in, then open Unminute again. If Windows can unlock the key by then, everything carries on, including any cleanup you had confirmed.
+2. If it is still locked, select **Copy details for IT** and paste the details into your support request. They hold no meeting content.
 
 Windows can refuse when the workspace was made by another Windows account or on another computer, after an administrator reset your password without the old one, or when your Windows profile is damaged. Settings, the model downloads and the Hugging Face token are not affected.
 
@@ -201,7 +206,7 @@ For IT support:
 2. `runtime\python.exe -m workspace --status` shows `"keys": "locked"` with `lock_reason` and `lock_code`, and `--health` reports `"workspace": "locked"`. Both read what the app recorded at its last start and never try the key. The installer's check (`--gate`) still works: it reads counts only.
 3. Whether Windows can still unlock the key (for example after a password reset) depends on how the laptop and account are set up, which is being checked (validation tracker #189). If it cannot, the meetings in this workspace cannot be read by anyone. Rename the workspace folder (as in step 3 of [If Unminute finds damage](#if-unminute-finds-damage)) so Unminute can start a new one. The renamed folder still holds every meeting, including those confirmed for cleanup that did not finish, and they become readable again if Windows later unlocks the key. Delete the renamed folder once no hold applies to anything in it. The new workspace starts with the built-in handoff templates.
 
-The locked screen repeats steps 1 and 3 in short for IT.
+The locked screen gives IT the sign-out step above and steps 1 and 3 in short.
 
 If Windows cannot set up a key for a new workspace at all, Unminute says so with the Windows error number and a code, and closes; nothing is created.
 

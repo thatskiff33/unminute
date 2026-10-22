@@ -17,10 +17,12 @@
 # frames under virtual time), and count the clock and level polls and the level
 # meter's draws: about METER_HZ a second while visible (workspace/ui/app.js; the
 # owner's decision of 23 Oct 2026, #216), none while hidden, and drawing again
-# within a second of being shown. The last shows the locked screen (#111 C4b)
+# within a second of being shown. The next shows the locked screen (#111 C4b)
 # and leaves it for a minute: it must ask for the status, call only what the
 # app allows while locked, then make no bridge call and keep no timer, with no
-# meeting title on the page.
+# meeting title on the page. The last does the same when the page's first
+# status() fails: the page starts as usual, and its next status must still end
+# on the locked screen, quiet.
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
@@ -55,6 +57,7 @@ DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd 
 METER_TOLERANCE = 0.1
 APP_JS = design_check.UI / "app.js"
 LOCKED_SCENARIO = "locked"   # the locked screen (#111 C4b)
+LOCKED_LATE_SCENARIO = "locked-after-error"   # ...after a failed first status()
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
 EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
@@ -143,10 +146,10 @@ def locked_methods():
     raise RuntimeError("workspace/api.py has no LOCKED_METHODS")
 
 
-def run_locked(base, page_ms):
+def run_locked(base, page_ms, scenario=LOCKED_SCENARIO):
     """What the locked screen did over page_ms of page time (fixtures.js,
     locked mode)."""
-    out = final_dom(f"{base}/app/index.html?perf=locked&ms={page_ms}#{LOCKED_SCENARIO}",
+    out = final_dom(f"{base}/app/index.html?perf=locked&ms={page_ms}#{scenario}",
                     page_ms + 15000)
     found = RESULT.search(out.stdout or "")
     if not found:
@@ -156,19 +159,21 @@ def run_locked(base, page_ms):
     return json.loads(html.unescape(found.group(1)))
 
 
-def locked_problems(result, allowed):
+def locked_problems(result, allowed, label="locked", status_calls=1):
     """Reasons the locked screen was wrong: not shown, a meeting title on the
-    page, a call the app refuses while locked (allowed: api.LOCKED_METHODS),
-    no status asked for, or anything at all while it sat there (a bridge
-    call, a timer, an interval or an animation frame): only closing and
-    opening Unminute can change a locked workspace, so nothing polls."""
+    page, a call the app refuses while locked (allowed: api.LOCKED_METHODS;
+    None after a failed first status, when the page starts as usual and the
+    bridge refuses the rest), the status asked for fewer than status_calls
+    times, or anything at all while it sat there (a bridge call, a timer, an
+    interval or an animation frame): only closing and opening Unminute can
+    change a locked workspace, so nothing polls."""
     problems = []
     if result.get("page_errors"):
-        problems.append(f"locked: the page threw: {'; '.join(result['page_errors'][:3])}")
+        problems.append(f"{label}: the page threw: {'; '.join(result['page_errors'][:3])}")
     if result.get("locked_shown") is not True:
-        problems.append("locked: the locked screen was not shown, or not on its own")
+        problems.append(f"{label}: the locked screen was not shown, or not on its own")
     if result.get("sample_titles_shown"):
-        problems.append(f"locked: the page shows a meeting title "
+        problems.append(f"{label}: the page shows a meeting title "
                         f"({', '.join(result['sample_titles_shown'][:3])})")
     for metric, words in (("bridge_calls_per_minute", "bridge calls a minute"),
                           ("timeouts_per_minute", "timers a minute"),
@@ -176,14 +181,19 @@ def locked_problems(result, allowed):
                           ("pending_animation_frames", "animation frame(s) pending")):
         value = result.get(metric)
         if value != 0:
-            problems.append(f"locked: {'not reported' if value is None else value} {words}, "
+            problems.append(f"{label}: {'not reported' if value is None else value} {words}, "
                             "not 0")
-    calls = set(result.get("all_calls") or {})
-    if calls - set(allowed):
-        problems.append(f"locked: the page called {', '.join(sorted(calls - set(allowed)))}, "
+    all_calls = result.get("all_calls") or {}
+    calls = set(all_calls)
+    if allowed is not None and calls - set(allowed):
+        problems.append(f"{label}: the page called {', '.join(sorted(calls - set(allowed)))}, "
                         "which the app refuses while locked")
-    if "status" not in calls:
-        problems.append("locked: the page never asked for the status")
+    asked = all_calls.get("status", 0)
+    if not asked:
+        problems.append(f"{label}: the page never asked for the status")
+    elif asked < status_calls:
+        problems.append(f"{label}: the page asked for the status {asked} time(s), "
+                        f"not at least {status_calls}")
     return problems
 
 
@@ -338,6 +348,7 @@ def main():
         recording = {mode: run_page(base, mode, args.page_ms, RECORDING_SCENARIO, DISPLAY_HZ)
                      for mode in MODES}
         locked = run_locked(base, args.page_ms)
+        locked_late = run_locked(base, args.page_ms, LOCKED_LATE_SCENARIO)
     finally:
         server.shutdown()
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
@@ -347,10 +358,12 @@ def main():
                compare(recording, budgets["ui_recording"]["ratchets"])])
     problems = (sanity(results) + early_problems(early) + transcribing_problems(growing)
                 + recording_problems(recording, meter_hz())
-                + locked_problems(locked, locked_methods()))
+                + locked_problems(locked, locked_methods())
+                + locked_problems(locked_late, None, "locked after a failed status",
+                                  status_calls=2))
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
               "early_error": early, "transcribing": growing, "recording": recording,
-              "locked": locked,
+              "locked": locked, "locked_after_error": locked_late,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -379,6 +392,11 @@ def main():
           f"{locked.get('timeouts_per_minute')} timeouts/min, "
           f"{locked.get('live_intervals')} interval(s); called "
           f"{', '.join(sorted(locked.get('all_calls') or {})) or 'nothing'}")
+    print(f"locked after a failed status: "
+          f"{locked_late.get('bridge_calls_per_minute')} bridge calls/min, "
+          f"{locked_late.get('timeouts_per_minute')} timeouts/min, "
+          f"{locked_late.get('live_intervals')} interval(s); shown "
+          f"{locked_late.get('locked_shown')}")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:

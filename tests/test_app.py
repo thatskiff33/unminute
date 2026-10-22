@@ -1686,5 +1686,60 @@ class LockedPageTests(unittest.TestCase):
         block = self.page[start:self.page.index("};", start)]
         self.assertEqual(self.reasons, set(re.findall(r"^  (\w+):", block, re.MULTILINE)))
 
+    def test_a_later_status_that_says_locked_still_shows_the_locked_screen(self):
+        # Review of 7b28de1: when the first status() fails, the start goes on
+        # as usual. The next status (the first refresh) must still end on the
+        # locked screen, and that refresh must ask for nothing more.
+        body = self.function("renderStatus")
+        after = body[body.index('call("status")'):]
+        self.assertRegex(after, r'^call\("status"\);\s*if \(s\.locked\) \{\s*(?://[^\n]*\s*)?'
+                                r'renderLocked\(s\.locked\);\s*return;\s*\}',
+                         "renderStatus does not stop at a locked status")
+        self.assertRegex(self.function("refresh"),
+                         r"await renderStatus\(\);\s*if \(state\.locked\) return;",
+                         "refresh goes on after the status said locked")
+
+    def strings(self, name):
+        """A page constant built from string literals joined by +."""
+        found = re.search(rf"const {name} = ((?:\"[^\"]*\"\s*\+?\s*)+);", self.page)
+        self.assertIsNotNone(found, f"the page has no string constant {name}")
+        return "".join(re.findall(r'"([^"]*)"', found.group(1)))
+
+    def test_the_users_paragraph_is_two_short_sentences(self):
+        # Owner, 22 Oct 2026 (#111): what happened, then that nothing is lost.
+        # Signing out and copying the details for IT are in "How to recover"
+        # and IT's steps, not in the paragraph.
+        start = self.page.index("const LOCKED_REASONS = {")
+        block = self.page[start:self.page.index("};", start)]
+        firsts = {"LOCKED_OTHER": self.strings("LOCKED_OTHER")}
+        for name in set(re.findall(r"^  \w+: (LOCKED_\w+),", block, re.MULTILINE)):
+            firsts[name] = self.strings(name)
+        firsts.update(("reason " + k, v) for k, v in
+                      re.findall(r'^  (\w+): "([^"]*)",', block, re.MULTILINE))
+        self.assertGreaterEqual(len(firsts), 4)
+        kept = self.strings("LOCKED_KEPT")
+        self.assertIn("nothing has been deleted", kept)
+        for name, text in [*firsts.items(), ("LOCKED_KEPT", kept)]:
+            with self.subTest(name=name):
+                self.assertEqual(1, len(re.findall(r"[.!?](?:\s|$)", text)), text)
+                self.assertLessEqual(len(text.split()), 16, text)
+                self.assertNotIn("sign out", text.lower())
+                self.assertNotIn("IT team", text)
+        self.assertIn("${LOCKED_REASONS[info.reason] || LOCKED_OTHER}${damage} ${LOCKED_KEPT}",
+                      self.function("renderLocked"))
+
+    def test_signing_out_and_the_details_are_in_its_and_the_guides_steps(self):
+        start = self.html.index('<section class="locked-it"')
+        steps = self.html[start:self.html.index("</section>", start)]
+        self.assertIn("sign out of Windows and back in", steps)
+        self.assertIn("Copy details for IT", steps)
+        guide = (Path(__file__).resolve().parents[1] / "docs" / "WORKSPACE_GUIDE.md").read_text(
+            encoding="utf-8")
+        start = guide.index("## If Unminute cannot unlock its workspace")
+        section = guide[start:guide.index("\n## ", start + 1)]
+        self.assertRegex(section, r"\n1\. [^\n]*sign out of Windows and back in")
+        self.assertRegex(section, r"\n2\. [^\n]*\*\*Copy details for IT\*\*")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -449,7 +449,9 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .locked-it { border: 1px solid var(--line); border-radius: var(--r-xl); padding: 16px 20px; }
 .locked-it h2 { margin: 0 0 8px; }
 .locked-it ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }
-.locked-it code { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+/* A path breaks at its separators (<wbr> in the page), and anywhere only when
+   a part is still too long; a code breaks at its space first. */
+.locked-it code { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 @media (max-width: 480px) {
   .locked-codes { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .locked-codes dd + dt { margin-top: 6px; }
