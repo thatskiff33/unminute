@@ -194,7 +194,7 @@ for (const el of document.querySelectorAll('body *')) {
 }
 // 1.4.11 for the boundary of a field (or of a checkbox the page draws itself):
 // its border or its fill reaches 3:1 against what is around it, on the field or
-// on a wrapper (up to two levels) that holds no other control.
+// on a wrapper (up to two levels) that contains no other control.
 const FIELD = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio])' +
   ':not([type=button]):not([type=submit]):not([type=reset]):not([type=image])' +
   ':not([type=range]):not([type=file]):not([type=color]), select, textarea';
