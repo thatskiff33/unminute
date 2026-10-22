@@ -8,16 +8,24 @@
 
   - Checks prerequisites: 64-bit Windows 10/11, the WebView2 runtime, free
     disk space and memory.
-  - Verifies the package: the zip against its .sha256 file, and every file
-    against package-manifest.json, before anything is installed.
+  - Verifies the package: the zip against its .sha256 file, and the package
+    folder for links or junctions, before anything is copied; then every file of
+    the copy in <InstallDir>\versions\<version>.partial against
+    package-manifest.json, by exact name, size and SHA-256, so the bytes checked
+    are the bytes that run (#111 B6a). A failure removes the copy.
   - Installs side by side under <InstallDir>\versions\<version> and keeps the
     previous version for rollback; workspace data and models are separate and
     never touched.
+  - Runs one install at a time (install.lock in the install folder; a second
+    run waits up to 10 minutes), writes current.json by a temporary file and a
+    replace, and keeps a short log in <InstallDir>\logs\install.log with no user
+    name, path or message text (#111 B6a).
   - Registers a per-user uninstall entry (used for Intune detection) and a
     Start menu shortcut.
 
   Updates (#26) use the same command. Before switching version, the NEW
-  package's runtime checks the existing workspace (python -m workspace --gate):
+  version's runtime, from its verified copy in the install folder, checks the
+  existing workspace (python -m workspace --gate):
   an update that changes how the workspace is stored waits until the workspace
   holds no meetings, retention holds or unfinished cleanup, and says why.
   Nothing is expired, deleted or backed up to let an update proceed.
@@ -32,9 +40,11 @@
   is written (#297).
   Only versions the installer made are removed, never through a link.
 
-  Exit codes: 0 installed, 1 failed, 2 prerequisites missing or the install
+  Exit codes: 0 installed, 1 failed (including another install still running
+  after 10 minutes), 2 prerequisites missing or the install
   folder is not allowed, 3 the app is running, 4 the package failed
-  verification (including a version that is not a plain folder name),
+  verification (including a version that is not a plain folder name, or a link
+  or junction in the package),
   5 the update waits for the workspace (see the message), 6 this version cannot
   open the existing workspace (it was created by a newer version) or its
   location is refused (missing, synced, on a network drive, or a data folder
@@ -61,8 +71,19 @@ $ErrorActionPreference = "Stop"
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback }
 $AppName = "Unminute"
+# The install mode, as the log records it. Machine mode follows in #111 B6b.
+$Mode = "user"
 $script:TempExtract = $null
+$script:StagedCopy = $null           # versions\<version>.partial while this run owns it
+$script:InstallLock = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# What the installer may put in the install folder, and so all the uninstaller
+# removes there (#297, #111 B6a): the versions, the record and its temporary copy,
+# the uninstaller, the log folder and the lock. install.ps1 and uninstall.ps1 list
+# the same names, and packaging/identity.json mirrors them (tests keep the three equal).
+$OwnEntries = @("versions", "current.json", "current.json.tmp", "uninstall.ps1", "logs", "install.lock")
+$LockName = "install.lock"
+$LogNames = @("install.log", "install.log.1")
 # Must match APP_ID in workspace/__main__.py (taskbar grouping and icon).
 $AppId = "Unlimit.Unminute"
 # How the app is started. -I: isolated (no PYTHON* variables, user site-packages or
@@ -83,8 +104,54 @@ function Write-Warn([string]$Message) {
 }
 
 function Stop-Install([int]$Code, [string]$Message) {
+    Write-InstallLog "stopped" $Code
     if ($Options.Silent) { [Console]::Error.WriteLine($Message) } else { Write-Host $Message -ForegroundColor Red }
     exit $Code
+}
+
+# -- the installer log (#111 B6a) ------------------------------------------------------
+
+# <InstallDir>\logs\install.log: one line per step, for IT and support. Each line holds
+# only fixed words and numbers: the time (UTC), the mode, the version once it is known
+# to be a plain name, the step, its result, the exit code, the time since the start
+# and, for an unexpected error, its type name. Never a user name, a path or an error's
+# message (P3). Written only once the install folder is known to be the installer's
+# own; at most $LogLimitBytes, then the file becomes install.log.1 (one copy kept).
+# A failure to write it never stops the install.
+$LogLimitBytes = 256KB
+$script:LogFile = $null
+$script:LogVersion = "-"
+$script:LogStep = "start"
+$script:LogError = $null
+$script:LogClock = [Diagnostics.Stopwatch]::StartNew()
+
+function Write-InstallLog([string]$Result, [int]$Code = -1) {
+    if (-not $script:LogFile) { return }
+    try {
+        $time = [DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ", [Globalization.CultureInfo]::InvariantCulture)
+        $line = "$time mode=$Mode version=$($script:LogVersion) step=$($script:LogStep) result=$Result"
+        if ($Code -ge 0) { $line += " code=$Code" }
+        $line += " elapsed_ms=$($script:LogClock.ElapsedMilliseconds)"
+        if ($script:LogError) { $line += " error=$($script:LogError)" }
+        $line += "`r`n"
+        $file = [IO.FileInfo]::new($script:LogFile)
+        if ($file.Exists -and (Test-Link $file)) { return }
+        if ($file.Exists -and $file.Length + $line.Length -gt $LogLimitBytes) {
+            $kept = [IO.FileInfo]::new("$($script:LogFile).1")
+            if ($kept.Exists) {
+                if (Test-Link $kept) { return }
+                $kept.Delete()
+            }
+            $file.MoveTo($kept.FullName)
+        }
+        [IO.File]::AppendAllText($script:LogFile, $line, [Text.UTF8Encoding]::new($false))
+    } catch { }
+}
+
+# Records a step as started; the log line says it began.
+function Set-InstallStep([string]$Step) {
+    $script:LogStep = $Step
+    Write-InstallLog "begun"
 }
 
 function Get-FileSha256([string]$Path) {
@@ -184,8 +251,16 @@ function Get-PackageRoot {
     if ((Get-FileSha256 $zip) -ne $expected) {
         Stop-Install 4 "The package does not match its checksum. Download it again."
     }
-    # Short folder: Windows PowerShell cannot handle paths over 260 characters.
-    $temp = Join-Path ([IO.Path]::GetTempPath()) ("um" + [guid]::NewGuid().ToString("N").Substring(0, 6))
+    # A new folder named by a whole random GUID (#111 B6a); one that already exists is
+    # someone else's, so the run stops and neither uses nor removes it. Short enough
+    # for Windows PowerShell's 260 characters: um and 32 hex digits, the package's
+    # folder and its paths of at most 140 characters under a user's temporary folder.
+    # Nothing runs from here: the files are copied into the install folder and
+    # verified there.
+    $temp = Join-Path ([IO.Path]::GetTempPath()) ("um" + [guid]::NewGuid().ToString("N"))
+    if ([IO.Directory]::Exists($temp) -or [IO.File]::Exists($temp)) {
+        Stop-Install 1 "The temporary folder for extracting the package already exists, so nothing was installed. Run this again."
+    }
     $script:TempExtract = $temp
     Write-Step "Extracting..."
     Add-Type -AssemblyName System.IO.Compression.FileSystem     # much faster than Expand-Archive
@@ -194,29 +269,65 @@ function Get-PackageRoot {
     return $root.FullName
 }
 
+$NoLinkMessage = "The package contains a link or junction, so nothing was installed."
+
+# Every file under $Root, by its path relative to $Root with / between parts, exactly
+# as the folder listing spells it. Walked with [IO.DirectoryInfo], which reports each
+# entry's own attributes: a link or junction anywhere (the folder itself included)
+# stops the run with exit 4, and nothing behind it is listed or read (#111 B6a).
+# Windows PowerShell's Get-ChildItem -Recurse is not relied on for this.
+function Get-PackageListing([string]$Root) {
+    $top = [IO.DirectoryInfo]::new($Root)
+    if (Test-Link $top) { Stop-Install 4 $NoLinkMessage }
+    $skip = $top.FullName.TrimEnd("\").Length + 1
+    $files = [Collections.Generic.Dictionary[string, IO.FileInfo]]::new([StringComparer]::Ordinal)
+    $todo = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
+    $todo.Push($top)
+    while ($todo.Count) {
+        foreach ($item in $todo.Pop().GetFileSystemInfos()) {
+            if (Test-Link $item) { Stop-Install 4 $NoLinkMessage }
+            if ($item -is [IO.DirectoryInfo]) { $todo.Push($item); continue }
+            $files[$item.FullName.Substring($skip).Replace("\", "/")] = $item
+        }
+    }
+    return , $files
+}
+
+# The package folder holds no link or junction, checked before anything is copied:
+# copying would otherwise follow one and read what it points to (#111 B6a).
+function Assert-NoLink([string]$Root) {
+    [void](Get-PackageListing $Root)
+}
+
+# Checks the files under $Root (the staged copy) against package-manifest.json:
+# every file listed, nothing else, each with its size and SHA-256 (#111 B6a, B6-8).
+# Names compare exactly, by ordinal comparison of the names in the folder listing: a
+# letter-case variant, a Kelvin sign for K or a capital sharp s of a listed name is
+# not that name, and Test-Path, which ignores case, is not used. Nothing may be added
+# either: an extra file (a planted .pth or module) would be loaded by the app.
 function Test-PackageFile([string]$Root) {
-    $manifestPath = Join-Path $Root "package-manifest.json"
-    if (-not (Test-Path -LiteralPath $manifestPath)) { Stop-Install 4 "package-manifest.json is missing." }
-    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    $names = @($manifest.PSObject.Properties.Name)
-    # Nothing may be added either: an extra file (a planted .pth or module)
-    # would be loaded by the app.
-    $listed = @{}
-    foreach ($n in $names) { $listed[$n.ToLowerInvariant()] = $true }
-    $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd("\") + "\"
-    foreach ($file in Get-ChildItem -LiteralPath $Root -Recurse -File -Force) {
-        $rel = $file.FullName.Substring($rootFull.Length).Replace("\", "/")
-        if ($rel -ne "package-manifest.json" -and -not $listed.ContainsKey($rel.ToLowerInvariant())) {
+    $files = Get-PackageListing $Root
+    $manifestFile = $null
+    if (-not $files.TryGetValue("package-manifest.json", [ref]$manifestFile)) {
+        Stop-Install 4 "package-manifest.json is missing."
+    }
+    try { $manifest = [IO.File]::ReadAllText($manifestFile.FullName) | ConvertFrom-Json }
+    catch { Stop-Install 4 "package-manifest.json cannot be read." }
+    $entries = @($manifest.PSObject.Properties)
+    $listed = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $entries) { [void]$listed.Add($entry.Name) }
+    foreach ($rel in $files.Keys) {
+        if ($rel -cne "package-manifest.json" -and -not $listed.Contains($rel)) {
             Stop-Install 4 "The package contains a file that is not in its manifest: $rel"
         }
     }
-    Write-Step "Verifying $($names.Count) files..."
-    foreach ($name in $names) {
-        $path = Join-Path $Root ($name -replace "/", "\")
-        if (-not (Test-Path -LiteralPath $path)) { Stop-Install 4 "A package file is missing: $name" }
-        $entry = $manifest.$name
-        if ((Get-Item -LiteralPath $path).Length -ne [long]$entry[0] -or (Get-FileSha256 $path) -ne $entry[1]) {
-            Stop-Install 4 "A package file does not match its checksum: $name"
+    Write-Step "Verifying $($entries.Count) files..."
+    foreach ($entry in $entries) {
+        $file = $null
+        if (-not $files.TryGetValue($entry.Name, [ref]$file)) { Stop-Install 4 "A package file is missing: $($entry.Name)" }
+        $expected = @($entry.Value)
+        if ($file.Length -ne [long]$expected[0] -or (Get-FileSha256 $file.FullName) -ne [string]$expected[1]) {
+            Stop-Install 4 "A package file does not match its checksum: $($entry.Name)"
         }
     }
 }
@@ -323,28 +434,31 @@ function Test-InstallRecord([IO.FileInfo]$File) {
 # (its current.json is an install's record, above), or holds only what an install that
 # stopped before writing current.json leaves: versions, holding only versions and
 # working folders the installer made, and uninstall.ps1 beside a complete version
-# (#245, #239). Any other current.json counts as someone else's file. So a wrong
-# -InstallDir, such as a shared folder or a drive's root, loses nothing. A link or
-# junction at current.json, uninstall.ps1, versions or directly inside versions is
-# refused in every case. Checked before anything is written; the messages name no
-# path. An install keeps whatever else is in it: the installer never removes that.
+# (#245, #239). Any other current.json counts as someone else's file. The installer's
+# other entries ($OwnEntries: the log folder holding only its logs, current.json.tmp
+# and install.lock, #111 B6a) may be there in any case. So a wrong -InstallDir, such
+# as a shared folder or a drive's root, loses nothing. A link or junction at any of
+# those names, directly inside versions or inside logs is refused in every case.
+# Checked before anything is written; the messages name no path. An install keeps
+# whatever else is in it: the installer never removes that.
 function Assert-InstallFolder([string]$Dir) {
     $notOurs = "The install folder already holds files that $AppName did not put there. Choose an empty or new -InstallDir."
     if ([IO.File]::Exists($Dir)) { Stop-Install 2 $notOurs }
     $folder = [IO.DirectoryInfo]::new($Dir)
     if (-not $folder.Exists) { return }
-    $install = $false; $uninstaller = $false; $versions = $null
+    $install = $false; $uninstaller = $false; $versions = $null; $logs = $null
     $foreign = 0; $links = 0; $complete = 0; $strays = 0
     foreach ($item in $folder.GetFileSystemInfos()) {
         $isDir = $item -is [IO.DirectoryInfo]
-        if (@("current.json", "uninstall.ps1", "versions") -notcontains $item.Name) { $foreign++ }
+        if ($OwnEntries -notcontains $item.Name) { $foreign++ }
         elseif (Test-Link $item) { $links++ }
-        elseif ($isDir -ne ($item.Name -eq "versions")) { $foreign++ }
+        elseif ($isDir -ne (@("versions", "logs") -contains $item.Name)) { $foreign++ }
         elseif ($item.Name -eq "current.json") {
             if (Test-InstallRecord $item) { $install = $true } else { $foreign++ }
         }
         elseif ($item.Name -eq "uninstall.ps1") { $uninstaller = $true }
-        else { $versions = $item }
+        elseif ($item.Name -eq "versions") { $versions = $item }
+        elseif ($item.Name -eq "logs") { $logs = $item }
     }
     if ($versions) {
         foreach ($item in $versions.GetFileSystemInfos()) {
@@ -352,6 +466,12 @@ function Assert-InstallFolder([string]$Dir) {
             elseif ($item -isnot [IO.DirectoryInfo]) { $strays++ }
             elseif (Test-OwnVersion $item) { $complete++ }
             elseif (-not (Test-OwnWorkingFolder $item)) { $strays++ }
+        }
+    }
+    if ($logs) {
+        foreach ($item in $logs.GetFileSystemInfos()) {
+            if (Test-Link $item) { $links++ }
+            elseif ($item -is [IO.DirectoryInfo] -or $LogNames -notcontains $item.Name) { $strays++ }
         }
     }
     if ($links) {
@@ -370,8 +490,8 @@ function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema =
     # $Checker (a newer runtime) checks on its behalf with -Schema.
     $base = if ($Checker) { $Checker } else { $Root }
     $python = Join-Path $base "runtime\python.exe"
-    # -B: write nothing into the package.
-    $gateArgs = @("-I", "-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")
+    # As the app starts ($LaunchArgs): -B writes nothing into the version's folder.
+    $gateArgs = @($LaunchArgs -split " ") + "--gate"
     if ($Schema -gt 0) { $gateArgs += @("--schema", "$Schema") }
     $saved = $ErrorActionPreference
     $ErrorActionPreference = "Continue"                  # warnings on stderr must not abort
@@ -441,18 +561,31 @@ function Invoke-LockRetry([scriptblock]$Action) {
     }
 }
 
-function Install-Version([string]$Root, [string]$Version) {
+# Copies the package folder (already checked for links, Assert-NoLink) into
+# versions\<version>.partial and verifies that copy against the manifest, once
+# (#111 B6a, the owner's decision B6-8): the bytes checked are the bytes that will
+# run. A failure here, or in any later step before the rename, removes the copy
+# (the main part's finally) and changes nothing else. Returns the copy's folder.
+function New-StagedCopy([string]$Root, [string]$Version) {
     $versions = Join-Path $Options.InstallDir "versions"
-    $target = Join-Path $versions $Version
     New-Item -ItemType Directory -Force -Path $versions | Out-Null
-    $staging = "$target.partial"
+    $staging = Join-Path $versions "$Version.partial"
     Remove-OwnFolder $staging
+    $script:StagedCopy = $staging
     Write-Step "Copying files..."
     Copy-Item -LiteralPath $Root -Destination $staging -Recurse
     # Files extracted by Explorer carry the "downloaded from the internet" mark;
-    # the package was just verified, so clear it on the executable files.
+    # clear it on the executable files of the copy, which is verified next.
     Get-ChildItem -LiteralPath $staging -Recurse -File -Include *.exe, *.dll, *.pyd, *.ps1 |
         Unblock-File -ErrorAction SilentlyContinue
+    Test-PackageFile $staging
+    return $staging
+}
+
+# Makes the verified copy the installed version: renames versions\<version>.partial
+# to versions\<version>, the last step.
+function Install-Version([string]$Staging, [string]$Version) {
+    $target = Join-Path (Join-Path $Options.InstallDir "versions") $Version
     # Same version again: move the live copy aside first, so a locked file can
     # never leave a half-deleted version in use. Both renames wait out a file held
     # open for a moment, such as by a virus scan of the new files (#239).
@@ -460,6 +593,7 @@ function Install-Version([string]$Root, [string]$Version) {
     Remove-OwnFolder $old
     if (Test-Path -LiteralPath $target) { Invoke-LockRetry { Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf) } }
     Invoke-LockRetry { Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf) }
+    $script:StagedCopy = $null
     try { Remove-OwnFolder $old } catch { }        # if it fails, the next install of this version removes it
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     return $target
@@ -529,9 +663,77 @@ function Get-SlotRecord($Was, [string[]]$Order, [string]$Fresh) {
 }
 
 function Write-CurrentRecord([string]$File, [string]$Version, [string]$Target, $Previous, [bool]$Managed, $Slots) {
-    [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous
-                managed = $Managed; slots = $Slots } |
-        ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $File -Encoding UTF8
+    $text = [ordered]@{ format = 2; version = $Version; path = $Target; previous = $Previous
+                        managed = $Managed; slots = $Slots } | ConvertTo-Json -Depth 5
+    Save-RecordFile $File $text
+}
+
+# current.json is replaced whole or not at all (#111 B6a): the new text goes to
+# current.json.tmp, which is flushed to the disk, then replaces current.json
+# ([IO.File]::Replace; a move when there is none yet). A stop between the two leaves
+# current.json as it was, and the next run removes the temporary file
+# (Remove-LeftoverRecord). The bytes are what Set-Content -Encoding UTF8 wrote before:
+# UTF-8 with a byte-order mark and a final line break, which Windows PowerShell 5.1's
+# Get-Content (in this and earlier installers) needs to read a path that is not ASCII.
+function Save-RecordFile([string]$File, [string]$Text) {
+    $temp = "$File.tmp"
+    $bytes = [byte[]]([Text.UTF8Encoding]::new($true).GetPreamble() + [Text.UTF8Encoding]::new($false).GetBytes($Text + "`r`n"))
+    $stream = [IO.FileStream]::new($temp, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally { $stream.Dispose() }
+    Move-RecordFile $temp $File
+}
+
+function Move-RecordFile([string]$Temp, [string]$File) {
+    if ([IO.File]::Exists($File)) { [IO.File]::Replace($Temp, $File, [NullString]::Value) }
+    else { [IO.File]::Move($Temp, $File) }
+}
+
+# A current.json.tmp left by a run that stopped before its replace: never read, removed.
+# A link there was refused with the install folder (Assert-InstallFolder).
+function Remove-LeftoverRecord {
+    $temp = [IO.FileInfo]::new([IO.Path]::Combine($Options.InstallDir, "current.json.tmp"))
+    if ($temp.Exists -and -not (Test-Link $temp)) { $temp.Delete() }
+}
+
+# -- one run at a time (#111 B6a) -------------------------------------------------------
+
+# install.lock in the install folder, open with no sharing for the whole run and
+# deleted when it closes (also when the process ends). A second run, or the
+# uninstaller, cannot open it meanwhile: the installer waits up to $LockWaitSeconds,
+# then stops with exit 1. Only someone who can write the install folder can hold it.
+$LockWaitSeconds = 600
+
+function Enter-InstallLock {
+    $path = [IO.Path]::Combine($Options.InstallDir, $LockName)
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $said = $false
+    while ($true) {
+        try {
+            $script:InstallLock = [IO.FileStream]::new($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+            return
+        } catch {
+            if (-not (Test-TransientLock $_.Exception)) { throw }
+            if ($clock.Elapsed.TotalSeconds -ge $LockWaitSeconds) {
+                Stop-Install 1 "Another install or update of $AppName is still running. Run this again when it has finished."
+            }
+            if (-not $said) {
+                Write-Step "Another install or update of $AppName is running. Waiting for it to finish (up to $([int]($LockWaitSeconds / 60)) minutes)..."
+                $said = $true
+            }
+            Start-Sleep -Milliseconds 500
+        }
+    }
+}
+
+function Exit-InstallLock {
+    if ($script:InstallLock) {
+        $script:InstallLock.Dispose()
+        $script:InstallLock = $null
+    }
 }
 
 function Set-CurrentVersion([string]$Target, [string]$Version) {
@@ -708,9 +910,22 @@ function Register-Uninstall([string]$Target, [string]$Version) {
 
 # -- main ---------------------------------------------------------------------------
 
+# From here the install folder is the installer's own (Assert-InstallFolder) and
+# the run writes in it: one run at a time, a record left half-written by a stopped
+# run removed, and the log started (#111 B6a). Until then nothing is written there.
+function Start-InstallRun([string]$Step) {
+    [void][IO.Directory]::CreateDirectory($Options.InstallDir)
+    Enter-InstallLock
+    Remove-LeftoverRecord
+    $logs = [IO.Directory]::CreateDirectory([IO.Path]::Combine($Options.InstallDir, "logs"))
+    $script:LogFile = [IO.Path]::Combine($logs.FullName, $LogNames[0])
+    Set-InstallStep $Step
+}
+
 function Invoke-Rollback {
     $currentFile = Join-Path $Options.InstallDir "current.json"
     if (-not (Test-Path -LiteralPath $currentFile)) { Stop-Install 1 "$AppName is not installed." }
+    Start-InstallRun "rollback"
     $current = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json
     # Both values become folder names, so each must be a plain version name (#297).
     $previous = Get-VersionValue $current.previous
@@ -734,9 +949,16 @@ function Invoke-Rollback {
     Write-CurrentRecord $currentFile $previous $target $version ([bool]$current.managed) $slots
     New-Shortcut $target
     Register-Uninstall $target $previous
+    $script:LogVersion = $previous
+    $script:LogStep = "done"
+    Write-InstallLog "ok" 0
     Write-Step "$(Get-VersionAppName $target) is back on version $previous."
     exit 0
 }
+
+# Dot-sourced (the Pester tests in tests/powershell): the functions above are defined
+# and nothing runs.
+if ($MyInvocation.InvocationName -eq ".") { return }
 
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
@@ -764,25 +986,43 @@ try {
     if ($Options.Rollback) { Invoke-Rollback }
     Test-Prerequisite
     $root = Get-PackageRoot
+    # Before anything in the package is read or copied: no link or junction in it.
+    Assert-NoLink $root
     $version = [string](Get-Content -LiteralPath (Join-Path $root "version.json") -Raw | ConvertFrom-Json).version
     if (-not (Test-VersionName $version)) {
         Stop-Install 4 "The package's version.json does not hold a valid version, so nothing was installed."
     }
+    $script:LogVersion = $version
+    Start-InstallRun "start"
     Write-Step "Installing $AppName $version for $env:USERNAME..."
-    Test-PackageFile $root
     Test-AppRunning
-    Test-WorkspaceGate $root
-    $target = Install-Version $root $version
+    # Copy, then verify the copy; then the copy's own runtime checks the workspace
+    # (never from %TEMP% or the package's unpacked folder); then the swap (#111 B6a).
+    Set-InstallStep "copy"
+    $staging = New-StagedCopy $root $version
+    Set-InstallStep "gate"
+    Test-WorkspaceGate $staging
+    Set-InstallStep "switch"
+    $target = Install-Version $staging $version
     Set-CurrentVersion $target $version
+    Set-InstallStep "register"
     New-Shortcut $target
     Register-Uninstall $target $version
+    $script:LogStep = "done"
+    Write-InstallLog "ok" 0
     Write-Step "$AppName $version is installed. Open it from the Start menu and unlimit your meeting minutes."
     Write-Step "Your workspace and downloaded models are kept separately and are not affected by updates or uninstalling."
     exit 0
 } catch {
+    # The log keeps the error's type only; the screen shows its message, as before.
+    $script:LogError = $_.Exception.GetType().Name
     Stop-Install 1 "Installation failed: $($_.Exception.Message)"
 } finally {
+    # A copy that did not become the installed version is removed (never through a
+    # link), so a failed run changes nothing else (#111 B6a).
+    if ($script:StagedCopy) { try { Remove-OwnFolder $script:StagedCopy } catch { } }
     if ($script:TempExtract -and (Test-Path -LiteralPath $script:TempExtract)) {
         Remove-Item -LiteralPath $script:TempExtract -Recurse -Force -ErrorAction SilentlyContinue
     }
+    Exit-InstallLock
 }

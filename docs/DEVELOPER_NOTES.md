@@ -187,6 +187,22 @@ real time, and remove it when the cause is fixed.
 - **A regular expression's `$` matches before a final newline (#297).** In .NET, as in
   Python, a pattern `^...$` also accepts a name with a final newline, such as `"1.0.0\n"`.
   A check on a name that becomes a path ends in `\z` instead.
+- **Pester tests dot-source the installer scripts (#111 B6a).** `install.ps1` and
+  `uninstall.ps1` end their function definitions with a guard,
+  `if ($MyInvocation.InvocationName -eq ".") { return }`, so dot-sourcing defines the
+  functions and runs nothing. A script without that guard runs its main part when
+  dot-sourced, with its default `-InstallDir`: on 23 Oct 2026 a failing-first run of
+  the new Pester tests against the scripts from before B6a uninstalled the per-user copy
+  on the development computer. `tests/powershell` now checks for the guard before it
+  dot-sources anything, and points `LOCALAPPDATA` and `APPDATA` into Pester's TestDrive.
+  Never dot-source an older revision of either script; show failing-first evidence for
+  installer behaviour with the Python-driven tests, which run copies in temporary folders.
+- **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
+  page.** Keep the installer scripts and their Pester tests ASCII; build other characters
+  from their code points (`[char]0x212A`).
+- **Pester's package has deep paths.** Unpacked under a long folder it passes 260
+  characters and `ExtractToDirectory` fails; `tools/run_pester.ps1` unpacks into a short
+  folder name under `-ModuleRoot`, which should itself be short (CI uses `RUNNER_TEMP`).
 
 ## Claude Code hooks on Windows
 
