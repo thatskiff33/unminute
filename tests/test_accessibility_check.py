@@ -315,6 +315,138 @@ class ColourModeTests(unittest.TestCase):
         self.assertEqual(["meeting (dark): low_contrast (1)"], found)
 
 
+class _Task:
+    """A finished .NET Task, as CallDevToolsProtocolMethodAsync returns."""
+    IsCompleted, IsFaulted, IsCanceled, Exception, Result = True, False, False, None, "{}"
+
+
+class _Page:
+    """A stand-in for the check's WebView2 window (#328): the page's colour
+    mode, which the browser's media emulation changes and, as on a PC in the
+    other mode, WebView2's preferred colour scheme for the profile may not."""
+
+    def __init__(self, mode, profile_switches=False, emulation_switches=True,
+                 styles_follow=True, emulation_error=None):
+        self.media = self.drawn = mode
+        self.profile_switches, self.emulation_switches = profile_switches, emulation_switches
+        self.styles_follow, self.emulation_error = styles_follow, emulation_error
+        self.profile_set, self.devtools = [], []
+        page = self
+
+        class Profile:
+            def __setattr__(self, name, value):
+                page.profile_set.append((name, value))
+                if page.profile_switches and value in ("light", "dark"):
+                    page.show(value)
+
+        class Core:
+            def __init__(self):
+                self.Profile = Profile()
+
+            def CallDevToolsProtocolMethodAsync(self, method, params):
+                page.devtools.append((method, json.loads(params)))
+                if page.emulation_error:
+                    raise RuntimeError(page.emulation_error)
+                value = json.loads(params)["features"][0]["value"]
+                if page.emulation_switches and value:
+                    page.show(value)
+                return _Task()
+
+        class Form:
+            def Invoke(self, action):          # the UI thread: runs it there and then
+                action()
+        self.native = Form()
+        self.native.browser = type("Browser", (), {})()
+        self.native.browser.webview = type("Control", (), {})()
+        self.native.browser.webview.CoreWebView2 = Core()
+
+    def show(self, mode):
+        self.media = mode
+        if self.styles_follow:
+            self.drawn = mode
+
+    def evaluate_js(self, js, callback):
+        # The page's answer to the tool's colour-mode scripts.
+        if "colorScheme" in js:
+            callback({"media": self.media, "drawn": self.drawn})
+        else:
+            callback(self.media)
+
+
+def _dotnet():
+    """Stand-ins for the .NET names the switch imports (pythonnet is not
+    needed): an Action that is the function itself and the scheme values."""
+    from types import ModuleType, SimpleNamespace
+    system = ModuleType("System")
+    system.Action = lambda fn: fn
+    core = ModuleType("Microsoft.Web.WebView2.Core")
+    core.CoreWebView2PreferredColorScheme = SimpleNamespace(Auto="auto", Light="light",
+                                                            Dark="dark")
+    return {"System": system, "Microsoft": ModuleType("Microsoft"),
+            "Microsoft.Web": ModuleType("Microsoft.Web"),
+            "Microsoft.Web.WebView2": ModuleType("Microsoft.Web.WebView2"),
+            "Microsoft.Web.WebView2.Core": core}
+
+
+class ColourSwitchTests(unittest.TestCase):
+    """--colour-mode switches the check's own page whatever mode Windows is in
+    (#328), and still stops when the page does not show the mode asked for."""
+
+    @classmethod
+    def setUpClass(cls):
+        # The tool reads the page through the UI check's evaluate. Imported
+        # here, outside the patched sys.modules, which would unload numpy.
+        import workspace_ui_check  # noqa: F401
+
+    def show(self, page, mode, **kw):
+        from unittest import mock
+        with mock.patch.dict(sys.modules, _dotnet()):
+            return accessibility_check.show_colour_mode(page, mode, **kw)
+
+    def test_light_is_drawn_when_windows_is_dark(self):
+        # As on the test laptop: the profile's preferred scheme leaves the page dark.
+        page = _Page("dark")
+        self.assertEqual("light", self.show(page, "light"))
+        self.assertEqual(("light", "light"), (page.media, page.drawn))
+        self.assertIn(("Emulation.setEmulatedMedia",
+                       {"features": [{"name": "prefers-color-scheme", "value": "light"}]}),
+                      page.devtools)
+
+    def test_both_modes_in_turn_on_either_windows_mode(self):
+        for windows in ("light", "dark"):
+            with self.subTest(windows=windows):
+                page = _Page(windows)
+                self.assertEqual(["light", "dark"],
+                                 [self.show(page, m) for m in ("light", "dark")])
+
+    def test_the_profile_scheme_is_still_used_when_emulation_fails(self):
+        page = _Page("dark", profile_switches=True, emulation_error="no DevTools")
+        self.assertEqual("light", self.show(page, "light"))
+        self.assertIn(("PreferredColorScheme", "light"), page.profile_set)
+
+    def test_a_page_that_does_not_switch_stops_the_run(self):
+        page = _Page("dark", emulation_switches=False)
+        with self.assertRaisesRegex(RuntimeError, "asked for: light; the page shows: 'dark'"):
+            self.show(page, "light", wait=0.3)
+
+    def test_styles_that_do_not_follow_the_media_query_stop_the_run(self):
+        # The confirmation reads the page's drawn colour scheme too, not only
+        # the media query it was told.
+        page = _Page("dark", styles_follow=False)
+        with self.assertRaisesRegex(RuntimeError, "drawn"):
+            self.show(page, "light", wait=0.3)
+
+    def test_the_pc_s_own_mode_changes_nothing(self):
+        page = _Page("dark")
+        self.assertEqual("dark", self.show(page, None))
+        self.assertEqual(([], []), (page.devtools, page.profile_set))
+
+    def test_windows_own_setting_is_never_written(self):
+        source = (ROOT / "tools" / "accessibility_check.py").read_text(encoding="utf-8")
+        for name in ("winreg", "AppsUseLightTheme", "SystemParametersInfo"):
+            self.assertNotIn(name, source)
+
+
 class ReportTests(unittest.TestCase):
     ZOOM = {"zoomable": True, "keyboard_zoom": {"before": 1, "zoomed": 1.1, "reset": 1}}
     PAGE = {"lang": "en", "title": "Unminute", "live_status": "polite"}
