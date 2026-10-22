@@ -92,6 +92,9 @@ DEFAULT_SETTINGS = {
     "recording_display": "flow",                   # flow | spectrum | wave, while recording
     "lid_override": False,                         # lid "Do nothing" while recording (#172)
     "live_drafts": False,                          # draft text while recording (#104), off
+    # What the draft follows with computer audio on (#104, the owner's
+    # decision of 22 Oct 2026): microphone | mix (both tracks, mixed live).
+    "live_drafts_audio": "microphone",
 }
 RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
@@ -258,6 +261,8 @@ class Settings:
             raise WorkspaceError("Choose Quiet or Faster.")
         if key == "recording_display" and value not in RECORDING_DISPLAYS:
             raise WorkspaceError("Choose Flowing wave, Spectrum or Sound wave.")
+        if key == "live_drafts_audio" and value not in drafts.AUDIO_CHOICES:
+            raise WorkspaceError("Choose the microphone, or the microphone and computer audio.")
         if key == "model" and not (isinstance(value, str) and (
                 asr_engines.is_parakeet(value) or asr_engines.is_whisper(value)
                 or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
@@ -1032,6 +1037,7 @@ class Workspace:
                 key = None
             with self._lock:
                 self._recording = rec
+                self._draft_why = "off"      # until the tick decides for this recording
             self._indicate()
             self._policy_wake.set()          # live drafts, if on, start without waiting
         finally:
@@ -1166,7 +1172,7 @@ class Workspace:
         if self.locked is not None:              # nothing records, and no report is shown
             return {"enabled": False, "display": self.settings["recording_display"],
                     "lid_override": False, "lid_refused": None, "recording": None,
-                    "reports": []}
+                    "reports": [], "draft": None}
         return {"enabled": (self.settings["microphone"]
                             and self._allowed("AllowMicrophoneRecording")),
                 "display": self.settings["recording_display"],
@@ -1176,9 +1182,46 @@ class Workspace:
                 "lid_refused": (self._lid_result[1] if self._lid_result
                                 and not self._lid_result[0] else None),
                 "recording": rec.status() if rec is not None else None,
-                "reports": self._recording_reports[-5:]}
+                "reports": self._recording_reports[-5:],
+                # Live drafts (#104): state and counts only, never text. The
+                # page fetches the text (recording_draft) only when count or
+                # generation changes, so this 100 ms poll stays small.
+                "draft": self._draft_status(rec)}
 
     # -- live drafts while recording (#104) -------------------------------------------
+
+    def _draft_status(self, rec):
+        """Whether the recording card shows a draft area, and when the page
+        should fetch draft text: the state, a note in the page's words, the
+        phrase count and the generation. None when drafts are off (the
+        switch) or nothing is recorded. Fixed words and numbers only (P3)."""
+        if rec is None:
+            return None
+        session = self._drafts
+        if session is not None:
+            return {"state": session.state, "note": drafts.NOTES.get(session.state),
+                    "count": session.count, "generation": session.generation,
+                    "mix": session.mixing}
+        if self._draft_why == "off":
+            return None
+        return {"state": self._draft_why, "note": drafts.REASONS.get(self._draft_why),
+                "count": 0, "generation": self._draft_gen, "mix": False}
+
+    def _draft_mix(self, rec, session):
+        """The draft follows a live mix of both tracks when the user chose it
+        (live_drafts_audio) and this recording's computer track is on and
+        allowed (#108, K3); otherwise the microphone. Checked at the start
+        and on each tick, so a change of setting, or a computer track that
+        stops, applies within a second."""
+        want = (self.settings["live_drafts_audio"] == drafts.MIX and rec.computer_on
+                and self._computer_audio_allowed())
+        if want and rec.tap_computer is None and session.state in (drafts.STARTING,
+                                                                     drafts.RUNNING):
+            if session.mix(rec.computer_rate):
+                rec.tap_computer = session.tap_computer
+        elif not want and session.mixing:
+            rec.tap_computer = None       # the recorder first, then the worker is told
+            session.unmix()
 
     def _draft_reason(self, p):
         """Why live drafts may not run now, or None. Managed policy withholds
@@ -1215,6 +1258,8 @@ class Workspace:
                 self._end_drafts(rec)
             elif session.state == drafts.BATTERY:
                 session.resume()
+            if not reason:
+                self._draft_mix(rec, session)
             return
         if reason or self._drafts_ended == rec.journal["id"]:
             self._draft_why = reason or self._draft_why
@@ -1246,6 +1291,7 @@ class Workspace:
         # The tap holds audio from now, so the first words are drafted too.
         if session.open():
             rec.tap = session.tap
+            self._draft_mix(rec, session)
         try:
             # D4: one heavy model at a time. The main worker lets go of a model
             # it may still hold (idle) before the draft worker loads one.
@@ -1275,6 +1321,8 @@ class Workspace:
         for r in (rec, self._recording):
             if r is not None and r.tap == session.tap:
                 r.tap = None
+            if r is not None and r.tap_computer == session.tap_computer:
+                r.tap_computer = None
         session.stop()
         with self._lock:
             if self._drafts is session:
@@ -1289,8 +1337,9 @@ class Workspace:
 
     def recording_draft(self, since=0):
         """The live draft of the recording in progress: state, a note, and the
-        phrases after index since (text and times only). For the page part
-        still to come (#104 slice 3); not on the bridge yet."""
+        phrases after index since (text and times only, at most 200), for the
+        recording card (bridge method recording_draft, #104). The page asks
+        only when recording_status's draft count or generation changes."""
         if not isinstance(since, int) or isinstance(since, bool) or not 0 <= since <= 10 ** 7:
             raise WorkspaceError("Expected a position.")
         if self._recording is None:
@@ -1298,8 +1347,8 @@ class Workspace:
         session = self._drafts
         if session is not None:
             return session.snapshot(since)
-        return {"state": self._draft_why, "note": None, "generation": self._draft_gen,
-                "count": 0, "since": since, "phrases": []}
+        return {"state": self._draft_why, "note": drafts.REASONS.get(self._draft_why),
+                "generation": self._draft_gen, "count": 0, "since": since, "phrases": []}
 
     def _add_report(self, report):
         import uuid
@@ -2920,6 +2969,11 @@ class Workspace:
         if not self._allowed("AllowLiveDrafts"):
             effective["live_drafts"] = False
         return {**effective, "choices": choices, "managed": self.managed(),
+                # Live drafts (#104) need Parakeet v2: its state, for the
+                # switch's note, and whether Manage downloads can fetch it.
+                "live_drafts_model": {"state": states.get(drafts.DRAFT_MODEL, "missing"),
+                                      "label": asr_engines.label(drafts.DRAFT_MODEL),
+                                      "offered": downloads},
                 # Settings on their default because the saved value could not
                 # be used (R11): names of settings only, never their values.
                 "repaired": {"keys": list(self.settings.repaired),
@@ -2966,7 +3020,7 @@ class Workspace:
             raise WorkspaceError(MANAGED_OFF.format(what="Draft text while recording"))
         if changes.get("live_drafts") is True and not drafts.ON_PAGE:
             raise WorkspaceError("Draft text while recording is not available in this "
-                                 "version yet.")
+                                 "version.")
         if changes.get("lid_override") is True:
             if not self._allowed("AllowLidOverride"):
                 raise WorkspaceError(MANAGED_OFF.format(what="Changing the lid setting"))

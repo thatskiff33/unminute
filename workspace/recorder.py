@@ -7,6 +7,8 @@
 #   - Live drafts (#104, off by default) take a copy of each block from the
 #     writer thread through `tap`, never from the callback. The tap must not
 #     block; if it raises, it is turned off and the recording carries on.
+#     For the draft's live mix of both tracks, `tap_computer` gets each
+#     computer block the same way, placed on the microphone's time line.
 #   - Audio is written in durable chunks (CHUNK_S seconds of 16-bit mono PCM),
 #     each its own encrypted file (workspace/audiocrypt.py, #111 C3b) under the
 #     recording's key: written to a temporary file, finished (last block
@@ -85,6 +87,8 @@ MAX_HOURS = 8                # a forgotten recording stops itself
 # only) and 2 (with a computer track). A newer one is kept, never half-imported.
 JOURNAL_FORMAT = 2
 MARK_EVERY_S = 30            # a timing mark at least this often, per track
+TAP_REACH_S = 2.0            # live drafts' mix: a computer block this far from the
+                             # latest microphone block is not handed on
 MICROPHONE = "microphone"
 COMPUTER = "computer"
 MIC_PREFIX = "chunk-"        # the microphone track's chunk files
@@ -361,6 +365,12 @@ class Recording:
         # Live drafts (#104): tap(start, block) for each block the writer
         # takes, start being where it begins in the recording (frames).
         self.tap = None
+        # The draft's live mix (#104, setting live_drafts_audio): tap_computer
+        # (at, block) for each computer block, at being where it falls on the
+        # microphone's time line (microphone frames), from the two tracks'
+        # arrival times. Only while it is set; the saved tracks are unchanged.
+        self.tap_computer = None
+        self._tap_anchor = None          # (frame, stamp) of the latest microphone block
         self.journal = {
             "id": self.folder.name, "device": device, "device_name": device_name,
             "rate": self.rate, "started_at": clock(), "state": "recording",
@@ -485,6 +495,11 @@ class Recording:
         return self._end_computer("policy_stop", "computer_policy_stop", note)
 
     @property
+    def computer_rate(self):
+        """The computer track's sample rate, or None without one."""
+        return self._computer.rate if self._computer is not None else None
+
+    @property
     def computer_on(self):
         return self._computer is not None and self._computer.on
 
@@ -564,6 +579,7 @@ class Recording:
             except queue.Empty:
                 break
             track.timing.note(entry["frames"] + track.buffered, stamp, segment)
+            self._tap_computer_block(block, stamp)
             track.buffer.append(block)
             track.buffered += len(block)
             if track.buffered >= CHUNK_S * track.rate:
@@ -580,9 +596,11 @@ class Recording:
                     block = None
                 if block is _PAUSED:
                     self._tap_block(None)        # live drafts: the phrase ends here
+                    self._tap_anchor = None      # and the time lines part until resumed
                 elif block is not None:
                     block, stamp, segment = block
                     self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
+                    self._tap_anchor = (self.journal["frames"] + self._buffered, stamp)
                     self._tap_block(block)       # live drafts: the block alone, not the tuple
                     self._buffer.append(block)
                     self._buffered += len(block)
@@ -656,6 +674,23 @@ class Recording:
             tap(self.journal["frames"] + self._buffered, block)
         except Exception:
             self.tap = None
+
+    def _tap_computer_block(self, block, stamp):
+        """Hand a computer block to the draft's live mix, placed on the
+        microphone's time line by the latest microphone block's frame and
+        arrival time. Not before a microphone block has come since the start
+        or a pause, and not when the two are further apart than TAP_REACH_S
+        (draft only). A tap that fails is turned off, as `tap` is."""
+        tap, anchor = self.tap_computer, self._tap_anchor
+        if tap is None or anchor is None:
+            return
+        frame, mic_stamp = anchor
+        if abs(stamp - mic_stamp) > TAP_REACH_S:
+            return
+        try:
+            tap(frame + int(round((stamp - mic_stamp) * self.rate)), block)
+        except Exception:
+            self.tap_computer = None
 
     def _frozen(self, tick):
         """The watchdog has missed its beat by more than SLEEP_S: the whole

@@ -468,7 +468,10 @@ INVARIANT_GUARDS = {
                                          "test_locked_methods_match_agents_md_and_the_docs"],
            "tests/test_hardening.py": ["test_refuses_the_internet_explorer_fallback",
                                        "test_the_page_opens_no_link_itself",
-                                       "test_every_content_method_is_refused_while_locked"]},
+                                       "test_every_content_method_is_refused_while_locked"],
+           "tests/test_drafts.py": [
+               "test_the_bridge_method_checks_its_argument_and_returns_text_only",
+               "test_the_page_shows_draft_text_as_text_only_and_does_not_announce_it"]},
     "D1": {"tests/test_workspace_core.py": [
         "test_crash_before_commit_resumes_without_loss_or_duplication",
         "test_generated_output_never_overwrites_edits"]},
@@ -522,7 +525,10 @@ INVARIANT_GUARDS = {
                "test_turned_off_unreadable_or_invalid_policy_refuses_it",
                "test_policy_turned_off_mid_recording_stops_only_the_computer_track",
                "test_an_invalid_policy_value_mid_recording_stops_only_the_computer_track",
-               "test_resume_checks_the_policy_again"]},
+               "test_resume_checks_the_policy_again"],
+           "tests/test_drafts.py": [
+               "test_policy_off_bad_or_unreadable_withholds_drafts",
+               "test_the_choice_and_the_computer_policy_apply_mid_recording"]},
     "E1": {},
     "E2": {},
 }

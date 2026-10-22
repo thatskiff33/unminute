@@ -99,6 +99,22 @@ body{margin:0}
           </div>
         </div>
         <div style="font-size: 14px; color: {{t.muted}}">Laptop microphone. Only the microphone is recorded, not computer sound. Tell everyone present the meeting is being recorded.</div>
+        <!-- #104: live drafts, when the user turned them on (sample words) -->
+        <sc-if value="{{drafts}}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 16px; border-top: 1px solid {{t.line}}">
+            <div style="display: flex; align-items: baseline; gap: 12px">
+              <span style="font-size: 15px; font-weight: 700">Draft text</span>
+              <span style="flex: 1; font-size: 13px; color: {{t.muted}}">Rough text. The full transcript replaces it after you stop.</span>
+              <a href="#" style="font-size: 14px; font-weight: 600; color: {{t.link}}">Hide draft</a>
+            </div>
+            <div style="border-radius: 12px; padding: 12px 16px; display: flex; flex-direction: column; gap: 6px; background: {{t.sideBg}}; color: {{t.muted}}; font-size: 15px; line-height: 1.5">
+              <sc-for list="{{draft}}" as="line" hint-placeholder-count="5">
+                <span>{{line}}</span>
+              </sc-for>
+            </div>
+            <div style="font-size: 13px; color: {{t.muted}}">Draft text shows on this screen. Hide it before sharing your screen.</div>
+          </div>
+        </sc-if>
       </div>
     </sc-if>
 
@@ -154,7 +170,7 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"drafts":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     const themes = {
@@ -164,7 +180,7 @@ class Component extends DCLogic {
         heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
         dropBg: '#FFFFFF', dropBorder: 'rgba(43,97,191,0.55)', soft: '#B4DDF6', softFg: '#142966',
         primaryBg: '#142966', primaryFg: '#FFFFFF', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
-        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF', link: '#2B61BF'
       },
       A: {
         page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', card: '#FFFFFF',
@@ -172,7 +188,7 @@ class Component extends DCLogic {
         heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
         dropBg: '#FFFFFF', dropBorder: 'rgba(43,97,191,0.55)', soft: '#B4DDF6', softFg: '#142966',
         primaryBg: '#E56600', primaryFg: '#351503', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
-        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF', link: '#2B61BF'
       },
       B: {
         page: '#FFFFFF', text: '#142966', muted: '#566591', line: 'rgba(20,41,102,0.14)', card: '#FFFFFF',
@@ -180,7 +196,7 @@ class Component extends DCLogic {
         heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
         dropBg: '#EEF7FD', dropBorder: 'rgba(43,97,191,0.55)', soft: '#142966', softFg: '#FFFFFF',
         primaryBg: '#142966', primaryFg: '#FFFFFF', secBg: '#FFFFFF', secFg: '#142966', secBorder: 'rgba(20,41,102,0.28)',
-        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF'
+        track: 'rgba(20,41,102,0.12)', fill: '#2B61BF', link: '#2B61BF'
       },
       Dark: {
         page: '#101F4E', text: '#FFFFFF', muted: 'rgba(255,255,255,0.74)', line: 'rgba(255,255,255,0.14)', card: '#142966',
@@ -188,7 +204,7 @@ class Component extends DCLogic {
         heroBg: '#E56600', heroFg: '#FFFFFF', heroIconBg: '#FFFFFF', heroIconFg: '#E56600',
         dropBg: 'transparent', dropBorder: 'rgba(180,221,246,0.5)', soft: 'rgba(180,221,246,0.2)', softFg: '#B4DDF6',
         primaryBg: '#B4DDF6', primaryFg: '#142966', secBg: 'transparent', secFg: '#FFFFFF', secBorder: 'rgba(255,255,255,0.32)',
-        track: 'rgba(255,255,255,0.14)', fill: '#B4DDF6'
+        track: 'rgba(255,255,255,0.14)', fill: '#B4DDF6', link: '#B4DDF6'
       }
     };
     const t = themes[this.props.direction ?? 'H'] || themes.H;
@@ -196,7 +212,15 @@ class Component extends DCLogic {
     const heights = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54, 62, 44, 30, 24, 42, 50, 38, 26, 18, 14, 12, 10, 10, 8, 8, 8];
     const bars = heights.map((h, i) => ({ h: h + 'px', c: i < 30 ? '#E56600' : 'rgba(20,41,102,0.14)' }));
     const variant = this.props.variant ?? 'default';
-    return { t, recording, idle: !recording, bars, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
+    const drafts = recording && !!(this.props.drafts ?? false);
+    const draft = [
+      "Okay, thanks for coming, everyone. First up is the garden roster for next month.",
+      "I can take the first two Saturdays, but I'm away the weekend after that.",
+      "Great. Can someone look at the tap by the shed? It was dripping again on Tuesday.",
+      "I'll check it on Thursday and bring a spare washer.",
+      "And has the seed order gone in yet, or are we still waiting on prices"
+    ];
+    return { t, recording, drafts, draft, idle: !recording, bars, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
   }
 }
 </script>

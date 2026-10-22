@@ -48,6 +48,12 @@ CASES = [
      "h": 1100, "props": {"policy": "managed"}},
     {"name": "home-retention-default", "board": "Home-Retention.dc.html",
      "app": "home-retention-default", "h": 1100, "props": {"policy": "default"}},
+    # Live drafts (#104): the recording card with draft text, light and dark.
+    {"name": "recording-drafts", "board": "Recording-Drafts.dc.html", "app": "recording-drafts"},
+    {"name": "recording-drafts-dark", "board": "Recording-Drafts-Dark.dc.html",
+     "app": "recording-drafts", "dark": True},
+    {"name": "recording-drafts-states", "board": "Recording-Drafts-States.dc.html", "app": "",
+     "h": 1180},
     {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
     {"name": "meeting-transcribing", "app": "meeting-transcribing",
      "board": "Meeting-Transcribing.dc.html"},
@@ -73,6 +79,9 @@ CASES = [
      "h": 1320, "props": {"assistant": "set"}},
     {"name": "settings-unrecognised", "board": "Settings.dc.html",
      "app": "settings-unrecognised", "h": 1320, "props": {"unrecognised": "set"}},
+    # #104 with #108: the choice of what draft text follows, with computer audio on.
+    {"name": "settings-drafts-mix", "board": "Settings.dc.html", "app": "settings-drafts-mix",
+     "h": 1320, "props": {"drafts": "mix"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},

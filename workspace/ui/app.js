@@ -2039,7 +2039,8 @@ const SETTING_NAMES = {
   mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
   battery_override: "Process on battery power", onboarded: "Guided setup",
   microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card",
-  recording_display: "Recording display",
+  recording_display: "Recording display", live_drafts: "Draft text while recording",
+  live_drafts_audio: "What draft text follows",
 };
 function renderRepaired(r) {
   const names = ((r && r.keys) || []).map((k) => SETTING_NAMES[k] || k);
@@ -2089,6 +2090,30 @@ function modelChoice(c) {
   return `${c.label}${c.recommended ? " (recommended)" : ""}${MODEL_STATE[c.state] || ""}`;
 }
 
+// Live drafts (#104): off by default, Parakeet v2 only, and IT can turn it
+// off. With computer audio on, the user chooses what the draft follows.
+function renderDraftSettings(s) {
+  const permitted = allowed("AllowLiveDrafts");
+  const model = s.live_drafts_model || {};
+  const ready = model.state === "ready";
+  $("s-drafts").checked = !!s.live_drafts;
+  $("s-drafts").disabled = !permitted;               // always possible to turn off otherwise
+  $("s-drafts-note").textContent = !permitted ? MANAGED_NOTE
+    : !ready ? (model.offered
+      ? `Needs ${model.label}: download it in Manage downloads (Speech model, above).`
+      : `Needs ${model.label}. Ask your IT team.`)
+    : "Rough text a few seconds after people speak. The full transcript replaces it after you stop. Uses more memory and processor time while recording.";
+  // The choice matters only while computer audio is recorded as well (#108).
+  $("s-drafts-audio-box").hidden = !s.computer_audio;
+  for (const r of document.querySelectorAll('input[name="draftsaudio"]')) {
+    r.checked = r.value === (s.live_drafts_audio || "microphone");
+    r.disabled = !permitted || !s.live_drafts;
+  }
+  $("s-drafts-audio-note").textContent = s.live_drafts_audio === "mix"
+    ? "Draft text also includes what others say on the call. The full transcript always uses both."
+    : "Draft text follows your microphone only. The full transcript always uses both.";
+}
+
 async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
@@ -2122,6 +2147,7 @@ async function renderSettings() {
         : `${s.gpu.card}. Speeds up ${gpuUses.join(" and ")} in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
+  renderDraftSettings(s);
   // The lid (#172): "Do nothing" while recording, put back afterwards.
   $("s-lid").checked = !!s.lid_override;
   $("s-lid").disabled = !s.lid_override && (!allowed("AllowLidOverride") || s.lid_managed);
@@ -2526,6 +2552,94 @@ function reportItem(rep) {
   return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);
 }
 
+// -- live drafts while recording (#104) -------------------------------------------------
+// Rough text a few seconds behind speech. The app keeps it in memory only and
+// replaces it with the full transcript after Stop and save. Shown as text only
+// (textContent), not selectable, and not announced as it grows: the status
+// line below it announces changes of state only. recording_status carries
+// the draft's state and counts, never text; the text is fetched only when
+// the count or generation changes, never while the window is hidden or the
+// user has hidden the draft, and at most DRAFT_KEEP phrases stay on the page.
+const DRAFT_KEEP = 300;
+const DRAFT_EMPTY = {
+  starting: "Getting draft text ready…",
+  running: "Draft text appears here a few seconds after people speak.",
+};
+const draft = { rec: null, gen: null, count: 0, hidden: false, reading: false, said: null };
+
+function draftLine(p) {
+  return p.kind === "skipped"
+    ? el("p", { class: "rec-draft-skip",
+                textContent: `(Draft skipped about ${Math.max(1, Math.round(p.seconds))} s to keep up. The recording itself is complete.)` })
+    : el("p", { class: "rec-draft-line", textContent: p.text });
+}
+
+function draftEmpty(stateName) {
+  const box = $("rec-draft-box");
+  const lines = box.querySelectorAll(".rec-draft-line, .rec-draft-skip").length;
+  const text = lines ? "" : DRAFT_EMPTY[stateName] || "";
+  const empty = box.querySelector(".rec-draft-empty");
+  if (!text) { if (empty) empty.remove(); return; }
+  if (empty) empty.textContent = text;
+  else box.append(el("p", { class: "rec-draft-empty", textContent: text }));
+}
+
+function clearDraft() {
+  $("rec-draft-box").replaceChildren();
+  draft.count = 0;
+}
+
+async function renderDraft(rec, d) {
+  const area = $("rec-draft");
+  const live = !!(rec && d && REC_KIND[rec.state] !== "saving" && REC_KIND[rec.state] !== "lost");
+  area.hidden = !live;
+  if (!live) {                                      // stopped, saving or off: nothing kept
+    if (draft.rec !== null) { clearDraft(); draft.rec = draft.gen = draft.said = null; }
+    return;
+  }
+  if (draft.rec !== rec.id) {                       // Hide draft is for this recording only
+    clearDraft();
+    Object.assign(draft, { rec: rec.id, gen: d.generation, hidden: false, said: null });
+  }
+  if (draft.gen !== d.generation) { clearDraft(); draft.gen = d.generation; }
+  // The status line: a change of state is announced once (polite).
+  const said = draft.hidden ? "Draft text is hidden for this recording."
+    : d.note || (d.state === "running" ? "Draft text is on." : "");
+  if (said !== draft.said) {
+    draft.said = said;
+    $("rec-draft-status").textContent = said;
+  }
+  $("rec-draft-status").classList.toggle("sr", !draft.hidden && !d.note);
+  $("rec-draft-box").hidden = draft.hidden;
+  $("rec-draft-toggle").textContent = draft.hidden ? "Show draft" : "Hide draft";
+  $("rec-draft-toggle").setAttribute("aria-expanded", String(!draft.hidden));
+  if (draft.hidden) return;
+  draftEmpty(d.state);
+  if (d.count === draft.count || draft.reading || document.hidden) return;
+  draft.reading = true;
+  try {
+    const got = await call("recording_draft", Math.max(draft.count, d.count - DRAFT_KEEP));
+    if (got.generation !== draft.gen || draft.hidden || draft.rec !== rec.id) return;
+    const box = $("rec-draft-box");
+    const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+    box.append(...got.phrases.map(draftLine));
+    const lines = box.querySelectorAll(".rec-draft-line, .rec-draft-skip");
+    for (let i = 0; i < lines.length - DRAFT_KEEP; i++) lines[i].remove();
+    draft.count = got.since + got.phrases.length;
+    draftEmpty(got.state);
+    if (atEnd) box.scrollTop = box.scrollHeight;    // follow the newest, unless scrolled up
+  } finally {
+    draft.reading = false;
+  }
+}
+
+function toggleDraft() {
+  draft.hidden = !draft.hidden;
+  clearDraft();                                      // hidden: the page keeps no draft text
+  draft.said = null;
+  renderRecorder().catch(() => {});
+}
+
 let recReading = false;
 async function renderRecorder(tick = false) {
   if (tick && recReading) return;                   // the previous read is still on its way
@@ -2553,6 +2667,7 @@ async function renderRecorder(tick = false) {
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
   if (active) renderRecCard(rec, r.display, r.lid_override, r.lid_refused);
   else stopViz();
+  renderDraft(rec, r.draft).catch(() => {});
   $("rec-events").replaceChildren(...(rec ? rec.events.filter((e) => !["paused", "resumed"].includes(e.kind))
     .map((e) => el("li", { textContent: eventText(e) })) : []));
   const reportsSig = JSON.stringify(r.reports);
@@ -2604,6 +2719,7 @@ function wireRecorder() {
       ? `Sound heard (loudest ${t.peak_db} dB).`
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
+  $("rec-draft-toggle").addEventListener("click", toggleDraft);
   $("rec-pause").addEventListener("click", () => attempt(async () => { await call("pause_recording"); renderRecorder(); }));
   $("rec-resume").addEventListener("click", () => attempt(async () => { await call("resume_recording"); renderRecorder(); }));
   $("rec-discard").addEventListener("click", () => confirmDialog({
@@ -2897,6 +3013,9 @@ function wire() {
   $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
   $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }));
   $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }));
+  $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }));
+  for (const r of document.querySelectorAll('input[name="draftsaudio"]'))
+    r.addEventListener("change", () => setSetting({ live_drafts_audio: r.value }));
   wireRecorder();
   $("s-model").addEventListener("change", () => setSetting({ model: $("s-model").value }));
   document.addEventListener("keydown", (e) => {

@@ -1,7 +1,7 @@
 # workspace/drafts.py
 # Live drafts while recording (#104): rough text a few seconds behind speech,
-# replaced by the full transcript after Stop and save. Back end only so far;
-# the page does not show it yet.
+# replaced by the full transcript after Stop and save, shown on the recording
+# card (workspace/ui, through the bridge method recording_draft; text only).
 #
 # Off unless the user turns on "live_drafts" (default off, the owner's
 # decision of 20 Oct 2026), withheld when managed policy sets AllowLiveDrafts
@@ -29,6 +29,14 @@
 #     transcribes each phrase on a second thread, so reading audio never
 #     waits for a phrase. When more than BACKLOG_S of phrases are waiting,
 #     the oldest are skipped and the draft says how much.
+#   - With computer audio recorded too (#108), the user chooses what the draft
+#     follows (setting live_drafts_audio, the owner's decision of 22 Oct 2026):
+#     the microphone (the default), or a live mix of both tracks. For the mix,
+#     the writer thread also hands each computer block to tap_computer, placed
+#     on the microphone's time line from the two tracks' arrival times; the
+#     draft worker resamples it to the microphone's rate and mixes it as the
+#     recording's own mix does (LiveMix: the mean of the two, as
+#     workspace/mixdown.py). Draft only: the recording and its mix are unchanged.
 #   - A session is tied to one recording and a generation number. After stop()
 #     nothing more is kept and a late result is dropped.
 #   - A crashed draft worker is restarted once per session; a second crash, or
@@ -76,11 +84,22 @@ LOAD_TIMEOUT_S = 300.0           # a worker that has not loaded by then is ended
 STOP_JOIN_S = 5.0                # a draft thread is waited for this long at a stop
 LOG_NAME = "draft-worker"        # its log, crash file and process name (workspace.diag)
 FLUSH = "flush"                  # tap queue marker: end the current phrase (pause)
-# The page part (slice 3) shows draft text and sets this True. Until then
-# Workspace.set_settings refuses to turn live_drafts on, and drafts stay off
-# whatever the settings file says (fail closed): no worker starts whose text
-# nobody can see.
-ON_PAGE = False
+MIX_OFF = "mix_off"              # computer tap marker: the draft follows the microphone again
+MIX_HOLD_S = 1.0                 # microphone audio waits this long for the computer's (mix)
+MIX_REACH_S = 5.0                # computer audio placed further than this from the
+                                 # microphone's latest audio is not used (draft only)
+MIX_PIECES = 400                 # computer pieces held at most (about 20 s at 50 ms)
+COMPUTER_TAP_S = 60.0            # computer audio held while the worker loads (mix)
+# The page shows draft text (#104 slice 3), so the switch can be turned on.
+# False keeps drafts off whatever the settings file says (fail closed): no
+# worker starts whose text nobody can see, and set_settings refuses the switch.
+ON_PAGE = True
+
+# What the draft follows when computer audio is recorded too (setting
+# live_drafts_audio; the owner's decision of 22 Oct 2026). The microphone only
+# while computer audio is off, whatever the choice.
+MICROPHONE, MIX = "microphone", "mix"
+AUDIO_CHOICES = (MICROPHONE, MIX)
 
 # Session states (what the page part will show, #104 slice 3):
 STARTING, RUNNING, BATTERY, FAILED, UNAVAILABLE, STOPPED = (
@@ -90,6 +109,19 @@ NOTES = {
     BATTERY: "Draft text is paused while on battery. The recording carries on.",
     FAILED: "Draft text stopped. The recording is not affected.",
     UNAVAILABLE: "Draft text is not available. The recording is not affected.",
+}
+# Why the app has no draft session for this recording (Workspace._draft_why),
+# in the page's words. "off" (the switch) shows nothing.
+REASONS = {
+    "managed": "Draft text is turned off by your organisation. The recording is not affected.",
+    "battery": NOTES[BATTERY],
+    "busy": "Draft text waits while a speech model is downloaded or removed.",
+    "unavailable": (f"Draft text is not available: {asr_engines.label(DRAFT_MODEL)} is not "
+                    "downloaded or needs repair (Settings, Manage downloads). The recording "
+                    "is not affected."),
+    "ended": ("Draft text stopped for this recording because a speech model was downloaded "
+              "or removed. The recording is not affected."),
+    "failed": NOTES[FAILED],
 }
 
 
@@ -268,7 +300,121 @@ class DraftPipeline:
         return self._timed(self._splitter.flush())
 
 
+class LiveMix:
+    """The draft's live mix of the two tracks (#104 with #108), made in the
+    draft worker. Microphone audio arrives with its place in the recording;
+    computer audio arrives placed on the microphone's time line (at: the
+    microphone frame of its first sample, from the tracks' arrival times)
+    and is resampled to the microphone's rate by linear interpolation. Each
+    stretch of microphone audio waits until the computer audio for it has
+    arrived, or MIX_HOLD_S at most, then goes on mixed as the recording's own
+    mix is (the mean of the two, workspace/mixdown.py). Where no computer
+    audio covers it, the microphone goes on alone and unchanged. Draft
+    quality: the recording and its mix are never touched. Returns
+    [(start_frame, int16 pcm)] in order."""
+
+    def __init__(self, rate):
+        self.rate = int(rate)
+        self._hold = max(1, int(round(MIX_HOLD_S * self.rate)))
+        self._reach = int(round(MIX_REACH_S * self.rate))
+        self._mic = collections.deque()      # (start, pcm) waiting for the computer's
+        self._comp = collections.deque()     # (at, float32 at the mic rate), by arrival
+        self._comp_end = None                # mic frame the computer audio has reached
+        self._mic_end = None                 # end of the newest microphone audio
+
+    @property
+    def mixing(self):
+        return self._comp_end is not None
+
+    def computer(self, at, rate, pcm):
+        """A piece of computer audio at its place on the microphone's time
+        line. Returns the microphone audio it lets go on."""
+        x = np.asarray(pcm, dtype=np.int16).astype(np.float32)
+        rate, at = int(rate), int(at)
+        if not len(x) or (self._mic_end is not None
+                          and abs(at - self._mic_end) > self._reach):
+            return []                        # empty, or nowhere near the microphone's audio
+        if rate != self.rate:
+            n = max(1, int(round(len(x) * self.rate / rate)))
+            x = np.interp(np.arange(n) * (rate / self.rate),
+                          np.arange(len(x)), x).astype(np.float32)
+        self._comp.append((at, x))
+        while len(self._comp) > MIX_PIECES:
+            self._comp.popleft()
+        end = at + len(x)
+        self._comp_end = end if self._comp_end is None else max(self._comp_end, end)
+        return self._ready(False)
+
+    def mic(self, start, pcm):
+        start, pcm = int(start), np.asarray(pcm, dtype=np.int16)
+        self._mic_end = start + len(pcm)
+        if not self.mixing:
+            return [(start, pcm)]
+        self._mic.append((start, pcm))
+        return self._ready(False)
+
+    def flush(self):
+        """Everything held goes on now (a pause)."""
+        return self._ready(True)
+
+    def off(self):
+        """The draft follows the microphone again: what is held goes on, and
+        computer audio is no longer waited for."""
+        out = self._ready(True)
+        self._comp.clear()
+        self._comp_end = None
+        return out
+
+    def _ready(self, force):
+        out = []
+        while self._mic:
+            start, pcm = self._mic[0]
+            end = start + len(pcm)
+            if not force and self._comp_end < end and self._mic_end - end < self._hold:
+                break                        # the computer audio for it may still come
+            self._mic.popleft()
+            out.append((start, self._mixed(start, pcm)))
+        # Computer audio that ends before the microphone audio still to come
+        # is done with.
+        upto = self._mic[0][0] if self._mic else (out[-1][0] + len(out[-1][1]) if out
+                                                  else None)
+        while upto is not None and self._comp and \
+                self._comp[0][0] + len(self._comp[0][1]) <= upto:
+            self._comp.popleft()
+        return out
+
+    def _mixed(self, start, pcm):
+        n = len(pcm)
+        other = np.zeros(n, dtype=np.float32)
+        covered = np.zeros(n, dtype=bool)
+        for at, x in self._comp:             # a later piece wins where two overlap
+            a, b = max(at, start), min(at + len(x), start + n)
+            if a < b:
+                other[a - start:b - start] = x[a - at:b - at]
+                covered[a - start:b - start] = True
+        if not covered.any():
+            return pcm
+        mixed = pcm.astype(np.float32)
+        mixed[covered] = (mixed[covered] + other[covered]) / 2.0
+        return np.clip(np.round(mixed), -32768, 32767).astype(np.int16)
+
+
 # -- the draft worker's loop (runs in the draft worker process) ---------------------
+
+MAX_FRAME = MAX_RATE * 3600 * 24    # a place in a recording (frames): under a day at most
+
+
+def _whole(value, lo, hi):
+    return isinstance(value, int) and not isinstance(value, bool) and lo <= value <= hi
+
+
+def _sized(data):
+    return isinstance(data, bytes) and 0 < len(data) <= 2 * MAX_BATCH_FRAMES
+
+
+def _pcm(data):
+    return np.frombuffer(data[: len(data) // 2 * 2], dtype="<i2")
+
 
 def clean_text(text):
     """A phrase's text as plain, printable text of bounded length."""
@@ -279,9 +425,12 @@ def clean_text(text):
 def serve(conn, load, log=None):
     """The draft worker's loop: load the engine, then turn audio batches into
     phrases until the pipe closes or "exit" arrives. load() returns an engine
-    with speech_prob(window), reset() and transcribe_phrase(audio). Replies:
-    ("ready", description, load_s), ("phrase", start_s, end_s, text),
-    ("skipped", seconds), ("error", type, message, op, code)."""
+    with speech_prob(window), reset() and transcribe_phrase(audio). Messages:
+    ("audio", start, pcm bytes) from the microphone, ("computer", at, rate,
+    pcm bytes) for the live mix, (MIX_OFF,), (FLUSH,) and ("exit",); any
+    other is ignored. Replies: ("ready", description, load_s), ("phrase",
+    start_s, end_s, text), ("skipped", seconds), ("error", type, message, op,
+    code)."""
     from workspace import diag
     from workspace.worker import safe_message
     send_lock = threading.Lock()
@@ -350,6 +499,11 @@ def serve(conn, load, log=None):
             send("skipped", round(skipped, 2))
 
     pipeline = DraftPipeline(rate, engine.speech_prob, getattr(engine, "reset", None))
+    mix = LiveMix(rate)
+
+    def feed(pieces):
+        for start, pcm in pieces:
+            queue_phrases(pipeline.feed(start, pcm))
     try:
         while True:
             if log is not None:
@@ -361,12 +515,17 @@ def serve(conn, load, log=None):
             if not isinstance(msg, tuple) or not msg:
                 continue
             try:
-                if msg[0] == "audio" and len(msg) == 3 and isinstance(msg[1], int) \
-                        and isinstance(msg[2], bytes) \
-                        and 0 < len(msg[2]) <= 2 * MAX_BATCH_FRAMES:
-                    pcm = np.frombuffer(msg[2][: len(msg[2]) // 2 * 2], dtype="<i2")
-                    queue_phrases(pipeline.feed(msg[1], pcm))
+                if msg[0] == "audio" and len(msg) == 3 and _whole(msg[1], 0, MAX_FRAME) \
+                        and _sized(msg[2]):
+                    feed(mix.mic(msg[1], _pcm(msg[2])))
+                elif msg[0] == "computer" and len(msg) == 4 \
+                        and _whole(msg[1], -MAX_FRAME, MAX_FRAME) \
+                        and _whole(msg[2], 8000, MAX_RATE) and _sized(msg[3]):
+                    feed(mix.computer(msg[1], msg[2], _pcm(msg[3])))
+                elif msg[0] == MIX_OFF:
+                    feed(mix.off())
                 elif msg[0] == FLUSH:
+                    feed(mix.flush())
                     queue_phrases(pipeline.flush())
                 elif msg[0] == "exit":
                     return
@@ -384,12 +543,59 @@ def serve(conn, load, log=None):
 
 # -- the app's side: one session per recording -----------------------------------------
 
+class _ComputerBatch:
+    """The feeder's computer audio for the live mix, sent in pieces of about
+    BATCH_S. Blocks follow on in the computer's own time (the loopback fills
+    silence), so a piece starts at its first block's place on the
+    microphone's time line; a block more than MIX_JUMP_S from where the piece
+    says it falls starts a new piece."""
+
+    MIX_JUMP_S = 0.1
+
+    def __init__(self, session):
+        self.session = session
+        self.blocks, self.at, self.frames = [], None, 0
+
+    def take(self):
+        s = self.session
+        while True:
+            try:
+                at, block = s._ctap.get_nowait()
+            except queue.Empty:
+                return
+            if at == MIX_OFF:
+                self.send()
+                s._send((MIX_OFF,))
+                continue
+            rate = s.computer_rate
+            if rate is None or block is None or not len(block):
+                continue
+            if self.blocks:
+                expect = self.at + self.frames * s.rate / rate
+                if abs(at - expect) > self.MIX_JUMP_S * s.rate:
+                    self.send()
+            if not self.blocks:
+                self.at = int(at)
+            self.blocks.append(block)
+            self.frames += len(block)
+
+    def full(self):
+        rate = self.session.computer_rate
+        return bool(self.blocks) and rate is not None and self.frames >= BATCH_S * rate
+
+    def send(self):
+        if self.blocks and self.session.computer_rate is not None:
+            self.session._send_computer(self.at, self.session.computer_rate, self.blocks)
+        self.blocks, self.at, self.frames = [], None, 0
+
+
 class DraftSession:
     """Live drafts for one recording, in the app process. tap(start, block) is
     called by the recorder's writer thread for each block; it never blocks
-    or raises. start() starts the draft worker; stop() ends it and forgets
-    the text. suspend() ends the worker but keeps the text (battery);
-    resume() starts it again. Thread-safe."""
+    or raises. With the live mix on (mix(rate)), tap_computer(at, block) is
+    called the same way for each computer block. start() starts the draft
+    worker; stop() ends it and forgets the text. suspend() ends the worker
+    but keeps the text (battery); resume() starts it again. Thread-safe."""
 
     def __init__(self, recording_id, rate, cache_dir, *, generation=0, model=DRAFT_MODEL,
                  threads=DRAFT_THREADS, log=None, allow_test_engines=False, target=None):
@@ -399,7 +605,12 @@ class DraftSession:
         self._target = target            # tests: another process target
         self._lock = threading.Lock()
         self._tap = queue.Queue(maxsize=max(1, int(TAP_S / 0.1)))
+        # Computer audio for the live mix: blocks of 10 to 200 ms, so held
+        # by count at the shortest (COMPUTER_TAP_S at 10 ms a block).
+        self._ctap = queue.Queue(maxsize=max(1, int(COMPUTER_TAP_S / 0.01)))
         self._feeding = False            # the tap queues audio (not stopped or suspended)
+        self._mixing = False             # tap_computer queues computer audio (live mix)
+        self.computer_rate = None
         self._phrases = []               # [{kind, text, start, end} | {kind, seconds}]
         self._first = 0                  # index of _phrases[0] (older ones were let go)
         self.state, self.reason = STARTING, None
@@ -432,10 +643,50 @@ class DraftSession:
             if block is not None:
                 self._tap_dropped_s += len(block) / self.rate
 
+    def tap_computer(self, at, block):
+        """A computer block for the live mix. at: where it begins on the
+        microphone's time line, in microphone frames. Draft only: a full
+        queue loses it for the draft, never for the recording."""
+        if not (self._feeding and self._mixing):
+            return
+        try:
+            self._ctap.put_nowait((at, block))
+        except queue.Full:
+            pass
+
     @property
     def dropped_s(self):
         """Seconds of draft audio lost (a full tap, or a worker that was gone)."""
         return self._tap_dropped_s + self._send_dropped_s
+
+    @property
+    def mixing(self):
+        return self._mixing
+
+    def mix(self, rate):
+        """Follow a live mix of the microphone and the computer track (at
+        its rate) from now on. The recorder's tap_computer is set after."""
+        if not (isinstance(rate, int) and not isinstance(rate, bool)
+                and 8000 <= rate <= MAX_RATE):
+            raise ValueError("Unsupported sample rate.")
+        with self._lock:
+            if self._stopped:
+                return False
+            self.computer_rate, self._mixing = rate, True
+            return True
+
+    def unmix(self):
+        """Follow the microphone alone again (the setting changed, or the
+        computer track stopped). The recorder's tap_computer is cleared
+        first; the worker is told after the computer audio already queued."""
+        with self._lock:
+            if not self._mixing:
+                return
+            self._mixing = False
+        try:
+            self._ctap.put_nowait((MIX_OFF, None))
+        except queue.Full:
+            pass
 
     # -- control --------------------------------------------------------------------
 
@@ -561,11 +812,12 @@ class DraftSession:
                 pass
 
     def _drain(self):
-        while True:
-            try:
-                self._tap.get_nowait()
-            except queue.Empty:
-                return
+        for q in (self._tap, self._ctap):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
 
     @property
     def pid(self):
@@ -586,6 +838,7 @@ class DraftSession:
     def _feed_loop(self):
         batch, batch_start, batch_frames = [], None, 0
         limit = max(1, int(self.rate * BATCH_S))
+        comp = _ComputerBatch(self)
         while True:
             try:
                 start, block = self._tap.get(timeout=0.2)
@@ -594,12 +847,16 @@ class DraftSession:
                 if self._stopped:
                     return
                 if not batch:
+                    comp.take()          # no microphone audio just now (a pause)
+                    comp.send()
                     continue
             if start is None and block is None and self._stopped:
                 return
             flush = start == FLUSH
+            comp.take()                  # the computer audio taken so far (live mix)
             if block is not None:
                 if batch and start != batch_start + batch_frames:
+                    comp.send()
                     self._send_batch(batch_start, batch)     # not contiguous: send apart
                     batch, batch_frames = [], 0
                 if not batch:
@@ -607,9 +864,15 @@ class DraftSession:
                 batch.append(block)
                 batch_frames += len(block)
             if batch and (batch_frames >= limit or flush or block is None):
+                # The computer audio for the same time first, so the worker's
+                # mix need not wait for it.
+                comp.send()
                 self._send_batch(batch_start, batch)
                 batch, batch_frames = [], 0
+            elif comp.full() or (block is None and not flush):
+                comp.send()
             if flush:
+                comp.send()
                 self._send((FLUSH,))
 
     def _send_batch(self, start, blocks):
@@ -618,6 +881,13 @@ class DraftSession:
             part = pcm[i:i + MAX_BATCH_FRAMES]
             if not self._send(("audio", start + i, part.tobytes())):
                 self._send_dropped_s += len(part) / self.rate
+
+    def _send_computer(self, at, rate, blocks):
+        pcm = np.concatenate(blocks).astype("<i2")
+        for i in range(0, len(pcm), MAX_BATCH_FRAMES):
+            part = pcm[i:i + MAX_BATCH_FRAMES]
+            self._send(("computer", at + int(round(i * self.rate / rate)), rate,
+                        part.tobytes()))
 
     def _send(self, msg):
         # Not before the worker is ready (it reads nothing while it loads), and

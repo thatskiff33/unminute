@@ -30,6 +30,8 @@ if HAVE_DEPS:
     from workspace.app import Workspace, WorkspaceError
 
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
+# drafts.ON_PAGE as the module ships it, read before any test patches it.
+SHIPPED_ON_PAGE = drafts.ON_PAGE if HAVE_DEPS else None
 FAKE = "test:fake_worker_engines:"
 
 
@@ -670,8 +672,8 @@ class TapTests(unittest.TestCase):
 
 # -- the workspace: off by default, policy, battery, every way a recording ends -----
 
-@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
-class WorkspaceDraftTests(unittest.TestCase):
+class DraftWorkspaceCase(unittest.TestCase):
+    """A workspace with fake engines and a fake microphone (no tests here)."""
     RATE = 48000
 
     def setUp(self):
@@ -733,6 +735,9 @@ class WorkspaceDraftTests(unittest.TestCase):
         self.policy = (values or {}, invalid)
         self.ws.policy.refresh()
 
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class WorkspaceDraftTests(DraftWorkspaceCase):
     # -- off means off ----------------------------------------------------------
 
     def test_off_by_default_no_worker_and_no_model(self):
@@ -1221,6 +1226,330 @@ class WorkspaceDraftTests(unittest.TestCase):
             self.assertFalse(proc.is_alive())
         finally:
             real_rec_stop()
+
+
+# -- the page part (#104 slice 3): the live mix, the bridge, the recording card ----------
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class LiveMixTests(unittest.TestCase):
+    """The draft's live mix of the microphone and the computer track, in the
+    draft worker (the owner's decision of 22 Oct 2026)."""
+
+    def test_the_mix_is_the_mean_of_both_tracks_at_the_microphone_rate(self):
+        mix = drafts.LiveMix(16000)
+        voice = tone(1.0, 16000, freq=200.0)
+        other = tone(1.0, 48000, freq=300.0, amp=0.2)
+        self.assertEqual(mix.computer(0, 48000, other), [])     # waits for the microphone
+        [(start, out)] = mix.mic(0, voice)                      # covered: on at once
+        self.assertEqual((start, len(out)), (0, 16000))
+        resampled = np.interp(np.arange(16000) * 3.0, np.arange(48000), other.astype(float))
+        expected = (voice.astype(float) + resampled) / 2
+        self.assertLessEqual(float(np.max(np.abs(out - expected))), 1.0)
+        self.assertEqual(out.dtype, np.int16)
+
+    def test_microphone_audio_waits_for_the_computer_then_goes_on_alone(self):
+        mix = drafts.LiveMix(16000)
+        half = 8000
+        self.assertEqual(mix.computer(0, 16000, silence(0.5)), [])
+        self.assertEqual([s for s, _ in mix.mic(0, tone(0.5))], [0])
+        late = tone(0.5, freq=330.0)
+        self.assertEqual(mix.mic(half, late), [])               # its computer audio may come
+        self.assertEqual(mix.mic(2 * half, tone(0.5)), [])       # still within MIX_HOLD_S
+        [(start, out)] = mix.mic(3 * half, tone(0.5))            # waited long enough
+        self.assertEqual(start, half)
+        np.testing.assert_array_equal(out, late)                 # alone and unchanged
+        self.assertEqual([s for s, _ in mix.flush()], [2 * half, 3 * half])
+
+    def test_off_lets_the_held_audio_go_and_stops_waiting(self):
+        mix = drafts.LiveMix(16000)
+        mix.computer(0, 16000, silence(0.2))
+        self.assertEqual(mix.mic(16000, tone(0.5)), [])
+        self.assertEqual([s for s, _ in mix.off()], [16000])
+        self.assertFalse(mix.mixing)
+        [(start, out)] = mix.mic(24000, tone(0.5))               # straight on
+        self.assertEqual(start, 24000)
+
+    def test_computer_audio_far_from_the_microphone_is_not_used(self):
+        mix = drafts.LiveMix(16000)
+        mix.mic(0, tone(0.5))
+        self.assertEqual(mix.computer(16000 * 20, 16000, tone(0.5)), [])
+        self.assertFalse(mix.mixing)
+        self.assertEqual(len(mix.mic(8000, tone(0.5))), 1)
+
+    def test_the_worker_refuses_computer_audio_out_of_shape(self):
+        # serve() reads only messages in a known shape; others are ignored.
+        for bad in ((True, 48000, b"\0\0"), (0, 1, b"\0\0"), (0, 48000, "pcm"),
+                    (0, 48000, b""), (0.5, 48000, b"\0\0"),
+                    (0, 48000, b"\0" * (4 * drafts.MAX_BATCH_FRAMES))):
+            with self.subTest(bad=repr(bad)[:40]):
+                ok = (drafts._whole(bad[0], -drafts.MAX_FRAME, drafts.MAX_FRAME)
+                      and drafts._whole(bad[1], 8000, drafts.MAX_RATE)
+                      and drafts._sized(bad[2]))
+                self.assertFalse(ok)
+        self.assertTrue(drafts._whole(-5, -drafts.MAX_FRAME, drafts.MAX_FRAME)
+                        and drafts._whole(48000, 8000, drafts.MAX_RATE)
+                        and drafts._sized(b"\0\0"))
+
+
+class _Loopback:
+    device_name = "Test speakers"
+
+    def __init__(self, source, callback, notify):
+        self.callback = callback
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class ComputerTapTests(unittest.TestCase):
+    """The recorder hands computer blocks to the draft's live mix, placed on
+    the microphone's time line, from its writer thread."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.holder, self.held = {}, {}
+        self.now = [100.0]
+
+        def open_loopback(source, callback, notify):
+            self.held["comp"] = _Loopback(source, callback, notify)
+            return self.held["comp"]
+        self.rec = recorder.Recording(Path(self.tmp.name) / "two", 3, "Test microphone", 16000,
+                                      open_stream=opener(self.holder),
+                                      tick=lambda: self.now[0],
+                                      computer={"open": open_loopback,
+                                                "source": {"kind": "endpoint"}, "rate": 48000},
+                                      key=bytes(range(32)))
+        self.mic, self.comp = [], []
+        self.rec.tap = lambda start, block: self.mic.append(start)
+        self.rec.tap_computer = lambda at, block: self.comp.append((at, len(block)))
+
+    def mic_block(self):
+        self.now[0] += 0.1
+        n = len(self.mic)
+        self.holder["stream"].callback(silence(0.1).reshape(-1, 1), 1600, None, None)
+        self.assertTrue(wait_for(lambda: len(self.mic) == n + 1, timeout=10))
+
+    def comp_block(self, stamp):
+        self.held["comp"].callback(tone(0.05, 48000), stamp)
+
+    def test_computer_blocks_are_placed_on_the_microphone_time_line(self):
+        self.rec.start()
+        self.addCleanup(self.rec.stop)
+        self.comp_block(self.now[0])                    # before any microphone block: not used
+        time.sleep(0.5)
+        self.assertEqual(self.comp, [])
+        for i in range(5):
+            self.mic_block()                             # its stamp: now - 0.1
+            self.comp_block(self.now[0] - 0.1 + 0.03)   # 30 ms after that block began
+            self.assertTrue(wait_for(lambda i=i: len(self.comp) == i + 1, timeout=10))
+        self.assertEqual(self.comp, [(i * 1600 + 480, 2400) for i in range(5)])
+        self.rec.pause()
+        self.rec.resume()
+        self.comp_block(self.now[0] + 0.5)              # after the pause, before the microphone
+        time.sleep(0.5)
+        self.assertEqual(len(self.comp), 5)
+        journal = self.rec.stop()
+        self.assertEqual(journal["tracks"]["computer"]["frames"], 7 * 2400)   # all saved
+
+    def test_a_failing_computer_tap_is_turned_off_and_the_recording_is_untouched(self):
+        def broken(at, block):
+            raise RuntimeError("draft trouble")
+        self.rec.tap_computer = broken
+        self.rec.start()
+        self.addCleanup(self.rec.stop)
+        self.mic_block()
+        self.comp_block(self.now[0] - 0.1)
+        self.assertTrue(wait_for(lambda: self.rec.tap_computer is None, timeout=10))
+        self.mic_block()
+        journal = self.rec.stop()
+        self.assertEqual((journal["frames"], journal["tracks"]["computer"]["frames"]),
+                         (3200, 2400))
+        self.assertEqual(journal["events"], [])
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class PagePartTests(DraftWorkspaceCase):
+    """Slice 3: the setting for what the draft follows, the live mix in the
+    app, the bridge method and the recording card's status (no text)."""
+
+    def computer_audio(self, choice):
+        from workspace import app as app_module
+        patch = mock.patch.object(app_module, "COMPUTER_AUDIO_STARTS", True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.held = {}
+
+        def open_loopback(source, callback, notify):
+            self.held["comp"] = _Loopback(source, callback, notify)
+            return self.held["comp"]
+        self.ws.open_loopback = open_loopback
+        self.ws.settings.update(computer_audio=True, live_drafts_audio=choice)
+
+    def play_both(self, mic_pcm, comp_pcm):
+        """Both tracks in real time, 0.1 s at a time, as the devices would."""
+        stream, comp = self.holder["stream"], self.held["comp"]
+        n, c = self.RATE // 10, 4800
+        for i in range(len(mic_pcm) // n):
+            now = time.monotonic()
+            stream.callback(mic_pcm[i * n:(i + 1) * n].reshape(-1, 1), n, None, None)
+            comp.callback(comp_pcm[i * c:(i + 1) * c], now - 0.1)
+            time.sleep(0.1)
+
+    def test_the_setting_defaults_to_the_microphone_and_takes_two_choices(self):
+        self.assertEqual(self.ws.settings["live_drafts_audio"], "microphone")
+        self.assertEqual(self.ws.set_settings({"live_drafts_audio": "mix"})["live_drafts_audio"],
+                         "mix")
+        for bad in ("both", "", None, 1, True):
+            with self.assertRaisesRegex(WorkspaceError, "Choose the microphone"):
+                self.ws.set_settings({"live_drafts_audio": bad})
+        self.assertEqual(self.ws.settings["live_drafts_audio"], "mix")
+        model = self.ws.get_settings()["live_drafts_model"]
+        self.assertEqual(set(model), {"state", "label", "offered"})
+
+    def test_the_switch_can_be_turned_on_now_the_page_shows_drafts(self):
+        # As shipped, not as the set-up patches it for the other tests.
+        self.assertIs(SHIPPED_ON_PAGE, True)
+        with mock.patch.object(drafts, "ON_PAGE", SHIPPED_ON_PAGE):
+            self.ws.set_settings({"live_drafts": True})
+        self.assertTrue(self.ws.settings["live_drafts"])
+
+    def test_with_the_mix_chosen_the_draft_hears_the_computer_audio(self):
+        # Silence at the microphone, speech from the computer: only the mix
+        # drafts it. The microphone choice drafts nothing.
+        # Two bursts, then silence for long enough that the mix (which waits
+        # up to MIX_HOLD_S for the computer's audio) lets the last phrase end.
+        speech = np.concatenate([tone(1.5, 48000, freq=300.0), silence(1.0, 48000),
+                                 tone(1.5, 48000, freq=300.0), silence(2.5, 48000)])
+        for choice, expected in (("mix", 2), ("microphone", 0)):
+            with self.subTest(choice=choice):
+                self.ws.close()
+                self.root = Path(self.tmp.name) / choice
+                self.ws = self.make()
+                self.computer_audio(choice)
+                rec = self.record()
+                self.assertTrue(wait_for(self.running))
+                session = self.ws._drafts
+                self.assertEqual(session.mixing, choice == "mix")
+                self.assertEqual(rec.tap_computer == session.tap_computer, choice == "mix")
+                self.play_both(silence(6.5, self.RATE), speech)
+                if expected:
+                    self.assertTrue(wait_for(
+                        lambda n=expected: len(self.draft_phrases()) == n))
+                else:
+                    time.sleep(2.0)
+                self.assertEqual(len(self.draft_phrases()), expected)
+                self.ws.stop_recording()
+                self.assertTrue(self.ws.wait_idle(120))
+
+    def test_the_choice_and_the_computer_policy_apply_mid_recording(self):
+        self.computer_audio("microphone")
+        rec = self.record()
+        self.assertTrue(wait_for(self.running))
+        session = self.ws._drafts
+        self.assertIsNone(rec.tap_computer)
+        self.ws.set_settings({"live_drafts_audio": "mix"})
+        self.ws._policy_tick()
+        self.assertTrue(session.mixing)
+        self.assertEqual(rec.tap_computer, session.tap_computer)
+        self.ws.set_settings({"live_drafts_audio": "microphone"})
+        self.ws._policy_tick()
+        self.assertFalse(session.mixing)
+        self.assertIsNone(rec.tap_computer)
+        self.ws.set_settings({"live_drafts_audio": "mix"})
+        self.ws._policy_tick()
+        self.assertTrue(session.mixing)
+        # IT turns computer audio off: that track stops, and the draft follows
+        # the microphone again (K3).
+        self.set_policy({"AllowComputerAudioRecording": False})
+        self.ws._policy_tick()
+        self.ws._policy_tick()
+        self.assertFalse(rec.computer_on)
+        self.assertFalse(session.mixing)
+        self.assertIsNone(rec.tap_computer)
+        self.assertIs(self.ws._drafts, session)                 # drafts carry on
+        self.ws.stop_recording()
+        self.assertIsNone(rec.tap_computer)
+
+    def test_without_computer_audio_the_mix_choice_changes_nothing(self):
+        self.ws.settings.update(live_drafts_audio="mix")
+        rec = self.record()
+        self.assertTrue(wait_for(self.running))
+        self.ws._policy_tick()
+        self.assertFalse(self.ws._drafts.mixing)
+        self.assertIsNone(rec.tap_computer)
+        self.ws.stop_recording()
+
+    def test_recording_status_carries_the_draft_state_and_counts_never_text(self):
+        self.assertIsNone(self.ws.recording_status()["draft"])          # nothing recorded
+        self.record(drafts_on=False)
+        self.ws._policy_tick()
+        self.assertIsNone(self.ws.recording_status()["draft"])          # the switch is off
+        self.set_policy({"AllowLiveDrafts": False})
+        self.ws.settings.update(live_drafts=True)
+        self.ws._policy_tick()
+        draft = self.ws.recording_status()["draft"]
+        self.assertEqual(draft["state"], "managed")
+        self.assertEqual(draft["note"], drafts.REASONS["managed"])
+        self.set_policy()
+        self.ws._policy_tick()
+        self.assertTrue(wait_for(self.running))
+        self.holder["stream"].play(self.speech(2))
+        self.assertTrue(wait_for(lambda: self.ws.recording_status()["draft"]["count"] == 2))
+        draft = self.ws.recording_status()["draft"]
+        self.assertEqual(set(draft), {"state", "note", "count", "generation", "mix"})
+        self.assertEqual(draft["state"], drafts.RUNNING)
+        for value in draft.values():                                     # no phrase text
+            self.assertNotIn("phrase", str(value))
+        self.ws.stop_recording()
+        self.assertIsNone(self.ws.recording_status()["draft"])
+
+    def test_the_bridge_method_checks_its_argument_and_returns_text_only(self):
+        from workspace import api
+        self.assertIn("recording_draft", api.API_METHODS)
+        self.assertNotIn("recording_draft", api.LOCKED_METHODS)      # nothing records then
+        page = api.make_api(self.ws)
+        self.assertEqual(page.recording_draft(0),
+                         {"ok": False, "error": "Nothing is being recorded."})
+        self.record()
+        self.assertTrue(wait_for(self.running))
+        for bad in (-1, True, 1.5, "0", None, [0], 10 ** 8, float("nan")):
+            with self.subTest(bad=bad):
+                self.assertEqual(page.recording_draft(bad),
+                                 {"ok": False, "error": "Out of range."})
+        self.holder["stream"].play(self.speech(2))
+        self.assertTrue(wait_for(lambda: len(self.draft_phrases()) == 2))
+        got = page.recording_draft(1)
+        self.assertTrue(got["ok"])
+        self.assertEqual((got["value"]["since"], len(got["value"]["phrases"])), (1, 1))
+        [phrase] = got["value"]["phrases"]
+        self.assertEqual(set(phrase), {"kind", "text", "start", "end"})
+        self.assertIsInstance(phrase["text"], str)
+        self.ws.stop_recording()
+
+    def test_the_page_shows_draft_text_as_text_only_and_does_not_announce_it(self):
+        ui = Path(__file__).resolve().parents[1] / "workspace" / "ui"
+        html = (ui / "index.html").read_text(encoding="utf-8")
+        js = (ui / "app.js").read_text(encoding="utf-8")
+        import re
+
+        def tag(element_id):
+            return re.search(r'<[^<>]*id="' + element_id + r'"[^<>]*>', html).group(0)
+        self.assertIn('aria-live="off"', tag("rec-draft-box"))       # not read out as it grows
+        self.assertIn('role="status"', tag("rec-draft-status"))      # its state is
+        self.assertIn("Hide it before sharing your screen.", html)   # the owner's line (T31)
+        body = js[js.index("function draftLine"):js.index("function toggleDraft")]
+        self.assertNotRegex(body, r"innerHTML|outerHTML|insertAdjacentHTML|\.html\(")
+        self.assertIn("textContent: p.text", body)
+        self.assertIn("user-select: none", (ui / "app.css").read_text(encoding="utf-8"))
+
 
 
 if __name__ == "__main__":
