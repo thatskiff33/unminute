@@ -7,9 +7,12 @@ It is a temporary workspace, not an archive. Your final documents live wherever 
 This guide covers the packaged workspace, as it is in the project's latest code. The newest release is 0.5.0-preview.3 (20 October 2026). These parts of the guide are not in that release yet, and arrive with the next one (see [CHANGELOG.md](../CHANGELOG.md)):
 
 - **Copy and open ChatGPT** on the Hand off page, and IT's option to rename it, point it at another assistant or turn it off. In 0.5.0-preview.3 the main button is **Copy prompt and transcript**.
-- **Encryption of the workspace.** Transcripts, edits, speaker names and other meeting text in the workspace database, your handoff templates and the app's working copy of each meeting's audio are encrypted with a key Windows keeps for your account. In 0.5.0-preview.3 the app encrypts nothing itself; your organisation's disk encryption (BitLocker) protects the workspace. With encryption come the "[Could not be read]" marker and the locked workspace in [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace).
+- **Encryption of the workspace.** Transcripts, edits, speaker names and other meeting text in the workspace database, your handoff templates, the app's working copy of each meeting's audio and microphone recordings as they are saved are encrypted with a key Windows keeps for your account. In 0.5.0-preview.3 the app encrypts nothing itself; your organisation's disk encryption (BitLocker) protects the workspace. With encryption come the "[Could not be read]" marker and the locked workspace in [If Unminute cannot unlock its workspace](#if-unminute-cannot-unlock-its-workspace).
 - **The message for a workspace folder linked to a folder that cannot be reached.** In 0.5.0-preview.3 Unminute closed at start without saying why.
 - **The log of what was done with each meeting**, in [What Unminute records about your work](#what-unminute-records-about-your-work). 0.5.0-preview.3 keeps only the short cleanup receipts, for 30 days.
+- **Stricter checks on recordings.** Recordings are decoded with audio decoders only, and a file with a sample rate below 4 kHz or above 384 kHz, or one that would decode to far more audio than its size can hold, is refused (see step 3 of [Getting started](#getting-started)). 0.5.0-preview.3 does not refuse these.
+- **Stricter watched folders.** The folder that holds every user's profile (such as `C:\Users`), `AppData` and every folder in it, and Unminute's own data folder can no longer be watched, and a recording whose path is too long for Windows to open is counted in the folder's note while the rest of the folder is imported. In 0.5.0-preview.3 those folders can be watched, and one path that is too long can stop a folder from importing anything.
+- **The recording display redraws about 30 times a second**, rather than on every refresh of the screen, to use less of the processor. It may look slightly less fluid on fast screens. On a 60 Hz screen it now settles about twice as quickly as in 0.5.0-preview.3, as it does on a 120 Hz screen.
 
 ## What stays on your computer, and what does not
 
@@ -17,7 +20,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer (not in 0.5.0-preview.3, see above). This is not a synced folder. The app's working copy of each meeting's audio is encrypted the same way. A microphone recording waiting to be imported is not encrypted yet, nor are your settings. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer (not in 0.5.0-preview.3, see above). This is not a synced folder. The app's working copy of each meeting's audio, and each microphone recording as it is saved, are encrypted the same way. Your settings are not encrypted. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
@@ -58,7 +61,7 @@ How it handles problems:
   - With the lid set to do nothing, the recording carries on until you stop it, and its marks cannot be seen while the lid is shut. When you open the lid again, the recording card says how long the recording carried on with the lid closed. When the meeting ends, open the lid and stop it in Unminute, and never put a laptop that is still running in a bag.
   - These lid and sleep behaviours come from Windows' documentation and have not yet been tested on a real laptop.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
-- **Recording uses more processor time with the window visible.** It uses about 22 to 24% of one processor core while the window is visible, against a 5% target; minimised, it uses under 1% (measured on an Intel Core Ultra 7 255H laptop on 18 and 19 October 2026). A fix is tracked in #216.
+- **Recording uses more processor time with the window visible.** It used about 22 to 24% of one processor core while the window was visible, against a 5% target; minimised, it uses under 1% (measured on an Intel Core Ultra 7 255H laptop on 18 and 19 October 2026). The recording display now redraws about 30 times a second to use less (not in 0.5.0-preview.3); the effect has not been measured yet. The work is tracked in #216. Minimise the window while you record if you do not need to watch it.
 - **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded, and there is no live transcription.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
@@ -175,8 +178,9 @@ The earlier version's workspace and models stay on the computer until they are d
 For IT support:
 
 - `runtime\python.exe -I -B -m workspace --self-test` in the installed version folder imports every dependency, confirms the network block, checks that the speaker model loader refuses a model file that would run code (a test file made in memory) and that Windows can protect and unlock a key for this account (`dpapi round trip`). It does not check your models: use Settings > Manage downloads for those.
-- `--status` prints counts only (meetings, holds, pending cleanup), never content.
+- `--status` prints counts and states only (meetings, holds, pending cleanup, the key's state at the last start), never content.
 - `--health` prints a one-line health report for device management (see [PACKAGING.md](PACKAGING.md)).
+- `--verify-audit` checks the log in [What Unminute records about your work](#what-unminute-records-about-your-work), and with `--event-log` compares it with its Windows event log copy. Run it as the signed-in user (see [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md#audit-log)).
 - The app keeps small content-free logs in `%LOCALAPPDATA%\Unminute\workspace\logs`. **Copy diagnostics** in Help copies their newest records with versions and settings; ask for that rather than the files.
 
 Deployment, detection and signing are covered in [PACKAGING.md](PACKAGING.md). [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md) brings together what IT needs: install modes, managed policy, health monitoring, updates, offboarding and incidents.
