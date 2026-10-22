@@ -63,7 +63,7 @@
   --hit: #FDCAEA;             /* search matches */
   --track: rgba(20, 41, 102, 0.12);
   --fill: #2B61BF;
-  --done: #00A275;
+  --done: #008661;            /* white tick on it 4.5:1 (WCAG 1.4.3, #298) */
   --done-fg: #FFFFFF;
   --done-text: #003B2A;       /* "Ready" and other success text (dark green) */
   --upcoming: rgba(20, 41, 102, 0.16);

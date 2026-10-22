@@ -27,7 +27,7 @@ body{margin:0}
         <li aria-current="{{s.current}}" style="display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 0 12px; border-radius: 10px; font-size: 15px; font-weight: {{s.weight}}; background: {{s.bg}}">
           <span style="width: 26px; height: 26px; flex: none; box-sizing: border-box; border-radius: 50%; font-size: 13px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; background: {{s.dotBg}}; color: {{s.dotFg}}; border: 2px solid {{s.dotBorder}}">{{s.mark}}</span>
           <span style="flex: 1">{{s.label}}</span>
-          <span style="font-size: 12px; color: #566591">{{s.note}}</span>
+          <span style="font-size: 12px; color: {{s.noteFg}}">{{s.note}}</span>
         </li>
       </sc-for>
     </ol>
@@ -202,9 +202,9 @@ class Component extends DCLogic {
     const labels = [['Welcome', ''], ['Speech model', ''], ['Speaker names', 'Optional'], ['Microphone', 'Optional'], ['Ready', '']];
     const steps = labels.map(([label, note], i) => {
       const n = i + 1;
-      if (n < cur) return { label, note, mark: '✓', current: 'false', weight: 500, bg: 'transparent', dotBg: '#00A275', dotFg: '#FFFFFF', dotBorder: '#00A275' };
-      if (n === cur) return { label, note, mark: String(n), current: 'step', weight: 800, bg: '#B4DDF6', dotBg: '#E56600', dotFg: '#351503', dotBorder: '#E56600' };
-      return { label, note, mark: String(n), current: 'false', weight: 500, bg: 'transparent', dotBg: 'transparent', dotFg: '#566591', dotBorder: 'rgba(20,41,102,0.51)' };
+      if (n < cur) return { label, note, mark: '✓', noteFg: '#566591', current: 'false', weight: 500, bg: 'transparent', dotBg: '#008661', dotFg: '#FFFFFF', dotBorder: '#008661' };
+      if (n === cur) return { label, note, mark: String(n), noteFg: '#142966', current: 'step', weight: 800, bg: '#B4DDF6', dotBg: '#E56600', dotFg: '#351503', dotBorder: '#E56600' };
+      return { label, note, mark: String(n), noteFg: '#566591', current: 'false', weight: 500, bg: 'transparent', dotBg: 'transparent', dotFg: '#566591', dotBorder: 'rgba(20,41,102,0.51)' };
     });
     const check = 'M5 12l5 5 9-10';
     const skip = 'M6 12h12';

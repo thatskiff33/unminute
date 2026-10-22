@@ -120,6 +120,53 @@ class ControlBorderContrastTests(unittest.TestCase):
                 self.assertIn(tokens["--control-line"].replace(" ", ""), text)
 
 
+class TextAndRingOnColourTests(unittest.TestCase):
+    """The tick on a done step, "Optional" on the current setup step, and the
+    focus ring on pink (#298, from the real-window run of the extended check)."""
+
+    def test_the_done_tick_reaches_4_5_to_1(self):
+        for theme, tokens in themes().items():
+            with self.subTest(theme=theme):
+                done = rgba(tokens["--done"])[:3]
+                self.assertGreaterEqual(ratio(rgba(tokens["--done-fg"])[:3], done), 4.5)
+
+    def test_optional_on_the_current_setup_step_reaches_4_5_to_1(self):
+        body = "".join(b for sel, b in rules(APP_CSS, ".su-steps li.now .su-opt"))
+        token = re.search(r"color\s*:\s*var\((--[\w-]+)\)", body)
+        if token is None:
+            self.fail("no colour for Optional on the current step")
+        for theme, tokens in themes().items():
+            with self.subTest(theme=theme):
+                bg = over(rgba(tokens["--side-sel"]), surfaces(tokens)["page"])
+                fg = over(rgba(tokens[token[1]]), bg)
+                self.assertGreaterEqual(ratio(fg, bg), 4.5)
+
+    def test_the_focus_ring_on_pink_reaches_3_to_1(self):
+        # Each pink surface with controls on it, the rule that recolours the
+        # ring there, and the colour that rule must reach 3:1 against.
+        cases = {".ho-next :focus-visible": "--hold", ".holds li :focus-visible": "--hold",
+                 ".notice.hold :focus-visible": "--hold", ".m-banner.hold :focus-visible": "--hold",
+                 "#transcript li.hit :focus-visible": "--hit",
+                 ".ho-passages label:has(input:checked) :focus-visible": "--hit"}
+        for selector, surface in cases.items():
+            body = "".join(b for sel, b in rules(APP_CSS, selector))
+            token = re.search(r"outline-color\s*:\s*var\((--[\w-]+)\)", body)
+            with self.subTest(selector=selector):
+                self.assertIsNotNone(token, "the ring keeps its orange on pink")
+            if not token:
+                continue
+            for theme, tokens in themes().items():
+                with self.subTest(selector=selector, theme=theme):
+                    bg = over(rgba(tokens[surface]), surfaces(tokens)["card"])
+                    self.assertLess(ratio(over(rgba(tokens["--accent"]), bg), bg), NON_TEXT)
+                    self.assertGreaterEqual(ratio(over(rgba(tokens[token[1]]), bg), bg), NON_TEXT)
+
+    def test_the_boards_draw_done_steps_with_the_token_colour(self):
+        text = "".join(b.read_text(encoding="utf-8") for b in sorted(BOARDS.glob("*.dc.html")))
+        self.assertNotIn("#00A275", text.upper(), "a board draws a done step in the old green")
+        self.assertIn(themes()["light"]["--done"].strip().upper(), text.upper())
+
+
 class MeetingTitleBoundaryTests(unittest.TestCase):
     def test_hovering_the_title_shows_a_control_border(self):
         hover = [body for sel, body in rules(APP_CSS, ".title-edit textarea:hover")]

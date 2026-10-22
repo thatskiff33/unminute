@@ -879,7 +879,8 @@ async function renderNames() {
 }
 
 function speakerBlock(sp, all, index) {
-  const name = el("input", { value: sp.name, maxLength: 80, "aria-label": `Name for ${sp.name}` });
+  const name = el("input", { value: sp.name, maxLength: 80,
+                           "aria-label": `Name for ${sp.name}, ${plural(sp.passages, "passage")}` });
   // Renaming does not rebuild the panel, so focus and typing elsewhere are kept.
   name.addEventListener("change", () => attempt(async () => {
     await call("rename_speaker", state.mid, sp.label, name.value);
@@ -898,7 +899,7 @@ function speakerBlock(sp, all, index) {
     ? el("button", { type: "button", class: "n-more", textContent: "More examples", on: { click: page(sp.offset + 3) } })
     : (sp.offset ? el("button", { type: "button", class: "n-more", textContent: "First examples", on: { click: page(0) } }) : null);
   const others = all.filter((o) => o.label !== sp.label);
-  const into = el("select", { "aria-label": `Merge ${sp.name} into` },
+  const into = el("select", { "aria-label": `${sp.name}: same person as` },
     ...others.map((o) => el("option", { value: o.label, textContent: o.name })));
   const merge = others.length ? el("label", { class: "n-merge" }, "Same person as", into,
     el("button", { type: "button", class: "n-merge-btn", "aria-label": `Merge ${sp.name} into the chosen speaker`,
@@ -1270,7 +1271,7 @@ function wirePlayer() {
     const i = SPEEDS.indexOf(state.speed || 1);
     state.speed = SPEEDS[(i + 1) % SPEEDS.length];
     $("p-speed").textContent = `${state.speed}×`;
-    $("p-speed").setAttribute("aria-label", `Playback speed ${state.speed} times`);
+    $("p-speed").setAttribute("aria-label", `Playback speed ${state.speed}×`);
     if (!clips.exact) audio.playbackRate = state.speed;
   });
   const seek = $("p-seek");
@@ -1490,7 +1491,7 @@ async function renderHandoffOptions() {
     for (const it of page.items)
       rows.push(el("li", {}, el("label", { title: `${it.who ? it.who + ": " : ""}${it.text}` },
         el("input", { type: "checkbox", value: it.id, checked: omitted.has(it.id),
-                      "aria-label": `Leave out ${fmtTime(it.t)}${it.who ? ` ${it.who}` : ""}: ${it.text}` }),
+                      "aria-label": `Leave out ${fmtTime(it.t)} ${it.text}${it.who ? ` (${it.who})` : ""}` }),
         el("span", { class: "t-mark", textContent: fmtTime(it.t) }),
         el("span", { class: "p-text", textContent: it.text }))));
     start += page.items.length;
