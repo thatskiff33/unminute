@@ -462,13 +462,13 @@ class Workspace:
         run's own state (_key_line). Reason, Windows error number and code
         only (P3)."""
         if self.locked is None:
-            diag.record_keys(self.log.folder, "ok")
+            diag.record_keys(self.log.folder, "ok", log=self.log)
             return
         self._lock_code = diag.new_code()
         self.log.write("key_unavailable", code=self._lock_code, reason=self.locked.reason,
                        winerror=self.locked.code)
         diag.record_keys(self.log.folder, "locked", self.locked.reason, self.locked.code,
-                         self._lock_code)
+                         self._lock_code, log=self.log)
 
     def _open_audit(self, mirror):
         """The audit log (#111 C5): content-free records of how meetings are
@@ -526,12 +526,12 @@ class Workspace:
             if failed_before:                   # the damage found before still stands
                 self._integrity = {"state": "failed", "code": last["code"]}
             else:                               # kept, so the next start checks again
-                diag.record_integrity(self.log.folder, "skipped")
+                diag.record_integrity(self.log.folder, "skipped", log=self.log)
             return
         code = None if sound else diag.new_code()
         result = "ok" if sound else "failed"
         self.log.write("integrity", result=result, code=code)
-        diag.record_integrity(self.log.folder, result, code)
+        diag.record_integrity(self.log.folder, result, code, log=self.log)
         if not sound:
             self._integrity = {"state": "failed", "code": code}
 

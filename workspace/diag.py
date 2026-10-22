@@ -65,10 +65,14 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # templates.json kept unconverted or damaged (handoff.Templates)
          "templates_unreadable",
          # #104: a live draft session ended (counts and seconds only, never text)
-         "drafts"}
+         "drafts",
+         # #311: a state file (STATE_FILES) not written, even after the retries
+         "state_unwritten"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
+STATE_FILES = {INTEGRITY_FILE: "integrity", KEYS_FILE: "keys"}   # as a state_unwritten names them
+STATE_RETRIES_S = (0.02, 0.05, 0.1, 0.2, 0.4)   # _write_state's pauses while a file is held
 # The number and true/false fields the app writes (FIELDS has the text ones).
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
@@ -135,6 +139,7 @@ FIELDS = {
     "method": _pattern(IDENT),           # a bridge method's name
     "thread": _pattern(WORD),            # the app's own thread names
     "fatal": _pattern(re.compile(r"[A-Za-z0-9_]{1,64}")),
+    "file": _set(*STATE_FILES.values()),   # #311: which state file was not written
     "frames": _frames,
 }
 
@@ -678,27 +683,51 @@ def integrity_state(folder):
                 r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else None}
 
 
-def record_integrity(folder, result, code=None):
+def record_integrity(folder, result, code=None, log=None):
     """Keep the result of a database check for the next start, --status and
-    --health: written in full or not at all. Never raises."""
-    _write_state(folder, INTEGRITY_FILE, {"result": result, "code": code})
+    --health: written in full or not at all (a failure is logged in log, if
+    given: _write_state). Never raises."""
+    _write_state(folder, INTEGRITY_FILE, {"result": result, "code": code}, log)
 
 
-def _write_state(folder, name, state):
+def _write_state(folder, name, state, log=None):
     """A small state file in folder, written in full or not at all, with the
-    time added. Never raises."""
+    time added. Windows refuses the rename while another process holds either
+    file open without sharing deletion (an antivirus or indexer scan of the
+    file just written, a reader such as --status): the whole write is tried
+    again after each pause in STATE_RETRIES_S, about 0.8 s in all (#311).
+    A write that still fails leaves the earlier file as it was, removes its
+    temporary file, and is logged in log, if given, as state_unwritten: which
+    file, the exception type and the Windows error number only (P3). Returns
+    whether the file was written. Never raises."""
     folder = Path(folder)
     state = {**state, "t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     tmp = folder / (name + ".tmp")
+    error = None
+    for pause in (0, *STATE_RETRIES_S):
+        if pause:
+            time.sleep(pause)
+        try:
+            folder.mkdir(exist_ok=True)
+            with open(tmp, "w", encoding="ascii") as f:
+                json.dump(state, f)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(folder / name)
+            return True
+        except PermissionError as exc:          # held open for now: tried again
+            error = exc
+        except OSError as exc:                  # anything else will not pass by itself
+            error = exc
+            break
     try:
-        folder.mkdir(exist_ok=True)
-        with open(tmp, "w", encoding="ascii") as f:
-            json.dump(state, f)
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(folder / name)
+        tmp.unlink(missing_ok=True)
     except OSError:
         pass
+    if log is not None:
+        log.write("state_unwritten", file=STATE_FILES.get(name), error=_type_name(error),
+                  winerror=windows_error(getattr(error, "winerror", None)))
+    return False
 
 
 def windows_error(value):
@@ -738,21 +767,22 @@ def keys_state(folder):
                 r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", t) else None}
 
 
-def record_keys(folder, result, reason=None, winerror=None, code=None):
+def record_keys(folder, result, reason=None, winerror=None, code=None, log=None):
     """Keep the key's state at this start for --status and --health
     (#111 C4a): "ok", or "locked" with the reason, the Windows
     error number and the incident code. Fixed words and numbers only (P3).
-    An "ok" already recorded is not written again. Never raises."""
+    An "ok" already recorded is not written again. A failure is logged in
+    log, if given (_write_state). Never raises."""
     if result == "ok":
         last = keys_state(folder)
         if last is not None and last["result"] == "ok":
             return
-        _write_state(folder, KEYS_FILE, {"result": "ok"})
+        _write_state(folder, KEYS_FILE, {"result": "ok"}, log)
         return
     _write_state(folder, KEYS_FILE, {
         "result": "locked", "reason": reason if reason in KEY_REASONS else None,
         "winerror": windows_error(winerror),
-        "code": code if FIELDS["code"](code) == code else None})
+        "code": code if FIELDS["code"](code) == code else None}, log)
 
 
 def recent_crashes(folder, days=7, now=None):
