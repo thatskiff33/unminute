@@ -65,6 +65,8 @@ CASES = [
     {"name": "settings", "board": "Settings.dc.html", "app": "settings", "h": 1320},
     {"name": "settings-assistant", "board": "Settings.dc.html", "app": "settings-assistant",
      "h": 1320, "props": {"assistant": "set"}},
+    {"name": "settings-unrecognised", "board": "Settings.dc.html",
+     "app": "settings-unrecognised", "h": 1320, "props": {"unrecognised": "set"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},
