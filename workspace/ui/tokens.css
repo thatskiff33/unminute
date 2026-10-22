@@ -28,7 +28,7 @@
   --line: rgba(20, 41, 102, 0.14);
   --line-soft: rgba(20, 41, 102, 0.08);
   --pill-line: rgba(20, 41, 102, 0.2);
-  --control-line: rgba(20, 41, 102, 0.28);
+  --control-line: rgba(20, 41, 102, 0.51);   /* 3:1 on white and --soft (WCAG 1.4.11, #298) */
   --input-bg: #FFFFFF;
   --link: #2B61BF;
   --link-hover: #142966;
@@ -134,7 +134,7 @@
     --line: rgba(255, 255, 255, 0.14);
     --line-soft: rgba(255, 255, 255, 0.08);
     --pill-line: rgba(255, 255, 255, 0.2);
-    --control-line: rgba(255, 255, 255, 0.32);
+    --control-line: rgba(255, 255, 255, 0.38);   /* 3:1 on the card and --soft on it (#298) */
     --input-bg: rgba(255, 255, 255, 0.06);
     --link: #B4DDF6;
     --link-hover: #FFFFFF;

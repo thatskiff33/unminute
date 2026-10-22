@@ -451,6 +451,9 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
   resize: none; overflow: hidden;
 }
 .title-edit textarea:hover { background: var(--soft); }
+/* Hovered, it shows a control's border where the focus ring goes, so it reads as
+   editable (WCAG 1.4.11, #298); with focus, the focus ring replaces it. */
+.title-edit textarea:hover:not(:focus-visible) { outline: 1px solid var(--control-line); outline-offset: 2px; }
 .m-meta { font-size: 14px; color: var(--muted); }
 .m-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .m-head-actions button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }

@@ -1,0 +1,136 @@
+# tests/test_ui_contrast.py
+# Non-text contrast of the page's own colours (WCAG 2.2 1.4.11, #298), worked
+# out from workspace/ui/tokens.css: the border of fields and buttons
+# (--control-line) and the focus ring (--accent) reach 3:1 against each surface
+# a control sits on, in the light and the dark theme. The meeting title, which
+# has no border, shows a --control-line boundary when the pointer is over it
+# and keeps the focus ring when it has focus. The design boards draw controls
+# with the same border colour as the tokens. tools/accessibility_check.py
+# measures the live page; these tests keep the tokens from drifting back.
+
+import re
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TOKENS = (ROOT / "workspace" / "ui" / "tokens.css").read_text(encoding="utf-8")
+APP_CSS = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
+BOARDS = ROOT / "docs" / "design" / "boards"
+NON_TEXT = 3.0      # WCAG 2.2 1.4.11; no rounding up
+
+
+def declarations(block):
+    """{--name: value} for the custom properties in a block of CSS."""
+    block = re.sub(r"/\*.*?\*/", "", block, flags=re.DOTALL)
+    return dict(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", block))
+
+
+def themes():
+    """The light tokens and the dark tokens (light values the dark theme does not override)."""
+    light_block = re.search(r"^:root\s*\{(.*?)^\}", TOKENS, re.DOTALL | re.MULTILINE).group(1)
+    dark_media = TOKENS[TOKENS.index("@media (prefers-color-scheme: dark)"):]
+    dark_block = re.search(r":root\s*\{(.*?)\}", dark_media, re.DOTALL).group(1)
+    light = declarations(light_block)
+    return {"light": light, "dark": {**light, **declarations(dark_block)}}
+
+
+def rgba(value):
+    """(r, g, b, a) from #RRGGBB or rgba(r, g, b, a)."""
+    value = value.strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+        return tuple(int(value[i:i + 2], 16) for i in (1, 3, 5)) + (1.0,)
+    m = re.fullmatch(r"rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\s*\)", value)
+    if m:
+        return (int(m[1]), int(m[2]), int(m[3]), float(m[4]))
+    raise ValueError(f"not a colour this test reads: {value}")
+
+
+def over(colour, background):
+    """colour drawn over an opaque background (r, g, b)."""
+    *rgb, a = colour
+    return tuple(c * a + b * (1 - a) for c, b in zip(rgb, background, strict=True))
+
+
+def luminance(rgb):
+    def channel(v):
+        v /= 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (channel(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def ratio(a, b):
+    la, lb = luminance(a), luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def surfaces(tokens):
+    """The opaque colours a control can sit on: the page, a card, the sidebar,
+    and a quiet panel (--soft) or a field's fill (--input-bg) on a card."""
+    card = over(rgba(tokens["--card"]), over(rgba(tokens["--page"]), (255, 255, 255)))
+    page = over(rgba(tokens["--page"]), (255, 255, 255))
+    return {"page": page, "card": card,
+            "sidebar": over(rgba(tokens["--side-bg"]), page),
+            "soft panel on a card": over(rgba(tokens["--soft"]), card),
+            "field fill on a card": over(rgba(tokens["--input-bg"]), card)}
+
+
+def rules(css, selector_part):
+    """The declaration blocks of rules whose selector contains selector_part."""
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    return [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+            if selector_part in sel]
+
+
+class ControlBorderContrastTests(unittest.TestCase):
+    def test_the_control_border_reaches_3_to_1_on_every_surface(self):
+        for theme, tokens in themes().items():
+            line = rgba(tokens["--control-line"])
+            for name, bg in surfaces(tokens).items():
+                with self.subTest(theme=theme, surface=name):
+                    self.assertGreaterEqual(ratio(over(line, bg), bg), NON_TEXT)
+
+    def test_the_focus_ring_reaches_3_to_1_on_the_page_and_a_card(self):
+        for theme, tokens in themes().items():
+            ring = rgba(tokens["--accent"])
+            for name in ("page", "card"):
+                bg = surfaces(tokens)[name]
+                with self.subTest(theme=theme, surface=name):
+                    self.assertGreaterEqual(ratio(over(ring, bg), bg), NON_TEXT)
+
+    def test_the_boards_draw_controls_with_the_token_colour(self):
+        # The boards write colours inline, without spaces: the control border
+        # (and the switch's off track, which the page draws with the same
+        # token) as the token's value, never the values before #298.
+        before_298 = ("rgba(20,41,102,0.28)", "rgba(255,255,255,0.32)", "rgba(20,41,102,0.24)")
+        text = "".join(b.read_text(encoding="utf-8") for b in sorted(BOARDS.glob("*.dc.html")))
+        for old in before_298:
+            self.assertNotIn(old, text, "a board draws a control with the old border colour")
+        for theme, tokens in themes().items():
+            with self.subTest(theme=theme):
+                self.assertIn(tokens["--control-line"].replace(" ", ""), text)
+
+
+class MeetingTitleBoundaryTests(unittest.TestCase):
+    def test_hovering_the_title_shows_a_control_border(self):
+        hover = [body for sel, body in rules(APP_CSS, ".title-edit textarea:hover")]
+        self.assertTrue(any(re.search(r"\boutline\s*:\s*1px solid var\(--control-line\)", b)
+                            for b in hover),
+                        "the meeting title has no visible boundary on hover")
+
+    def test_the_hover_boundary_gives_way_to_the_focus_ring(self):
+        for sel, body in rules(APP_CSS, ".title-edit textarea:hover"):
+            if "outline" in body:
+                self.assertIn(":not(:focus-visible)", sel)
+
+    def test_the_title_keeps_the_focus_ring(self):
+        for sel, body in rules(APP_CSS, ".title-edit"):
+            with self.subTest(selector=sel):
+                self.assertNotRegex(body, r"\boutline\s*:\s*(none|0)\b")
+        ring = [body for sel, body in rules(APP_CSS, ":focus-visible")
+                if sel.strip() == ":focus-visible"]
+        self.assertTrue(any("2px solid var(--accent)" in b for b in ring))
+
+
+if __name__ == "__main__":
+    unittest.main()
