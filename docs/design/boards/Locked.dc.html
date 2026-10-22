@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+<meta charset="utf-8">
+<title>Locked</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<!-- #111 C4b: Windows would not unlock the workspace key. The only screen
+     shown: no sidebar, no meeting, no list. The reason, the codes for IT,
+     three buttons and IT's steps. -->
+<div style="width: 1100px; height: 760px; overflow: hidden; font-family: 'Archivo', 'Segoe UI', sans-serif; background: #FFFFFF; color: #142966; line-height: normal">
+  <main style="box-sizing: border-box; height: 760px; padding: 32px 40px">
+    <section style="max-width: 760px; height: 100%; margin: 0 auto; display: flex; flex-direction: column; justify-content: center; gap: 22px">
+      <div style="display: flex; align-items: center; gap: 14px">
+        <span style="width: 52px; height: 52px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #B4DDF6; color: #142966">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+        </span>
+        <h1 style="margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -0.02em">Unminute is locked</h1>
+      </div>
+      <p style="margin: 0; font-size: 16px; line-height: 1.55">{{reason}}</p>
+      <dl style="margin: 0; padding: 14px 18px; border-radius: 14px; background: #EEF7FD; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 14px">
+        <sc-for list="{{codes}}" as="c" hint-placeholder-count="2">
+          <dt style="color: #566591; font-weight: 600">{{c.name}}</dt>
+          <dd style="margin: 0; font-family: Consolas, 'Cascadia Mono', monospace">{{c.value}}</dd>
+        </sc-for>
+      </dl>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px">
+        <button type="button" style="font: inherit; font-size: 15px; min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid #142966; background: #142966; color: #FFFFFF; font-weight: 700">Copy details for IT</button>
+        <button type="button" style="font: inherit; font-size: 15px; min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.28); background: #FFFFFF; color: #142966; font-weight: 600">How to recover</button>
+        <button type="button" style="font: inherit; font-size: 15px; min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.28); background: #FFFFFF; color: #142966; font-weight: 600">Close Unminute</button>
+      </div>
+      <section style="border: 1px solid rgba(20,41,102,0.14); border-radius: 16px; padding: 16px 20px">
+        <h2 style="margin: 0 0 8px; font-size: 17px; font-weight: 800">For your IT team</h2>
+        <ol style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5">
+          <sc-for list="{{steps}}" as="s" hint-placeholder-count="3">
+            <li>{{s.before}}<sc-if value="{{s.folder}}"><code style="font-family: Consolas, 'Cascadia Mono', monospace; font-size: 13px; word-break: break-all">{{s.folder}}</code>{{s.middle}}<code style="font-family: Consolas, 'Cascadia Mono', monospace; font-size: 13px; word-break: break-all">{{s.renamed}}</code></sc-if>{{s.after}}</li>
+          </sc-for>
+        </ol>
+      </section>
+    </section>
+  </main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":760}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      reason: "Windows could not unlock Unminute's encryption key for your account on this computer. This can happen after IT resets your password, or if your Windows profile is damaged. Your meetings are still on this computer, encrypted, and nothing has been deleted. Close Unminute, sign out of Windows and back in, then open Unminute again. If it is still locked, copy the details for your IT team.",
+      codes: [
+        { name: 'Code', value: 'U-3F9A2C' },
+        { name: 'Windows error', value: '-2146893813 (0x8009000B)' }
+      ],
+      steps: [
+        { before: 'Copy details for IT gives the reason, the codes, and the number of active holds and of meetings whose cleanup was confirmed but not finished. It holds no meeting content.', folder: '', after: '' },
+        { before: 'If Windows still cannot unlock the key, close Unminute and rename the workspace folder ', folder: '%LOCALAPPDATA%\\Unminute\\workspace', middle: ' (for example to ', renamed: 'workspace-locked', after: '). Leave it in this profile on this computer. Unminute then starts a new, empty workspace.' },
+        { before: 'The renamed folder still holds every meeting, including any whose cleanup was confirmed but did not finish. Delete it once no hold applies to anything in it.', folder: '', after: '' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

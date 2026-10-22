@@ -4,6 +4,7 @@
 # workflow's "UI idle (headless Edge)" job (.github/workflows/ci.yml).
 
 import contextlib
+import importlib.util
 import io
 import json
 import subprocess
@@ -317,7 +318,8 @@ class EdgeTimeoutTests(unittest.TestCase):
                 (lambda: ui_idle_check.run_transcribing(base), "transcribing",
                  "meeting-transcribing-long"),
                 (lambda: ui_idle_check.run_page(base, "hidden", 60000, "recording", 120),
-                 "hidden", "recording"))
+                 "hidden", "recording"),
+                (lambda: ui_idle_check.run_locked(base, 60000), "locked", "locked"))
         for run, mode, scenario in runs:
             with self.timed_out(), self.assertRaises(design_check.EdgeTimeout) as caught:
                 run()
@@ -330,3 +332,42 @@ class EdgeTimeoutTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LockedTests(unittest.TestCase):
+    # The locked screen (#111 C4b): asked for the status only, called only
+    # what the app allows while locked, and then nothing at all (no poll, no
+    # timer), with no meeting title on the page.
+    QUIET = {"page_errors": [], "locked_shown": True, "sample_titles_shown": [],
+             "bridge_calls_per_minute": 0, "timeouts_per_minute": 0, "live_intervals": 0,
+             "pending_animation_frames": 0, "all_calls": {"status": 1}}
+
+    def test_the_methods_allowed_while_locked_are_the_bridges(self):
+        # Read from workspace/api.py's source: the check needs no packages.
+        self.assertGreaterEqual(len(ui_idle_check.locked_methods()), 5)
+        if importlib.util.find_spec("numpy") is None:
+            self.skipTest("numpy not installed (workspace.api imports it)")
+        sys.path.insert(0, str(ROOT))
+        from workspace import api
+        self.assertEqual(set(api.LOCKED_METHODS), ui_idle_check.locked_methods())
+
+    def test_a_quiet_locked_screen_passes(self):
+        allowed = {"status", "copy_diagnostics", "close_app"}
+        self.assertEqual([], ui_idle_check.locked_problems(self.QUIET, allowed))
+
+    def test_each_way_of_leaving_the_locked_screen_busy_fails(self):
+        allowed = {"status", "copy_diagnostics", "close_app"}
+        for change, words in (
+                ({"page_errors": ["TypeError: x"]}, "threw"),
+                ({"locked_shown": False}, "not shown"),
+                ({"sample_titles_shown": ["Board meeting (sample)"]}, "meeting title"),
+                ({"bridge_calls_per_minute": 6}, "bridge calls a minute"),
+                ({"timeouts_per_minute": 6}, "timers a minute"),
+                ({"live_intervals": 1}, "interval"),
+                ({"pending_animation_frames": 1}, "animation frame"),
+                ({"all_calls": {"status": 1, "meetings": 1}}, "meetings"),
+                ({"all_calls": {}}, "never asked for the status"),
+                ({"bridge_calls_per_minute": None}, "bridge calls a minute")):
+            problems = ui_idle_check.locked_problems(dict(self.QUIET, **change), allowed)
+            self.assertEqual(1, len(problems), change)
+            self.assertIn(words, problems[0])

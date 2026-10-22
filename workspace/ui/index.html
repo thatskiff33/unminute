@@ -661,6 +661,31 @@
       <span>Recordings, transcripts and names stay on this computer. Unminute is a temporary workspace: once the final document is saved elsewhere, it removes its own copies. Something not working? <button type="button" id="help-diagnostics" class="link-plain">Copy diagnostics</button> and paste them into your support request: they hold no meeting content.</span>
     </p>
   </section>
+
+  <!-- Locked (#111 C4b): Windows would not unlock the workspace key, so the
+       app opened locked. Only this screen is shown, with no meeting, list or
+       setting; renderLocked (app.js) fills in the reason and codes as text. -->
+  <section id="view-locked" class="view page locked-page" aria-labelledby="h-locked" hidden>
+    <div class="locked-head">
+      <span class="locked-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+      <h1 id="h-locked">Unminute is locked</h1>
+    </div>
+    <p id="locked-reason" class="locked-reason" role="alert"></p>
+    <dl id="locked-codes" class="locked-codes" aria-label="Codes for your IT team"></dl>
+    <div class="locked-actions">
+      <button type="button" id="locked-copy" class="primary">Copy details for IT</button>
+      <button type="button" id="locked-help">How to recover</button>
+      <button type="button" id="locked-close">Close Unminute</button>
+    </div>
+    <section class="locked-it" aria-labelledby="h-locked-it">
+      <h2 id="h-locked-it">For your IT team</h2>
+      <ol>
+        <li>Copy details for IT gives the reason, the codes, and the number of active holds and of meetings whose cleanup was confirmed but not finished. It holds no meeting content.</li>
+        <li>If Windows still cannot unlock the key, close Unminute and rename the workspace folder <code>%LOCALAPPDATA%\Unminute\workspace</code> (for example to <code>workspace-locked</code>). Leave it in this profile on this computer. Unminute then starts a new, empty workspace.</li>
+        <li>The renamed folder still holds every meeting, including any whose cleanup was confirmed but did not finish. Delete it once no hold applies to anything in it.</li>
+      </ol>
+    </section>
+  </section>
 </main>
 </div>
 

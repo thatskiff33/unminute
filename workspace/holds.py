@@ -147,7 +147,9 @@ def purge_expired_receipts(store, now=None):
 def unfinished_work(store, now=None):
     """Meetings still in the workspace with their age and next action, for the
     Active meetings list. Retention reminders for that work come from
-    retention_state (#111 C6)."""
+    retention_state (#111 C6). A meeting whose title did not open also has
+    "damaged" (the store's list of columns that did not), so the list can tell
+    a key that will not open without reading the meeting again (#111 C4b)."""
     now = now or time.time()
     out = []
     held = {r["meeting_id"] for r in store._all(
@@ -163,9 +165,12 @@ def unfinished_work(store, now=None):
             action = "Needs attention"
         else:
             action = "Transcribing" if not m["paused"] else "Paused"
-        out.append({"id": m["id"], "title": m["title"],
-                    "age_days": int((now - m["created_at"]) // DAY), "action": action,
-                    "held": m["id"] in held})
+        row = {"id": m["id"], "title": m["title"],
+               "age_days": int((now - m["created_at"]) // DAY), "action": action,
+               "held": m["id"] in held}
+        if m.get("damaged"):
+            row["damaged"] = tuple(m["damaged"])
+        out.append(row)
     return out
 
 

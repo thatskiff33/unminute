@@ -812,15 +812,97 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
         window.destroy()
 
 
+def locked_checks(window, report, modes=(None,)):
+    """The locked screen (#111 C4b), audited as each view is, in each colour
+    mode asked for. Focus starts on its heading, which is focusable only until
+    it loses focus; the audit runs with focus on the first button, where the
+    keyboard goes next."""
+    import time
+
+    from workspace_ui_check import WAIT, evaluate
+    try:
+        window.events.loaded.wait(30)
+        while not window.evaluate_js("!!(window.workspace && window.pywebview && "
+                                     "window.pywebview.api && window.pywebview.api.status)"):
+            time.sleep(0.2)
+        report["heading_focused"] = evaluate(window, WAIT + """
+            for (let i = 0; i < 50 && !window.workspace.state.locked; i++) await wait(200);
+            await wait(300);
+            const focused = document.activeElement === document.getElementById('h-locked');
+            document.getElementById('locked-copy').focus();
+            return focused;""")
+        report["views"] = {}
+        for mode in modes:
+            shown = show_colour_mode(window, mode)
+            audit = evaluate(window, AUDIT)
+            audit["colour_mode"] = shown
+            audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
+                                                     "'dialog[open]')].map(d => d.id);")
+            audit["reflow"] = reflow(window)
+            report["views"][view_key("locked screen", shown, modes)] = audit
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        window.destroy()
+
+
+def locked_findings(locked):
+    """The locked screen's own findings, from its process's report; its views'
+    audits are failed by findings() with every other view's."""
+    out = []
+    if locked.get("error") or not locked.get("views"):
+        out.append(f"locked screen not audited ({locked.get('error') or 'no result'})")
+    if not locked.get("heading_focused"):
+        out.append("locked screen: focus did not start on its heading")
+    return out
+
+
+def create_window(ws, title):
+    """The app's window for ws, with the minimum size lifted for this check
+    only: 400% zoom gives 320 CSS px, below the app's 640 px minimum."""
+    import webview
+
+    from workspace import api, shell
+    holder = {}
+    real = webview.create_window
+    webview.create_window = lambda *a, **k: real(*a, **{**k, "min_size": (200, 200)})
+    try:
+        window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
+                                     title=title, allowed=api.API_METHODS)
+    finally:
+        webview.create_window = real
+    holder["window"] = window
+    return window
+
+
+def locked_main(out, modes):
+    """The locked screen's own process (pywebview starts once a process)."""
+    from workspace_ui_check import locked_workspace
+
+    from workspace import shell
+    report = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            ws = locked_workspace(Path(tmp))
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            window = create_window(ws, "Accessibility check, locked (synthetic data)")
+            shell.run(locked_checks, (window, report, modes))
+            ws.close()
+    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0
+
+
 def main():
     sys.path.append(str(Path(__file__).resolve().parent))   # also under -I; after the stdlib
     # workspace_ui_check puts the app checked (this checkout, or --app) on the path,
     # so it comes first: draft_scenario and the rest import workspace from there.
     import evidence
-    from workspace_ui_check import APP, FAKE, write_wav
+    from workspace_ui_check import APP, FAKE, run_locked_child, write_wav
 
     import draft_scenario  # noqa: I001  (after the line above: it imports workspace)
-    from workspace import api, shell
+    from workspace import shell
     from workspace.app import Workspace
     ap = argparse.ArgumentParser(description="Technical accessibility audit (#27, #298).",
                                  allow_abbrev=False)
@@ -832,8 +914,11 @@ def main():
     ap.add_argument("--colour-mode", choices=COLOUR_CHOICES, default=COLOUR_CHOICES[0],
                     help="the colour mode to audit the page in: the PC's own (system, the "
                     "default), light, dark, or both (each view in light, then dark)")
+    ap.add_argument("--locked-only", metavar="REPORT", help=argparse.SUPPRESS)
     args = ap.parse_args()
     modes = colour_modes(args.colour_mode)
+    if args.locked_only:                  # the locked screen's own process (#111 C4b)
+        return locked_main(args.locked_only, modes)
     before = evidence.prepare(ap, args, APP if args.app else None)
     out = Path(args.report)
     report = {"colour_mode": args.colour_mode}
@@ -848,28 +933,21 @@ def main():
         ws.import_paths([str(write_wav(root / "synthetic-standup.wav", 60))])
         assert ws.wait_idle(180), "processing did not finish"
         mid = ws.meetings()[0]["id"]
-        holder = {}
-        # The app's minimum window size (640 px) is above the 320 CSS px that
-        # 400% zoom gives; lift it for this check only, to test reflow there.
-        import webview
-        real = webview.create_window
-        webview.create_window = lambda *a, **k: real(*a, **{**k, "min_size": (200, 200)})
-        try:
-            window = shell.create_window(api.make_api(ws, lambda: holder.get("window")),
-                                         title="Accessibility check (synthetic data)",
-                                         allowed=api.API_METHODS)
-        finally:
-            webview.create_window = real
-        holder["window"] = window
+        window = create_window(ws, "Accessibility check (synthetic data)")
         feed = draft_scenario.DraftFeed(ws).install()       # the recording draft view (#370)
         shell.run(checks, (window, ws, mid, report, modes, feed))
         feed.remove()
         ws.close()
+    # The locked screen (#111 C4b), in a window and process of its own, in the
+    # same colour modes; its views count for the owner exceptions too.
+    locked = run_locked_child(args, "--locked-only", extra=["--colour-mode", args.colour_mode])
+    report["locked_heading_focused"] = locked.get("heading_focused")
+    report.setdefault("views", {}).update(locked.get("views") or {})
     excepted = owner_exceptions(report)
     report["owner_exceptions"] = {"decision": DECISION_298, "findings": excepted}
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
-    problems = findings(report)
+    problems = findings(report) + locked_findings(locked)
     if excepted:
         print(f"OWNER EXCEPTIONS ({len(excepted)}, not failures; {DECISION_298}):\n- "
               + "\n- ".join(excepted))
