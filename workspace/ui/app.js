@@ -367,6 +367,22 @@ async function renderStatus() {
   $("import-errors").replaceChildren(...s.import_errors.map((e) => notice("alert", e,
     linkButton("Dismiss", () => attempt(() => call("clear_import_errors").then(refresh))))));
   renderIntegrity(s.integrity);
+  renderFinishOnly(s.finish_only);
+}
+
+// Finish-only mode (#111 B5b): this version was opened for a workspace an
+// update is waiting to take over. Record, import and drop are not offered
+// (the app refuses them anyway); everything else works. Announced once.
+const FINISH_ONLY_TEXT = "An update is waiting for this workspace. Finish your meetings here; " +
+  "new meetings open in the updated version once this workspace is empty.";
+function renderFinishOnly(on) {
+  on = on === true;
+  if (on === state.finishOnly) return;
+  state.finishOnly = on;
+  $("finish-only").hidden = !on;
+  $("finish-only").replaceChildren(...(on ? [notice("hold", FINISH_ONLY_TEXT)] : []));
+  $("start").classList.toggle("finish-only", on);
+  if (on) say(FINISH_ONLY_TEXT);
 }
 
 // The database check after an unexpected close (R11) found damage: work is
@@ -2766,6 +2782,7 @@ function wireDrop() {
   const hide = () => { overlay.hidden = true; };
   document.addEventListener("dragover", (e) => {
     if (!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
+    if (state.finishOnly) return;            // nothing is imported in finish-only mode
     overlay.hidden = false;
     clearTimeout(dragTimer);
     dragTimer = setTimeout(hide, 400);

@@ -51,6 +51,26 @@ class PackageTests(unittest.TestCase):
         build = (root / "tools" / "build_package.py").read_text(encoding="utf-8")
         self.assertIn('"schema": schema_version(folder / "app" / "workspace" / "store.py")', build)
 
+    def test_version_json_names_the_graphics_card_components_from_the_app_source(self):
+        # #111 B5b: read with ast from the packaged gpu.py, never by importing it;
+        # a component folder no installed version names is removed (B5-4).
+        root = Path(__file__).resolve().parents[1]
+        sys.path.insert(0, str(root))
+        from workspace import gpu
+        self.assertEqual(bp.gpu_components(root / "workspace" / "gpu.py"),
+                         [gpu.VERSION, gpu.WHISPER_VERSION])
+        for body in ('VERSION = "a"', 'WHISPER_VERSION = "a"', 'VERSION = 1\nWHISPER_VERSION = "b"',
+                     'VERSION = "..\\\\x"\nWHISPER_VERSION = "b"',
+                     'VERSION = "a."\nWHISPER_VERSION = "b"', "def ("):
+            with self.subTest(body=body):
+                bad = self.root / "gpu.py"
+                bad.write_text(body, encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    bp.gpu_components(bad)
+        build = (root / "tools" / "build_package.py").read_text(encoding="utf-8")
+        self.assertIn('"gpu_components": gpu_components(folder / "app" / "workspace" / "gpu.py")',
+                      build)
+
     def test_pth_isolates_the_runtime(self):
         rt = self.root / "runtime"
         rt.mkdir()

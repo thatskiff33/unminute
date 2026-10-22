@@ -796,7 +796,8 @@ class UninstallOffboardTextTests(unittest.TestCase):
     def test_the_package_declares_the_switch_the_uninstaller_looks_for(self):
         build = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard"]', build)
+        self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard", '
+                      '"launch-check"]', build)
         self.assertIn('-notcontains "offboard"', uninstall)
         self.assertIn('"-I -B -X disable-remote-debug -m workspace $Switch"', uninstall)
         main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")

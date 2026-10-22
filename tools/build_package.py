@@ -810,6 +810,28 @@ def schema_version(store_py):
     return found[0].value
 
 
+def gpu_components(gpu_py):
+    """The graphics card component versions in the packaged workspace/gpu.py
+    (VERSION and WHISPER_VERSION), read with ast, for version.json's
+    "gpu_components" (#111 B5b: a component folder no installed version
+    names is removed). The build stops unless each is one plain name."""
+    try:
+        tree = ast.parse(Path(gpu_py).read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        sys.exit("Could not read the component versions from workspace/gpu.py.")
+    out = []
+    for name in ("VERSION", "WHISPER_VERSION"):
+        found = [node.value for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+        if (len(found) != 1 or not isinstance(found[0], ast.Constant)
+                or not isinstance(found[0].value, str)
+                or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}", found[0].value)
+                or found[0].value.endswith(".")):
+            sys.exit(f"workspace/gpu.py must set {name} to one plain version name.")
+        out.append(found[0].value)
+    return out
+
+
 def iso(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1513,11 +1535,15 @@ def build(version, out, cache, release=False, update_allowlist=False):
             # installer records it in current.json, and the launcher hands a
             # workspace only to a version whose format it knows.
             "schema": schema_version(folder / "app" / "workspace" / "store.py"),
+            # The graphics card component versions it uses (#111 B5b): one
+            # that no installed version names is removed from the model cache.
+            "gpu_components": gpu_components(folder / "app" / "workspace" / "gpu.py"),
             # Installers check for features before relying on them (#26): "gate"
             # is --gate, "restore-lid" is --restore-lid (the uninstaller, #191),
             # "launch-gate" is the launcher pass and --slot (#111 B5); "offboard"
-            # is --offboard-report and --offboard (uninstall.ps1 -Offboard, #111 B8b).
-            "features": ["gate", "restore-lid", "launch-gate", "offboard"]}
+            # is --offboard-report and --offboard (uninstall.ps1 -Offboard, #111 B8b);
+            # "launch-check" is the first-start check, --launch-check (B5b).
+            "features": ["gate", "restore-lid", "launch-gate", "offboard", "launch-check"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         (folder / "model-manifest.json").write_text(
             json.dumps(model_manifest(folder / "app" / "workspace" / "asr_engines.py"), indent=1),
