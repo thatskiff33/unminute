@@ -1,7 +1,8 @@
-# The recording level meter's frame rate (#216): it draws about 60 times a
-# second on whole display frames (every Nth frame, N = round(display rate / 60),
-# at least 1), and its easing is time-based so the motion does not depend on
-# how often it draws. The pure helpers are taken from workspace/ui/app.js by
+# The recording level meter's frame rate (#216): it draws about 30 times a
+# second on whole display frames (every Nth frame, N = round(display rate / 30),
+# at least 1: every frame at 30 Hz or lower), and its easing is time-based so
+# the motion does not depend on how often it draws (the owner's decision of
+# 22 Oct 2026, after 60 a second in #294). The pure helpers are taken from workspace/ui/app.js by
 # name and run in Node.js (the CI images have it, as the JS syntax job uses).
 #   python tools/run_tests.py
 
@@ -54,27 +55,34 @@ function run(hz, seconds, dropEvery) {
   const span = (times[settled[settled.length - 1]] - times[settled[0]]) / 1000;
   return { gaps: [...gaps], per_second: (settled.length - 1) / span, step: clock.step };
 }
-const rates = [30, 60, 75, 90, 120, 144, 165, 240];
+const rates = [24, 30, 48, 60, 75, 90, 120, 144, 165, 240];
 const result = { meter_hz: METER_HZ, ease_ref_hz: EASE_REF_HZ, rates: {}, dropped: run(120, 4, 30),
                  steps: {}, ease: {} };
 for (const hz of rates) result.rates[hz] = run(hz, 4, 0);
 for (const hz of rates) result.steps[hz] = meterStep(hz, 0);
 // Near the half-way point between two steps, the current step is kept.
-result.steps.wobble_up = meterStep(91, 1);
-result.steps.wobble_down = meterStep(89, 2);
+result.steps.wobble_up = meterStep(46, 1);
+result.steps.wobble_down = meterStep(44, 2);
+result.steps.wobble_165_down = meterStep(166, 5);
+result.steps.wobble_165_up = meterStep(164, 6);
 for (const r of [0.3, 0.08, 0.25, 0.35, 0.1]) {
   const once = ease(0, 1, r, 1 / 60);
   const twice = ease(ease(0, 1, r, 1 / 120), 1, r, 1 / 120);
+  // One draw at 30 a second moves as far as four at 120 a second.
+  let four = 0;
+  for (let k = 0; k < 4; k++) four = ease(four, 1, r, 1 / 120);
   result.ease[r] = { at_ref: easeShare(r, 1 / EASE_REF_HZ), once, twice,
+                     at_30: ease(0, 1, r, 1 / 30), four,
                      long_gap: ease(0, 1, r, 0.1) };
 }
-// The display changes mid-run (the window moved to another monitor): 120, then
-// 60, then 144 Hz, two seconds each. Draw gaps after each segment's first half second.
+// The display changes mid-run (the window moved to another monitor, or dynamic
+// refresh): 120, 60, 144, 30, then 240 Hz, two seconds each. Draw gaps after
+// each segment's first half second.
 {
   const clock = { prev: 0, frameMs: 0, step: 0, count: 0 };
   let t = 1000, i = 0;
   result.switched = [];
-  for (const hz of [120, 60, 144]) {
+  for (const hz of [120, 60, 144, 30, 240]) {
     const drawn = [];
     for (let k = 0; k < hz * 2; k++, i++) {
       t += 1000 / hz + [0, 0.2, -0.15, 0.1, -0.2][i % 5];
@@ -84,7 +92,7 @@ for (const r of [0.3, 0.08, 0.25, 0.35, 0.1]) {
                            gaps: [...new Set(drawn.slice(1).map((v, k) => v - drawn[k]))] });
   }
 }
-// Drawing at 60 a second, then the meter stops (or the window is minimised)
+// Drawing at 30 a second, then the meter stops (or the window is minimised)
 // for five seconds and starts again: the first draw after must not jump.
 {
   const v = { last: 0 }, clock = { prev: 0, frameMs: 0, step: 0, count: 0 };
@@ -94,7 +102,7 @@ for (const r of [0.3, 0.08, 0.25, 0.35, 0.1]) {
   restartMeter(v, clock);
   t += 5000;
   let after = null;
-  for (let k = 0; k < 4 && after === null; k++) {
+  for (let k = 0; k < 8 && after === null; k++) {
     t += 1000 / 120;
     if (meterFrame(clock, t)) after = meterDt(v, t);
   }
@@ -120,27 +128,46 @@ class LevelMeterTests(unittest.TestCase):
 
     def test_draws_on_every_nth_display_frame_and_never_unevenly(self):
         result = self.simulate()
-        self.assertEqual(result["meter_hz"], 60)
-        expected = {30: 1, 60: 1, 75: 1, 120: 2, 144: 2, 165: 3, 240: 4}
+        # The owner's decision (22 Oct 2026): about 30 a second.
+        self.assertEqual(result["meter_hz"], 30)
+        # Every 2nd frame at 60 Hz, 4th at 120, 5th at 144, 8th at 240; every
+        # frame at 30 Hz or lower.
+        expected = {24: 1, 30: 1, 48: 2, 60: 2, 90: 3, 120: 4, 144: 5, 240: 8}
         for hz, step in expected.items():
             with self.subTest(hz=hz):
                 self.assertEqual(result["steps"][str(hz)], step)
                 run = result["rates"][str(hz)]
                 self.assertEqual(run["gaps"], [step], "draws must be evenly spaced")
                 self.assertAlmostEqual(run["per_second"], hz / step, delta=1)
-        # 90 Hz is exactly half-way (1.5): whichever step it settles on, it keeps.
-        self.assertEqual(len(result["rates"]["90"]["gaps"]), 1)
-        self.assertLessEqual(result["rates"]["120"]["per_second"], 61)
+        # 75 and 165 Hz are exactly half-way (2.5, 5.5): whichever step each
+        # settles on, it keeps, and it is one of the two nearest.
+        for hz, steps in ((75, (2, 3)), (165, (5, 6))):
+            with self.subTest(hz=hz):
+                run = result["rates"][str(hz)]
+                self.assertEqual(len(run["gaps"]), 1, "draws must be evenly spaced")
+                self.assertIn(run["gaps"][0], steps)
+                self.assertEqual(run["step"], run["gaps"][0])
+                self.assertAlmostEqual(run["per_second"], hz / run["step"], delta=1)
+        # Away from those points, never faster than about 30 a second; and never
+        # below 20 on any display faster than 30 Hz (at worst 45 Hz / 2).
+        for hz, run in result["rates"].items():
+            with self.subTest(hz=hz):
+                if hz not in ("75", "165"):
+                    self.assertLessEqual(run["per_second"], 31)
+                self.assertLessEqual(run["per_second"], 38)
+                self.assertGreaterEqual(run["per_second"], min(int(hz), 20) - 1)
 
     def test_a_dropped_frame_does_not_change_the_step(self):
         result = self.simulate()
-        self.assertEqual(result["dropped"]["step"], 2)
-        self.assertEqual(result["dropped"]["gaps"], [2])
+        self.assertEqual(result["dropped"]["step"], 4)
+        self.assertEqual(result["dropped"]["gaps"], [4])
 
     def test_a_rate_wobbling_at_the_half_way_point_keeps_its_step(self):
         result = self.simulate()
         self.assertEqual(result["steps"]["wobble_up"], 1)
         self.assertEqual(result["steps"]["wobble_down"], 2)
+        self.assertEqual(result["steps"]["wobble_165_down"], 5)
+        self.assertEqual(result["steps"]["wobble_165_up"], 6)
 
     def test_easing_is_time_based_and_matches_the_tuned_per_frame_rates(self):
         result = self.simulate()
@@ -150,11 +177,14 @@ class LevelMeterTests(unittest.TestCase):
             with self.subTest(rate=rate):
                 self.assertAlmostEqual(got["at_ref"], float(rate), places=12)
                 self.assertAlmostEqual(got["once"], got["twice"], places=12)
+                # Drawing less often does not change the motion's speed.
+                self.assertAlmostEqual(got["at_30"], got["four"], places=12)
                 self.assertLess(got["long_gap"], 1.0)
 
     def test_a_display_rate_change_settles_on_the_new_step_evenly(self):
         result = self.simulate()
-        expected = {120: 2, 60: 1, 144: 2}
+        expected = {120: 4, 60: 2, 144: 5, 30: 1, 240: 8}
+        self.assertEqual([seg["hz"] for seg in result["switched"]], [120, 60, 144, 30, 240])
         for seg in result["switched"]:
             with self.subTest(hz=seg["hz"]):
                 self.assertEqual(seg["step"], expected[seg["hz"]])
@@ -162,11 +192,11 @@ class LevelMeterTests(unittest.TestCase):
 
     def test_the_first_draw_after_a_stop_or_minimise_does_not_jump(self):
         result = self.simulate()["restart"]
-        self.assertAlmostEqual(result["running"], 1 / 60, delta=0.001)
+        self.assertAlmostEqual(result["running"], 1 / 30, delta=0.001)
         # One nominal frame's easing (as on the very first draw), not 0.1 s worth.
         self.assertAlmostEqual(result["after"], 0.016, places=6)
         self.assertLess(result["share"], 0.6)
-        self.assertEqual(result["step"], 2, "the measured display rate is kept")
+        self.assertEqual(result["step"], 4, "the measured display rate is kept")
         # The page restarts the meter when it stops and when the window is hidden.
         stop = source_of("stopViz")
         self.assertIn("restartMeter(viz, meterClock);", stop)

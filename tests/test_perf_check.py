@@ -456,10 +456,10 @@ def drawn_pages(fps=120.0, draws=None, undrawn_ms=None, step_ms=60000.0,
     each read is step_ms of page time after the last, with a frame drawn just
     before it. While a recording state is shown the page runs fps animation
     frames a second and the level display draws `draws` times a second (by
-    default every frame up to 60 a second, as #294 has it), never undrawn for
+    default every frame up to 30 a second, as #216 has it), never undrawn for
     longer than undrawn_ms (by default two draws' time)."""
     clock = {"now": 1000.0, "frames": 0, "draws": 0}
-    draws = min(fps, 60.0) if draws is None else draws
+    draws = min(fps, 30.0) if draws is None else draws
 
     def page(commands):
         state = [c for c in commands if c not in ("probe", "check")][-1]
@@ -632,7 +632,7 @@ class DrawnWindowTests(unittest.TestCase):
 
     def report(self, state="recording", display=("on",), sessions=None, fps=120.0, draws=None,
                refresh_hz=120, **page1):
-        draws = min(fps, 60.0) if draws is None else draws
+        draws = min(fps, 30.0) if draws is None else draws
         start = self.page(1000.0)
         end = self.page(301000.0, frames=round(fps * 300), draws=round(draws * 300), **page1)
         return perf_check.drawing_report(state, None if display is None else list(display),
@@ -642,7 +642,7 @@ class DrawnWindowTests(unittest.TestCase):
         got = self.report()
         self.assertEqual({"drawn": True, "problems": [], "display": ["on"],
                           "page_visibility": ["visible", "visible"], "page_frames_per_s": 120.0,
-                          "meter_draws_per_s": 60.0, "min_meter_draws_per_s": 30.0,
+                          "meter_draws_per_s": 30.0, "min_meter_draws_per_s": 15.0,
                           "longest_undrawn_s": 0.0}, got)
         # A view that animates nothing still drew a frame in the window, and
         # has no level display to count.
@@ -686,7 +686,7 @@ class DrawnWindowTests(unittest.TestCase):
     def test_the_level_display_must_draw_while_recording(self):
         got = self.report(fps=5)
         self.assertFalse(got["drawn"])
-        self.assertEqual(["the level display drew 5.0 times a second (at least 30.0 "
+        self.assertEqual(["the level display drew 5.0 times a second (at least 15.0 "
                           "expected)"], got["problems"])
         self.assertTrue(self.report(fps=30)["drawn"])
         self.assertTrue(self.report(fps=60)["drawn"])
@@ -747,17 +747,35 @@ class DrawnWindowTests(unittest.TestCase):
         self.assertIn("clearRect(", app)
 
     def test_the_expected_draws_follow_the_display(self):
-        # #292 review: half of what the meter draws on this display: every
-        # frame up to 60 a second (#294), so half of min(60, refresh rate).
-        for hz, least in ((60, 30.0), (120, 30.0), (144, 30.0), (240, 30.0), (48, 24.0),
-                          (30, 15.0), (None, 30.0), (0, 30.0), (1, 30.0)):
+        # #292 review: half of what the meter draws on this display. It draws
+        # every frame up to about 30 a second (the owner's decision of 22 Oct
+        # 2026, #216; 60 in #294), so half of min(30, refresh rate). This
+        # follows the meter's rate: it is not a looser bar for the same meter.
+        for hz, least in ((60, 15.0), (120, 15.0), (144, 15.0), (165, 15.0), (240, 15.0),
+                          (48, 15.0), (30, 15.0), (24, 12.0), (None, 15.0), (0, 15.0),
+                          (1, 15.0)):
             with self.subTest(hz=hz):
                 self.assertEqual(least, perf_check.min_meter_draws(hz))
-        # On a 30 Hz display 15 draws a second is all it can do, and counts.
-        self.assertTrue(self.report(fps=30, refresh_hz=30, draws=15)["drawn"])
-        got = self.report(fps=120, draws=25)
-        self.assertEqual(["the level display drew 25.0 times a second (at least 30.0 "
+        # The meter at its rate counts: 30 a second on a 60, 120 or 144 Hz
+        # display, 27.5 at 165 Hz (every 6th frame), 24 on a 24 Hz one.
+        for fps, draws, hz in ((60, 30, 60), (120, 30, 120), (144, 28.8, 144),
+                               (165, 27.5, 165), (24, 24, 24), (120, 15, 120)):
+            with self.subTest(fps=fps, draws=draws):
+                self.assertTrue(self.report(fps=fps, refresh_hz=hz, draws=draws)["drawn"])
+        # On a 24 Hz display 12 draws a second (half its rate) still counts.
+        self.assertTrue(self.report(fps=24, refresh_hz=24, draws=12)["drawn"])
+        got = self.report(fps=120, draws=14)
+        self.assertEqual(["the level display drew 14.0 times a second (at least 15.0 "
                           "expected)"], got["problems"])
+        got = self.report(fps=24, refresh_hz=24, draws=11)
+        self.assertEqual(["the level display drew 11.0 times a second (at least 12.0 "
+                          "expected)"], got["problems"])
+
+    def test_the_expected_rate_is_the_meters_own(self):
+        # The tool's meter rate is the page's (METER_HZ in workspace/ui/app.js),
+        # so a change to one without the other fails here.
+        app = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertRegex(app, rf"(?m)^const METER_HZ = {perf_check.METER_MAX_HZ};$")
 
     def test_the_meter_draws_are_counted_not_the_pages_frames(self):
         # #292 review: the page can run every frame while the meter draws none
@@ -766,7 +784,7 @@ class DrawnWindowTests(unittest.TestCase):
         self.assertFalse(got["drawn"])
         self.assertEqual(120.0, got["page_frames_per_s"])
         self.assertEqual(0.0, got["meter_draws_per_s"])
-        self.assertTrue(self.report(fps=120, draws=60)["drawn"])
+        self.assertTrue(self.report(fps=120, draws=30)["drawn"])
 
     def test_a_long_undrawn_stretch_is_not_drawn(self):
         # #292 review: a window drawn well on average can still have gone
@@ -780,11 +798,13 @@ class DrawnWindowTests(unittest.TestCase):
 
     def test_the_help_says_how_the_drawing_is_judged(self):
         text = " ".join(perf_check.HELP.split())
-        self.assertIn("at least 30 a second on a 60 Hz or faster display", text)
+        self.assertIn("at least 15 a second on a 30 Hz or faster display", text)
+        self.assertIn("about 30 a second", text)
+        self.assertNotIn("60 a second", text)
         self.assertIn("no stretch longer than 5 s undrawn", text)
         self.assertNotIn("20 frames", text)
         self.assertEqual(5.0, perf_check.MAX_UNDRAWN_S)
-        self.assertEqual(60, perf_check.METER_MAX_HZ)
+        self.assertEqual(30, perf_check.METER_MAX_HZ)
 
     def test_the_docs_say_a_policy_lock_still_stops_the_run(self):
         # #292 review: keeping the display on does not stop a screen saver or
@@ -870,7 +890,7 @@ class DrawnRunTests(unittest.TestCase):
         for state in perf_check.VISIBLE_STATES:
             self.assertTrue(result[state]["drawing"]["drawn"], state)
         self.assertEqual(120.0, result["recording"]["drawing"]["page_frames_per_s"])
-        self.assertEqual(60.0, result["recording"]["drawing"]["meter_draws_per_s"])
+        self.assertEqual(30.0, result["recording"]["drawing"]["meter_draws_per_s"])
         for state in ("minimised", "recording-minimised"):
             self.assertNotIn("drawing", result[state])
 
@@ -1022,15 +1042,15 @@ class DrawnRunTests(unittest.TestCase):
 
     def test_the_expected_draws_use_the_rate_read_once_kept_on(self):
         # #292 review: the bar follows the display, not a fixed 20 a second.
-        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=120.0, draws=25.0))
+        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=120.0, draws=14.0))
         self.assertEqual(2, rc)
-        self.assertIn("the level display drew 25.0 times a second (at least 30.0 expected)",
+        self.assertIn("the level display drew 14.0 times a second (at least 15.0 expected)",
                       report.get("error", ""))
-        # On a 48 Hz display (read once kept on) 26 draws a second is enough.
-        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=48.0, draws=26.0),
-                                     refresh=(120, 48))
+        # On a 24 Hz display (read once kept on) 13 draws a second is enough.
+        rc, report = self.run_parent(FakeDisplay(), page=drawn_pages(fps=24.0, draws=13.0),
+                                     refresh=(120, 24))
         self.assertEqual(0, rc)
-        self.assertEqual(24.0, report["each_run"][0]["recording"]["drawing"].get(
+        self.assertEqual(12.0, report["each_run"][0]["recording"]["drawing"].get(
             "min_meter_draws_per_s"))
 
     def test_a_long_undrawn_stretch_in_a_run_is_unmeasurable(self):
