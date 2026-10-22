@@ -171,10 +171,10 @@ Coverage is measured and reported first. Then it gets a floor that can only rise
 **Criterion.** WCAG 2.2 AA (owner decision, 21 October 2026, #121).
 
 **Check.**
-- Automated checks on the real window every release: names, keyboard reach, focus, contrast, reflow and zoom.
+- Automated checks on the real window every release, against the WCAG 2.2 AA criteria that can be measured in the page: names, keyboard reach and traps, focus (visible, not obscured, its contrast), text and non-text contrast, target size, label in name, text spacing, reflow and zoom.
 - A manual keyboard and screen-reader pass every minor release.
-- Each app's Part B says which success criteria its automated check covers and which are left to the manual pass. An automated pass is never reported as conformance.
-- For Unminute, extending the automated check to the WCAG 2.2 AA criteria it can test (#298) is a gate for the next release (owner decision, 22 October 2026).
+- Each app's Part B says which success criteria its automated check covers, in full or in part, and which are left to the manual pass. An automated pass is never reported as conformance.
+- For Unminute, the automated check of the WCAG 2.2 AA criteria it can test (#298) is a gate for the next release (owner decision, 22 October 2026).
 
 ### 13. Security and privacy
 
@@ -265,7 +265,7 @@ Status is one of:
 | Coverage reported, then a rising floor | 7 | The "Coverage (report only)" job in `.github/workflows/quality.yml` | Report in place, not yet required; no floor yet |
 | Changelog fragment for shipped changes | 8, 10 | `.github/workflows/changelog.yml` (a `changelog.d/` fragment; the `no-changelog` label opts out); fragments checked by `tools/changelog.py --check` in the unit tests | In place |
 | Manual keyboard and screen-reader pass, every minor release, covering the WCAG 2.2 AA criteria the automated check leaves out ("Accessibility against WCAG 2.2 AA" below) | 12 | [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md) | Manual; not yet done (validation tracker #189) |
-| Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py`, against the package with its own Python (`--app`) | Manual; the reports name the package (B3a) and are required before a release is published (B3b). Extending the accessibility check to the automatable WCAG 2.2 AA criteria (#298) is a gate for the next release (owner decision, 22 October 2026) |
+| Real-window UI and accessibility checks | 7, 12 | `tools/workspace_ui_check.py`, `tools/accessibility_check.py` (the automatable WCAG 2.2 AA criteria, #298; "Accessibility against WCAG 2.2 AA" below), against the package with its own Python (`--app`) | Manual; the reports name the package (B3a) and are required before a release is published (B3b). The automatable WCAG 2.2 AA checks (#298) are a gate for the next release (owner decision, 22 October 2026). The accessibility checks themselves are unit-tested on synthetic fragments in headless Edge (`tests/test_accessibility_check.py`) |
 | Packaged lifecycle and residue | 7 | `tools/packaged_check.py` (pass criteria in its `verdict`) | Manual; the report names the package (B3a) and is required before a release is published (B3b); extended by security plan C7 |
 | Accuracy on the public clips in [ENGINE_EVALUATION.md](ENGINE_EVALUATION.md) (proposed: WER no worse than +0.5 points) | 7 | `tools/compare_engines.py` when engines or dependencies change | Manual |
 | Offline guard blocks network access | 13 | Unit tests (`tests/test_offline_guard.py`); `--self-test` on the installed package | Unit tests in place; `--self-test` manual |
@@ -288,24 +288,31 @@ Status is one of:
 
 ### Accessibility against WCAG 2.2 AA
 
-The target is WCAG 2.2 AA (section 12). `tools/accessibility_check.py` is the automated half of the check: it opens the real window on a throwaway workspace with synthetic audio and fake engines, visits a fixed list of views and dialogs (Setup's steps, Downloads, Meetings with the microphone chooser, Settings, Help, a meeting with its Versions, Holds and Speakers tabs, the names and confirmation dialogs, and the Hand off page), and fails on any finding. Passing it is not conformance: most of WCAG 2.2 AA needs the manual keyboard and screen-reader pass ([VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md), section 5; validation tracker #189, sitting 5). Extending the tool to the criteria below that can be checked automatically (for example 2.5.8 Target Size, 2.4.11 Focus Not Obscured and 1.4.11 Non-text Contrast) is #298, which is a gate for the next release (owner decision, 22 October 2026): no release is published until it has landed. Until then those criteria stay with the manual pass.
+The target is WCAG 2.2 AA (section 12). `tools/accessibility_check.py` is the automated half of the check: it opens the real window on a throwaway workspace with synthetic audio and fake engines, visits a fixed list of views and dialogs (Setup's steps, Downloads, Meetings with the microphone chooser, Settings, Help, a meeting with its Versions, Holds and Speakers tabs, the names and confirmation dialogs, and the Hand off page), and fails on any finding. These checks (#298) are a gate for the next release (owner decision, 22 October 2026). It checks the window in the Windows colour mode it runs in (light or dark); the other mode is checked only by running it again in that mode. Passing it is not conformance: much of WCAG 2.2 AA needs the manual keyboard and screen-reader pass ([VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md), section 5; validation tracker #189, sitting 5). `tests/test_accessibility_check.py` runs the audit in headless Edge on synthetic page fragments, and shows each check failing on a fragment that breaks its criterion.
 
 What it checks, and fails on:
 
 - **4.1.2 Name, Role, Value (names only):** every visible control and open dialog has an accessible name. Roles, states and values are not checked.
 - **2.1.1 Keyboard (in part):** no visible, enabled control is taken out of the tab order, and nothing with a pointer cursor is unreachable by keyboard. It does not operate each control from the keyboard.
+- **2.1.2 No Keyboard Trap (in part):** on each focusable control (the first 80 in a view), the page does not swallow Tab or Shift+Tab while focus stays put, and focus moved on to the next control is not pulled back. The key presses are simulated, so the browser's own movement of focus, and leaving a dialog with Escape, are left to the manual pass.
 - **2.4.7 Focus Visible:** each focusable control (the first 80 in a view) shows an outline or shadow on keyboard focus.
+- **2.4.11 Focus Not Obscured (Minimum):** each of those controls, once focused and scrolled into view, is not entirely hidden: at least one of nine points across its visible part shows the control or its label on top. Content that lets the pointer through (`pointer-events: none`) is not seen.
 - **1.4.3 Contrast (Minimum):** text against its effective background, 4.5:1, or 3:1 for large text; disabled controls are exempt. Backgrounds are taken as the nearest solid colour, so text over an image or gradient is not measured.
+- **1.4.11 Non-text Contrast (in part):** the focus outline (or, without one, the focus shadow) against the colour it is drawn on, 3:1, unless the browser draws it; and the boundary of each field, and of each checkbox or switch the page draws itself, 3:1 against what is around it: its border or its fill, or those of a wrapper that holds no other control. Other state indicators (the selected tab, a switch's position, icons) and graphics are not measured.
+- **2.5.8 Target Size (Minimum):** each pointer target is at least 24 by 24 CSS px, counting a label that operates the control as part of its target, or meets the spacing exception (a 24 px circle on its centre meets no other target and no other undersized target's circle). It recognises the inline exception (a control within a line of text) and the user agent exception (a checkbox or radio button at the browser's own size). It cannot judge the equivalent or essential exceptions: a target that relies on one is reported for a person to decide.
+- **2.5.3 Label in Name:** a control named with `aria-label` or `aria-labelledby` has its visible text, or its label's, in that name, comparing letters and digits only and ignoring case. A label of symbols only (such as ×) is not compared. Visible text near a control but not tied to it is not seen.
+- **1.4.12 Text Spacing (in part):** with line height 1.5, spacing after paragraphs of twice the font size, letter spacing 0.12 and word spacing 0.16 times the font size applied to the whole page, no text is newly cut off by a box that hides its overflow. Overlapping text, and text already cut off before the spacing, are not measured.
 - **1.4.10 Reflow:** at 640 and 320 CSS px wide (200% and 400% zoom of a 1280 px window), no horizontal scrolling or cut-off content.
 - **1.4.4 Resize Text (in part):** Ctrl+plus zooms the page and Ctrl+0 resets it, checked once, not per view.
 - **1.4.1 Use of Color (in part):** status badges carry text or a name, not colour alone.
-
-It records but does not fail on the page language (3.1.1), the window title (2.4.2) and the status region's `aria-live` setting (4.1.3).
+- **1.1.1 Non-text Content (in part):** every image has a text alternative (an empty one for decoration). Whether the text is right is not judged.
+- **3.2.1 On Focus (in part):** focusing a control opens no dialog and changes no address.
+- **3.1.1 Language of Page, 2.4.2 Page Titled and 4.1.3 Status Messages (in part):** checked once: the page has a language tag, the window has a title, and the status region is live (polite or assertive). Whether the title describes the page, and whether each message is announced, are left to the manual pass.
 
 Not checked by the tool, so left to the manual pass:
 
-- **New in WCAG 2.2:** 2.4.11 Focus Not Obscured (Minimum), 2.5.7 Dragging Movements, 2.5.8 Target Size (Minimum), 3.2.6 Consistent Help, 3.3.7 Redundant Entry and 3.3.8 Accessible Authentication (Minimum).
-- **From 2.1 and earlier:** screen-reader output, reading and focus order (1.3.1, 1.3.2, 2.4.3), keyboard traps (2.1.2), timing such as the confirmation button's delay (2.2.1), pausing moving content such as the live recording curve (2.2.2), non-text contrast of controls and focus rings (1.4.11), text spacing (1.4.12), content on hover or focus (1.4.13), headings and labels (2.4.6), label in name (2.5.3), status messages as announced (4.1.3), and error identification and suggestions (3.3.1, 3.3.3).
+- **New in WCAG 2.2:** 2.5.7 Dragging Movements, 3.2.6 Consistent Help, 3.3.7 Redundant Entry and 3.3.8 Accessible Authentication (Minimum), and the equivalent and essential exceptions to 2.5.8 for any target the tool reports.
+- **From 2.1 and earlier:** screen-reader output, reading and focus order (1.3.1, 1.3.2, 2.4.3), real Tab, Shift+Tab and Escape through each view and dialog (2.1.2), timing such as the confirmation button's delay (2.2.1), pausing moving content such as the live recording curve (2.2.2), non-text contrast of state indicators and graphics (1.4.11), overlapping text with the text spacing applied (1.4.12), content on hover or focus (1.4.13), headings and labels (2.4.6), changes of context on input (3.2.2), status messages as announced (4.1.3), and error identification and suggestions (3.3.1, 3.3.3).
 - **Windows contrast themes** (forced colours).
 - **The confirmation windows the app draws outside the page** (recording, deletion authority, discard; `workspace/consent.py`): they are not part of the page the tool audits.
 - **States the tool does not visit:** a recording in progress, a recovered recording, error and damage messages, and the Downloads page while a download runs.
