@@ -1637,7 +1637,9 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(decoded - fed))), 1e-3)
         self.assertTrue(self.ws.transcript(m["id"])["items"])
 
-    def test_the_recording_key_is_erased_with_the_import(self):
+    def test_the_recording_key_is_erased_when_the_first_version_is_set_up(self):
+        # The owner's decision (22 Oct 2026): kept through the import, deleted
+        # in the transaction that sets up the meeting's first version.
         from workspace.store import KeyMissing
         self.ws.settings.update(microphone=True)
         self.ws.start()
@@ -1646,8 +1648,17 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.holder["stream"].feed(3)
         wrapped = self.wrapped_key(rid)
         self.assertEqual(self.ws.store.recording_key_ids(), [rid])
-        self.ws.stop_recording()
-        self.assertTrue(self.ws.wait_idle(120))
+        real, seen = self.ws.store.ensure_version, []
+
+        def ensure_version(*args, **kwargs):
+            seen.append(self.ws.store.recording_key_ids())          # imported, not yet set up
+            vid = real(*args, **kwargs)
+            seen.append(self.ws.store.recording_key_ids())
+            return vid
+        with mock.patch.object(self.ws.store, "ensure_version", ensure_version):
+            self.ws.stop_recording()
+            self.assertTrue(self.ws.wait_idle(120))
+        self.assertEqual(seen, [[rid], []])
         self.assertEqual(len(self.ws.meetings()), 1)
         self.assertEqual(self.in_database_files(wrapped), [])       # not in the log either
         with self.assertRaises(KeyMissing):
@@ -1722,27 +1733,91 @@ class WorkspaceRecordingTests(unittest.TestCase):
         self.assertEqual(self.ws.store.recording_key_ids(), [])
         self.assertEqual(list(rec_root.iterdir()), [])
 
-    def test_a_failure_after_the_import_leaves_no_meeting_and_no_rows(self):
+    def test_a_failure_while_planning_keeps_the_key_and_try_again_imports(self):
+        # The owner's decision (22 Oct 2026): a failure while the meeting's
+        # first version is set up leaves no meeting and no rows, and keeps the
+        # recording and its key, so Try again can import it.
         self.ws.settings.update(microphone=True)
         self.ws.start()
         self.ws._plan_version = mock.Mock(side_effect=RuntimeError("planning failed"))
         self.ws.start_recording(3, consent=CONSENT)
-        rid = self.ws._recording.folder.name
-        self.holder["stream"].feed(3)
+        folder = self.ws._recording.folder
+        rid = folder.name
+        self.holder["stream"].feed(7)                       # long enough to transcribe
         self.ws.stop_recording()
         self.assertTrue(self.ws.wait_idle(120))
         self.assertEqual(self.ws.meetings(), [])
         q = self.ws.store._one
         self.assertEqual([q(f"SELECT COUNT(*) FROM {t}")[0] for t in
-                          ("meetings", "sources", "content_keys", "recording_sources",
-                           "recording_keys")], [0, 0, 0, 0, 0])
+                          ("meetings", "sources", "content_keys", "recording_sources")],
+                         [0, 0, 0, 0])
+        self.assertEqual(self.ws.store.recording_key_ids(), [rid])      # kept for Try again
         report = self.ws.recording_status()["reports"][-1]
-        self.assertEqual(report["pending"], rid)                  # reported; its key went
+        self.assertEqual(report["pending"], rid)
+        self.assertIn("could not be imported yet", report["note"])
         del self.ws._plan_version
+        wrapped = self.wrapped_key(rid)
         self.ws.retry_recording_import(report["id"])
         self.assertTrue(self.ws.wait_idle(60))
-        self.assertIn("could not be read", self.ws.recording_status()["reports"][-1]["note"])
-        self.assertEqual(self.ws.meetings(), [])
+        [m] = self.ws.meetings()
+        self.assertTrue(self.ws.store.recording_imported(rid))
+        self.assertEqual(self.ws.store.recording_key_ids(), [])
+        self.assertEqual(self.in_database_files(wrapped), [])
+        self.assertFalse(folder.exists())
+        self.assertTrue(self.ws.transcript(m["id"])["items"])
+
+    def test_a_crash_before_the_first_version_leaves_the_key_until_the_next_start(self):
+        # The window between the import's commit and the first version: the
+        # next start sets the meeting up, which erases the key.
+        self.ws.settings.update(microphone=True)
+        self.ws.start()
+        self.ws._plan_version = mock.Mock(side_effect=RuntimeError("the app stopped here"))
+        self.ws._discard_import = mock.Mock(return_value=False)      # nothing removed
+        self.ws.start_recording(3, consent=CONSENT)
+        folder = self.ws._recording.folder
+        rid = folder.name
+        self.holder["stream"].feed(7)                       # long enough to transcribe
+        self.ws.stop_recording()
+        self.assertTrue(self.ws.wait_idle(120))
+        self.assertTrue(self.ws.store.recording_imported(rid))
+        self.assertEqual(self.ws.store.recording_key_ids(), [rid])
+        wrapped = self.wrapped_key(rid)
+        self.ws.close()
+        self.ws = self.make()                       # the start-up upkeep sets it up
+        self.assertEqual(self.ws.store.recording_key_ids(), [])
+        self.assertEqual(self.in_database_files(wrapped), [])
+        self.ws.start()
+        self.assertTrue(self.ws.wait_idle(60))
+        [m] = self.ws.meetings()
+        self.assertFalse(folder.exists())           # already a meeting: removed, not imported
+        self.assertTrue(self.ws.transcript(m["id"])["items"])
+
+    def test_the_next_start_erases_the_key_of_a_recording_already_imported(self):
+        # A meeting made from the recording that the start-up upkeep could not
+        # finish (here held, with no audio): its recording key goes at the
+        # sound start, while the folder is still there; never while locked
+        # (tests/test_locked.py).
+        from workspace import holds
+        rid = "c" * 32
+        folder = self.ws.root / "recordings" / rid
+        rec = recorder.Recording(folder, 3, "Mic", RATE, open_stream=opener(self.holder),
+                                 key=KEY)
+        rec.start()
+        self.holder["stream"].feed(2)
+        rec.stop()
+        s = self.ws.store
+        mid = s.create_meeting("synthetic held")
+        s.add_source(mid, original_path=None, original_sha256="a" * 64, original_size=1,
+                     original_mtime_ns=0, audio_id="b" * 64, samples=RATE, sample_rate=RATE,
+                     recording=(rid, "{}"))
+        holds.add_hold(s, mid, "audio", "synthetic reason")
+        s.create_recording_key(rid)                 # left by a crash before the first version
+        wrapped = self.wrapped_key(rid)
+        self.ws.close()
+        self.ws = self.make()
+        self.assertEqual(self.ws.store.recording_key_ids(), [])
+        self.assertEqual(self.in_database_files(wrapped), [])
+        self.assertTrue(folder.is_dir())           # by the sweep, not because the folder went
 
     def test_a_start_that_fails_leaves_no_key(self):
         self.ws.settings.update(microphone=True)

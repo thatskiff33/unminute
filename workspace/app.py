@@ -548,20 +548,25 @@ class Workspace:
             cleanup.compact_deferred(self.store)       # owed compaction (#198)
 
     def _sweep_recording_keys(self):
-        """Delete the key of a recording whose folder is gone (#111 C3b): a
-        crash between making the key and the folder, or after a folder was
-        removed. A folder whose key is missing is kept and reported when it
-        is imported, never deleted here. Runs only at a sound, unlocked start
-        (never while locked: no key row is read or changed then, C4a design
-        7.2), before any recording can start."""
+        """Delete a recording key that is no longer needed (#111 C3b): its
+        folder is gone (a crash between making the key and the folder, or
+        after a folder was removed), or a meeting was already made from it
+        (a crash between the import and the meeting's first version, whose
+        set-up the start-up upkeep could not finish; its folder is removed,
+        not imported, so its chunks are erased first). A folder whose key is
+        missing is kept and reported when it is imported, never deleted here.
+        Runs only at a sound, unlocked start, after _reconcile_imports (never
+        while locked: no key row is read or changed then, C4a design 7.2),
+        before any recording or import can start."""
         if self.locked is not None:
             return
         try:
             ids = self.store.recording_key_ids()
+            gone = [rid for rid in ids
+                    if not (audit.HEX32.fullmatch(rid) and (self.recordings / rid).is_dir())
+                    or self.store.recording_imported(rid)]
         except StoreError:
             return
-        gone = [rid for rid in ids
-                if not (audit.HEX32.fullmatch(rid) and (self.recordings / rid).is_dir())]
         for rid in gone:
             self._forget_recording_key(rid)
 
@@ -865,8 +870,8 @@ class Workspace:
         recording (the audit log ties its confirmation to the meeting).
         stream: for a microphone recording (#111 C3b), (audio, (recording
         folder id, info JSON)) in place of path: the audio is streamed to the
-        decoder (media.import_stream), and the recording's key is deleted with
-        the import's commit."""
+        decoder (media.import_stream); the recording's key is deleted when the
+        meeting's first version is set up (_plan_version)."""
         if stream is not None:
             audio, row = stream
             mid, sid = media.import_stream(self.store, self.media, audio, title, row)
@@ -1338,10 +1343,22 @@ class Workspace:
         and checked in full (recorder.open_recording), and the recording is
         streamed to the sandboxed decoder over its stdin; no plain copy is
         written. The import's commit stores the sealed recording_sources row
-        and deletes the key, then the write-ahead log is emptied. Before any
-        folder of a recording is deleted (discarded, or nothing recorded) its
-        key goes first, so whatever is left can never be opened."""
+        (no second import); the key is kept until the meeting's first version
+        is set up, in whose transaction it is deleted before the write-ahead
+        log is emptied (_plan_version), so a failure before then keeps the
+        folder and its key for Try again (the owner's decision, 22 Oct 2026).
+        Before any folder of a recording is deleted (discarded, nothing
+        recorded, or already a meeting) its key goes first, so whatever is
+        left can never be opened.
+
+        A recovered folder that only reports (_only_reports) runs while
+        damage holds work (R11). Deleting a folder deletes its key first, a
+        write, so while held a discarded, empty or already imported folder is
+        left as it is, for a start whose check passes."""
+        held = not self._integrity_ok.is_set()
         if recorder.is_discarded(folder):        # the user discarded it: delete, never import
+            if held:
+                return                           # R11: deleted at a sound start
             self._forget_recording_key(folder.name)
             try:
                 recorder.remove_folder(folder)
@@ -1351,6 +1368,8 @@ class Workspace:
         journal = recorder.read_journal(folder)
         if journal is None and not (folder / "journal.json").exists() \
                 and not recorder.has_audio(folder):
+            if held:
+                return                           # R11: deleted at a sound start
             self._forget_recording_key(folder.name)
             try:                         # an empty leftover (removal stopped at the end)
                 recorder.remove_folder(folder)
@@ -1367,6 +1386,9 @@ class Workspace:
                               "pending": folder.name})
             return
         if journal.get("state") == "imported" or self.store.recording_imported(folder.name):
+            if held:
+                return                           # R11: removed at a sound start
+            self._forget_recording_key(folder.name)    # set-up unfinished: kept until now
             try:                         # already a meeting: finish removing the folder
                 recorder.remove_folder(folder)
             except OSError:
@@ -1457,9 +1479,6 @@ class Workspace:
         finally:
             if audio is not None:
                 audio.close()
-            # The import's commit deleted the key: empty the write-ahead log
-            # now (also when a later step failed and the meeting was removed).
-            self._erase_if_key_gone(folder.name)
         # Mark the folder as imported before removing it; the recording_sources
         # row, committed with the import, also stops a second import.
         report.update(title=title, meeting=mid, recording_id=folder.name)
@@ -1479,9 +1498,9 @@ class Workspace:
         self._add_report(report)
 
     def _erase_if_key_gone(self, recording_id):
-        """After an import attempt: if the import's commit deleted the
-        recording's key, empty the write-ahead log (erase_checkpoint), or
-        leave the compaction owed when it stays busy."""
+        """After a meeting's first version is set up: if its transaction
+        deleted the recording's key, empty the write-ahead log
+        (erase_checkpoint), or leave the compaction owed when it stays busy."""
         try:
             if recording_id in self.store.recording_key_ids():
                 return
@@ -1491,12 +1510,20 @@ class Workspace:
             pass
 
     def _plan_version(self, mid, sid):
+        """Plan and set up a meeting's version. For a meeting made from a
+        microphone recording whose key is still kept (#111 C3b), the version's
+        transaction deletes that key (store.ensure_version), and the
+        write-ahead log is emptied here."""
         reader = media.open_audio(self.store, self.media, mid)
         try:
             plan = plan_chunks(reader, len(reader))
         finally:
             reader.close()
-        return self._new_version(mid, sid, plan)
+        recording_id = self.store.meeting_recording_key(mid)
+        vid = self._new_version(mid, sid, plan)
+        if recording_id is not None:
+            self._erase_if_key_gone(recording_id)
+        return vid
 
     def _discard_import(self, mid):
         """Remove a meeting whose import never completed. Only the app's own

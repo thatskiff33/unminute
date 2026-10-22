@@ -854,38 +854,69 @@ class ErasePointTests(unittest.TestCase):
         self.assertEqual((0, 0), self.leftovers(mid))
         self.assertEqual(0, self.s._one("SELECT COUNT(*) FROM meetings")[0])
 
+    def checkpointed(self, rid):
+        """The recording key's wrapped bytes, after a forced checkpoint of the
+        write-ahead log, so they are in the main database file (where only
+        secure_delete and the erase checkpoint can remove them), not only in
+        the log."""
+        wrapped = bytes(self.s._one("SELECT wrapped FROM recording_keys WHERE recording_id = ?",
+                                    (rid,))[0])
+        with self.s._lock:
+            busy = self.s.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        self.assertEqual(busy, 0)
+        self.assertIn(wrapped, (self.root / "workspace.db").read_bytes())
+        return wrapped
+
+    def in_database_files(self, needle):
+        return [name for name in ("workspace.db", "workspace.db-wal")
+                if (self.root / name).exists() and needle in (self.root / name).read_bytes()]
+
     def test_recording_keys_are_made_and_destroyed(self):
         key = self.s.create_recording_key("rec-1")
         self.assertEqual(key, self.s.recording_key("rec-1"))
+        wrapped = self.checkpointed("rec-1")
         self.assertTrue(self.s.destroy_recording_key("rec-1"))
         self.assertEqual(0, self.s._one("SELECT COUNT(*) FROM recording_keys")[0])
+        self.assertEqual([], self.in_database_files(wrapped))      # crypto-erased
         with self.assertRaises(KeyMissing):
             self.s.recording_key("rec-1")
 
-    def test_an_import_deletes_its_recording_key_in_the_same_transaction(self):
-        # #111 C3b: the source, its sealed recording row and the deletion of
-        # the recording's key commit together, so a crash cannot leave a
-        # meeting whose recording could be imported again, or a key that
-        # outlives the import.
+    def test_the_first_version_deletes_the_recording_key_in_its_transaction(self):
+        # #111 C3b, the owner's decision of 22 Oct 2026: a recording's key is
+        # kept through the import and deleted in the transaction that sets up
+        # the meeting's first version, so a failure while planning can be
+        # tried again. The recording_sources row, committed with the import,
+        # stops a second import meanwhile.
         count = lambda t: self.s._one(f"SELECT COUNT(*) FROM {t}")[0]   # noqa: E731
         self.s.create_recording_key("rec-1")
         self.s.create_recording_key("rec-2")
         mid = self.s.create_meeting("synthetic recording")
-        self.s.add_source(mid, original_path=None, original_sha256=H, original_size=1,
-                          original_mtime_ns=0, audio_id=H, samples=SR, sample_rate=SR,
-                          recording=("rec-1", '{"device": "x"}'))
-        self.assertEqual(self.s.recording_key_ids(), ["rec-2"])
+        sid = self.s.add_source(mid, original_path=None, original_sha256=H, original_size=1,
+                                original_mtime_ns=0, audio_id=H, samples=SR, sample_rate=SR,
+                                recording=("rec-1", '{"device": "x"}'))
+        self.assertEqual(self.s.recording_key_ids(), ["rec-1", "rec-2"])   # kept by the import
         self.assertTrue(self.s.recording_imported("rec-1"))
-        # A failure inside the transaction (here the recording row is refused:
-        # rec-1 already made a meeting) keeps the key and adds no source.
-        self.s.create_recording_key("rec-1")
+        # A second import of rec-1 is refused and adds nothing.
         other = self.s.create_meeting("synthetic second")
         with self.assertRaises(StoreError):
             self.s.add_source(other, original_path=None, original_sha256=H, original_size=1,
                               original_mtime_ns=0, audio_id=H, samples=SR, sample_rate=SR,
                               recording=("rec-1", "{}"))
-        self.assertEqual(self.s.recording_key_ids(), ["rec-1", "rec-2"])
         self.assertEqual((count("sources"), count("recording_sources")), (1, 1))
+        wrapped = self.checkpointed("rec-1")
+        # A set-up that fails inside its transaction (a malformed plan) keeps the key.
+        version = dict(engine="e", model="m", model_revision="r", precision="int8", config={})
+        with self.assertRaises(StoreError):
+            self.s.ensure_version(mid, sid, chunk_plan=[(0, SR)], **version)
+        self.assertEqual((count("versions"), self.s.recording_key_ids()), (0, ["rec-1", "rec-2"]))
+        vid = self.s.ensure_version(mid, sid, chunk_plan=[(0, SR, 0, SR)], **version)
+        self.assertEqual(self.s.recording_key_ids(), ["rec-2"])           # with the version
+        self.assertTrue(self.s.erase_checkpoint())
+        self.assertEqual([], self.in_database_files(wrapped))
+        # A later version of the same meeting, or of a meeting from a file, is unaffected.
+        self.assertEqual(vid, self.s.ensure_version(mid, sid, chunk_plan=[(0, SR, 0, SR)],
+                                                    **version))
+        self.assertEqual(self.s.recording_key_ids(), ["rec-2"])
 
     def test_the_erase_checkpoint_waits_for_a_reader(self):
         self.s.create_recording_key("rec-1")

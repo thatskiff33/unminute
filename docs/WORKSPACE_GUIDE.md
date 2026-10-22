@@ -47,7 +47,7 @@ Microphone recording is off until you turn it on, in Setup or in Settings > Reco
 
 How it handles problems:
 
-- **Saved as it goes.** Audio is saved to disk every few seconds while recording, encrypted with a key that Windows keeps for your account. When the recording becomes a meeting, or you discard or delete it, that key is deleted first, so anything left on disk cannot be read. If the app or computer stops unexpectedly, the next start lists it as a recovered recording: choose **Keep and transcribe** (it then reports about how much at the end could not be saved) or **Delete…**.
+- **Saved as it goes.** Audio is saved to disk every few seconds while recording, encrypted with a key that Windows keeps for your account. Once the recording has become a meeting ready to transcribe, or when you discard or delete it, that key is deleted before the saved files, so anything left on disk cannot be read. If the app or computer stops unexpectedly, the next start lists it as a recovered recording: choose **Keep and transcribe** (it then reports about how much at the end could not be saved) or **Delete…**.
 - **Closing asks first.** Closing the window while recording asks whether to stop and save, discard, or keep recording.
 - **Gaps are reported, never hidden.** If the computer falls behind or the disk fills up, the recording says when audio was lost and, where known, for how long.
 - **The microphone never changes on its own.** If the microphone is disconnected, recording stops and keeps what was saved. It does not move to another microphone.
