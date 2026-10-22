@@ -1242,7 +1242,7 @@ class GpuUpkeepTests(unittest.TestCase):
         self.assertNotIn(str(self.base), logged)
 
     @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
-    def test_only_the_current_version_starts_the_upkeep(self):
+    def test_only_the_current_version_starts_the_upkeep_and_compat_is_finish_only(self):
         # The app's own start (__main__.main) as each role, up to the window.
         from workspace import __main__ as main
         from workspace import app as app_module
@@ -1272,6 +1272,8 @@ class GpuUpkeepTests(unittest.TestCase):
                 try:
                     with self.assertRaisesRegex(RuntimeError, "the window"):
                         main.main()
+                    # A compat start opens the workspace for finishing only (B5-7).
+                    self.assertEqual(made[-1].finish_only, role == "compat")
                 finally:
                     made.pop().close()
                 self.assertEqual(started.called, upkeep)
