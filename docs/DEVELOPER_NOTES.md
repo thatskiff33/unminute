@@ -217,11 +217,14 @@ real time, and remove it when the cause is fixed.
 - **Speed tests measure processor time, not wall time (#293).** The private data guard's
   speed tests in `tests/test_agent_guard.py` failed at 2.0 s wall clock when the laptop was
   busy. They now time the test's own thread (`time.thread_time()`) against the same 2.0 s, and
-  the too-complex test also counts the guard's work (`counted_work`) against fixed ceilings
-  that do not depend on the machine. A negative control lifts the guard's work bounds and
-  checks that both measures then fail. Load that slows the processor itself (clock speed,
-  heat) still counts, so a failure there is worth a rerun before treating it as real. Do not
-  raise the 2.0 s or the ceilings to make a run pass (AGENTS.md E2).
+  the too-complex test also counts the guard's work (`counted_work`) against a fixed limit
+  per command shape (`TOO_COMPLEX`), 5% above what the bounded guard measured, so raising
+  any of its work bounds by a tenth fails the test. A negative control lifts the guard's
+  work bounds and checks that both measures then fail. Load that slows the processor itself
+  (clock speed, heat) still counts, so a failure there is worth a rerun before treating it as
+  real. Do not raise the 2.0 s or the work limits to make a run pass (AGENTS.md E2); a
+  deliberate change to the guard's work needs the shapes measured again, with the reason in
+  the PR.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 
