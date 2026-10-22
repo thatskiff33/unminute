@@ -42,7 +42,7 @@ API_METHODS = frozenset({
     "set_folder_active", "remove_folder", "scan_now", "set_folder_authority", "zoom",
     "microphone_devices", "start_recording", "pause_recording", "resume_recording",
     "stop_recording", "discard_recording", "recording_status", "discard_recording_report",
-    "test_microphone",
+    "test_microphone", "recording_draft",
     "retry_recording_import", "delete_pending_recording", "remove_model", "discard_meeting",
     "close_app", "report_ui_error", "copy_diagnostics", "continue_despite_damage",
 })
@@ -398,6 +398,12 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def recording_status(self):
         return _safe(ws.recording_status)
 
+    def recording_draft(self, since):
+        """Live draft text of the recording in progress (#104): the phrases
+        after position since, as text and times, rendered by the page as
+        text only. The owner authorised this method on 20 Oct 2026 (E2)."""
+        return _safe(lambda: ws.recording_draft(_int(since, 0, 10**7)))
+
     def discard_recording_report(self, rid):
         return _safe(lambda: ws.discard_recording_report(_report_id(rid)))
 
@@ -483,7 +489,7 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  microphone_devices=microphone_devices, start_recording=start_recording,
                  pause_recording=pause_recording, resume_recording=resume_recording,
                  stop_recording=stop_recording, discard_recording=discard_recording,
-                 recording_status=recording_status,
+                 recording_status=recording_status, recording_draft=recording_draft,
                  discard_recording_report=discard_recording_report,
                  test_microphone=test_microphone,
                  retry_recording_import=retry_recording_import,

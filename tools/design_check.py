@@ -42,6 +42,12 @@ CASES = [
     {"name": "home-drop", "board": "Home-Drop.dc.html", "app": "home-drop"},
     {"name": "home-states", "board": "Home-States.dc.html", "app": "home-states", "h": 1180},
     {"name": "recording-states", "board": "Recording-States.dc.html", "app": "", "h": 1180},
+    # Live drafts (#104): the recording card with draft text, light and dark.
+    {"name": "recording-drafts", "board": "Recording-Drafts.dc.html", "app": "recording-drafts"},
+    {"name": "recording-drafts-dark", "board": "Recording-Drafts-Dark.dc.html",
+     "app": "recording-drafts", "dark": True},
+    {"name": "recording-drafts-states", "board": "Recording-Drafts-States.dc.html", "app": "",
+     "h": 1180},
     {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
     {"name": "meeting-transcribing", "app": "meeting-transcribing",
      "board": "Meeting-Transcribing.dc.html"},
@@ -65,6 +71,9 @@ CASES = [
     {"name": "settings", "board": "Settings.dc.html", "app": "settings", "h": 1320},
     {"name": "settings-assistant", "board": "Settings.dc.html", "app": "settings-assistant",
      "h": 1320, "props": {"assistant": "set"}},
+    # #104 with #108: the choice of what draft text follows, with computer audio on.
+    {"name": "settings-drafts-mix", "board": "Settings.dc.html", "app": "settings-drafts-mix",
+     "h": 1320, "props": {"drafts": "mix"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},

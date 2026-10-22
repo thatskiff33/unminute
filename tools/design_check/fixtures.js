@@ -420,9 +420,19 @@
            label: "Graphics card for Whisper", title: "Graphics card for Whisper (optional)",
            about: "Runs Whisper large-v3 turbo and Whisper large-v3 on this computer's NVIDIA RTX 500, several times faster than on the processor. Used only in Faster mode, once the graphics card is turned on in Settings. Parakeet stays on the processor." }),
   ];
+  // Live drafts (#104): sample words only, matching the sample garden meeting.
+  const DRAFT = [
+    "Okay, thanks for coming, everyone. First up is the garden roster for next month.",
+    "I can take the first two Saturdays, but I'm away the weekend after that.",
+    "Great. Can someone look at the tap by the shed? It was dripping again on Tuesday.",
+    "I'll check it on Thursday and bring a spare washer.",
+    "And has the seed order gone in yet, or are we still waiting on prices",
+  ].map((text, i) => ({ kind: "phrase", text, start: 700 + i * 9, end: 706 + i * 9 }));
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
     model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
+    live_drafts: false, live_drafts_audio: "microphone", computer_audio: false,
+    live_drafts_model: { state: "ready", label: "Parakeet v2", offered: true },
     // Each with its state as the Downloads page shows it (#244); CARDS above.
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true,
                 state: "ready", offered: true, note: null },
@@ -566,6 +576,36 @@
       },
       steps: [],
     },
+    // Live drafts (#104): the recording card with draft text (sample words).
+    "recording-drafts": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.recording.recording.id = "r1";
+        d.recording.draft = { state: "running", note: null, count: DRAFT.length, generation: 1, mix: false };
+      },
+      steps: [],
+    },
+    "recording-drafts-starting": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.recording.recording.id = "r1";
+        d.recording.draft = { state: "starting", note: "Getting draft text ready.", count: 0, generation: 1, mix: false };
+      },
+      steps: [],
+    },
+    "recording-drafts-battery": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.recording.recording.id = "r1";
+        d.recording.draft = { state: "battery", count: DRAFT.length, generation: 1, mix: false,
+                              note: "Draft text is paused while on battery. The recording carries on." };
+      },
+      steps: [],
+    },
+    "recording-drafts-hidden": {
+      change: (d) => { SCENARIOS["recording-drafts"].change(d); },
+      steps: [() => document.getElementById("rec-draft-toggle").click()],
+    },
     "home-empty": { change: (d) => { d.meetings = []; }, steps: [] },
     "home-drop": {
       steps: [() => {
@@ -700,6 +740,19 @@
       },
       steps: [show("settings")],
     },
+    // Live drafts (#104): the switch on; and with computer audio on (#108,
+    // a later version), the choice of what the draft follows.
+    "settings-drafts": {
+      change: (d) => { SCENARIOS.settings.change(d); d.settings = { ...d.settings, live_drafts: true }; },
+      steps: [show("settings")],
+    },
+    "settings-drafts-mix": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.settings = { ...d.settings, live_drafts: true, computer_audio: true, live_drafts_audio: "mix" };
+      },
+      steps: [show("settings")],
+    },
     downloads: { steps: [show("downloads")] },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.
@@ -804,6 +857,12 @@
       return data.recording;
     },
     microphone_devices: () => [{ index: 1, name: "Laptop microphone", default: true }],
+    recording_draft: (since) => {
+      const d = data.recording.draft || { state: "off", generation: 0 };
+      const phrases = DRAFT.slice(since, since + 200);
+      return { state: d.state, note: d.note || null, generation: d.generation, count: DRAFT.length,
+               since, phrases };
+    },
     detail: (mid) => data.detail[mid],
     transcript: (mid, start = 0, count = 500) => {
       const page = transcriptPage(mid, start, count);
