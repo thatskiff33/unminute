@@ -14,6 +14,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 - **Stricter checks on recordings.** Recordings are decoded with audio decoders only, and a file with a sample rate below 4 kHz or above 384 kHz, or one that would decode to far more audio than its size can hold, is refused (see step 3 of [Getting started](#getting-started)). 0.5.0-preview.3 does not refuse these.
 - **Stricter watched folders.** The folder that holds every user's profile (such as `C:\Users`), `AppData` and every folder in it, and Unminute's own data folder can no longer be watched, and a recording whose path is too long for Windows to open is counted in the folder's note while the rest of the folder is imported. In 0.5.0-preview.3 those folders can be watched, and one path that is too long can stop a folder from importing anything.
 - **The recording display redraws about 60 times a second**, rather than on every refresh of the screen, to use less of the processor. On a 120 Hz screen that is every second refresh, and it moves as before. On a 60 Hz screen it now settles about twice as quickly as in 0.5.0-preview.3, as it does on a 120 Hz screen.
+- **Removing a graphics card component no installed version uses any more**, in [Supported configuration](#supported-configuration). 0.5.0-preview.3 keeps every downloaded component. Removal starts with the second installed update that has it, because earlier versions do not say which component they use.
 
 ## What stays on your computer, and what does not
 
