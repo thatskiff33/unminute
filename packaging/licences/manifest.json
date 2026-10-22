@@ -164,6 +164,702 @@
      "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90"
     }
    ]
+  },
+  {
+   "id": "ctranslate2",
+   "name": "CTranslate2",
+   "version": "4.8.3",
+   "licence": "MIT (package metadata)",
+   "wheel": "ctranslate2",
+   "wheel_version": "4.8.3",
+   "covers": [],
+   "source": {
+    "repository": "https://github.com/OpenNMT/CTranslate2",
+    "ref": "v4.8.3",
+    "commit": "8d91aa08225004755360daa43deb62b35b1ed65d"
+   },
+   "files": [
+    {
+     "path": "ctranslate2-4.8.3/LICENSE",
+     "url": "https://raw.githubusercontent.com/OpenNMT/CTranslate2/8d91aa08225004755360daa43deb62b35b1ed65d/LICENSE",
+     "sha256": "54aa79d9fe3c09e67a16dcd95b9e88676405a6ec174efda31036983cf7672ecb"
+    }
+   ]
+  },
+  {
+   "id": "tokenizers",
+   "name": "Tokenizers",
+   "version": "0.23.3",
+   "licence": "Apache-2.0 (package classifier)",
+   "wheel": "tokenizers",
+   "wheel_version": "0.23.3",
+   "covers": [],
+   "source": {
+    "repository": "https://github.com/huggingface/tokenizers",
+    "ref": "v0.23.3",
+    "commit": "301277072263fb3830eb66eec7e47adadf76f1dc"
+   },
+   "files": [
+    {
+     "path": "tokenizers-0.23.3/LICENSE",
+     "url": "https://raw.githubusercontent.com/huggingface/tokenizers/301277072263fb3830eb66eec7e47adadf76f1dc/LICENSE",
+     "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    }
+   ]
+  },
+  {
+   "id": "ctranslate2-dll",
+   "name": "CTranslate2",
+   "version": "4.8.3",
+   "licence": "MIT (package metadata)",
+   "wheel": "ctranslate2",
+   "wheel_version": "4.8.3",
+   "covers": [
+    "ctranslate2/ctranslate2.dll"
+   ],
+   "in_wheel": true,
+   "note": "CTranslate2's own library, under the CTranslate2 text collected for the wheel. What it links in statically (oneMKL, oneDNN and others) is the compiled-in follow-up (#176 D1).",
+   "files": []
+  },
+  {
+   "id": "intel-openmp-ct2",
+   "name": "Intel OpenMP runtime",
+   "version": "2025.3.0",
+   "licence": "Intel End User License Agreement for Developer Tools, as shipped in the intel-openmp wheel (redistribution terms: #176 L4)",
+   "wheel": "ctranslate2",
+   "wheel_version": "4.8.3",
+   "covers": [
+    "ctranslate2/libiomp5md.dll"
+   ],
+   "source": {
+    "repository": "https://pypi.org/project/intel-openmp/2025.3.0/",
+    "ref": "2025.3.0"
+   },
+   "note": "ctranslate2/libiomp5md.dll is byte-identical to Library/bin/libiomp5md.dll in the intel-openmp 2025.3.0 wheel and to the one in ctranslate2 4.8.0 (SHA-256 compared 22 Oct 2026). The archive hash is PyPI's published SHA-256.",
+   "files": [
+    {
+     "path": "intel-openmp-ct2-2025.3.0/LICENSE.txt",
+     "archive": {
+      "url": "https://files.pythonhosted.org/packages/79/69/05addedd727061b61a85b4fd989754edb628b5be1cd5d161727f98cf4d86/intel_openmp-2025.3.0-py2.py3-none-win_amd64.whl",
+      "sha256": "8ff899d01a41b92ffe0e618b221ea633127d16df726086082d381c431c31339d",
+      "member": "intel_openmp-2025.3.0.dist-info/LICENSE.txt"
+     },
+     "sha256": "febfb69a5b058f55892dc7f341108a9ca29d50e9fe85723a57eebbb826436958"
+    },
+    {
+     "path": "intel-openmp-ct2-2025.3.0/third-party-programs.txt",
+     "archive": {
+      "url": "https://files.pythonhosted.org/packages/79/69/05addedd727061b61a85b4fd989754edb628b5be1cd5d161727f98cf4d86/intel_openmp-2025.3.0-py2.py3-none-win_amd64.whl",
+      "sha256": "8ff899d01a41b92ffe0e618b221ea633127d16df726086082d381c431c31339d",
+      "member": "intel_openmp-2025.3.0.data/data/share/doc/compiler/licensing/openmp/third-party-programs.txt"
+     },
+     "sha256": "f8ce918fe7311ce279e68380a2e233f8a42b1cd3dda8f4c48d6de97a0255c1d7"
+    }
+   ]
+  },
+  {
+   "id": "ffmpeg",
+   "name": "FFmpeg",
+   "version": "9.0.2",
+   "licence": "LGPL version 3 or later, as the bundled build reports it (the build question is #189)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/avcodec-63-*.dll",
+    "av.libs/avdevice-63-*.dll",
+    "av.libs/avfilter-12-*.dll",
+    "av.libs/avformat-63-*.dll",
+    "av.libs/avutil-61-*.dll",
+    "av.libs/swresample-7-*.dll",
+    "av.libs/swscale-10-*.dll"
+   ],
+   "source": {
+    "repository": "https://ffmpeg.org/",
+    "ref": "9.0.2"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). Every FFmpeg library reports 'FFmpeg version 9.0.2' and 'LGPL version 3 or later'. The archive hash is the one pkg.py pins.",
+   "files": [
+    {
+     "path": "ffmpeg-9.0.2/LICENSE.md",
+     "archive": {
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "member": "ffmpeg-9.0.2/LICENSE.md"
+     },
+     "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+    },
+    {
+     "path": "ffmpeg-9.0.2/COPYING.LGPLv3",
+     "archive": {
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "member": "ffmpeg-9.0.2/COPYING.LGPLv3"
+     },
+     "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+    },
+    {
+     "path": "ffmpeg-9.0.2/COPYING.GPLv3",
+     "archive": {
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "member": "ffmpeg-9.0.2/COPYING.GPLv3"
+     },
+     "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+     "path": "ffmpeg-9.0.2/COPYING.LGPLv2.1",
+     "archive": {
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "member": "ffmpeg-9.0.2/COPYING.LGPLv2.1"
+     },
+     "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    },
+    {
+     "path": "ffmpeg-9.0.2/COPYING.GPLv2",
+     "archive": {
+      "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+      "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+      "member": "ffmpeg-9.0.2/COPYING.GPLv2"
+     },
+     "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    }
+   ]
+  },
+  {
+   "id": "lame",
+   "name": "LAME (lamer fork)",
+   "version": "3.101.0",
+   "licence": "LGPL (LICENSE holds the LGPL version 2.1 text)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/avcodec-63-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/basswood-io/lamer",
+    "ref": "v3.101.0",
+    "commit": "3ffd14f5531e0e5078e31eba4b2fb6ccc277b843"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). LAME is linked into avcodec (the string 'LAME3.101'); av 19 ships no separate libmp3lame DLL.",
+   "files": [
+    {
+     "path": "lame-3.101.0/LICENSE",
+     "url": "https://raw.githubusercontent.com/basswood-io/lamer/3ffd14f5531e0e5078e31eba4b2fb6ccc277b843/LICENSE",
+     "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    }
+   ]
+  },
+  {
+   "id": "x264",
+   "name": "x264",
+   "version": "0.165-b35605a",
+   "licence": "GPL version 2 (COPYING)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libx264-165-*.dll"
+   ],
+   "source": {
+    "repository": "https://code.videolan.org/videolan/x264",
+    "ref": "commit b35605ace3ddf7c1a5d67a2eb553f034aef41d55"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The archive hash is the one pkg.py pins.",
+   "files": [
+    {
+     "path": "x264-0.165-b35605a/COPYING",
+     "archive": {
+      "url": "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2",
+      "sha256": "6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224",
+      "member": "x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55/COPYING"
+     },
+     "sha256": "32b1062f7da84967e7019d01ab805935caa7ab7321a7ced0e30ebe75e5df1670"
+    }
+   ]
+  },
+  {
+   "id": "x265",
+   "name": "x265",
+   "version": "4.3",
+   "licence": "GPL version 2 (COPYING)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libx265-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/Multicorewareinc/x265",
+    "ref": "4.3",
+    "commit": "e9b88125dc21393b3fd8d68e98083bdfb89778a8"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The DLL's version resource reads 4.3+1-e9b8812, the tag's commit.",
+   "files": [
+    {
+     "path": "x265-4.3/COPYING",
+     "url": "https://raw.githubusercontent.com/Multicorewareinc/x265/e9b88125dc21393b3fd8d68e98083bdfb89778a8/COPYING",
+     "sha256": "d8afb1bcc7a2cfc603683b168d6987ef0a48e59e0da3693bf55c5d33b67e2b49"
+    }
+   ]
+  },
+  {
+   "id": "opus",
+   "name": "Opus",
+   "version": "1.6.1",
+   "licence": "BSD-3-Clause (COPYING)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libopus-0-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/xiph/opus",
+    "ref": "v1.6.1",
+    "commit": "22244de5a79bd1d6d623c32e72bf1954b56235be"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The DLL reports 'libopus 1.6.1'. Text from Xiph's GitHub repository.",
+   "files": [
+    {
+     "path": "opus-1.6.1/COPYING",
+     "url": "https://raw.githubusercontent.com/xiph/opus/22244de5a79bd1d6d623c32e72bf1954b56235be/COPYING",
+     "sha256": "01e1167d54a096d123cf6dfbbeb19587278845c6481d2d66d545669846079551"
+    }
+   ]
+  },
+  {
+   "id": "dav1d",
+   "name": "dav1d",
+   "version": "1.5.4",
+   "licence": "BSD-2-Clause (COPYING)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libdav1d-*.dll"
+   ],
+   "source": {
+    "repository": "https://code.videolan.org/videolan/dav1d",
+    "ref": "1.5.4"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The DLL's version resource reads 1.5.4. The archive hash is the one pkg.py pins.",
+   "files": [
+    {
+     "path": "dav1d-1.5.4/COPYING",
+     "archive": {
+      "url": "https://code.videolan.org/videolan/dav1d/-/archive/1.5.4/dav1d-1.5.4.tar.bz2",
+      "sha256": "2abfb0c89212e6e4733a54e0ae509ec00a5b845a6360946f918806e14aedb011",
+      "member": "dav1d-1.5.4/COPYING"
+     },
+     "sha256": "dd92c3c2247c5651606fc23a5e2d6a1ebc5ace9a3e49cbde0e12f05ad1cb1ee5"
+    }
+   ]
+  },
+  {
+   "id": "svt-av1",
+   "name": "SVT-AV1",
+   "version": "4.2.0",
+   "licence": "BSD-3-Clause-Clear with the AOMedia Patent License (LICENSE.md, PATENTS.md)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libSvtAv1Enc-*.dll"
+   ],
+   "source": {
+    "repository": "https://gitlab.com/AOMediaCodec/SVT-AV1",
+    "ref": "v4.2.0"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The archive hash is the one pkg.py pins.",
+   "files": [
+    {
+     "path": "svt-av1-4.2.0/LICENSE.md",
+     "archive": {
+      "url": "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.2.0/SVT-AV1-v4.2.0.tar.bz2",
+      "sha256": "512f2ea5649e3e76c2dddcc25c2556fb67a9582baaab207c9c96161c94659dad",
+      "member": "SVT-AV1-v4.2.0/LICENSE.md"
+     },
+     "sha256": "0acc2fcb27472bdc9aaf8b71f37055bbdac4f54671b7d922f241bd7fcd0dd3e6"
+    },
+    {
+     "path": "svt-av1-4.2.0/PATENTS.md",
+     "archive": {
+      "url": "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.2.0/SVT-AV1-v4.2.0.tar.bz2",
+      "sha256": "512f2ea5649e3e76c2dddcc25c2556fb67a9582baaab207c9c96161c94659dad",
+      "member": "SVT-AV1-v4.2.0/PATENTS.md"
+     },
+     "sha256": "20678ab10402659106dc4c147c97b2a6e94b5c0695415e15a8f195ebc3547922"
+    }
+   ]
+  },
+  {
+   "id": "libvpx",
+   "name": "libvpx",
+   "version": "1.17.0",
+   "licence": "BSD-3-Clause with a patent grant (LICENSE, PATENTS)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libvpx-1-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/webmproject/libvpx",
+    "ref": "v1.17.0",
+    "commit": "6df3ec34557879fff673706f4a1d9fbd0f3a6f0e"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The DLL reports v1.17.0.",
+   "files": [
+    {
+     "path": "libvpx-1.17.0/LICENSE",
+     "url": "https://raw.githubusercontent.com/webmproject/libvpx/6df3ec34557879fff673706f4a1d9fbd0f3a6f0e/LICENSE",
+     "sha256": "8267348d5af1262c11d1a08de2f5afc77457755f1ac658627dd9acf71011d615"
+    },
+    {
+     "path": "libvpx-1.17.0/PATENTS",
+     "url": "https://raw.githubusercontent.com/webmproject/libvpx/6df3ec34557879fff673706f4a1d9fbd0f3a6f0e/PATENTS",
+     "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c"
+    }
+   ]
+  },
+  {
+   "id": "libwebp",
+   "name": "libwebp",
+   "version": "1.6.0",
+   "licence": "BSD-3-Clause with a patent grant (COPYING, PATENTS)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libwebp-*.dll",
+    "av.libs/libwebpmux-*.dll",
+    "av.libs/libsharpyuv-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/webmproject/libwebp",
+    "ref": "v1.6.0",
+    "commit": "4fa21912338357f89e4fd51cf2368325b59e9bd9"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256).",
+   "files": [
+    {
+     "path": "libwebp-1.6.0/COPYING",
+     "url": "https://raw.githubusercontent.com/webmproject/libwebp/4fa21912338357f89e4fd51cf2368325b59e9bd9/COPYING",
+     "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf"
+    },
+    {
+     "path": "libwebp-1.6.0/PATENTS",
+     "url": "https://raw.githubusercontent.com/webmproject/libwebp/4fa21912338357f89e4fd51cf2368325b59e9bd9/PATENTS",
+     "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c"
+    }
+   ]
+  },
+  {
+   "id": "libvmaf",
+   "name": "VMAF (libvmaf)",
+   "version": "3.2.1",
+   "licence": "BSD-2-Clause-Patent (LICENSE)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libvmaf-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/Netflix/vmaf",
+    "ref": "v3.2.1",
+    "commit": "f85a853692a8c730d0270cd733c8bb30b5b93b7c"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256).",
+   "files": [
+    {
+     "path": "libvmaf-3.2.1/LICENSE",
+     "url": "https://raw.githubusercontent.com/Netflix/vmaf/f85a853692a8c730d0270cd733c8bb30b5b93b7c/LICENSE",
+     "sha256": "a6fdb51d02b9dfe198e55534bb8047fe6d756eda117f4ff83de98f92c1952710"
+    }
+   ]
+  },
+  {
+   "id": "libvpl",
+   "name": "Intel VPL (libvpl)",
+   "version": "2.16.0",
+   "licence": "MIT (LICENSE), with third-party-programs.txt",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libvpl-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/intel/libvpl",
+    "ref": "v2.16.0",
+    "commit": "778a66d6c6537f08eabb91955dbbf1bce3812894"
+   },
+   "note": "av 19.0.2 bundles pyav-ffmpeg 9.0.2-1 (PyAV scripts/ffmpeg-latest.json at v19.0.2; pyav-ffmpeg tag 9.0.2-1 is commit bac889417e26be29615cb6a3f38318151fed55cd, whose scripts/pkg.py pins each source by SHA-256). The DLL's version resource reads 2.16.0.0.",
+   "files": [
+    {
+     "path": "libvpl-2.16.0/LICENSE",
+     "url": "https://raw.githubusercontent.com/intel/libvpl/778a66d6c6537f08eabb91955dbbf1bce3812894/LICENSE",
+     "sha256": "bf1cfac2e2792b6e1e995ce103d70796aecaf2ec7e4c5fe5474f7acec7b4a677"
+    },
+    {
+     "path": "libvpl-2.16.0/third-party-programs.txt",
+     "url": "https://raw.githubusercontent.com/intel/libvpl/778a66d6c6537f08eabb91955dbbf1bce3812894/third-party-programs.txt",
+     "sha256": "e3c92992b1df02b467ac086d7d3730f4c1fc2c2a1f2c520657c4c9f2085305a3"
+    }
+   ]
+  },
+  {
+   "id": "zlib",
+   "name": "zlib",
+   "version": "1.3.2",
+   "licence": "Zlib (LICENSE)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/zlib1-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/madler/zlib",
+    "ref": "v1.3.2",
+    "commit": "da607da739fa6047df13e66a2af6b8bec7c2a498"
+   },
+   "note": "Copied from the MSYS2 toolchain by pyav-ffmpeg's build-ffmpeg.py; the DLL reports 'deflate 1.3.2'.",
+   "files": [
+    {
+     "path": "zlib-1.3.2/LICENSE",
+     "url": "https://raw.githubusercontent.com/madler/zlib/da607da739fa6047df13e66a2af6b8bec7c2a498/LICENSE",
+     "sha256": "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
+    }
+   ]
+  },
+  {
+   "id": "libiconv",
+   "name": "GNU libiconv",
+   "version": "1.19",
+   "licence": "LGPL version 2.1 or later for the library (COPYING.LIB)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libiconv-2-*.dll"
+   ],
+   "source": {
+    "repository": "https://www.gnu.org/software/libiconv/",
+    "ref": "1.19"
+   },
+   "note": "Copied from the MSYS2 toolchain by pyav-ffmpeg's build-ffmpeg.py; the DLL's version resource reads 1.19. GNU publishes a signature, not a SHA-256: the SHA-256 here was computed on 22 Oct 2026 from the tarball whose .sig verified with the GNU keyring (key E0FFBD975397F77A32AB76ECB6301D9E1BBEAC08).",
+   "files": [
+    {
+     "path": "libiconv-1.19/COPYING.LIB",
+     "archive": {
+      "url": "https://ftp.gnu.org/gnu/libiconv/libiconv-1.19.tar.gz",
+      "sha256": "88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6",
+      "member": "libiconv-1.19/COPYING.LIB"
+     },
+     "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95"
+    }
+   ]
+  },
+  {
+   "id": "gcc-runtime",
+   "name": "GCC runtime libraries",
+   "version": "16.1.0",
+   "licence": "GPL version 3 or later with the GCC Runtime Library Exception (COPYING3, COPYING.RUNTIME)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libgcc_s_seh-1-*.dll",
+    "av.libs/libstdc++-6-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/gcc-mirror/gcc",
+    "ref": "releases/gcc-16.1.0",
+    "commit": "6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea"
+   },
+   "note": "Copied from the MSYS2 toolchain (GCC 16.1.0, per the DLL strings) by pyav-ffmpeg's build-ffmpeg.py. Texts from the GitHub mirror of GCC's repository at the release tag.",
+   "files": [
+    {
+     "path": "gcc-runtime-16.1.0/COPYING3",
+     "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea/COPYING3",
+     "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+     "path": "gcc-runtime-16.1.0/COPYING.RUNTIME",
+     "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/6afcc4f6da931eb93f3ab001a0dd9650ea71d1ea/COPYING.RUNTIME",
+     "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+    }
+   ]
+  },
+  {
+   "id": "winpthreads",
+   "name": "mingw-w64 winpthreads",
+   "version": "14.0.0",
+   "licence": "MIT and BSD-style (COPYING)",
+   "wheel": "av",
+   "wheel_version": "19.0.2",
+   "covers": [
+    "av.libs/libwinpthread-1-*.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/mingw-w64/mingw-w64",
+    "ref": "v14.0.0",
+    "commit": "9b3dd0125792fe94d16cacdc596dbd42fca1b369"
+   },
+   "note": "Copied from the MSYS2 toolchain by pyav-ffmpeg's build-ffmpeg.py. The DLL records no mingw-w64 version (1,0,0,0); this COPYING is identical at v12.0.0, v13.0.0 and v14.0.0 (same git blob). Text from the project's unofficial GitHub mirror.",
+   "files": [
+    {
+     "path": "winpthreads-14.0.0/COPYING",
+     "url": "https://raw.githubusercontent.com/mingw-w64/mingw-w64/9b3dd0125792fe94d16cacdc596dbd42fca1b369/mingw-w64-libraries/winpthreads/COPYING",
+     "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177"
+    }
+   ]
+  },
+  {
+   "id": "zstd",
+   "name": "Zstandard",
+   "version": "1.5.7",
+   "licence": "BSD-3-Clause (LICENSE) or GPL version 2 (COPYING), as upstream offers it",
+   "wheel": "torchcodec",
+   "wheel_version": "0.17.0",
+   "covers": [
+    "torchcodec/libzstd.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/facebook/zstd",
+    "ref": "v1.5.7",
+    "commit": "f8745da6ff1ad1e7bab384bd1f9d742439278e99"
+   },
+   "note": "The DLL's version resource reads 1.5.7. torchcodec's own texts do not include Zstandard's. Both upstream texts are shipped as they are.",
+   "files": [
+    {
+     "path": "zstd-1.5.7/LICENSE",
+     "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+     "url": "https://raw.githubusercontent.com/facebook/zstd/f8745da6ff1ad1e7bab384bd1f9d742439278e99/LICENSE"
+    },
+    {
+     "path": "zstd-1.5.7/COPYING",
+     "sha256": "f9c375a1be4a41f7b70301dd83c91cb89e41567478859b77eef375a52d782505",
+     "url": "https://raw.githubusercontent.com/facebook/zstd/f8745da6ff1ad1e7bab384bd1f9d742439278e99/COPYING"
+    }
+   ]
+  },
+  {
+   "id": "torchcodec-dlls",
+   "name": "TorchCodec and the libraries its texts name",
+   "version": "0.17.0",
+   "licence": "BSD-3-Clause (TorchCodec), with libjpeg-turbo, libavif, libpng, libwebp, libyuv and zlib texts in the wheel",
+   "wheel": "torchcodec",
+   "wheel_version": "0.17.0",
+   "covers": [
+    "torchcodec/libtorchcodec_core4.dll",
+    "torchcodec/libtorchcodec_core5.dll",
+    "torchcodec/libtorchcodec_core6.dll",
+    "torchcodec/libtorchcodec_core7.dll",
+    "torchcodec/libtorchcodec_core8.dll",
+    "torchcodec/libtorchcodec_core9.dll",
+    "torchcodec/libtorchcodec_custom_ops4.dll",
+    "torchcodec/libtorchcodec_custom_ops5.dll",
+    "torchcodec/libtorchcodec_custom_ops6.dll",
+    "torchcodec/libtorchcodec_custom_ops7.dll",
+    "torchcodec/libtorchcodec_custom_ops8.dll",
+    "torchcodec/libtorchcodec_custom_ops9.dll",
+    "torchcodec/libtorchcodec_heic.dll",
+    "torchcodec/libtorchcodec_image.dll",
+    "torchcodec/jpeg8.dll",
+    "torchcodec/libavif.dll",
+    "torchcodec/libpng16.dll",
+    "torchcodec/libsharpyuv.dll",
+    "torchcodec/libwebp.dll",
+    "torchcodec/libwebpdecoder.dll",
+    "torchcodec/libwebpdemux.dll",
+    "torchcodec/libwebpmux.dll",
+    "torchcodec/zlib.dll"
+   ],
+   "in_wheel": true,
+   "note": "TorchCodec's own libraries, and the image libraries whose texts are in torchcodec 0.17.0's own licence texts (dist-info/licenses/LICENSE and dist-info/licenses/third_party/). libtorchcodec_heic.dll loads heif.dll at run time, which the wheel does not bundle.",
+   "files": []
+  },
+  {
+   "id": "torch-dlls",
+   "name": "PyTorch",
+   "version": "2.14.1",
+   "licence": "BSD-3-Clause (PyTorch's own texts in the wheel)",
+   "wheel": "torch",
+   "wheel_version": "2.14.1",
+   "covers": [
+    "torch/lib/c10.dll",
+    "torch/lib/shm.dll",
+    "torch/lib/torch.dll",
+    "torch/lib/torch_cpu.dll",
+    "torch/lib/torch_global_deps.dll",
+    "torch/lib/torch_python.dll"
+   ],
+   "in_wheel": true,
+   "note": "PyTorch's own libraries. What torch_cpu.dll links in statically (oneMKL) is the compiled-in follow-up (#176 D1).",
+   "files": []
+  },
+  {
+   "id": "onnxruntime-dlls",
+   "name": "ONNX Runtime",
+   "version": "1.30.0",
+   "licence": "MIT, with ThirdPartyNotices.txt in the wheel",
+   "wheel": "onnxruntime",
+   "wheel_version": "1.30.0",
+   "covers": [
+    "onnxruntime/capi/onnxruntime.dll",
+    "onnxruntime/capi/onnxruntime_providers_shared.dll"
+   ],
+   "in_wheel": true,
+   "note": "ONNX Runtime's own libraries; the wheel's LICENSE and ThirdPartyNotices.txt cover them.",
+   "files": []
+  },
+  {
+   "id": "openblas-numpy",
+   "name": "OpenBLAS (scipy-openblas build)",
+   "version": "numpy-2.5.4",
+   "licence": "BSD-3-Clause, with the gfortran runtime, as numpy's LICENSE.txt lists it",
+   "wheel": "numpy",
+   "wheel_version": "2.5.4",
+   "covers": [
+    "numpy.libs/libscipy_openblas64_-*.dll"
+   ],
+   "in_wheel": true,
+   "note": "numpy's LICENSE.txt has OpenBLAS, LAPACK and GCC runtime sections for numpy.libs/libscipy_openblas*.dll.",
+   "files": []
+  },
+  {
+   "id": "openblas-scipy",
+   "name": "OpenBLAS (scipy-openblas build)",
+   "version": "scipy-1.18.1",
+   "licence": "BSD-3-Clause, with the gfortran runtime, as SciPy's LICENSE.txt lists it",
+   "wheel": "scipy",
+   "wheel_version": "1.18.1",
+   "covers": [
+    "scipy.libs/libscipy_openblas-*.dll"
+   ],
+   "in_wheel": true,
+   "note": "SciPy's LICENSE.txt has OpenBLAS, LAPACK and GCC runtime sections for scipy.libs/libscipy_openblas*.dll.",
+   "files": []
+  },
+  {
+   "id": "clr-loader-dll",
+   "name": "clr-loader",
+   "version": "0.3.1",
+   "licence": "MIT (the wheel's LICENSE)",
+   "wheel": "clr_loader",
+   "wheel_version": "0.3.1",
+   "covers": [
+    "clr_loader/ffi/dlls/amd64/ClrLoader.dll"
+   ],
+   "in_wheel": true,
+   "note": "clr-loader's own library.",
+   "files": []
+  },
+  {
+   "id": "pythonnet-dll",
+   "name": "Python.NET",
+   "version": "3.2.1",
+   "licence": "MIT (the wheel's LICENSE)",
+   "wheel": "pythonnet",
+   "wheel_version": "3.2.1",
+   "covers": [
+    "pythonnet/runtime/Python.Runtime.dll"
+   ],
+   "in_wheel": true,
+   "note": "Python.NET's own library.",
+   "files": []
   }
  ]
 }

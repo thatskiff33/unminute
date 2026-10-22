@@ -74,7 +74,7 @@ Some wheels ship no licence text, and some bundle libraries from other projects 
 Each manifest entry gives:
 
 - `id`, `name`, `version`: the component, and the version the texts are for.
-- `licence`: the licence as the component or its package states it. It records what upstream says, not a legal conclusion; open questions go to the adviser (#176, #189).
+- `licence`: the licence as the component or its package states it, recorded as upstream says it (#176).
 - `wheel`, `wheel_version`: the wheel that carries the component in the package, and its locked version.
 - `covers`: empty for texts of the wheel's own code; otherwise the DLLs in that wheel the texts are for, as paths under `runtime\lib`. A `*` may stand for part of a file name only (for example a delvewheel hash suffix), after at least three fixed characters, so no pattern can cover a whole folder.
 - `source`: the repository and the tag or version, with the full commit SHA where the texts come from a commit.
@@ -82,7 +82,7 @@ Each manifest entry gives:
 - `in_wheel` (optional): `true` when the wheel's own texts already cover the DLLs in `covers`; such an entry has no files.
 - `note` (optional): how the component was identified.
 
-The build fails if a text is missing, unlisted or differs from its SHA-256; if an entry's `wheel_version` differs from the version installed, so a re-lock that moves a wheel must check its components again (#180); or if a `covers` pattern matches no DLL. Until every wheel and DLL has a text (`LICENCE_COVERAGE_REQUIRED` in `tools/build_package.py`, switched on by the #180 re-lock), the notices list what is still missing.
+The build fails if a text is missing, unlisted or differs from its SHA-256; if an entry's `wheel_version` differs from the version installed, so a re-lock that moves a wheel must check its components again (#180); or if a `covers` pattern matches no DLL. Until every wheel and DLL has a text (`LICENCE_COVERAGE_REQUIRED` in `tools/build_package.py`), the notices list what is still missing. After the #180 re-lock these are still open: NVIDIA's `cudnn64_9.dll` in CTranslate2 (to be removed after a GPU run shows it unused, #176 D2), the Microsoft C++ runtime copies in `numpy.libs` and `pandas.libs` (#176 L8), pywebview's `WebBrowserInterop.x64.dll` (origin to confirm), and three DLLs whose wheels' own texts cover them but whose names a `covers` pattern cannot express (`torch/lib/uv.dll`, and `msvcp140.dll` and `vcomp140.dll` under `sklearn/.libs`). Statically linked components are a follow-up (#176 D1).
 
 `tools/collect_licences.py` collects the texts. It is a developer tool: the build and the app never run it, and it is not in the package. Edit the manifest entry first, then:
 
