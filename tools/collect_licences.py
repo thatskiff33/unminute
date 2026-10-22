@@ -52,8 +52,9 @@ class CollectError(Exception):
 
 
 def allowed_url(url):
-    parts = urllib.parse.urlsplit(url)
-    return parts.scheme == "https" and parts.hostname in bp.LICENCE_HOSTS
+    # https on a collector host, with no credentials or port (a malformed one is
+    # refused, not raised); a redirect may add a query.
+    return bp.licence_url_parts(url) is not None
 
 
 class CheckedRedirects(urllib.request.HTTPRedirectHandler):
@@ -61,8 +62,11 @@ class CheckedRedirects(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not allowed_url(newurl):
-            raise CollectError(f"{req.full_url} redirects off the collector hosts "
-                               f"({urllib.parse.urlsplit(newurl).hostname}).")
+            try:
+                where = urllib.parse.urlsplit(newurl).hostname
+            except ValueError:
+                where = "a malformed address"
+            raise CollectError(f"{req.full_url} redirects off the collector hosts ({where}).")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 

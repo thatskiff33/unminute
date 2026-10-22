@@ -2,6 +2,7 @@
 # checks of the committed texts, the notices, and the developer-only collector.
 # No test here reaches the network: the collector's fetches are faked.
 
+import contextlib
 import copy
 import hashlib
 import io
@@ -11,6 +12,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import urllib.parse
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -84,6 +86,38 @@ class ManifestRuleTests(unittest.TestCase):
                 bad = entry(files=[{**entry()["files"][0], "url": url}])
                 self.assertIn("the URL", problems_of(bad))
 
+    def test_a_malformed_or_explicit_port_is_a_manifest_problem(self):
+        # #282 review: urlsplit's port raised ValueError (a traceback, not a
+        # manifest error), and port 0 passed because it is falsy.
+        for url in ("https://ffmpeg.org:x/releases/LICENSE", "https://ffmpeg.org:0/LICENSE",
+                    "https://ffmpeg.org:443/LICENSE", "https://ffmpeg.org:/LICENSE",
+                    "https://[ffmpeg.org/LICENSE"):
+            with self.subTest(url=url):
+                bad = entry(files=[{**entry()["files"][0], "url": url}])
+                self.assertIn("the URL", problems_of(bad))
+                archive = entry(files=[{"path": "demo-1.0/LICENSE", "sha256": "b" * 64,
+                                        "archive": {"url": url, "sha256": "c" * 64,
+                                                    "member": "LICENSE"}}])
+                self.assertIn("the archive URL", problems_of(archive))
+                self.assertFalse(cl.allowed_url(url))
+
+    def test_exact_names_cover_files_a_pattern_cannot_name(self):
+        # Owner decision, 22 Oct 2026 (#111, #176): covers may list exact file
+        # names as well as patterns. An exact name has no wildcard, so it names
+        # one file; it may be short or sit in a folder that starts with a dot.
+        own = {k: v for k, v in entry(id="own", covers=["torch/lib/uv.dll",
+                                                        "sklearn/.libs/msvcp140.dll",
+                                                        "sklearn/.libs/vcomp140.dll"],
+                                      files=[], in_wheel=True).items() if k != "source"}
+        self.assertEqual(problems_of(own), "")
+        self.assertEqual(bp.licence_pattern("sklearn/.libs/vcomp140.dll").pattern,
+                         r"sklearn/\.libs/vcomp140\.dll")
+        for exact in ("sklearn/.libs/*.dll", "a/.libs/v*.dll", ".libs/x.dll/../y.dll",
+                      "sklearn/../x.dll", "sklearn/./x.dll", "sklearn//x.dll",
+                      "sklearn/.libs/.dll", "C:/x/uv.dll", "sklearn/.libs/uv.DLL "):
+            with self.subTest(exact=exact):
+                self.assertIn("not an anchored .dll path", problems_of(entry(covers=[exact])))
+
     def test_covers_patterns_are_anchored_dll_paths(self):
         for pattern in ("av.libs/*.dll", "*.dll", "av.libs/ab*.dll", "../x/libfoo.dll",
                         "av.libs/libfoo-*-*.dll", "av.libs/libfoo.so", "av.libs\\libfoo.dll",
@@ -141,6 +175,22 @@ class CommittedTextsTests(unittest.TestCase):
                               "packaging/licences/demo-1.0/LICENSE"], cwd=ROOT,
                              capture_output=True, text=True, check=True).stdout
         self.assertTrue(out.strip().endswith("text: unset"), out)
+
+    def test_the_collector_hosts_are_the_ones_the_manifest_uses(self):
+        # Least privilege (#282 review): no host the collector may reach that no
+        # committed text comes from. Adding a source adds its host here.
+        components, _ = bp.licence_texts()
+        used = {urllib.parse.urlsplit(f.get("url") or f["archive"]["url"]).hostname
+                for c in components for f in c["files"]}
+        self.assertEqual(set(bp.LICENCE_HOSTS), used)
+
+    def test_coverage_is_required_for_a_release(self):
+        # Owner decision, 22 Oct 2026 (#111, #176): a release fails if any
+        # bundled wheel or native file lacks its licence text. A development
+        # build lists the gaps in its notices and on the console instead.
+        self.assertIs(bp.LICENCE_COVERAGE_REQUIRED, True)
+        self.assertTrue(bp.licence_coverage_required(release=True))
+        self.assertFalse(bp.licence_coverage_required(release=False))
 
     def test_the_build_never_imports_the_collector(self):
         source = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
@@ -213,7 +263,7 @@ class NoticesTests(unittest.TestCase):
         (self.folder / "runtime" / "LICENSE.txt").write_text("PSF")
         for dist, files in (("bare-1.0", ["bare/__init__.py"]),
                             ("demo-1.0", ["demo/__init__.py", "demo/core.dll",
-                                          "demo.libs/libfoo-1-abc.dll",
+                                          "demo/.libs/uv.dll", "demo.libs/libfoo-1-abc.dll",
                                           "demo-1.0.dist-info/licenses/LICENSE"])):
             info = self.site / f"{dist}.dist-info"
             info.mkdir(parents=True, exist_ok=True)
@@ -231,19 +281,24 @@ class NoticesTests(unittest.TestCase):
                                "archive_info": {"hashes": {"sha256": "b" * 64}}}}]
         lib = f"runtime/{bp.SITE}"
         self.signed = {f"{lib}/demo/core.dll": {"signer": ""},
+                       f"{lib}/demo/.libs/uv.dll": {"signer": ""},
                        f"{lib}/demo.libs/libfoo-1-abc.dll": {"signer": ""}}
         own = entry(id="bare", name="Bare", wheel="bare",
                     files=[{**entry()["files"][0], "path": "bare-1.0/LICENSE"}])
         foo = entry(id="libfoo", name="libfoo", version="2.3", covers=["demo.libs/libfoo-1-*.dll"],
                     files=[{**entry()["files"][0], "path": "libfoo-2.3/COPYING"}])
-        core = {k: v for k, v in entry(id="demo-core", name="Demo core", covers=["demo/core.dll"],
+        core = {k: v for k, v in entry(id="demo-core", name="Demo core",
+                                       covers=["demo/core.dll", "demo/.libs/uv.dll"],
                                        files=[], in_wheel=True).items() if k != "source"}
         self.components = bp.licence_manifest(manifest(own, foo, core))
         bp.copy_licences(self.folder, {"bare-1.0/LICENSE": TEXT, "libfoo-2.3/COPYING": TEXT})
 
     def notices(self, components=None, **kw):
-        return bp.notices(self.installed, self.site, self.folder, "0.5.0", self.signed,
-                          self.components if components is None else components, **kw)
+        # A development build also lists the gaps on the console; kept in self.console.
+        self.console = io.StringIO()
+        with contextlib.redirect_stderr(self.console):
+            return bp.notices(self.installed, self.site, self.folder, "0.5.0", self.signed,
+                              self.components if components is None else components, **kw)
 
     def test_collected_texts_are_named_for_wheels_and_dlls(self):
         text = self.notices()
@@ -262,6 +317,18 @@ class NoticesTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "bare 1.0: the wheel ships no licence text"):
             self.notices(components=[], required=True)
         self.notices(required=True)             # complete: passes
+
+    def test_removing_a_covered_file_from_the_manifest_stops_a_required_build(self):
+        # The exact name covers the file; take it out of the manifest and a
+        # build that requires coverage (a release) stops on that file.
+        self.notices(required=True)
+        less = copy.deepcopy(self.components)
+        less[2]["covers"] = ["demo/core.dll"]
+        self.assertIn("included yet (to follow, #176)", self.notices(components=less))
+        self.assertIn(f"a release stops on these:\n  runtime/{bp.SITE}/demo/.libs/uv.dll: "
+                      "no licence text recorded", self.console.getvalue())
+        with self.assertRaisesRegex(SystemExit, r"demo/\.libs/uv\.dll: no licence text"):
+            self.notices(components=less, required=True)
 
     def test_a_stale_pattern_stops_the_build(self):
         stale = copy.deepcopy(self.components)

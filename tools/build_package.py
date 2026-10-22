@@ -146,13 +146,13 @@ LICENCES = PACKAGING / "licences"
 LICENCES_DIR = "packaging/licences"
 LICENCE_MANIFEST = "manifest.json"
 # Where the collector may fetch from; a manifest URL on any other host is refused.
-LICENCE_HOSTS = ("raw.githubusercontent.com", "gitlab.com", "code.videolan.org",
-                 "bitbucket.org", "api.nuget.org", "files.pythonhosted.org", "ftp.gnu.org",
-                 "deb.debian.org", "static.crates.io", "ffmpeg.org")
-# #176: False until the re-lock PR (#180) has collected a text for every wheel
-# that ships none and every bundled DLL; then a gap fails the build. Hashes,
-# versions, unlisted files and stale patterns fail it already.
-LICENCE_COVERAGE_REQUIRED = False
+# Only the hosts the manifest uses (a test checks): a new source adds its host.
+LICENCE_HOSTS = ("raw.githubusercontent.com", "files.pythonhosted.org", "api.nuget.org",
+                 "ffmpeg.org", "code.videolan.org", "gitlab.com", "ftp.gnu.org")
+# #176 (owner decision, 22 Oct 2026): a release stops if a wheel or bundled DLL
+# has no licence text; a development build lists the gaps in its notices and on
+# the console. Hashes, versions, unlisted files and stale patterns stop any build.
+LICENCE_COVERAGE_REQUIRED = True
 # Left out after installing (#111 B2). An import trace of the window process,
 # transcription and speaker identification on CPython 3.14 (17 October 2026)
 # loaded none of these. Each must still be there to remove, so a dependency
@@ -949,16 +949,35 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _LICENCE_COVERS = re.compile(
     r"(?:[A-Za-z0-9_+-][A-Za-z0-9._+-]*/)*[A-Za-z0-9_+-][A-Za-z0-9._+-]{2,}"
     r"(?:\*[A-Za-z0-9._+-]*)?\.dll")
+# Or one exact file, with no wildcard (owner decision, 22 Oct 2026): a name the
+# pattern rule cannot express, such as torch/lib/uv.dll or a DLL in sklearn/.libs.
+_LICENCE_EXACT = re.compile(r"(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9_+-][A-Za-z0-9._+-]*\.dll")
 MAX_LICENCE_PATH = 100        # under licences/ in the package (MAX_RELATIVE_PATH holds)
 
 
 def licence_pattern(pattern):
-    """The regular expression for a "covers" entry, or None if it is not allowed."""
-    if not isinstance(pattern, str) or not _LICENCE_COVERS.fullmatch(pattern):
+    """The regular expression for a "covers" entry, or None if it is not allowed:
+    an anchored pattern, or an exact path (no "*") that names one file."""
+    if not isinstance(pattern, str) or not (_LICENCE_COVERS.fullmatch(pattern)
+                                            or _LICENCE_EXACT.fullmatch(pattern)):
         return None
     if any(part in (".", "..") or part.startswith("..") for part in pattern.split("/")):
         return None
     return re.compile(re.escape(pattern).replace(r"\*", "[^/]*"))
+
+
+def licence_url_parts(url):
+    """urlsplit's parts if url is https on a collector host with nothing but the
+    host before the path (no credentials and no port, even an empty or malformed
+    one), else None. The collector checks redirects with it too."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError:                          # e.g. an unclosed "[" in the host
+        return None
+    if parts.scheme != "https" or host not in LICENCE_HOSTS or parts.netloc.lower() != host:
+        return None
+    return parts
 
 
 def licence_url_problem(url, commit):
@@ -966,11 +985,11 @@ def licence_url_problem(url, commit):
     credentials, port, query or fragment, and a GitHub raw URL at the commit."""
     if not isinstance(url, str):
         return "is not a string"
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or parts.hostname not in LICENCE_HOSTS:
-        return f"is not https on a collector host ({url})"
-    if parts.username or parts.password or parts.port or parts.query or parts.fragment:
-        return f"has credentials, a port, a query or a fragment ({url})"
+    parts = licence_url_parts(url)
+    if parts is None:
+        return f"is not https on a collector host, or has credentials or a port ({url})"
+    if parts.query or parts.fragment:
+        return f"has a query or a fragment ({url})"
     if parts.hostname == "raw.githubusercontent.com":
         segments = parts.path.split("/")
         if len(segments) < 5 or segments[3] != commit:
@@ -1165,8 +1184,12 @@ def copy_licences(folder, files):
         target.write_bytes(data)
 
 
-def notices(installed, site, folder, version, signed, licences=(),
-            required=LICENCE_COVERAGE_REQUIRED):
+def licence_coverage_required(release):
+    """Whether a gap in the licence texts stops this build: a release's does."""
+    return bool(release and LICENCE_COVERAGE_REQUIRED)
+
+
+def notices(installed, site, folder, version, signed, licences=(), required=False):
     """THIRD_PARTY_NOTICES.txt: every bundled component, its licence, where
     its licence texts are in the package, and the native libraries it bundles
     with their signers and, where collected (#176), their licence texts. Every
@@ -1210,6 +1233,9 @@ def notices(installed, site, folder, version, signed, licences=(),
         body.append("")
     if gaps and required:
         sys.exit(f"Licence texts are missing ({LICENCES_DIR}, #176):\n" + "\n".join(gaps))
+    if gaps:
+        print(f"Licence texts still missing ({LICENCES_DIR}, #176); a release stops on "
+              "these:\n  " + "\n  ".join(gaps), file=sys.stderr)
     missing = [p for p in named if not (folder / p).is_file()]
     if missing:
         sys.exit("The notices name files that are not in the package:\n" + "\n".join(missing))
@@ -1500,7 +1526,8 @@ def build(version, out, cache, release=False, update_allowlist=False):
         (folder / "binary-inventory.json").write_text(
             json.dumps(binary_inventory(folder, signed), indent=1), encoding="utf-8")
         (folder / "THIRD_PARTY_NOTICES.txt").write_text(
-            notices(installed, site, folder, version, signed, licences), encoding="utf-8")
+            notices(installed, site, folder, version, signed, licences,
+                    required=licence_coverage_required(release)), encoding="utf-8")
         bom = sbom(installed, info["name"], version, commit, epoch, sha256(embed), release,
                    build_tools(), removed)
         (folder / "sbom.cdx.json").write_text(json.dumps(bom, indent=1), encoding="utf-8")

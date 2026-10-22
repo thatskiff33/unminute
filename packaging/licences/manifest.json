@@ -784,10 +784,11 @@
     "torch/lib/torch.dll",
     "torch/lib/torch_cpu.dll",
     "torch/lib/torch_global_deps.dll",
-    "torch/lib/torch_python.dll"
+    "torch/lib/torch_python.dll",
+    "torch/lib/uv.dll"
    ],
    "in_wheel": true,
-   "note": "PyTorch's own libraries. What torch_cpu.dll links in statically (oneMKL) is the compiled-in follow-up (#176 D1).",
+   "note": "PyTorch's own libraries, and uv.dll, libuv (MIT), whose text is among PyTorch's third-party texts (third_party/tensorpipe/third_party/libuv/LICENSE). What torch_cpu.dll links in statically (oneMKL) is the compiled-in follow-up (#176 D1).",
    "files": []
   },
   {
@@ -834,6 +835,21 @@
    "files": []
   },
   {
+   "id": "sklearn-msvc-runtime",
+   "name": "Microsoft Visual C++ Runtime Files (scikit-learn)",
+   "version": "scikit-learn-1.9.1",
+   "licence": "Microsoft distributable code terms, as scikit-learn's COPYING quotes them",
+   "wheel": "scikit-learn",
+   "wheel_version": "1.9.1",
+   "covers": [
+    "sklearn/.libs/msvcp140.dll",
+    "sklearn/.libs/vcomp140.dll"
+   ],
+   "in_wheel": true,
+   "note": "scikit-learn's COPYING has a Microsoft Visual C++ Runtime Files section for the DLLs in sklearn/.libs.",
+   "files": []
+  },
+  {
    "id": "clr-loader-dll",
    "name": "clr-loader",
    "version": "0.3.1",
@@ -859,6 +875,20 @@
    ],
    "in_wheel": true,
    "note": "Python.NET's own library.",
+   "files": []
+  },
+  {
+   "id": "pywebview-interop",
+   "name": "pywebview WebBrowserInterop",
+   "version": "6.2.1",
+   "licence": "BSD-3-Clause (pywebview's LICENSE)",
+   "wheel": "pywebview",
+   "wheel_version": "6.2.1",
+   "covers": [
+    "webview/lib/WebBrowserInterop.x64.dll"
+   ],
+   "in_wheel": true,
+   "note": "pywebview's own library, built from interop/mshtml in its repository: the wheel's copy is byte-identical to webview/lib/WebBrowserInterop.x64.dll at tag 6.2.1 (commit 2fc63cd6a92b8630c14f6d4dd73f9691591f8eea, git blob a4d0a1fadb2d01109822ef04bdee68f36705f924).",
    "files": []
   }
  ]
