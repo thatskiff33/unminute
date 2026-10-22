@@ -9,12 +9,14 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -61,6 +63,74 @@ def profile_guard():
         fresh = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fresh)
         yield fresh
+
+
+# How quickly the guard must decide (#221): a hook that runs past Claude Code's time
+# limit lets the call through. Measured as this thread's processor time, not wall
+# time, so a busy machine does not fail the check (#293).
+GUARD_SECONDS = 2.0
+# Commands too complex for the guard to check, each with the work (checks, characters,
+# counted by counted_work) the bounded guard measured on it, 22 October 2026. The
+# count is deterministic, so each shape has a fixed limit just above its own
+# measurement (WORK_MARGIN), and raising the bound that stops it fails the test
+# (#293 round 1): a tenth more GROWTH_ALLOWANCE gives the doubling shape 6.3 million
+# characters, a tenth more MAX_WORK gives the 3,000 variables 444 checks, and a tenth
+# more MAX_ASSIGNMENTS gives the 2,500 assignments 2,200 checks.
+TOO_COMPLEX = (
+    # Values that double at each step: stopped by GROWTH_ALLOWANCE.
+    ("doubling", "a=x; b0=$a$a; " + "".join(f"b{i + 1}=$b{i}$b{i}; " for i in range(40))
+     + "echo $b40", "Bash", 38, 3_164_606),
+    # Nested for lists that double: stopped by GROWTH_ALLOWANCE.
+    ("loops", "for a0 in x x; do :; done; " + "".join(
+        f"for a{i + 1} in $a{i} $a{i}; do :; done; " for i in range(30)),
+     "Bash", 17, 3_685_458),
+    # Set-and-used variables, each rescanning the rest: stopped by MAX_WORK. Without
+    # the bounds, about 6,000 checks, 590 million characters and 7 to 9 s.
+    ("variables", "".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(3000)),
+     "PowerShell", 402, 41_231_573),
+    # Assignments of names never used again: stopped by MAX_ASSIGNMENTS.
+    ("assignments", "".join(f"v{i:04}=x; " for i in range(2500)) + "echo done",
+     "Bash", 2000, 45_018_000),
+)
+WORK_MARGIN = 1.05
+
+
+def work_limit(measured):
+    """The most work a TOO_COMPLEX shape may take: its measurement plus WORK_MARGIN."""
+    return math.ceil(measured * WORK_MARGIN)
+
+
+def cpu_seconds():
+    """The processor time of this thread: time spent waiting for a processor while
+    other programs run is not counted (#293)."""
+    return time.thread_time()
+
+
+class _PastLimits(Exception):
+    """Raised by counted_work's stop condition to end a run early."""
+
+
+@contextlib.contextmanager
+def counted_work(module, stop=None):
+    """Count the guard's work in module (a loaded hook): each length its growth bound
+    (_Growth.check) is asked about, which happens once per assignment, loop and
+    used variable, and the characters summed (#293). The sum is a measure of the work,
+    not a count of the characters read: each step reads the command, at about that
+    length, a few times over (searches, slices and replacements), so the work grows
+    with the sum. With stop, a function of the counts: _PastLimits once it returns
+    true."""
+    work = types.SimpleNamespace(checks=0, characters=0)
+
+    class Counted(module._Growth):
+        def check(self, length):
+            work.checks += 1
+            work.characters += length
+            if stop is not None and stop(work):
+                raise _PastLimits
+            super().check(length)
+
+    with mock.patch.object(module, "_Growth", Counted):
+        yield work
 
 
 class FileToolTests(unittest.TestCase):
@@ -1501,9 +1571,9 @@ class HardeningTests(unittest.TestCase):
                      "PowerShell"))
         for command, name in commands:
             with self.subTest(start=command[:24], length=len(command), tool=name):
-                start = time.perf_counter()
+                start = cpu_seconds()
                 guard.decide(shell(command, name))
-                self.assertLess(time.perf_counter() - start, 2.0)
+                self.assertLess(cpu_seconds() - start, GUARD_SECONDS)
 
     # Round 1 review of f45268c (#221). Bash spells the data path with Git Bash's drive.
     BASH_DATA = "/c/Users/someone/AppData/Local/Unminute/workspace"
@@ -1525,20 +1595,40 @@ class HardeningTests(unittest.TestCase):
         # ran past its time limit, which lets the call through), and thousands of
         # used variables rescanned the command each time. Blocked as too complex,
         # within the budget; a few hundred variables are still checked as usual.
-        doubling = "a=x; b0=$a$a; " + "".join(f"b{i + 1}=$b{i}$b{i}; " for i in range(40))
-        loops = "for a0 in x x; do :; done; " + "".join(
-            f"for a{i + 1} in $a{i} $a{i}; do :; done; " for i in range(30))
-        many = "".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(3000))
+        # Two measures of "quickly" (#293): the processor time this thread spent,
+        # which time other programs take on a busy machine does not count, and the
+        # work done, which does not depend on the machine at all: a fixed limit per
+        # shape (TOO_COMPLEX), just above what the bounded guard measured.
         with profile_guard() as fresh:
-            for command, name in ((doubling + "echo $b40", "Bash"), (loops, "Bash"),
-                                  (many, "PowerShell")):
-                with self.subTest(start=command[:20], tool=name):
-                    start = time.perf_counter()
-                    self.assertEqual(fresh.COMPLEX, fresh.decide(shell(command, name)))
-                    self.assertLess(time.perf_counter() - start, 2.0)
+            for label, command, name, checks, characters in TOO_COMPLEX:
+                with self.subTest(label, tool=name):
+                    with counted_work(fresh) as work:
+                        start = cpu_seconds()
+                        self.assertEqual(fresh.COMPLEX, fresh.decide(shell(command, name)))
+                        self.assertLess(cpu_seconds() - start, GUARD_SECONDS)
+                    self.assertLessEqual(work.checks, work_limit(checks))
+                    self.assertLessEqual(work.characters, work_limit(characters))
             self.check(fresh, allowed=(
                 ("".join(f"$v{i} = 'a'; Write-Output $v{i}; " for i in range(200)),
                  "PowerShell"),))
+
+    def test_the_speed_measures_fail_a_guard_without_its_bounds(self):
+        # Negative control (#293): with the work bounds lifted, the 3,000-variable
+        # command passes both limits of the test above (unbounded it takes about
+        # 6,000 checks, 590 million characters and 7 to 9 s). The run is stopped once
+        # it is past both, so this costs about GUARD_SECONDS, not the whole run.
+        _, many, _, checks, characters = next(
+            shape for shape in TOO_COMPLEX if shape[0] == "variables")
+        with profile_guard() as fresh, mock.patch.multiple(
+                fresh, MAX_ASSIGNMENTS=10**15, MAX_WORK=10**15, GROWTH_ALLOWANCE=10**15):
+            start = cpu_seconds()
+
+            def past_both(work):
+                return (cpu_seconds() - start >= GUARD_SECONDS
+                        and (work.checks > work_limit(checks)
+                             or work.characters > work_limit(characters)))
+            with self.assertRaises(_PastLimits), counted_work(fresh, stop=past_both):
+                fresh.decide(shell(many, "PowerShell"))
 
     def test_an_exported_value_is_never_hidden(self):
         # A child process reads an exported value without its name being written,
