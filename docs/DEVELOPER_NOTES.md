@@ -210,7 +210,9 @@ real time, and remove it when the cause is fixed.
   case varies slightly between runs on `main` itself.
 - **`tools/accessibility_check.py`** fails a view with `focus_not_measured` when its window loses
   keyboard focus during the focus pass (another window came to the front): Edge then draws no
-  focus style at all. Keep the window in front and rerun; it is not a page fault.
+  focus style at all. Keep the window in front and rerun; it is not a page fault. It does the
+  same when Edge does not treat the focus as keyboard focus (`:focus-visible` does not match,
+  as can happen after a mouse click in the window): press Tab once in the window and rerun.
 - **Clipboard tests** skip as "clipboard busy" while another app holds the clipboard.
 - **A busy clipboard in `tools/workspace_ui_check.py` (#342).** The app waits about a second
   for a clipboard another program holds, then reports "The clipboard is in use by another

@@ -37,7 +37,7 @@ EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
 
 # Each view: the fixtures.js scenario, script run once it is ready, the window
 # width, and the audit lists that must be empty.
-FOCUS = ["no_focus_ring", "low_contrast_focus"]
+FOCUS = ["focus_not_measured", "no_focus_ring", "low_contrast_focus"]
 VIEWS = {
     "setup speaker names": ("setup-3", "", 1100, ["low_contrast"] + FOCUS),
     "setup microphone": ("setup-4", "", 1100, ["low_contrast"] + FOCUS),

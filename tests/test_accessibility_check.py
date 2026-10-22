@@ -110,6 +110,9 @@ FIXTURES = {
     # so the audit cannot measure the ring (see SETUP).
     "window_not_focused": '<style>button:focus-visible { outline: 2px solid #1a1a1a; }</style>'
                           '<button class="gap">One</button><button>Two</button>',
+    # 2.4.7 with focus the browser treats as from the pointer (see SETUP).
+    "focus_not_keyboard": '<style>button:focus-visible { outline: 2px solid #1a1a1a; }</style>'
+                          '<button class="gap">One</button><button>Two</button>',
     # 3.2.1 On Focus
     "opens_on_focus": '<button onfocus="document.getElementById(\'d\').show()">Opens</button>'
                       '<dialog id="d" aria-label="Pop-up">Synthetic</dialog>',
@@ -119,6 +122,9 @@ FIXTURES = {
 SETUP = {
     # Another window in front: the document reports that it has no focus.
     "window_not_focused": "document.hasFocus = () => false;",
+    # Focus after a mouse click: :focus-visible matches nothing.
+    "focus_not_keyboard": "Element.prototype.matches = function (s) {"
+                          " return s === ':focus-visible' ? false : MATCHES.call(this, s); };",
     # The box's text throws once the text spacing is applied, so the audit
     # fails with the spacing still on the page unless it takes it off anyway.
     "spacing_fails": "Object.defineProperty(document.getElementById('boom'), 'innerText', "
@@ -130,12 +136,14 @@ RUNNER = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fi
 <script>
 const AUDIT = %s, FIXTURES = %s, BASE = %s, SETUP = %s, COLOUR_MODE = %s;
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const MATCHES = Element.prototype.matches;
 window.addEventListener('load', async () => {
   const out = {}, styles = {};
   const colour = new Function(COLOUR_MODE)();
   for (const [name, fragment] of Object.entries(FIXTURES)) {
     document.body.innerHTML = BASE + fragment;
     delete document.hasFocus;          // a SETUP may have replaced it for its fragment
+    Element.prototype.matches = MATCHES;
     if (SETUP[name]) new Function(SETUP[name])();
     window.scrollTo(0, 0);
     document.body.getBoundingClientRect();
@@ -284,6 +292,14 @@ class AuditTests(unittest.TestCase):
         self.assertIn("keyboard focus", r["focus_not_measured"][0])
         self.assertIn("focus_not_measured", accessibility_check.CHECKS)
         self.assertEqual([], self.flagged("dark_ring", "focus_not_measured"))
+
+    def test_focus_not_from_the_keyboard_is_not_measured(self):
+        # Without :focus-visible the page's ring does not show, so every
+        # control would look ringless; the audit says so instead (#298).
+        r = self.result("focus_not_keyboard")
+        self.assertEqual([], r["no_focus_ring"])
+        self.assertEqual(1, len(r["focus_not_measured"]))
+        self.assertIn("as keyboard focus", r["focus_not_measured"][0])
 
     def test_focus_opens_nothing(self):
         self.assertEqual(["button"], self.flagged("opens_on_focus", "change_on_focus"))

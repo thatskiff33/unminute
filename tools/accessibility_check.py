@@ -142,7 +142,10 @@ const ringRatio = (el, s) => {
 // While the window does not have keyboard focus (another window is in front)
 // the browser draws no focus style at all, so nothing can be measured: the
 // pass stops and says so (focus_not_measured) rather than report every
-// control as having no focus indicator (#298).
+// control as having no focus indicator (#298). It stops the same way when the
+// browser does not treat the focus as keyboard focus (:focus-visible does not
+// match, as after a mouse click in the window), since a page's ring usually
+// shows only on keyboard focus.
 const noFocusRing = [], focusObscured = [], lowContrastFocus = [], changeOnFocus = [];
 const focusNotMeasured = [];
 const focusable = [];
@@ -159,6 +162,11 @@ for (const el of controls.filter(e => !e.disabled && e.tabIndex >= 0).slice(0, 8
   const ring = (s.outlineStyle !== 'none' && parseFloat(s.outlineWidth) > 0) ||
                (s.boxShadow && s.boxShadow !== 'none');
   if (document.activeElement !== el) continue;
+  if (!el.matches(':focus-visible')) {
+    focusNotMeasured.push('the browser did not treat focus on ' + desc(el) +
+                          ' as keyboard focus: press Tab once in the window and run again');
+    break;
+  }
   focusable.push(el);
   if (!ring) noFocusRing.push(desc(el));
   if (hiddenWhenFocused(el)) focusObscured.push(desc(el));
