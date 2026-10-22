@@ -89,6 +89,11 @@ NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s",
            "computer_dropped_s", "bytes"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
+# A log's files: <stem>.log, <name>.running while its run is open and <name>.crash
+# (faulthandler's output). tools/residue.py allows these after cleanup (#111 C7).
+LOG_SUFFIX = ".log"
+RUNNING_SUFFIX = ".running"
+CRASH_SUFFIX = ".crash"
 BIG = 10 ** 12                  # no number the app writes is this large
 INCIDENT_REPEATS = 3            # the same incident is written this often a run,
 INCIDENTS_MAX = 200             # and no more than this many incidents in all
@@ -267,9 +272,9 @@ class Log:
             raise ValueError("A log name is a short code.")
         self.folder, self.name = Path(folder), name
         self._lock = threading.Lock()
-        self.path = self.folder / f"{name}.log"
-        self.crash_path = self.folder / f"{name}.crash"
-        self.running_path = self.folder / f"{name}.running"
+        self.path = self.folder / f"{name}{LOG_SUFFIX}"
+        self.crash_path = self.folder / f"{name}{CRASH_SUFFIX}"
+        self.running_path = self.folder / f"{name}{RUNNING_SUFFIX}"
         self._crash_file = None
         self._incidents = {}            # incident -> (its last code, times written)
         self._incidents_written = 0
@@ -309,10 +314,10 @@ class Log:
             return False
         try:
             for i in range(KEEP - 1, 1, -1):
-                newer = self.folder / f"{self.name}.{i - 1}.log"
+                newer = self.folder / f"{self.name}.{i - 1}{LOG_SUFFIX}"
                 if newer.exists():
-                    newer.replace(self.folder / f"{self.name}.{i}.log")
-            aside.replace(self.folder / f"{self.name}.1.log")
+                    newer.replace(self.folder / f"{self.name}.{i}{LOG_SUFFIX}")
+            aside.replace(self.folder / f"{self.name}.1{LOG_SUFFIX}")
         except OSError:
             try:
                 aside.replace(self.path)
@@ -358,7 +363,8 @@ class Log:
             # Manager's Details, power lost): still a crash, counted once.
             self.write("crash", code=new_code(), process=self.name, fatal="did_not_close")
         for name in others:
-            self.collect_crash(False, crash_path=self.folder / f"{name}.crash", process=name)
+            self.collect_crash(False, crash_path=self.folder / f"{name}{CRASH_SUFFIX}",
+                               process=name)
         try:
             self.folder.mkdir(exist_ok=True)
             # Which process is running (--health asks Windows whether it still
@@ -834,7 +840,7 @@ def files(folder):
     """The log files in folder (never the raw .crash files, which can hold
     program folders): what Copy diagnostics may read, and what tests check."""
     try:
-        return sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix == ".log")
+        return sorted(p for p in Path(folder).iterdir() if p.is_file() and p.suffix == LOG_SUFFIX)
     except OSError:                             # missing, or not readable
         return []
 

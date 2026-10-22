@@ -998,6 +998,8 @@ class DrawnRunTests(unittest.TestCase):
                                       return_value=display), \
                     mock.patch.object(perf_check, "refresh_now", create=True,
                                       side_effect=refresh_now), \
+                    mock.patch.object(perf_check, "store_step",      # #111 C7, no window
+                                      return_value=dict(STORE)), \
                     mock.patch.object(perf_check.subprocess, "Popen", return_value=child), \
                     mock.patch.object(perf_check, "Job"), \
                     mock.patch.object(perf_check, "measure",
@@ -1480,6 +1482,167 @@ class MachineReportTests(unittest.TestCase):
         # No named reference machine: a 4-core, 8 GB laptop measures as well.
         rc, run, report = self.run_parent(dict(self.FULL), "p.zip")
         self.assertEqual((0, 1), (rc, run.call_count))
+
+
+STORE = {name: 0.01 for name in perf_check.STORE_FIGURES}
+
+
+class StoreStepTests(unittest.TestCase):
+    """#111 C7: the sealed store measured once per release run, with no window,
+    before the windowed runs (the C2b-2 design's section 4.8). Measured, no
+    budget yet."""
+
+    def run_parent(self, store, quick=False):
+        import tempfile
+        from types import SimpleNamespace
+        calls = []
+
+        def step(args):
+            calls.append("store")
+            if isinstance(store, Exception):
+                raise store
+            return dict(store)
+
+        def run(*a, **k):
+            calls.append("run")
+            return {"startup": {"startup_s": 1.0, "workspace_s": 0.2}}
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "perf.json"
+            args = SimpleNamespace(quick=quick, settle=0, window=0, runs=2, leak_minutes=0,
+                                   report=str(report), app=None, zip=None, compare=None)
+            with mock.patch.object(perf_check, "environment", return_value={}), \
+                    mock.patch.object(perf_check, "display_watch", return_value=FakeDisplay()), \
+                    mock.patch.object(perf_check, "refresh_now", return_value=None), \
+                    mock.patch.object(perf_check, "store_step", side_effect=step), \
+                    mock.patch.object(perf_check, "one_run", side_effect=run), \
+                    mock.patch.object(perf_check, "BUDGETS", Path(tmp) / "none.json"), \
+                    mock.patch("builtins.print"):
+                rc = perf_check.parent(args)
+            return rc, calls, json.loads(report.read_text(encoding="utf-8"))
+
+    def test_a_release_run_measures_the_store_once_before_the_windows(self):
+        rc, calls, report = self.run_parent(STORE)
+        self.assertEqual((0, ["store", "run", "run"]), (rc, calls))
+        self.assertEqual(STORE, report["store"])
+        # workspace_s is a startup median, with no budget and none proposed.
+        self.assertEqual(0.2, report["median"]["startup"]["workspace_s"])
+        self.assertNotIn("workspace_s", report["proposed_budgets_plus_20_percent"]["startup"])
+
+    def test_quick_leaves_it_out(self):
+        rc, calls, report = self.run_parent(STORE, quick=True)
+        self.assertEqual(["run"], calls[:1])
+        self.assertNotIn("store", calls)
+        self.assertNotIn("store", report)
+
+    def test_a_store_step_that_misses_a_figure_stops_the_run(self):
+        for store in ({k: v for k, v in STORE.items() if k != "open_500_meetings_s"},
+                      dict(STORE, page_5000_passages_s=None),
+                      RuntimeError("the store step failed (exit 1)")):
+            with self.subTest(store=store):
+                rc, calls, report = self.run_parent(store)
+                self.assertEqual((2, ["store"]), (rc, calls))
+                self.assertTrue(report["error"])
+
+    def test_store_problems_names_what_is_missing(self):
+        self.assertEqual([], perf_check.store_problems(STORE))
+        self.assertEqual(["the store step did not run"], perf_check.store_problems(None))
+        self.assertEqual(["database_5000_passages_mb"], perf_check.store_problems(
+            dict(STORE, database_5000_passages_mb="12")))
+
+    def test_the_store_child_is_this_tool_without_a_window(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(app=None, zip=None)
+        command, _ = perf_check.child_command(args, Path("w"))
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["command"] = cmd
+            figures = perf_check.PREFIX + json.dumps(STORE) + "\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=figures, stderr="")
+        with mock.patch.object(perf_check.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(STORE, perf_check.store_step(args))
+        self.assertIn("--store-child", seen["command"])
+        self.assertNotIn("--child", seen["command"])
+
+    def test_workspace_s_reaches_the_startup_figures(self):
+        ready = dict(OneRunTests.READY, workspace_s=0.31)
+        child = FakeChild(ready, lambda c: {"state": "recording", "seconds": 61.0})
+        result = OneRunTests.run_child(self, child, held=60.0)
+        self.assertEqual(0.31, result["startup"]["workspace_s"])
+
+
+@unittest.skipUnless(all(__import__("importlib").util.find_spec(m) for m in ("numpy", "av")),
+                     "numpy/av not installed")
+class MeasureStoreTests(unittest.TestCase):
+    def test_every_figure_is_measured(self):
+        # Small numbers and the test key protector: the shape, not the speed.
+        import tempfile
+
+        import keyprotect
+        with tempfile.TemporaryDirectory() as tmp:
+            out = perf_check.measure_store(tmp, protector=keyprotect.TestProtector(),
+                                           meetings=2, passages=30, opens=2, reads=2)
+        self.assertEqual([], perf_check.store_problems(out))
+        self.assertEqual((2, 30), (out["meetings"], out["passages"]))
+        self.assertGreater(out["database_5000_passages_mb"], 0)
+
+
+class CompareTests(unittest.TestCase):
+    """--compare: an earlier release's report, a local file only."""
+
+    MACHINE = MachineReportTests.FULL
+
+    def report(self, machine=None, **figures):
+        return {"machine": dict(self.MACHINE, **(machine or {})),
+                "environment": {"app": {"version": "0.5.0-preview.3"}},
+                "median": {"startup": {"startup_s": figures.get("startup_s", 2.0)},
+                           "meetings": {"cpu_percent_of_one_core": 1.0, "private_mb": 700}},
+                **({"store": dict(STORE)} if figures.get("store") else {})}
+
+    def test_figures_in_both_are_set_side_by_side(self):
+        now = self.report(startup_s=2.2, store=True)
+        out = perf_check.compare_reports(now, self.report())
+        self.assertEqual([], out["machines_differ_in"])
+        rows = {(r["state"], r["metric"]): r for r in out["compared"]}
+        self.assertEqual({("startup", "startup_s"), ("meetings", "cpu_percent_of_one_core"),
+                          ("meetings", "private_mb")}, set(rows))
+        self.assertEqual(10.0, rows[("startup", "startup_s")]["change_percent"])
+        self.assertEqual(len(STORE), out["only_now"])        # preview.3 has no store step
+        self.assertEqual({"version": "0.5.0-preview.3"}, out["earlier_app"])
+
+    def test_other_machines_are_not_comparable(self):
+        for change in ({"power_plan": "High performance"}, {"memory_gb": 15.6},
+                       {"on_mains_power": False}, {"cpu": None}):
+            with self.subTest(change=change):
+                out = perf_check.compare_reports(self.report(change), self.report())
+                self.assertEqual(list(change), out["machines_differ_in"])
+                self.assertTrue(out["compared"])
+                self.assertTrue(all(r["change_percent"] == perf_check.NOT_COMPARABLE
+                                    for r in out["compared"]))
+                self.assertEqual(self.MACHINE, out["machine_earlier"])
+
+    def test_a_bad_file_stops_before_the_run(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "earlier.json"
+            bad.write_text("[1, 2]", encoding="utf-8")
+            for path in (bad, Path(tmp) / "missing.json"):
+                argv = ["perf_check.py", str(Path(tmp) / "perf.json"), "--compare", str(path)]
+                never = mock.Mock(side_effect=AssertionError("a run started"))
+                with self.subTest(path=path.name), mock.patch.object(sys, "argv", argv), \
+                        mock.patch("sys.stderr"), mock.patch.object(perf_check, "parent", never), \
+                        self.assertRaises(SystemExit):
+                    perf_check.main()
+                never.assert_not_called()
+
+    def test_the_comparison_reads_only_the_named_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "evidence-perf.json"
+            path.write_text(json.dumps(self.report()), encoding="utf-8")
+            with mock.patch("urllib.request.urlopen",
+                            side_effect=AssertionError("fetched")):
+                self.assertEqual(self.report(), perf_check.earlier_report(path))
 
 
 if __name__ == "__main__":

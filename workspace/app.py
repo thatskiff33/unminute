@@ -75,6 +75,15 @@ ASSISTANT_WITHHELD = {
     "unreadable": ("Your organisation's settings could not be read, so Copy and open is not "
                    "available. Use Copy prompt and transcript instead, and ask your IT team."),
 }
+# The workspace's own files and folders. tools/residue.py builds the list of
+# files allowed after final cleanup from these (#111 C7), so a rename here
+# moves that list with it.
+DB_FILE = "workspace.db"
+SETTINGS_FILE = "settings.json"
+SETTINGS_UNREADABLE_FILE = "settings.unreadable.json"   # a copy kept when it cannot be read
+POWER_RESTORE_FILE = "power_restore.json"   # the lid action to put back (power.LidSwitch)
+LOGS_FOLDER = "logs"
+AUDIT_FOLDER = "audit"
 SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
 SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
@@ -320,7 +329,7 @@ class Settings:
                 # A copy, so a write that fails next still leaves it in place.
                 import shutil
                 try:
-                    shutil.copyfile(self.path, self.path.with_name("settings.unreadable.json"))
+                    shutil.copyfile(self.path, self.path.with_name(SETTINGS_UNREADABLE_FILE))
                 except OSError:
                     pass
             # Written in full or not at all: flushed to disk before the swap,
@@ -386,7 +395,7 @@ class Workspace:
         # The lid (#172): a "Do nothing" left by a crash or power cut is put
         # back first of all, before anything that could fail (the database
         # may be damaged by the same power cut). It never stops the start.
-        self.lid = lid_switch or power.LidSwitch(self.root / "power_restore.json")
+        self.lid = lid_switch or power.LidSwitch(self.root / POWER_RESTORE_FILE)
         try:
             self.lid.restore()
         except Exception:
@@ -394,14 +403,14 @@ class Workspace:
         self.media = self.root / "media"
         # Content-free diagnostics (R9): workspace\logs. The app's start
         # (__main__) installs it as the process's log; tests read it directly.
-        self.log = diag.Log(self.root / "logs", "app")
+        self.log = diag.Log(self.root / LOGS_FOLDER, "app")
         self._integrity = {"state": None, "code": None}
         self._check_database(check_integrity)
         held = self._integrity["state"] == "failed"
         self._integrity_ok = threading.Event()      # set: work may start
         # A damaged database opens without marking interrupted work, and the
         # start-up upkeep below waits too: on damaged pages it could delete.
-        self.store = Store(self.root / "workspace.db", housekeeping=not held,
+        self.store = Store(self.root / DB_FILE, housekeeping=not held,
                            protector=protector, on_unavailable=on_unavailable)
         self.store.log = self.log         # damaged values are recorded here (content-free)
         # Locked (#111 C4a): the key cannot be used, so nothing can be opened
@@ -413,7 +422,7 @@ class Workspace:
         if not held and self.locked is None:
             self._integrity_ok.set()
         self.audit = self._open_audit(audit_mirror)
-        self.settings = Settings(self.root / "settings.json",
+        self.settings = Settings(self.root / SETTINGS_FILE,
                                  allow_test_engines=allow_test_engines)
         # Handoff templates are built at their first use, not here (#111 C2c):
         # nothing is read, converted or logged while the key is unavailable.
@@ -534,7 +543,7 @@ class Workspace:
         if mirror is None and real and os.name == "nt" \
                 and under_workspace_root(self.store.path):
             mirror = audit.EventLogMirror()
-        log = audit.AuditLog(self.root / "audit", mirror=mirror, log=self.log,
+        log = audit.AuditLog(self.root / AUDIT_FOLDER, mirror=mirror, log=self.log,
                              new_workspace=self.store.new_root)
         if self.locked is not None:
             # A locked start (#111 C4a): Workspace.locked's reason and Windows
@@ -560,7 +569,7 @@ class Workspace:
         folder scan and receipt purge waits until the user chooses Continue
         anyway (the user's choices, 17 Oct 2026, #132). The hold is in memory
         only, so it adds no write to the damaged database."""
-        db = self.root / "workspace.db"
+        db = self.root / DB_FILE
         last = diag.integrity_state(self.log.folder)
         failed_before = bool(last and last["result"] == "failed")
         skipped_before = bool(last and last["result"] == "skipped")
@@ -3137,7 +3146,7 @@ class Workspace:
                 # again whenever either changes.
                 "update_blockers": self._display_value(
                     "blockers", lambda: [b["message"] for b in
-                                         update.blockers(self.root / "workspace.db")],
+                                         update.blockers(self.root / DB_FILE)],
                     version=(self.store.revision, _folders(self.recordings)))}
 
     def set_settings(self, changes):

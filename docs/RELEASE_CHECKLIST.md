@@ -38,6 +38,15 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 | Packaged lifecycle and resources | `tools/packaged_check.py` (PR #57) collects these from an installed package. Development laptop run of the installed 0.2.0-preview.1 package (16 logical CPUs, 32 GB, CPU only, 14 October 2026). Self-test PASS. 15 minutes of synthetic audio transcribed with speakers in 673 s, with a worker peak of 2,418 MB and 0 network attempts. After review and final-saved confirmation, no meeting or marker text remained and there were no backup files. The idle window used 1.0% of one core and 480 MB. Reference measurements still belong on the lowest-supported laptop (#28). |
 | Idle performance (provisional) | `tools/perf_check.py --quick` (#124) on source at 0fb525f with 3 synthetic meetings, 16 October 2026. This was the development laptop on the Performance power plan, with other apps running.<br>- Start-up to interactive: 1.7 s.<br>- Meetings view: 1.2% of one core, 754 MB private bytes.<br>- Settings view: 3.2% of one core, 773 MB.<br>- Minimised: 0.4% of one core, 763 MB.<br>- Process tree: 8 processes, 6 of them WebView2.<br>- The worker unloaded 121 s after its last use.<br>These figures set the provisional budgets in `docs/perf-budgets.json`. Private bytes are not comparable with the 480 MB above, which summed working sets. |
 
+## Phase C release evidence (#111 C7)
+
+For the first release with schema 2 and every release after it. Each item is part of a report's own pass criteria; this list says what to look at before approving.
+
+- [ ] **Packaged lifecycle** (`evidence-packaged.json`): the scanner's control found every pattern; nothing readable at rest; the audit log verified; the recording encrypted while it records and its key erased after import and discard; the audio key erased with the text key kept; nothing blocking an update and the database compacted; only the workspace's own files left, with the logs listed; no crash dumps.
+- [ ] **Crash checks** (`evidence-crash.json`): the import killed part-way was discarded with nothing of it left; each cleanup landing was consistent and then finished; the recording killed part-way was kept after the restart, with no partial chunk or plain audio left; no crash dumps. Where each cleanup kill landed is recorded in `landings`.
+- [ ] **Performance** (`evidence-perf.json`): the store step's figures and `workspace_s` are present. On the first Phase C release, open a pull request after publishing that sets their budgets from these medians plus 20% (never from a development-laptop run).
+- [ ] **Comparison:** run the performance check with `--compare` against a local copy of the previous release's `evidence-perf.json`, and say in the release notes whether the machines were comparable.
+
 ## Before a business release (needs people or hardware)
 
 Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md). Each open item is tracked in validation tracker #189, by sitting; the closed issues it came from keep their earlier evidence.

@@ -68,6 +68,11 @@ ACCESSIBILITY_VIEWS = (
 # The performance states with the window on screen (tools/perf_check.py): each
 # window measured in one counts only if it was drawn (its "drawing" block; #292).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
+# The sealed store's figures (tools/perf_check.py, "store"; #111 C7): a release's
+# performance evidence measures each one. Measured, no budget yet.
+PERF_STORE_FIGURES = ("open_0_meetings_s", "open_500_meetings_s", "listing_500_meetings_s",
+                      "page_5000_passages_s", "search_5000_passages_s",
+                      "database_5000_passages_mb")
 # The machine a performance report ran on (tools/perf_check.py, "machine"), as
 # a test of each field. Specification only: nothing names a person, the
 # computer or a path (AGENTS.md P3).
@@ -544,6 +549,11 @@ def check(expected_sha256, paths, commit=None):
             elif missing:
                 found.append(f"records the machine only in part (not read: "
                              f"{', '.join(missing)})")
+            store = body.get("store") if isinstance(body.get("store"), dict) else {}
+            unmeasured = [f for f in PERF_STORE_FIGURES if not _number(store.get(f))]
+            if unmeasured:
+                found.append(f"does not measure the sealed store (not measured: "
+                             f"{', '.join(unmeasured)}; run tools/perf_check.py again)")
             undrawn = perf_not_drawn(body)
             if undrawn:
                 found.append(f"does not show every visible window drawn on a display that was "
