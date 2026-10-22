@@ -878,7 +878,7 @@ class EncryptedChunkTests(unittest.TestCase):
         found = []
         for name in ("recorder.py", "mixdown.py", "media.py", "app.py"):
             text = (root / name).read_text(encoding="utf-8")
-            if name != "app.py" and re.search(r"import wave|wave\.open", text):
+            if name != "app.py" and re.search(r"\bimport wave\b|\bwave\.open\b", text):
                 found.append((name, "wave"))
             for call in re.findall(r"(?<!def )_write_atomic\(([^,]*),", text):
                 if "journal.json" not in call:
