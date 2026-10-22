@@ -21,21 +21,38 @@
   left it at "Do nothing" (#191): see Restore-LidSetting. That step never stops
   the uninstall.
 
-  Exit codes: 0 removed, 1 failed, 3 the app is running.
+  With -Offboard (#111 B8b), run as the person, it first has the installed app
+  remove what Unminute keeps for them (python -m workspace --offboard: the
+  workspace, the downloaded models and the token), and removes the program,
+  its shortcut, its taskbar and Start pins and its uninstall entry only when
+  that finished cleanly. If anything stops offboarding (meetings, holds or
+  cleanup left, the app open, Local System, other items in the data folder),
+  the uninstall stops too and the program is kept, so the person can still
+  finish with it. See docs/PACKAGING.md, "Offboarding". Without -Silent it
+  shows what will go and asks for REMOVE first.
+
+  Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed), 3 the
+  app is running. With -Offboard, also --offboard's own codes when it stops the
+  uninstall: 1 a step failed, 2 Local System, 3 the app is open, 4 other items
+  left in the data folder, 5 blocked, 6 the data folder's location is refused.
 #>
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\Unminute"),
-    [switch]$Silent
+    [switch]$Silent,
+    [switch]$Offboard
 )
 
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
-$Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent }
+$Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent; Offboard = [bool]$Offboard }
 $AppName = "Unminute"
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 # The longest the lid restore may take before it is stopped (it needs about a second).
 $LidRestoreSeconds = 60
+# The longest --offboard-report or --offboard may take before it is stopped. Removing
+# several GB of models takes about a minute, and a file in use is waited for 30 s.
+$OffboardSeconds = 900
 
 function Write-Step([string]$Message) {
     if (-not $Options.Silent) { Write-Host $Message }
@@ -55,16 +72,22 @@ function Write-Warn([string]$Message) {
 # "Do nothing"), which never touch IT's policy settings. Whatever happens, the
 # uninstall carries on; anything but success only says to check the setting.
 
-# The current version's folder, if it can run the restore: a plain folder name from
-# current.json (never a path; \z, unlike $, refuses a final newline), and a
-# version.json that lists the feature, so an older version never takes the switch
-# for an ordinary start and opens its window.
-function Get-LidRestoreVersion {
+# The current version's folder: a plain folder name from current.json (never a path;
+# \z, unlike $, refuses a final newline), or $null. Also used by -Offboard (#111 B8b).
+function Get-CurrentVersionFolder {
     $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
     if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) { return $null }
     $version = [string](Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json).version
     if ($version -cnotmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z') { return $null }
-    $target = [IO.Path]::Combine($Options.InstallDir, "versions", $version)
+    return [IO.Path]::Combine($Options.InstallDir, "versions", $version)
+}
+
+# The current version's folder, if it can run the restore: a version.json that lists
+# the feature, so an older version never takes the switch for an ordinary start and
+# opens its window.
+function Get-LidRestoreVersion {
+    $target = Get-CurrentVersionFolder
+    if (-not $target) { return $null }
     $info = Get-Content -LiteralPath ([IO.Path]::Combine($target, "version.json")) -Raw | ConvertFrom-Json
     if (@($info.features) -notcontains "restore-lid") { return $null }
     if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, "runtime", "python.exe")) -PathType Leaf)) { return $null }
@@ -227,6 +250,244 @@ function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
     $Dir.Delete()
 }
 
+# -- offboarding, with -Offboard (#111 B8b) ---------------------------------------------
+# The installed app removes what Unminute keeps for this Windows user (python -m workspace
+# --offboard; docs/PACKAGING.md, "Offboarding"), run as this user, as the lid restore is
+# run: never as Local System, which it refuses. It first reports (--offboard-report),
+# and only a clean report ("ok", exit 0) and a clean removal ("offboarded", exit 0) let
+# the uninstall carry on. Anything else stops it with the app's own exit code and the
+# program kept, so a person with meetings, holds or cleanup left can still finish them
+# with it (the owner's decision B8-2, 21 Oct 2026). The app's output is one line of
+# counts and states (no path, name or content), passed on to standard output.
+
+# The current version's folder, if it has the switch: as Get-LidRestoreVersion, and
+# never a version folder that is a link (#297). An older version would take --offboard
+# for an ordinary start and open its window.
+function Get-OffboardVersion {
+    try {
+        $target = Get-CurrentVersionFolder
+        if (-not $target) { return $null }
+        $folder = [IO.DirectoryInfo]::new($target)
+        if (-not $folder.Exists -or (Test-Link $folder)) { return $null }
+        $info = Get-Content -LiteralPath ([IO.Path]::Combine($target, "version.json")) -Raw | ConvertFrom-Json
+        if (@($info.features) -notcontains "offboard") { return $null }
+        if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, "runtime", "python.exe")) -PathType Leaf)) { return $null }
+        return $target
+    } catch { return $null }
+}
+
+# Runs the installed app with one switch and a hard time limit, as Invoke-LidRestore
+# does. Returns @{ Code; Output }, Code -1 if it was stopped.
+function Invoke-AppSwitch([string]$Target, [string]$Switch) {
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = [IO.Path]::Combine($Target, "runtime", "python.exe")
+    $start.Arguments = "-I -B -X disable-remote-debug -m workspace $Switch"
+    $start.WorkingDirectory = [IO.Path]::Combine($Target, "app")
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        $out = $process.StandardOutput.ReadToEndAsync()
+        [void]$process.StandardError.ReadToEndAsync()       # read so a full pipe never blocks it
+        if (-not $process.WaitForExit($OffboardSeconds * 1000)) {
+            try { $process.Kill() } catch { }
+            [void]$process.WaitForExit(10000)        # so no file in the install stays open
+            return @{ Code = -1; Output = "" }
+        }
+        $process.WaitForExit()                       # and its output read to the end
+        return @{ Code = $process.ExitCode; Output = [string]$out.Result }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+# The app's result: its last line, a JSON object with a "result" word, or $null.
+function Read-OffboardResult([string]$Output) {
+    $lines = @($Output -split "\r?\n" | Where-Object { $_.Trim() })
+    if (-not $lines.Count) { return $null }
+    $line = $lines[-1].Trim()
+    if (-not $line.StartsWith("{")) { return $null }
+    try { $result = $line | ConvertFrom-Json } catch { return $null }
+    if ($null -eq $result -or -not ($result.result -is [string])) { return $null }
+    return @{ Line = $line; Result = $result }
+}
+
+# "meetings: 2, holds: 1": the blocker kinds (fixed words) and their counts only.
+function Format-BlockerCount($Result) {
+    $parts = @()
+    if ($Result -and $Result.blockers) {
+        foreach ($p in $Result.blockers.PSObject.Properties) {
+            if ($p.Name -cmatch '^[a-z_]{1,32}\z' -and "$($p.Value)" -match '^\d{1,9}\z') {
+                $parts += "$($p.Name): $($p.Value)"
+            }
+        }
+    }
+    if ($parts.Count) { return $parts -join ", " }
+    return "meetings, holds, cleanup or audio"
+}
+
+# Returns when the run was clean ($Expected, exit 0); otherwise stops the uninstall.
+function Assert-Offboarded($Run, [string]$Expected) {
+    if ($Run.Code -eq -1) {
+        Stop-Uninstall 1 ("Offboarding did not finish within $OffboardSeconds seconds and was stopped, " +
+            "so the program was kept. Run this again: it finishes what was started.")
+    }
+    $read = Read-OffboardResult $Run.Output
+    $result = $null
+    if ($read) {
+        [Console]::Out.WriteLine($read.Line)
+        $result = $read.Result
+    }
+    if ($Run.Code -eq 0 -and $result -and $result.result -ceq $Expected) { return }
+    $kept = "so the program was kept"
+    switch ($Run.Code) {
+        5 { Stop-Uninstall 5 ("Offboarding is blocked: $(Format-BlockerCount $result) left. Finish them in " +
+            "$AppName (confirm cleanup of finished meetings; holds are released by whoever manages " +
+            "them), then run this again. Nothing was removed, $kept.") }
+        3 { Stop-Uninstall 3 ("$AppName is open, in this or another session of this user, $kept. " +
+            "Close it, then run this again.") }
+        2 { Stop-Uninstall 2 ("Offboarding runs only as the person whose data it is, never as Local " +
+            "System, so nothing was removed and the program was kept. Run this in their own " +
+            "session (with Intune, with the logged-on user's credentials).") }
+        4 {
+            $count = "Other"
+            if ($result -and "$($result.others)" -match '^\d{1,9}\z') { $count = "$($result.others) other" }
+            Stop-Uninstall 4 ("$count item(s) in $AppName's data folder are not offboarding's to remove " +
+                "(for example a workspace set aside after damage), $kept. Check them with whoever " +
+                "manages holds, delete them by hand once nothing in them is needed, then run this again.")
+        }
+        6 { Stop-Uninstall 6 ("Offboarding refused $AppName's data folder: it is a link, a file, or a " +
+            "location $AppName itself refuses. Nothing was removed, $kept. IT removes that folder by hand.") }
+        1 {
+            $step = "unknown"
+            if ($result -and "$($result.step)" -cmatch '^[a-z_]{1,32}\z') { $step = $result.step }
+            Stop-Uninstall 1 ("Offboarding stopped at the step '$step', $kept. Run this again: it " +
+                "finishes what was started.")
+        }
+        default { Stop-Uninstall 1 "Offboarding gave a result this uninstaller does not know, $kept." }
+    }
+}
+
+# Offboards, or stops the uninstall. Without -Silent, shows what will go and asks.
+function Invoke-Offboard {
+    $target = Get-OffboardVersion
+    if (-not $target) {
+        Stop-Uninstall 1 ("This version of $AppName cannot offboard (it is older than the switch, or " +
+            "its files are missing), so nothing was removed and the program was kept. Install the " +
+            "current version, then run this again.")
+    }
+    $report = Invoke-AppSwitch $target "--offboard-report"
+    Assert-Offboarded $report "ok"
+    if (-not $Options.Silent) {
+        $facts = (Read-OffboardResult $report.Output).Result
+        Write-Host "This removes, for this Windows user:"
+        if ("empty", "locked_empty" -contains $facts.workspace) {
+            Write-Host "  - $AppName's workspace: settings, logs, the audit log and window data (no meetings, holds or cleanup are left)"
+        }
+        if ($facts.models_link -eq $true) { Write-Host "  - the link to the downloaded models (what it points to is kept)" }
+        elseif ("$($facts.models_mb)" -match '^\d{1,9}\z' -and [int]$facts.models_mb -gt 0) {
+            Write-Host "  - the downloaded models ($($facts.models_mb) MB)"
+        }
+        if ($facts.token -eq $true) { Write-Host "  - the saved Hugging Face token" }
+        Write-Host "  - then the program, its Start menu shortcut, its pins and its uninstall entry."
+        Write-Host "Type REMOVE to continue, or anything else to stop:"
+        if ([Console]::In.ReadLine() -cne "REMOVE") {
+            Stop-Uninstall 1 "Nothing was removed, and the program was kept."
+        }
+    }
+    Assert-Offboarded (Invoke-AppSwitch $target "--offboard") "offboarded"
+    Write-Step "What $AppName kept for this Windows user was removed."
+}
+
+# Taskbar and Start pins are copies of the Start menu shortcut in these folders, which
+# install.ps1's Update-PinnedShortcut repoints at each update. None when the roaming
+# profile folder is unknown or not a full path.
+function Get-PinFolder {
+    $roaming = [string]$env:APPDATA
+    if ([string]::IsNullOrWhiteSpace($roaming) -or -not [IO.Path]::IsPathRooted($roaming)) { return @() }
+    $pinned = [IO.Path]::Combine($roaming, "Microsoft\Internet Explorer\Quick Launch\User Pinned")
+    return @([IO.Path]::Combine($pinned, "TaskBar"), [IO.Path]::Combine($pinned, "StartMenu"))
+}
+
+# What a pin runs, read without resolving or changing the shortcut (the shell's own
+# shortcut object, as install.ps1's Set-ShortcutAppId uses it).
+function Get-ShortcutTarget([string]$Path) {
+    if (-not ([System.Management.Automation.PSTypeName]'UnminuteUninstall.ShortcutTarget').Type) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace UnminuteUninstall {
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int size,
+                     IntPtr data, uint flags);
+    }
+    [ComImport, Guid("0000010b-0000-0000-C000-000000000046"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPersistFile {
+        void GetClassID(out Guid id);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string name, int mode);
+    }
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")] class CShellLink { }
+    public static class ShortcutTarget {
+        public static string Read(string lnk) {
+            // Load reads the file and closes it (STGM_READ): nothing is resolved or written.
+            object link = new CShellLink();
+            ((IPersistFile)link).Load(lnk, 0);
+            StringBuilder file = new StringBuilder(32768);
+            ((IShellLinkW)link).GetPath(file, file.Capacity, IntPtr.Zero, 0);
+            return file.ToString();
+        }
+    }
+}
+'@
+    }
+    return [UnminuteUninstall.ShortcutTarget]::Read($Path)
+}
+
+# The start of every path this install's versions have: the folder as given, and as
+# Windows names it (Update-PinnedShortcut writes pins with the latter). Read before
+# the install folder is removed.
+function Get-PinPrefix {
+    $dirs = @($Options.InstallDir)
+    try { $dirs += (Get-Item -LiteralPath $Options.InstallDir -Force -ErrorAction Stop).FullName } catch { }
+    return @($dirs | ForEach-Object { [IO.Path]::Combine($_.TrimEnd("\"), "versions") + "\" })
+}
+
+# Removes pins that run this install's pythonw.exe (Update-PinnedShortcut's test); pins
+# to anything else are kept. A pin folder or pin that is a link or junction is neither
+# read nor removed (#297). A pin that cannot be read or removed only warns.
+function Remove-OwnPin([string[]]$Prefixes) {
+    $left = 0
+    foreach ($folder in Get-PinFolder) {
+        try {
+            $dir = [IO.DirectoryInfo]::new($folder)
+            if (-not $dir.Exists -or (Test-Link $dir)) { continue }
+            foreach ($file in $dir.GetFiles("*.lnk")) {
+                if ($file.Extension -ine ".lnk" -or (Test-Link $file)) { continue }
+                try {
+                    $target = [string](Get-ShortcutTarget $file.FullName)
+                    $ours = $target.EndsWith("\runtime\pythonw.exe", [StringComparison]::OrdinalIgnoreCase) -and
+                        @($Prefixes | Where-Object { $target.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count
+                    if (-not $ours) { continue }
+                    if ($file.Attributes -band [IO.FileAttributes]::ReadOnly) {
+                        $file.Attributes = $file.Attributes -bxor [IO.FileAttributes]::ReadOnly
+                    }
+                    Invoke-LockRetry { $file.Delete() }
+                } catch { $left++ }
+            }
+        } catch { $left++ }
+    }
+    if ($left) {
+        Write-Warn "$left pin(s) could not be checked or removed. Unpin $AppName by hand if it still shows."
+    }
+}
+
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so the checks and the removals below use the same path.
@@ -280,7 +541,14 @@ try {
             Stop-Uninstall 1 "The install folder holds a link or junction that $AppName did not put there, so nothing was removed. Remove it, then run this again."
         }
     }
+    # With -Offboard (#111 B8b): the person's data goes first, through the installed app.
+    # Anything but a clean result stops here, with the program kept (B8-2).
+    if ($Options.Offboard) {
+        Invoke-Offboard
+        $pinPrefixes = Get-PinPrefix
+    }
     # Before anything is removed: the installed app puts the lid setting back (#191).
+    # After offboarding there is no record left (it was put back first), so this does nothing.
     Restore-LidSetting
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove the rest first, never through
@@ -301,6 +569,8 @@ try {
     $programs = [Environment]::GetFolderPath("Programs")
     $link = Join-Path $programs "$AppName.lnk"
     if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
+    # Pins that run this install's versions would only break: with -Offboard they go too.
+    if ($Options.Offboard) { Remove-OwnPin $pinPrefixes }
     # Last: while any file remains, the app still shows as installed (Intune detection).
     if ($elsewhere) {
         Write-Step ("$AppName has been removed from this folder. The Start menu shortcut and the " +
@@ -309,6 +579,7 @@ try {
         if (Test-Path -LiteralPath $RegKey) { Remove-Item -LiteralPath $RegKey -Recurse -Force }
         Write-Step "$AppName has been removed."
     }
+    if ($Options.Offboard) { exit 0 }               # the data went first
     $db = Join-Path $env:LOCALAPPDATA "Unminute\workspace\workspace.db"
     if (Test-Path -LiteralPath $db) {
         Write-Step ("Your workspace was kept ($([IO.Path]::GetDirectoryName($db))). It may still " +
