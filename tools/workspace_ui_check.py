@@ -88,16 +88,22 @@ WAIT = "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
 # Ends an edit as a person leaving the passage would (#308). Chromium sends
 # `blur` only while the page has focus, and a check started from a terminal
 # often cannot bring its window to the front (docs/DEVELOPER_NOTES.md), so the
-# page's stopEditing would never run. Then the event a focused window would
-# deliver is dispatched here. The page's listener runs once, so this is
-# harmless if the native event fired. Returns whether the page had focus, for
-# the step's report. Focus itself needs no help: focus() and blur() move
+# page's stopEditing would never run. So when `el` held the focus and no
+# native `blur` arrived during blur() (Chromium sends it synchronously), the
+# event a focused window would deliver is dispatched here: exactly one blur,
+# even if the window gains or loses focus mid-call, and none for an element
+# that was not focused. Returns whether the page had focus, for the step's
+# report. Focus itself needs no help: focus() and blur() move
 # document.activeElement whether or not the window has focus.
 BLUR_JS = """
     const blurLikeFocused = (el) => {
-        const focused = document.hasFocus();
+        const focused = document.hasFocus(), held = document.activeElement === el;
+        let sent = false;
+        const seen = () => { sent = true; };
+        el.addEventListener('blur', seen, { once: true });
         el.blur();
-        if (!focused) el.dispatchEvent(new FocusEvent('blur'));
+        el.removeEventListener('blur', seen);
+        if (held && !sent) el.dispatchEvent(new FocusEvent('blur'));
         return focused; };"""
 
 

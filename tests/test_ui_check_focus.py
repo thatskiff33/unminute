@@ -142,8 +142,45 @@ const step = {step};
         self.assertEqual(1, out["stops"], "the page's stopEditing ran more than once")
         self.assertIs(True, out["focused"])
 
+    def blur_events(self, focus_sequence, calls):
+        """Blur events the span receives when blurLikeFocused runs `calls`
+        times while document.hasFocus() answers `focus_sequence` in turn
+        (the last answer repeats)."""
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        script = PAGE + f"""
+{self.parts["BLUR_JS"]}
+const answers = {json.dumps(focus_sequence)};
+globalThis.document = {{ activeElement: null,
+  hasFocus: () => answers.length > 1 ? answers.shift() : answers[0] }};
+const span = new Element();
+document.activeElement = span;
+let blurs = 0;
+span.addEventListener('blur', () => blurs++);
+for (let i = 0; i < {calls}; i++) blurLikeFocused(span);
+console.log(JSON.stringify(blurs));
+"""
+        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
+                              timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_the_helper_sends_exactly_one_blur(self):
+        # Like a focused window: one blur for the focused element, whatever
+        # the window's focus, and none once nothing is focused. The window
+        # gaining focus between the helper's check and blur() (the native
+        # event then fires) must not add a second, nor losing it leave none.
+        cases = {"unfocused": ([False], 1), "focused": ([True], 1),
+                 "called again once nothing is focused": ([False], 3),
+                 "the window gains focus mid-call": ([False, True], 1),
+                 "the window loses focus mid-call": ([True, False], 1)}
+        for name, (sequence, calls) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(1, self.blur_events(sequence, calls))
+
     def test_the_page_listener_runs_once(self):
-        # Why the dispatched blur is harmless when the native one also fired.
+        # A second guard behind the helper's one-blur rule: a repeated blur
+        # cannot end the edit twice.
         start = re.search(r"^function startEditing\(span\) \{.*?^\}$", APP_JS, re.M | re.S)
         self.assertIsNotNone(start, "startEditing not found in app.js")
         self.assertIn('span.addEventListener("blur", stopEditing, { once: true });',
