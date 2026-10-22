@@ -85,8 +85,28 @@ Describe "packaging/identity.json mirrors the scripts" {
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
         (@($LogNames | ForEach-Object { "logs\$_" }) -join ",") | Should -BeExactly ($script:Identity.install_log -join ",")
-        $codes = @($script:Identity.exit_codes."install.ps1".user.PSObject.Properties.Name | Sort-Object)
+        # Every exit code the script can give, in either mode, and no other.
+        $codes = @(@($script:Identity.exit_codes."install.ps1".user.PSObject.Properties.Name) +
+            @($script:Identity.exit_codes."install.ps1".machine.PSObject.Properties.Name) | Sort-Object -Unique)
         (Get-ExitCode (Join-Path $script:Repo "packaging\install.ps1")) -join "," | Should -BeExactly ($codes -join ",")
+    }
+
+    It "both scripts use the identity's machine names (#111 B6b)" {
+        $named = $script:Identity.modes.machine
+        foreach ($name in "install.ps1", "uninstall.ps1") {
+            Assert-DotSourceGuard (Join-Path $script:Repo "packaging\$name")
+            . (Join-Path $script:Repo "packaging\$name")
+            $MachineRegKey | Should -BeExactly ($named.uninstall_key -replace '^HKLM\\', 'HKLM:\')
+            $EventSourceKey | Should -BeExactly ($named.event_source_key -replace '^HKLM\\', 'HKLM:\')
+            (Split-Path -Leaf $EventSourceKey) | Should -BeExactly $named.event_source
+            $MachineFolderName | Should -BeExactly (Split-Path -Leaf $named.install_folder)
+            $JunctionName | Should -BeExactly $named.launch_junction
+            ($JunctionNames -join ",") | Should -BeExactly ((@($named.launch_junction) + @($named.launch_junction_working)) -join ",")
+            ("staging-" + ("a" * 32)) | Should -MatchExactly $StagingPattern
+            ("staging-" + ("a" * 31)) | Should -Not -MatchExactly $StagingPattern
+        }
+        Get-MachineRoot | Should -BeExactly ([Environment]::ExpandEnvironmentVariables($named.install_folder))
+        $MachineRegSubKey | Should -BeExactly ($named.uninstall_key -replace '^HKLM\\', '')
     }
 
     It "uninstall.ps1 uses the identity's names and exit codes" {
@@ -99,7 +119,8 @@ Describe "packaging/identity.json mirrors the scripts" {
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
         (@($LogNames | ForEach-Object { "logs\$_" }) -join ",") | Should -BeExactly ($script:Identity.install_log -join ",")
-        $codes = @($script:Identity.exit_codes."uninstall.ps1".user.PSObject.Properties.Name | Sort-Object)
+        $codes = @(@($script:Identity.exit_codes."uninstall.ps1".user.PSObject.Properties.Name) +
+            @($script:Identity.exit_codes."uninstall.ps1".machine.PSObject.Properties.Name) | Sort-Object -Unique)
         (Get-ExitCode (Join-Path $script:Repo "packaging\uninstall.ps1")) -join "," | Should -BeExactly ($codes -join ",")
     }
 

@@ -176,7 +176,7 @@ The Release workflow builds every published package. The same command builds it 
    - Add a warning at the top of the bad release's notes, saying what is wrong and which version to use instead.
    - Do not delete the release or its tag. A version number is never reused, and deleting it loses the record of what was shipped.
    - Once immutable releases are turned on (#111), the files cannot change. Whether the notes can still be edited is to confirm at that point.
-2. **Managed devices.** Once the per-machine Intune installer exists (#111, slice B6): in Intune, supersede or unassign the bad version and assign the previous one. Until then, installs are per user, and step 3 applies.
+2. **Managed devices.** Per-user installs: step 3 applies. Machine installs (`install.ps1 -Machine`, #111 B6b): in Intune, assign the previous version as new content of the same app (or supersede without "Uninstall previous version"), or run `install.ps1 -Machine -Rollback`. Going back to an earlier storage format removes the bad version from the computer, and users whose workspace it already changed see "ask your IT team" until the fix ships (strict withdrawal, the owner's decision B5-8). The first version with `-Machine` cannot be withdrawn to a version without it: uninstall it with `uninstall.ps1 -Machine` instead.
 3. **People who installed it.**
    - Ask them to roll back, as described in [PACKAGING.md](PACKAGING.md): from `%LOCALAPPDATA%\Programs\Unminute\versions\<version>` (the bad version), run `powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Rollback`.
    - Rollback is refused if the bad version changed the storage format. In that case, fix forward instead.

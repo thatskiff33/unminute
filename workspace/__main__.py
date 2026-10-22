@@ -463,6 +463,11 @@ def main():
     diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
     ws.log.write("start", version=package_version(), python=sys.version.split()[0],
                  previous_run_unclean=unclean)
+    # A current.json that claims machine mode for an install that fails the machine
+    # trust test (#111 B6b): treated as per-user, and recorded (no path or name).
+    from workspace import update
+    if update.deployment().get("machine_refused"):
+        ws.log.write("machine_claim_refused")
     opened = time.perf_counter()
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),

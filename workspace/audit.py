@@ -48,7 +48,7 @@ from pathlib import Path
 from workspace import diag
 
 FORMAT = 1
-SOURCE = "Unminute"                  # the Event Log source (unregistered: per-user installs)
+SOURCE = "Unminute"                  # the Event Log source (install.ps1 -Machine registers it)
 SEGMENT_BYTES = 1 << 20              # a segment rotates at 1 MB
 MAX_BYTES = 16 << 20                 # the folder keeps at most 16 MB (about 80,000 records)
 TAIL_BYTES = 64 * 1024               # how much of the newest segment is read at open
