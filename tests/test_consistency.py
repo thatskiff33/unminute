@@ -711,6 +711,25 @@ class DeploymentGuideTests(unittest.TestCase):
         self.assertIn("(#health-monitoring-with---health)", incidents)
         self.assertIn("(PACKAGING.md#managed-deployment-intune)", incidents)
 
+    def test_app_control_guidance_cites_its_sources(self):
+        # #304: every Microsoft claim cites a listed Microsoft Learn page, every listed
+        # page is cited, and the security model's residual points to the guidance.
+        heading = "Stopping per-user copies on managed computers"
+        guide = section(self.text, heading)
+        body, sources = guide.split("\n### Microsoft sources\n", 1)
+        listed = table_rows(sources, r"M\d+")
+        self.assertGreaterEqual(len(listed), 10, "the sources table no longer matches")
+        self.assertEqual(set(re.findall(r"\bM\d+\b", body)), set(listed),
+                         "cited and listed Microsoft sources differ")
+        for ref, cells in listed.items():
+            with self.subTest(source=ref):
+                self.assertRegex(cells[1], r"^\[[^]]+\]\(https://learn\.microsoft\.com/en-us/")
+        anchor = heading.lower().replace(" ", "-")
+        self.assertIn(anchor, heading_anchors(self.text))
+        t24 = table_rows(section(read("docs/SECURITY_MODEL.md"), "Threats and controls"),
+                         r"T24")["T24"]
+        self.assertIn(f"(IT_DEPLOYMENT.md#{anchor})", t24[5])
+
     def test_anchor_links_resolve(self):
         # The repo-wide link test skips anchors; these docs lean on them.
         broken = []
