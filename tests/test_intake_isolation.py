@@ -295,6 +295,32 @@ class DecoderTests(unittest.TestCase):
                     media.decode(src, io.BytesIO())
                 self.assertEqual(str(ctx.exception), media._GENERIC)
 
+    def test_the_bundled_pyav_raises_rather_than_crashes_without_a_decoder(self):
+        # The second layer under the check above (#310): PyAV 18.1.0 and later
+        # raise DecoderNotFoundError for a stream with no codec context
+        # (PyAV-Org/PyAV#2344); PyAV 17.1.0 crashed the process. Run in a child
+        # process with PyAV alone, no app guard, so a crash fails the test.
+        script = (
+            "import sys, av\n"
+            "with av.open(sys.argv[1]) as c:\n"
+            "    s = c.streams.audio[0]\n"
+            "    assert s.codec_context is None\n"
+            "    try:\n"
+            "        for _ in c.decode(s):\n"
+            "            pass\n"
+            "    except av.error.DecoderNotFoundError:\n"
+            "        print('refused')\n")
+        good = tone_wav(self.root / "tone.wav").read_bytes()
+        for name, offset, value in (("bits-zero.wav", 34, 0), ("format-7777.wav", 20, 0x7777)):
+            with self.subTest(name=name):
+                data = bytearray(good)
+                struct.pack_into("<H", data, offset, value)
+                src = self.root / name
+                src.write_bytes(bytes(data))
+                r = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(src)],
+                                   capture_output=True, text=True, timeout=120)
+                self.assertEqual((r.returncode, r.stdout.strip()), (0, "refused"), r.stderr)
+
     def test_sample_rates_outside_4_to_384_khz_are_refused(self):
         # A header claiming 1 Hz made each stored sample 16,000 output
         # samples: 86 KB decoded to 12 hours (finding 3).
