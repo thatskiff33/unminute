@@ -5,10 +5,12 @@
 .DESCRIPTION
   Removes the installed program, its Start menu shortcut and its uninstall
   entry. It removes only what the installer put in the install folder
-  (versions, current.json and this script); if the folder holds anything
-  else, or is neither an install nor the folder the uninstall entry names, it
-  removes nothing. It never removes through a link or junction: one at
-  versions, current.json or uninstall.ps1 stops it before anything is removed,
+  (versions, current.json and its temporary copy, the logs folder with the
+  installer's log, install.lock and this script; #111 B6a); if the folder holds
+  anything else, or is neither an install nor the folder the uninstall entry
+  names, it removes nothing. It holds install.lock while it removes, so it never
+  runs beside an install or update. It never removes through a link or junction: one at
+  any of those entries stops it before anything is removed,
   and one inside a version is removed as a link, leaving what it points to
   (#297). When the uninstall entry names another folder that still
   holds an install, the shortcut and the entry are that install's, and are
@@ -37,11 +39,11 @@
   will go and asks for REMOVE first.
 
   Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed, or not
-  this account's install), 3 the app is running. With -Offboard, also
-  --offboard's own codes when it stops the uninstall: 1 a step failed, 2 Local
-  System (or Windows could not say which account; the uninstaller refuses
-  this itself, before starting anything), 3 the app is open, 5 blocked, 6 the
-  data folder's location is refused.
+  this account's install), 3 the app, or an install or update, is running.
+  With -Offboard, also --offboard's own codes when it stops the uninstall: 1 a
+  step failed, 2 Local System (or Windows could not say which account; the
+  uninstaller refuses this itself, before starting anything), 3 the app is
+  open, 5 blocked, 6 the data folder's location is refused.
 #>
 [CmdletBinding()]
 param(
@@ -55,6 +57,16 @@ $ErrorActionPreference = "Stop"
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent; Offboard = [bool]$Offboard }
 $AppName = "Unminute"
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# What the installer may put in the install folder, and so all this removes there
+# (#297, #111 B6a). install.ps1 and uninstall.ps1 list the same names, and
+# packaging/identity.json mirrors them (tests keep the three equal).
+$OwnEntries = @("versions", "current.json", "current.json.tmp", "uninstall.ps1", "logs", "install.lock")
+$LockName = "install.lock"
+$LogNames = @("install.log", "install.log.1")
+# How the installer starts the app (install.ps1 has the same; tests keep them equal):
+# isolated, no bytecode written, no remote debugging (#111 B4).
+$LaunchArgs = "-I -B -X disable-remote-debug -m workspace"
+$script:InstallLock = $null
 # The longest the lid restore may take before it is stopped (it needs about a second).
 $LidRestoreSeconds = 60
 # The longest --offboard-report or --offboard may take before it is stopped. Removing
@@ -106,7 +118,7 @@ function Invoke-LidRestore([string]$Target) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = [IO.Path]::Combine($Target, "runtime", "python.exe")
     # As the installer starts the app: isolated, no bytecode written, no remote debugging.
-    $start.Arguments = "-I -B -X disable-remote-debug -m workspace --restore-lid"
+    $start.Arguments = "$LaunchArgs --restore-lid"
     $start.WorkingDirectory = [IO.Path]::Combine($Target, "app")
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
@@ -707,6 +719,39 @@ function Remove-OwnPin([string[]]$Prefixes) {
     }
 }
 
+# The number of entries in the logs folder that are not the installer's log files
+# (install.log, install.log.1) or are links (#111 B6a).
+function Get-LogStray([string]$Dir) {
+    $logs = [IO.DirectoryInfo]::new([IO.Path]::Combine($Dir, "logs"))
+    if (-not $logs.Exists -or (Test-Link $logs)) { return 0 }
+    return @($logs.GetFileSystemInfos() | Where-Object {
+        $_ -is [IO.DirectoryInfo] -or (Test-Link $_) -or $LogNames -notcontains $_.Name }).Count
+}
+
+# install.lock, as the installer holds it (#111 B6a): no sharing, deleted when closed.
+# Held by an install or update now: stop with exit 3 before anything is removed.
+function Enter-InstallLock {
+    try {
+        $script:InstallLock = [IO.FileStream]::new([IO.Path]::Combine($Options.InstallDir, $LockName),
+            [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1,
+            [IO.FileOptions]::DeleteOnClose)
+    } catch {
+        if (-not (Test-TransientLock $_.Exception)) { throw }
+        Stop-Uninstall 3 "An install or update of $AppName is running. Run this again when it has finished."
+    }
+}
+
+function Exit-InstallLock {
+    if ($script:InstallLock) {
+        $script:InstallLock.Dispose()
+        $script:InstallLock = $null
+    }
+}
+
+# Dot-sourced (the Pester tests in tests/powershell): the functions above are defined
+# and nothing runs.
+if ($MyInvocation.InvocationName -eq ".") { return }
+
 try {
     # An empty -InstallDir is refused, and a relative one is taken from PowerShell's
     # current folder, once, so the checks and the removals below use the same path.
@@ -748,17 +793,22 @@ try {
     # Only the installer's own entries are removed. Anything else in the folder (a
     # wrong -InstallDir, or one that reaches other data through a junction or a
     # mapped drive) stops the uninstall before anything is removed.
-    $own = @("versions", "current.json", "uninstall.ps1")
     if (Test-Path -LiteralPath $Options.InstallDir) {
         $items = @(Get-ChildItem -LiteralPath $Options.InstallDir -Force)
-        $other = @($items | Where-Object { $own -notcontains $_.Name })
-        if ($other.Count) {
-            Stop-Uninstall 1 "The install folder holds $($other.Count) item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
+        $other = @($items | Where-Object { $OwnEntries -notcontains $_.Name })
+        # logs is a folder; current.json.tmp and install.lock are files.
+        $kind = @($items | Where-Object { @("logs", "current.json.tmp", "install.lock") -contains $_.Name -and
+            (($_.Name -eq "logs") -ne ($_ -is [IO.DirectoryInfo])) })
+        $strays = $other.Count + $kind.Count + (Get-LogStray $Options.InstallDir)
+        if ($strays) {
+            Stop-Uninstall 1 "The install folder holds $strays item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
         }
         # Nothing is removed through a link or junction, or run from one (#297).
         if (@($items | Where-Object { Test-Link $_ }).Count) {
             Stop-Uninstall 1 "The install folder holds a link or junction that $AppName did not put there, so nothing was removed. Remove it, then run this again."
         }
+        # Not beside an install or update (#111 B6a).
+        Enter-InstallLock
     }
     # With -Offboard (#111 B8b): the person's data goes first, through the installed app.
     # Anything but a clean result stops here, with the program kept (B8-2). First, the
@@ -775,11 +825,19 @@ try {
     if (Test-Path -LiteralPath $Options.InstallDir) {
         # The script itself lives in InstallDir: remove the rest first, never through
         # a link (#297): one inside a version is removed as a link.
-        foreach ($name in "versions", "current.json") {
+        foreach ($name in "versions", "current.json", "current.json.tmp") {
             $path = [IO.Path]::Combine($Options.InstallDir, $name)
             if ([IO.Directory]::Exists($path)) { Invoke-LockRetry { Remove-OwnFolder $path } }
             elseif ([IO.File]::Exists($path)) { Invoke-LockRetry { Remove-Item -LiteralPath $path -Force } }
         }
+        # The installer's log files, then their folder once empty (#111 B6a).
+        $logs = [IO.Path]::Combine($Options.InstallDir, "logs")
+        foreach ($name in $LogNames) {
+            $path = [IO.Path]::Combine($logs, $name)
+            if ([IO.File]::Exists($path)) { Remove-Item -LiteralPath $path -Force }
+        }
+        if ([IO.Directory]::Exists($logs)) { [IO.Directory]::Delete($logs, $false) }
+        Exit-InstallLock                 # closing it deletes install.lock
         try { Remove-OwnFolder $Options.InstallDir } catch { }
     }
     # The shortcut and the entry stay only when the entry names another folder that
@@ -812,4 +870,6 @@ try {
     exit 0
 } catch {
     Stop-Uninstall 1 "Removal failed: $($_.Exception.Message)"
+} finally {
+    Exit-InstallLock
 }
