@@ -74,10 +74,6 @@
    "signer": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US"
   },
   {
-   "path": "runtime/lib/81d243bd2c585b0f4821__mypyc.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/_cffi_backend.cp314-win_amd64.pyd",
    "signer": ""
   },
@@ -102,107 +98,103 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/avcodec-62-0f4d449c1bbaaa5eeb9f8a10b4cc7e85.dll",
+   "path": "runtime/lib/av.libs/avcodec-63-2756d4fffb772585dcdece87427716a4.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/avdevice-62-e71ffbe296e3d34589fb064328316bfc.dll",
+   "path": "runtime/lib/av.libs/avdevice-63-2b26d22512639c049532c0bc6f6c022f.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/avfilter-11-780a5681e7b21881ef585cd5ce000321.dll",
+   "path": "runtime/lib/av.libs/avfilter-12-87c7677b784d3ea4ecceb3e6cae9c9f1.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/avformat-62-9c2d3ee2527a13ca0fdcb82b33ed040a.dll",
+   "path": "runtime/lib/av.libs/avformat-63-e8c4f8fc30664f2b7e85dcc683bd4b0d.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/avutil-60-21bd72d722406bd9f4b24262cf4b35f3.dll",
+   "path": "runtime/lib/av.libs/avutil-61-e540ec7976bbd26a4a94dc737be3001c.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libdav1d-d92ea30c3d9c9934f860c34d1ba70766.dll",
+   "path": "runtime/lib/av.libs/libdav1d-5469d6ef7baf7426269a9483c24587b7.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libgcc_s_seh-1-eb70c1c038eb1106448e1bc7e15ae24a.dll",
+   "path": "runtime/lib/av.libs/libgcc_s_seh-1-3e3b83c1f8de213bb810010a5622b180.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libiconv-2-52797ea4538a440d60943a017fb87a4f.dll",
+   "path": "runtime/lib/av.libs/libiconv-2-5e7e51fe6a6e182df6c9f30f41700345.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libmp3lame-0-7a64829d195e8823e9b581d29ebd8775.dll",
+   "path": "runtime/lib/av.libs/libopus-0-278e2dd25a2793d306204c9d966fe0de.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libopencore-amrnb-0-39f66c13099c652115aad3e3dbebfd3a.dll",
+   "path": "runtime/lib/av.libs/libsharpyuv-90c3f670f207c806d3e44db799e78832.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libopencore-amrwb-0-715bb0ad19b03fa41dd3753676655d28.dll",
+   "path": "runtime/lib/av.libs/libstdc++-6-7ad22040206bf70776b13a24ec3f87b2.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libopus-0-b7c59d64d75a04d4907fe3036e46c927.dll",
+   "path": "runtime/lib/av.libs/libSvtAv1Enc-7a2b2046575991edd70ef501ca085458.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libsharpyuv-25eb0c4836aeeccd9b98aeb9ee77a148.dll",
+   "path": "runtime/lib/av.libs/libvmaf-e1698aa5c58a07400697833b5f19b0a3.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libstdc++-6-6cc2d0c6172bc373353f289ef20782fe.dll",
+   "path": "runtime/lib/av.libs/libvpl-45cd70cb42c579529a30ad6fc282c626.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libSvtAv1Enc-5eeef79489c86980df49968253b5be77.dll",
+   "path": "runtime/lib/av.libs/libvpx-1-dd81d2b55a771749d485047772201cc1.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libvpl-7122e3918b8fda828a5af6af73ca944b.dll",
+   "path": "runtime/lib/av.libs/libwebp-abac96c4759f9eb9b31588c8a839816c.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libvpx-1-c0f634e6ca42adeec806716d1a9e5c3e.dll",
+   "path": "runtime/lib/av.libs/libwebpmux-0b9545d83accdb1110a7efa5d1c54007.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libwebp-e5d4f9543eae6d381f6212f006b75bdc.dll",
+   "path": "runtime/lib/av.libs/libwinpthread-1-3e9f18fdf7e856e1e9fedd138e84e874.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libwebpmux-c7c66c64054d42d6a25d9c92afeb2d3f.dll",
+   "path": "runtime/lib/av.libs/libx264-165-0f71f37cf3f3ee0e2ecac2b06829e9ff.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libwinpthread-1-26b1e143f68b103d25cd0ba0a146f5b4.dll",
+   "path": "runtime/lib/av.libs/libx265-ee9d492f3fb55d0a3b564bb1bf4f6822.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libx264-165-71900781b680e0e06a1b966b46fee000.dll",
+   "path": "runtime/lib/av.libs/swresample-7-4f9462a1fb73b949ccad2774dd941624.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/libx265-7e74dd5103fd9dad5114dffeefd474ce.dll",
+   "path": "runtime/lib/av.libs/swscale-10-9af0a10ad7003982e48548ff39e98465.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/av.libs/swresample-6-2f06f0ee7dafc4af6aa424f40df61d57.dll",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/av.libs/swscale-9-23c45a0fb3712fe0e8e3dafd8d2fd7d1.dll",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/av.libs/zlib1-df406c365e4a532adb993bd06f95ca24.dll",
+   "path": "runtime/lib/av.libs/zlib1-4d767210e087ff082d94ef0a09ddc7f8.dll",
    "signer": ""
   },
   {
    "path": "runtime/lib/av/_core.pyd",
+   "signer": ""
+  },
+  {
+   "path": "runtime/lib/av/_cyutil.pyd",
    "signer": ""
   },
   {
@@ -335,6 +327,10 @@
   },
   {
    "path": "runtime/lib/av/plane.pyd",
+   "signer": ""
+  },
+  {
+   "path": "runtime/lib/av/rational.pyd",
    "signer": ""
   },
   {
@@ -514,7 +510,7 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/numpy.libs/libscipy_openblas64_-63c857e738469261263c764a36be9436.dll",
+   "path": "runtime/lib/numpy.libs/libscipy_openblas64_-ed4f167a5330424524f45258e7ca2c8d.dll",
    "signer": ""
   },
   {
@@ -838,7 +834,7 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy.libs/libscipy_openblas-64eda39e79589aedb16f58e5547eb599.dll",
+   "path": "runtime/lib/scipy.libs/libscipy_openblas-197ee2fc9b4d071f7e048078cac74115.dll",
    "signer": ""
   },
   {
@@ -874,19 +870,19 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_hierarchy.cp314-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/hierarchy/_hierarchy.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_optimal_leaf_ordering.cp314-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/hierarchy/_optimal_leaf_ordering.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/cluster/_vq.cp314-win_amd64.pyd",
+   "path": "runtime/lib/scipy/cluster/vq/_vq.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/fft/_pocketfft/pypocketfft.cp314-win_amd64.pyd",
+   "path": "runtime/lib/scipy/fft/_duccfft/pyduccfft.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -911,10 +907,6 @@
   },
   {
    "path": "runtime/lib/scipy/integrate/_vode.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/scipy/interpolate/_dfitpack.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -970,10 +962,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/scipy/linalg/_decomp_lu_cython.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
    "path": "runtime/lib/scipy/linalg/_decomp_update.cp314-win_amd64.pyd",
    "signer": ""
   },
@@ -986,15 +974,11 @@
    "signer": ""
   },
   {
+   "path": "runtime/lib/scipy/linalg/_internal_matfuncs.cp314-win_amd64.pyd",
+   "signer": ""
+  },
+  {
    "path": "runtime/lib/scipy/linalg/_linalg_pythran.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/scipy/linalg/_matfuncs_expm.cp314-win_amd64.pyd",
-   "signer": ""
-  },
-  {
-   "path": "runtime/lib/scipy/linalg/_matfuncs_schur_sqrtm.cp314-win_amd64.pyd",
    "signer": ""
   },
   {
@@ -1634,6 +1618,22 @@
    "signer": ""
   },
   {
+   "path": "runtime/lib/torchcodec/jpeg8.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/libavif.dll",
+   "signer": ""
+  },
+  {
+   "path": "runtime/lib/torchcodec/libpng16.dll",
+   "signer": ""
+  },
+  {
+   "path": "runtime/lib/torchcodec/libsharpyuv.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
    "path": "runtime/lib/torchcodec/libtorchcodec_core4.dll",
    "signer": ""
   },
@@ -1651,6 +1651,10 @@
   },
   {
    "path": "runtime/lib/torchcodec/libtorchcodec_core8.dll",
+   "signer": ""
+  },
+  {
+   "path": "runtime/lib/torchcodec/libtorchcodec_core9.dll",
    "signer": ""
   },
   {
@@ -1674,24 +1678,44 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops4.pyd",
+   "path": "runtime/lib/torchcodec/libtorchcodec_custom_ops9.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops5.pyd",
+   "path": "runtime/lib/torchcodec/libtorchcodec_heic.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops6.pyd",
+   "path": "runtime/lib/torchcodec/libtorchcodec_image.dll",
    "signer": ""
   },
   {
-   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops7.pyd",
+   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops.pyd",
    "signer": ""
   },
   {
-   "path": "runtime/lib/torchcodec/libtorchcodec_pybind_ops8.pyd",
-   "signer": ""
+   "path": "runtime/lib/torchcodec/libwebp.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/libwebpdecoder.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/libwebpdemux.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/libwebpmux.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/libzstd.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
+  },
+  {
+   "path": "runtime/lib/torchcodec/zlib.dll",
+   "signer": "CN=\"Anaconda, Inc.\", O=\"Anaconda, Inc.\", L=Austin, S=Texas, C=US, SERIALNUMBER=5073497, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US"
   },
   {
    "path": "runtime/lib/webview/lib/Microsoft.Web.WebView2.Core.dll",
