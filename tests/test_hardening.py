@@ -2089,8 +2089,11 @@ class FolderInUseTests(unittest.TestCase):
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         call = f"& '{copy}' -InstallDir '{self.install}'" + (" -Silent" if silent else "")
-        env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_WAIT=stage,
-                   UNMINUTE_TEST_SYNC=str(self.sync), UNMINUTE_TEST_PACKAGE=str(self.package))
+        # The helper's minimal environment: from pwsh 7 (as in CI), an inherited
+        # PSModulePath hides 5.1's own Get-FileHash, which New-StagedCopy's check uses.
+        env = windows_powershell.environment({
+            "LOCALAPPDATA": str(self.local), "UNMINUTE_TEST_WAIT": stage,
+            "UNMINUTE_TEST_SYNC": str(self.sync), "UNMINUTE_TEST_PACKAGE": str(self.package)})
         r = subprocess.run([windows_powershell.executable(), "-NoProfile",
                             "-ExecutionPolicy", "Bypass",
                             "-Command", f"{call}; exit $LASTEXITCODE"],
@@ -2911,10 +2914,13 @@ class StagedCopyTests(unittest.TestCase):
         call = f"& '{copy or self.copy}' -InstallDir '{install or self.install}' -Silent {extra}"
         base = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata),
                 "UNMINUTE_TEST_PACKAGE": str(self.package)}
+        # errors="replace": Windows PowerShell writes in the console's code page, so an
+        # unlisted name such as one with a ligature can be a byte the locale codec lacks.
         return subprocess.run([windows_powershell.executable(), "-NoProfile",
                                "-ExecutionPolicy", "Bypass",
                                "-Command", f"{call}; exit $LASTEXITCODE"],
-                              capture_output=True, text=True, timeout=180, cwd=self.root,
+                              capture_output=True, text=True, errors="replace", timeout=180,
+                              cwd=self.root,
                               env=windows_powershell.environment({**base, **(env or {})}))
 
     def variant(self, name, find, insert):
