@@ -65,6 +65,15 @@
       <enabledValue><decimal value="1" /></enabledValue>
       <disabledValue><decimal value="0" /></disabledValue>
     </policy>
+    <policy name="AllowLiveDrafts" class="Machine"
+            displayName="$(string.AllowLiveDrafts)"
+            explainText="$(string.AllowLiveDrafts_Help)" key="SOFTWARE\Policies\Unminute"
+            valueName="AllowLiveDrafts">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
     <policy name="RequireRecordingConsent" class="Machine"
             displayName="$(string.RequireRecordingConsent)"
             explainText="$(string.RequireRecordingConsent_Help)" key="SOFTWARE\Policies\Unminute"

@@ -104,6 +104,22 @@ def load_engine(name, cache_dir, threads, allow_test=False, device="cpu"):
     raise ModelLoadError(f"Unknown model: {asr_engines.label(name)}")
 
 
+def load_draft_engine(name, cache_dir, threads, allow_test=False):
+    """The draft worker's engine (#104): Parakeet v2 on phrases with a
+    streaming Silero scorer, checked and loaded offline like the full pass
+    (I1). Only Parakeet v2 writes drafts (owner decision 8)."""
+    if name.startswith(TEST_PREFIX):
+        return _test_factory(name, allow_test)(threads)
+    if name != asr_engines.PARAKEET_V2:
+        raise ModelLoadError(f"Draft text uses {asr_engines.label(asr_engines.PARAKEET_V2)} "
+                             "only.")
+    state, detail = asr_engines.parakeet_status(name, cache_dir)
+    if state != "ready":
+        raise ModelLoadError(f"{asr_engines.label(name)} is not ready. {fix_speech(name)} "
+                             f"({detail})")
+    return asr_engines.DraftEngine(name, cache_dir, threads).load()
+
+
 class GpuUnavailable(RuntimeError):
     """The CUDA build or a usable NVIDIA card/driver is not available."""
 

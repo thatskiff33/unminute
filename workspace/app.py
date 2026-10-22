@@ -24,8 +24,8 @@ import time
 from pathlib import Path
 
 from workspace import asr_engines
-from workspace import (audit, cleanup, clipboard, credentials, diag, engines, gpu, handoff,
-                       holds, intake, keystore,
+from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, engines, gpu,
+                       handoff, holds, intake, keystore,
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -90,6 +90,7 @@ DEFAULT_SETTINGS = {
     "gpu_speakers": False,                         # NVIDIA for speaker identification (Faster)
     "recording_display": "flow",                   # flow | spectrum | wave, while recording
     "lid_override": False,                         # lid "Do nothing" while recording (#172)
+    "live_drafts": False,                          # draft text while recording (#104), off
 }
 RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
@@ -244,7 +245,7 @@ class Settings:
                 or (self.allow_test_engines and value.startswith(engines.TEST_PREFIX)))):
             raise WorkspaceError("Unknown speech model.")
         if (key in ("speakers", "battery_override", "onboarded", "microphone",
-                    "computer_audio", "gpu_speakers", "lid_override")
+                    "computer_audio", "gpu_speakers", "lid_override", "live_drafts")
                 and not isinstance(value, bool)):
             raise WorkspaceError("Expected on or off.")
 
@@ -381,8 +382,15 @@ class Workspace:
         self.handle = WorkerHandle(self.cache_dir,
                                    quiet=self.settings["mode"] == resources.QUIET,
                                    allow_test_engines=allow_test_engines, log=self.log, **kw)
-        # Downloads replace model files: the inference worker is unloaded first.
-        self.downloads = setup.Downloads(self.cache_dir, before_install=self.handle.shutdown,
+        # Live drafts while recording (#104): off by default, memory only.
+        self._drafts = None               # drafts.DraftSession for the open recording
+        self._draft_gen = 0               # each session's number (late results are dropped)
+        self._drafts_ended = None         # the recording whose drafts ended for good
+        self._draft_why = "off"           # why drafts are not running, for the page
+        self.draft_model = drafts.DRAFT_MODEL     # tests: a "test:" engine
+        # Downloads replace model files: the draft worker and the inference
+        # worker let go of them first.
+        self.downloads = setup.Downloads(self.cache_dir, before_install=self._before_model_change,
                                          before_gpu_install=self._release_gpu_worker)
         self.downloads.after = self._after_download
         self.downloads.log_dir = str(self.log.folder)
@@ -550,6 +558,7 @@ class Workspace:
             time.sleep(0.1)
         with self._lock:                 # claimed once: the policy tick may race
             rec, self._recording = self._recording, None
+        self._end_drafts(rec, final=True)
         if rec is not None:              # saved now; imported at the next start
             self._indicate()
             try:
@@ -921,6 +930,7 @@ class Workspace:
             with self._lock:
                 self._recording = rec
             self._indicate()
+            self._policy_wake.set()          # live drafts, if on, start without waiting
         finally:
             with self._lock:
                 self._rec_starting = False
@@ -963,19 +973,23 @@ class Workspace:
         try:
             rec.stop()
         except recorder.RecorderError as exc:
+            self._end_drafts(rec)
             self._hung[rec.folder.name] = rec
             self._add_report({"title": None, "seconds": rec.status()["seconds"],
                               "events": list(rec.journal["events"]),
                               "note": str(exc), "pending": rec.folder.name})
             return                       # imported at the next start
         self._recording_ended(rec, "saved")
+        # Capture has stopped; drafts end before the import is queued. Until
+        # the draft worker has exited, processing waits for it (D4).
+        self._end_drafts(rec)
         self._imports.put(("__recording__", str(rec.folder)))
         self._wake.set()
 
     def pause_recording(self):
         if self._recording is None:
             raise WorkspaceError("Nothing is being recorded.")
-        self._recording.pause()
+        self._recording.pause()          # live drafts: the phrase in progress ends here
         return self._recording.status()
 
     def resume_recording(self):
@@ -1020,6 +1034,7 @@ class Workspace:
             self._recording = None                # the watcher will not import it now
         self._indicate()
         self._recording_ended(rec, "discarded")
+        self._end_drafts(rec)                     # its draft text goes with it
         report = {"title": None, "seconds": rec.status()["seconds"], "events": [],
                   "note": "Delete it now, or it is deleted when the app next starts.",
                   "pending": rec.folder.name, "discarded": True}
@@ -1056,6 +1071,129 @@ class Workspace:
                                 and not self._lid_result[0] else None),
                 "recording": rec.status() if rec is not None else None,
                 "reports": self._recording_reports[-5:]}
+
+    # -- live drafts while recording (#104) -------------------------------------------
+
+    def _draft_reason(self, p):
+        """Why live drafts may not run now, or None. Managed policy withholds
+        them when it says no, holds a bad value or cannot be read (K3). Until
+        the page shows drafts, they stay off whatever the settings file says."""
+        if not (self.settings["live_drafts"] and drafts.ON_PAGE):
+            return "off"
+        if not p.get("AllowLiveDrafts"):
+            return "managed"
+        if not resources.may_start_automatic_work(self.settings["battery_override"],
+                                                  battery=self._battery):
+            return "battery"
+        return None
+
+    def _draft_model_ready(self):
+        if self.draft_model.startswith(engines.TEST_PREFIX):
+            return self.handle.allow_test_engines
+        return asr_engines.parakeet_status(self.draft_model, self.cache_dir)[0] == "ready"
+
+    def _draft_tick(self, p):
+        """On the policy tick, every second while recording: start, suspend,
+        resume or end live drafts as the setting, policy and battery say.
+        Off, managed or unreadable: no draft worker, no model."""
+        rec = self._recording
+        if rec is None or rec.stopped:
+            return
+        reason = self._draft_reason(p)
+        session = self._drafts
+        if session is not None:
+            if reason == "battery":
+                session.suspend()            # the worker ends; the text so far is kept
+            elif reason:
+                self._draft_why = reason
+                self._end_drafts(rec)
+            elif session.state == drafts.BATTERY:
+                session.resume()
+            return
+        if reason or self._drafts_ended == rec.journal["id"]:
+            self._draft_why = reason or self._draft_why
+            return
+        if self.downloads.busy() or self._removing:
+            self._draft_why = "busy"          # model files may be changing: not yet
+            return
+        if not self._draft_model_ready():
+            self._draft_why = "unavailable"   # Parakeet v2 is not downloaded or is damaged
+            self._drafts_ended = rec.journal["id"]
+            return
+        self._start_drafts(rec)
+
+    def _start_drafts(self, rec):
+        with self._lock:
+            # Checked again under the lock that a model download or removal
+            # takes before it ends drafts (_end_drafts), so one that began
+            # since the tick is never missed.
+            if (self._recording is not rec or self._drafts is not None
+                    or self._drafts_ended == rec.journal["id"]
+                    or self.downloads.busy() or self._removing):
+                return
+            self._draft_gen += 1
+            session = drafts.DraftSession(rec.journal["id"], rec.rate, self.cache_dir,
+                                          generation=self._draft_gen, model=self.draft_model,
+                                          log=self.log,
+                                          allow_test_engines=self.handle.allow_test_engines)
+            self._drafts = session        # processing waits from here (D4)
+        # The tap holds audio from now, so the first words are drafted too.
+        if session.open():
+            rec.tap = session.tap
+        try:
+            # D4: one heavy model at a time. The main worker lets go of a model
+            # it may still hold (idle) before the draft worker loads one.
+            self.handle.shutdown()
+            session.start()
+        except Exception as exc:
+            self.log.incident("drafts", exc)
+            self._draft_why = "failed"
+            self._end_drafts(rec, final=True)
+
+    def _end_drafts(self, rec=None, final=False):
+        """End live drafts: the draft worker is ended (and waited for) and its
+        text forgotten. final: not again for this recording (its model files
+        are about to change, or the app is closing)."""
+        with self._lock:                  # _start_drafts checks the mark under it
+            session = self._drafts
+            if final:
+                current = self._recording
+                target = session.recording_id if session is not None else (
+                    rec.journal["id"] if rec is not None else
+                    current.journal["id"] if current is not None else None)
+                if target is not None:
+                    self._drafts_ended = target
+                    self._draft_why = "ended"
+        if session is None:
+            return
+        for r in (rec, self._recording):
+            if r is not None and r.tap == session.tap:
+                r.tap = None
+        session.stop()
+        with self._lock:
+            if self._drafts is session:
+                self._drafts = None
+        self._wake.set()                      # processing that waited for it carries on
+
+    def _before_model_change(self):
+        """A model is about to be downloaded, repaired or replaced: the draft
+        worker and the inference worker let go of its files first."""
+        self._end_drafts(final=True)
+        self.handle.shutdown()
+
+    def recording_draft(self, since=0):
+        """The live draft of the recording in progress: state, a note, and the
+        phrases after index since (text and times only). For the page part
+        still to come (#104 slice 3); not on the bridge yet."""
+        if not isinstance(since, int) or isinstance(since, bool) or not 0 <= since <= 10 ** 7:
+            raise WorkspaceError("Expected a position.")
+        if self._recording is None:
+            raise WorkspaceError("Nothing is being recorded.")
+        session = self._drafts
+        if session is not None:
+            return session.snapshot(since)
+        return {"state": self._draft_why, "note": None, "generation": self._draft_gen,
+                "count": 0, "since": since, "phrases": []}
 
     def _add_report(self, report):
         import uuid
@@ -1418,8 +1556,9 @@ class Workspace:
             if (not cleanup.is_held(self.store, job["meeting_id"], job["phase"])
                     and not self._waiting_on_audio(job)):
                 return ("cleanup", job["meeting_id"], job["id"])
-        if self._capturing():
+        if self._capturing() or self._drafts is not None:
             return None                      # heavy processing waits for the recording
+                                             # and its draft worker (D4)
         with self._lock:
             for mid, count in list(self._reruns.items()):
                 m = self.store.meeting_state(mid)
@@ -1480,7 +1619,7 @@ class Workspace:
                     if kind != "cleanup" and self.downloads.busy():
                         self._status = "Waiting for the model download to finish"
                         break
-                    if kind != "cleanup" and self._capturing():
+                    if kind != "cleanup" and (self._capturing() or self._drafts is not None):
                         break                # a recording started meanwhile (#30)
                     if kind != "cleanup" and self._removing:
                         self._status = "Waiting while a model is removed"
@@ -2566,6 +2705,8 @@ class Workspace:
         lid_managed = self._display_value("lid_managed", self.lid.managed)
         if not self._allowed("AllowLidOverride") or lid_managed:
             effective["lid_override"] = False
+        if not self._allowed("AllowLiveDrafts"):
+            effective["live_drafts"] = False
         return {**effective, "choices": choices, "managed": self.managed(),
                 # Settings on their default because the saved value could not
                 # be used (R11): names of settings only, never their values.
@@ -2609,6 +2750,11 @@ class Workspace:
             changes = {**changes, "computer_audio": False}    # never without the microphone
         if changes.get("gpu_speakers") is True and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
+        if changes.get("live_drafts") is True and not self._allowed("AllowLiveDrafts"):
+            raise WorkspaceError(MANAGED_OFF.format(what="Draft text while recording"))
+        if changes.get("live_drafts") is True and not drafts.ON_PAGE:
+            raise WorkspaceError("Draft text while recording is not available in this "
+                                 "version yet.")
         if changes.get("lid_override") is True:
             if not self._allowed("AllowLidOverride"):
                 raise WorkspaceError(MANAGED_OFF.format(what="Changing the lid setting"))
@@ -2639,6 +2785,7 @@ class Workspace:
         if self.handle.quiet != quiet_before and self._busy is None:
             self.handle.shutdown()        # the next worker starts with the new priority
         self._wake.set()
+        self._policy_wake.set()           # live drafts follow the switch at once (#104)
         return self.get_settings()
 
     # -- handoff (#22) ------------------------------------------------------------------
@@ -2923,6 +3070,10 @@ class Workspace:
             # Only the computer track stops; the microphone carries on. Like
             # the microphone, an unreadable key does not cut a track short.
             rec.stop_computer(COMPUTER_POLICY_STOP)
+        try:
+            self._draft_tick(p)
+        except Exception as exc:          # drafts never affect the recording
+            self.log.incident("drafts", exc)
 
     def handoff_folder(self):
         """Where the handoff Save dialog starts: the organisation's folder if
@@ -3036,7 +3187,7 @@ class Workspace:
                         c.status(self.cache_dir)[0] == "ready" for c in others):
                     self.settings.update(gpu_speakers=False)
             else:
-                self.handle.shutdown()         # the worker may still hold it loaded
+                self._before_model_change()    # the workers may still hold it loaded
             freed = setup.remove(name, self.cache_dir)
         except setup.RemovalRefused as exc:
             raise WorkspaceError(str(exc)) from exc

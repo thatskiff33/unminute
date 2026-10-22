@@ -42,7 +42,8 @@ Privacy
 Network, secrets and integrity
 
 - **N1** Processing never uses the network; dependency telemetry is off before heavy imports.
-  Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`.
+  Guard: `tests/test_offline_guard.py`, `tests/test_workers.py`, `tests/test_import_hygiene.py`,
+  `tests/test_drafts.py`.
 - **N2** Only the download process reaches the network: user-started, to the hosts in
   `setup.DOWNLOAD_HOSTS` (and files.pythonhosted.org for the Whisper GPU component's download
   only, `setup.download_hosts`; the user's decision, 20 October 2026, #248), every request
@@ -80,7 +81,7 @@ Durability
 - **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
   transcript usable. A GPU failure falls back to the processor and says so; the model,
   precision and committed text never change silently. Guard: `tests/test_workers.py`,
-  `tests/test_speakers.py`, `tests/test_gpu.py`.
+  `tests/test_speakers.py`, `tests/test_gpu.py`, `tests/test_drafts.py`.
 
 Cleanup and retention
 

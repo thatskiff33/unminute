@@ -4,6 +4,9 @@
 #
 #   - Capture runs in PortAudio's callback (via sounddevice). The callback only
 #     copies each block into a bounded queue; a writer thread does all disk work.
+#   - Live drafts (#104, off by default) take a copy of each block from the
+#     writer thread through `tap`, never from the callback. The tap must not
+#     block; if it raises, it is turned off and the recording carries on.
 #   - Audio is written in durable chunks (CHUNK_S seconds of 16-bit mono PCM):
 #     each chunk is written to a temporary file, flushed to disk and renamed,
 #     then the journal (journal.json) is replaced atomically. A crash loses at
@@ -70,6 +73,9 @@ JOURNAL_FORMAT = 2
 MARK_EVERY_S = 30            # a timing mark at least this often, per track
 COMPUTER = "computer"
 COMPUTER_PREFIX = "sys-"     # the computer track's chunk files
+# Live drafts (#104): put in the writer's queue at a pause, after the blocks
+# captured before it, so the draft's phrase in progress ends at the pause.
+_PAUSED = object()
 
 
 class RecorderError(ValueError):
@@ -295,6 +301,9 @@ class Recording:
         self._stopping = threading.Event()      # a deliberate stop (not a lost device)
         self._writer = None
         self._stream = None
+        # Live drafts (#104): tap(start, block) for each block the writer
+        # takes, start being where it begins in the recording (frames).
+        self.tap = None
         self.journal = {
             "id": self.folder.name, "device": device, "device_name": device_name,
             "rate": self.rate, "started_at": clock(), "state": "recording",
@@ -428,7 +437,13 @@ class Recording:
         """Seconds captured so far: saved, buffered and still queued for the
         writer. Call with _lock held."""
         return (self.journal["frames"] + self._buffered) / self.rate \
-            + self._queue.qsize() * BLOCK_S
+            + self._queued_blocks() * BLOCK_S
+
+    def _queued_blocks(self):
+        """Microphone blocks still queued for the writer. A live-draft pause
+        marker takes a place in the queue but holds no audio."""
+        with self._queue.mutex:
+            return sum(1 for item in self._queue.queue if item is not _PAUSED)
 
     def _event(self, kind, seconds=None, note=""):
         with self._lock:
@@ -502,9 +517,12 @@ class Recording:
                     block = self._queue.get(timeout=0.2)
                 except queue.Empty:
                     block = None
-                if block is not None:
+                if block is _PAUSED:
+                    self._tap_block(None)        # live drafts: the phrase ends here
+                elif block is not None:
                     block, stamp, segment = block
                     self._mic.note(self.journal["frames"] + self._buffered, stamp, segment)
+                    self._tap_block(block)       # live drafts: the block alone, not the tuple
                     self._buffer.append(block)
                     self._buffered += len(block)
                 elif self._stop.is_set():
@@ -541,7 +559,7 @@ class Recording:
         except OSError as exc:
             # Disk full or unwritable: keep every chunk already saved, stop
             # capture, and say how much could not be saved.
-            lost = self._buffered / self.rate + self._queue.qsize() * BLOCK_S
+            lost = self._buffered / self.rate + self._queued_blocks() * BLOCK_S
             track = self._computer
             if track is not None:
                 # Both tracks cover the same time: the longer unsaved stretch is lost.
@@ -565,6 +583,18 @@ class Recording:
                 self._save_journal()
             except OSError:
                 pass        # the journal on disk still lists every saved chunk
+
+    def _tap_block(self, block):
+        """Hand the block to live drafts (None: the recording paused here).
+        Drafts never affect the recording: a tap that fails is turned off,
+        with nothing in the journal."""
+        tap = self.tap
+        if tap is None:
+            return
+        try:
+            tap(self.journal["frames"] + self._buffered, block)
+        except Exception:
+            self.tap = None
 
     def _frozen(self, tick):
         """The watchdog has missed its beat by more than SLEEP_S: the whole
@@ -703,6 +733,11 @@ class Recording:
             self.paused = True
             self._display_block = None
             self._event("paused")
+            if self.tap is not None:     # live drafts: only while they take audio
+                try:
+                    self._queue.put_nowait(_PAUSED)
+                except queue.Full:
+                    pass                 # the draft's phrase then runs on past the pause
 
     def lid_changed(self, open_):
         """The lid closed or opened while recording (#172). On opening, a

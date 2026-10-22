@@ -434,7 +434,8 @@ INVARIANT_GUARDS = {
     "N1": {"tests/test_offline_guard.py": [
         "test_switches_are_forced_off_even_if_the_user_enabled_them", "NetworkGuardTests"],
            "tests/test_workers.py": ["test_worker_cannot_reach_the_network"],
-           "tests/test_import_hygiene.py": []},
+           "tests/test_import_hygiene.py": [],
+           "tests/test_drafts.py": ["test_the_draft_worker_cannot_reach_the_network"]},
     "N2": {"tests/test_download_process.py": ["RequestCheckTests"]},
     "N3": {"tests/test_setup.py": ["test_child_gets_the_token_but_not_on_argv_or_env"],
            "tests/test_hardening.py": ["EnvironmentTokenTests"]},
@@ -461,6 +462,10 @@ INVARIANT_GUARDS = {
     "D4": {"tests/test_workers.py": ["test_one_model_at_a_time_in_the_same_worker",
                                     "test_idle_worker_unloads"],
            "tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],
+           "tests/test_drafts.py": [
+               "test_drafts_follow_the_recording_and_go_at_stop_before_processing",
+               "test_processing_waits_for_the_draft_worker_after_the_recording_ends",
+               "test_the_processing_loop_checks_the_draft_worker_again"],
            "tests/test_gpu.py": ["test_gpu_failure_falls_back_to_the_cpu_and_says_so",
                                  "test_whisper_gpu_failure_falls_back_to_the_cpu_and_says_so",
                                  "test_out_of_graphics_memory_falls_back_without_losing_"

@@ -92,8 +92,11 @@ def safe_message(exc):
     return _PATHS.sub("<path>", str(exc))[:500]
 
 
-def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False,
-                 log_dir=None, log_name="worker", gpu_component=None):
+def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
+    """A worker process's start-up, before any model library is imported:
+    its log, no telemetry, the offline guard (N1), weights-only loading and,
+    if quiet, below-normal priority. Shared by the main, GPU and draft
+    workers. Returns (log, the device it runs speech models on)."""
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker. What they write is free text,
     # which can include meeting content (P3), so it is never kept: with a log,
@@ -136,9 +139,20 @@ def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False
         if quiet:
             from workspace.resources import set_priority
             set_priority()
-        from workspace.engines import load_engine
     except BaseException as exc:
         # multiprocessing prints a failed start to stderr, never to excepthook.
+        diag.incident("worker_start", exc)
+        raise
+    return log, asr_device
+
+
+def _worker_main(conn, cache_dir, quiet, gpu_site=None, allow_test_engines=False,
+                 log_dir=None, log_name="worker", gpu_component=None):
+    log, asr_device = _start_up(log_dir, log_name, quiet, gpu_site, gpu_component)
+    from workspace import diag
+    try:
+        from workspace.engines import load_engine
+    except BaseException as exc:
         diag.incident("worker_start", exc)
         raise
 
@@ -242,6 +256,26 @@ def _read_audio(audio):
         waveform = np.empty(reader.frames, dtype=np.float32)
         reader.readinto(waveform, 0)
     return waveform
+
+
+def draft_main(conn, cache_dir, model, threads, allow_test_engines=False, log_dir=None):
+    """The draft worker (#104): live drafts while recording, in its own
+    process with the same start-up as the main worker, always at
+    below-normal priority. workspace.drafts.serve runs its loop."""
+    from workspace import diag, drafts
+    log, _ = _start_up(log_dir, drafts.LOG_NAME, quiet=True)
+    try:
+        from workspace.engines import load_draft_engine
+    except BaseException as exc:
+        diag.incident("worker_start", exc)
+        raise
+    drafts.serve(conn, lambda: load_draft_engine(model, cache_dir, threads,
+                                                 allow_test=allow_test_engines), log)
+    # The pipe closed or "exit" came and serve has returned. Its transcribe
+    # thread (a daemon) may still be inside the engine with a phrase; it ends
+    # with the process. The crash file is closed before the process ends, as
+    # the main worker's is (#278).
+    _end_crash_capture(log)
 
 
 class WorkerHandle:

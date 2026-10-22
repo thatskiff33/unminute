@@ -36,6 +36,11 @@ Disabled: computer audio cannot be recorded or turned on, and a recording in pro
 
 Disabled: the setting cannot be turned on, and a change already in force is put back when the app next reads the policy.</string>
 
+      <string id="AllowLiveDrafts">Allow draft text while recording</string>
+      <string id="AllowLiveDrafts_Help">Enabled or not configured: draft text while recording is allowed. This version does not show it yet and has no switch for it; when a later version does, it will be off until the user turns it on in Settings. While a meeting is recorded, Unminute then makes rough text of what is said, a few seconds behind, on this computer with the Parakeet v2 speech model. The draft is kept in memory only, never saved, and is replaced by the full transcript after the recording stops. It needs extra memory while recording (not yet measured in the app), and pauses on battery unless processing on battery is allowed.
+
+Disabled: draft text is off and cannot be turned on, and draft text in progress is stopped and cleared when the app next reads the policy (within 15 minutes). Recording is not affected.</string>
+
       <string id="RequireRecordingConsent">Confirm before each recording that everyone has been told</string>
       <string id="RequireRecordingConsent_Help">Enabled or not configured: before each microphone recording, the person recording confirms that everyone in the meeting has been told that it is being recorded, and why. The recording starts only after they tick that statement and select Start recording. The confirmation is a window the app draws outside its web page, so the page cannot answer it.
 

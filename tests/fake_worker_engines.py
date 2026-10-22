@@ -296,3 +296,102 @@ def fake_download_fails(conn, name, cache_dir):
     conn.recv()
     conn.send(("error", "Could not reach Hugging Face. Check the internet connection and "
                         "try again."))
+
+
+# -- fake draft engines (#104): load_draft_engine("test:fake_worker_engines:<name>") --
+# Speech is any 32 ms window louder than DRAFT_SPEECH_RMS (synthetic tone bursts);
+# the "text" names the phrase's number and length, never anything heard.
+
+DRAFT_SPEECH_RMS = 0.02
+
+
+class _DraftEngine:
+    description = "fake draft engine (test)"
+
+    def __init__(self, word="phrase", delay=0.0, fail=None):
+        self.word, self.delay, self.fail, self.count = word, delay, fail, 0
+        self.description = f"fake draft engine (test) pid={os.getpid()}"
+
+    def reset(self):
+        pass
+
+    def speech_prob(self, window):
+        import numpy as np
+        return 1.0 if float(np.sqrt(np.mean(np.square(window)))) > DRAFT_SPEECH_RMS else 0.0
+
+    def transcribe_phrase(self, audio):
+        self.count += 1
+        if self.fail:
+            self.fail(self.count)
+        if self.delay:
+            time.sleep(self.delay)
+        return f"{self.word} {self.count} {len(audio) / SR:.1f}s"
+
+
+def draft_phrases(threads):
+    return _DraftEngine()
+
+
+def draft_marker(threads):
+    """Draft text carrying the marker word (diagnostics tests)."""
+    return _DraftEngine(word=MARKER)
+
+
+def draft_slow(threads):
+    """Takes 4 s a phrase: falls behind real time."""
+    return _DraftEngine(delay=4.0)
+
+
+def draft_raises_marker(threads):
+    """Every phrase fails with the marker and a path in its message."""
+    def fail(n):
+        raise RuntimeError(f"{MARKER} words from C:\\Users\\{MARKER}\\{MARKER}.wav")
+    return _DraftEngine(fail=fail)
+
+
+def draft_crash_once(threads):
+    """The first draft worker crashes at its first phrase; the next one works."""
+    marker = os.environ["UNMINUTE_TEST_MARKER"]
+
+    def fail(n):
+        if not os.path.exists(marker):
+            open(marker, "w").close()
+            os._exit(3)
+    return _DraftEngine(fail=fail)
+
+
+def draft_crash_always(threads):
+    def fail(n):
+        os._exit(3)
+    return _DraftEngine(fail=fail)
+
+
+def draft_load_fails(threads):
+    raise RuntimeError("model files failed verification")
+
+
+class _DraftNetwork(_DraftEngine):
+    def transcribe_phrase(self, audio):
+        try:
+            socket.create_connection(("192.0.2.1", 443), timeout=2)
+            got = "connected"
+        except OSError as exc:
+            got = f"blocked {type(exc).__name__}"
+        return f"{got} weights={os.environ.get('TORCH_FORCE_WEIGHTS_ONLY_LOAD')}"
+
+
+def draft_network(threads):
+    """Each phrase says whether a connection got out of the draft worker
+    (N1), and its torch.load switch."""
+    return _DraftNetwork()
+
+
+class _DraftScoringFails(_DraftEngine):
+    def speech_prob(self, window):
+        raise RuntimeError("speech scoring failed")
+
+
+def draft_scoring_fails(threads):
+    """Scoring the audio for speech fails (not a phrase): an error in the
+    draft worker's own loop."""
+    return _DraftScoringFails()
