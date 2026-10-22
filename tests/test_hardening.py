@@ -1522,6 +1522,19 @@ function Wait-ForTest([string]$Stage) {
 WINDOWS_ONLY = unittest.skipUnless(sys.platform == "win32", "the installer is Windows PowerShell")
 
 
+def write_manifest(folder):
+    """package-manifest.json for every file under folder, as the build writes it:
+    {relative path: [size, SHA-256]}."""
+    import hashlib
+    manifest = {}
+    for path in sorted(Path(folder).rglob("*")):
+        if path.is_file() and path.name != "package-manifest.json":
+            data = path.read_bytes()
+            manifest[path.relative_to(folder).as_posix()] = [len(data),
+                                                             hashlib.sha256(data).hexdigest()]
+    (Path(folder) / "package-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def lock_retry_block(name):
     """The wait for a file in use (#239), as packaging/<name> has it: the time limit,
     Test-TransientLock and Invoke-LockRetry."""
@@ -1540,7 +1553,8 @@ class FolderInUseTests(unittest.TestCase):
     real in temporary folders with a temporary LOCALAPPDATA (DataFolderOverlapTests);
     the installer's copy runs only Install-Version, on a small synthetic package. A
     hook pauses each copy just before the step while the test opens a file in the
-    folder, as a scanner might."""
+    folder, as a scanner might. Since #111 B6a the copy runs New-StagedCopy, which
+    verifies the copy against the package's manifest, then Install-Version."""
 
     PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
                                DataFolderOverlapTests.TEST_KEY)
@@ -1550,7 +1564,7 @@ class FolderInUseTests(unittest.TestCase):
     MAIN = "    if ($Options.Rollback) { Invoke-Rollback }\n"
     STAGING = "Rename-Item -LiteralPath $staging -NewName (Split-Path $target -Leaf)"
     OLD = "Rename-Item -LiteralPath $target -NewName (Split-Path $old -Leaf)"
-    REMOVE = 'foreach ($name in "versions", "current.json")'
+    REMOVE = 'foreach ($name in "versions", "current.json", "current.json.tmp")'
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -1574,6 +1588,7 @@ class FolderInUseTests(unittest.TestCase):
         # As every package has: a live version names itself (the installer's folder
         # check, #297, takes a version folder without it for someone else's).
         (folder / "version.json").write_text(json.dumps({"version": version}))
+        write_manifest(folder)
 
     def with_hooks(self, text, steps, seconds=None):
         """text with the hook, called just before the line holding each step, and
@@ -1596,7 +1611,8 @@ class FolderInUseTests(unittest.TestCase):
         text = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
         self.assertEqual(text.count(self.MAIN), 1)
         text = text.replace(self.MAIN,
-                            '    $target = Install-Version $env:UNMINUTE_TEST_PACKAGE "1.0.0"\n'
+                            '    $staging = New-StagedCopy $env:UNMINUTE_TEST_PACKAGE "1.0.0"\n'
+                            '    $target = Install-Version $staging "1.0.0"\n'
                             '    Write-Output "TARGET=$target"; exit 0\n')
         copy = self.root / "install-copy.ps1"
         copy.write_text(self.with_hooks(text, {"old": self.OLD, "staging": self.STAGING}, seconds),
@@ -1804,11 +1820,16 @@ class FolderInUseTests(unittest.TestCase):
 # Stand-ins that a copy of install.ps1 defines just before its main part
 # (InstallFolderScopeTests): the prerequisites, the workspace check, the app-running
 # check, the shortcut and the uninstall entry do nothing, and the package is a
-# synthetic folder. The gate's stand-in says that it ran.
+# synthetic folder. The gate's stand-in says that it ran, and from which folder in the
+# install folder ("outside" for any other).
 INSTALL_STUBS = '''\
 function Test-Prerequisite { }
 function Test-AppRunning { }
-function Test-WorkspaceGate { Write-Output "GATE RAN" }
+function Test-WorkspaceGate([string]$Root, [string]$Checker = "", [int]$Schema = 0) {
+    $inside = $Root.StartsWith($Options.InstallDir + "\\", [StringComparison]::OrdinalIgnoreCase)
+    $where = if ($inside) { $Root.Substring($Options.InstallDir.Length + 1) } else { "outside" }
+    Write-Output "GATE RAN $where"
+}
 function Get-PackageRoot { return $env:UNMINUTE_TEST_PACKAGE }
 function New-Shortcut { }
 function Register-Uninstall { }
@@ -2429,6 +2450,356 @@ foreach ($file in Get-ChildItem -LiteralPath $args[0] -Filter 'case-*.json' | So
         self.assertEqual(r.stdout.split(), ["1", "0", "0"], r.stdout + r.stderr)
 
 
+# One installer log line (#111 B6a): fixed words and numbers only.
+LOG_LINE = (r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ mode=user version=(?:-|[0-9A-Za-z.+_-]+) "
+            r"step=(?:start|rollback|copy|gate|switch|register|done) "
+            r"result=(?:begun|ok|stopped)(?: code=\d)? elapsed_ms=\d+(?: error=\w+)?")
+
+
+@WINDOWS_ONLY
+class StagedCopyTests(unittest.TestCase):
+    """#111 B6a, the installer's behaviour in both modes: the package folder is
+    checked for links before anything is copied; the copy in
+    versions\\<version>.partial is verified once, by exact name, size and SHA-256
+    (the owner's decision B6-8), before its own runtime runs the workspace check and
+    before the swap; current.json is replaced whole or not at all; one run at a time
+    (install.lock); a log without names or paths. A copy of install.ps1 runs for real
+    in temporary folders, as in InstallFolderScopeTests (whose helpers these borrow),
+    with a synthetic package."""
+
+    MAIN, PROGRAMS, KEY, TEST_KEY = (InstallFolderScopeTests.MAIN, InstallFolderScopeTests.PROGRAMS,
+                                     InstallFolderScopeTests.KEY, InstallFolderScopeTests.TEST_KEY)
+    setUp = InstallFolderScopeTests.setUp
+    installer_copy = InstallFolderScopeTests.installer_copy
+    write_package = InstallFolderScopeTests.write_package
+    version_folder = staticmethod(InstallFolderScopeTests.version_folder)
+    write_current = InstallFolderScopeTests.write_current
+    current = InstallFolderScopeTests.current
+    junction = InstallFolderScopeTests.junction
+    NO_LINK = "The package contains a link or junction, so nothing was installed."
+    BUSY = "Another install or update of Unminute is still running"
+
+    def run_copy(self, copy=None, install=None, extra="", env=None):
+        """Runs the installer's copy (or another copy) with -Silent."""
+        call = f"& '{copy or self.copy}' -InstallDir '{install or self.install}' -Silent {extra}"
+        base = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata),
+                "UNMINUTE_TEST_PACKAGE": str(self.package)}
+        return subprocess.run([windows_powershell.executable(), "-NoProfile",
+                               "-ExecutionPolicy", "Bypass",
+                               "-Command", f"{call}; exit $LASTEXITCODE"],
+                              capture_output=True, text=True, timeout=180, cwd=self.root,
+                              env=windows_powershell.environment({**base, **(env or {})}))
+
+    def variant(self, name, find, insert):
+        """A copy of the installer copy with insert placed before the one line holding find."""
+        text = self.copy.read_text(encoding="utf-8")
+        lines = text.split("\n")
+        at = [i for i, line in enumerate(lines) if find in line]
+        self.assertEqual(len(at), 1, find)
+        lines.insert(at[0], insert)
+        copy = self.root / name
+        copy.write_text("\n".join(lines), encoding="utf-8")
+        return copy
+
+    def existing_install(self):
+        """An install of 0.9.0, as the installer leaves it."""
+        self.version_folder(self.versions / "0.9.0")
+        self.write_current(version="0.9.0", path=str(self.versions / "0.9.0"), managed=False)
+        (self.install / "uninstall.ps1").write_text("# synthetic\n")
+
+    def log(self, install=None):
+        path = (install or self.install) / "logs" / "install.log"
+        return path.read_bytes().decode("utf-8") if path.exists() else ""
+
+    def test_listed_names_must_match_exactly(self):
+        # A letter-case variant, a Kelvin sign (U+212A) for K or a capital sharp s
+        # (U+1E9E) of a listed name is not that name. Before B6a the check lower-cased
+        # both sides and so took each of these for the listed file.
+        def case(folder):                    # listed held.txt, the copy has Held.txt
+            (folder / "app" / "held.txt").rename(folder / "app" / "Held.txt")
+
+        def kelvin(folder):                  # an unlisted file beside the listed kelvin.txt
+            (folder / "app" / "\u212aelvin.txt").write_text("planted")
+
+        def sharp_s(folder):                 # an unlisted file beside the listed strasse
+            (folder / "app" / "STRA\u1e9eE.txt").write_text("planted")
+
+        def ligature(folder):                # U+FB01 for "fi"
+            (folder / "app" / "\ufb01le.txt").write_text("planted")
+
+        def extra(folder):
+            (folder / "app" / "planted.pth").write_text("import os")
+
+        def missing(folder):
+            (folder / "app" / "file.txt").unlink()
+
+        def changed(folder):
+            (folder / "runtime" / "python.exe").write_bytes(b"synthetiC")
+
+        for label, change in (("case", case), ("kelvin", kelvin), ("sharp_s", sharp_s),
+                              ("ligature", ligature), ("extra", extra), ("missing", missing),
+                              ("changed", changed)):
+            with self.subTest(label):
+                self.write_package("1.0.0")
+                for name in ("kelvin.txt", "stra\u00dfe.txt", "file.txt"):
+                    (self.package / "app" / name).write_text("listed")
+                write_manifest(self.package)
+                change(self.package)
+                install = self.root / f"Apps-{label}"
+                r = self.run_copy(install=install)
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertNotIn("GATE RAN", r.stdout)
+                self.assertFalse((install / "versions" / "1.0.0").exists())
+                self.assertFalse((install / "versions" / "1.0.0.partial").exists())
+                self.assertFalse((install / "current.json").exists())
+
+    def test_a_link_in_the_package_stops_the_install_before_anything_is_copied(self):
+        outside = self.root / "outside"
+        (outside / "empty").mkdir(parents=True)
+        (outside / "full").mkdir()
+        (outside / "full" / "sentinel.txt").write_text("someone's file")
+        for label, target in (("empty", outside / "empty"), ("full", outside / "full")):
+            with self.subTest(label):
+                self.write_package("1.0.0")
+                self.junction(self.package / "app" / "linked", target)
+                install = self.root / f"Apps-{label}"
+                r = self.run_copy(install=install)
+                self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+                self.assertIn(self.NO_LINK, r.stderr)
+                self.assertNotIn("GATE RAN", r.stdout)
+                self.assertFalse((install / "versions").exists())
+                os.rmdir(self.package / "app" / "linked")
+        self.assertEqual(snapshot(outside), {"empty": "<dir>", "full": "<dir>",
+                                             "full/sentinel.txt": "someone's file"})
+        # The package folder itself a junction.
+        self.write_package("1.0.0", folder=self.root / "real-package")
+        shutil.rmtree(self.package, ignore_errors=True)
+        self.junction(self.package, self.root / "real-package")
+        r = self.run_copy(install=self.root / "Apps-root")
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        self.assertIn(self.NO_LINK, r.stderr)
+
+    def test_the_workspace_check_runs_from_the_verified_copy(self):
+        # Never from %TEMP% or the package folder (T22): from versions\<v>.partial,
+        # after its verification, before the swap.
+        self.write_package("1.0.0")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("GATE RAN versions\\1.0.0.partial\n", r.stdout)
+        self.assertTrue((self.versions / "1.0.0" / "package-manifest.json").is_file())
+        self.assertFalse((self.versions / "1.0.0.partial").exists())
+
+    def test_a_failed_check_of_the_copy_changes_nothing_else(self):
+        self.existing_install()
+        before = {k: v for k, v in snapshot(self.install).items() if not k.startswith("logs")}
+        self.write_package("1.0.0")
+        (self.package / "app" / "planted.pth").write_text("import os")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        after = {k: v for k, v in snapshot(self.install).items() if not k.startswith("logs")}
+        self.assertEqual(after, {**before, "versions": "<dir>"})
+
+    def test_the_package_is_unpacked_into_a_new_folder_named_by_a_whole_guid(self):
+        # The real Get-PackageRoot, with -Package: a zip beside its .sha256.
+        import hashlib
+        import zipfile
+        text = self.copy.read_text(encoding="utf-8")
+        stub = "function Get-PackageRoot { return $env:UNMINUTE_TEST_PACKAGE }\n"
+        self.assertEqual(text.count(stub), 1)
+        listing = ("function Test-WorkspaceGate { Write-Output (\"TEMP=\" + "
+                   "((Get-ChildItem -LiteralPath $env:TEMP -Name) -join \",\")) }\n")
+        text = text.replace(stub, "").replace(
+            INSTALL_STUBS[INSTALL_STUBS.index("function Test-WorkspaceGate"):
+                          INSTALL_STUBS.index("function Get-PackageRoot")], listing)
+        copy = self.root / "install-package.ps1"
+        copy.write_text(text, encoding="utf-8")
+        self.write_package("1.0.0", folder=self.root / "build" / "Unminute-1.0.0")
+        zpath = self.root / "Unminute-1.0.0.zip"
+        with zipfile.ZipFile(zpath, "w") as z:
+            for path in sorted((self.root / "build").rglob("*")):
+                if path.is_file():
+                    z.write(path, path.relative_to(self.root / "build").as_posix())
+        digest = hashlib.sha256(zpath.read_bytes()).hexdigest()
+        (self.root / "Unminute-1.0.0.zip.sha256").write_text(f"{digest}  {zpath.name}\n")
+        temp = self.root / "temp"
+        temp.mkdir()
+        r = self.run_copy(copy=copy, extra=f"-Package '{zpath}'",
+                          env={"TEMP": str(temp), "TMP": str(temp)})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"(?m)^TEMP=um[0-9a-f]{32}$")
+        self.assertEqual(list(temp.iterdir()), [])                  # removed afterwards
+
+    def test_current_json_is_replaced_whole_or_not_at_all(self):
+        self.existing_install()
+        before = (self.install / "current.json").read_bytes()
+        self.write_package("1.0.0")
+        failing = self.variant("install-fail.ps1", "    Move-RecordFile $temp $File",
+                               '    if ($env:UNMINUTE_TEST_FAIL) { throw "injected detail" }')
+        r = self.run_copy(copy=failing, env={"UNMINUTE_TEST_FAIL": "1"})
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual((self.install / "current.json").read_bytes(), before)
+        self.assertTrue((self.install / "current.json.tmp").is_file())
+        # The log keeps the error's type, never its message.
+        self.assertRegex(self.log(), r"step=switch result=stopped code=1 elapsed_ms=\d+ "
+                                     r"error=RuntimeException\r\n$")
+        self.assertNotIn("injected", self.log())
+        # The next run removes the leftover and replaces the record.
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.install / "current.json.tmp").exists())
+        raw = (self.install / "current.json").read_bytes()
+        # As Set-Content -Encoding UTF8 wrote it: a byte-order mark and a final line break.
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf") and raw.endswith(b"\r\n"), raw[:8])
+        self.assertEqual(self.current()["version"], "1.0.0")
+        self.assertEqual(self.current()["previous"], "0.9.0")
+
+    def test_the_log_has_one_line_per_step_without_names_or_paths(self):
+        self.write_package("1.0.0")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.write_package("1.0.1")
+        (self.package / "app" / "planted.pth").write_text("import os")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 4, r.stdout + r.stderr)
+        import re
+        lines = self.log().split("\r\n")
+        self.assertEqual(lines[-1], "")
+        for line in lines[:-1]:
+            self.assertRegex(line, f"^{LOG_LINE}$")
+        steps = [re.search(r"step=(\w+) result=(\w+)", line).groups() for line in lines[:-1]]
+        self.assertEqual(steps, [("start", "begun"), ("copy", "begun"), ("gate", "begun"),
+                                 ("switch", "begun"), ("register", "begun"), ("done", "ok"),
+                                 ("start", "begun"), ("copy", "begun"), ("copy", "stopped")])
+        self.assertIn("version=1.0.0 step=done result=ok code=0", lines[5])
+        self.assertIn("version=1.0.1 step=copy result=stopped code=4", lines[8])
+        text = self.log()
+        for secret in (str(self.root), os.environ.get("USERNAME", "") or "\0", "\\", "planted"):
+            self.assertNotIn(secret, text)
+
+    def test_the_log_keeps_one_earlier_file_at_its_limit(self):
+        logs = self.install / "logs"
+        logs.mkdir(parents=True)
+        (logs / "install.log").write_bytes(b"x" * (256 * 1024 - 40))
+        (logs / "install.log.1").write_bytes(b"older")
+        self.write_package("1.0.0")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((logs / "install.log.1").read_bytes(), b"x" * (256 * 1024 - 40))
+        self.assertLess((logs / "install.log").stat().st_size, 4096)
+        self.assertEqual(sorted(p.name for p in logs.iterdir()), ["install.log", "install.log.1"])
+
+    def test_one_run_at_a_time(self):
+        self.existing_install()
+        before = snapshot(self.install)
+        text = self.copy.read_text(encoding="utf-8")
+        self.assertEqual(text.count("$LockWaitSeconds = 600\n"), 1)
+        quick = self.root / "install-quick.ps1"
+        quick.write_text(text.replace("$LockWaitSeconds = 600\n", "$LockWaitSeconds = 2\n"),
+                         encoding="utf-8")
+        self.write_package("1.0.0")
+        held = open(self.install / "install.lock", "a+b")       # another run holds it
+        try:
+            r = self.run_copy(copy=quick)
+        finally:
+            held.close()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(self.BUSY, r.stderr)
+        after = snapshot(self.install)
+        self.assertEqual({k: v for k, v in after.items() if not k.startswith("logs")},
+                         {**before, "install.lock": ""})
+        # Once it is free, the install goes ahead, and the lock goes with the run.
+        r = self.run_copy(copy=quick)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.install / "install.lock").exists())
+        self.assertEqual(self.current()["version"], "1.0.0")
+
+    def test_the_installers_own_entries_belong_to_it(self):
+        # A run that stopped early leaves the log folder, the lock or a temporary
+        # record; the folder is still the installer's own, and the leftover goes.
+        self.write_package("1.0.0")
+        (self.install / "logs").mkdir(parents=True)
+        (self.install / "logs" / "install.log").write_text("earlier\r\n")
+        (self.install / "current.json.tmp").write_text("{")
+        (self.install / "install.lock").write_text("")
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse((self.install / "current.json.tmp").exists())
+        # Anything else in logs is someone else's: refused, and nothing changes.
+        other = self.root / "Other"
+        (other / "logs").mkdir(parents=True)
+        (other / "logs" / "notes.txt").write_text("someone's notes")
+        r = self.run_copy(install=other)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertEqual(snapshot(other), {"logs": "<dir>", "logs/notes.txt": "someone's notes"})
+        # A link at the log folder, or in it, is refused in every case.
+        for label in ("at", "in"):
+            with self.subTest(link=label):
+                folder = self.root / f"Linked-{label}"
+                folder.mkdir()
+                target = self.root / f"target-{label}"
+                target.mkdir()
+                if label == "at":
+                    self.junction(folder / "logs", target)
+                else:
+                    (folder / "logs").mkdir()
+                    self.junction(folder / "logs" / "install.log", target)
+                r = self.run_copy(install=folder)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("holds a link or junction", r.stderr)
+                self.assertEqual(list(target.iterdir()), [])
+
+
+@WINDOWS_ONLY
+class UninstallOwnEntriesTests(unittest.TestCase):
+    """#111 B6a: the uninstaller removes the installer's new entries (the log folder
+    with its two files, current.json.tmp, install.lock), refuses anything else in
+    the log folder, and never runs beside an install (exit 3)."""
+
+    PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
+                               DataFolderOverlapTests.TEST_KEY)
+    uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
+    run_script = DataFolderOverlapTests.run_script
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.local = self.root / "Local"
+        self.local.mkdir()
+        self.copy, self.link = self.uninstaller_copy(self.root)
+        self.install = self.root / "Apps"
+        version = self.install / "versions" / "0.9.0"
+        (version / "runtime").mkdir(parents=True)
+        (version / "version.json").write_text(json.dumps({"version": "0.9.0"}))
+        (self.install / "current.json").write_text(json.dumps({"version": "0.9.0"}))
+        shutil.copy(self.copy, self.install / "uninstall.ps1")
+        (self.install / "logs").mkdir()
+        (self.install / "logs" / "install.log").write_text("line\r\n")
+        (self.install / "logs" / "install.log.1").write_text("older\r\n")
+        (self.install / "current.json.tmp").write_text("{")
+
+    def test_the_installers_own_entries_are_removed(self):
+        r = self.run_script(self.copy, self.install, self.local, cwd=self.root)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.install.exists())
+
+    def test_anything_else_in_the_log_folder_stops_it(self):
+        (self.install / "logs" / "notes.txt").write_text("someone's notes")
+        before = snapshot(self.install)
+        r = self.run_script(self.copy, self.install, self.local, cwd=self.root)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("did not put there", r.stderr)
+        self.assertEqual(snapshot(self.install), before)
+
+    def test_it_never_runs_beside_an_install(self):
+        before = snapshot(self.install)
+        with open(self.install / "install.lock", "a+b"):        # an install holds it
+            r = self.run_script(self.copy, self.install, self.local, cwd=self.root)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("An install or update of Unminute is running", r.stderr)
+        self.assertEqual(snapshot(self.install), {**before, "install.lock": ""})
+
+
 STUB_APP = '''\
 # A stand-in for the app: records how the uninstaller started it, then acts as told.
 import json, os, sys, time
@@ -2651,14 +3022,20 @@ class RemoteDebugTests(unittest.TestCase):
 
     def test_the_app_and_its_processes_start_with_remote_debugging_off(self):
         install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn('$LaunchArgs = "-I -B -X disable-remote-debug -m workspace"', install)
+        args = '$LaunchArgs = "-I -B -X disable-remote-debug -m workspace"'
+        self.assertEqual(install.count(args), 1)
         self.assertEqual(install.count("Arguments = $LaunchArgs"), 2)   # new and pinned
         self.assertNotIn('Arguments = "-m workspace"', install)
-        self.assertIn('@("-I", "-B", "-X", "disable-remote-debug", "-m", "workspace", "--gate")',
-                      install)
+        # The gate starts with the same options (#111 B6a: one list for every start).
+        self.assertIn('$gateArgs = @($LaunchArgs -split " ") + "--gate"', install)
+        # No other list of options: "-m workspace" ends a quoted string only there.
+        self.assertEqual(install.count('-m workspace"'), 1)
+        self.assertNotIn('"-m", "workspace"', install)
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn('Arguments = "-I -B -X disable-remote-debug -m workspace --restore-lid"',
-                      uninstall)
+        self.assertEqual(uninstall.count(args), 1)
+        self.assertIn('$start.Arguments = "$LaunchArgs --restore-lid"', uninstall)
+        self.assertEqual(uninstall.count('-m workspace"'), 1)
+        self.assertNotIn('"-m", "workspace"', uninstall)
         media = (ROOT / "workspace" / "media.py").read_text(encoding="utf-8")
         self.assertIn('"-I", "-B", "-X", "disable-remote-debug", "-c"', media)
 
