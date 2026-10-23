@@ -14,8 +14,9 @@
 #     specification of the machine it ran on (PERF_MACHINE), and that every
 #     window measured in a visible state was drawn on a display that was on
 #     (PERF_VISIBLE_STATES; #292);
-#   - for accessibility, that the run audited every view in both light and dark
-#     mode (ACCESSIBILITY_MODES; the owner's decision of 22 Oct 2026, #111).
+#   - for accessibility, that the run audited every view the tool defines
+#     (ACCESSIBILITY_VIEWS) in both light and dark mode (ACCESSIBILITY_MODES;
+#     the owner's decision of 22 Oct 2026, #111).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -55,6 +56,15 @@ PERF_RELEASE = {"runs": 3, "settle_s": 60, "window_s": 300, "leak_minutes": 30}
 # The colour modes release evidence audits each view in (tools/accessibility_check.py
 # --colour-mode both; the owner's decision of 22 Oct 2026, #111 and #298).
 ACCESSIBILITY_MODES = ("light", "dark")
+# Every view tools/accessibility_check.py audits (its VIEWS, in order; a test
+# keeps the two equal): release evidence needs each one in both modes, so a
+# report with a view left out is refused, not passed on the views it has.
+ACCESSIBILITY_VIEWS = (
+    "setup", "setup speech model", "setup speaker names", "setup microphone", "setup ready",
+    "downloads", "meetings", "microphone chooser", "settings", "help", "meeting",
+    "versions tab", "holds tab", "identify again", "names dialog", "confirm dialog",
+    "handoff page",
+)
 # The performance states with the window on screen (tools/perf_check.py): each
 # window measured in one counts only if it was drawn (its "drawing" block; #292).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
@@ -386,7 +396,8 @@ def perf_not_drawn(body):
 def accessibility_not_both(body):
     """What an accessibility report lacks to show every view audited in both
     light and dark (empty when it shows that): the run asked for both modes,
-    and each view is there once in each, named for the mode the page showed
+    and every view the tool audits (ACCESSIBILITY_VIEWS), and any other the
+    report names, is there once in each, named for the mode the page showed
     (tools/accessibility_check.py, view_key) and recording that mode."""
     out = []
     asked = body.get("colour_mode") if isinstance(body, dict) else None
@@ -406,7 +417,8 @@ def accessibility_not_both(body):
             out.append(f"{key} (shows {mode})")
             continue
         shown.setdefault(key[:-len(suffix)], set()).add(mode)
-    for name, modes in shown.items():
+    for name in dict.fromkeys((*ACCESSIBILITY_VIEWS, *shown)):
+        modes = shown.get(name, set())
         out += [f"{name} in {mode}" for mode in ACCESSIBILITY_MODES if mode not in modes]
     return out
 

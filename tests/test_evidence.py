@@ -169,9 +169,9 @@ def report(kind, sha=SHA, **change):
     return body
 
 
-# A few of the views tools/accessibility_check.py audits, as its report names
-# them when it audits each view in light and then in dark (view_key).
-A11Y_VIEWS = ("setup: welcome", "meetings", "handoff page")
+# Every view tools/accessibility_check.py audits; its report names each one
+# for its mode when it audits each view in light and then in dark (view_key).
+A11Y_VIEWS = evidence.ACCESSIBILITY_VIEWS
 
 
 def both_modes(views=A11Y_VIEWS):
@@ -728,14 +728,39 @@ class AccessibilityEvidenceTests(TempDir):
         body = report("accessibility")
         del body["colour_mode"]
         body["views"] = {name: {"unnamed": []} for name in A11Y_VIEWS}
-        self.refused(body, "the run asked for None, not 'both', setup: welcome (no colour "
-                           "mode), meetings (no colour mode), handoff page (no colour mode)")
+        listed = (["the run asked for None, not 'both'"]
+                  + [f"{name} (no colour mode)" for name in A11Y_VIEWS]
+                  + [f"{name} in {mode}" for name in A11Y_VIEWS for mode in ("light", "dark")])
+        self.assertTrue(listed[evidence.MAX_LISTED:])     # more than are listed
+        self.refused(body, ", ".join(listed[:evidence.MAX_LISTED]))
 
     def test_each_view_needs_both_modes(self):
         body = report("accessibility")
         del body["views"]["meetings (dark)"]
         del body["views"]["handoff page (light)"]
         self.refused(body, "meetings in dark, handoff page in light")
+
+    def test_every_view_the_tool_audits_is_required(self):
+        # A report with a view left out in both modes (a run that stopped
+        # early, or one edited down) is refused, not passed on what it has.
+        body = report("accessibility")
+        del body["views"]["meetings (light)"]
+        del body["views"]["meetings (dark)"]
+        self.refused(body, "meetings in light, meetings in dark")
+        for name in A11Y_VIEWS:
+            with self.subTest(left_out=name):
+                body = report("accessibility")
+                body["views"] = both_modes([n for n in A11Y_VIEWS if n != name])
+                self.refused(body, f"{name} in light, {name} in dark")
+        body = report("accessibility")
+        body["views"] = both_modes(["setup", "meetings"])
+        missing = [f"{name} in {mode}" for name in A11Y_VIEWS
+                   if name not in ("setup", "meetings") for mode in ("light", "dark")]
+        self.refused(body, ", ".join(missing[:evidence.MAX_LISTED]))
+        # A view the tool does not define still needs both modes.
+        body = report("accessibility")
+        body["views"]["extra view (light)"] = {"colour_mode": "light", "unnamed": []}
+        self.refused(body, "extra view in dark")
 
     def test_a_view_must_show_the_mode_it_is_named_for(self):
         body = report("accessibility")
@@ -769,6 +794,8 @@ class AccessibilityEvidenceTests(TempDir):
         self.assertEqual(list(evidence.ACCESSIBILITY_MODES), modes)
         self.assertEqual("meetings (dark)", accessibility_check.view_key("meetings", "dark",
                                                                           modes))
+        # Every view the tool audits, and only those, is required.
+        self.assertEqual(evidence.ACCESSIBILITY_VIEWS, tuple(accessibility_check.VIEWS))
 
 
 class PrepareTests(TempDir):
