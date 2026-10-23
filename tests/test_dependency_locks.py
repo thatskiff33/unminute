@@ -329,6 +329,32 @@ class AuditIgnoreTests(unittest.TestCase):
         for e in entries:
             self.assertEqual(set(e), set(audit.FIELDS))
 
+    def test_each_committed_ignore_names_one_advisory_and_ends_on_its_date(self):
+        # Each entry is scoped to a single advisory ID (no lists, no wildcards), and
+        # stops being honoured the day after its "until" date, so no exception can
+        # silently outlive the date it was granted to.
+        entries = json.loads(read("requirements/audit-ignore.json"))
+        one_id = re.compile(r"(GHSA(-[23456789cfghjmpqrvwx]{4}){3}|CVE-\d{4}-\d{4,}"
+                            r"|PYSEC-\d{4}-\d+)")
+        self.assertEqual(len({e["id"] for e in entries}), len(entries))
+        for e in entries:
+            self.assertTrue(one_id.fullmatch(e["id"]), e["id"])
+            last_day = datetime.date.fromisoformat(e["until"])
+            self.assertEqual(audit.active_ignores([e], last_day), [e["id"]])
+            with self.assertRaises(SystemExit, msg=e["id"]):
+                audit.active_ignores([e], last_day + datetime.timedelta(days=1))
+
+    def test_an_expired_ignore_fails_the_audit_before_pip_audit_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit-ignore.json"
+            path.write_text(json.dumps([self.entry(until="2026-01-01")]), encoding="utf-8")
+            with mock.patch.object(audit, "IGNORES", path), \
+                    mock.patch.object(audit.subprocess, "run",
+                                      side_effect=AssertionError("pip-audit ran")), \
+                    self.assertRaises(SystemExit) as caught:
+                audit.main()
+        self.assertIn("expired", str(caught.exception.code))
+
     def test_every_lock_is_audited(self):
         locks = {"requirements.txt"} | {f"requirements/{p.name}"
                                          for p in (ROOT / "requirements").glob("*.txt")}
