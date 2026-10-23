@@ -1,1 +1,8 @@
-[]
+[
+  {
+    "id": "GHSA-xcq7-p3pf-p88h",
+    "package": "opentelemetry-api",
+    "reason": "CVE-2026-114603, opentelemetry-api <= 1.45.0 (medium): quadratic CPU use when TraceState.from_header parses an inbound W3C tracestate header. Not reachable: Unminute runs no web server and accepts no inbound connections, and opentelemetry arrives only through pyannote.audio, with telemetry switched off before import (N1). Owner decision of 23 Oct 2026 on #111, an owner-approved E2 widening for 30 days. opentelemetry 1.45.1 is taken in the next monthly re-lock.",
+    "until": "2026-11-22"
+  }
+]
