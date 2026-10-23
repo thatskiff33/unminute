@@ -25,16 +25,19 @@
   remove what Unminute keeps for them (python -m workspace --offboard: the
   workspace, the downloaded models and the token), and removes the program,
   its shortcut, its taskbar and Start pins and its uninstall entry only when
-  that finished cleanly. If anything stops offboarding (meetings, holds or
-  cleanup left, the app open, Local System, other items in the data folder),
-  the uninstall stops too and the program is kept, so the person can still
+  that finished. Other items left in the data folder (a workspace set aside,
+  say) are reported with their count and the uninstall carries on (the
+  owner's decision of 23 Oct 2026). If anything else stops offboarding
+  (meetings, holds or cleanup left, the app open, Local System), the
+  uninstall stops too and the program is kept, so the person can still
   finish with it. See docs/PACKAGING.md, "Offboarding". Without -Silent it
   shows what will go and asks for REMOVE first.
 
   Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed), 3 the
   app is running. With -Offboard, also --offboard's own codes when it stops the
-  uninstall: 1 a step failed, 2 Local System, 3 the app is open, 4 other items
-  left in the data folder, 5 blocked, 6 the data folder's location is refused.
+  uninstall: 1 a step failed, 2 Local System (or Windows could not say which
+  account), 3 the app is open, 5 blocked, 6 the data folder's location is
+  refused.
 #>
 [CmdletBinding()]
 param(
@@ -262,18 +265,54 @@ function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
 
 # The current version's folder, if it has the switch: as Get-LidRestoreVersion, and
 # never a version folder that is a link (#297). An older version would take --offboard
-# for an ordinary start and open its window.
+# for an ordinary start and open its window. Returns @{ Why; Target }: Why is "ready",
+# "old" (its version.json lacks the feature), "incomplete" (current.json, the version
+# folder, its version.json, its runtime or its app is missing, as a removal that stopped
+# part-way leaves them) or "unusable" (a link, or files that cannot be read).
 function Get-OffboardVersion {
     try {
+        $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
+        if (-not (Test-Path -LiteralPath $currentFile -PathType Leaf)) { return @{ Why = "incomplete" } }
         $target = Get-CurrentVersionFolder
-        if (-not $target) { return $null }
+        if (-not $target) { return @{ Why = "unusable" } }
         $folder = [IO.DirectoryInfo]::new($target)
-        if (-not $folder.Exists -or (Test-Link $folder)) { return $null }
-        $info = Get-Content -LiteralPath ([IO.Path]::Combine($target, "version.json")) -Raw | ConvertFrom-Json
-        if (@($info.features) -notcontains "offboard") { return $null }
-        if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, "runtime", "python.exe")) -PathType Leaf)) { return $null }
-        return $target
-    } catch { return $null }
+        if (-not $folder.Exists) { return @{ Why = "incomplete" } }
+        if (Test-Link $folder) { return @{ Why = "unusable" } }
+        $file = [IO.Path]::Combine($target, "version.json")
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return @{ Why = "incomplete" } }
+        $info = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+        if (@($info.features) -notcontains "offboard") { return @{ Why = "old" } }
+        foreach ($part in @("runtime\python.exe", "app\workspace\__main__.py")) {
+            if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, $part)) -PathType Leaf)) {
+                return @{ Why = "incomplete" }
+            }
+        }
+        return @{ Why = "ready"; Target = $target }
+    } catch { return @{ Why = "unusable" } }
+}
+
+# For a rerun after a program removal that stopped part-way: is anything of
+# offboarding's still in the data folder (the workspace, the models, a part-removed
+# workspace, or a data folder that is a link or a file)? Returns @{ Left; Others }:
+# Left is $true also when it cannot tell; Others counts the other entries (offboarding's
+# others_left), never named or opened.
+function Get-OffboardLeft {
+    try {
+        $local = $env:LOCALAPPDATA
+        if ([string]::IsNullOrWhiteSpace($local) -or -not [IO.Path]::IsPathRooted($local) -or
+            $local -match '^[\\/]{2}') { return @{ Left = $true } }
+        $path = [IO.Path]::Combine($local, $AppName)
+        $base = [IO.DirectoryInfo]::new($path)
+        if (-not $base.Exists) { return @{ Left = [IO.File]::Exists($path); Others = 0 } }
+        if (Test-Link $base) { return @{ Left = $true } }
+        $others = 0
+        foreach ($item in $base.GetFileSystemInfos()) {
+            if ($item.Name -ieq "workspace" -or $item.Name -ieq "models" -or
+                $item.Name -match '^workspace\.offboarding-[0-9a-f]{32}\z') { return @{ Left = $true } }
+            $others++
+        }
+        return @{ Left = $false; Others = $others }
+    } catch { return @{ Left = $true } }
 }
 
 # Runs the installed app with one switch and a hard time limit, as Invoke-LidRestore
@@ -303,15 +342,79 @@ function Invoke-AppSwitch([string]$Target, [string]$Switch) {
     }
 }
 
-# The app's result: its last line, a JSON object with a "result" word, or $null.
-function Read-OffboardResult([string]$Output) {
+# The results --offboard-report and --offboard give, by exit code (workspace/offboard.py
+# and workspace/__main__.py's offboard). A result word must match its code.
+$OffboardResults = @{
+    0 = @("ok", "offboarded"); 1 = @("failed"); 2 = @("system_account", "account_unknown")
+    3 = @("running"); 4 = @("others_left"); 5 = @("blocked"); 6 = @("refused")
+}
+
+function Test-Word($Value) { return ($Value -is [string]) -and ($Value -cmatch '^[a-z_]{1,32}\z') }
+function Test-Count($Value) { return (($Value -is [int]) -or ($Value -is [long])) -and $Value -ge 0 }
+
+# True when every field of the app's line has the shape the app gives it: fixed words,
+# counts, yes or no, and the fixed residual sentences. Any other field, or a field of
+# another kind, and the line is not trusted (P3: nothing else reaches the output).
+function Test-OffboardShape($Result) {
+    foreach ($p in $Result.PSObject.Properties) {
+        $v = $p.Value
+        $name = $p.Name
+        if (@("result", "step", "workspace") -ccontains $name) { $ok = Test-Word $v }
+        elseif (@("leftover", "models_mb") -ccontains $name) { $ok = Test-Count $v }
+        elseif ($name -ceq "others") { $ok = ($null -eq $v) -or (Test-Count $v) }
+        elseif (@("models_link", "token", "lid_record", "running") -ccontains $name) { $ok = $v -is [bool] }
+        elseif (@("blockers", "removed") -ccontains $name) {
+            $ok = $v -is [Management.Automation.PSCustomObject]
+            if ($ok) {
+                foreach ($q in $v.PSObject.Properties) {
+                    if ($name -ceq "blockers") { $kind = Test-Count $q.Value } else { $kind = $q.Value -is [bool] }
+                    if (-not ((Test-Word $q.Name) -and $kind)) { $ok = $false }
+                }
+            }
+        }
+        elseif ($name -ceq "residuals") {
+            $ok = ($v -is [object[]]) -and $v.Count -le 10
+            if ($ok) {
+                foreach ($s in $v) {
+                    if (-not (($s -is [string]) -and $s.Length -le 400 -and $s -cmatch '^[ -~]+\z')) { $ok = $false }
+                }
+            }
+        }
+        else { $ok = $false }
+        if (-not $ok) { return $false }
+    }
+    return $true
+}
+
+# The app's result: its last line, one JSON object of the app's shape whose result word
+# matches the exit code (for exit 0, the run's own: $Expected), or $null.
+function Read-OffboardResult([string]$Output, [int]$Code, [string]$Expected) {
     $lines = @($Output -split "\r?\n" | Where-Object { $_.Trim() })
     if (-not $lines.Count) { return $null }
     $line = $lines[-1].Trim()
-    if (-not $line.StartsWith("{")) { return $null }
+    if ($line.Length -gt 65536 -or -not $line.StartsWith("{")) { return $null }
     try { $result = $line | ConvertFrom-Json } catch { return $null }
-    if ($null -eq $result -or -not ($result.result -is [string])) { return $null }
+    if (-not ($result -is [Management.Automation.PSCustomObject])) { return $null }
+    if (-not (Test-Word $result.result) -or -not (Test-OffboardShape $result)) { return $null }
+    if (-not $OffboardResults.ContainsKey($Code) -or $OffboardResults[$Code] -cnotcontains $result.result -or
+        ($Code -eq 0 -and $result.result -cne $Expected)) {
+        return $null
+    }
     return @{ Line = $line; Result = $result }
+}
+
+# "2 other item(s)", or "Other items" when the app could not count them.
+function Format-OtherCount($Result) {
+    if ($Result -and (Test-Count $Result.others)) { return "$($Result.others) other item(s)" }
+    return "Other items"
+}
+
+# Other entries left in the data folder are reported, and the uninstall carries on
+# (the owner's decision of 23 Oct 2026): offboarding never removes them (C1).
+function Write-OthersLeft([string]$Count) {
+    Write-Warn ("$Count in $AppName's data folder were left: they are not offboarding's to " +
+        "remove (for example a workspace set aside after damage). Check them with whoever " +
+        "manages holds, and delete them by hand once nothing in them is needed.")
 }
 
 # "meetings: 2, holds: 1": the blocker kinds (fixed words) and their counts only.
@@ -328,19 +431,23 @@ function Format-BlockerCount($Result) {
     return "meetings, holds, cleanup or audio"
 }
 
-# Returns when the run was clean ($Expected, exit 0); otherwise stops the uninstall.
+# Returns the result when the run was clean ($Expected, exit 0) or left only other
+# entries (others_left, exit 4, the owner's decision of 23 Oct 2026); otherwise stops
+# the uninstall. A line of another shape counts as no line: exit 0 or 4 without one stops.
 function Assert-Offboarded($Run, [string]$Expected) {
     if ($Run.Code -eq -1) {
         Stop-Uninstall 1 ("Offboarding did not finish within $OffboardSeconds seconds and was stopped, " +
             "so the program was kept. Run this again: it finishes what was started.")
     }
-    $read = Read-OffboardResult $Run.Output
+    $read = Read-OffboardResult $Run.Output $Run.Code $Expected
     $result = $null
     if ($read) {
         [Console]::Out.WriteLine($read.Line)
         $result = $read.Result
     }
-    if ($Run.Code -eq 0 -and $result -and $result.result -ceq $Expected) { return }
+    if ($result -and ($Run.Code -eq 0 -or $Run.Code -eq 4)) {
+        return $result
+    }
     $kept = "so the program was kept"
     switch ($Run.Code) {
         5 { Stop-Uninstall 5 ("Offboarding is blocked: $(Format-BlockerCount $result) left. Finish them in " +
@@ -348,16 +455,10 @@ function Assert-Offboarded($Run, [string]$Expected) {
             "them), then run this again. Nothing was removed, $kept.") }
         3 { Stop-Uninstall 3 ("$AppName is open, in this or another session of this user, $kept. " +
             "Close it, then run this again.") }
-        2 { Stop-Uninstall 2 ("Offboarding runs only as the person whose data it is, never as Local " +
-            "System, so nothing was removed and the program was kept. Run this in their own " +
-            "session (with Intune, with the logged-on user's credentials).") }
-        4 {
-            $count = "Other"
-            if ($result -and "$($result.others)" -match '^\d{1,9}\z') { $count = "$($result.others) other" }
-            Stop-Uninstall 4 ("$count item(s) in $AppName's data folder are not offboarding's to remove " +
-                "(for example a workspace set aside after damage), $kept. Check them with whoever " +
-                "manages holds, delete them by hand once nothing in them is needed, then run this again.")
-        }
+        2 { Stop-Uninstall 2 ("Offboarding runs only as the person whose data it is: it was run as " +
+            "Local System, or Windows could not say which account it runs as. Nothing was removed " +
+            "and the program was kept. Run this in their own session (with Intune, with the " +
+            "logged-on user's credentials).") }
         6 { Stop-Uninstall 6 ("Offboarding refused $AppName's data folder: it is a link, a file, or a " +
             "location $AppName itself refuses. Nothing was removed, $kept. IT removes that folder by hand.") }
         1 {
@@ -372,16 +473,31 @@ function Assert-Offboarded($Run, [string]$Expected) {
 
 # Offboards, or stops the uninstall. Without -Silent, shows what will go and asks.
 function Invoke-Offboard {
-    $target = Get-OffboardVersion
-    if (-not $target) {
-        Stop-Uninstall 1 ("This version of $AppName cannot offboard (it is older than the switch, or " +
-            "its files are missing), so nothing was removed and the program was kept. Install the " +
-            "current version, then run this again.")
+    $version = Get-OffboardVersion
+    if ($version.Why -eq "incomplete") {
+        # A rerun after a program removal that stopped part-way: offboarding finished
+        # before that removal started, unless something of offboarding's is still there.
+        $left = Get-OffboardLeft
+        if ($left.Left) {
+            Stop-Uninstall 1 ("This install's program files are incomplete (an earlier removal may have " +
+                "stopped part-way), so offboarding cannot run, nothing was removed and the program " +
+                "was kept. Install the current version again, then run this again.")
+        }
+        Write-Warn ("This install's program files were incomplete (an earlier removal stopped part-way), " +
+            "so offboarding was not run again: no workspace or models are left. If a Hugging Face " +
+            "token for $AppName is still saved, remove it in Windows Credential Manager.")
+        if ($left.Others) { Write-OthersLeft "$($left.Others) other item(s)" }
+        return
     }
-    $report = Invoke-AppSwitch $target "--offboard-report"
-    Assert-Offboarded $report "ok"
+    if ($version.Why -ne "ready") {
+        $why = "it is older than the switch"
+        if ($version.Why -eq "unusable") { $why = "its version folder is a link or its files cannot be read" }
+        Stop-Uninstall 1 ("This version of $AppName cannot offboard ($why), so nothing was removed and " +
+            "the program was kept. Install the current version, then run this again.")
+    }
+    $target = $version.Target
+    $facts = Assert-Offboarded (Invoke-AppSwitch $target "--offboard-report") "ok"
     if (-not $Options.Silent) {
-        $facts = (Read-OffboardResult $report.Output).Result
         Write-Host "This removes, for this Windows user:"
         if ("empty", "locked_empty" -contains $facts.workspace) {
             Write-Host "  - $AppName's workspace: settings, logs, the audit log and window data (no meetings, holds or cleanup are left)"
@@ -392,23 +508,35 @@ function Invoke-Offboard {
         }
         if ($facts.token -eq $true) { Write-Host "  - the saved Hugging Face token" }
         Write-Host "  - then the program, its Start menu shortcut, its pins and its uninstall entry."
+        if ($facts.result -ceq "others_left") {
+            Write-Host ("It keeps $((Format-OtherCount $facts).ToLower()) in $AppName's data folder: " +
+                "they are not offboarding's to remove.")
+        }
         Write-Host "Type REMOVE to continue, or anything else to stop:"
         if ([Console]::In.ReadLine() -cne "REMOVE") {
             Stop-Uninstall 1 "Nothing was removed, and the program was kept."
         }
     }
-    Assert-Offboarded (Invoke-AppSwitch $target "--offboard") "offboarded"
+    $done = Assert-Offboarded (Invoke-AppSwitch $target "--offboard") "offboarded"
     Write-Step "What $AppName kept for this Windows user was removed."
+    if ($done.result -ceq "others_left") { Write-OthersLeft (Format-OtherCount $done) }
 }
 
 # Taskbar and Start pins are copies of the Start menu shortcut in these folders, which
-# install.ps1's Update-PinnedShortcut repoints at each update. None when the roaming
-# profile folder is unknown or not a full path.
+# install.ps1's Update-PinnedShortcut repoints at each update. Each is given as the
+# folders on its path from the roaming profile folder down (that folder, Microsoft,
+# Internet Explorer, Quick Launch, User Pinned, then TaskBar or StartMenu), so a link
+# anywhere on it is seen. None when the roaming folder is unknown or not a full path.
 function Get-PinFolder {
     $roaming = [string]$env:APPDATA
     if ([string]::IsNullOrWhiteSpace($roaming) -or -not [IO.Path]::IsPathRooted($roaming)) { return @() }
-    $pinned = [IO.Path]::Combine($roaming, "Microsoft\Internet Explorer\Quick Launch\User Pinned")
-    return @([IO.Path]::Combine($pinned, "TaskBar"), [IO.Path]::Combine($pinned, "StartMenu"))
+    $pinned = @($roaming)
+    foreach ($name in "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned") {
+        $pinned += [IO.Path]::Combine($pinned[-1], $name)
+    }
+    return @("TaskBar", "StartMenu" | ForEach-Object {
+        , @($pinned + [IO.Path]::Combine($pinned[-1], $_))
+    })
 }
 
 # What a pin runs, read without resolving or changing the shortcut (the shell's own
@@ -460,16 +588,23 @@ function Get-PinPrefix {
 }
 
 # Removes pins that run this install's pythonw.exe (Update-PinnedShortcut's test); pins
-# to anything else are kept. A pin folder or pin that is a link or junction is neither
-# read nor removed (#297). A pin that cannot be read or removed only warns.
+# to anything else are kept. A pin, or any folder on a pin folder's path, that is a link
+# or junction is neither read nor removed through (#297), and warns: a pin may be left.
+# A pin that cannot be read or removed only warns.
 function Remove-OwnPin([string[]]$Prefixes) {
     $left = 0
-    foreach ($folder in Get-PinFolder) {
+    foreach ($path in Get-PinFolder) {
         try {
-            $dir = [IO.DirectoryInfo]::new($folder)
-            if (-not $dir.Exists -or (Test-Link $dir)) { continue }
+            $dir = $null
+            foreach ($folder in $path) {
+                $dir = [IO.DirectoryInfo]::new($folder)
+                if (-not $dir.Exists -or (Test-Link $dir)) { break }
+            }
+            if (-not $dir.Exists) { continue }
+            if (Test-Link $dir) { $left++; continue }
             foreach ($file in $dir.GetFiles("*.lnk")) {
-                if ($file.Extension -ine ".lnk" -or (Test-Link $file)) { continue }
+                if ($file.Extension -ine ".lnk") { continue }
+                if (Test-Link $file) { $left++; continue }
                 try {
                     $target = [string](Get-ShortcutTarget $file.FullName)
                     $ours = $target.EndsWith("\runtime\pythonw.exe", [StringComparison]::OrdinalIgnoreCase) -and
@@ -484,7 +619,8 @@ function Remove-OwnPin([string[]]$Prefixes) {
         } catch { $left++ }
     }
     if ($left) {
-        Write-Warn "$left pin(s) could not be checked or removed. Unpin $AppName by hand if it still shows."
+        Write-Warn ("$left pin(s) or pin folder(s) could not be checked or removed (an error, or a link " +
+            "or junction, which is never followed). Unpin $AppName by hand if it still shows.")
     }
 }
 
