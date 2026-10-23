@@ -48,7 +48,7 @@
       "machine": {
         "0": "installed",
         "1": "failed, including another install still running after 10 minutes",
-        "2": "not allowed: a 32-bit or non-elevated run, a refused switch, a package that states no storage format, or prerequisites missing",
+        "2": "not allowed: a 32-bit or non-elevated run, a refused switch, a package that states no storage format, prerequisites missing, or the install folder holds entries or a link the installer did not put there",
         "3": "the app is running for someone on this computer",
         "4": "the package failed verification, or the install folder's permissions have changed"
       }

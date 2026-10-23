@@ -219,8 +219,8 @@ real time, and remove it when the cause is fixed.
 - **Machine mode is tested without elevation (#111 B6b).** `tests/powershell/Machine.Tests.ps1`
   stands in elevation, bitness, Program Files, the all-users Start menu, the HKLM keys
   (Pester's `TestRegistry`, under HKCU), the folder's permissions as read and its creation
-  with them; everything else, junctions and permissions on folders beneath the install
-  folder included, runs for real in TestDrive. Never run `install.ps1 -Machine` or
+  with them; everything else, junctions and permissions on folders and files beneath the
+  install folder included, runs for real in TestDrive. Never run `install.ps1 -Machine` or
   `uninstall.ps1 -Machine` for real outside those stand-ins: elevated (as GitHub's runners
   are), they would write this computer's Program Files, HKLM and Start menu. The
   Python-driven test that runs `-Machine` for real does so only without elevation, where it
