@@ -66,12 +66,19 @@ class HoldTests(unittest.TestCase):
         self.assertEqual(self.run_all(), {})
         self.assertEqual(cleanup.run_job(self.store, jid, self.media), JobResult.NOTHING_PENDING)
         self.assertTrue((self.media / self.mid / "audio.uma").exists())
+        # Nor is a key destroyed (#111 C3c: the key goes first at cleanup).
+        self.assertEqual({"audio", "text"}, self.key_purposes())
         [waiting] = holds.awaiting_confirmation(self.store)
         self.assertIn("confirm", waiting["error"])
         # Confirming the same checkpoint again is the explicit confirmation.
         self.assertEqual(cleanup.confirm_transcript_reviewed(self.store, self.mid), jid)
         self.assertEqual(self.run_all(), {jid: JobResult.DONE})
         self.assertFalse((self.media / self.mid / "audio.uma").exists())
+        self.assertEqual({"text"}, self.key_purposes())
+
+    def key_purposes(self):
+        return {r[0] for r in self.store._all("SELECT purpose FROM content_keys WHERE "
+                                              "meeting_id = ?", (self.mid,))}
 
     def test_release_racing_a_held_attempt_still_needs_confirmation(self):
         hid = holds.add_hold(self.store, self.mid, "audio", "dispute")

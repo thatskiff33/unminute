@@ -512,7 +512,6 @@ def import_recording(store, media_root, src_path, title=None):
     because the recorded identity would not match the decoded audio. The
     saved file is read back and authenticated in full once, here; runs then
     check its length and file id only (runner._audio_matches)."""
-    import shutil
     src = Path(src_path)
     before = src.stat()
     original_sha = sha256_file(src)
@@ -546,13 +545,23 @@ def import_recording(store, media_root, src_path, title=None):
                                audio_id=file_id.hex(), samples=samples,
                                sample_rate=SAMPLE_RATE)
     except BaseException:
-        shutil.rmtree(folder, ignore_errors=True)
-        try:
-            store.delete_new_meeting(mid)
-        except Exception:
-            pass
+        _forget_new_meeting(store, mid, folder)
         raise
     return mid, sid
+
+
+def _forget_new_meeting(store, mid, folder):
+    """A failed import leaves nothing behind. Its keys go first (with the
+    write-ahead log emptied, store.delete_new_meeting), then its folder, so
+    a crash in between leaves only audio that can never be opened (#111
+    C3c). A meeting kept by a hold (#193) keeps its keys; its folder is
+    still removed, as before."""
+    import shutil
+    try:
+        store.delete_new_meeting(mid)
+    except Exception:
+        pass
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def import_stream(store, media_root, audio, title, recording):
@@ -565,7 +574,6 @@ def import_stream(store, media_root, audio, title, recording):
     (the chunks left behind can then never be opened). The PCM's SHA-256 is
     the source's identity (fingerprinted by the store). A failed import
     leaves nothing behind, as import_recording. Returns (meeting_id, source_id)."""
-    import shutil
     feed = WavFeed(audio)
     mid = store.create_meeting(title or "Untitled meeting")
     folder = meeting_folder(media_root, mid)
@@ -591,11 +599,7 @@ def import_stream(store, media_root, audio, title, recording):
                                audio_id=file_id.hex(), samples=samples,
                                sample_rate=SAMPLE_RATE, recording=recording)
     except BaseException:
-        shutil.rmtree(folder, ignore_errors=True)
-        try:
-            store.delete_new_meeting(mid)
-        except Exception:
-            pass
+        _forget_new_meeting(store, mid, folder)
         raise
     return mid, sid
 

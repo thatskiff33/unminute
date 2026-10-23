@@ -152,7 +152,11 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(self.job(jid)["state"], "failed")
             self.assertNotIn(str(self.media), self.job(jid)["error"])     # no paths kept
             self.assertEqual(self.job(jid)["attempts"], 1)
-            self.assertIsNone(self.store.meeting(self.mid)["audio_removed_at"])
+            # #111 C3c: the audio key goes before any file, so the audio
+            # already cannot be read and is recorded as removed; only the
+            # leftover ciphertext waits for the retry (design 6.2).
+            self.assertIsNotNone(self.store.meeting(self.mid)["audio_removed_at"])
+            self.assertEqual(0, self.audio_rows(self.mid))
         finally:
             handle.close()
         self.assertEqual(cleanup.resume_pending(self.store, self.media), {jid: JobResult.DONE})
@@ -357,6 +361,211 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(self.run_job(jid, on_event=lambda k, **f: events.append(k)),
                          JobResult.DONE)
         self.assertEqual(events, ["cleanup_started", "cleanup_started", "cleanup_done"])
+
+    # -- crypto-erase first (#111 C3c, design part 2, section 6) ------------------------
+
+    def audio_rows(self, mid):
+        return self.store._one("SELECT COUNT(*) FROM content_keys WHERE meeting_id = ? AND "
+                               "purpose = 'audio'", (mid,))[0]
+
+    def checkpointed_key(self, mid, purpose):
+        """A meeting key's wrapped bytes, after a forced checkpoint, so they
+        are in the main database file (where only secure_delete and a
+        checkpoint can remove them), not only in the write-ahead log."""
+        wrapped = bytes(self.store._one("SELECT wrapped FROM content_keys WHERE meeting_id = ? "
+                                        "AND purpose = ?", (mid, purpose))[0])
+        with self.store._lock:
+            busy = self.store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0]
+        self.assertEqual(0, busy)
+        self.assertIn(wrapped, self.db_path.read_bytes())
+        return wrapped
+
+    def in_database_files(self, needle):
+        return [p.name for p in (self.db_path, self.db_path.with_name("workspace.db-wal"))
+                if p.exists() and needle in p.read_bytes()]
+
+    def state(self, mid):
+        """(audio key present, audio file present, audio recorded as removed)."""
+        return (self.audio_rows(mid) == 1, (self.media / mid / "audio.uma").exists(),
+                self.store.meeting_state(mid)["audio_removed_at"] is not None)
+
+    def test_the_audio_key_goes_before_any_file(self):
+        # A folder that cannot be removed: the key is already gone and the
+        # audio recorded as removed (it cannot be read any more); the job is
+        # failed and retried for the files.
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        with mock.patch("shutil.rmtree", side_effect=PermissionError(13, "in use")):
+            self.assertEqual(JobResult.FAILED, self.run_job(jid))
+        self.assertEqual((False, True, True), self.state(self.mid))
+        self.assertEqual("failed", self.job(jid)["state"])
+        self.assertEqual({jid: JobResult.DONE}, cleanup.resume_pending(self.store, self.media))
+        self.assertFalse((self.media / self.mid).exists())
+
+    def test_crypto_erase_leaves_a_copy_of_the_audio_unreadable(self):
+        from workspace import audiocrypt, media
+        from workspace.store import KeyMissing
+        path = self.media / self.mid / media.AUDIO_FILE
+        path.unlink()
+        key = self.store.meeting_key(self.mid, "audio")
+        with audiocrypt.AudioWriter(path, key, media.audio_context(self.mid)) as w:
+            w.write(bytes(4 * SR))                            # one second of silence
+        copy = self.root / "copy.uma"                          # e.g. a stray backup
+        copy.write_bytes(path.read_bytes())
+        with audiocrypt.AudioReader(copy, key, media.audio_context(self.mid)) as r:
+            self.assertEqual(SR, len(r))                       # control: it opens now
+        self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid))
+        self.assertEqual(0, self.audio_rows(self.mid))
+        with self.assertRaises(KeyMissing):
+            self.store.meeting_key(self.mid, "audio")
+        # Every key the store can still produce: the meeting's text key, the
+        # workspace key, and any recording key.
+        keys = [self.store.meeting_key(self.mid, "text"), self.store.keyring.workspace_key]
+        keys += [self.store.recording_key(r) for r in self.store.recording_key_ids()]
+        for k in keys:
+            with self.assertRaises(audiocrypt.AudioCryptError):
+                audiocrypt.AudioReader(copy, k, media.audio_context(self.mid))
+
+    def test_no_wrapped_audio_key_is_left_in_the_database_files(self):
+        wrapped = self.checkpointed_key(self.mid, "audio")
+        self.run_job(cleanup.confirm_transcript_reviewed(self.store, self.mid))
+        self.assertEqual([], self.in_database_files(wrapped))     # nor in the log
+        # The text key after transcript cleanup (already so; pinned here).
+        text = self.checkpointed_key(self.mid, "text")
+        self.run_job(cleanup.confirm_final_saved(self.store, self.mid))
+        self.assertEqual([], self.in_database_files(text))
+
+    def test_a_hold_added_after_the_epoch_transaction_keeps_the_key(self):
+        # Critique 9: cleanup_started is told after run_job's epoch
+        # transaction and before _remove_audio's key transaction, the gap
+        # the key transaction's own hold check closes.
+        def hold_now(kind, **fields):
+            if kind == "cleanup_started":
+                self.add_hold("audio")
+        jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+        self.assertEqual(JobResult.HELD, self.run_job(jid, on_event=hold_now))
+        self.assertEqual((True, True, False), self.state(self.mid))
+        self.assertEqual("pending", self.job(jid)["state"])
+
+    def test_a_crash_at_any_step_leaves_key_and_audio_together_or_both_gone(self):
+        """A fault between each step of _remove_audio (the C7 design's
+        offsets, moved here): every landing leaves either the audio key and
+        the audio intact and not recorded as removed, or the key gone and
+        the audio recorded as removed; never a key gone with the audio shown
+        as available. The rerun finishes with one receipt."""
+        class Crash(BaseException):
+            """The process ends here (nothing catches it)."""
+
+        def part_of_the_folder(folder, *a, **k):
+            (Path(folder) / "audio.uma").unlink()
+            raise Crash()
+        landings = {
+            "in the key transaction": ("workspace.store.Store.remove_audio_keys", Crash),
+            "before the checkpoint": ("workspace.store.Store.erase_checkpoint", Crash),
+            "before the folder": ("shutil.rmtree", Crash),
+            "part of the folder": ("shutil.rmtree", part_of_the_folder),
+            "before the originals": ("workspace.cleanup._remove_original", Crash),
+            "before the receipt": ("workspace.cleanup.record_receipt", Crash),
+        }
+        for name, (target, effect) in landings.items():
+            with self.subTest(landing=name):
+                mid, _, original = self.make_meeting(authority=True)
+                jid = cleanup.confirm_transcript_reviewed(self.store, mid)
+                receipts = self.store._one("SELECT COUNT(*) FROM receipts")[0]
+                with mock.patch(target, side_effect=effect), self.assertRaises(Crash):
+                    self.run_job(jid, original_roots=[self.intake])
+                key, audio, removed = self.state(mid)
+                self.assertIn((key, audio, removed), {(True, True, False), (False, audio, True)})
+                self.assertEqual("pending", self.job(jid)["state"])
+                self.assertEqual(JobResult.DONE, self.run_job(jid, original_roots=[self.intake]))
+                self.assertEqual((False, False, True), self.state(mid))
+                self.assertFalse(original.exists())
+                self.assertEqual(receipts + 1,
+                                 self.store._one("SELECT COUNT(*) FROM receipts")[0])
+
+    def test_a_busy_checkpoint_fails_the_job_with_a_fixed_note_and_retries(self):
+        import sqlite3
+        import threading
+        from workspace.store import Store as S
+        mid2, _, _ = self.make_meeting()
+        reader = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM receipts").fetchone()   # a read snapshot
+            jid = cleanup.confirm_transcript_reviewed(self.store, self.mid)
+            with mock.patch.object(S, "ERASE_RETRIES_S", (0.01, 0.01)):
+                self.assertEqual(JobResult.FAILED, self.run_job(jid))     # held throughout
+            self.assertEqual("failed", self.job(jid)["state"])
+            self.assertEqual(f"StoreError: {cleanup.ERASE_BUSY}", self.job(jid)["error"])
+            # The key is gone, but no file is deleted while the log may still
+            # hold a copy of it.
+            self.assertEqual((False, True, True), self.state(self.mid))
+            reader.rollback()
+            self.assertEqual({jid: JobResult.DONE},
+                             cleanup.resume_pending(self.store, self.media))
+            self.assertFalse((self.media / self.mid).exists())
+            # A reader that finishes within the retries: the job just finishes.
+            reader.execute("BEGIN")
+            reader.execute("SELECT COUNT(*) FROM receipts").fetchone()
+            jid2 = cleanup.confirm_transcript_reviewed(self.store, mid2)
+            timer = threading.Timer(0.05, reader.rollback)
+            timer.start()
+            with mock.patch.object(S, "ERASE_RETRIES_S", (0.2, 0.2, 0.2)):
+                self.assertEqual(JobResult.DONE, self.run_job(jid2))
+            timer.join()
+        finally:
+            reader.close()
+
+    def test_discard_destroys_both_keys(self):
+        wrapped = [self.checkpointed_key(self.mid, p) for p in ("audio", "text")]
+        audio, transcript = cleanup.discard(self.store, self.mid)
+        self.assertEqual(JobResult.DONE, self.run_job(audio))
+        self.assertEqual(JobResult.DONE, self.run_job(transcript))
+        self.assertEqual(0, self.store._one("SELECT COUNT(*) FROM content_keys WHERE "
+                                            "meeting_id = ?", (self.mid,))[0])
+        for blob in wrapped:
+            self.assertEqual([], self.in_database_files(blob))
+
+    def test_a_failed_or_abandoned_import_erases_its_keys(self):
+        from workspace.store import compaction_marker
+        for remove in (lambda mid: self.store.delete_new_meeting(mid),
+                       lambda mid: self.store.discard_unfinished_import(mid, lambda: None)):
+            mid = self.store.create_meeting("synthetic unfinished")
+            wrapped = self.checkpointed_key(mid, "audio")
+            with mock.patch.object(self.store, "erase_checkpoint",
+                                   wraps=self.store.erase_checkpoint) as erase:
+                remove(mid)
+            self.assertEqual(1, erase.call_count)
+            self.assertEqual(0, self.store._one("SELECT COUNT(*) FROM content_keys WHERE "
+                                                "meeting_id = ?", (mid,))[0])
+            self.assertEqual([], self.in_database_files(wrapped))
+        # A log that stays busy: the removal stands, and the compaction is
+        # owed to the next sound start.
+        mid = self.store.create_meeting("synthetic unfinished")
+        self.assertFalse(compaction_marker(self.db_path).exists())
+        with mock.patch.object(self.store, "erase_checkpoint", return_value=False):
+            self.store.delete_new_meeting(mid)
+        self.assertIsNone(self.store.meeting_state(mid))
+        self.assertTrue(compaction_marker(self.db_path).exists())
+
+    def test_a_failed_import_destroys_its_keys_before_its_folder(self):
+        from workspace import media
+        seen = []
+        real = cleanup.shutil.rmtree
+
+        def rmtree(folder, *a, **k):
+            mid = Path(folder).name
+            seen.append(self.store._one("SELECT COUNT(*) FROM content_keys WHERE "
+                                        "meeting_id = ?", (mid,))[0])
+            return real(folder, *a, **k)
+
+        def decode(src, dest, *a, **k):
+            Path(dest).write_bytes(b"partial")
+            raise media.DecodeError("synthetic failure")
+        with mock.patch.object(media, "decode_to_file", decode), \
+                mock.patch("shutil.rmtree", rmtree), self.assertRaises(media.DecodeError):
+            media.import_recording(self.store, self.media, self.original)
+        self.assertEqual([0], seen)                     # no key left when files go
+        self.assertEqual(1, self.store._one("SELECT COUNT(*) FROM meetings")[0])  # setUp's
 
     def test_an_audit_log_that_raises_never_changes_the_result(self):
         def broken(kind, **fields):

@@ -15,7 +15,9 @@
 # worker is stopped and file handles released, and the meeting's content
 # epoch is bumped so a late worker result cannot recreate removed content.
 # Holds (#18) are checked before every attempt; a finished job leaves only a
-# minimal receipt (workspace.holds).
+# minimal receipt (workspace.holds). Audio cleanup crypto-erases first: the
+# audio key goes and the write-ahead log is emptied before any file is
+# deleted (#111 C3c), so a crash part way leaves nothing readable.
 
 import hashlib
 import os
@@ -175,7 +177,9 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=(), on_event
     """Perform one cleanup job. `quiesce()` must stop the worker and release
     file handles; `original_roots` are the folders an original may be deleted
     from (deletion authority, #24). Returns a JobResult; a failure leaves the
-    job 'failed' with its reason, to be retried.
+    job 'failed' with its reason, to be retried. Audio cleanup destroys the
+    audio key and empties the write-ahead log before any file is deleted
+    (_remove_audio, #111 C3c). While the workspace is locked nothing runs.
 
     on_event(kind, **fields) (the audit log, #111 C5) is told cleanup_started
     once the attempt is committed and before anything is removed, so a crash
@@ -186,6 +190,11 @@ def run_job(store, jid, media_root, *, quiesce=None, original_roots=(), on_event
     retry of a failed job every minute, which would flood the log (#289
     review; the orchestrator's default of 21 Oct 2026, no new kind).
     An on_event that raises never changes the job's result."""
+    if store.locked is not None:
+        # Locked (#111 C4a): no key row is read or destroyed and nothing is
+        # written or deleted. The job waits, unchanged, for a start that can
+        # use the key (the app's processing loop is held anyway).
+        return JobResult.WAITING
     job = store._one("SELECT * FROM cleanup_jobs WHERE id = ?", (jid,))
     if job is None or job["state"] not in ("pending", "failed"):
         return JobResult.NOTHING_PENDING     # finished, or awaiting confirmation after a hold
@@ -303,20 +312,44 @@ def _mark(store, jid, state, error):
         pass
 
 
+ERASE_BUSY = "Could not finish removing the audio key: the database is in use. Will retry."
+
+
 def _remove_audio(store, mid, media_root, original_roots):
-    """(notes, originals deleted, originals kept). The counts come from
-    _remove_original's fixed outcomes, never from the receipt's text."""
+    """Crypto-erase first, then the files (#111 C3c, design part 2, 6.1):
+
+    1. One transaction re-checks the audio holds (one may have been added
+       after run_job's epoch transaction, which this runs outside), destroys
+       the audio key and the recording's details, and records the audio as
+       removed: from here the audio cannot be read, wherever a copy is.
+    2. The write-ahead log is checkpointed into the database and truncated
+       (store.erase_checkpoint, with secure_delete on), so no copy of the
+       wrapped key is left in the live database files. Still busy after its
+       retries: the job fails with a fixed note and is retried.
+    3. The meeting's folder (only ciphertext without a key now), then
+       4. the originals, as before (the text key opens their paths).
+
+    A crash or failure at any point leaves either the key and the audio
+    both intact, or the key gone and the audio recorded as removed; a rerun
+    repeats the idempotent steps. Returns (notes, originals deleted,
+    originals kept); the counts come from _remove_original's fixed
+    outcomes, never from the receipt's text."""
     folder = media.meeting_folder(media_root, mid)
+    with store.tx() as db:
+        if _held(db, mid, AUDIO):
+            raise HeldDuringCleanup()
+        # The audio key and the recording's details (#111 C2b-2, C3b); the
+        # text key stays for the transcript. A rerun keeps the first time.
+        store.remove_audio_keys(db, mid)
+        db.execute("UPDATE meetings SET audio_removed_at = COALESCE(audio_removed_at, ?) "
+                   "WHERE id = ?", (time.time(), mid))
+    if not store.erase_checkpoint():
+        raise StoreError(ERASE_BUSY)
     if folder.exists():
         shutil.rmtree(folder)         # raises on a locked file: job stays 'failed'
     notes = []
     for src in store.sources(mid):
         notes.append(_remove_original(store, src, original_roots))
-    with store.tx() as db:
-        db.execute("UPDATE meetings SET audio_removed_at = ? WHERE id = ?", (time.time(), mid))
-        # The audio key and the recording's details go in the same
-        # transaction (#111 C2b-2); the text key stays for the transcript.
-        store.remove_audio_keys(db, mid)
     deleted = sum(n == ORIGINAL_DELETED for n in notes)
     kept = sum(n in ORIGINAL_KEPT for n in notes)
     return "; ".join(n for n in notes if n) or None, deleted, kept

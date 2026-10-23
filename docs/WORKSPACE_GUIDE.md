@@ -91,7 +91,7 @@ Each meeting shows its steps:
 
 1. **Confirm the transcript is reviewed.**
    - The reviewed text is saved in the workspace.
-   - The app then removes its own copy of the audio. It also removes the original recording, but only if you allowed that for the watched folder it came from.
+   - The app then removes its own copy of the audio. First it deletes the audio's key, so the copy cannot be read any more, even if another program is still holding the file; then it deletes the files. It also removes the original recording, but only if you allowed that for the watched folder it came from.
    - Playback and editing are no longer available after this step.
 2. **Hand off.**
    - **Hand off…** opens a page that shows exactly what will be copied, with four ways out: **Copy and open ChatGPT** (the main button), **Copy prompt and transcript**, **Copy prompt only**, and **Save Markdown…**.
