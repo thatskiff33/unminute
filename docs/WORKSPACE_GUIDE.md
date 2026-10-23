@@ -24,7 +24,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 | --- | --- |
 | **Recordings you import** | Read where they are. The app keeps its own working copy of the audio until you confirm the transcript is reviewed. |
 | **Transcription and speaker identification** | Done on this computer. Nothing is uploaded. While processing, the app refuses its own Python network connections; for managed devices, an outbound firewall rule is the stronger control. |
-| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer (not in 0.5.0-preview.3, see above). This is not a synced folder. The app's working copy of each meeting's audio, and each microphone recording as it is saved, are encrypted the same way. Your settings are not encrypted. |
+| **Transcripts, edits, speaker names, holds** | In the workspace on this computer (`%LOCALAPPDATA%\Unminute\workspace`), encrypted with a key that Windows keeps for your account on this computer (not in 0.5.0-preview.3, see above). This is not a synced folder. The app's working copy of each meeting's audio, and each recording as it is saved (the microphone, and computer audio when it is on), are encrypted the same way. Your settings are not encrypted. |
 | **Models** | Downloaded once, when you choose, from Hugging Face. Each file is checked against a published checksum. They are stored in `%LOCALAPPDATA%\Unminute\models`. |
 | **Handoff to an AI assistant** | Only when you copy or save it. **Copy and open** also opens the assistant's web page in your browser, but sends nothing: you paste and send. What you paste or upload is then handled by that assistant under your organisation's account and policies, not by this app. |
 | **Watched folders and synced storage** | If a watched folder is synced (for example OneDrive), its recordings are already in that cloud service. The app does not change that. |
@@ -49,7 +49,7 @@ Unminute keeps a log of what is done with each meeting: when it was imported or 
 Microphone recording is off until you turn it on, in Setup or in Settings > Recording and speakers. The Meetings page then shows **Record a meeting**, with the microphone in use and **Change or test** beneath it.
 
 1. **Choose and test the microphone.** **Change or test** lists the microphones, including one connected since Unminute opened (Setup lists them the same way). If the microphone you chose has been disconnected, Unminute says so when the list is next refreshed and selects the Windows default instead. **Test microphone** listens for 3 seconds and shows the level; nothing is kept.
-2. **Tell everyone present that the meeting is being recorded, and why.** When you start, Unminute asks you to tick that everyone has been told, then select **Start recording** (it becomes available after a moment; with the keyboard, Tab to it, pause briefly, then press Enter; Enter anywhere else means Cancel). Your organisation can turn this question off.
+2. **Tell everyone present that the meeting is being recorded, and why.** With computer audio on (below), that includes people on the call. When you start, Unminute asks you to tick that everyone has been told, then select **Start recording** (it becomes available after a moment; with the keyboard, Tab to it, pause briefly, then press Enter; Enter anywhere else means Cancel). Your organisation can turn this question off.
 3. **Start recording.** The recording card shows the length and a live curve of the sound. While recording, the window title starts with **● Recording** and the app's taskbar button shows a red dot. Settings > Recording and speakers chooses the curve: Flowing wave, Spectrum or Sound wave. **Pause** and **Resume** leave a gap that is not recorded.
 4. **Stop and save.** The recording becomes a meeting and is transcribed like an imported file. Review, holds and cleanup work the same way. To throw a recording away instead (a test, or the wrong meeting), use **Discard…** while recording or paused: after a confirmation the audio is deleted and nothing is transcribed.
 
@@ -67,7 +67,7 @@ How it handles problems:
   - These lid and sleep behaviours come from Windows' documentation and have not yet been tested on a real laptop.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
 - **Recording uses more processor time with the window visible.** It uses about 23% of one processor core while the window is visible, mostly to draw the moving recording display, and under 1% minimised (measured on an Intel Core Ultra 7 255H laptop with a 60 Hz screen on 23 October 2026). Minimise the window while you record if you do not need to watch it.
-- **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded.
+- **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
 ### Draft text while recording
 
@@ -78,9 +78,20 @@ Unminute can show rough text of what is said while you record, a few seconds beh
 - **Screen sharing.** Draft text shows on your screen. Select **Hide draft** before you share your screen; it stays hidden for the rest of that recording unless you select **Show draft**.
 - **On battery** it pauses, unless **Process automatically on battery power** is on; it carries on when you plug in again. The recording itself is never affected.
 - **It costs some memory and processor time** while recording. If it falls behind, it skips the oldest part and says so; the recording is still complete.
-- **With computer audio** (a later version records it beside the microphone), you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
+- **With computer audio** on, you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
 - **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. If draft text fails or cannot start while you record, the line says it stopped, or that it is not available if its speech model could not be loaded. If your organisation turns it off, or a speech model is downloaded or removed, while you record, the draft text shown so far is cleared. The recording is not affected.
-- **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
+
+### Recording calls (computer audio)
+
+Unminute can also record the sound playing on this computer, such as the other side of a Teams or Zoom call, beside the microphone. It is off until you turn on **Also record computer audio** in Settings > Recording and speakers (or in Setup). It needs microphone recording on, and your organisation can turn it off. The Meetings page then shows **Computer audio on** beside the microphone.
+
+- **What is recorded.** Everything the computer plays through its current speakers or headset: the call, but also notification sounds, a video in another tab, or Narrator reading the screen aloud. Before a call, turn on Do not disturb (Windows Settings > System > Notifications) and close anything else that plays sound. If you use Narrator, leave computer audio off.
+- **Tell everyone, including people on the call.** The question before you start says so, and you tick that everyone has been told. Teams and Zoom do not know Unminute is recording, so they show no recording notice of their own: say at the start of the call that it is being recorded.
+- **Headset or laptop speakers.** Both work. The microphone and the computer audio are saved as two tracks, then lined up and mixed into one recording when you stop, and that mix is transcribed once. On laptop speakers the microphone also hears the other side a moment later; whether this repeats words in the transcript has not been measured yet, so a headset gives the cleanest result.
+- **While recording**, a thin **Computer audio** bar under the display shows its level. If the microphone has heard the room for a minute but the computer has played nothing, the card says so and names the output being recorded: check that the call plays through it (Teams and Zoom have their own speaker setting).
+- **It follows the Windows default output.** If you plug in a headset, or Windows changes the default output (for example when a Bluetooth headset switches to its call mode), computer audio carries on from the new output and the card says so. If there is no output for a while, silence is recorded until one is back. The microphone is different: it never changes on its own.
+- **If computer audio stops** (it stops working, or your organisation turns it off while you record), the microphone carries on and the card says so. If computer audio cannot start at all, the recording does not start: turn computer audio off to record the microphone only.
+- **Going back to an earlier version.** Do not go back to an earlier version of Unminute while a recording with computer audio is unfinished. Stop it and let it import first: an earlier version imports only the microphone track and then deletes the recording.
 
 ## Working on a meeting
 

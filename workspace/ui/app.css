@@ -215,6 +215,13 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
    wherever they fit. */
 @media (max-width: 480px) { .rec-buttons { flex-wrap: wrap; } }
 .rec-note { margin: 0; font-size: 14px; color: var(--muted); }
+/* Computer audio (#108): a thin second level bar under the display. */
+.rec-computer { display: flex; align-items: center; gap: 12px; margin-top: -6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.rec-computer-label { flex: none; min-width: 150px; }
+.rec-computer-bar { flex: 1; max-width: 420px; height: 6px; border-radius: 999px; overflow: hidden; background: var(--track); }
+.rec-computer-fill { display: block; height: 100%; background: var(--fill); transform: scaleX(0); transform-origin: left center; transition: transform 100ms linear; }
+.rec-computer.off .rec-computer-bar { opacity: 0.5; }
+@media (prefers-reduced-motion: reduce) { .rec-computer-fill { transition: none; } }
 .rec-icon { width: 44px; height: 44px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--danger); color: var(--danger-fg); }
 .spinner { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--fill); animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
