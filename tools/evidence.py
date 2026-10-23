@@ -13,7 +13,9 @@
 #   - for performance, the run's shape (a full release run or not), the
 #     specification of the machine it ran on (PERF_MACHINE), and that every
 #     window measured in a visible state was drawn on a display that was on
-#     (PERF_VISIBLE_STATES; #292).
+#     (PERF_VISIBLE_STATES; #292);
+#   - for accessibility, that the run audited every view in both light and dark
+#     mode (ACCESSIBILITY_MODES; the owner's decision of 22 Oct 2026, #111).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -50,6 +52,9 @@ KINDS = {
 }
 # A performance run that counts as evidence (docs/RELEASING.md): at least this.
 PERF_RELEASE = {"runs": 3, "settle_s": 60, "window_s": 300, "leak_minutes": 30}
+# The colour modes release evidence audits each view in (tools/accessibility_check.py
+# --colour-mode both; the owner's decision of 22 Oct 2026, #111 and #298).
+ACCESSIBILITY_MODES = ("light", "dark")
 # The performance states with the window on screen (tools/perf_check.py): each
 # window measured in one counts only if it was drawn (its "drawing" block; #292).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
@@ -378,6 +383,34 @@ def perf_not_drawn(body):
     return out
 
 
+def accessibility_not_both(body):
+    """What an accessibility report lacks to show every view audited in both
+    light and dark (empty when it shows that): the run asked for both modes,
+    and each view is there once in each, named for the mode the page showed
+    (tools/accessibility_check.py, view_key) and recording that mode."""
+    out = []
+    asked = body.get("colour_mode") if isinstance(body, dict) else None
+    if asked != "both":
+        out.append(f"the run asked for {asked!r}, not 'both'")
+    views = body.get("views") if isinstance(body, dict) else None
+    if not isinstance(views, dict) or not views:
+        return out + ["no views recorded"]
+    shown = {}
+    for key, audit in views.items():
+        mode = audit.get("colour_mode") if isinstance(audit, dict) else None
+        if mode not in ACCESSIBILITY_MODES:
+            out.append(f"{key} (no colour mode)")
+            continue
+        suffix = f" ({mode})"
+        if not key.endswith(suffix) or key == suffix:
+            out.append(f"{key} (shows {mode})")
+            continue
+        shown.setdefault(key[:-len(suffix)], set()).add(mode)
+    for name, modes in shown.items():
+        out += [f"{name} in {mode}" for mode in ACCESSIBILITY_MODES if mode not in modes]
+    return out
+
+
 def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
     """Add the evidence block to a check's report and return it. It counts only
     if the check passed and the folder held exactly the package before and
@@ -479,6 +512,13 @@ def check(expected_sha256, paths, commit=None):
             if undrawn:
                 found.append(f"does not show every visible window drawn on a display that was "
                              f"on (not shown: {', '.join(undrawn[:MAX_LISTED])})")
+        if kind == "accessibility":
+            one_mode = accessibility_not_both(body)
+            if one_mode:
+                found.append("was not audited in both light and dark (owner decision, "
+                             "22 Oct 2026: run tools/accessibility_check.py with "
+                             "--colour-mode both; not shown: "
+                             f"{', '.join(one_mode[:MAX_LISTED])})")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():
         if kind not in seen:
