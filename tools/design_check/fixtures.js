@@ -12,13 +12,27 @@
   // meeting-list rebuilds and page errors. Timers are wrapped here, before
   // app.js loads. "hidden" starts visible and then becomes hidden, with the same
   // bubbling visibilitychange a minimised window gets.
+  // &display=120 (the recording run, #340) adds a simulated display: see below.
   const query = new URLSearchParams(location.search);
   const perfMode = query.get("perf");
   // pendingFrames: animation frames requested and not yet run. Headless Edge
   // runs almost no frames while virtual time skips ahead, so frames run are no
   // measure; an animation loop always leaves one frame pending.
+  // draws: with the simulated display below, the frames in which the level
+  // meter's canvas (#rec-canvas) was cleared for drawing, one count per frame,
+  // as tools/perf_check.py counts them in the real window.
   const perf = { calls: {}, timeouts: 0, rebuilds: 0, errors: [],
-                 intervals: new Map(), pendingFrames: new Set() };
+                 intervals: new Map(), pendingFrames: new Set(), draws: 0, drawnFrame: -1 };
+  // The simulated display (perf mode with &display=Hz). Headless Edge runs
+  // almost no animation frames while virtual time skips ahead, so the meter's
+  // frame rate cannot be seen there. Instead, frames come from a timer here,
+  // display times a second of page time (8 and 9 ms apart for 120 Hz, keeping
+  // to the rate), each with its exact display time, as a real display's do:
+  // every callback asked for before a frame runs in it. While the page reports
+  // itself hidden no frame runs, as with a minimised window; the ticks go on.
+  // ticks: display refreshes so far; frames: those the page was drawn in.
+  const sim = { hz: perfMode ? Number(query.get("display")) || 0 : 0, ticks: 0, frames: 0,
+                queue: new Map(), seq: 0, stopped: false };
   const realSetTimeout = window.setTimeout.bind(window);
   let pageHidden = false;
   let afterNextList = null;      // perf: run once the page next fetches the meeting list
@@ -51,11 +65,48 @@
     window.setTimeout = (fn, ms, ...rest) => { perf.timeouts++; return realSetTimeout(fn, ms, ...rest); };
     const realCancelFrame = window.cancelAnimationFrame.bind(window);
     window.requestAnimationFrame = (fn) => {
+      if (sim.hz) {
+        const id = ++sim.seq;
+        sim.queue.set(id, fn);
+        perf.pendingFrames.add(id);
+        return id;
+      }
       const id = realFrame((t) => { perf.pendingFrames.delete(id); fn(t); });
       perf.pendingFrames.add(id);
       return id;
     };
-    window.cancelAnimationFrame = (id) => { perf.pendingFrames.delete(id); realCancelFrame(id); };
+    window.cancelAnimationFrame = (id) => {
+      perf.pendingFrames.delete(id);
+      if (sim.hz) sim.queue.delete(id);
+      else realCancelFrame(id);
+    };
+    if (sim.hz) {
+      const period = 1000 / sim.hz;
+      const tick = () => {
+        if (sim.stopped) return;
+        sim.ticks++;
+        if (!pageHidden && sim.queue.size) {
+          sim.frames++;
+          const t = 1000 + sim.ticks * period;
+          const due = [...sim.queue];
+          sim.queue.clear();
+          for (const [id, fn] of due) {
+            perf.pendingFrames.delete(id);
+            try { fn(t); } catch (e) { window.reportError(e); }   // to the error listeners
+          }
+        }
+        realSetTimeout(tick, Math.round((sim.ticks + 1) * period) - Math.round(sim.ticks * period));
+      };
+      realSetTimeout(tick, Math.round(period));
+      const realClearRect = CanvasRenderingContext2D.prototype.clearRect;
+      CanvasRenderingContext2D.prototype.clearRect = function (...args) {
+        if (this.canvas && this.canvas.id === "rec-canvas" && perf.drawnFrame !== sim.frames) {
+          perf.drawnFrame = sim.frames;
+          perf.draws++;
+        }
+        return realClearRect.apply(this, args);
+      };
+    }
     Object.defineProperty(document, "hidden", { configurable: true, get: () => pageHidden });
     Object.defineProperty(document, "visibilityState", { configurable: true,
                                                           get: () => (pageHidden ? "hidden" : "visible") });
@@ -73,7 +124,8 @@
     }
     // Count from here, before the page becomes hidden, so work it does on the
     // visibilitychange itself counts too.
-    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0;
+    perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0; perf.draws = 0;
+    perf.ticksFrom = sim.ticks; perf.framesFrom = sim.frames;
     if (perfMode === "hidden") {
       pageHidden = true;
       document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
@@ -96,21 +148,27 @@
       }
       // Shown again: the page must catch up by itself, promptly. Counted
       // separately, so the hidden figures above stay what the hidden page did.
-      const before = { ...perf.calls };
+      const before = { ...perf.calls }, drawsBefore = perf.draws;
       pageHidden = false;
       document.dispatchEvent(new Event("visibilitychange", { bubbles: true }));
       realSetTimeout(() => finish(ms, seen, Object.keys(perf.calls).filter(
-        (k) => perf.calls[k] > (before[k] || 0))), 1000);
+        (k) => perf.calls[k] > (before[k] || 0)), null, perf.draws - drawsBefore), 1000);
     }, ms);
   }
   function total(calls) { return Object.values(calls).reduce((a, b) => a + b, 0); }
   function snapshot() {
     return { calls: { ...perf.calls }, timeouts: perf.timeouts, rebuilds: perf.rebuilds,
              intervals: [...perf.intervals.values()], frames: perf.pendingFrames.size,
-             rows: document.querySelectorAll("#groups li").length };
+             rows: document.querySelectorAll("#groups li").length, draws: perf.draws,
+             ticks: sim.ticks - perf.ticksFrom, simFrames: sim.frames - perf.framesFrom };
   }
-  function finish(ms, seen, catchUp, redrawn = null) {
+  function finish(ms, seen, catchUp, redrawn = null, catchUpDraws = null) {
+    sim.stopped = true;                  // no more simulated frames: the figures are in
     const perMinute = (n) => Math.round(n * 60000 / ms * 10) / 10;
+    // Per second of the simulated display's time (ticks / Hz), which keeps to
+    // page time; null without a simulated display.
+    const perSecond = (n) => (sim.hz && seen.ticks
+      ? Math.round(n * sim.hz / seen.ticks * 10) / 10 : null);
     const calls = Object.fromEntries(Object.entries(seen.calls).map(([k, v]) => [k, perMinute(v)]));
     const result = {
       mode: perfMode, page_ms: ms, calls_per_minute: calls,
@@ -123,6 +181,10 @@
       meeting_rows: seen.rows,
       catch_up_calls: catchUp,           // hidden: the methods called once shown again
       redrawn_after_change: redrawn,     // visible: the list redrawn within a poll of a change
+      display_hz: sim.hz || null,
+      page_frames_per_second: perSecond(seen.simFrames),
+      meter_draws_per_second: perSecond(seen.draws),
+      catch_up_meter_draws: catchUpDraws,   // hidden: meter draws in the 1 s once shown again
       page_errors: perf.errors,
     };
     const out = document.createElement("pre");

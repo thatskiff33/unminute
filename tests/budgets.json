@@ -37,5 +37,18 @@
       "transcribing": {"transcript_calls": 22, "rows_fetched": 9250,
                        "rows_drawn": 9225, "full_redraws": 3}
     }
+  },
+  "ui_recording": {
+    "note": "What the Meetings page does per minute of page time with a recording going (tools/ui_idle_check.py, the recording scenario of tools/design_check/fixtures.js on a simulated 120 Hz display, visible and hidden; #340). Counts, not times. Added on 23 Oct 2026 at main 98038e8 (the meter at about 60 a second, the owner's decision of 23 Oct 2026, #216), from 10 headless runs on the development laptop (5 on 23 Oct and 5 on 24 Oct 2026) and the CI runner's run, every one giving the same figures, so the median is each figure. Visible: 629 recording_status calls a minute (the clock and level: a 100 ms timer, about 600, and one with each 2 s poll, 30), 30 status calls (the 2 s poll), and the meeting list and reminders 5 times each (every 6th poll); 30 timeouts (the poll chain); one 100 ms interval (the clock and level), so fastest_interval_ms is a floor of 100 here; one animation frame pending (the meter's loop); the meter drew 60 times a second, every 2nd display frame (METER_HZ in workspace/ui/app.js). Hidden: nothing polls and the meter draws nothing; the meter's one frame stays pending, as a minimised window runs no frames. The check also fails a page that throws, stops asking for recording_status, draws the meter more than 10% from METER_HZ while visible, or does not ask and draw again within 1 s of being shown.",
+    "ratchets": {
+      "visible": {"bridge_calls_per_minute": 669, "calls_per_minute.recording_status": 629,
+                  "calls_per_minute.status": 30, "timeouts_per_minute": 30,
+                  "pending_animation_frames": 1, "live_intervals": 1,
+                  "fastest_interval_ms": 100, "meter_draws_per_second": 60},
+      "hidden": {"bridge_calls_per_minute": 0, "calls_per_minute.recording_status": 0,
+                 "calls_per_minute.status": 0, "timeouts_per_minute": 0,
+                 "pending_animation_frames": 1, "live_intervals": 0,
+                 "fastest_interval_ms": 30000, "meter_draws_per_second": 0}
+    }
   }
 }
