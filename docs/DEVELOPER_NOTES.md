@@ -211,6 +211,16 @@ real time, and remove it when the cause is fixed.
 - **`tools/accessibility_check.py`** can report `no_focus_ring` when its window loses focus.
   Rerun before treating it as real.
 - **Clipboard tests** skip as "clipboard busy" while another app holds the clipboard.
+- **A busy clipboard in `tools/workspace_ui_check.py` (#342).** The app waits about a second
+  for a clipboard another program holds, then reports "The clipboard is in use by another
+  program. Try again." On 23 October 2026 that failed the check's handoff step on every PR
+  (and the locked screen's "Copy details for IT" step on #318), most likely because
+  concurrent test runs on the same desktop held the clipboard. The check now clicks a copy
+  again only on that message, up to 10 clicks over about 30 s, and reports the retries
+  (`copy_retries` and `open_retries` in the handoff step). A copy that stays busy still fails
+  the step. A new copy step in the check goes through `COPY_RETRY_JS`
+  (`tests/test_ui_check_clipboard.py`). Many retries in a report mean something kept the
+  clipboard busy: find it rather than raising `COPY_TRIES` (AGENTS.md E2).
 - **Real-window checks** (`tools/workspace_ui_check.py`, `tools/accessibility_check.py`) open
   windows on the user's screen and answer their own dialogs. Tell the user before running one.
   With `--app` they check a package instead of the checkout. Run them with that package's

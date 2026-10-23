@@ -105,6 +105,27 @@ BLUR_JS = """
         el.removeEventListener('blur', seen);
         if (held && !sent) el.dispatchEvent(new FocusEvent('blur'));
         return focused; };"""
+# A copy fails when another program holds the Windows clipboard for longer
+# than the app waits for it (about a second, workspace/clipboard.py), and the
+# app then says so in the copy's status. Concurrent test runs on the same
+# desktop did that to every check on 23 October 2026 (#342). So a copy step
+# whose status is that message waits and clicks again, up to COPY_TRIES clicks
+# over about 30 s, and reports how many retries it needed. Any other status
+# ends the retries at once, and a copy that stays busy keeps the busy status,
+# so the step fails exactly as it did before. `attempt` clicks once and
+# resolves to the status the click left.
+CLIPBOARD_BUSY = "The clipboard is in use by another program. Try again."
+COPY_TRIES = 10
+COPY_GAP_MS = 2000
+COPY_RETRY_JS = f"""
+    const copyRetrying = async (attempt) => {{
+        let retries = 0, status = await attempt();
+        while (String(status).includes('{CLIPBOARD_BUSY}') && retries < {COPY_TRIES - 1}) {{
+            retries++;
+            await wait({COPY_GAP_MS});
+            status = await attempt();
+        }}
+        return {{status, retries}}; }};"""
 
 
 def page_dialogs():
@@ -431,6 +452,18 @@ def native_checks(window, ws, mid):
     return out
 
 
+def handoff_passed(h, opened):
+    """Whether the handoff step's evidence passes. A copy whose clipboard
+    stayed busy through every retry (#342) leaves the busy message as its
+    status, so it fails here as it did before."""
+    return bool(h.get("has_markers") and h.get("named_before") and not h.get("named_after")
+                and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")
+                and h.get("copy_blocked_until_applied") and h.get("anonymised")
+                and h.get("open_label") == "Copy and open ChatGPT"
+                and h.get("open_hidden") is False
+                and "opened ChatGPT in your browser" in h.get("open_status", "")
+                and opened == ["https://chatgpt.com/"])
+
 def native_problems(nv):
     """What the native confirmation scripts found wrong, one entry per rule
     (an empty list: nothing). A script that could not press its window
@@ -646,7 +679,7 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
                         Number(document.querySelector('#transcript .text').dataset.id),
                             'x')).error};""",
                                        timeout=90)
-        report["handoff"] = evaluate(window, WAIT + """
+        report["handoff"] = evaluate(window, WAIT + COPY_RETRY_JS + """
             const primary = document.getElementById('m-primary');
             if (!primary.textContent.includes('Hand off')) return {no_handoff_button: true};
             primary.click();
@@ -666,13 +699,21 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
             const copy_blocked_until_applied = document.getElementById('ho-copy').disabled;
             document.getElementById('ho-apply').click(); await wait(2000);
             const anonymised = pre.textContent;
-            document.getElementById('ho-copy').click(); await wait(1500);
-            const status = document.getElementById('ho-status').textContent
-                || document.getElementById('status').textContent;
+            // Each click starts from an empty status, so a slow answer is not
+            // read as the last click's (#342).
+            const copied = await copyRetrying(async () => {
+                document.getElementById('ho-status').textContent = '';
+                document.getElementById('ho-copy').click(); await wait(1500);
+                return document.getElementById('ho-status').textContent
+                    || document.getElementById('status').textContent; });
+            const status = copied.status;
             const open_label = document.getElementById('ho-open').textContent.trim();
             const open_hidden = document.getElementById('ho-open').hidden;
-            document.getElementById('ho-open').click(); await wait(1500);
-            const open_status = document.getElementById('ho-status').textContent;
+            const opened = await copyRetrying(async () => {
+                document.getElementById('ho-status').textContent = '';
+                document.getElementById('ho-open').click(); await wait(1500);
+                return document.getElementById('ho-status').textContent; });
+            const open_status = opened.status;
             document.getElementById('ho-close').click();
             return {has_markers: before.includes('\\nBEGIN TRANSCRIPT '),
                     named_before: before.includes('Aroha'), named_after: after.includes('Aroha'),
@@ -681,8 +722,9 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
                     edited_prompt: edited.startsWith('Our own minutes prompt.'),
                     copy_blocked_until_applied,
                     anonymised: anonymised.includes('Speaker 1:') && !anonymised.includes('Aroha'),
-                    template_label: tpl, copy_status: status,
-                    open_label, open_hidden, open_status};""")
+                    template_label: tpl, copy_status: status, copy_retries: copied.retries,
+                    open_label, open_hidden, open_status, open_retries: opened.retries};""",
+                                     timeout=150)
         t0 = time.perf_counter()
         report["long_transcript"] = evaluate(window, WAIT + f"""
             const t = performance.now();
@@ -1229,13 +1271,7 @@ def main():
         bad.append("speaker naming")
     if report.get("reassign") != "Speaker 3":
         bad.append("passage reassignment")
-    h = report.get("handoff") or {}
-    if not (h.get("has_markers") and h.get("named_before") and not h.get("named_after")
-            and h.get("redacted") and h.get("left_out") and h.get("edited_prompt")
-            and h.get("copy_blocked_until_applied") and h.get("anonymised")
-            and h.get("open_label") == "Copy and open ChatGPT" and h.get("open_hidden") is False
-            and "opened ChatGPT in your browser" in h.get("open_status", "")
-            and report.get("handoff_opened") == ["https://chatgpt.com/"]):
+    if not handoff_passed(report.get("handoff") or {}, report.get("handoff_opened")):
         bad.append("handoff")
     nv = report.get("native") or {}
     bad.extend(native_problems(nv))
