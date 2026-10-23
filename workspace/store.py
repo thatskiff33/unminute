@@ -808,6 +808,47 @@ def _install_new(new, path):
     os.replace(new, path)
 
 
+def _truncate_log(con):
+    """One wal_checkpoint(TRUNCATE) without SQLite's own busy wait: whether
+    it completed (a rollback-journal database has no log: completed)."""
+    try:
+        con.execute("PRAGMA busy_timeout = 0")
+        return con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    except sqlite3.Error:
+        return False
+
+
+def erase_root_key(db_path, retries=(0.05, 0.1, 0.2, 0.4)):
+    """Offboarding (#111 B8, the owner's decision B8-8): delete the
+    workspace's root key row (crypto_meta) with secure_delete, then empty the
+    write-ahead log, as destroy_recording_key and erase_checkpoint do, before
+    the workspace is renamed and deleted. Every sealed value left (watched
+    folders, the handoff templates, the intake salt; the workspace holds no
+    meeting by then) can no longer be opened, even if the removal stops
+    half-way. Needs no key and never opens the one stored: it works on a
+    locked workspace. Never creates a database (sqlite3.Error if there is
+    none). Returns whether the log was emptied; the row is deleted either
+    way, and a rerun tries the log again."""
+    uri = Path(db_path).absolute().as_uri() + "?mode=rw"   # as_uri: # and % escaped
+    con = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=5)
+    try:
+        con.execute("PRAGMA secure_delete=ON")
+        has_key = con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND "
+                              "name = 'crypto_meta'").fetchone()
+        if has_key:                             # schema 1 had no root key
+            con.execute("BEGIN IMMEDIATE")
+            con.execute("DELETE FROM crypto_meta")
+            con.execute("COMMIT")
+        for pause in (0, *retries):
+            if pause:
+                time.sleep(pause)
+            if _truncate_log(con):
+                return True
+        return False
+    finally:
+        con.close()
+
+
 def compaction_marker(db_path):
     """A file beside the database (configuration, no content): a compaction
     is owed (#198), so the next start whose database check passes compacts

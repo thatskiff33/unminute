@@ -200,6 +200,37 @@ Uninstalling removes the program, the shortcut and the uninstall entry. It does 
 
 - **The workspace** (`%LOCALAPPDATA%\Unminute\workspace`): meetings, holds, settings and receipts. Meeting content is only ever removed through the app's confirmed cleanup steps, which honour retention holds. The uninstaller says when a workspace remains.
 - **Downloaded models** (`%LOCALAPPDATA%\Unminute\models`).
+- **The Hugging Face token** (`Unminute/HuggingFaceToken` in Windows Credential Manager).
+
+To remove those for a person who leaves, offboard first (next section).
+
+## Offboarding (#111 B8a)
+
+**Not in v0.5.0-preview.3.** Two options of the installed runtime, run **as the user** from the current version's `app` folder, as the uninstaller runs `--restore-lid`: `runtime\python.exe -I -B -X disable-remote-debug -m workspace --offboard-report`, then `--offboard`. The owner's decisions of 21 Oct 2026 (B8-1 to B8-8, with B8-3 replaced on 22 Oct 2026) set what they do. They do not look at anything version 0.4.3 or earlier left (its folders or its token). An uninstall switch that runs `--offboard` and then removes the program, its uninstall entry, its Start menu shortcut and its pins (`uninstall.ps1 -Offboard`) is B8b. For the IT steps around them, see [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md), "Offboarding".
+
+`--offboard-report` changes nothing and prints one line of JSON, counts and yes or no only (no path, name or content):
+
+- `result`: `ok` (nothing to remove, or all of it removable), `others_left` (as `ok`, but other entries in `Unminute` stay, below), `blocked`, `running`, `refused`, `system_account` or `account_unknown`. The last three print nothing else: nothing was read.
+- `workspace`: `none`, `empty`, `locked_empty` (the key was locked at the app's last start; removed without the key) or `blocked`.
+- `blockers`: the update gate's kinds with their counts (`holds`, `meetings`, `cleanup`, `recordings`, `media`, `content`), or `unreadable` when the database cannot be read (never treated as empty).
+- `leftover`: folders a removal that stopped part-way left (`workspace.offboarding-<32 hex>`), finished first by the next `--offboard`.
+- `others`: how many other entries are in `%LOCALAPPDATA%\Unminute` (anything but `workspace`, `models` and the leftovers above), for example a workspace renamed by the steps in [WORKSPACE_GUIDE.md](WORKSPACE_GUIDE.md) ("If Unminute finds damage"). Offboarding never opens, names or removes them: one may still hold meetings (C1). `null` when `Unminute` cannot be listed.
+- `models_mb` (rounded up; 0 for a folder IT redirected), `models_link`, `token`, `lid_record` (`power_restore.json` is waiting), `running`.
+
+Exit codes: 0, 2 (Local System, or Windows cannot say who runs it), 3 (the app is open: its single-instance mutex in this session, the run marker's process in any session, or B5's workspace lock), 4 (`others_left`: `others` is above 0 or `null`), 5 (blocked) and 6 (a junction or link, or a file, at `Unminute` or `Unminute\workspace`, or a location the app itself refuses: synced, on a network drive, or a broken link).
+
+`--offboard` prints the same fields and exits with the same codes, removing nothing for 2, 3, 5 and 6. Other entries in `Unminute` do not stop it: it removes what is its own, leaves them, and ends with `others_left` and exit 4 instead of `offboarded` and 0. When nothing blocks, in order:
+
+1. Finishes any `workspace.offboarding-*` folder a stopped run left.
+2. Takes B5's workspace lock (`instance.lock`) and holds this session's single-instance mutex, so the app cannot open the workspace meanwhile: since B5a the app takes this lock at its start, in any Windows session of the user, before it opens the database. A version from before B5a does not take it; the last look in step 5 covers that.
+3. Puts the lid setting back with the app's own rules (`power.restore_only`). Exit 1 (`step` `lid`) when it cannot now; a damaged record is left as it is, as the uninstaller does.
+4. Writes an `offboarded` audit record (event ID 1700; `locked`, `models` and `token`, each true or false) and its Event Log copy. Exit 1 (`step` `audit`) if either fails, including a copy still being reported when the audit log closes (it then records a `mirror_gap`): the Event Log copy is the lasting record once the audit file is gone (B8-4).
+5. Looks again for an open app or anything new to block it, then erases the root key: the `crypto_meta` row is deleted with SQLite's secure delete and the write-ahead log is checkpointed and truncated (`store.erase_root_key`, needing no key). From here a stopped run leaves nothing that can be opened, and the app would open the workspace locked. Exit 1 (`step` `key`) if the log stays busy. Then it releases the workspace lock, because Windows will not rename a folder with a file open in it. An app started in that moment finds no root key, opens the workspace locked and holds its files, so the rename below fails (`step` `rename`) and a rerun with the app closed finishes.
+6. Renames the workspace to `workspace.offboarding-<32 hex>`, then deletes it with a walk that removes junctions and links as links and never follows them. A file in use is waited for, for up to 30 seconds (as the installer does, #239), then exit 1 (`step` `rename` or `workspace`); running it again finishes.
+7. Removes the models folder (a junction or link there: the link only, its target kept), then the token, then `%LOCALAPPDATA%\Unminute` if it is empty.
+8. Prints the result (`offboarded`, or `others_left` with exit 4 when `others` is above 0 or `null`), what was removed (`removed`: `workspace`, `models`, `token`) and `residuals`: fixed sentences on what it cannot reach (copies outside the app, plain text an SSD may keep from before encryption at rest, the Event Log copy).
+
+With Intune, run it as a script or remediation with the logged-on user's credentials, as for `--health`; whether such scripts run with the user's profile loaded on the managed baseline is to confirm (#189). Machine mode (B6) runs it from the machine install's current version the same way, never as Local System.
 
 ## Managed deployment (Intune)
 
@@ -242,7 +273,7 @@ The app keeps a content-free, hash-chained audit log in `workspace\audit\` (what
 - **Source** `Unminute`, not registered (installs are per user), so Windows shows the text without a description and a SIEM reads it from `EventData`. B6 (per-machine installer) can register the source with a message file.
 - **The entry's text**: `Unminute audit v1 chain=<32 hex> seq=<n> kind=<kind> sha256=<64 hex>`. No meeting, hold, job, folder or recording id, and no content.
 - **User**: the signed-in user's SID, which the app passes with each entry and Event Viewer shows as the account name. Whoever writes an entry supplies its SID, so it attributes the app's own entries but does not prove who wrote one.
-- **Event IDs and levels**: 1000 `chain_start` (a warning when the chain restarted because the folder was missing or unreadable), 1001 `app_start`, 1002 `locked`, 1003 `damage_continued`, 1100 `meeting_imported`, 1110 to 1112 `recording_started`, `recording_ended`, `recording_deleted`, 1200 `transcript_reviewed`, 1201 `final_saved`, 1210 `meeting_discarded`, 1300 to 1303 `cleanup_started`, `cleanup_done`, `cleanup_confirmed`, `cleanup_retry`, 1400 to 1402 `hold_placed`, `hold_released`, `hold_kept`, 1500 to 1502 `handoff_copied`, `handoff_saved`, `assistant_opened`, 1600 to 1602 `folder_added`, `delete_authority`, `folder_removed`, all information; and warnings 1900 `tail_damaged`, 1901 `write_failed`, 1902 `segment_dropped`, 1903 `mirror_gap`, 1904 `suppressed`.
+- **Event IDs and levels**: 1000 `chain_start` (a warning when the chain restarted because the folder was missing or unreadable), 1001 `app_start`, 1002 `locked`, 1003 `damage_continued`, 1100 `meeting_imported`, 1110 to 1112 `recording_started`, `recording_ended`, `recording_deleted`, 1200 `transcript_reviewed`, 1201 `final_saved`, 1210 `meeting_discarded`, 1300 to 1303 `cleanup_started`, `cleanup_done`, `cleanup_confirmed`, `cleanup_retry`, 1400 to 1402 `hold_placed`, `hold_released`, `hold_kept`, 1500 to 1502 `handoff_copied`, `handoff_saved`, `assistant_opened`, 1600 to 1602 `folder_added`, `delete_authority`, `folder_removed`, 1700 `offboarded` (B8a, the last record before offboarding removes the workspace), all information; and warnings 1900 `tail_damaged`, 1901 `write_failed`, 1902 `segment_dropped`, 1903 `mirror_gap`, 1904 `suppressed`.
 - **Always on**, with no policy key (the owner's decision, 21 Oct 2026).
 - **For the stronger record, forward the Application log off the device** (Windows Event Forwarding or a SIEM; the D1 IT guide). On the device, a standard user can typically write to the Application log, and its default retention overwrites the oldest events when it is full, so the user whose actions are recorded could push the entries out by filling it: without forwarding, the copy detects casual edits of the file only. Standard users' rights to the Application log and its size and retention on the managed baseline are to confirm (#189).
 
