@@ -35,7 +35,8 @@
 # page only (the browser's media emulation and WebView2's preferred colour
 # scheme), whatever mode Windows is in, and Windows' setting is never
 # changed (#328). A mode the page does not show, in its media query and in
-# its styles, stops the run.
+# its styles, stops the run. In the PC's own mode the page is read once,
+# with no switch to wait for, and its media query and styles must agree.
 #
 # Against an installed or extracted package, as release evidence
 # (tools/evidence.py), with that package's own Python:

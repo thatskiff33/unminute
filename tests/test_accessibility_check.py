@@ -326,10 +326,11 @@ class _Page:
     other mode, WebView2's preferred colour scheme for the profile may not."""
 
     def __init__(self, mode, profile_switches=False, emulation_switches=True,
-                 styles_follow=True, emulation_error=None):
+                 styles_follow=True, emulation_error=None, task=None):
         self.media = self.drawn = mode
         self.profile_switches, self.emulation_switches = profile_switches, emulation_switches
         self.styles_follow, self.emulation_error = styles_follow, emulation_error
+        self.task = task if task is not None else _Task()
         self.profile_set, self.devtools = [], []
         page = self
 
@@ -350,7 +351,7 @@ class _Page:
                 value = json.loads(params)["features"][0]["value"]
                 if page.emulation_switches and value:
                     page.show(value)
-                return _Task()
+                return page.task
 
         class Form:
             def Invoke(self, action):          # the UI thread: runs it there and then
@@ -426,7 +427,26 @@ class ColourSwitchTests(unittest.TestCase):
 
     def test_a_page_that_does_not_switch_stops_the_run(self):
         page = _Page("dark", emulation_switches=False)
-        with self.assertRaisesRegex(RuntimeError, "asked for: light; the page shows: 'dark'"):
+        with self.assertRaisesRegex(RuntimeError, "asked for: light; the page shows: 'dark'") as cm:
+            self.show(page, "light", wait=0.3)
+        # The error says what each switch did, so a failed run can be diagnosed.
+        self.assertIn("(switched by: {'emulation': 'set', 'profile': 'set'})", str(cm.exception))
+
+    def test_a_devtools_call_that_fails_or_never_answers_is_reported(self):
+        # _outcome reads the .NET Task off the UI thread: faulted, cancelled
+        # and unfinished calls each say so rather than claim the switch was set.
+        outcome = accessibility_check._outcome
+        faulted = type("Faulted", (_Task,), {"IsFaulted": True,
+                                             "Exception": RuntimeError("protocol error")})()
+        cancelled = type("Cancelled", (_Task,), {"IsCanceled": True})()
+        pending = type("Pending", (_Task,), {"IsCompleted": False})()
+        self.assertEqual("set", outcome(_Task(), 0))
+        self.assertEqual("failed: protocol error", outcome(faulted, 0))
+        self.assertTrue(outcome(cancelled, 0).startswith("failed: "))
+        self.assertEqual("no answer", outcome(pending, 0.1))
+        # On a page that does not switch, the unanswered call is in the error.
+        page = _Page("dark", emulation_switches=False, task=pending)
+        with self.assertRaisesRegex(RuntimeError, "'emulation': 'no answer'"):
             self.show(page, "light", wait=0.3)
 
     def test_styles_that_do_not_follow_the_media_query_stop_the_run(self):
@@ -439,6 +459,16 @@ class ColourSwitchTests(unittest.TestCase):
     def test_the_pc_s_own_mode_changes_nothing(self):
         page = _Page("dark")
         self.assertEqual("dark", self.show(page, None))
+        self.assertEqual(([], []), (page.devtools, page.profile_set))
+
+    def test_the_pc_s_own_mode_stops_when_styles_disagree(self):
+        # Without --colour-mode the page is read once, with no switch to wait
+        # for, and its media query and styles must still agree.
+        page = _Page("dark")
+        page.drawn = "light"
+        with self.assertRaisesRegex(RuntimeError, "asked for: system; the page shows: 'dark' "
+                                                  "but its styles are drawn in 'light'"):
+            self.show(page, None)
         self.assertEqual(([], []), (page.devtools, page.profile_set))
 
     def test_windows_own_setting_is_never_written(self):
