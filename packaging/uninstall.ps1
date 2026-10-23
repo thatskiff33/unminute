@@ -300,9 +300,14 @@ function Exit-InstallLock {
 # installed, checked or removed (the owner's decision B6-10).
 
 # %ProgramFiles%\Unminute, from Windows' known folder in a 64-bit process, never from
-# an environment variable; its machine-wide uninstall entry, in the 64-bit
-# registry view.
+# an environment variable; the all-users Start menu folder; the machine-wide
+# uninstall entry, in the 64-bit registry view. Each place outside the install
+# folder that machine mode writes is set once, here, so the tests can point every
+# one at scratch (tests/powershell/Isolation.ps1, scratch_text in
+# tests/test_hardening.py).
 $MachineFolderName = "Unminute"
+$ProgramFilesFolder = [Environment]::GetFolderPath("ProgramFiles")
+$CommonProgramsFolder = [Environment]::GetFolderPath("CommonPrograms")
 $MachineRegKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 # The Event Log source, registered by the install with .NET's EventLogMessages.dll (a
 # Windows file: no new binary) and removed by the uninstall (the owner's decision of
@@ -322,14 +327,15 @@ $UsersSid = "S-1-5-32-545"
 $AppPackagesSid = "S-1-15-2-1"
 $PermissionMessage = "The install folder's permissions have changed, so nothing was changed. Ask IT to check this computer."
 
-# What the run and the computer are. The Pester tests stand these in.
+# What the run and the computer are. The Pester tests stand in elevation, bitness
+# and the folder's permissions as read; the places come from the variables above.
 function Test-Elevated {
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 function Test-64BitProcess { return [Environment]::Is64BitProcess }
-function Get-ProgramFilesFolder { return [Environment]::GetFolderPath("ProgramFiles") }
-function Get-CommonProgramsFolder { return [Environment]::GetFolderPath("CommonPrograms") }
+function Get-ProgramFilesFolder { return $ProgramFilesFolder }
+function Get-CommonProgramsFolder { return $CommonProgramsFolder }
 function Get-MachineRegKey { return $MachineRegKey }
 function Get-EventSourceKey { return $EventSourceKey }
 function Get-FolderSecurity([string]$Path) { return [IO.DirectoryInfo]::new($Path).GetAccessControl() }

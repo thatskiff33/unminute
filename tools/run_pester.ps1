@@ -10,8 +10,8 @@
   and imported from that folder by path, so no other Pester (Windows ships 3.4.0)
   is used. Then every *.Tests.ps1 file under tests/powershell runs, with LOCALAPPDATA
   and APPDATA in a new scratch folder under -ModuleRoot; the run fails if this
-  computer's real install (its folder, Start menu shortcut or uninstall entry)
-  changed meanwhile. Never run the tests any other way (docs/DEVELOPER_NOTES.md).
+  computer's real install, per user or machine (its folder, Start menu shortcut,
+  uninstall entry or Event Log source), changed meanwhile. Never run the tests any other way (docs/DEVELOPER_NOTES.md).
 
   Run it under Windows PowerShell 5.1, which runs the installer:
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/run_pester.ps1 -ModuleRoot <folder>
@@ -71,21 +71,38 @@ if ($loaded.Version -ne [version]$PesterVersion -or
 # run uninstalled it). They load the scripts only through tests/powershell/Isolation.ps1;
 # on top of that, they run here with LOCALAPPDATA and APPDATA in a new scratch folder,
 # and the run fails if the real install's folder, Start menu shortcut or uninstall entry
-# changed while they ran. The real places come from the shell, not those variables.
-# Only times, attributes and values are compared, in memory; nothing is printed.
+# changed while they ran, per user or, since B6b, for the whole computer (Program
+# Files\Unminute, the all-users shortcut, the HKLM uninstall entry and the Event Log
+# source, read in the 64-bit registry view). The real places come from the shell, not
+# those variables. Only times, attributes and values are compared, in memory; nothing
+# is printed. Reading HKLM needs no administrator rights.
+function Get-RegistryState([Microsoft.Win32.RegistryHive]$Hive, [string]$SubKey) {
+    try {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($Hive, [Microsoft.Win32.RegistryView]::Registry64)
+        try {
+            $key = $base.OpenSubKey($SubKey)
+            if ($null -eq $key) { return "absent" }
+            try {
+                return (@($key.GetValueNames() | Sort-Object | ForEach-Object { "$_=$($key.GetValue($_))" }) +
+                    @($key.GetSubKeyNames() | Sort-Object)) -join "|"
+            } finally { $key.Dispose() }
+        } finally { $base.Dispose() }
+    } catch { return "unreadable" }
+}
+
 function Get-RealInstallState {
     $local = [Environment]::GetFolderPath("LocalApplicationData")
     $paths = @((Join-Path $local "Programs\Unminute"),
-               (Join-Path ([Environment]::GetFolderPath("Programs")) "Unminute.lnk"))
+               (Join-Path ([Environment]::GetFolderPath("Programs")) "Unminute.lnk"),
+               (Join-Path ([Environment]::GetFolderPath("ProgramFiles")) "Unminute"),
+               (Join-Path ([Environment]::GetFolderPath("CommonPrograms")) "Unminute.lnk"))
     $state = @(foreach ($path in $paths) {
         $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         if ($item) { "{0} {1}" -f $item.LastWriteTimeUtc.Ticks, $item.Attributes } else { "absent" }
     })
-    $entry = Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute" -ErrorAction SilentlyContinue
-    if ($entry) {
-        $state += (@($entry.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } |
-            ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "|")
-    } else { $state += "absent" }
+    $state += Get-RegistryState CurrentUser "Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+    $state += Get-RegistryState LocalMachine "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+    $state += Get-RegistryState LocalMachine "SYSTEM\CurrentControlSet\Services\EventLog\Application\Unminute"
     return ($state -join "`n")
 }
 
@@ -109,7 +126,7 @@ $changed = (Get-RealInstallState) -cne $before
 try { Remove-Item -LiteralPath $module -Recurse -Force } catch { }
 try { Remove-Item -LiteralPath $scratch -Recurse -Force } catch { }
 if ($changed) {
-    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut or uninstall entry). Check it.")
+    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut, uninstall entry or Event Log source). Check it.")
     exit 1
 }
 if ($result.TotalCount -eq 0 -or $result.FailedCount -gt 0 -or $result.Result -ne "Passed") { exit 1 }

@@ -1029,9 +1029,14 @@ function Register-Uninstall([string]$Target, [string]$Version) {
 # installed, checked or removed (the owner's decision B6-10).
 
 # %ProgramFiles%\Unminute, from Windows' known folder in a 64-bit process, never from
-# an environment variable; its machine-wide uninstall entry, in the 64-bit
-# registry view.
+# an environment variable; the all-users Start menu folder; the machine-wide
+# uninstall entry, in the 64-bit registry view. Each place outside the install
+# folder that machine mode writes is set once, here, so the tests can point every
+# one at scratch (tests/powershell/Isolation.ps1, scratch_text in
+# tests/test_hardening.py).
 $MachineFolderName = "Unminute"
+$ProgramFilesFolder = [Environment]::GetFolderPath("ProgramFiles")
+$CommonProgramsFolder = [Environment]::GetFolderPath("CommonPrograms")
 $MachineRegKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 # The Event Log source, registered by the install with .NET's EventLogMessages.dll (a
 # Windows file: no new binary) and removed by the uninstall (the owner's decision of
@@ -1051,14 +1056,15 @@ $UsersSid = "S-1-5-32-545"
 $AppPackagesSid = "S-1-15-2-1"
 $PermissionMessage = "The install folder's permissions have changed, so nothing was changed. Ask IT to check this computer."
 
-# What the run and the computer are. The Pester tests stand these in.
+# What the run and the computer are. The Pester tests stand in elevation, bitness
+# and the folder's permissions as read; the places come from the variables above.
 function Test-Elevated {
     $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 function Test-64BitProcess { return [Environment]::Is64BitProcess }
-function Get-ProgramFilesFolder { return [Environment]::GetFolderPath("ProgramFiles") }
-function Get-CommonProgramsFolder { return [Environment]::GetFolderPath("CommonPrograms") }
+function Get-ProgramFilesFolder { return $ProgramFilesFolder }
+function Get-CommonProgramsFolder { return $CommonProgramsFolder }
 function Get-MachineRegKey { return $MachineRegKey }
 function Get-EventSourceKey { return $EventSourceKey }
 function Get-FolderSecurity([string]$Path) { return [IO.DirectoryInfo]::new($Path).GetAccessControl() }
@@ -1187,17 +1193,16 @@ function Get-EventMessageFile {
 
 # -- machine mode: the install (#111 B6b) ---------------------------------------------
 
-# The machine uninstall entry as a registry path, for the per-user refusal.
-$MachineRegSubKey = "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
-
-# Unminute installed for everyone on this computer: the uninstall entry in the
-# 64-bit view of HKLM, read through RegistryView.Registry64 so a 32-bit Windows
-# PowerShell sees it too (#111 B6-1). The tests read a stand-in key in HKCU.
-function Test-MachineInstalled([Microsoft.Win32.RegistryHive]$Hive = [Microsoft.Win32.RegistryHive]::LocalMachine,
-                               [string]$SubKey = $MachineRegSubKey) {
-    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($Hive, [Microsoft.Win32.RegistryView]::Registry64)
+# Unminute installed for everyone on this computer: the machine uninstall entry
+# ($MachineRegKey) in the 64-bit view of HKLM, read through RegistryView.Registry64
+# so a 32-bit Windows PowerShell sees it too (#111 B6-1). Read only. The tests point
+# $MachineRegKey at a throwaway key in HKCU.
+function Test-MachineInstalled {
+    $hive, $subKey = $MachineRegKey -split ':\\', 2
+    $view = [Microsoft.Win32.RegistryView]::Registry64
+    $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(@{ HKLM = "LocalMachine"; HKCU = "CurrentUser" }[$hive], $view)
     try {
-        $key = $base.OpenSubKey($SubKey)
+        $key = $base.OpenSubKey($subKey)
         if ($null -eq $key) { return $false }
         $key.Dispose()
         return $true
@@ -1246,10 +1251,11 @@ function Assert-MachinePermission([string]$Root) {
 
 # A file the installer has just written over in the install folder (current.json,
 # uninstall.ps1) keeps only what it inherits from the folder: no protected list and
-# no entry of its own. Replacing or copying over a file can carry the old file's
-# permissions onto the new one as its own in an elevated run (seen on CI's elevated
-# runner, 23 October 2026), which the next run's check would refuse with exit 4. Only
-# files this run wrote are reset; anything else is checked, never repaired.
+# no entry of its own. On CI's elevated runner (23 October 2026) such a file came
+# out with permissions of its own after File.Replace or Copy-Item -Force, and the
+# next run's check refused it with exit 4; the cause is not confirmed. Only files
+# this run wrote are reset; anything else is checked, never repaired
+# (docs/PACKAGING.md, "The folder's permissions").
 function Set-InheritedOnly([string]$Path) {
     $file = [IO.FileInfo]::new($Path)
     $security = $file.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)

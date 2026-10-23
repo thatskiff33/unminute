@@ -201,8 +201,10 @@ changes; or GitHub owner settings.
   `tools/run_pester.ps1` under Windows PowerShell 5.1 (Pester pinned by version and SHA-256;
   the job is report only until it has passed on 5 consecutive PRs). Installer tests run only
   scratch copies with a scratch install folder, `LOCALAPPDATA`, `APPDATA`, Start menu folder
-  and HKCU key (`run_installer` in `tests/test_hardening.py`, `tests/powershell/Isolation.ps1`);
-  never run either script, or its tests, against the real install, nor dot-source an older
+  and HKCU key, and for machine mode a scratch Program Files and all-users Start menu folder
+  and throwaway HKCU keys for the HKLM uninstall entry and Event Log source (`run_installer`
+  in `tests/test_hardening.py`, `tests/powershell/Isolation.ps1`); never run either script,
+  or its tests, against the real install, per user or machine, nor dot-source an older
   revision.
 - `tests/test_consistency.py` ties together facts with several copies (version, install
   identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the

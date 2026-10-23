@@ -316,9 +316,16 @@ class InstallIdentityTests(unittest.TestCase):
                                  one(r"^\$StagingPattern = '([^']+)'$", text, "$StagingPattern"))
                 self.assertIn('"$AppName.lnk"', text)
                 self.assertIn('"EventLogMessages.dll"', text)
-        self.assertEqual(identity["modes"]["machine"]["uninstall_key"].split("\\", 1)[1],
-                         one(r'^\$MachineRegSubKey = "([^"]+)"$', self.install,
-                             "$MachineRegSubKey"))
+                # Program Files and the all-users Start menu from Windows' known
+                # folders, each set once (the tests redirect them).
+                self.assertEqual(one(r'^\$ProgramFilesFolder = (.+)$', text, "$ProgramFilesFolder"),
+                                 '[Environment]::GetFolderPath("ProgramFiles")')
+                self.assertEqual(one(r'^\$CommonProgramsFolder = (.+)$', text,
+                                     "$CommonProgramsFolder"),
+                                 '[Environment]::GetFolderPath("CommonPrograms")')
+        # The per-user refusal reads that same machine entry, in the 64-bit view.
+        self.assertIn("$hive, $subKey = $MachineRegKey -split ':\\\\', 2", self.install)
+        self.assertIn("[Microsoft.Win32.RegistryView]::Registry64", self.install)
         from workspace import update
         self.assertEqual(identity["modes"]["machine"]["install_folder"],
                          "%ProgramFiles%\\" + update.MACHINE_FOLDER)
