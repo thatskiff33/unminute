@@ -459,7 +459,15 @@ INVARIANT_GUARDS = {
                                       "test_location_inside_onedrive_is_refused",
                                       "test_a_data_folder_junction_into_onedrive_is_refused",
                                       "test_a_missing_onedrive_target_spelt_another_way_"
-                                      "is_refused"]},
+                                      "is_refused"],
+           # The workspace lock across Windows sessions (#111 B5a, B5-10).
+           "tests/test_launch.py": ["test_a_lock_held_by_another_process_is_refused_and_"
+                                    "released_with_it",
+                                    "test_a_second_session_is_refused_before_the_store_opens",
+                                    "test_a_migration_never_runs_while_another_session_"
+                                    "holds_the_lock",
+                                    "test_the_app_start_refuses_a_workspace_open_in_another_"
+                                    "session"]},
     "D4": {"tests/test_workers.py": ["test_one_model_at_a_time_in_the_same_worker",
                                     "test_idle_worker_unloads"],
            "tests/test_speakers.py": ["test_failure_keeps_the_transcript_usable"],

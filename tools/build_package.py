@@ -47,6 +47,7 @@
 # rewrites the list).
 
 import argparse
+import ast
 import csv
 import datetime
 import hashlib
@@ -769,6 +770,22 @@ def source_date_epoch(commit="HEAD"):
                  "checkout needs SOURCE_DATE_EPOCH).")
 
 
+def schema_version(store_py):
+    """SCHEMA_VERSION in the packaged workspace/store.py, read with ast (the
+    app is never imported), for version.json's "schema" (#111 B5). The build
+    stops if it is not one positive whole number."""
+    try:
+        tree = ast.parse(Path(store_py).read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+        sys.exit("Could not read SCHEMA_VERSION from workspace/store.py.")
+    found = [node.value for node in tree.body if isinstance(node, ast.Assign)
+             and any(isinstance(t, ast.Name) and t.id == "SCHEMA_VERSION" for t in node.targets)]
+    if (len(found) != 1 or not isinstance(found[0], ast.Constant)
+            or type(found[0].value) is not int or found[0].value < 1):
+        sys.exit("workspace/store.py must set SCHEMA_VERSION to one positive whole number.")
+    return found[0].value
+
+
 def iso(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1171,9 +1188,14 @@ def build(version, out, cache, release=False, update_allowlist=False):
             # A development build may hold uncommitted changes: "clean" says
             # whether the working tree had none (None when git cannot tell).
             "release": release, "clean": True if release else clean_tree(),
+            # The workspace storage format this version uses (#111 B5): the
+            # installer records it in current.json, and the launcher hands a
+            # workspace only to a version whose format it knows.
+            "schema": schema_version(folder / "app" / "workspace" / "store.py"),
             # Installers check for features before relying on them (#26): "gate"
-            # is --gate, "restore-lid" is --restore-lid (the uninstaller, #191).
-            "features": ["gate", "restore-lid"]}
+            # is --gate, "restore-lid" is --restore-lid (the uninstaller, #191),
+            # "launch-gate" is the launcher pass and --slot (#111 B5).
+            "features": ["gate", "restore-lid", "launch-gate"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         (folder / "model-manifest.json").write_text(
             json.dumps(model_manifest(folder / "app" / "workspace" / "asr_engines.py"), indent=1),

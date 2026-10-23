@@ -1877,8 +1877,9 @@ class InstallFolderScopeTests(unittest.TestCase):
         copy.write_text(text, encoding="utf-8")
         return copy
 
-    def write_package(self, version="1.0.0", folder=None):
-        """A synthetic package: a few files, version.json and the manifest."""
+    def write_package(self, version="1.0.0", folder=None, schema=None):
+        """A synthetic package: a few files, version.json (stating a storage
+        format if schema is given) and the manifest."""
         import hashlib
         folder = folder or self.package
         shutil.rmtree(folder, ignore_errors=True)
@@ -1887,8 +1888,10 @@ class InstallFolderScopeTests(unittest.TestCase):
         (folder / "runtime").mkdir()
         (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
         (folder / "uninstall.ps1").write_text("# synthetic\n")
-        (folder / "version.json").write_text(json.dumps(
-            {"name": "Unminute", "version": version, "features": ["gate", "restore-lid"]}))
+        info = {"name": "Unminute", "version": version, "features": ["gate", "restore-lid"]}
+        if schema is not None:
+            info["schema"] = schema
+        (folder / "version.json").write_text(json.dumps(info))
         manifest = {}
         for path in sorted(folder.rglob("*")):
             if path.is_file():
@@ -1898,13 +1901,15 @@ class InstallFolderScopeTests(unittest.TestCase):
         (folder / "package-manifest.json").write_text(json.dumps(manifest))
 
     @staticmethod
-    def version_folder(folder, version=None):
+    def version_folder(folder, version=None, schema=None):
         """An installed version as the installer leaves it: version.json names it."""
         (folder / "runtime").mkdir(parents=True)
         (folder / "runtime" / "python.exe").write_bytes(b"synthetic")
         (folder / "uninstall.ps1").write_text("# synthetic\n")
-        (folder / "version.json").write_text(json.dumps(
-            {"name": "Unminute", "version": version or folder.name, "features": ["gate"]}))
+        info = {"name": "Unminute", "version": version or folder.name, "features": ["gate"]}
+        if schema is not None:
+            info["schema"] = schema
+        (folder / "version.json").write_text(json.dumps(info))
 
     def write_current(self, **record):
         self.install.mkdir(parents=True, exist_ok=True)
@@ -2308,6 +2313,102 @@ foreach ($file in Get-ChildItem -LiteralPath $args[0] -Filter 'case-*.json' | So
         self.assertEqual((self.current()["version"], self.current()["previous"]),
                          ("0.8.0", "0.9.0"))
 
+    # -- current.json format 2 (#111 B5a) ------------------------------------------
+
+    def slots(self):
+        """current.json's slots without the install times."""
+        return {name: {k: v for k, v in entry.items() if k != "installed"}
+                for name, entry in self.current()["slots"].items()}
+
+    def test_an_install_records_each_versions_format_and_install_order(self):
+        from workspace import update
+        self.write_package("1.0.0", schema=2)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        record = self.current()
+        self.assertEqual((record["format"], record["version"], record["previous"]),
+                         (2, "1.0.0", None))
+        self.assertEqual(self.slots(), {"1.0.0": {"schema": 2, "seq": 1}})
+        self.assertRegex(record["slots"]["1.0.0"]["installed"],
+                         r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        state, read = update.read_slots(self.install)      # what the launcher reads
+        self.assertEqual((state, read["slots"]), ("ok", {"1.0.0": {"schema": 2, "seq": 1}}))
+
+    def test_an_update_from_format_1_numbers_the_kept_versions_oldest_first(self):
+        # A version from before B5 states no format: recorded without one.
+        self.write_package("1.0.0", schema=2)
+        self.write_current(version="0.9.0", previous="0.8.0", managed=True)
+        for name in ("0.9.0", "0.8.0"):
+            self.version_folder(self.versions / name)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.current()["version"], self.current()["previous"]),
+                         ("1.0.0", "0.9.0"))
+        self.assertEqual(self.slots(), {"0.9.0": {"seq": 1}, "1.0.0": {"schema": 2, "seq": 2}})
+        self.assertTrue(self.current()["managed"])
+
+    def format2(self, current, previous, slots, managed=False):
+        self.write_current(format=2, version=current, previous=previous, managed=managed,
+                           path=str(self.versions / current), slots=slots)
+
+    def test_an_update_gives_the_new_version_the_next_number_and_drops_removed_ones(self):
+        self.write_package("1.1.0", schema=3)
+        self.format2("1.0.0", "0.9.0", {
+            "1.0.0": {"schema": 2, "seq": 7, "installed": "2027-01-02T00:00:00Z"},
+            "0.9.0": {"schema": 2, "seq": 5, "installed": "2027-01-01T00:00:00Z"}})
+        for name in ("1.0.0", "0.9.0"):
+            self.version_folder(self.versions / name, schema=2)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.slots(), {"1.0.0": {"schema": 2, "seq": 7},
+                                        "1.1.0": {"schema": 3, "seq": 8}})
+        self.assertEqual(self.current()["slots"]["1.0.0"]["installed"], "2027-01-02T00:00:00Z")
+        self.assertEqual(sorted(p.name for p in self.versions.iterdir()), ["1.0.0", "1.1.0"])
+
+    def test_a_reinstall_keeps_the_number_and_records_a_new_install_time(self):
+        self.write_package("1.0.0", schema=2)
+        self.format2("1.0.0", "0.9.0", {
+            "1.0.0": {"schema": 2, "seq": 7, "installed": "2027-01-02T00:00:00Z"},
+            "0.9.0": {"schema": 2, "seq": 5, "installed": "2027-01-01T00:00:00Z"}})
+        for name in ("1.0.0", "0.9.0"):
+            self.version_folder(self.versions / name, schema=2)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.current()["previous"], "0.9.0")
+        self.assertEqual(self.slots(), {"0.9.0": {"schema": 2, "seq": 5},
+                                        "1.0.0": {"schema": 2, "seq": 7}})
+        installed = {k: v["installed"] for k, v in self.current()["slots"].items()}
+        self.assertEqual(installed["0.9.0"], "2027-01-01T00:00:00Z")
+        self.assertNotEqual(installed["1.0.0"], "2027-01-02T00:00:00Z")
+
+    def test_rollback_writes_format_2_and_keeps_each_versions_number(self):
+        self.write_package("1.0.0")
+        self.format2("1.0.0", "0.9.0", {
+            "1.0.0": {"schema": 2, "seq": 7, "installed": "2027-01-02T00:00:00Z"},
+            "0.9.0": {"schema": 2, "seq": 5, "installed": "2027-01-01T00:00:00Z"}},
+                     managed=True)
+        for name in ("1.0.0", "0.9.0"):
+            self.version_folder(self.versions / name, schema=2)
+        r = self.run_installer("-Rollback")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        record = self.current()
+        self.assertEqual((record["format"], record["version"], record["previous"],
+                          record["managed"]), (2, "0.9.0", "1.0.0", True))
+        self.assertEqual(record["slots"], {
+            "0.9.0": {"schema": 2, "seq": 5, "installed": "2027-01-01T00:00:00Z"},
+            "1.0.0": {"schema": 2, "seq": 7, "installed": "2027-01-02T00:00:00Z"}})
+        self.assertEqual(record["path"].lower(), str(self.versions / "0.9.0").lower())
+
+    def test_rollback_from_a_format_1_record_writes_format_2(self):
+        self.write_package("1.0.0")
+        self.write_current(version="0.9.0", previous="0.8.0", managed=False)
+        for name in ("0.9.0", "0.8.0"):
+            self.version_folder(self.versions / name)
+        r = self.run_installer("-Rollback")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.current()["format"], self.current()["version"]), (2, "0.8.0"))
+        self.assertEqual(self.slots(), {"0.8.0": {"seq": 1}, "0.9.0": {"seq": 2}})
+
     def test_both_scripts_use_the_same_version_name_pattern(self):
         import re
 
@@ -2533,7 +2634,7 @@ class RestoreLidFeatureTests(unittest.TestCase):
     def test_the_package_declares_the_switch_the_uninstaller_looks_for(self):
         build = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn('"features": ["gate", "restore-lid"]', build)
+        self.assertIn('"features": ["gate", "restore-lid", "launch-gate"]', build)
         self.assertIn('-notcontains "restore-lid"', uninstall)
         main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('if "--restore-lid" in sys.argv:', main)

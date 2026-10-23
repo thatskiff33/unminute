@@ -78,7 +78,10 @@ def package_version():
 # a UNC path (\\server\share, //server/share), an extended or device path
 # (\\?\..., \\.\..., including \\?\UNC\...), an NT-namespace path (\??\...,
 # which Windows passes straight through, so \??\UNC\server\share reaches the
-# network) or a reserved device name (NUL, CON). The workspace is never on a
+# network) or a name Windows turns into a device: abspath() makes NUL, in any
+# folder, and a bare CON into \\.\NUL and \\.\CON, which are refused. CON
+# inside a folder (C:\x\CON) stays an ordinary local path, as Windows 11 reads
+# it, and is read as one (#213). The workspace is never on a
 # network share (D3), and as_uri() would turn \\localhost\C$\x into
 # file://localhost/C%24/x, which SQLite opens as /C$/x on the current drive, a
 # different file. A mapped network drive letter (Z:\) passes here: for the
@@ -274,3 +277,128 @@ def gate(db_path, new_schema):
     return {"code": ALLOWED, "kind": "migration", "current_schema": cur, "blockers": [],
             "message": "The workspace is empty: the update can go ahead. Settings and "
                        "completed cleanup receipts are kept."}
+
+
+# -- Launch (#111 B5) ---------------------------------------------------------------
+#
+# In machine mode (B6) the installer runs as SYSTEM, which sees no user's
+# workspace, so whether a version may take over a workspace is decided when
+# each user starts the app (workspace/launch.py). Per-user installs keep the
+# install-time gate above (the owner's decision B5-1, 21 Oct 2026).
+
+# How the app is started. install.ps1's $LaunchArgs, its gate run and the
+# uninstaller's --restore-lid run use the same options (tests/test_launch.py
+# keeps them equal): -I isolated, -B no bytecode written, and no remote
+# debugger (PEP 768).
+LAUNCH_ARGS = ["-I", "-B", "-X", "disable-remote-debug", "-m", "workspace"]
+
+# What a hand-over starts a version as (--slot). current: the version
+# current.json names. compat: the newest installed version of the
+# workspace's older storage format, while the workspace still holds what
+# blocks the update (B5b opens it for finishing meetings only). fallback:
+# another version of the same format after a failed first-start check (B5b).
+# There is no "newer" role: a downgrade or withdrawal is strict (the owner's
+# decision B5-8, 21 Oct 2026), so a workspace from a newer version is never
+# handed to one.
+ROLES = ("current", "compat", "fallback")
+
+# install.ps1's $VersionPattern and its other rules (tests/test_launch.py
+# keeps them equal): letters and digits, then also . + _ -, at most 64
+# characters, no final dot (Windows drops it) and not a working folder's name.
+_VERSION_NAME = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")
+_WORKING = re.compile(r"\.(partial|old)\Z")
+_RECORD_MAX = 64 * 1024                 # current.json and version.json are far smaller
+
+
+def version_name(value):
+    """A plain version folder name, as the installer accepts one."""
+    return (isinstance(value, str) and _VERSION_NAME.fullmatch(value) is not None
+            and not value.endswith(".") and _WORKING.search(value) is None)
+
+
+def whole(value):
+    """A positive whole number (a JSON true is not one)."""
+    return type(value) is int and value > 0
+
+
+def read_record(path):
+    """A small JSON object from path: the object, or None if it is missing,
+    too large, not JSON or not an object. Windows PowerShell writes UTF-8
+    with a byte-order mark."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(_RECORD_MAX + 1)
+        if len(raw) > _RECORD_MAX:
+            return None
+        data = json.loads(raw.decode("utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_slots(install_root):
+    """current.json's record of the installed versions (format 2, #111 B5):
+    (state, record). state is "missing" (no file, as in a source checkout),
+    "damaged" (unreadable or any value fails its check), "format1" (an
+    install from before B5: no versions known beyond its current one) or
+    "ok". record: {"format", "version", "previous", "slots"}, where slots maps
+    each version name to {"schema": a whole number or None (unknown, never
+    handed over to), "seq": its install order}; None unless state is ok or
+    format1. No value read here becomes a path unless it is a plain name."""
+    path = Path(install_root) / "current.json"
+    if not path.exists():
+        return "missing", None
+    data = read_record(path)
+    if data is None:
+        return "damaged", None
+    version, previous = data.get("version"), data.get("previous")
+    if not version_name(version) or not (previous is None or version_name(previous)):
+        return "damaged", None
+    if "format" not in data:
+        return "format1", {"format": 1, "version": version, "previous": previous,
+                           "slots": {version: {"schema": None, "seq": None}}}
+    slots = data.get("slots")
+    if data["format"] != 2 or type(data["format"]) is not int or not isinstance(slots, dict):
+        return "damaged", None
+    out = {}
+    for name, entry in slots.items():
+        if not version_name(name) or not isinstance(entry, dict):
+            return "damaged", None
+        schema, seq = entry.get("schema"), entry.get("seq")
+        if not whole(seq) or not (schema is None or whole(schema)):
+            return "damaged", None
+        out[name] = {"schema": schema, "seq": seq}
+    seqs = [e["seq"] for e in out.values()]
+    if version not in out or len(set(seqs)) != len(seqs):
+        return "damaged", None
+    return "ok", {"format": 2, "version": version, "previous": previous, "slots": out}
+
+
+def newest_of_schema(slots, schema):
+    """The installed version of that storage format installed last (the
+    highest seq), or None. A version of unknown format is never one."""
+    found = [(e["seq"], name) for name, e in slots.items()
+             if e["schema"] is not None and e["schema"] == schema]
+    return max(found)[1] if found else None
+
+
+def launch_decision(workspace, has_blockers, record):
+    """Which installed version opens this workspace, decided as if the
+    current version had been started, whichever one ran: (version, role,
+    refusal). workspace: current_schema()'s answer (None, a number or
+    UNREADABLE). has_blockers: blockers() found something; asked only when
+    the workspace is older than the current version's format. refusal, when
+    nothing may open it: "blocked" (older, still holding meetings, and no
+    version of its format is installed) or "too_new" (from a newer version:
+    strict, B5-8). Never an older format for an empty or unreadable
+    workspace, so nothing creates or keeps a workspace an update cannot take."""
+    current = record["version"]
+    schema = record["slots"][current]["schema"]
+    if workspace is UNREADABLE or not whole(workspace) or schema is None:
+        return current, "current", None     # it shows its own damage, locked or location screen
+    if workspace == schema or (workspace < schema and not has_blockers):
+        return current, "current", None     # an older, empty workspace is migrated there
+    if workspace < schema:
+        compat = newest_of_schema(record["slots"], workspace)
+        return (compat, "compat", None) if compat else (None, None, "blocked")
+    return None, None, "too_new"

@@ -20,7 +20,7 @@ BUDGETS = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8
 # guard and drops a token left in the environment, which are start-up actions,
 # not imports.
 UI_MODULES = ("workspace.app", "workspace.api", "workspace.shell", "workspace.worker",
-              "workspace.asr_engines")
+              "workspace.asr_engines", "workspace.launch", "workspace.instance")
 
 # The only non-standard-library top-level packages the window process may import.
 ALLOWED = {"workspace", "numpy"}

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from workspace import asr_engines
 from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, engines, gpu,
-                       handoff, holds, intake, keystore,
+                       handoff, holds, instance, intake, keystore,
                        media, policy, power, recorder,
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
@@ -323,7 +323,8 @@ class Workspace:
     def __init__(self, root=None, cache_dir=None, *, speaker_model="pyannote",
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
                  policy_reader=None, check_integrity=False, lid_switch=None, protector=None,
-                 on_unavailable="raise", opener=None, audit_mirror=None):
+                 on_unavailable="raise", opener=None, audit_mirror=None,
+                 instance_lock=False):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
@@ -341,11 +342,19 @@ class Workspace:
         opener: tests and the UI check tools only; called with the assistant's
         address instead of asking Windows to open it (copy_and_open_assistant).
         audit_mirror: tests only; receives the audit log's Event Log copies
-        instead of Windows (#111 C5)."""
+        instead of Windows (#111 C5).
+        instance_lock: the app's own start (#111 B5): hold the workspace lock
+        (workspace/instance.py) for this Workspace's life, so another Windows
+        session of the same user cannot open the workspace at the same time.
+        Raises instance.Held when another process holds it."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
         self.root.mkdir(parents=True, exist_ok=True)
+        # The workspace lock (#111 B5): before the lid, the database check
+        # and the store, so nothing is read, written or migrated while
+        # another session of this user has the workspace open.
+        self._instance = self._take_instance() if instance_lock else None
         # The lid (#172): a "Do nothing" left by a crash or power cut is put
         # back first of all, before anything that could fail (the database
         # may be damaged by the same power cut). It never stops the start.
@@ -640,6 +649,20 @@ class Workspace:
             t.join(60 if t.name == "workspace-watch" else 15)
         self.store.close()
         self.audit.close()
+        held = getattr(self, "_instance", None)
+        if held is not None:
+            held.release()                # last: the workspace is closed
+
+    def _take_instance(self):
+        """The workspace lock. instance.Held when another process holds it;
+        a lock file that cannot be opened or locked for any other reason
+        stops the start too, rather than open the workspace unguarded (no
+        path in the message, P3)."""
+        try:
+            return instance.acquire(self.root)
+        except OSError:
+            raise StoreError("Unminute could not use its workspace's lock file, so it "
+                             "did not open the workspace. Ask your IT team.") from None
 
     # -- Settings and Setup data (R7b) -------------------------------------------------
 
