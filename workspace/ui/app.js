@@ -369,6 +369,7 @@ function renderFinishOnly(on) {
   $("finish-only").hidden = !on;
   $("finish-only").replaceChildren(...(on ? [notice("hold", FINISH_ONLY_TEXT)] : []));
   $("start").classList.toggle("finish-only", on);
+  $("s-scan").hidden = on;                   // Settings' "Check now": no watched-folder intake
   if (on) say(FINISH_ONLY_TEXT);
 }
 

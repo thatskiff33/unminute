@@ -1,6 +1,9 @@
 # workspace/launchcheck.py
 # The launcher's checks (#111 B5b, the owner's decisions B5-2 and B5-5 of
-# 21 Oct 2026). Machine mode only, like the launcher pass (workspace/launch.py).
+# 21 Oct 2026), run by the launcher pass (workspace/launch.py). The light
+# check and its fallback run in machine mode and, since the owner's decision
+# of 23 Oct 2026, in a per-user install too; the full check and the "update
+# waiting" message are machine mode only.
 #
 #   Light check: at a version's first start for this user, a child process,
 #       <runtime>\pythonw.exe LAUNCH_ARGS --launch-check, limited to 30 s. It
@@ -233,8 +236,8 @@ def read_raw(folder):
 
 def health_state(folder):
     """For --health (#111 B5b): {"slot": the role the last start opened in,
-    or "none" (no record: a per-user or source install, or never started in
-    machine mode), "update_waiting": that start went to the version kept for
+    or "none" (an ordinary per-user start, a source install, or no record),
+    "update_waiting": that start went to the version kept for
     an older workspace, "self_check": "ok", "slot_fault", "env_fault" or
     "unknown"}. Fixed words only; anything else in the file reads as none or
     unknown."""

@@ -56,16 +56,19 @@
 #                 token are removed (docs/PACKAGING.md, "Offboarding"). Exit
 #                 codes as above, and 1 when a step failed (run it again).
 #   --launch-check  the light first-start check (#111 B5b), run by the
-#                 launcher in machine mode in a child process of the version
-#                 it checks (workspace/launchcheck.py): prints one JSON line,
+#                 launcher (machine mode, and per-user since 23 Oct 2026) in
+#                 a child process of the version it checks
+#                 (workspace/launchcheck.py): prints one JSON line,
 #                 {"result": "ok" | "slot_fault" | "env_fault", "part"}. Opens
 #                 no window, database or key.
 #
 # A window start first runs the launcher pass (workspace/launch.py, #111 B5):
 # in machine mode it decides which installed version opens this user's
 # workspace, checks it (B5b) and may hand over to it, started with --slot
-# <role> (update.ROLES; set only by a hand-over). A per-user install starts
-# as before. The window then takes the single-instance mutex (this session)
+# <role> (update.ROLES; set only by a hand-over). A per-user install opens
+# the version started, after only its first-start check (and a fallback to
+# another kept version of the same storage format if that version fails it).
+# The window then takes the single-instance mutex (this session)
 # and the workspace lock (workspace/instance.py, every session of this user).
 # A version started as compat (kept for an older workspace that still holds
 # meetings) opens it in finish-only mode (B5b): no new imports, watched-folder
@@ -165,7 +168,7 @@ def health(root=None):
     workspace, and must never run the user's own install), or when something
     crashed in the last 7 days (including a run that ended without closing,
     which the next start records as a crash). The launcher's fields (#111
-    B5b, machine mode, from logs\\launch.json): slot (the role the last start
+    B5b, from logs\\launch.json): slot (the role the last start
     opened in, or "none"), update_waiting (it opened the version kept for an
     older workspace: workload, still healthy) and self_check; a fallback or
     a fault needs attention."""
@@ -498,8 +501,9 @@ def main():
                       "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
-    # The launcher pass (#111 B5): machine mode only; a per-user install
-    # carries on here as before. Nothing heavy is imported yet.
+    # The launcher pass (#111 B5): the decision in machine mode only; a
+    # per-user install runs only the first-start check (B5b). Nothing heavy
+    # is imported yet.
     from workspace import instance, launch
     outcome = launch.start(sys.argv)
     if outcome.exit is not None:
