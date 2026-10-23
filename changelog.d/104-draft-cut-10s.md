@@ -1,0 +1,1 @@
+- **Live drafts run a phrase for up to about 10 seconds.** When someone talks without a pause, the draft text can now run a phrase for up to about 10 seconds before showing it, which makes the draft slightly more accurate (#104).
