@@ -4,11 +4,20 @@
 # support switches), before the single-instance check and any heavy import.
 # Standard library only.
 #
-# Machine mode only (the owner's decision B5-1, 21 Oct 2026). A per-user
-# install keeps the install-time gate (install.ps1 waits with exit 5), so it
-# starts exactly as before. update.deployment() reports "machine" only once
-# B6b's machine trust test passes, so until then this pass always carries on
-# in the version that was started.
+# The decision is machine mode only (the owner's decision B5-1, 21 Oct
+# 2026). A per-user install keeps the install-time gate (install.ps1 waits
+# with exit 5), so it never hands its workspace to another version for that.
+# update.deployment() reports "machine" only once B6b's machine trust test
+# passes, so until then no install makes the decision.
+#
+# Per-user (the owner's decision of 23 Oct 2026, _per_user): only B5b's
+# light check of the version that was started, at its first start for this
+# user, and after a slot fault the fallback to another kept version of the
+# same storage format (started as fallback). No workspace is read, and there
+# is no full check (the installer's gate runs before a per-user update) and
+# no "update waiting" message. Whatever the check cannot be sure of (a
+# damaged record, a version it does not list, a folder that does not match
+# it) starts as before.
 #
 # In machine mode:
 #   1. --slot <role> (set only by a hand-over): no second decision. The
@@ -111,9 +120,13 @@ def start(argv, *, here=None, executable=None, popen=None, deployment=None,
         role = slot_role(argv)
     except ValueError:
         return Outcome(exit=1, message=IT_MESSAGE)
-    if (deployment or update.deployment)()["mode"] != "machine":
-        return Outcome(role=role)               # per-user and source: as before
-    here = Path(here or __file__).resolve()     # <root>\versions\<v>\app\workspace\launch.py
+    mode = (deployment or update.deployment)()["mode"]
+    if mode != "machine":
+        if mode == "source" or role is not None:
+            return Outcome(role=role)           # source, or a per-user fallback: as before
+        return _per_user(Path(here or __file__).resolve(), workspace_db, popen, checks,
+                         show, notice, today)
+    here = Path(here or __file__).resolve()    # <root>\versions\<v>\app\workspace\launch.py
     this, root = here.parents[2].name, here.parents[4]
     real = is_real(executable or sys.executable)
     if role is not None:
@@ -148,6 +161,34 @@ def start(argv, *, here=None, executable=None, popen=None, deployment=None,
     if target == this and real:
         return Outcome(role=chosen)
     return hand_over(root, target, chosen, schema, popen or subprocess.Popen)
+
+
+def _per_user(here, workspace_db, popen, checks, show, notice, today):
+    """A per-user start (the owner's decision of 23 Oct 2026): the light
+    check of the version that was started, at its first start for this
+    user, and a fallback after a slot fault. No workspace is read and the
+    pass migrates nothing, so no full check runs. Anything that cannot be
+    checked starts as before."""
+    as_before = Outcome()
+    if here.parents[3].name != "versions":
+        return as_before
+    this, root = here.parents[2].name, here.parents[4]
+    state, record = update.read_slots(root)
+    if state not in ("ok", "format1") or this not in record["slots"]:
+        return as_before
+    schema = record["slots"][this]["schema"]
+    if record["format"] == 1 or not update.whole(schema):
+        schema = _ANY                           # no storage format to match: no fallback
+    if _slot(root, this, schema) is None:
+        return as_before
+    checked = Checked(root, record, schema, _logs(workspace_db), checks, show, notice,
+                      today).run(this, None, False)
+    if isinstance(checked, Outcome):
+        return checked
+    target, role = checked
+    if target == this:
+        return as_before
+    return hand_over(root, target, role, schema, popen or subprocess.Popen)
 
 
 def _migrates(found, record, role):
@@ -204,7 +245,10 @@ class Checked:
             return "unknown", None, None
         known = self.book.known(name, self._installed(name))
         if known is not None:
-            return known["result"], known["part"], known["code"] or diag.new_code()
+            code = known["code"]
+            if code is None and known["result"] != "ok":
+                code = diag.new_code()          # a recorded fault whose code was lost
+            return known["result"], known["part"], code
         result, part = self.checks.light(exe, app)
         code = None if result == "ok" else diag.new_code()
         self.book.record(name, self._installed(name), result, part, code)
@@ -247,7 +291,10 @@ class Checked:
             if result == "slot_fault":
                 tried.append(name)
                 fault = fault or (name, code)
-                name, role = self._fallback(tried), "fallback"
+                # A fallback from compat opens the same older workspace: it
+                # stays compat, so finish-only with the waiting message (B5-7).
+                name = self._fallback(tried)
+                role = "compat" if role == "compat" else "fallback"
                 if name is None:
                     return self._end(FAILED.format(code=fault[1]), "slot_fault")
                 continue

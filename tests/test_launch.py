@@ -7,7 +7,9 @@
 #
 # The launcher (workspace/launch.py, update.launch_decision and read_slots)
 # decides, in machine mode only, which installed version opens a user's
-# workspace; the workspace lock (workspace/instance.py) keeps a second
+# workspace, and runs the first-start check there and, since the owner's
+# decision of 23 Oct 2026, in a per-user install too (PerUserCheckTests);
+# the workspace lock (workspace/instance.py) keeps a second
 # Windows session of the same user out. Synthetic installs and workspaces
 # only; nothing here starts a real app or reads the user's workspace.
 
@@ -284,16 +286,24 @@ class PassTests(unittest.TestCase):
         self.assertEqual(argv, [self.layout.exe(slot), *update.LAUNCH_ARGS, "--slot", role])
         self.assertEqual(kwargs["cwd"], str(self.layout.versions / slot / "app"))
 
-    def test_a_per_user_install_starts_as_before_and_reads_nothing(self):
+    def test_a_per_user_install_makes_no_decision_and_reads_no_workspace(self):
+        # Per-user installs keep the installer's gate (B5-1): the version
+        # started opens, whatever the workspace. Since the owner's decision
+        # of 23 Oct 2026 it reads current.json for its first-start check
+        # (PerUserCheckTests); these versions do not have it.
         def never(db):
             raise AssertionError("the workspace was read")
-        with mock.patch.multiple(update, current_schema=never, blockers=never), \
-                mock.patch.object(update, "read_slots", side_effect=AssertionError("read")):
-            out = launch.start(["workspace"], here=self.layout.here("2.0"),
-                               executable=self.layout.exe("2.0"), popen=self.popen,
-                               deployment=PER_USER)
-        self.assertEqual(out, launch.Outcome())
-        self.assertEqual(self.started, [])
+        (self.base / "workspace" / "logs").mkdir(parents=True)
+        for slot in ("2.0", "3.0"):
+            with self.subTest(slot=slot), \
+                    mock.patch.multiple(update, current_schema=never, blockers=never):
+                out = launch.start(["workspace"], here=self.layout.here(slot),
+                                   executable=self.layout.exe(slot), popen=self.popen,
+                                   deployment=PER_USER, checks=FakeChecks(), notice=FakeNotice,
+                                   show=self.fail,
+                                   workspace_db=self.base / "workspace" / "workspace.db")
+                self.assertEqual(out, launch.Outcome())
+                self.assertEqual(self.started, [])
 
     def test_the_current_version_with_its_own_format_opens_here(self):
         for workspace in ((None,), (3,), (2, ())):
@@ -707,7 +717,9 @@ class CheckTests(unittest.TestCase):
         self.assertEqual((self.record()["last_role"], self.record()["last_check"]),
                          ("current", "ok"))
         checks = FakeChecks()
-        self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
+        # A pass read from the record makes no incident code (nothing would use it).
+        with mock.patch.object(diag, "new_code", side_effect=AssertionError("a code made")):
+            self.assertEqual(self.run_pass(checks), launch.Outcome(role="current"))
         self.assertEqual(checks.calls, [])                 # a pass is not repeated
         self.assertEqual(self.shown, [])
 
@@ -818,6 +830,29 @@ class CheckTests(unittest.TestCase):
         self.run_pass(FakeChecks(), workspace=(2, self.BLOCKERS), today="2026-10-24")
         self.assertEqual(self.shown, [launch.WAITING.format(version="2.1")])
 
+    def test_a_fallback_from_compat_stays_finish_only_with_the_waiting_message(self):
+        # Two kept versions of the older format: 2.0 (newest, seq 4) fails its
+        # check, so 2.1 opens the same older workspace. It must still be
+        # compat (finish-only, B5-7) and the waiting message still shown (B5-6).
+        self.layout.version("2.0", 2)
+        self.layout.entries["2.0"] = {"seq": 4, "installed": "2027-01-04T01:00:00Z",
+                                      "schema": 2}
+        self.layout.write()
+        checks = FakeChecks(light={"2.0": ("slot_fault", "import")})
+        self.assertEqual(self.run_pass(checks, workspace=(2, self.BLOCKERS)),
+                         launch.Outcome(exit=0))
+        self.assertEqual(checks.calls, [("light", "2.0"), ("light", "2.1")])
+        self.assertEqual(self.started_as(), ("2.1", "compat"))
+        rec = self.record()
+        code = rec["slots"]["2.0"]["code"]
+        self.assertEqual(self.shown, [launch.FALLBACK.format(code=code, version="2.1"),
+                                      launch.WAITING.format(version="2.1")])
+        self.assertEqual((rec["last_role"], rec["last_check"]), ("compat", "slot_fault"))
+        self.assertEqual(launchcheck.health_state(self.ws / "logs"),
+                         {"slot": "compat", "update_waiting": True, "self_check": "slot_fault"})
+        # Never the current format's versions, and never a migration.
+        self.assertNotIn(("full", "3.0"), checks.calls)
+
     def test_a_version_from_before_b5b_is_never_started_with_the_check(self):
         for name, schema in self.SLOTS.items():
             self.layout.features = ["gate", "launch-gate"]
@@ -855,6 +890,144 @@ class CheckTests(unittest.TestCase):
                 self.assertEqual(launchcheck.health_state(self.ws / "logs"),
                                  {"slot": "none", "update_waiting": False,
                                   "self_check": "unknown"})
+
+
+class PerUserCheckTests(unittest.TestCase):
+    """The light first-start check in a per-user install too (the owner's
+    decision of 23 Oct 2026): the version started is checked once per
+    install, a slot fault falls back to another kept version of the same
+    format, and nothing else changes: no workspace is read, no decision,
+    no full check and no "update waiting" message."""
+
+    # 2.9 (the previous version) shares 3.0's format; 2.1 is older.
+    SLOTS = {"2.1": 2, "2.9": 3, "3.0": 3}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(os.path.realpath(tmp.name))
+        self.layout = InstallLayout(self.base, self.SLOTS, "3.0", previous="2.9",
+                                    features=["gate", "launch-gate", launchcheck.FEATURE])
+        self.ws = self.base / "workspace"
+        (self.ws / "logs").mkdir(parents=True)
+        FakeNotice.opened = 0
+        no_windows(self)
+
+    def run_pass(self, checks, slot="3.0", argv=("workspace",), deployment=PER_USER):
+        self.started, self.shown = [], []
+
+        def never(db):
+            raise AssertionError("the workspace was read")
+        with mock.patch.multiple(update, current_schema=never, blockers=never):
+            return launch.start(list(argv), here=self.layout.here(slot),
+                                executable=self.layout.exe(slot),
+                                popen=lambda argv, **kw: self.started.append(argv),
+                                deployment=deployment, workspace_db=self.ws / "workspace.db",
+                                checks=checks, notice=FakeNotice, show=self.shown.append,
+                                today="2026-10-23")
+
+    def record(self):
+        return json.loads((self.ws / "logs" / "launch.json").read_text(encoding="ascii"))
+
+    def test_the_first_start_is_checked_once_and_opens_here(self):
+        for _ in range(2):
+            checks = FakeChecks()
+            self.assertEqual(self.run_pass(checks), launch.Outcome())
+            self.assertEqual((self.started, self.shown), ([], []))
+        self.assertEqual(checks.calls, [])                  # the second start: recorded
+        rec = self.record()
+        self.assertEqual((rec["slots"]["3.0"]["result"], rec["slots"]["3.0"]["code"]),
+                         ("ok", None))
+        # An ordinary per-user start has no role: --health's slot stays none.
+        self.assertEqual(launchcheck.health_state(self.ws / "logs"),
+                         {"slot": "none", "update_waiting": False, "self_check": "ok"})
+        # A repair or reinstall checks it again.
+        self.layout.entries["3.0"]["installed"] = "2027-03-01T01:00:00Z"
+        self.layout.write()
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome())
+        self.assertEqual(checks.calls, [("light", "3.0")])
+
+    def test_a_slot_fault_falls_back_to_the_previous_version_of_its_format(self):
+        checks = FakeChecks(light={"3.0": ("slot_fault", "guard")})
+        self.assertEqual(self.run_pass(checks), launch.Outcome(exit=0))
+        self.assertEqual(checks.calls, [("light", "3.0"), ("light", "2.9")])
+        self.assertEqual(len(self.started), 1)
+        self.assertEqual(self.started[0], [self.layout.exe("2.9"), *update.LAUNCH_ARGS,
+                                           "--slot", "fallback"])
+        code = self.record()["slots"]["3.0"]["code"]
+        self.assertEqual(self.shown, [launch.FALLBACK.format(code=code, version="2.9")])
+        self.assertEqual(launchcheck.health_state(self.ws / "logs"),
+                         {"slot": "fallback", "update_waiting": False,
+                          "self_check": "slot_fault"})
+        # The fallback version, started with --slot, checks nothing again.
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks, slot="2.9", argv=("workspace", "--slot",
+                                                                  "fallback")),
+                         launch.Outcome(role="fallback"))
+        self.assertEqual((checks.calls, self.started), ([], []))
+
+    def test_never_a_fallback_to_an_older_format(self):
+        del self.layout.entries["2.9"]
+        self.layout.write()
+        checks = FakeChecks(light={"3.0": ("slot_fault", "webview")})
+        out = self.run_pass(checks)
+        code = self.record()["slots"]["3.0"]["code"]
+        self.assertEqual(out, launch.Outcome(exit=1, message=launch.FAILED.format(code=code)))
+        self.assertNotIn(("light", "2.1"), checks.calls)
+        self.assertEqual(self.started, [])
+
+    def test_an_environment_fault_opens_here_and_is_checked_at_every_start(self):
+        for _ in range(2):
+            checks = FakeChecks(light={"3.0": ("env_fault", "dpapi")})
+            self.assertEqual(self.run_pass(checks), launch.Outcome())
+            self.assertEqual(checks.calls, [("light", "3.0")])
+            self.assertEqual((self.started, self.shown), ([], []))
+        self.assertEqual(self.record()["last_check"], "env_fault")
+
+    def test_no_full_check_and_no_waiting_message(self):
+        # Even a forged record saying the last start was compat changes nothing.
+        (self.ws / "logs" / "launch.json").write_text(json.dumps(
+            {"last_role": "compat", "waiting_shown": "2026-10-01"}), encoding="ascii")
+        checks = FakeChecks()
+        self.assertEqual(self.run_pass(checks), launch.Outcome())
+        self.assertEqual(checks.calls, [("light", "3.0")])
+        self.assertEqual((FakeNotice.opened, self.shown), (0, []))
+
+    def test_what_cannot_be_checked_starts_as_before(self):
+        def damaged():
+            (self.layout.root / "current.json").write_text("{", encoding="utf-8")
+
+        def unlisted():
+            del self.layout.entries["3.0"]
+            self.layout.current = "2.9"
+            self.layout.write()
+
+        def mismatched():
+            self.layout.version("3.0", 3, stated="3.1")
+
+        def no_runtime():
+            (self.layout.versions / "3.0" / "runtime" / "pythonw.exe").unlink()
+        for name, change in (("damaged", damaged), ("unlisted", unlisted),
+                             ("mismatched", mismatched), ("no_runtime", no_runtime)):
+            with self.subTest(name):
+                self.setUp()
+                change()
+                checks = FakeChecks(light={"3.0": ("slot_fault", "import")})
+                self.assertEqual(self.run_pass(checks), launch.Outcome())
+                self.assertEqual((checks.calls, self.started, self.shown), ([], [], []))
+        # Not inside a versions folder (a source checkout's layout), and a
+        # source checkout itself: nothing is read.
+        with mock.patch.object(update, "read_slots", side_effect=AssertionError("read")):
+            out = launch.start(["workspace"], here=self.base / "src" / "workspace" / "x.py",
+                               executable=sys.executable, deployment=PER_USER,
+                               workspace_db=self.ws / "workspace.db", checks=FakeChecks())
+            self.assertEqual(out, launch.Outcome())
+            checks = FakeChecks(light={"3.0": ("slot_fault", "import")})
+            self.assertEqual(self.run_pass(checks, deployment=lambda: {"version": None,
+                                                                        "mode": "source"}),
+                             launch.Outcome())
+            self.assertEqual(checks.calls, [])
 
 
 class ChildCheckTests(unittest.TestCase):
@@ -1098,6 +1271,9 @@ class FinishOnlyTests(unittest.TestCase):
         self.assertIn('id="finish-only"', html)
         self.assertIn("renderFinishOnly(s.finish_only)", js)
         self.assertIn(".start.finish-only { display: none; }", css)
+        # Settings' "Check now" for watched folders (scan_now) is not offered either.
+        self.assertIn('id="s-scan"', html)
+        self.assertIn('$("s-scan").hidden = on;', js)
 
 
 class GpuUpkeepTests(unittest.TestCase):
