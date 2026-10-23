@@ -7,10 +7,12 @@
 #              0.1 s blocks at real time, once per cut length (default 6, 8 and
 #              10 s), then run the full pass (Parakeet v2, as compare_engines
 #              does) on the same audio. Reports, per cut:
-#                - delay: when each correctly recognised word first appears,
-#                  minus when it finished being spoken (the AMI word times with
-#                  --ami-words, otherwise the full pass's word times), median
-#                  and 90th percentile, in seconds;
+#                - delay: when the phrase holding each correctly recognised
+#                  word reached the draft session (checked every POLL_S; the
+#                  page's own polling is not counted), minus when it finished
+#                  being spoken (the AMI word times with --ami-words, otherwise
+#                  the full pass's word times), median and 90th percentile, in
+#                  seconds;
 #                - agreement: 100% minus the draft's word error rate measured
 #                  against the full pass (how close the draft is to the text
 #                  that replaces it);

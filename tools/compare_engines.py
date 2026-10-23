@@ -147,7 +147,10 @@ def edit_distance(ref, hyp):
 
 # --- draft mode (#104) ---------------------------------------------------------
 
-CUT_RANGE = (2.0, 30.0)     # cuts a trial may try: longer than the cut search, bounded
+# Cuts a trial may try, in seconds. The lowest stays above drafts.CUT_SEARCH_S
+# (1.5 s), the stretch at a phrase's end searched for a quiet place to cut; the
+# highest bounds how long a trial's phrases can get.
+CUT_RANGE = (2.0, 30.0)
 
 
 @contextlib.contextmanager

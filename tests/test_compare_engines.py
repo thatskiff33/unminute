@@ -311,7 +311,6 @@ class RunTests(unittest.TestCase):
             self.assertEqual([lines[0]["engine"], lines[1]["audio_s"]], ["fake", 2.0])
             self.assertIn("peak_ram_gb", lines[-1])
 
-
     def test_draft_mode_runs_the_draft_path_at_the_trial_cut(self):
         import importlib.util
         import json
@@ -365,6 +364,7 @@ class RunTests(unittest.TestCase):
             self.assertNotEqual(r.returncode, 0)
             self.assertIn("A cut must be 2 to 30 seconds", r.stderr)
             self.assertFalse((Path(tmp) / "run.jsonl").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

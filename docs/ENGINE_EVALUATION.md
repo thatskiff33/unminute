@@ -117,7 +117,7 @@ Live drafts (#104) transcribe each phrase while a meeting is recorded. A phrase 
 - `tools/compare_engines.py run --draft-cut S` runs the same draft engine and phrase splitter offline, all at once rather than at real time, so draft accuracy can be scored like any engine. `tools/live_trial.py manifest` builds its AMI references.
 
 **Measures.**
-- Delay: when each correctly recognised word first appears on screen, minus when it finished being spoken (AMI word times).
+- Delay: when the phrase holding each correctly recognised word reached the draft session (the harness checks for new phrases every 20 ms), minus when the word finished being spoken (AMI word times). This is not when the word appears on screen: the page's own checks for new phrases add to it and are not counted.
 - Agreement: 100% minus the draft's word error rate measured against the full pass, that is, how close the draft is to the text that replaces it.
 - CPU: the draft worker process's processor time while the audio was fed, as a share of one core. The app's feeder thread is not included.
 
@@ -144,14 +144,14 @@ The draft worker loaded in 2.5 to 2.7 s each time.
 - Every cut met the issue's limits on this laptop: a median delay of 5 s or less and draft CPU under 15% of one core on average.
 - The cut mainly changes the slowest words. The median delay moved only from 2.7 s to 3.1 s, but the 90th percentile rose from 5.3 s at 6 s to 7.9 s at 10 s, because long unbroken speech waits for its cut.
 - Longer cuts were slightly more accurate on the whole meetings (19.4%, 18.7%, 18.5%). On the 7.5-minute window the order was mixed, and the differences there (about 15 words in 700) are within what one short run can show.
-- CPU: the 8 s run's 7.3% is probably noise. The offline runs did the same work at every cut, and other sessions were using the laptop during the trial. Treat the CPU column as 4 to 8% of one core, not as a ranking.
+- CPU: the 8 s run's 7.3% is probably noise. The offline runs did the same work at every cut. The trial held the shared lock for heavy runs, so no other benchmark or test suite ran at the same time, but whatever lighter work was running on the laptop was not recorded. Treat the CPU column as 4 to 8% of one core, not as a ranking.
 
 **Recommendation (for the owner; not a decision).** Keep the shipped 8 s cut.
 - 8 s. Pros: median delay 3.0 s and 90th percentile 6.5 s; 0.7 points more accurate than 6 s on whole meetings and within 0.2 points of 10 s; no change to the code. Cons: the slowest words arrive about 1.2 s later than at 6 s.
 - 6 s. Pros: the quickest draft (90th percentile 5.3 s). Cons: the least accurate on whole meetings (19.4%) and the most phrases.
 - 10 s. Pros: the most accurate on whole meetings (18.5%). Cons: the slowest words take 7.9 s at the 90th percentile, for 0.2 points of accuracy over 8 s.
 
-**Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), and not repeated on a busy or battery-powered laptop. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
+**Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), background load not recorded (see CPU above), and not repeated under a known load or on battery power. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
 
 ## Short clips (first screen)
 
