@@ -214,7 +214,9 @@ av==19.0.2 \
     --hash=sha256:bebbc52598886480f4d861c575dc2b020785d6c04e1308680ddcc545e1b94c66 \
     --hash=sha256:dfe7af5aa8243afd5d4778f85ad1a7c948e37fad272869da1f8f93f8d57fa7ad \
     --hash=sha256:f5f7bcf987567cd3f9b01f1c375c59bf59d8a5b98c9c5c154aeda7a11e0c5dce
-    # via faster-whisper, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   faster-whisper
 bottle==0.13.4 \
     --hash=sha256:045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e \
     --hash=sha256:787e78327e12b227938de02248333d788cfe45987edca735f8f88e03472c3f47
@@ -222,7 +224,10 @@ bottle==0.13.4 \
 certifi==2026.10.19 \
     --hash=sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae \
     --hash=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
-    # via httpcore, httpx, requests
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
 cffi==2.1.1 \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
     --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
@@ -324,7 +329,9 @@ cffi==2.1.1 \
     --hash=sha256:f8ec5e643a9a937f64e1999eb9f75d072263751912dc5cd06d3c85f8f44be7c3 \
     --hash=sha256:fb92203a88b3d3053034db775110081c49d28be6551923805e039924093761e4 \
     --hash=sha256:fcd22650c908d7b7da162bbfaab594a1227a15d1643a98c68b122ac642fa2264
-    # via clr-loader, cryptography, sounddevice
+    # via
+    #   cryptography
+    #   sounddevice
 charset-normalizer==3.5.2 \
     --hash=sha256:01077390b03f7988f11d700a2194e69b119741a86b1a638b1db88891e3eced8e \
     --hash=sha256:01b0c0d2262a9e28e8484a278c7e1b5d650e3ac8cf2683d2967e25899f208bdf \
@@ -507,14 +514,6 @@ cloudpickle==3.1.2 \
     --hash=sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414 \
     --hash=sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a
     # via joblib
-clr-loader==0.3.1 \
-    --hash=sha256:2e073e9aaf49d1ae2f56ecba27987ad5fb68be4bcd9dd34a5bed8f0e4e128366 \
-    --hash=sha256:cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1
-    # via pythonnet
-colorama==0.4.6 \
-    --hash=sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44 \
-    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
-    # via colorlog, tqdm
 colorlog==6.12.0 \
     --hash=sha256:2a7924c1dadf18b22a0eb8b06d1c7b01d5341707ec1641eb6fcc4fde0c3e8e5f \
     --hash=sha256:30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e
@@ -689,6 +688,45 @@ ctranslate2==4.8.3 \
     --hash=sha256:cf4b55455cbd70177dec3a35a40bc864078c591e5bd8334ffaa58df7f5a9858c \
     --hash=sha256:d3eb9dad7a3781edd0ea921473288d085a21284f0c6d00a3b01c479b36e30ae7
     # via faster-whisper
+cuda-bindings==13.4.4 \
+    --hash=sha256:03a8fd2a25530dbae26ecd4462d418156028e35b3f3b081440ff6368506e10eb \
+    --hash=sha256:0c3f4cc887eac0d5edb5d7396cc78b336bee151a97e2ba7acf59e8b9380132d0 \
+    --hash=sha256:0ce9208c7cf03a947ac11553b08ee2fca594ac63d34360639a9060980f546a62 \
+    --hash=sha256:0d714d5a85174530b58b39a8e06664ebc6296e62a90d66b0b2eb4dbdfaaabe5b \
+    --hash=sha256:433efa31e33c2868621b5f6036bd3bf5de9c45c5546cb1361a5f6ff3415b8bb5 \
+    --hash=sha256:4a429132f06d0c3a853aa419aabe4c0a7bfc3f3886fb4c336d81729f63754d31 \
+    --hash=sha256:50bc70ef3b225f4794f5b374773629836bbfdf4a21fc975ac25e7daad67494b8 \
+    --hash=sha256:5d6adc44f098472d8ac2d6211923eea6081830521852dc77f8c9237bf9320a59 \
+    --hash=sha256:6781fe08ed5f4b5163a3c6577e079bc28955811382d35995c916bf052ee0994e \
+    --hash=sha256:680e70dcb8b61fdae16d3bb4876c41d55aadc9fe8b3825ea567f2f2c85606b0a \
+    --hash=sha256:76dafd37ff5191f183ea9c1d981f7bb541df5c0bec502bcc4cc84a3eea706b40 \
+    --hash=sha256:787936778fb69a66afa5d7769086640cbf938a3b83f2b8171174a46d115e87ce \
+    --hash=sha256:85d961133658fff3167cfcf69de1beac8e46453c15fd4bcaa4a96d3ef1110c69 \
+    --hash=sha256:87899d738c2c093821b8306e96585fbceb3a9d69a1e1598b9e4639aabf9548ce \
+    --hash=sha256:90f85a00fc89dd4a8f7c4beb0a2f3f788b845c8496fe84adc1217830206db9e0 \
+    --hash=sha256:939d2672199048649fd2118e4df9df770a517711e50d25c05f880f3606b78142 \
+    --hash=sha256:93ad74e8181a89e7886be9d06414a772701081c9edcf6c84d9fc1ccda50f6767 \
+    --hash=sha256:978927d7b911e80fa5a7308284c39c79b1182c48f47ed62717fc7f5c22f6ded4 \
+    --hash=sha256:a4c97f8430d7f7c4a4d0f245510d26647dd81ea3fc65941f7a815ad395cbc30e \
+    --hash=sha256:a8109e8ca1e40b666fc94d7bc4a172dfb99746a7d3fd933ee17b3f36f48f24ab \
+    --hash=sha256:b346bfe1dda49537537c06cc4727b2210d949d8aee883cb591bca46581629d00 \
+    --hash=sha256:b8b2e4235b552edb42cdbe39de7a9259ceec631e21c7344b76177db9cc6c58b4 \
+    --hash=sha256:baa0f5f1f9a05032e7deb97051e85aa18b4e3c6db914f1c813bb2f02e5c72db4 \
+    --hash=sha256:caba27cd9a5f910aaadb54878f52ad91be1abbe3b3cfb955c999709c1a1798b0 \
+    --hash=sha256:cc1acee5720dbe077777fe540eee84ec4547286bbed3cba24d1c764d4b930317 \
+    --hash=sha256:cc8f35176be380fa241dfe9b8583a16db9c4b043fecb4b2932898e1699e5a0fb \
+    --hash=sha256:d9e00ee968781e06ab09f8c87f75586f04829988d66b4a0d6efbccfd03576b71 \
+    --hash=sha256:db0cdac6a8d8bd72f3dcb755ad4fcc904e0bd75a30091422fedbcfa9fc06b09a \
+    --hash=sha256:e1cef1eaf5a08cc3bf3675ca9d3f97f3fc7085998556c848b4053e74ba4ba392 \
+    --hash=sha256:f5bf66473514863aeede6cdefd887e6e22d74dbbac0933cd166ab4498935d04e \
+    --hash=sha256:f8ac692e0377c51d0bda32ae6782caafa007a5de171571ac844e616391c89a16
+    # via torch
+cuda-pathfinder==1.8.4 \
+    --hash=sha256:85a4e708c725d603f576042ef32781a3d1737c51e84c35fe361d2680191af65a
+    # via cuda-bindings
+cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.3.0 \
+    --hash=sha256:d693caaa261214ddd7dbb60d68e71cbed884e68c2be7509778f3051da0b91c3f
+    # via torch
 cycler==0.12.1 \
     --hash=sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30 \
     --hash=sha256:88bb128f02ba341da8ef447245a9e138fae777f6a23943da4540077d3601eb1c
@@ -700,10 +738,13 @@ einops==0.8.2 \
 faster-whisper==1.2.1 \
     --hash=sha256:79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7
     # via -r requirements.in
-filelock==3.29.1 \
-    --hash=sha256:85199dfd706869641b72b2e8955d5416a4b2b7dc4b0e8e6d97b4cc1299a6983b \
-    --hash=sha256:d97e6b1b9757569626c58caa07dc4beb1613f4a2938b1e8cc81afca398906c9e
-    # via huggingface-hub, pyannote-pipeline, torch
+filelock==4.2.1 \
+    --hash=sha256:7be2662e9e826b9bba28afc0f843a123280d799a2ea44bb5d35ccec67905ae44 \
+    --hash=sha256:c4c937ccac2a813cee448e662a56366cfb374c0f8702e75f295c412cc1c5d5a3
+    # via
+    #   huggingface-hub
+    #   pyannote-pipeline
+    #   torch
 flatbuffers==25.12.19 \
     --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
     # via onnxruntime
@@ -898,15 +939,23 @@ frozenlist==1.8.0 \
     --hash=sha256:fa47e444b8ba08fffd1c18e8cdb9a75db1b6a27f17507522834ad13ed5922b93 \
     --hash=sha256:fb30f9626572a76dfe4293c7194a09fb1fe93ba94c7d4f720dfae3b646b45027 \
     --hash=sha256:fe3c58d2f5db5fbd18c2987cba06d51b0529f52bc3a6cdc33d3f4eab725104bd
-    # via aiohttp, aiosignal
-fsspec==2026.9.0 \
+    # via
+    #   aiohttp
+    #   aiosignal
+fsspec[http]==2026.9.0 \
     --hash=sha256:0f08147951c8cb31d844c3547d631053b127863b60be04cf06e121333ee0e2fe \
     --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f
-    # via huggingface-hub, lightning, pytorch-lightning, torch
+    # via
+    #   huggingface-hub
+    #   lightning
+    #   pytorch-lightning
+    #   torch
 googleapis-common-protos==1.75.5 \
     --hash=sha256:c7a866fc34ed29a3b10af627a4b9b1dc2433313ca6e959f0ae4feb132047ed72 \
     --hash=sha256:d7285525c23039db98f2463e6d5a4f9b958b94d497f03a844ece3259c4e72d5d
-    # via opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http
+    # via
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 greenlet==3.5.6 \
     --hash=sha256:0616b8f878098c5681fd8f0dc92d887551717402342a70f0abcbfea5f5ad8a44 \
     --hash=sha256:06c0e933290fba8ffe53ead4ae1b8044b0e9754b75cebf381aa2bc3e50d82fac \
@@ -1073,7 +1122,9 @@ hf-xet==1.6.0 \
     --hash=sha256:f0906082d9932ae0c0057fa194041c22b4e2cdb46b2592ef3b91f020d62a081a \
     --hash=sha256:f2f7278c05c22fd60cb436cda1269649b3e81db65ecdc8496e5e164aa4143e7b \
     --hash=sha256:fb4fadde1b2b70bf4c0c14a6dccbe7194b1c28947fefd5bbe3fed9d940676c3b
-    # via huggingface-hub, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   huggingface-hub
 httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
     --hash=sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8
@@ -1085,11 +1136,19 @@ httpx==0.28.1 \
 huggingface-hub==1.33.0 \
     --hash=sha256:04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899 \
     --hash=sha256:367be21a201db9523eddf8aeac7048f2602c1b308691c97640d5e72ed188007e
-    # via faster-whisper, pyannote-audio, tokenizers, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   faster-whisper
+    #   pyannote-audio
+    #   tokenizers
 idna==3.20 \
     --hash=sha256:a7db850025b95ded1eae8a46181a1a6c56c92c96f0e2b005d9ff8dc0210cab44 \
     --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
-    # via anyio, httpx, requests, yarl
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+    #   yarl
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -1252,7 +1311,10 @@ lightning==2.6.6 \
 lightning-utilities==0.15.3 \
     --hash=sha256:6c55f1bee70084a1cbeaa41ada96e4b3a0fea5909e844dd335bd80f5a73c5f91 \
     --hash=sha256:792ae0204c79f6859721ac7f386c237a33b0ed06ba775009cb894e010a842033
-    # via lightning, pytorch-lightning, torchmetrics
+    # via
+    #   lightning
+    #   pytorch-lightning
+    #   torchmetrics
 mako==1.4.3 \
     --hash=sha256:723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f \
     --hash=sha256:cd6537fe88d5fec315c55c2f8529bc4ce7a9a352ad7db3eeaa6a66e2dd4ec37a
@@ -1413,7 +1475,9 @@ markupsafe==3.0.4 \
     --hash=sha256:fa95848c929b6a75f6848d3c9793e59db365ee436776e57db835cdbfa79ba977 \
     --hash=sha256:fd9f8797427910198f95bced71ddfed61130d7e349213bfb8466c9c99e2c46a8 \
     --hash=sha256:fdb4ca07ab75ffadab4a8b135ad59cdbb3156b99310f3d565370da74a15d6bd3
-    # via jinja2, mako
+    # via
+    #   jinja2
+    #   mako
 matplotlib==3.11.2 \
     --hash=sha256:01dc8eaaab5a9fce9ff615eca82345728f289e4715b186ee10c6d85272fc26bb \
     --hash=sha256:02329432ae5c6af87cf208ee575b701d698bdf0b1a3bb28cc6d53c36e967e575 \
@@ -1649,7 +1713,9 @@ multidict==6.9.1 \
     --hash=sha256:f9dad513626a33670f17cddc6078e30e311f444c957e8dbfc5b2b4603c8b4edb \
     --hash=sha256:fc0dcb22fa9aeabfe3fa4e0430099acff985ec5d77a851382f76cc6146e780e5 \
     --hash=sha256:fd882aa29bf402b62bf1fd7c19fd5df4b6528cf468a908864b39368572b662a9
-    # via aiohttp, yarl
+    # via
+    #   aiohttp
+    #   yarl
 narwhals==2.27.1 \
     --hash=sha256:aed93076a3ea42d9c32c88e4eb5ea422a21937011cbe1f480f9572a523c82094 \
     --hash=sha256:d057df13f5852b8e157596e82eb5e955fad267425df5e420e0ee9863da483b31
@@ -1725,7 +1791,106 @@ numpy==2.5.4 \
     --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a \
     --hash=sha256:fe4d21ab149f15e4e6043dfb0de87e6e5f34ac176cde83060e9802981fca2ac2 \
     --hash=sha256:ffa6ce09a1c6a08e9667dd9c97aa0b14184e8d18f2a14b78b2a2328c9147f076
-    # via asteroid-filterbanks, contourpy, ctranslate2, matplotlib, onnx-asr, onnxruntime, optuna, pandas, pyannote-core, pyannote-metrics, pytorch-metric-learning, scikit-learn, scipy, torchmetrics, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   asteroid-filterbanks
+    #   contourpy
+    #   ctranslate2
+    #   matplotlib
+    #   onnx-asr
+    #   onnxruntime
+    #   optuna
+    #   pandas
+    #   pyannote-core
+    #   pyannote-metrics
+    #   pytorch-metric-learning
+    #   scikit-learn
+    #   scipy
+    #   torchmetrics
+nvidia-cublas==13.1.1.3 \
+    --hash=sha256:37936a16db8fe4ac1f065c2139360608a543a09275cb1a1af612e08cfa065436 \
+    --hash=sha256:b6cdce694e47ff6aadf0a69df1cab6628d696f5ff56e8d16af50309d855fa20f \
+    --hash=sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5
+    # via
+    #   cuda-toolkit
+    #   nvidia-cudnn-cu13
+    #   nvidia-cusolver
+nvidia-cuda-cupti==13.0.85 \
+    --hash=sha256:4eb01c08e859bf924d222250d2e8f8b8ff6d3db4721288cf35d14252a4d933c8 \
+    --hash=sha256:683f58d301548deeefcb8f6fac1b8d907691b9d8b18eccab417f51e362102f00 \
+    --hash=sha256:796bd679890ee55fb14a94629b698b6db54bcfd833d391d5e94017dd9d7d3151
+    # via cuda-toolkit
+nvidia-cuda-nvrtc==13.0.88 \
+    --hash=sha256:6bcd4e7f8e205cbe644f5a98f2f799bef9556fefc89dd786e79a16312ce49872 \
+    --hash=sha256:ad9b6d2ead2435f11cbb6868809d2adeeee302e9bb94bcf0539c7a40d80e8575 \
+    --hash=sha256:d27f20a0ca67a4bb34268a5e951033496c5b74870b868bacd046b1b8e0c3267b
+    # via
+    #   cuda-toolkit
+    #   nvidia-cublas
+nvidia-cuda-runtime==13.0.96 \
+    --hash=sha256:7f82250d7782aa23b6cfe765ecc7db554bd3c2870c43f3d1821f1d18aebf0548 \
+    --hash=sha256:ef9bcbe90493a2b9d810e43d249adb3d02e98dd30200d86607d8d02687c43f55 \
+    --hash=sha256:f79298c8a098cec150a597c8eba58ecdab96e3bdc4b9bc4f9983635031740492
+    # via cuda-toolkit
+nvidia-cudnn-cu13==9.24.0.43 \
+    --hash=sha256:67a7273b5cf062f9446fd76cf464351a1c0f66501e6cd78f6675c0d604d8ac87 \
+    --hash=sha256:71f181cd810e90f9b6023b01186fe82d13d65f0ec098581ee201d39fad769e4b \
+    --hash=sha256:a6812a554a1ff0413e9c52b84c26c050380649ab9615f9c16bded368ce9f421f
+    # via torch
+nvidia-cufft==12.0.0.61 \
+    --hash=sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5 \
+    --hash=sha256:2abce5b39d2f5ae12730fb7e5db6696533e36c26e2d3e8fd1750bdd2853364eb \
+    --hash=sha256:6c44f692dce8fd5ffd3e3df134b6cdb9c2f72d99cf40b62c32dde45eea9ddad3
+    # via cuda-toolkit
+nvidia-cufile==1.15.1.6 \
+    --hash=sha256:08a3ecefae5a01c7f5117351c64f17c7c62efa5fffdbe24fc7d298da19cd0b44 \
+    --hash=sha256:bdc0deedc61f548bddf7733bdc216456c2fdb101d020e1ab4b88d232d5e2f6d1
+    # via cuda-toolkit
+nvidia-curand==10.4.0.35 \
+    --hash=sha256:133df5a7509c3e292aaa2b477afd0194f06ce4ea24d714d616ff36439cee349a \
+    --hash=sha256:1aee33a5da6e1db083fe2b90082def8915f30f3248d5896bcec36a579d941bfc \
+    --hash=sha256:65b1710aa6961d326b411e314b374290904c5ddf41dc3f766ebc3f1d7d4ca69f
+    # via cuda-toolkit
+nvidia-cusolver==12.0.4.66 \
+    --hash=sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2 \
+    --hash=sha256:0a759da5dea5c0ea10fd307de75cdeb59e7ea4fcb8add0924859b944babf1112 \
+    --hash=sha256:16515bd33a8e76bb54d024cfa068fa68d30e80fc34b9e1090813ea9362e0cb65
+    # via cuda-toolkit
+nvidia-cusparse==12.6.3.3 \
+    --hash=sha256:2b3c89c88d01ee0e477cb7f82ef60a11a4bcd57b6b87c33f789350b59759360b \
+    --hash=sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c \
+    --hash=sha256:cbcf42feb737bd7ec15b4c0a63e62351886bd3f975027b8815d7f720a2b5ea79
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver
+nvidia-cusparselt-cu13==0.8.1 \
+    --hash=sha256:4dca476c50bf4780d46cd0bfbd82e2bc10a08e4fef7950917ce8d7578d22a23f \
+    --hash=sha256:786ce87568c303fadb5afcc7102d454cd3040d75f6f8626f5db460d1871f4dd0 \
+    --hash=sha256:dccbd362f91a7b9024d1f55ee9f548ac065027ff15d8c8b0db889ab3a8f31215
+    # via torch
+nvidia-nccl-cu13==2.30.7 \
+    --hash=sha256:ca786ffa5a647c75d4d1f5cc72a6c4f537947e2ba8823d7c8aaf768e7a7b9f77 \
+    --hash=sha256:cefa7fdb9710efd0f39c5f1be1d61ff6fc9a996c451265bd7fbdcf9455ed4b50
+    # via torch
+nvidia-nvjitlink==13.4.92 \
+    --hash=sha256:25f74fad0d654271c921ac4dca614bd6258bc21791242fc7b2289dad7ae9c099 \
+    --hash=sha256:9e4a7ff4f0cafa8c624917055b863dc11f5c2912ead23c462889e166f3b0e57d \
+    --hash=sha256:b286f3a4f227a9363efdec263c7b91788cef1478d2b8a5fa8bab7f3e82ff82fd \
+    --hash=sha256:e0391f24ed94ec879b84e3da4d4ec320c879aff681f2c7a638462f7199284323
+    # via
+    #   cuda-toolkit
+    #   nvidia-cufft
+    #   nvidia-cusolver
+    #   nvidia-cusparse
+nvidia-nvshmem-cu13==3.4.5 \
+    --hash=sha256:290f0a2ee94c9f3687a02502f3b9299a9f9fe826e6d0287ee18482e78d495b80 \
+    --hash=sha256:6dc2a197f38e5d0376ad52cd1a2a3617d3cdc150fd5966f4aee9bcebb1d68fe9
+    # via torch
+nvidia-nvtx==13.0.85 \
+    --hash=sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4 \
+    --hash=sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6 \
+    --hash=sha256:d66ea44254dd3c6eacc300047af6e1288d2269dd072b417e0adffbf479e18519
+    # via cuda-toolkit
 onnx-asr==0.12.0 \
     --hash=sha256:5e7ceca454609819ea7833f61e2302e0c8f6ece4f8a78b66c5daba53cb51de4a \
     --hash=sha256:c1fcacddbced392f9f769ed5c6223f4ce739a6e4549346de33b9b520d4ead713
@@ -1755,11 +1920,18 @@ onnxruntime==1.30.0 \
     --hash=sha256:f36c87ec504f4f328e968ee322e4ba9682abe66280b3425625afcbed5333fed7 \
     --hash=sha256:fa688e7891a6aa206636fe7372e27ee75fd17713289f6b4fc7b190e0a7de9328 \
     --hash=sha256:fd54b314ea385bcecac69ab431f020ba503e3878dad4ebb645fec5a24b041242
-    # via faster-whisper, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   faster-whisper
 opentelemetry-api==1.42.1 \
     --hash=sha256:51a69edacadbc03a8950ace1c4c21099cacc538820ac2c9e36277e78cebba714 \
     --hash=sha256:56c63bea9f77b62856be8c47600474acad853b2924b99b1687c4cb6297166716
-    # via opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http, opentelemetry-sdk, opentelemetry-semantic-conventions, pyannote-audio
+    # via
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pyannote-audio
 opentelemetry-exporter-otlp==1.42.1 \
     --hash=sha256:2d9ebaed714377a67d224d46795ddcc11d2c877fa5de35fda70b6f3b010729a9 \
     --hash=sha256:aedd54545bb0587cd45210abdc8be545af9c01413f3307786e276df1e3c83bee
@@ -1767,7 +1939,9 @@ opentelemetry-exporter-otlp==1.42.1 \
 opentelemetry-exporter-otlp-proto-common==1.42.1 \
     --hash=sha256:04f1f01fb597c4249dfcd7f8b861c902c2102369d376d9d346ff38de4469a2ee \
     --hash=sha256:f48d395ab815b444da118868977e9798ea354c25737d5cf39578ae894011c140
-    # via opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http
+    # via
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-exporter-otlp-proto-grpc==1.42.1 \
     --hash=sha256:0ae1177e2038b18a929b3098215243631ef91136cba26b7e2b12790ceb7e87cc \
     --hash=sha256:975c4461f167dd8ed8857d68d3b6b25f3d272eab896f6a9470d0f5b90e2faf15
@@ -1779,11 +1953,17 @@ opentelemetry-exporter-otlp-proto-http==1.42.1 \
 opentelemetry-proto==1.42.1 \
     --hash=sha256:c6a51e6b4f05ae63565f3a113217f3d2bfaec68f78c02d7a6c85f9010d1cfca6 \
     --hash=sha256:dedb74cba2886c59c7789b227a7a670613025a07489040050aedff6e5c0fb43c
-    # via opentelemetry-exporter-otlp-proto-common, opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
 opentelemetry-sdk==1.42.1 \
     --hash=sha256:083cd4bbfaa5aa7b5a9e552430d9951219967cfb27aa61feb13a77aba1fc839d \
     --hash=sha256:8c834e8f8c9ba4171d4ec843d0cb8a67e4c7394d3f9e9297e582cbd9456ddbf7
-    # via opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http, pyannote-audio
+    # via
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+    #   pyannote-audio
 opentelemetry-semantic-conventions==0.63b1 \
     --hash=sha256:3daf963611334b365e98a57438183eb012d3bfb40b2d931a9af613476b8701a9 \
     --hash=sha256:dfe5ef4dee82586b746f522b818ceb298d00b3d59f660042bd79404bff8d0682
@@ -1795,7 +1975,16 @@ optuna==4.9.0 \
 packaging==26.3 \
     --hash=sha256:94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79 \
     --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
-    # via huggingface-hub, lightning, lightning-utilities, matplotlib, onnxruntime, optuna, pytorch-lightning, torch-pitch-shift, torchmetrics
+    # via
+    #   huggingface-hub
+    #   lightning
+    #   lightning-utilities
+    #   matplotlib
+    #   onnxruntime
+    #   optuna
+    #   pytorch-lightning
+    #   torch-pitch-shift
+    #   torchmetrics
 pandas==3.0.6 \
     --hash=sha256:0704044b676496b8350e023b09f174a26772456c974a2b11c36bebb558c9490d \
     --hash=sha256:085e3786ae6b2e82b406266bce36690f72b9dc1421903ba9296b2981a9fcf586 \
@@ -1855,7 +2044,10 @@ pandas==3.0.6 \
     --hash=sha256:f8029ec0f1f89e4f985929ce1f6626dabf3140d61a4e9c1215afdab34eaf9a5d \
     --hash=sha256:fb625f426b375bcc96e3a04c5d5d266cd7be6ae5d6866e0e703382ab5164068c \
     --hash=sha256:ff51a4459ed036e93d1eb1bb5e6e7b28685d3cb6b7c12b91c05b31024e234729
-    # via pyannote-core, pyannote-database, pyannote-metrics
+    # via
+    #   pyannote-core
+    #   pyannote-database
+    #   pyannote-metrics
 pillow==13.0.0 \
     --hash=sha256:02464da86f561f410e13b061ec37c3068a9cb557a095494157742d07b3c24a27 \
     --hash=sha256:04a63720f79e22fd54d897c233a68314c50ca0603360f54ce2bd5db8f0f43782 \
@@ -2084,7 +2276,9 @@ propcache==0.5.4 \
     --hash=sha256:f85915e00dcb1cd9f2f890ead064ed40a27df06f0db65be427b29482ae357572 \
     --hash=sha256:fc2461ecc45f17893f8207e73b46ea8ba93e33630e51cf4af3fbc21d47462b1a \
     --hash=sha256:ff6b113f50bc066a698db5d944d2c6dc7507168dd3341e255a8892fd0715a558
-    # via aiohttp, yarl
+    # via
+    #   aiohttp
+    #   yarl
 protobuf==6.33.6 \
     --hash=sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326 \
     --hash=sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901 \
@@ -2096,7 +2290,10 @@ protobuf==6.33.6 \
     --hash=sha256:e2afbae9b8e1825e3529f88d514754e094278bb95eadc0e199751cdd9a2e82a2 \
     --hash=sha256:e9db7e292e0ab79dd108d7f1a94fe31601ce1ee3f7b79e0692043423020b0593 \
     --hash=sha256:f443a394af5ed23672bc6c486be138628fbe5c651ccbc536873d7da23d1868cf
-    # via googleapis-common-protos, onnxruntime, opentelemetry-proto
+    # via
+    #   googleapis-common-protos
+    #   onnxruntime
+    #   opentelemetry-proto
 proxy-tools==0.1.0 \
     --hash=sha256:b299ba191b86e8173bf116ee9b2324aa58622bdb4d58b26ec18379b713007ffa
     # via pywebview
@@ -2107,11 +2304,18 @@ pyannote-audio==4.0.7 \
 pyannote-core==6.1.0 \
     --hash=sha256:44208a48a43d540b6a40c0ab07c1cb38c8deacfa3308de2608eb7dffa0e8cb88 \
     --hash=sha256:c2933aeb406d7d9ac2e182343ac995bec08e4bba83f8b7e46db2b38b03ecca22
-    # via pyannote-audio, pyannote-database, pyannote-metrics, pyannote-pipeline
+    # via
+    #   pyannote-audio
+    #   pyannote-database
+    #   pyannote-metrics
+    #   pyannote-pipeline
 pyannote-database==6.1.1 \
     --hash=sha256:36460c70ce9f50ff25c9ea365bc83ad625bb6b2494deccf6bd3fc750686ae684 \
     --hash=sha256:bbe76da738257a9e64061123d9694ad7e949c4f171d91a9269606d873528cd10
-    # via pyannote-audio, pyannote-metrics, pyannote-pipeline
+    # via
+    #   pyannote-audio
+    #   pyannote-metrics
+    #   pyannote-pipeline
 pyannote-metrics==4.2.0 \
     --hash=sha256:4e933ed1d05e3ce76d5657e34f51c9a12362d148bf56decd4ea5051eed4f23db \
     --hash=sha256:d66566e253958e39728f0f51b6e648449044a29e43b2d25e486193366cd348e0
@@ -2139,15 +2343,15 @@ pyparsing==3.3.3 \
 python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
-    # via matplotlib, pandas
-pythonnet==3.2.1 \
-    --hash=sha256:c86e8dd31268f6e0c48fcc4d6030041316d49ed2764a1cb6ea8c37876e07c572 \
-    --hash=sha256:dd5668b74b0c903d9a24e1ba86f728fc490f8e919d56b3c24bf06739b9ee2b7f
-    # via pywebview
+    # via
+    #   matplotlib
+    #   pandas
 pytorch-lightning==2.6.6 \
     --hash=sha256:52c52b20522dd3d3feb3bb3aae2dbe3f291e8e836d4111a74cfd72e9df018834 \
     --hash=sha256:71f95c7b22f25c4f91cc659e1734bcdc6c69c8b66543f2ed2d78dbe29ce2f167
-    # via lightning, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   lightning
 pytorch-metric-learning==2.9.0 \
     --hash=sha256:27a626caf5e2876a0fd666605a78cb67ef7597e25d7a68c18053dd503830701f \
     --hash=sha256:d51646006dc87168f00cf954785db133a4c5aac81253877248737aa42ef6432a
@@ -2230,11 +2434,20 @@ pyyaml==6.0.3 \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-    # via ctranslate2, huggingface-hub, lightning, optuna, pyannote-database, pyannote-pipeline, pytorch-lightning
+    # via
+    #   ctranslate2
+    #   huggingface-hub
+    #   lightning
+    #   optuna
+    #   pyannote-database
+    #   pyannote-pipeline
+    #   pytorch-lightning
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
-    # via opentelemetry-exporter-otlp-proto-http, pyannoteai-sdk
+    # via
+    #   opentelemetry-exporter-otlp-proto-http
+    #   pyannoteai-sdk
 rich==15.0.0 \
     --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb \
     --hash=sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36
@@ -2302,7 +2515,9 @@ scikit-learn==1.9.1 \
     --hash=sha256:e4c20a6c017d820faa7ac8c783e3d0c6a9a2e297bf9f55332ca17cdf7fd4d04d \
     --hash=sha256:e5d7b18a5b9dca241a74695f3275fa4c895a9dadc72b3d8df5fa9d1083c9b83e \
     --hash=sha256:ffbcbbbb44202fbe9bc64bced25a145759adb9ef010b3d37a8064958ac13df2a
-    # via pyannote-metrics, pytorch-metric-learning
+    # via
+    #   pyannote-metrics
+    #   pytorch-metric-learning
 scipy==1.18.1 \
     --hash=sha256:011413b7426b75012840e35649e00fe0a2c3bae89fed433876e3a99251572efc \
     --hash=sha256:0ac49ea97594532dd44b7136094d35f5440fa06e6d9c6384a74c01764df388c5 \
@@ -2365,11 +2580,9 @@ scipy==1.18.1 \
     --hash=sha256:f29633129f9fa7e88a3f0fca835de2d030bfc9643f7799e1a0c46cee24d38fc7 \
     --hash=sha256:f55fa87b6c612ecd6b058f167c53231b1d14e412efe361d3d6e38b3631c73218 \
     --hash=sha256:fdaf5ea890a6183d0565f51a61799d67081bd5b1cf03c5f4b3fd3732108625c9
-    # via pyannote-metrics, scikit-learn
-setuptools==84.0.0 \
-    --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 \
-    --hash=sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73
-    # via torch
+    # via
+    #   pyannote-metrics
+    #   scikit-learn
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
@@ -2445,7 +2658,9 @@ sqlalchemy==2.0.50 \
     --hash=sha256:eefd9a03cc0047b14153872d228499d048bd7deaf926109c9ec25b15157b8e23 \
     --hash=sha256:f96233858e3df43932ac11589e22520da6e8aeb624b03fedfeebb0e8ea213086 \
     --hash=sha256:faffef4bcc20a1892e65e155293d99d60855bbbc79250ab712819cfd56a8e6bb
-    # via alembic, optuna
+    # via
+    #   alembic
+    #   optuna
 sympy==1.14.0 \
     --hash=sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517 \
     --hash=sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5
@@ -2505,7 +2720,17 @@ torch==2.14.1 \
     --hash=sha256:e65d5fe136e533b23c2d134377f7f126721c7c78dd75b3dbb735af082a8aeb85 \
     --hash=sha256:ef1276fd07adb8d463ac402a24ea7482e45c9a42df8ebdac211aa757779200ba \
     --hash=sha256:f68f5476e2bc0e8f60b74f7ca21acda885c4477af6392f8977e4f0d1ea1aa162
-    # via asteroid-filterbanks, julius, lightning, pyannote-audio, pytorch-lightning, pytorch-metric-learning, torch-audiomentations, torch-pitch-shift, torchmetrics, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   asteroid-filterbanks
+    #   julius
+    #   lightning
+    #   pyannote-audio
+    #   pytorch-lightning
+    #   pytorch-metric-learning
+    #   torch-audiomentations
+    #   torch-pitch-shift
+    #   torchmetrics
 torch-audiomentations==0.12.0 \
     --hash=sha256:1b80b91d2016ccf83979622cac8f702072a79b7dcc4c2bee40f00b26433a786b \
     --hash=sha256:b02d4c5eb86376986a53eb405cca5e34f370ea9284411237508e720c529f7888
@@ -2543,7 +2768,11 @@ torchaudio==2.11.0 \
     --hash=sha256:da2725e250866da42a12934c9a6552f65a18b7187fd7a6221387f0e605fb3b96 \
     --hash=sha256:e3f9696a9ef1d49acc452159b052370c636406d072e9d8f10895fda87b591ea9 \
     --hash=sha256:ed404c4399ad7f172c86a47c1b25293d322d1d58e26b10b0456a86cf67d37d84
-    # via pyannote-audio, torch-audiomentations, torch-pitch-shift, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   pyannote-audio
+    #   torch-audiomentations
+    #   torch-pitch-shift
 torchcodec==0.17.0 \
     --hash=sha256:0771bc114ff75a30f0ea8aa82cc7b259c518214eafe73fee2e606d745d77942b \
     --hash=sha256:0ab2f00d849ba7b24e1ddcc4ed575d988fe4ed54f39c6a55575a1a47674eff9c \
@@ -2567,15 +2796,41 @@ torchcodec==0.17.0 \
     --hash=sha256:d9e682f91bc70a34a8c7ea3d302b3d6f52970b97c5b81aa098478197abf17fc6 \
     --hash=sha256:defd5f0901999c9e981f6465a0f4aac8b5a5147e38e539b77c0711c015cf5349 \
     --hash=sha256:fc7021f10d38debd4fd47b4620da50d8cead981752bb359f7e3a615bbca2b7d3
-    # via pyannote-audio, -r requirements.in
+    # via
+    #   -r requirements.in
+    #   pyannote-audio
 torchmetrics==1.9.0 \
     --hash=sha256:a488609948600df52d3db4fcdab02e62aab2a85ef34da67037dc3e65b8512faa \
     --hash=sha256:bfdcbff3dd1d96b3374bb2496eb39f23c4b28b8a845b6a18c313688e0d2d9ca1
-    # via lightning, pyannote-audio, pytorch-lightning
+    # via
+    #   lightning
+    #   pyannote-audio
+    #   pytorch-lightning
 tqdm==4.70.1 \
     --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73 \
     --hash=sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4
-    # via faster-whisper, huggingface-hub, lightning, optuna, pyannote-pipeline, pytorch-lightning, pytorch-metric-learning
+    # via
+    #   faster-whisper
+    #   huggingface-hub
+    #   lightning
+    #   optuna
+    #   pyannote-pipeline
+    #   pytorch-lightning
+    #   pytorch-metric-learning
+triton==3.8.0 \
+    --hash=sha256:1b84e7d512490ba529111260fa6f7cad8b254a6bb5fbdf41d5ef9a5e57f52d0a \
+    --hash=sha256:1f0497218e26b7d79773ad9c2a3fa3b539ee69f587a13fac2e552b1d322a8015 \
+    --hash=sha256:1f6b48d0591929a3867973acac3dccd4e058585f91bfb41022de496c9ffab304 \
+    --hash=sha256:372285307d4c44ee74cee32de0b4f04bd157e071427e38c6f4ee3e3beb2194f4 \
+    --hash=sha256:387dae4cb0089a7b6ba1a428ae0782b65c4c58f57d94617cb22ca8593d8ccbca \
+    --hash=sha256:398f4b009c7ab08ed9aeb1d1282dee822945b53f399a5e12a4fecb643cf2007d \
+    --hash=sha256:68988ac85d5e7086baeda0ddc175af9667db7529b3c5e11a5c0601b8bef2200a \
+    --hash=sha256:6d914c52f89dc942b1819db959e7c07a5999f678ec760f677625c706b7e0d743 \
+    --hash=sha256:74217bb56ed8692759227758e4c4b3bd2d608a209c1a7a081bf361fb4c2c1bf9 \
+    --hash=sha256:a9c404c69ed4a39e8ec632eaf6b9fe058a060bf98979c177f6ef666f06bb8d50 \
+    --hash=sha256:b7004666652f500ed854a86988e4b3d69d247188b5d2092b5df1e44f4a954099 \
+    --hash=sha256:e91ffa46d095b252248297292dd22bcbacd53a125a0c2eefbbbf74925a320bc3
+    # via torch
 truststore==0.10.5 \
     --hash=sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd \
     --hash=sha256:9aaaedaefaf06d8b206278cf8b5012bc897f485a874503501e12d776df78951c
@@ -2583,11 +2838,23 @@ truststore==0.10.5 \
 typing-extensions==4.16.0 \
     --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8 \
     --hash=sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5
-    # via alembic, anyio, asteroid-filterbanks, grpcio, huggingface-hub, lightning, lightning-utilities, opentelemetry-api, opentelemetry-exporter-otlp-proto-grpc, opentelemetry-exporter-otlp-proto-http, opentelemetry-sdk, opentelemetry-semantic-conventions, pytorch-lightning, pywebview, sqlalchemy, torch
-tzdata==2026.5 \
-    --hash=sha256:8cc73c0a0bfca7dbfa59235d60b2eff82231dee33f53d206db1acd9173cfc0a7 \
-    --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac
-    # via pandas
+    # via
+    #   alembic
+    #   anyio
+    #   asteroid-filterbanks
+    #   grpcio
+    #   huggingface-hub
+    #   lightning
+    #   lightning-utilities
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-exporter-otlp-proto-http
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pytorch-lightning
+    #   pywebview
+    #   sqlalchemy
+    #   torch
 urllib3==2.8.0 \
     --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
     --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
