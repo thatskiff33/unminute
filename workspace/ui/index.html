@@ -79,7 +79,7 @@
         </button>
       </div>
       <p id="mic-line" class="mic-line" hidden>
-        <span>Microphone: <span id="mic-name"></span></span>
+        <span>Microphone: <span id="mic-name"></span><span id="mic-computer" hidden> · Computer audio on</span></span>
         <button type="button" id="mic-change" class="link-plain" aria-expanded="false" aria-controls="mic-chooser">Change or test</button>
       </p>
       <section id="mic-chooser" class="card chooser" aria-label="Choose the microphone" hidden>
@@ -116,6 +116,11 @@
           <button type="button" id="rec-discard" class="link-plain danger-link">Discard…</button>
         </div>
       </div>
+      <div id="rec-computer" class="rec-computer" hidden>
+        <span id="rec-computer-label" class="rec-computer-label">Computer audio</span>
+        <div id="rec-computer-level" class="rec-computer-bar" role="meter" aria-label="Computer audio level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-60"><span id="rec-computer-fill" class="rec-computer-fill"></span></div>
+      </div>
+      <p id="rec-computer-hint" class="rec-note" hidden></p>
       <p id="rec-note" class="rec-note"></p>
     </section>
     <ul id="rec-events" class="rec-events"></ul>
@@ -373,7 +378,7 @@
         <div class="su-head">
           <span class="eyebrow">Step 4 of 5 · Optional</span>
           <h2 id="su-4-title">Record with a microphone</h2>
-          <p class="su-lede">Record in-person meetings straight into Unminute. Only the microphone is recorded, not sound playing on the computer.</p>
+          <p class="su-lede">Record meetings in the room, or calls on this computer.</p>
         </div>
         <div class="su-card">
           <label class="toggle-row" for="su-mic"><span class="t-label strong">Turn on recording</span>
@@ -384,8 +389,11 @@
             <button type="button" id="su-test">Test microphone</button>
           </div>
           <p id="su-test-result" class="su-test" role="status" aria-live="polite" hidden></p>
+          <label class="toggle-row top" for="su-computer" id="su-computer-row"><span class="t-text"><span class="t-label strong">Also record computer audio</span>
+            <span id="su-computer-note" class="t-note"></span></span>
+            <input type="checkbox" id="su-computer" class="switch" role="switch"></label>
         </div>
-        <p class="su-note">Tell everyone present when a meeting is being recorded.</p>
+        <p class="su-note">Tell everyone in the meeting when it is being recorded, including people on a call.</p>
         <div class="su-foot">
           <button type="button" data-go="3">Back</button>
           <span class="su-foot-right">
@@ -443,8 +451,11 @@
       <h2 id="h-rec">Recording and speakers</h2>
       <div class="set-grid three">
         <label class="toggle-row top" for="s-microphone"><span class="t-text"><span class="t-label strong">Record with a microphone</span>
-          <span class="t-note">Adds Record a meeting to the Meetings page. Computer audio is not recorded.</span></span>
+          <span class="t-note">Adds Record a meeting to the Meetings page. Records the room through your microphone.</span></span>
           <input type="checkbox" id="s-microphone" class="switch" role="switch"></label>
+        <label class="toggle-row top" for="s-computer"><span class="t-text"><span class="t-label strong">Also record computer audio</span>
+          <span id="s-computer-note" class="t-note"></span></span>
+          <input type="checkbox" id="s-computer" class="switch" role="switch"></label>
         <label class="toggle-row top" for="s-speakers"><span class="t-text"><span class="t-label strong">Name speakers after transcription</span>
           <span class="t-note">Works out who spoke when, after the text is ready.</span></span>
           <input type="checkbox" id="s-speakers" class="switch" role="switch"></label>

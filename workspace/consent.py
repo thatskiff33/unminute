@@ -12,18 +12,45 @@
 # (a statement the person must tick first).
 #
 # The recording wording is versioned: a recording keeps the version it was
-# confirmed with. Stdlib only.
+# confirmed with, and the sources it was confirmed for (version 2, #108): the
+# microphone alone, or the microphone and computer audio. The microphone-only
+# text is version 1's, unchanged; the computer audio variant names people on
+# the call and other sounds the computer plays. Stdlib only.
 
 import time
 import unicodedata
 
-RECORDING_WORDING_VERSION = 1
+RECORDING_WORDING_VERSION = 2
 RECORDING_TITLE = "Start recording?"
 DELETE_ORIGINALS_TITLE = "Allow deleting originals from this folder?"
 DISCARD_TITLE = "Discard this meeting?"
 
+# What a recording records, as the recorder names its tracks.
+MICROPHONE = "microphone"
+COMPUTER = "computer"
+MICROPHONE_ONLY = (MICROPHONE,)
+WITH_COMPUTER = (MICROPHONE, COMPUTER)
 
-def recording_question():
+
+def _sources(sources):
+    """The sources as a tuple, if they are ones a recording can have."""
+    if isinstance(sources, (list, tuple)) and tuple(sources) in (MICROPHONE_ONLY, WITH_COMPUTER):
+        return tuple(sources)
+    raise ValueError("Unknown recording sources.")
+
+
+def recording_question(sources=MICROPHONE_ONLY):
+    if _sources(sources) == WITH_COMPUTER:
+        return {
+            "title": RECORDING_TITLE,
+            "body": ("Unminute records your microphone and the sound playing on this "
+                     "computer, including other people on a call, and transcribes it here. "
+                     "Other sounds, such as notifications or a video, are recorded too. "
+                     "Before you start, tell everyone in the meeting, in the room and on the "
+                     "call, that it is being recorded, and why."),
+            "check": ("Everyone in this meeting, including people on the call, has been told "
+                      "that it is being recorded, and why."),
+            "action": "Start recording", "style": "record", "icon": "mic"}
     return {
         "title": RECORDING_TITLE,
         "body": ("Unminute records the meeting's audio on this computer and transcribes it "
@@ -94,14 +121,25 @@ def _shown(value, limit, middle=False):
     return text[:limit - 1] + ellipsis
 
 
-def recording_record(clock=time.time):
-    """What is kept with a recording: that the person confirmed, when, and
-    which wording they saw. No names or content."""
+def recording_record(sources=MICROPHONE_ONLY, clock=time.time):
+    """What is kept with a recording: that the person confirmed, when, which
+    wording they saw and the sources it named. No names or content."""
     return {"confirmed": True, "wording": RECORDING_WORDING_VERSION, "at": round(clock(), 3),
-            "method": "app-window"}
+            "method": "app-window", "sources": list(_sources(sources))}
 
 
-def valid_recording_record(record):
+def sources_match(record, sources):
+    """The record names exactly these sources (the question shown was for
+    them). False for anything else, including a record without sources."""
+    named = record.get("sources") if isinstance(record, dict) else None
+    return isinstance(named, list) and tuple(named) == _sources(sources)
+
+
+def valid_recording_record(record, sources=MICROPHONE_ONLY):
+    """A confirmation of the current wording for exactly these sources. The
+    check runs only when a recording starts; records kept with earlier
+    recordings stay as history."""
     return (isinstance(record, dict) and record.get("confirmed") is True
             and record.get("wording") == RECORDING_WORDING_VERSION
-            and isinstance(record.get("at"), (int, float)))
+            and isinstance(record.get("at"), (int, float))
+            and sources_match(record, sources))

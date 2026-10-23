@@ -294,6 +294,7 @@ class ConsentAnswerTests(unittest.TestCase):
         # ws.locked is None, and a bare Mock's attribute is not None.
         ws = mock.Mock(locked=None)
         ws.consent_required.return_value = True
+        ws.recording_sources.return_value = consent.MICROPHONE_ONLY    # the perf run's (#108)
         ws.start_recording.side_effect = lambda index, name, consent=None: {"started": True}
         confirm, asked = perf_check.consent_answerer(consent.RECORDING_TITLE)
         before = diag._current

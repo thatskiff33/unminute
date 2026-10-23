@@ -1,4 +1,4 @@
-# Two-track recording groundwork (#108): microphone and computer audio, with
+# Two-track recording (#108): microphone and computer audio, with
 # fakes and synthetic buffers only (no device is opened, nothing is played).
 #   - workspace/loopback.py: mono conversion, the pacer that keeps a silent
 #     computer track continuous in time, and source checks;
@@ -7,7 +7,8 @@
 #     device; a failure or policy stops that track only);
 #   - workspace/mixdown.py: drift and offset corrected, resampled, ONE mix,
 #     made in memory from the encrypted chunks (#111 C3b);
-#   - workspace/app.py: the policy key and the user's switch, and the import
+#   - workspace/app.py and workspace/api.py: the policy key, the user's switch, the
+#     confirmation (wording version 2, its sources matched at start) and the import
 #     of a two-track recording as one meeting.
 #   python tools/run_tests.py
 
@@ -35,7 +36,14 @@ HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 RATE = 16000
 CRATE = 48000
 CONSENT = consent.recording_record(clock=lambda: 1000.0)
+BOTH = ("microphone", "computer")
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def both_consent():
+    """A confirmation whose wording named computer audio and people on the
+    call (version 2, the page part of #108)."""
+    return consent.recording_record(sources=BOTH, clock=lambda: 1000.0)
 KEY = bytes(range(32))           # a recording's key in these tests (#111 C3b)
 
 if HAVE_NUMPY:
@@ -624,6 +632,13 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in rec.folder.iterdir()),
                          ["chunk-000000.uma", "heartbeat", "journal.json"])
 
+    def test_the_status_names_the_output_being_recorded(self):
+        # Shown on the card's "no sound from the computer" hint (#108 page part).
+        rec, mic, comp = self.start()
+        self.assertEqual(rec.status()["computer"]["device"], "Test speakers")
+        comp.notify("switched", "Headset earphones")
+        self.assertEqual(rec.status()["computer"]["device"], "Headset earphones")
+
     def test_both_tracks_are_saved_in_durable_chunks_with_a_format_2_journal(self):
         rec, mic, comp = self.start()
         self.assertTrue(comp.started)
@@ -809,6 +824,41 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertFalse(folder.exists())
 
 
+# -- the confirmation: wording version 2 and its sources (stdlib only) ----------------
+
+class RecordingWordingTests(unittest.TestCase):
+    def test_the_wording_is_version_2_with_a_variant_for_computer_audio(self):
+        self.assertEqual(consent.RECORDING_WORDING_VERSION, 2)
+        mic, both = consent.recording_question(), consent.recording_question(BOTH)
+        self.assertEqual(mic, consent.recording_question(("microphone",)))
+        self.assertEqual((mic["title"], both["title"]), (consent.RECORDING_TITLE,) * 2)
+        # The microphone-only text is the version 1 text, unchanged.
+        self.assertIn("tell everyone present", mic["body"])
+        for text in (both["body"], both["check"]):
+            self.assertIn("on the call", text)
+        self.assertIn("notifications", both["body"])
+        for bad in ((), ("computer",), ("microphone", "speakers"), "microphone"):
+            with self.subTest(sources=bad), self.assertRaises(ValueError):
+                consent.recording_question(bad)
+
+    def test_the_record_keeps_the_sources_it_was_confirmed_for(self):
+        record = consent.recording_record(sources=BOTH, clock=lambda: 5.0)
+        self.assertEqual(record, {"confirmed": True, "wording": 2, "at": 5.0,
+                                  "method": "app-window", "sources": list(BOTH)})
+        self.assertEqual(consent.recording_record(clock=lambda: 5.0)["sources"],
+                         ["microphone"])
+        self.assertTrue(consent.valid_recording_record(record, BOTH))
+        self.assertFalse(consent.valid_recording_record(record))         # microphone only
+        self.assertTrue(consent.valid_recording_record(consent.recording_record()))
+        for bad in ({**record, "wording": 1}, {**record, "sources": "microphone"},
+                    {**record, "sources": ["computer", "microphone"]},
+                    {k: v for k, v in record.items() if k != "sources"}):
+            with self.subTest(record=bad):
+                self.assertFalse(consent.valid_recording_record(bad, BOTH))
+        self.assertFalse(consent.sources_match(record, ("microphone",)))
+        self.assertTrue(consent.sources_match(record, BOTH))
+
+
 # -- the app: policy, the switch, the import ------------------------------------------
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
@@ -856,10 +906,11 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
             fn(*args)
         return str(ctx.exception)
 
+    @mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", False)
     def test_the_switch_cannot_be_saved_before_the_app_offers_it(self):
-        # Fail closed until the page slice: set_settings refuses computer
-        # audio, nothing in the same change is saved, and a value already in
-        # the settings file reads as off.
+        # The gate still fails closed if it is turned off again: set_settings
+        # refuses computer audio, nothing in the same change is saved, and a
+        # value already in the settings file reads as off.
         ws = self.make()
         self.assertIn("not available", self.refused(
             ws.set_settings, {"microphone": True, "computer_audio": True}))
@@ -868,6 +919,7 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         ws.set_settings({"microphone": True})
         ws.settings.update(computer_audio=True)          # saved by some other means
         self.assertIs(ws.get_settings()["computer_audio"], False)
+        self.assertEqual(ws.recording_sources(), ("microphone",))
 
     def test_not_set_by_it_the_switch_is_allowed_but_off_by_default(self):
         ws = self.make()
@@ -896,9 +948,10 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
                 self.assertIs(ws.get_settings()["computer_audio"], False)
                 self.assertIsNone(ws._computer_track())
 
+    @mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", False)
     def test_no_computer_track_opens_until_the_app_allows_it(self):
-        # Groundwork only: whatever the switch says, the start path opens no
-        # computer track until the version 2 confirmation and the page land.
+        # With the gate off (as before the page part), whatever the switch
+        # says, the start path opens no computer track.
         ws = self.make()
         ws.settings.update(microphone=True, computer_audio=True)
         ws.start()
@@ -911,9 +964,99 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         ws = self.make(values)
         ws.settings.update(microphone=True, computer_audio=True)
         ws.start()
-        with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):
-            ws.start_recording(3, consent=CONSENT)
+        ws.start_recording(3, consent=both_consent())
         return ws, self.holder["mic"], self.holder["comp"]
+
+    # -- the page part (#108 slice 4): offered, and confirmed by name --------------
+
+    def test_computer_audio_is_offered_in_this_version(self):
+        ws = self.make()
+        ws.set_settings({"microphone": True, "computer_audio": True})
+        self.assertIs(ws.get_settings()["computer_audio"], True)
+        self.assertEqual(ws.recording_sources(), BOTH)
+        self.assertIs(ws.recording_status()["computer_audio"], True)
+        ws.set_settings({"computer_audio": False})
+        self.assertEqual(ws.recording_sources(), ("microphone",))
+        self.assertIs(ws.recording_status()["computer_audio"], False)
+
+    def test_policy_or_the_microphone_switch_takes_computer_audio_out_of_the_sources(self):
+        cases = (({"AllowComputerAudioRecording": False}, ()),
+                 ({}, ("AllowComputerAudioRecording",)))
+        for values, invalid in cases:
+            with self.subTest(values=values, invalid=invalid):
+                ws = self.make(values, invalid)
+                ws.settings.update(microphone=True, computer_audio=True)
+                self.assertEqual(ws.recording_sources(), ("microphone",))
+                self.assertIs(ws.recording_status()["computer_audio"], False)
+
+    def test_no_computer_track_opens_without_a_confirmation_that_names_it(self):
+        ws = self.make()
+        ws.settings.update(microphone=True, computer_audio=True)
+        ws.start()
+        no_sources = {k: v for k, v in both_consent().items() if k != "sources"}
+        for record in (CONSENT, {**both_consent(), "wording": 1}, no_sources,
+                       {**both_consent(), "sources": ["computer"]}):
+            with self.subTest(record=record):
+                self.assertIn("confirm", self.refused(ws.start_recording, 3, None, record))
+                self.assertEqual(self.holder, {})          # neither device was opened
+                self.assertIsNone(ws._recording)
+        ws.start_recording(3, consent=both_consent())
+        self.assertIn("comp", self.holder)
+        journal = recorder.read_journal(ws._recording.folder)
+        self.assertEqual(journal["format"], 2)
+        self.assertEqual((journal["consent"]["wording"], journal["consent"]["sources"]),
+                         (2, list(BOTH)))
+        ws.stop_recording()
+
+    def test_a_confirmation_naming_the_computer_never_starts_the_microphone_alone(self):
+        # The switch or policy changed while the question was open: what is
+        # about to start no longer matches what the person confirmed.
+        for values, computer in (({}, False), ({"AllowComputerAudioRecording": False}, True)):
+            with self.subTest(values=values, computer=computer):
+                self.holder.clear()
+                ws = self.make(values)
+                ws.settings.update(microphone=True, computer_audio=computer)
+                ws.start()
+                self.assertIn("again", self.refused(ws.start_recording, 3, None,
+                                                    both_consent()))
+                self.assertEqual(self.holder, {})
+                ws.start_recording(3, consent=CONSENT)      # the microphone-only wording
+                self.assertNotIn("comp", self.holder)
+                ws.stop_recording()
+
+    def bridge(self, ws, confirm):
+        from workspace import api
+        return api.make_api(ws, confirm=confirm, decline_pause_s=0)
+
+    def test_the_bridge_asks_with_the_computer_wording_and_keeps_both_sources(self):
+        ws = self.make()
+        ws.settings.update(microphone=True, computer_audio=True)
+        ws.start()
+        asked = []
+        r = self.bridge(ws, lambda q: asked.append(q) or True).start_recording(
+            3, "Test microphone")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(asked, [consent.recording_question(BOTH)])
+        self.assertNotEqual(asked[0], consent.recording_question())
+        self.assertIn("on the call", asked[0]["check"])
+        self.assertIn("comp", self.holder)
+        journal = recorder.read_journal(ws._recording.folder)
+        self.assertEqual(journal["consent"]["sources"], list(BOTH))
+        ws.stop_recording()
+
+    def test_a_switch_changed_while_the_question_is_open_starts_nothing(self):
+        ws = self.make()
+        ws.settings.update(microphone=True, computer_audio=True)
+        ws.start()
+
+        def confirm(question):
+            ws.settings.update(computer_audio=False)        # turned off meanwhile
+            return True
+        r = self.bridge(ws, confirm).start_recording(3, "Test microphone")
+        self.assertFalse(r["ok"])
+        self.assertIn("again", r["error"])
+        self.assertEqual(self.holder, {})
+        self.assertIsNone(ws._recording)
 
     def test_a_two_track_recording_becomes_one_meeting_from_one_mix(self):
         from workspace import media
@@ -926,6 +1069,7 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertEqual(len(meetings), 1)                       # one meeting, one transcript
         self.assertEqual(list((ws.root / "recordings").iterdir()), [])
         self.assertEqual(ws.recording_status()["reports"][-1]["seconds"], 6.0)
+        self.assertIs(ws.recording_status()["reports"][-1]["computer"], True)
         reader = media.open_audio(ws.store, ws.media, meetings[0]["id"])   # sealed since C3a
         try:
             audio = reader.read(16000, 64000)                   # 1 s to 4 s, at 16 kHz

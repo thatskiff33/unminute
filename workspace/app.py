@@ -102,11 +102,14 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
                "Ask your IT team.")
 
-# Computer audio (#108) is back-end groundwork until the recording confirmation
-# names people on the call (wording version 2) and the page has its switch:
-# until then no recording opens a computer track, whatever the setting says.
-# Tests turn it on to exercise the path.
-COMPUTER_AUDIO_STARTS = False
+# Computer audio (#108): a recording opens a computer track only when this is
+# True, the user's switch is on and policy allows it, and the confirmation
+# named it (wording version 2). The page part of #108 turned it on; setting it
+# back to False hides the switch's effect again (set_settings refuses it and
+# no recording opens a computer track), as the tests check.
+COMPUTER_AUDIO_STARTS = True
+SOURCES_CHANGED = ("What would be recorded changed while you were confirming (computer audio "
+                   "was turned on or off). Start the recording again.")
 COMPUTER_POLICY_STOP = ("Your organisation turned off computer audio. Only the microphone "
                         "is recorded from here.")
 
@@ -935,14 +938,25 @@ class Workspace:
         return (self._allowed("AllowMicrophoneRecording")
                 and self._allowed("AllowComputerAudioRecording"))
 
+    def _computer_wanted(self):
+        """A recording started now would record computer audio: the app opens
+        computer tracks at all (COMPUTER_AUDIO_STARTS), the user's switch is
+        on (off by default) and policy allows it."""
+        return bool(COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
+                    and self._computer_audio_allowed())
+
+    def recording_sources(self):
+        """What a recording started now would record, for the confirmation
+        the bridge shows (wording version 2): from the app's own settings and
+        policy, never from the page."""
+        return (recording_consent.WITH_COMPUTER if self._computer_wanted()
+                else recording_consent.MICROPHONE_ONLY)
+
     def _computer_track(self):
-        """The computer track for a recording about to start, or None: only
-        when the app opens computer tracks at all (COMPUTER_AUDIO_STARTS), the
-        user's switch is on (off by default) and policy allows it. The source
-        is the Windows default output (the meeting-app source needs a choice
-        of app on the page, a later slice)."""
-        if not (COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
-                and self._computer_audio_allowed()):
+        """The computer track for a recording about to start, or None. The
+        source is the Windows default output (the meeting-app source needs a
+        choice of app on the page, a later slice)."""
+        if not self._computer_wanted():
             return None
         from workspace import loopback       # only when a recording needs it
         return {"open": self.open_loopback or loopback.open_loopback,
@@ -990,7 +1004,17 @@ class Workspace:
         policy turns the confirmation off. Refused while locked (#111 C4a)."""
         self._not_locked()
         self._need_microphone()
-        if consent is not None and not recording_consent.valid_recording_record(consent):
+        # Worked out once: the sources the confirmation must name are the
+        # ones this recording opens (#108). A switch or policy changed while
+        # the question was open means asking again, never a different start.
+        computer = self._computer_track()
+        sources = (recording_consent.WITH_COMPUTER if computer is not None
+                   else recording_consent.MICROPHONE_ONLY)
+        if consent is not None and not recording_consent.valid_recording_record(consent,
+                                                                                 sources):
+            if any(recording_consent.valid_recording_record(consent, other) for other in
+                   (recording_consent.MICROPHONE_ONLY, recording_consent.WITH_COMPUTER)):
+                raise WorkspaceError(SOURCES_CHANGED)
             raise WorkspaceError("The recording confirmation is not valid.")
         if consent is None and self.consent_required():
             raise WorkspaceError("Recording needs your confirmation that everyone in the "
@@ -1019,7 +1043,7 @@ class Workspace:
                 rec = recorder.Recording(folder, choice["index"],
                                          choice.get("label") or choice["name"], choice["rate"],
                                          open_stream=self.open_stream,
-                                         computer=self._computer_track(), key=key)
+                                         computer=computer, key=key)
                 if consent is not None:
                     rec.journal["consent"] = dict(consent)     # saved with the journal
                 rec.start()
@@ -1164,11 +1188,14 @@ class Workspace:
     def recording_status(self):
         rec = self._recording
         if self.locked is not None:              # nothing records, and no report is shown
-            return {"enabled": False, "display": self.settings["recording_display"],
+            return {"enabled": False, "computer_audio": False,
+                    "display": self.settings["recording_display"],
                     "lid_override": False, "lid_refused": None, "recording": None,
                     "reports": []}
-        return {"enabled": (self.settings["microphone"]
-                            and self._allowed("AllowMicrophoneRecording")),
+        enabled = bool(self.settings["microphone"] and self._allowed("AllowMicrophoneRecording"))
+        return {"enabled": enabled,
+                # A recording started now records computer audio too (#108).
+                "computer_audio": enabled and self._computer_wanted(),
                 "display": self.settings["recording_display"],
                 # The lid action is "Do nothing" for this recording (set, or already so).
                 "lid_override": bool(self._lid_result and self._lid_result[0]),
@@ -1485,6 +1512,7 @@ class Workspace:
                     **({"consent": journal["consent"]} if "consent" in journal else {})}
             mid = self._import_one(None, None, title, recording=recording_id,
                                    stream=(audio, (folder.name, json.dumps(info))))
+            two = audio.computer is not None       # the report says both were saved
         except Exception as exc:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
             changed = media.damaged_audio(exc)  # a chunk changed after it was checked
@@ -1504,7 +1532,7 @@ class Workspace:
                 audio.close()
         # Mark the folder as imported before removing it; the recording_sources
         # row, committed with the import, also stops a second import.
-        report.update(title=title, meeting=mid, recording_id=folder.name)
+        report.update(title=title, meeting=mid, recording_id=folder.name, computer=two)
         if interrupted and recording_id:          # the app did not stop it: recovered
             self.audit.record("recording_ended", recording=recording_id, result="recovered",
                               seconds=max(0, int(seconds)))
