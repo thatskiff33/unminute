@@ -7,46 +7,122 @@
 # script without a byte-order mark in the system code page, so other characters are
 # built from their code points.
 #
-# Safety: a script is dot-sourced only after Assert-DotSourceGuard has found its
-# guard (a top-level "if ($MyInvocation.InvocationName -eq ".") { return }" before
-# the main part), because without it the main part would install or uninstall for
-# real. While the tests run, LOCALAPPDATA and APPDATA point into TestDrive.
+# Safety (tests/powershell/Isolation.ps1): these tests never reach this computer's
+# real install. LOCALAPPDATA and APPDATA point into TestDrive, and a script is loaded
+# only as ". (Confirm-Loadable $path); Set-ScratchTarget": refused without its
+# dot-source guard (without it the main part would install or uninstall for real) or
+# while anything it would write is not scratch, and then given a throwaway HKCU
+# uninstall key and a scratch Start menu folder. "the tests' own safety check" below
+# proves it, including that every load in these files has that form.
 
 BeforeAll {
-    $script:SavedLocal = $env:LOCALAPPDATA
-    $script:SavedRoaming = $env:APPDATA
-    $env:LOCALAPPDATA = [IO.Directory]::CreateDirectory((Join-Path $TestDrive "Local")).FullName
-    $env:APPDATA = [IO.Directory]::CreateDirectory((Join-Path $TestDrive "Roaming")).FullName
-
-    function Assert-DotSourceGuard([string]$Path) {
-        $tokens = $null; $errors = $null
-        $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
-        $statements = @($ast.EndBlock.Statements)
-        $guard = -1; $main = -1
-        for ($i = 0; $i -lt $statements.Count; $i++) {
-            $text = $statements[$i].Extent.Text
-            if ($guard -lt 0 -and $text -ceq 'if ($MyInvocation.InvocationName -eq ".") { return }') { $guard = $i }
-            if ($main -lt 0 -and $statements[$i] -is [Management.Automation.Language.TryStatementAst]) { $main = $i }
-        }
-        if ($errors.Count -or $guard -lt 0 -or $main -lt 0 -or $guard -gt $main) {
-            throw "$Path has no dot-source guard before its main part, so it was not loaded."
-        }
-    }
+    . (Join-Path $PSScriptRoot "Isolation.ps1")
+    Enter-ScratchProfile $TestDrive
 }
 
 AfterAll {
-    $env:LOCALAPPDATA = $script:SavedLocal
-    $env:APPDATA = $script:SavedRoaming
+    Exit-ScratchProfile
 }
 
 Describe "the tests' own safety check" {
+    BeforeAll {
+        $script:Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+        $script:Scripts = @((Join-Path $script:Repo "packaging\install.ps1"), (Join-Path $script:Repo "packaging\uninstall.ps1"))
+    }
+
     It "refuses a script whose main part would run when dot-sourced" {
         $unsafe = Join-Path $TestDrive "unsafe.ps1"
         [IO.File]::WriteAllText($unsafe, "function Get-One { 1 }`r`ntry { throw 'main ran' } finally { }`r`n")
-        { Assert-DotSourceGuard $unsafe } | Should -Throw "*no dot-source guard*"
+        { Confirm-Loadable $unsafe } | Should -Throw "*no dot-source guard*"
         $late = Join-Path $TestDrive "late.ps1"
         [IO.File]::WriteAllText($late, "try { } finally { }`r`nif (`$MyInvocation.InvocationName -eq `".`") { return }`r`n")
-        { Assert-DotSourceGuard $late } | Should -Throw "*no dot-source guard*"
+        { Confirm-Loadable $late } | Should -Throw "*no dot-source guard*"
+    }
+
+    It "refuses a script that reaches the Start menu or the uninstall key directly" {
+        $guarded = "if (`$MyInvocation.InvocationName -eq `".`") { return }`r`ntry { } finally { }`r`n"
+        $direct = Join-Path $TestDrive "direct.ps1"
+        # As the scripts were until B6a: the Programs folder looked up inside a function.
+        [IO.File]::WriteAllText($direct, "function New-Shortcut { [Environment]::GetFolderPath(`"Programs`") }`r`n" + $guarded)
+        { Confirm-Loadable $direct } | Should -Throw "*other than through*"
+        [IO.File]::WriteAllText($direct, "function Remove-Entry { Remove-Item `"$($script:RealUninstallKey)`" }`r`n" + $guarded)
+        { Confirm-Loadable $direct } | Should -Throw "*other than through*"
+    }
+
+    It "loads nothing while <Name> is this account's own" -TestCases @(
+        @{ Name = "LOCALAPPDATA"; Folder = "LocalApplicationData" }
+        @{ Name = "APPDATA"; Folder = "ApplicationData" }
+    ) {
+        param($Name, $Folder)
+        $saved = [Environment]::GetEnvironmentVariable($Name)
+        try {
+            [Environment]::SetEnvironmentVariable($Name, [Environment]::GetFolderPath($Folder))
+            foreach ($path in $script:Scripts) { { Confirm-Loadable $path } | Should -Throw "*not scratch*" }
+        } finally {
+            [Environment]::SetEnvironmentVariable($Name, $saved)
+        }
+    }
+
+    It "points every place <Leaf> writes at scratch, and refuses the real ones" -TestCases @(
+        @{ Leaf = "install.ps1" }
+        @{ Leaf = "uninstall.ps1" }
+    ) {
+        param($Leaf)
+        . (Confirm-Loadable (Join-Path $script:Repo "packaging\$Leaf")); Set-ScratchTarget
+        $RegKey | Should -BeExactly $script:ScratchKey
+        $ProgramsFolder | Should -BeExactly $script:ScratchPrograms
+        Test-ScratchPath $Options.InstallDir | Should -BeTrue
+        $real = Get-RealPlace
+        foreach ($case in @(
+                @{ Name = "ProgramsFolder"; Value = [Environment]::GetFolderPath("Programs"); Says = "*Start menu folder*" }
+                @{ Name = "RegKey"; Value = $script:RealUninstallKey; Says = "*uninstall key*" }
+                @{ Name = "RegKey"; Value = $script:ScratchKeyPrefix + "x\..\..\Microsoft"; Says = "*uninstall key*" }
+                @{ Name = "InstallDir"; Value = $real[0]; Says = "*default -InstallDir*" })) {
+            $saved = Get-Variable -Name $case.Name -ValueOnly
+            Set-Variable -Name $case.Name -Value $case.Value
+            { Assert-ScratchTarget } | Should -Throw $case.Says
+            Set-Variable -Name $case.Name -Value $saved
+        }
+        foreach ($place in $real) {
+            $saved = $Options.InstallDir
+            $Options.InstallDir = $place
+            { Assert-ScratchTarget } | Should -Throw "*install folder*"
+            $Options.InstallDir = $saved
+        }
+        { Assert-ScratchTarget } | Should -Not -Throw
+    }
+
+    It "writes the shortcut and the uninstall entry only to the scratch ones" {
+        . (Confirm-Loadable $script:Scripts[0]); Set-ScratchTarget
+        $target = [IO.Directory]::CreateDirectory((Join-Path $Options.InstallDir "versions\1.0.0")).FullName
+        [IO.File]::WriteAllText((Join-Path $target "version.json"), '{"name": "Unminute", "version": "1.0.0"}')
+        New-Shortcut $target
+        Register-Uninstall $target "1.0.0"
+        Test-Path -LiteralPath (Join-Path $script:ScratchPrograms "Unminute.lnk") -PathType Leaf | Should -BeTrue
+        (Get-ItemProperty -LiteralPath $script:ScratchKey).DisplayVersion | Should -BeExactly "1.0.0"
+    }
+
+    It "loads every script in these tests only through the checks" {
+        $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.Tests.ps1" -File)
+        $files.Count | Should -BeGreaterThan 0
+        $loads = 0
+        foreach ($file in $files) {
+            $tokens = $null; $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            $dots = $ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and
+                $n.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot }, $true)
+            foreach ($dot in $dots) {
+                if ($dot.Extent.Text -ceq '. (Join-Path $PSScriptRoot "Isolation.ps1")') { continue }
+                $dot.Extent.Text | Should -BeLike ". (Confirm-Loadable *)"
+                $pipeline = $dot.Parent
+                $statements = @($pipeline.Parent.Statements)
+                $at = [array]::IndexOf($statements, $pipeline)
+                $at | Should -BeLessThan ($statements.Count - 1)
+                $statements[$at + 1].Extent.Text | Should -BeExactly "Set-ScratchTarget"
+                $loads++
+            }
+        }
+        $loads | Should -BeGreaterThan 0
     }
 }
 
@@ -55,6 +131,17 @@ Describe "packaging/identity.json mirrors the scripts" {
         $script:Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         $script:Identity = Get-Content -LiteralPath (Join-Path $script:Repo "packaging\identity.json") -Raw |
             ConvertFrom-Json
+
+        # The text a script assigns to $Name at its top level (the tests replace the
+        # loaded value of $RegKey with a throwaway key).
+        function Get-TopString([string]$Path, [string]$Name) {
+            $tokens = $null; $errors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+            $found = @($ast.EndBlock.Statements | Where-Object {
+                $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left.Extent.Text -ceq "`$$Name" })
+            $found.Count | Should -Be 1
+            return $found[0].Right.Expression.Value
+        }
 
         # Every exit code a script can give: Stop-Install/Stop-Uninstall <n> and exit <n>.
         function Get-ExitCode([string]$Path) {
@@ -75,12 +162,12 @@ Describe "packaging/identity.json mirrors the scripts" {
     }
 
     It "install.ps1 uses the identity's names and exit codes" {
-        Assert-DotSourceGuard (Join-Path $script:Repo "packaging\install.ps1")
-        . (Join-Path $script:Repo "packaging\install.ps1")
+        $path = Join-Path $script:Repo "packaging\install.ps1"
+        . (Confirm-Loadable $path); Set-ScratchTarget
         $user = $script:Identity.modes.user
         $AppName | Should -BeExactly $script:Identity.name
         $AppId | Should -BeExactly $script:Identity.app_id
-        $RegKey | Should -BeExactly ($user.uninstall_key -replace '^HKCU\\', 'HKCU:\')
+        Get-TopString $path "RegKey" | Should -BeExactly ($user.uninstall_key -replace '^HKCU\\', 'HKCU:\')
         $InstallDir | Should -BeExactly ([Environment]::ExpandEnvironmentVariables($user.install_folder))
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
@@ -90,11 +177,11 @@ Describe "packaging/identity.json mirrors the scripts" {
     }
 
     It "uninstall.ps1 uses the identity's names and exit codes" {
-        Assert-DotSourceGuard (Join-Path $script:Repo "packaging\uninstall.ps1")
-        . (Join-Path $script:Repo "packaging\uninstall.ps1")
+        $path = Join-Path $script:Repo "packaging\uninstall.ps1"
+        . (Confirm-Loadable $path); Set-ScratchTarget
         $user = $script:Identity.modes.user
         $AppName | Should -BeExactly $script:Identity.name
-        $RegKey | Should -BeExactly ($user.uninstall_key -replace '^HKCU\\', 'HKCU:\')
+        Get-TopString $path "RegKey" | Should -BeExactly ($user.uninstall_key -replace '^HKCU\\', 'HKCU:\')
         $InstallDir | Should -BeExactly ([Environment]::ExpandEnvironmentVariables($user.install_folder))
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
@@ -106,8 +193,7 @@ Describe "packaging/identity.json mirrors the scripts" {
     It "both scripts keep clear of the data folder the identity names" {
         $data = [Environment]::ExpandEnvironmentVariables($script:Identity.data_folders.root)
         foreach ($name in "install.ps1", "uninstall.ps1") {
-            Assert-DotSourceGuard (Join-Path $script:Repo "packaging\$name")
-            . (Join-Path $script:Repo "packaging\$name")
+            . (Confirm-Loadable (Join-Path $script:Repo "packaging\$name")); Set-ScratchTarget
             Get-DataOverlap $data | Should -BeExactly $data
             Get-DataOverlap ([Environment]::ExpandEnvironmentVariables($script:Identity.data_folders.workspace)) |
                 Should -BeExactly $data
@@ -121,8 +207,7 @@ Describe "install.ps1 in both modes" {
     BeforeAll {
         $script:Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         $script:Install = Join-Path $script:Repo "packaging\install.ps1"
-        Assert-DotSourceGuard $script:Install
-        . $script:Install
+        . (Confirm-Loadable $script:Install); Set-ScratchTarget
         Mock Stop-Install { throw "STOP $Code" }
 
         # A synthetic package: the files given (relative name = text), and its manifest.
@@ -306,8 +391,7 @@ Describe "uninstall.ps1 in both modes" {
     BeforeAll {
         $script:Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
         $script:Uninstall = Join-Path $script:Repo "packaging\uninstall.ps1"
-        Assert-DotSourceGuard $script:Uninstall
-        . $script:Uninstall
+        . (Confirm-Loadable $script:Uninstall); Set-ScratchTarget
         Mock Stop-Uninstall { throw "STOP $Code" }
     }
 

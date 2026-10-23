@@ -193,10 +193,26 @@ real time, and remove it when the cause is fixed.
   functions and runs nothing. A script without that guard runs its main part when
   dot-sourced, with its default `-InstallDir`: on 23 Oct 2026 a failing-first run of
   the new Pester tests against the scripts from before B6a uninstalled the per-user copy
-  on the development computer. `tests/powershell` now checks for the guard before it
-  dot-sources anything, and points `LOCALAPPDATA` and `APPDATA` into Pester's TestDrive.
-  Never dot-source an older revision of either script; show failing-first evidence for
-  installer behaviour with the Python-driven tests, which run copies in temporary folders.
+  on the development computer.
+- **Installer tests never reach the real install (#111 B6a, after that incident).**
+  Pester: `tests/powershell/Isolation.ps1` points `LOCALAPPDATA` and `APPDATA` into
+  TestDrive, and a test loads a script only as
+  `. (Confirm-Loadable $path); Set-ScratchTarget`. `Confirm-Loadable` refuses, before
+  anything in the script runs, a script without the guard, one that reaches the Start
+  menu or the uninstall key other than through `$ProgramsFolder` and `$RegKey` (as every
+  script before B6a did), and a run whose variables are not scratch; `Set-ScratchTarget`
+  points `$RegKey` at a throwaway `HKCU\Software\Unminute-PesterTest-<guid>` key and
+  `$ProgramsFolder` at a scratch folder, and checks every place the script would write.
+  A test in the suite checks that every load has that form. `tools/run_pester.ps1` also
+  runs the suite with scratch variables and fails if the real install's folder, Start
+  menu shortcut or uninstall entry changed. Python: every test runs a scratch copy
+  (`scratch_text`) through `run_installer` in `tests/test_hardening.py`, which refuses
+  unless the copy, `-InstallDir`, `LOCALAPPDATA` and `APPDATA` are scratch and fails if
+  the real install changed; `InstallerIsolationTests` proves it. The real places come
+  from the shell's known folders, which ignore `LOCALAPPDATA` and `APPDATA`. Never
+  dot-source an older revision of either script, and never run the scripts or Pester any
+  other way; show failing-first evidence for installer behaviour with the Python-driven
+  tests (a scratch copy of the older script through `run_installer`).
 - **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
   page.** Keep the installer scripts and their Pester tests ASCII; build other characters
   from their code points (`[char]0x212A`).

@@ -57,6 +57,9 @@ $ErrorActionPreference = "Stop"
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent; Offboard = [bool]$Offboard }
 $AppName = "Unminute"
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# The Start menu's Programs folder, for the shortcut. Read once, here, like $RegKey, so
+# the tests can point both at scratch places (tests/powershell/Isolation.ps1).
+$ProgramsFolder = [Environment]::GetFolderPath("Programs")
 # What the installer may put in the install folder, and so all this removes there
 # (#297, #111 B6a). install.ps1 and uninstall.ps1 list the same names, and
 # packaging/identity.json mirrors them (tests keep the three equal).
@@ -796,9 +799,11 @@ try {
     if (Test-Path -LiteralPath $Options.InstallDir) {
         $items = @(Get-ChildItem -LiteralPath $Options.InstallDir -Force)
         $other = @($items | Where-Object { $OwnEntries -notcontains $_.Name })
-        # logs is a folder; current.json.tmp and install.lock are files.
-        $kind = @($items | Where-Object { @("logs", "current.json.tmp", "install.lock") -contains $_.Name -and
-            (($_.Name -eq "logs") -ne ($_ -is [IO.DirectoryInfo])) })
+        # versions and logs are folders; the installer's other entries are files, so a
+        # folder named current.json, for example, is not the installer's. (A link at
+        # any of them is refused below, as a link.)
+        $kind = @($items | Where-Object { $OwnEntries -contains $_.Name -and -not (Test-Link $_) -and
+            ((@("versions", "logs") -contains $_.Name) -ne ($_ -is [IO.DirectoryInfo])) })
         $strays = $other.Count + $kind.Count + (Get-LogStray $Options.InstallDir)
         if ($strays) {
             Stop-Uninstall 1 "The install folder holds $strays item(s) that $AppName did not put there, so nothing was removed. Check -InstallDir."
@@ -846,8 +851,7 @@ try {
     # (an 8.3 short name, a junction, a subst drive) is not taken for another
     # install (R13b round 3 review).
     $elsewhere = $location -and (-not $registered) -and (Test-Install $location)
-    $programs = [Environment]::GetFolderPath("Programs")
-    $link = Join-Path $programs "$AppName.lnk"
+    $link = Join-Path $ProgramsFolder "$AppName.lnk"
     if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
     # Pins that run this install's versions would only break: with -Offboard they go too.
     if ($Options.Offboard) { Remove-OwnPin $pinPrefixes }

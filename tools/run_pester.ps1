@@ -8,7 +8,10 @@
   21 October 2026: pinned by version and hash). The package is downloaded into
   -ModuleRoot unless a copy is already there, checked, unpacked into a new folder,
   and imported from that folder by path, so no other Pester (Windows ships 3.4.0)
-  is used. Then every *.Tests.ps1 file under tests/powershell runs.
+  is used. Then every *.Tests.ps1 file under tests/powershell runs, with LOCALAPPDATA
+  and APPDATA in a new scratch folder under -ModuleRoot; the run fails if this
+  computer's real install (its folder, Start menu shortcut or uninstall entry)
+  changed meanwhile. Never run the tests any other way (docs/DEVELOPER_NOTES.md).
 
   Run it under Windows PowerShell 5.1, which runs the installer:
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/run_pester.ps1 -ModuleRoot <folder>
@@ -17,7 +20,8 @@
   copyright line, checked 23 October 2026). It is a development tool only: it is not
   in the package.
 
-  Exit codes: 0 every test passed, 1 a test failed or none ran, 2 the Pester package
+  Exit codes: 0 every test passed, 1 a test failed, none ran or the real install
+  changed, 2 the Pester package
   did not match its recorded SHA-256 (nothing was unpacked or run).
 #>
 [CmdletBinding()]
@@ -63,12 +67,50 @@ if ($loaded.Version -ne [version]$PesterVersion -or
 
 # -- the tests ---------------------------------------------------------------------------
 
-$tests = Join-Path (Split-Path -Parent $PSScriptRoot) "tests\powershell"
-$config = New-PesterConfiguration
-$config.Run.Path = $tests
-$config.Run.PassThru = $true
-$config.Output.Verbosity = "Detailed"
-$result = Invoke-Pester -Configuration $config
+# The tests must never reach this computer's real install (on 23 October 2026 a local
+# run uninstalled it). They load the scripts only through tests/powershell/Isolation.ps1;
+# on top of that, they run here with LOCALAPPDATA and APPDATA in a new scratch folder,
+# and the run fails if the real install's folder, Start menu shortcut or uninstall entry
+# changed while they ran. The real places come from the shell, not those variables.
+# Only times, attributes and values are compared, in memory; nothing is printed.
+function Get-RealInstallState {
+    $local = [Environment]::GetFolderPath("LocalApplicationData")
+    $paths = @((Join-Path $local "Programs\Unminute"),
+               (Join-Path ([Environment]::GetFolderPath("Programs")) "Unminute.lnk"))
+    $state = @(foreach ($path in $paths) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) { "{0} {1}" -f $item.LastWriteTimeUtc.Ticks, $item.Attributes } else { "absent" }
+    })
+    $entry = Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute" -ErrorAction SilentlyContinue
+    if ($entry) {
+        $state += (@($entry.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } |
+            ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "|")
+    } else { $state += "absent" }
+    return ($state -join "`n")
+}
+
+$scratch = Join-Path $ModuleRoot ("s" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+$saved = @{ LOCALAPPDATA = $env:LOCALAPPDATA; APPDATA = $env:APPDATA }
+$before = Get-RealInstallState
+$env:LOCALAPPDATA = [IO.Directory]::CreateDirectory((Join-Path $scratch "Local")).FullName
+$env:APPDATA = [IO.Directory]::CreateDirectory((Join-Path $scratch "Roaming")).FullName
+try {
+    $tests = Join-Path (Split-Path -Parent $PSScriptRoot) "tests\powershell"
+    $config = New-PesterConfiguration
+    $config.Run.Path = $tests
+    $config.Run.PassThru = $true
+    $config.Output.Verbosity = "Detailed"
+    $result = Invoke-Pester -Configuration $config
+} finally {
+    $env:LOCALAPPDATA = $saved.LOCALAPPDATA
+    $env:APPDATA = $saved.APPDATA
+}
+$changed = (Get-RealInstallState) -cne $before
 try { Remove-Item -LiteralPath $module -Recurse -Force } catch { }
+try { Remove-Item -LiteralPath $scratch -Recurse -Force } catch { }
+if ($changed) {
+    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut or uninstall entry). Check it.")
+    exit 1
+}
 if ($result.TotalCount -eq 0 -or $result.FailedCount -gt 0 -or $result.Result -ne "Passed") { exit 1 }
 exit 0
