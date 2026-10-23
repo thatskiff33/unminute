@@ -24,13 +24,26 @@
 # Manifest paths are not checked as the app checks imports (workspace.safe_paths):
 # list local files on this computer only.
 #
+# Draft mode (--draft-cut S, #104): the live-draft path offline instead of the
+# full pass. The draft engine (workspace.engines.load_draft_engine: Parakeet v2
+# on phrases, Silero scoring 32 ms windows) and the app's own phrase splitter
+# (workspace.drafts.DraftPipeline) with unbroken speech cut at S seconds rather
+# than the shipped drafts.MAX_PHRASE_S. Each clip goes in as 16-bit audio in
+# the feeder's batches, all at once rather than at real time, so it measures
+# draft accuracy and processing time, not delay (tools/live_trial.py does).
+#
+#   python tools/compare_engines.py run --engine parakeet-tdt-0.6b-v2 --draft-cut 8
+#       --cache <models> --out d8.jsonl m.jsonl
+#
 # Keep real recordings, transcripts and per-clip results private; publish only
 # aggregate figures (see issue #12). Run heavy engines one at a time.
 
 import argparse
+import contextlib
 import ctypes
 import io
 import json
+import math
 import re
 import sys
 import time
@@ -132,6 +145,53 @@ def edit_distance(ref, hyp):
     return prev[-1]
 
 
+# --- draft mode (#104) ---------------------------------------------------------
+
+CUT_RANGE = (2.0, 30.0)     # cuts a trial may try: longer than the cut search, bounded
+
+
+@contextlib.contextmanager
+def draft_cut(seconds):
+    """Phrase splitters made inside this block cut unbroken speech at
+    `seconds` instead of the shipped drafts.MAX_PHRASE_S, which each new
+    PhraseSplitter reads (tests/test_live_trial.py keeps that so). A trial
+    setting in this process only; the app's value is restored after."""
+    seconds = float(seconds)
+    if not (math.isfinite(seconds) and CUT_RANGE[0] <= seconds <= CUT_RANGE[1]):
+        raise ValueError(f"A cut must be {CUT_RANGE[0]:g} to {CUT_RANGE[1]:g} seconds.")
+    from workspace import drafts
+    before = drafts.MAX_PHRASE_S
+    drafts.MAX_PHRASE_S = seconds
+    try:
+        yield seconds
+    finally:
+        drafts.MAX_PHRASE_S = before
+
+
+def draft_phrases(engine, wav):
+    """The draft path on one 16 kHz float32 clip, offline: 16-bit audio in the
+    feeder's batches through the app's DraftPipeline, then each phrase
+    transcribed. Returns [(start_s, end_s, text)] with empty phrases left out."""
+    import numpy as np
+
+    from workspace import drafts
+    pcm = np.clip(np.round(np.asarray(wav, dtype=np.float32) * 32768.0),
+                  -32768, 32767).astype(np.int16)
+    pipeline = drafts.DraftPipeline(drafts.SAMPLE_RATE, engine.speech_prob,
+                                    getattr(engine, "reset", None))
+    step = int(drafts.SAMPLE_RATE * drafts.BATCH_S)
+    phrases = []
+    for i in range(0, len(pcm), step):
+        phrases += pipeline.feed(i, pcm[i:i + step])
+    phrases += pipeline.flush()
+    out = []
+    for start, end, audio in phrases:
+        text = drafts.clean_text(engine.transcribe_phrase(audio))
+        if text:
+            out.append((start, end, text))
+    return out
+
+
 # --- run ----------------------------------------------------------------------
 
 def peak_memory_gb():
@@ -162,43 +222,59 @@ def cmd_run(args):
 
     import numpy as np
 
-    from workspace import media, resources
-    from workspace.engines import load_engine
+    from workspace import engines, media, resources
     from workspace.store import local_appdata
 
     cache = Path(args.cache) if args.cache else local_appdata() / "Unminute" / "models"
-    threads = args.threads or resources.worker_threads(resources.FASTER)
+    cut = getattr(args, "draft_cut", None)
+    if cut is None:
+        threads = args.threads or resources.worker_threads(resources.FASTER)
+        mode, label, load = contextlib.nullcontext(), args.engine, engines.load_engine
+    else:
+        from workspace import drafts
+        threads = args.threads or drafts.DRAFT_THREADS
+        mode, label = draft_cut(cut), f"{args.engine} drafts {cut:g} s"
+        load = engines.load_draft_engine
     clips = [json.loads(line) for m in args.manifest
              for line in Path(m).read_text(encoding="utf-8").splitlines() if line.strip()]
     missing = [f"{c.get('set')}/{c.get('id')}" for c in clips if not Path(c["wav"]).is_file()]
     if missing:                      # before the model loads, which takes a while
         sys.exit(f"{len(missing)} clip(s) not found: {', '.join(missing[:5])}")
-    t0 = time.perf_counter()
-    engine = load_engine(args.engine, str(cache), threads)
-    load_s = time.perf_counter() - t0
-    with open(args.out, "w", encoding="utf-8") as out, \
-            tempfile.TemporaryDirectory(prefix="compare-") as tmp:
-        out.write(json.dumps({"engine": args.engine, "description": engine.description,
-                              "threads": threads, "load_s": round(load_s, 2)}) + "\n")
-        for i, clip in enumerate(clips, 1):
-            raw = io.BytesIO()
-            try:
-                samples = media.decode(clip["wav"], raw, folder=Path(tmp))  # 16 kHz mono float32
-            except media.DecodeError as exc:
-                # The set is incomplete without it, so stop; name the clip, not its path.
-                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')} could not be decoded: {exc}")
-            wav = np.frombuffer(raw.getbuffer(), dtype="<f4").copy()
-            raw.close()
-            if len(wav) != samples:
-                sys.exit(f"Clip {clip.get('set')}/{clip.get('id')}: the decoded file is "
-                         f"{len(wav)} samples, not {samples}.")
-            t = time.perf_counter()
-            segments, duration = engine.transcribe(wav)
-            text = " ".join(s.text for s in segments)
-            out.write(json.dumps({**clip, "hyp": text, "audio_s": round(duration, 3),
-                                  "proc_s": round(time.perf_counter() - t, 3)}) + "\n")
-            print(f"{i}/{len(clips)} {clip['set']}", file=sys.stderr, flush=True)
-        out.write(json.dumps({"peak_ram_gb": peak_memory_gb()}) + "\n")
+    with mode:                       # a cut outside CUT_RANGE is refused here
+        t0 = time.perf_counter()
+        engine = load(args.engine, str(cache), threads)
+        load_s = time.perf_counter() - t0
+        with open(args.out, "w", encoding="utf-8") as out, \
+                tempfile.TemporaryDirectory(prefix="compare-") as tmp:
+            out.write(json.dumps({"engine": label, "description": engine.description,
+                                  "threads": threads, "load_s": round(load_s, 2)}) + "\n")
+            for i, clip in enumerate(clips, 1):
+                raw = io.BytesIO()
+                try:
+                    samples = media.decode(clip["wav"], raw, folder=Path(tmp))  # 16 kHz float32
+                except media.DecodeError as exc:
+                    # The set is incomplete without it, so stop; name the clip, not its path.
+                    sys.exit(f"Clip {clip.get('set')}/{clip.get('id')} could not be decoded: "
+                             f"{exc}")
+                wav = np.frombuffer(raw.getbuffer(), dtype="<f4").copy()
+                raw.close()
+                if len(wav) != samples:
+                    sys.exit(f"Clip {clip.get('set')}/{clip.get('id')}: the decoded file is "
+                             f"{len(wav)} samples, not {samples}.")
+                t = time.perf_counter()
+                extra = {}
+                if cut is None:
+                    segments, duration = engine.transcribe(wav)
+                    text = " ".join(s.text for s in segments)
+                else:
+                    phrases = draft_phrases(engine, wav)
+                    text, duration = " ".join(p[2] for p in phrases), len(wav) / 16000
+                    extra = {"phrases": len(phrases)}
+                out.write(json.dumps({**clip, "hyp": text, "audio_s": round(duration, 3),
+                                      "proc_s": round(time.perf_counter() - t, 3), **extra})
+                          + "\n")
+                print(f"{i}/{len(clips)} {clip['set']}", file=sys.stderr, flush=True)
+            out.write(json.dumps({"peak_ram_gb": peak_memory_gb()}) + "\n")
 
 
 # --- score --------------------------------------------------------------------
@@ -257,7 +333,12 @@ def main():
     r.add_argument("--out", required=True)
     r.add_argument("--repo", default=str(REPO))
     r.add_argument("--cache", help="model cache (default %%LOCALAPPDATA%%\\Unminute\\models)")
-    r.add_argument("--threads", type=int, help="processor threads (default: as Faster mode)")
+    r.add_argument("--threads", type=int,
+                   help="processor threads (default: as Faster mode; drafts: the draft "
+                        "worker's)")
+    r.add_argument("--draft-cut", type=float, metavar="SECONDS",
+                   help="the live-draft path (Parakeet v2 only) with unbroken speech cut "
+                        "at SECONDS, instead of the full pass (#104)")
     r.add_argument("manifest", nargs="+")
     s = sub.add_parser("score")
     s.add_argument("results", nargs="+")
