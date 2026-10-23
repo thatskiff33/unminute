@@ -146,6 +146,7 @@ class TextAndRingOnColourTests(unittest.TestCase):
         # ring there, and the colour that rule must reach 3:1 against.
         cases = {".ho-next :focus-visible": "--hold", ".holds li :focus-visible": "--hold",
                  ".notice.hold :focus-visible": "--hold", ".m-banner.hold :focus-visible": "--hold",
+                 ".banner :focus-visible": "--hold", ".su-test.quiet :focus-visible": "--hold",
                  "#transcript li.hit :focus-visible": "--hit",
                  ".ho-passages label:has(input:checked) :focus-visible": "--hit"}
         for selector, surface in cases.items():
