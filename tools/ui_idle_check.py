@@ -11,13 +11,20 @@
 # report once it is (#171). A fourth opens a long meeting while it is being
 # transcribed and counts what the page fetches and draws as passages arrive,
 # with an earlier chunk done again, an edit, speakers and a search on the way;
-# the rows shown must then be each passage once, in order (#127).
+# the rows shown must then be each passage once, in order (#127). The last two
+# open the Meetings page with a recording going (#340), visible and hidden, on a
+# simulated 120 Hz display (fixtures.js: headless Edge runs almost no animation
+# frames under virtual time), and count the clock and level polls and the level
+# meter's draws: about METER_HZ a second while visible (workspace/ui/app.js; the
+# owner's decision of 23 Oct 2026, #216), none while hidden, and drawing again
+# within a second of being shown.
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
 # Exit code 1 when a figure is over its ratchet in tests/budgets.json ("ui_idle",
-# "ui_transcribing"). Lower a ratchet when the figure drops (#127); raise one
-# only with a reason in the pull request. Needs Microsoft Edge; no Python packages.
+# "ui_transcribing", "ui_recording"). Lower a ratchet when the figure drops (#127);
+# raise one only with a reason in the pull request. Needs Microsoft Edge; no
+# Python packages.
 
 import argparse
 import http.server
@@ -38,6 +45,11 @@ MODES = ("visible", "hidden")
 SCENARIO = "home"            # the Meetings view with the sample meetings, nothing busy
 GROW_SCENARIO = "meeting-transcribing-long"   # a long meeting open while transcribing
 GROW_PAGE_MS = 90000         # its steps (12 x 4 s) after start-up, with room to spare
+RECORDING_SCENARIO = "recording"   # the Meetings view with a recording going
+DISPLAY_HZ = 120             # the simulated display: the meter draws every 2nd frame
+# The level meter's draws a second may be this share either side of METER_HZ.
+METER_TOLERANCE = 0.1
+APP_JS = design_check.UI / "app.js"
 RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
 EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
@@ -55,18 +67,19 @@ def final_dom(url, budget_ms):
                               errors="replace", timeout=300)
 
 
-def run_page(base, mode, page_ms):
+def run_page(base, mode, page_ms, scenario=SCENARIO, display_hz=None):
     """The page's perf result for one mode, from Edge's dump of the final DOM."""
     # page time: the scenario's start-up steps plus the measured window + up to
     # 60 s for the next list fetch and 11 s for the redraw after a change
     # (visible), or 1 s of catch-up (hidden).
-    out = final_dom(f"{base}/app/index.html?perf={mode}&ms={page_ms}#{SCENARIO}",
+    display = f"&display={display_hz}" if display_hz else ""
+    out = final_dom(f"{base}/app/index.html?perf={mode}&ms={page_ms}{display}#{scenario}",
                     page_ms + 90000)
     found = RESULT.search(out.stdout or "")
     if not found:
         ready = 'data-ready="1"' in (out.stdout or "")
         raise RuntimeError(
-            f"Edge returned no perf result for {mode} (exit {out.returncode}). The page "
+            f"Edge returned no perf result for {scenario} {mode} (exit {out.returncode}). The page "
             + ("finished its start-up steps, so the measured window did not fit in the page "
                "time budget" if ready else "never finished its start-up steps")
             + f". stderr: {(out.stderr or '').strip()[-500:] or '(empty)'}")
@@ -152,6 +165,17 @@ def early_problems(result):
     return []
 
 
+def figure(result, metric):
+    """A metric from one run's result. "calls_per_minute.recording_status" is
+    one method's calls: 0 when the page did not call it, "missing" when the run
+    reported no per-method figures at all."""
+    group, dot, key = metric.partition(".")
+    if not dot:
+        return result.get(metric, "missing")
+    per = result.get(group)
+    return per.get(key, 0) if isinstance(per, dict) else "missing"
+
+
 def compare(results, ratchets):
     """[(mode, metric, value, limit)] for every figure past its ratchet. A metric
     the page did not report counts as past it (value None), except the interval
@@ -161,7 +185,7 @@ def compare(results, ratchets):
         for metric, limit in limits.items():
             if limit is None:
                 continue
-            value = results.get(mode, {}).get(metric, "missing")
+            value = figure(results.get(mode, {}), metric)
             if metric in AT_LEAST and value is None:
                 continue                          # no interval: nothing polls
             if not isinstance(value, (int, float)):
@@ -199,6 +223,41 @@ def sanity(results):
     return problems
 
 
+def meter_hz():
+    """METER_HZ in workspace/ui/app.js: the level meter's draws a second."""
+    found = re.search(r"^const METER_HZ = (\d+);", APP_JS.read_text(encoding="utf-8"), re.M)
+    if not found:
+        raise RuntimeError("app.js no longer sets METER_HZ as expected; update meter_hz().")
+    return int(found.group(1))
+
+
+def recording_problems(results, hz):
+    """Reasons the page mishandled an open recording (#340): it threw, stopped
+    asking for the clock and level, drew the meter at other than about hz a
+    second while visible, drew it at all while hidden, or did not ask and draw
+    again within a second of being shown."""
+    problems = []
+    for mode, r in results.items():
+        if r.get("page_errors"):
+            problems.append(f"recording {mode}: the page threw: {'; '.join(r['page_errors'][:3])}")
+    visible, hidden = results.get("visible", {}), results.get("hidden", {})
+    if not (visible.get("calls_per_minute") or {}).get("recording_status"):
+        problems.append("recording visible: the page did not ask for recording_status, so the "
+                        "clock and level meter stood still")
+    rate = visible.get("meter_draws_per_second")
+    if not isinstance(rate, (int, float)) or abs(rate - hz) > hz * METER_TOLERANCE:
+        problems.append(f"recording visible: the level meter drew {rate} times a second on a "
+                        f"{DISPLAY_HZ} Hz display, not about {hz} (METER_HZ)")
+    if hidden.get("meter_draws_per_second") != 0:
+        problems.append(f"recording hidden: the level meter drew "
+                        f"{hidden.get('meter_draws_per_second')} times a second while hidden")
+    if ("recording_status" not in (hidden.get("catch_up_calls") or [])
+            or not hidden.get("catch_up_meter_draws")):
+        problems.append("recording hidden: shown again, the page did not ask for "
+                        "recording_status and draw the meter within 1 s")
+    return problems
+
+
 def main():
     parser = argparse.ArgumentParser(description="Count what the idle page does.")
     parser.add_argument("report", nargs="?", type=Path)
@@ -216,14 +275,19 @@ def main():
         results = {mode: run_page(base, mode, args.page_ms) for mode in MODES}
         early = run_early(base)
         growing = run_transcribing(base)
+        recording = {mode: run_page(base, mode, args.page_ms, RECORDING_SCENARIO, DISPLAY_HZ)
+                     for mode in MODES}
     finally:
         server.shutdown()
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))
     over = (compare(results, budgets["ui_idle"]["ratchets"])
-            + compare({"transcribing": growing}, budgets["ui_transcribing"]["ratchets"]))
-    problems = sanity(results) + early_problems(early) + transcribing_problems(growing)
+            + compare({"transcribing": growing}, budgets["ui_transcribing"]["ratchets"])
+            + [(f"recording {m}", k, v, r) for m, k, v, r in
+               compare(recording, budgets["ui_recording"]["ratchets"])])
+    problems = (sanity(results) + early_problems(early) + transcribing_problems(growing)
+                + recording_problems(recording, meter_hz()))
     report = {"scenario": SCENARIO, "page_ms": args.page_ms, "results": results,
-              "early_error": early, "transcribing": growing,
+              "early_error": early, "transcribing": growing, "recording": recording,
               "over_ratchet": [{"mode": m, "metric": k, "value": v, "ratchet": r}
                                for m, k, v, r in over], "problems": problems}
     if args.report:
@@ -241,6 +305,13 @@ def main():
           f"{growing.get('rows_fetched')} rows fetched, {growing.get('rows_drawn')} rows drawn, "
           f"{growing.get('full_redraws')} full redraw(s) over {growing.get('steps')} steps; "
           f"{growing.get('rows_shown')} of {growing.get('rows_expected')} passages shown")
+    for mode in MODES:
+        r = recording[mode]
+        print(f"recording {mode}: {r.get('bridge_calls_per_minute')} bridge calls/min "
+              f"({(r.get('calls_per_minute') or {}).get('recording_status', 0)} recording_status), "
+              f"{r.get('timeouts_per_minute')} timeouts/min, {r.get('live_intervals')} "
+              f"interval(s), fastest {r.get('fastest_interval_ms')} ms, meter "
+              f"{r.get('meter_draws_per_second')} draws/s at {r.get('display_hz')} Hz")
     for problem in problems:
         print(f"PAGE PROBLEM: {problem}")
     for m, k, v, r in over:

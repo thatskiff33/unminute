@@ -86,6 +86,74 @@ class RatchetTests(unittest.TestCase):
 
 
 GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"}
+RECORDING_METRICS = METRICS - {"list_rebuilds_per_minute"} | {
+    "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second"}
+
+
+class RecordingTests(unittest.TestCase):
+    # The Meetings page with a recording open (#340): the clock and level poll,
+    # and the level meter's draws on a simulated 120 Hz display, about METER_HZ
+    # a second while visible (#216), none while hidden.
+    VISIBLE = {"page_errors": [], "meter_draws_per_second": 60.0,
+               "calls_per_minute": {"recording_status": 630, "status": 30}}
+    HIDDEN = {"page_errors": [], "meter_draws_per_second": 0,
+              "catch_up_calls": ["status", "recording_status"], "catch_up_meter_draws": 60}
+
+    def problems(self, visible=None, hidden=None, meter_hz=60):
+        return ui_idle_check.recording_problems(
+            {"visible": dict(self.VISIBLE, **(visible or {})),
+             "hidden": dict(self.HIDDEN, **(hidden or {}))}, meter_hz)
+
+    def test_a_page_that_draws_at_the_meter_rate_and_stops_when_hidden_passes(self):
+        self.assertEqual([], self.problems())
+        self.assertEqual([], self.problems({"meter_draws_per_second": 56.0}))
+
+    def test_each_way_of_getting_the_recording_page_wrong_fails(self):
+        for visible, hidden, words in (
+                ({"page_errors": ["TypeError: x"]}, None, "threw"),
+                (None, {"page_errors": ["TypeError: x"]}, "threw"),
+                # The meter stopped, or drew on every frame of the display.
+                ({"meter_draws_per_second": 0}, None, "not about 60"),
+                ({"meter_draws_per_second": 120.0}, None, "not about 60"),
+                ({"meter_draws_per_second": None}, None, "not about 60"),
+                # The clock and level stopped updating.
+                ({"calls_per_minute": {"status": 30}}, None, "recording_status"),
+                # Drawing while minimised, or not coming back when shown again.
+                (None, {"meter_draws_per_second": 1.5}, "while hidden"),
+                (None, {"catch_up_meter_draws": 0}, "shown again"),
+                (None, {"catch_up_calls": ["status"]}, "shown again")):
+            problems = self.problems(visible, hidden)
+            self.assertEqual(1, len(problems), (visible, hidden))
+            self.assertIn(words, problems[0])
+
+    def test_the_meter_rate_follows_the_page(self):
+        # At about 30 a second the same figures are wrong, so the check
+        # follows METER_HZ in app.js rather than a copy of it.
+        self.assertEqual(60, ui_idle_check.meter_hz())
+        self.assertEqual(1, len(self.problems(meter_hz=30)))
+
+    def test_per_method_ratchets(self):
+        ratchets = {"visible": {"calls_per_minute.recording_status": 630,
+                                "calls_per_minute.status": 30}}
+        self.assertEqual([], ui_idle_check.compare(
+            {"visible": {"calls_per_minute": {"recording_status": 630}}}, ratchets))
+        self.assertEqual([("visible", "calls_per_minute.recording_status", 1200, 630)],
+                         ui_idle_check.compare(
+                             {"visible": {"calls_per_minute": {"recording_status": 1200}}},
+                             ratchets))
+        # No per-method figures at all is a figure missing, not zero calls.
+        self.assertEqual([("visible", "calls_per_minute.recording_status", None, 630),
+                          ("visible", "calls_per_minute.status", None, 30)],
+                         ui_idle_check.compare({"visible": {}}, ratchets))
+
+    def test_ratchet_file_covers_the_recording_page(self):
+        data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
+        ratchets = data["ui_recording"]["ratchets"]
+        self.assertEqual(set(ui_idle_check.MODES), set(ratchets))
+        for mode, limits in ratchets.items():
+            self.assertEqual(RECORDING_METRICS, set(limits), mode)
+        self.assertEqual(0, ratchets["hidden"]["meter_draws_per_second"])
+        self.assertEqual(0, ratchets["hidden"]["bridge_calls_per_minute"])
 
 
 class TranscribingTests(unittest.TestCase):
