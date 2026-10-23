@@ -684,6 +684,7 @@ function Install-Version([string]$Staging, [string]$Version) {
     $script:StagedCopy = $null
     try { Remove-OwnFolder $old } catch { }        # if it fails, the next install of this version removes it
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
+    if ($Options.Machine) { Set-InheritedOnly (Join-Path $Options.InstallDir "uninstall.ps1") }
     return $target
 }
 
@@ -781,6 +782,7 @@ function Save-RecordFile([string]$File, [string]$Text) {
 function Move-RecordFile([string]$Temp, [string]$File) {
     if ([IO.File]::Exists($File)) { [IO.File]::Replace($Temp, $File, [NullString]::Value) }
     else { [IO.File]::Move($Temp, $File) }
+    if ($Options.Machine) { Set-InheritedOnly $File }
 }
 
 # A current.json.tmp left by a run that stopped before its replace: never read, removed.
@@ -1239,6 +1241,22 @@ function Assert-MachinePermission([string]$Root) {
     }
 }
 
+# A file the installer has just written over in the install folder (current.json,
+# uninstall.ps1) keeps only what it inherits from the folder: no protected list and
+# no entry of its own. Replacing or copying over a file can carry the old file's
+# permissions onto the new one as its own in an elevated run (seen on CI's elevated
+# runner, 23 October 2026), which the next run's check would refuse with exit 4. Only
+# files this run wrote are reset; anything else is checked, never repaired.
+function Set-InheritedOnly([string]$Path) {
+    $file = [IO.FileInfo]::new($Path)
+    $security = $file.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    $security.SetAccessRuleProtection($false, $false)
+    foreach ($rule in @($security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))) {
+        [void]$security.RemoveAccessRuleSpecific($rule)
+    }
+    $file.SetAccessControl($security)
+}
+
 # Creates the install folder with its permissions (Get-MachineRootSecurity).
 function New-MachineRoot([string]$Root) {
     [void][IO.Directory]::CreateDirectory($Root, (Get-MachineRootSecurity))
@@ -1476,6 +1494,7 @@ function Invoke-MachineInstall {
     if ((Test-OwnVersion ([IO.DirectoryInfo]::new($target))) -and -not (Get-PackageProblem $target)) {
         # The same version, intact: nothing is copied, the rest is registered again.
         Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $root "uninstall.ps1") -Force
+        Set-InheritedOnly (Join-Path $root "uninstall.ps1")
     } else {
         $staging = New-MachineStagedCopy $package $version
         Set-InstallStep "switch"
@@ -1511,6 +1530,7 @@ function Invoke-MachineRollback {
     $script:LogVersion = $previous
     Test-PackageFile $target
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
+    Set-InheritedOnly (Join-Path $Options.InstallDir "uninstall.ps1")
     Set-CurrentLink $previous
     Set-MachineVersion $previous $version $null
     Register-Machine $target $previous
