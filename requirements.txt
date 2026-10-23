@@ -3,7 +3,7 @@
 # Unminute's runtime: Windows x64, CPython 3.14, wheels only. The package build
 # installs it with pip install --require-hashes --no-deps --only-binary=:all:
 # --find-links packaging/wheels -r requirements.txt
-# Only versions published before 2026-10-15T06:21:56Z (a 7-day cooldown).
+# Only versions published before 2026-10-16T06:42:53Z (a 7-day cooldown).
 # By exception, av may be newer: published before 2026-10-22T06:21:56Z.
 # By exception, certifi may be newer: published before 2026-10-20T22:39:56Z.
 # By exception, pillow may be newer: published before 2026-10-20T22:39:56Z.
@@ -2104,17 +2104,17 @@ pyannote-audio==4.0.7 \
     --hash=sha256:3a903dfb5ca711d134cc2522561c9158b186836f5d62e8a57c46c6648e8a8229 \
     --hash=sha256:852ea15c4d85bc34773e618267603ffca6a521669a74d33742692cc67fc700d6
     # via -r requirements.in
-pyannote-core==6.0.1 \
-    --hash=sha256:4b4ada3276f6df4e073fa79166636e3597d0dcb5a0fe26014a3477867cc033fb \
-    --hash=sha256:924550d6ecf6b05ad13bf3f66f59c29fc740cf1c62a6fca860ac2e66908203e5
+pyannote-core==6.1.0 \
+    --hash=sha256:44208a48a43d540b6a40c0ab07c1cb38c8deacfa3308de2608eb7dffa0e8cb88 \
+    --hash=sha256:c2933aeb406d7d9ac2e182343ac995bec08e4bba83f8b7e46db2b38b03ecca22
     # via pyannote-audio, pyannote-database, pyannote-metrics, pyannote-pipeline
 pyannote-database==6.1.1 \
     --hash=sha256:36460c70ce9f50ff25c9ea365bc83ad625bb6b2494deccf6bd3fc750686ae684 \
     --hash=sha256:bbe76da738257a9e64061123d9694ad7e949c4f171d91a9269606d873528cd10
     # via pyannote-audio, pyannote-metrics, pyannote-pipeline
-pyannote-metrics==4.1 \
-    --hash=sha256:34a54b7671f61709c1865d0484843e5b46ea3c4e4e5260ab065e5b3156c733d3 \
-    --hash=sha256:afe24c54ee0799e8cfbe8ee85fa517793c3450bb7eae8fedd1a77ccec0343f7e
+pyannote-metrics==4.2.0 \
+    --hash=sha256:4e933ed1d05e3ce76d5657e34f51c9a12362d148bf56decd4ea5051eed4f23db \
+    --hash=sha256:d66566e253958e39728f0f51b6e648449044a29e43b2d25e486193366cd348e0
     # via pyannote-audio
 pyannote-pipeline==4.0.0 \
     --hash=sha256:6b0bfc19e684d89cc1608bb39448e15ff1231d4a87e99fc7e812e7891b8cd555 \
