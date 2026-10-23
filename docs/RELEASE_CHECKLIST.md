@@ -42,7 +42,7 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 
 Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md). Each open item is tracked in validation tracker #189, by sitting; the closed issues it came from keep their earlier evidence.
 
-- [ ] **#189 sitting 3 (from #11, closed):** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Signing is not part of it: the owner dropped the signing requirement on 22 October 2026 (#111), so the installer scripts stay unsigned and run with `-ExecutionPolicy Bypass`, an accepted risk, recorded in [SECURITY_MODEL.md](SECURITY_MODEL.md) T22 with security plan B6.
+- [ ] **#189 sitting 3 (from #11, closed):** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Signing is not part of it: the owner dropped the signing requirement on 22 October 2026 (#111), so the installer scripts stay unsigned and run with `-ExecutionPolicy Bypass`, an accepted risk under [SECURITY_MODEL.md](SECURITY_MODEL.md) T22, which security plan B6 updates to say so.
 - [ ] **#189 sitting 4 (from #12 and #25, closed):** transcription quality on consented, representative business recordings (anonymous aggregate results only).
 - [ ] **#189 sitting 5 (from #27, closed):** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
 - [ ] **#189 sitting 2 (from #28, closed):** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
