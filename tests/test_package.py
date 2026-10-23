@@ -3,6 +3,7 @@
 #   python -m unittest discover -s tests -v
 
 import importlib.util
+import io
 import json
 import marshal
 import os
@@ -223,7 +224,8 @@ class ReproducibleBuildTests(unittest.TestCase):
             (info / "RECORD").write_text("".join(f"{f},sha256=x,1\n" for f in files)
                                          + f"{dist}.dist-info/RECORD,,\n")
 
-    def test_notices_list_every_component_its_texts_and_native_libraries(self):
+    @mock.patch("sys.stderr", new_callable=io.StringIO)     # the gaps a dev build lists
+    def test_notices_list_every_component_its_texts_and_native_libraries(self, _console):
         folder = self.root / "Unminute-0.5.0"
         site = folder / "runtime" / bp.SITE
         (folder / "runtime").mkdir(parents=True)
