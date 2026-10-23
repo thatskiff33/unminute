@@ -219,6 +219,7 @@ Cleanup (`workspace/cleanup.py`) follows exactly two explicit confirmations. Cop
      3. The app's audio folder is removed (ciphertext with no key by now).
      4. Originals, as below.
    - A crash or a failure at any point leaves either the key and the audio both intact, or the key gone and the audio recorded as removed. A file that cannot be deleted fails the job, but the meeting already shows its audio as removed, because it cannot be read. A rerun repeats each step and writes one receipt.
+   - A hold added after step 1 (for example while a failed job waits for its retry) stops the retry: the job shows as held, and the folder of audio that can no longer be opened stays until the hold is released (C2: a hold blocks deletion, even of ciphertext with no key).
    - An intake original is deleted only if all of these hold:
      - the user gave explicit authority (`sources.delete_original`, #24);
      - its recorded location can be read (a sealed path that does not open keeps the original);
@@ -240,7 +241,7 @@ Before removal:
 
 Holds (#18) are checked before an attempt, again in the transaction that bumps the epoch, and again in the audio key transaction or the transcript-delete transaction. A hold added while the worker is stopping, or just after the epoch transaction, still wins.
 
-While the workspace is locked (#111 C4a) no cleanup job runs: the processing loop is held, and `run_job` returns at once without reading the job or any key. A failed or abandoned import (`Store.delete_new_meeting`, `Store.discard_unfinished_import`) empties the WAL after the transaction that destroys its keys, or leaves the compaction owed (`compact.pending`) when a reader keeps it busy; a failed import destroys its keys before its folder.
+While the workspace is locked (#111 C4a) no cleanup job runs: the processing loop is held, and `run_job` returns at once without reading the job or any key. A failed or abandoned import (`Store.delete_new_meeting`, `Store.discard_unfinished_import`) empties the WAL after the transaction that destroys its keys, or leaves the compaction owed (`compact.pending`) when a reader keeps it busy; a failed import destroys its keys before its folder. A crash between those two steps leaves a `media\<id>` folder with no meeting: its audio can never be opened, because the key is gone, but the app never removes a folder that has no meeting, so a storage-format update waits on it (`workspace/update.py`, the "media" step) until IT deletes it, as that message says. Before C3c the leftover meeting row was removed at the next start instead.
 
 Failure reasons are stored without file paths.
 
