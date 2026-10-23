@@ -2218,12 +2218,13 @@ function stopViz() {
 // -- the meter's frame rate (#216) --
 // Drawing on every display frame (120 a second on a 120 Hz screen) cost most of
 // the processor time while recording with the window visible. The meter draws
-// on every Nth frame instead, N = round(display rate / 30), at least 1: every
-// frame at 30 Hz or lower, every 2nd at 60 Hz, 4th at 120 Hz, 5th at 144 Hz.
-// N is whole, so draws stay evenly spaced. requestAnimationFrame still drives
-// it, so it stops when hidden. About 30 a second is the owner's choice (22 Oct
-// 2026), after 60 (#294); tools/perf_check.py expects the same rate.
-const METER_HZ = 30;
+// on every Nth frame instead, N = round(display rate / 60), at least 1: every
+// frame at 60 Hz, every 2nd at 120 or 144 Hz. N is whole, so draws stay evenly
+// spaced. requestAnimationFrame still drives it, so it stops when hidden.
+// About 60 a second is the owner's choice (23 Oct 2026): 30 a second saved too
+// little processor time for the drop in quality. tools/perf_check.py expects
+// the same rate.
+const METER_HZ = 60;
 // The easing rates below (0.3, 0.08, 0.25, 0.35, 0.1) are shares per frame. The
 // motion they give was seen and approved drawing on every frame of a 120 Hz
 // display (the development laptop's, and the #216 demo), so 120 is the
@@ -2232,7 +2233,7 @@ const METER_HZ = 30;
 const EASE_REF_HZ = 120;
 
 // How many display frames apart to draw. Near the half-way point between two
-// steps (75 Hz is 2.5, 165 Hz is 5.5), the current step is kept, so it does not flip between them.
+// steps (90 Hz is 1.5), the current step is kept, so it does not flip between them.
 function meterStep(displayHz, current) {
   const ratio = displayHz / METER_HZ;
   const want = Math.max(1, Math.round(ratio));

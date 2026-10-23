@@ -13,7 +13,7 @@ This guide covers the packaged workspace, as it is in the project's latest code.
 - **The message when Unminute is already open in another Windows session of yours**, in [Troubleshooting and support](#troubleshooting-and-support). 0.5.0-preview.3 does not check for this.
 - **Stricter checks on recordings.** Recordings are decoded with audio decoders only, and a file with a sample rate below 4 kHz or above 384 kHz, or one that would decode to far more audio than its size can hold, is refused (see step 3 of [Getting started](#getting-started)). 0.5.0-preview.3 does not refuse these.
 - **Stricter watched folders.** The folder that holds every user's profile (such as `C:\Users`), `AppData` and every folder in it, and Unminute's own data folder can no longer be watched, and a recording whose path is too long for Windows to open is counted in the folder's note while the rest of the folder is imported. In 0.5.0-preview.3 those folders can be watched, and one path that is too long can stop a folder from importing anything.
-- **The recording display redraws about 30 times a second**, rather than on every refresh of the screen, to use less of the processor. It may look slightly less fluid on fast screens. On a 60 Hz screen it now settles about twice as quickly as in 0.5.0-preview.3, as it does on a 120 Hz screen.
+- **The recording display redraws about 60 times a second**, rather than on every refresh of the screen, to use less of the processor. On a 120 Hz screen that is every second refresh, and it moves as before. On a 60 Hz screen it now settles about twice as quickly as in 0.5.0-preview.3, as it does on a 120 Hz screen.
 
 ## What stays on your computer, and what does not
 
@@ -62,7 +62,7 @@ How it handles problems:
   - With the lid set to do nothing, the recording carries on until you stop it, and its marks cannot be seen while the lid is shut. When you open the lid again, the recording card says how long the recording carried on with the lid closed. When the meeting ends, open the lid and stop it in Unminute, and never put a laptop that is still running in a bag.
   - These lid and sleep behaviours come from Windows' documentation and have not yet been tested on a real laptop.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
-- **Recording uses more processor time with the window visible.** It used about 22 to 24% of one processor core while the window was visible, against a 5% target; minimised, it uses under 1% (measured on an Intel Core Ultra 7 255H laptop on 18 and 19 October 2026). The recording display now redraws about 30 times a second to use less (not in 0.5.0-preview.3); the effect has not been measured yet. The work is tracked in #216. Minimise the window while you record if you do not need to watch it.
+- **Recording uses more processor time with the window visible.** It uses about 23% of one processor core while the window is visible, mostly to draw the moving recording display, and under 1% minimised (measured on an Intel Core Ultra 7 255H laptop with a 60 Hz screen on 23 October 2026). Minimise the window while you record if you do not need to watch it.
 - **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded, and there is no live transcription.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
