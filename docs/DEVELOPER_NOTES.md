@@ -187,6 +187,44 @@ real time, and remove it when the cause is fixed.
 - **A regular expression's `$` matches before a final newline (#297).** In .NET, as in
   Python, a pattern `^...$` also accepts a name with a final newline, such as `"1.0.0\n"`.
   A check on a name that becomes a path ends in `\z` instead.
+- **Pester tests dot-source the installer scripts (#111 B6a).** `install.ps1` and
+  `uninstall.ps1` end their function definitions with a guard,
+  `if ($MyInvocation.InvocationName -eq ".") { return }`, so dot-sourcing defines the
+  functions and runs nothing. A script without that guard runs its main part when
+  dot-sourced, with its default `-InstallDir`: on 23 Oct 2026 a failing-first run of
+  the new Pester tests against the scripts from before B6a uninstalled the per-user copy
+  on the development computer. `tests/powershell` now checks for the guard before it
+  dot-sources anything, and points `LOCALAPPDATA` and `APPDATA` into Pester's TestDrive.
+  Never dot-source an older revision of either script; show failing-first evidence for
+  installer behaviour with the Python-driven tests, which run copies in temporary folders.
+- **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
+  page.** Keep the installer scripts and their Pester tests ASCII; build other characters
+  from their code points (`[char]0x212A`).
+- **Machine mode is tested without elevation (#111 B6b).** `tests/powershell/Machine.Tests.ps1`
+  stands in elevation, bitness, Program Files, the all-users Start menu, the HKLM keys
+  (Pester's `TestRegistry`, under HKCU), the folder's permissions as read and its creation
+  with them; everything else, junctions and permissions on folders and files beneath the
+  install folder included, runs for real in TestDrive. Never run `install.ps1 -Machine` or
+  `uninstall.ps1 -Machine` for real outside those stand-ins: elevated (as GitHub's runners
+  are), they would write this computer's Program Files, HKLM and Start menu. The
+  Python-driven test that runs `-Machine` for real does so only without elevation, where it
+  stops at the elevation check, and points Program Files at a temporary folder all the same.
+  A real System-context install is a manual check (#189).
+- **A 32-bit Windows PowerShell sees another Program Files and registry (#111 B6b).** In a
+  32-bit process `[Environment]::GetFolderPath("ProgramFiles")` and `%ProgramFiles%` name
+  `Program Files (x86)`, and `HKLM:\SOFTWARE` is the `WOW6432Node` view. `install.ps1
+  -Machine` refuses a 32-bit run; from a 32-bit host, `%SystemRoot%\Sysnative\...` reaches the
+  64-bit `powershell.exe`, and `%ProgramW6432%` names the 64-bit Program Files. The per-user
+  installer reads the machine entry with `RegistryKey.OpenBaseKey(LocalMachine, Registry64)`
+  so a 32-bit host sees it.
+- **Remove a junction as a link (#111 B6b).** `[IO.Directory]::Delete(path, $false)` removes
+  the junction itself and leaves its target; `[IO.Directory]::Move` renames the junction, not
+  its target. `Remove-Item -Recurse` on a junction is never used. In Windows PowerShell 5.1,
+  `(Get-Item -Force).Target` gives a junction's target as a one-item `string[]`, and
+  `LinkType` is `Junction`.
+- **Pester's package has deep paths.** Unpacked under a long folder it passes 260
+  characters and `ExtractToDirectory` fails; `tools/run_pester.ps1` unpacks into a short
+  folder name under `-ModuleRoot`, which should itself be short (CI uses `RUNNER_TEMP`).
 
 ## Claude Code hooks on Windows
 

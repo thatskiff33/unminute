@@ -41,6 +41,13 @@
 #                 Prints {"lid": state}; exit 0 put back or nothing waiting,
 #                 1 not put back now, 2 damaged record (left as it is), 3 the
 #                 app is open (power.RESTORE_CODES). No content or paths.
+#
+# A window start first runs the launcher pass (workspace/launch.py, #111 B5):
+# in machine mode it decides which installed version opens this user's
+# workspace and may hand over to it, started with --slot <role>
+# (update.ROLES; set only by a hand-over). A per-user install starts as
+# before. The window then takes the single-instance mutex (this session) and
+# the workspace lock (workspace/instance.py, every session of this user).
 
 import json
 import sqlite3
@@ -415,11 +422,19 @@ def main():
                       "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
+    # The launcher pass (#111 B5): machine mode only; a per-user install
+    # carries on here as before. Nothing heavy is imported yet.
+    from workspace import instance, launch
+    outcome = launch.start(sys.argv)
+    if outcome.exit is not None:
+        if outcome.message:
+            _message(outcome.message)
+        return outcome.exit
     from workspace import api, diag, shell
     from workspace.app import Workspace
     imported = time.perf_counter()
-    instance = _single_instance()
-    if instance is None:
+    mutex = _single_instance()
+    if mutex is None:
         _message("Unminute is already open. Look for its window on the taskbar.")
         return 0
     try:
@@ -429,7 +444,13 @@ def main():
         # opens the workspace locked (nothing read but counts, nothing
         # written, every request refused) rather than closing. The protector
         # is never chosen here: the store's own (Windows Data Protection).
-        ws = Workspace(cache_dir=model_cache(), check_integrity=True, on_unavailable="lock")
+        # instance_lock (#111 B5): the workspace lock, which every Windows
+        # session of this user sees (the mutex above is this session's only).
+        ws = Workspace(cache_dir=model_cache(), check_integrity=True, on_unavailable="lock",
+                       instance_lock=True)
+    except instance.Held as exc:
+        _message(str(exc))                  # open in another session of this user
+        return 0
     except (StoreError, sqlite3.DatabaseError) as exc:
         # e.g. a workspace from a newer version, one that cannot be migrated,
         # or a damaged database: explain instead of disappearing (pythonw
@@ -442,6 +463,11 @@ def main():
     diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
     ws.log.write("start", version=package_version(), python=sys.version.split()[0],
                  previous_run_unclean=unclean)
+    # A current.json that claims machine mode for an install that fails the machine
+    # trust test (#111 B6b): treated as per-user, and recorded (no path or name).
+    from workspace import update
+    if update.deployment().get("machine_refused"):
+        ws.log.write("machine_claim_refused")
     opened = time.perf_counter()
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),

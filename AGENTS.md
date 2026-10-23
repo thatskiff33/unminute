@@ -76,7 +76,7 @@ Durability
   `tests/test_workspace_core.py`.
 - **D2** An explicit pause stays paused after a restart. Guard: `tests/test_workspace_core.py`.
 - **D3** One app instance owns the state; the workspace is never in a synced or network folder.
-  Guard: `tests/test_hardening.py`.
+  Guard: `tests/test_hardening.py`, `tests/test_launch.py` (the workspace lock, every session).
 - **D4** Heavy models load lazily, one at a time. A speaker-identification failure leaves the
   transcript usable. A GPU failure falls back to the processor and says so; the model,
   precision and committed text never change silently. Guard: `tests/test_workers.py`,
@@ -109,7 +109,11 @@ Compatibility, installation and policy
   uninstall key `Unminute`, the APP_ID `Unlimit.Unminute`, the Credential Manager name
   `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and `Unminute\models`
   under `%LOCALAPPDATA%`, and `unminute.ico`. The user renamed them from the earlier names
-  (17 October 2026, #136), with no migration. Guard: `tests/test_consistency.py`.
+  (17 October 2026, #136), with no migration. For machine installs (#111 B6b) also
+  `%ProgramFiles%\Unminute`, the HKLM uninstall key `Unminute`, the Event Log source
+  `Unminute`, the lock file `install.lock` and the `current` junction (the user's approval,
+  22 October 2026, #111). `packaging/identity.json` mirrors these names for tests and is
+  never read at run time. Guard: `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
@@ -192,6 +196,9 @@ changes; or GitHub owner settings.
   does) and `ruff check .`. Run tests only through `tools/run_tests.py`.
 - For PowerShell, dependency and workflow changes, run the matching job's commands from
   `.github/workflows/` rather than a copy kept here. The required checks are in `docs/RELEASING.md`.
+  Installer changes also run the Pester tests in `tests/powershell` with
+  `tools/run_pester.ps1` under Windows PowerShell 5.1 (Pester pinned by version and SHA-256;
+  the job is report only until it is made required).
 - `tests/test_consistency.py` ties together facts with several copies (version, install
   identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the
   one version source, written by `tools/changelog.py`.
