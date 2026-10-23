@@ -108,7 +108,7 @@ def machine_trusted(install_root, *, program_files=None, owner=None, can_change=
         if (owner or _owner_sid)(root) not in OWNERS:
             return False
         return not (can_change or _can_change)(root)
-    except (OSError, ValueError, AttributeError):
+    except Exception:   # any error fails the test (a ctypes ArgumentError, a TypeError, ...)
         return False
 
 

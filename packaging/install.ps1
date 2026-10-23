@@ -59,25 +59,27 @@
   a folder only administrators can change: created with its own permissions
   (owner Administrators; full control for SYSTEM and Administrators; read and
   run for Users and ALL APPLICATION PACKAGES), and checked at every run, with
-  every folder beneath it, for another owner, an explicit entry or a protected
-  list (exit 4; never repaired silently). The package is unpacked inside that
-  folder (staging-<32 hex digits>), never in a temporary folder, and no Python
-  runs during the install. The Start menu entry for all users starts
+  every folder and file beneath it, for another owner, an explicit entry or a
+  protected list (exit 4; never repaired silently). The package is unpacked
+  inside that folder (staging-<32 hex digits>), never in a temporary folder, and
+  no Python runs during the install. The Start menu entry for all users starts
   %ProgramFiles%\Unminute\current, a junction to the current version, which
   the app leaves at once for the version's real folder (workspace/launch.py).
   Kept versions: the current one, the previous one, and the newest version of
-  the storage format immediately before the current one, for people whose
-  workspace still holds meetings in that format (the owner's decisions of 21
-  and 22 October 2026). Installing a version with an older storage format
-  removes every newer one. It refuses while the app runs for anyone on the
-  computer (exit 3; Intune retries). It registers the HKLM uninstall entry
+  the storage format immediately before the current one (current minus one; no
+  older format in its place), for people whose workspace still holds meetings
+  in that format (the owner's decisions of 21, 22 and 23 October 2026).
+  Installing a version with an older storage format removes every newer one.
+  It refuses while the app runs for anyone on the computer (exit 3; Intune
+  retries). It registers the HKLM uninstall entry
   (Intune detection), the Start menu entry and the Event Log source, and never
   reads or writes a user's profile. -Machine -Rollback switches back to the
   previous version; -Machine -RemoveSlot <version> removes a kept version that
   is not current.
   Machine exit codes: 0 installed, 1 failed, 2 not allowed (a 32-bit or
   non-elevated run, a refused switch, a package that states no storage format,
-  or prerequisites missing), 3 the app is running, 4 the package failed
+  prerequisites missing, or an install folder holding entries or a link the
+  installer did not put there), 3 the app is running, 4 the package failed
   verification or the install folder's permissions have changed.
 
 .EXAMPLE
@@ -1120,17 +1122,20 @@ function Test-AclChanged([IO.FileSystemInfo]$Item) {
         @($security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count -gt 0
 }
 
-# How many folders beneath $Root have permissions of their own (never walking
-# through a link): every one should only inherit the install folder's.
+# How many folders and files beneath $Root have permissions of their own (never
+# walking through a link): every one should only inherit the install folder's. Files
+# too: uninstall.ps1, which SYSTEM runs at uninstall, and every kept version's files,
+# which the launcher may start (review of 4c0daf2). About 10 seconds a kept version
+# (27,746 files) on a development laptop, measured 23 October 2026.
 function Get-AclChangeCount([string]$Root) {
     $count = 0
     $todo = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
     $todo.Push([IO.DirectoryInfo]::new($Root))
     while ($todo.Count) {
-        foreach ($dir in $todo.Pop().GetDirectories()) {
-            if (Test-Link $dir) { continue }
-            if (Test-AclChanged $dir) { $count++ }
-            $todo.Push($dir)
+        foreach ($item in $todo.Pop().GetFileSystemInfos()) {
+            if (Test-Link $item) { continue }
+            if (Test-AclChanged $item) { $count++ }
+            if ($item -is [IO.DirectoryInfo]) { $todo.Push($item) }
         }
     }
     return $count
@@ -1227,9 +1232,10 @@ function Assert-MachineContext {
 }
 
 # The install folder's permissions, at every run before anything is written: the
-# folder's own (owner and entries, exactly) and those of every folder beneath it
-# (only what they inherit). Anything else stops the run with exit 4: something with
-# administrator rights changed it, so it is never repaired silently (#111 B6-7).
+# folder's own (owner and entries, exactly) and those of every folder and file
+# beneath it (only what they inherit). Anything else stops the run with exit 4:
+# something with administrator rights changed it, so it is never repaired silently
+# (#111 B6-7).
 function Assert-MachinePermission([string]$Root) {
     if (-not (Test-MachineRootSecurity (Get-FolderSecurity $Root)) -or (Get-AclChangeCount $Root) -gt 0) {
         Stop-Install 4 $PermissionMessage
@@ -1349,7 +1355,9 @@ function Get-SlotSeq($Was) {
 #   - the current version;
 #   - the previous one ($Previous), unless its storage format is newer;
 #   - the newest version (highest seq) of the storage format immediately before the
-#     current one: the highest format below the current one that is installed. The
+#     current one: exactly the current format minus one (the owner's decision of 22
+#     October 2026, confirmed 23 October). When no version of that format is
+#     installed, none is kept in its place: an older format is not a fallback. The
 #     launcher hands a workspace that still holds meetings in that format to it
 #     (workspace/launch.py); it is replaced at the next storage-format change.
 # A downgrade is strict: every version with a newer storage format than the current
@@ -1379,11 +1387,9 @@ function Set-MachineVersion([string]$Version, [string]$Previous, [string]$Fresh)
             break
         }
     }
-    $older = @($slots.Keys | Where-Object { $_ -cne $Version -and $schema -and $slots[$_] -and $slots[$_] -lt $schema })
+    $older = @($slots.Keys | Where-Object { $_ -cne $Version -and $schema -and $slots[$_] -and $slots[$_] -eq $schema - 1 })
     if ($older.Count) {
-        $format = ($older | ForEach-Object { $slots[$_] } | Measure-Object -Maximum).Maximum
-        $newest = $older | Where-Object { $slots[$_] -eq $format } |
-            Sort-Object { if ($seq.ContainsKey($_)) { $seq[$_] } else { [long]0 } } | Select-Object -Last 1
+        $newest = $older | Sort-Object { if ($seq.ContainsKey($_)) { $seq[$_] } else { [long]0 } } | Select-Object -Last 1
         if ($kept -cnotcontains $newest) { $kept += $newest }
     }
     # Oldest first, so a version the record does not list yet (the new one) is

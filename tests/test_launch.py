@@ -556,6 +556,11 @@ class MachineTrustTests(unittest.TestCase):
                 ("the user can change it", {"can_change": True}),
                 ("the owner cannot be read", {"owner": OSError("denied")}),
                 ("the permissions cannot be read", {"can_change": OSError("denied")}),
+                # Any error fails the test, not only the expected ones (review
+                # of 4c0daf2): a ctypes argument or type error never escapes.
+                ("a ctypes argument error", {"owner": __import__("ctypes").ArgumentError("bad")}),
+                ("a type error", {"can_change": TypeError("bad")}),
+                ("a lookup error", {"owner": KeyError("bad")}),
                 ("no Program Files", {"program_files": lambda: None}),
                 ("another folder", {"root": self.base / "Local" / "Programs" / "Unminute"}),
                 ("a folder inside it", {"root": self.layout.versions}),

@@ -875,17 +875,20 @@ function Test-AclChanged([IO.FileSystemInfo]$Item) {
         @($security.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])).Count -gt 0
 }
 
-# How many folders beneath $Root have permissions of their own (never walking
-# through a link): every one should only inherit the install folder's.
+# How many folders and files beneath $Root have permissions of their own (never
+# walking through a link): every one should only inherit the install folder's. Files
+# too: uninstall.ps1, which SYSTEM runs at uninstall, and every kept version's files,
+# which the launcher may start (review of 4c0daf2). About 10 seconds a kept version
+# (27,746 files) on a development laptop, measured 23 October 2026.
 function Get-AclChangeCount([string]$Root) {
     $count = 0
     $todo = [Collections.Generic.Stack[IO.DirectoryInfo]]::new()
     $todo.Push([IO.DirectoryInfo]::new($Root))
     while ($todo.Count) {
-        foreach ($dir in $todo.Pop().GetDirectories()) {
-            if (Test-Link $dir) { continue }
-            if (Test-AclChanged $dir) { $count++ }
-            $todo.Push($dir)
+        foreach ($item in $todo.Pop().GetFileSystemInfos()) {
+            if (Test-Link $item) { continue }
+            if (Test-AclChanged $item) { $count++ }
+            if ($item -is [IO.DirectoryInfo]) { $todo.Push($item) }
         }
     }
     return $count
@@ -935,21 +938,26 @@ function Get-EventMessageFile {
 
 # -- machine mode: the uninstall (#111 B6b) ---------------------------------------------
 
-# How many versions are installed beside the current one with an earlier storage
-# format: the version kept for people whose workspace has not moved to the current
-# format yet. Read from each version's own version.json; none when the current
+# How many versions current.json keeps beside the current one with an earlier
+# storage format: the version kept for people whose workspace has not moved to the
+# current format yet. Only versions the record keeps (its slots and previous) count,
+# so a version an earlier install could not remove does not (review of 4c0daf2).
+# Each format is read from the version's own version.json; none when the current
 # version or its format cannot be told.
 function Get-KeptOlderSlotCount([string]$Root) {
     $currentFile = [IO.Path]::Combine($Root, "current.json")
     if (-not [IO.File]::Exists($currentFile)) { return 0 }
     try { $record = Get-Content -LiteralPath $currentFile -Raw | ConvertFrom-Json } catch { return 0 }
     $current = [string]$record.version
+    $listed = @([string]$record.previous)
+    if ($record.slots -is [Management.Automation.PSCustomObject]) { $listed += @($record.slots.PSObject.Properties.Name) }
     $versions = [IO.DirectoryInfo]::new([IO.Path]::Combine($Root, "versions"))
     if (-not $versions.Exists) { return 0 }
     $schemas = @{}
     foreach ($dir in $versions.GetDirectories()) {
         if ((Test-Link $dir) -or -not ($dir.Name -cmatch '^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}\z') -or
             $dir.Name.EndsWith(".") -or $dir.Name -match '\.(partial|old|retired)\z') { continue }
+        if ($dir.Name -cne $current -and $listed -cnotcontains $dir.Name) { continue }
         try { $info = Get-Content -LiteralPath ([IO.Path]::Combine($dir.FullName, "version.json")) -Raw | ConvertFrom-Json }
         catch { continue }
         $schema = $info.schema
@@ -1000,7 +1008,7 @@ function Invoke-MachineUninstall {
     }
     if ($folder.Exists) {
         # The installer's checks: the folder's own permissions, exactly, and nothing
-        # of their own on any folder beneath it.
+        # of their own on any folder or file beneath it.
         if (-not (Test-MachineRootSecurity (Get-FolderSecurity $root)) -or (Get-AclChangeCount $root) -gt 0) {
             Stop-Uninstall 4 $PermissionMessage
         }

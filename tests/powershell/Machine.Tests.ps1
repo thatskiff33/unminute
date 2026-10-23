@@ -343,6 +343,10 @@ Describe "install.ps1 -Machine" {
             @{ Label = "a list that inherits"; Kind = "inherits" }
             @{ Label = "an explicit entry on a folder beneath it"; Kind = "beneath" }
             @{ Label = "a protected list on a folder beneath it"; Kind = "protected" }
+            # Files too (review of 4c0daf2): the uninstaller SYSTEM runs, and a kept version's files.
+            @{ Label = "an explicit entry on the uninstaller in the install folder"; Kind = "topfile" }
+            @{ Label = "an explicit entry on a file of a kept version"; Kind = "keptfile" }
+            @{ Label = "a protected list on a file of a kept version"; Kind = "keptprotected" }
         ) {
             param($Label, $Kind)
             $null = $Label
@@ -369,6 +373,19 @@ Describe "install.ps1 -Machine" {
                     $acl = $sub.GetAccessControl()
                     $acl.SetAccessRuleProtection($true, $true)
                     $sub.SetAccessControl($acl)
+                }
+                { $_ -in "topfile", "keptfile" } {
+                    $rel = if ($Kind -eq "topfile") { "uninstall.ps1" } else { "versions\1.0.0\runtime\pythonw.exe" }
+                    $file = [IO.FileInfo]::new((Join-Path $script:Root $rel))
+                    $acl = $file.GetAccessControl()
+                    $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($me, "Modify", "Allow"))
+                    $file.SetAccessControl($acl)
+                }
+                "keptprotected" {
+                    $file = [IO.FileInfo]::new((Join-Path $script:Root "versions\1.0.0\app\unminute.ico"))
+                    $acl = $file.GetAccessControl()
+                    $acl.SetAccessRuleProtection($true, $true)
+                    $file.SetAccessControl($acl)
                 }
             }
             $before = Get-Snapshot $script:Root
@@ -420,6 +437,23 @@ Describe "install.ps1 -Machine" {
             Invoke-TestInstall (New-TestZip "2.1.0" -Schema 2)
             Invoke-TestInstall (New-TestZip "2.2.0" -Schema 2)
             Get-Kept | Should -BeExactly "1.0.0,2.1.0,2.2.0"
+        }
+
+        It "keeps no older version when the format immediately before the current one is not installed" {
+            # The owner's decision of 22 October 2026, confirmed 23 October: current
+            # minus one only, never an older format in its place.
+            Invoke-TestInstall (New-TestZip "2.0.0" -Schema 2)
+            Invoke-TestInstall (New-TestZip "2.1.0" -Schema 2)
+            Invoke-TestInstall (New-TestZip "4.0.0" -Schema 4)
+            Get-Kept | Should -BeExactly "2.1.0,4.0.0"          # 2.1.0 stays only as the previous version
+            (Get-Record).previous | Should -BeExactly "2.1.0"
+            Invoke-TestInstall (New-TestZip "4.1.0" -Schema 4)
+            Get-Kept | Should -BeExactly "4.0.0,4.1.0"
+            ((@((Get-Record).slots.PSObject.Properties.Name) | Sort-Object) -join ",") | Should -BeExactly "4.0.0,4.1.0"
+            # With format 3 installed, its newest version is the one kept.
+            Invoke-TestInstall (New-TestZip "3.0.0" -Schema 3)
+            Invoke-TestInstall (New-TestZip "4.2.0" -Schema 4)
+            Get-Kept | Should -BeExactly "3.0.0,4.2.0"
         }
 
         It "removes every newer storage format when an older one is installed (strict downgrade)" {
@@ -590,7 +624,11 @@ Describe "uninstall.ps1 -Machine" {
                 [IO.File]::WriteAllText((Join-Path $slot "version.json"), (@{ version = $v; schema = $Versions[$v] } | ConvertTo-Json))
             }
             New-Item -ItemType Junction -Path (Join-Path $root "current") -Target (Join-Path $root "versions\$Current") | Out-Null
-            [IO.File]::WriteAllText((Join-Path $root "current.json"), (@{ format = 2; version = $Current; mode = "machine" } | ConvertTo-Json))
+            $slots = [ordered]@{}
+            $seq = 0
+            foreach ($v in $Versions.Keys) { $seq++; $slots[$v] = [ordered]@{ schema = $Versions[$v]; seq = $seq } }
+            [IO.File]::WriteAllText((Join-Path $root "current.json"),
+                ([ordered]@{ format = 2; version = $Current; mode = "machine"; slots = $slots } | ConvertTo-Json -Depth 4))
             [void][IO.Directory]::CreateDirectory((Join-Path $root "logs"))
             [IO.File]::WriteAllText((Join-Path $root "logs\install.log"), "x")
             [IO.File]::WriteAllText((Join-Path $root "uninstall.ps1"), "# uninstaller")
@@ -663,6 +701,17 @@ Describe "uninstall.ps1 -Machine" {
         [IO.Directory]::Exists($root) | Should -BeFalse
     }
 
+    It "counts only the versions current.json keeps, not one an earlier install could not remove" {
+        # Review of 4c0daf2: a version left on disk after its .retired rename failed is
+        # not kept, so it does not stop the uninstall (exit 5).
+        $root = New-TestMachineInstall @{ "1.0.0" = 1; "2.0.0" = 2 } "2.0.0"
+        $record = Get-Content -LiteralPath (Join-Path $root "current.json") -Raw | ConvertFrom-Json
+        $record.slots.PSObject.Properties.Remove("1.0.0")
+        [IO.File]::WriteAllText((Join-Path $root "current.json"), ($record | ConvertTo-Json -Depth 4))
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+    }
+
     It "removes a previous version of the same storage format without -IncludeKeptSlots" {
         $root = New-TestMachineInstall @{ "2.0.0" = 2; "2.1.0" = 2 } "2.1.0"
         Invoke-TestUninstall
@@ -673,6 +722,7 @@ Describe "uninstall.ps1 -Machine" {
         @{ Label = "the folder holds something else"; Kind = "stray"; Code = 1 }
         @{ Label = "a junction points outside the versions"; Kind = "link"; Code = 1 }
         @{ Label = "the folder's permissions have changed"; Kind = "acl"; Code = 4 }
+        @{ Label = "a file in it has permissions of its own"; Kind = "fileacl"; Code = 4 }
         @{ Label = "the app runs for anyone"; Kind = "running"; Code = 3 }
     ) {
         param($Label, $Kind, $Code)
@@ -685,6 +735,13 @@ Describe "uninstall.ps1 -Machine" {
                 New-Item -ItemType Junction -Path (Join-Path $root "current") -Target (New-TestFolder "out") | Out-Null
             }
             "acl" { Mock Get-FolderSecurity { Get-MachineRootSecurity "S-1-5-32-545" } }
+            "fileacl" {
+                $file = [IO.FileInfo]::new((Join-Path $root "uninstall.ps1"))
+                $acl = $file.GetAccessControl()
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                    [Security.Principal.WindowsIdentity]::GetCurrent().User, "Modify", "Allow"))
+                $file.SetAccessControl($acl)
+            }
             "running" { Mock Get-Process { [pscustomobject]@{ Path = "$root\current\runtime\pythonw.exe" } } }
         }
         $before = Get-Snapshot $root
