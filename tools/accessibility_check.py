@@ -31,8 +31,12 @@
 # By default the page is audited in the PC's own colour mode. --colour-mode
 # light or dark draws it in that mode instead, and both audits each view in
 # light and then in dark (reported as "<view> (light)" and "<view> (dark)").
-# The checks are the same in every mode; a mode the page does not switch to
-# stops the run.
+# The checks are the same in every mode. The mode is set for this window's
+# page only (the browser's media emulation and WebView2's preferred colour
+# scheme), whatever mode Windows is in, and Windows' setting is never
+# changed (#328). A mode the page does not show, in its media query and in
+# its styles, stops the run. In the PC's own mode the page is read once,
+# with no switch to wait for, and its media query and styles must agree.
 #
 # Against an installed or extracted package, as release evidence
 # (tools/evidence.py), with that package's own Python:
@@ -359,6 +363,11 @@ CHECKS = {
 
 # The colour mode the page is drawn in (prefers-color-scheme).
 COLOUR_MODE = "return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';"
+# The same, and the colour scheme the page's own styles are drawn in:
+# workspace/ui/tokens.css sets color-scheme with the media query, so both
+# agree only once the page has really switched (#328).
+PAGE_MODE = ("return {media: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : "
+             "'light', drawn: getComputedStyle(document.documentElement).colorScheme};")
 
 # --colour-mode: the modes each view is audited in, in order. "system" leaves
 # the page in the PC's own colour mode (Windows' app mode) and is the default.
@@ -371,13 +380,17 @@ def colour_modes(choice):
     return list(_MODES[choice])
 
 
-def colour_mode_shown(asked, shown):
+def colour_mode_shown(asked, shown, drawn=None):
     """The mode the page shows, checked against the one asked for (None: the
-    PC's own, either). A mode the page did not switch to stops the run, so a
+    PC's own, either), and, when given, against the colour scheme its styles
+    are drawn in. A mode the page did not switch to stops the run, so a
     report never claims a mode that was not audited."""
     if shown not in ("light", "dark") or (asked and shown != asked):
         raise RuntimeError(f"colour mode asked for: {asked or 'system'}; the page shows: "
                            f"{shown!r}")
+    if drawn is not None and drawn != shown:
+        raise RuntimeError(f"colour mode asked for: {asked or 'system'}; the page shows: "
+                           f"{shown!r} but its styles are drawn in {drawn!r}")
     return shown
 
 
@@ -386,31 +399,81 @@ def view_key(name, shown, modes):
     return f"{name} ({shown})" if len(modes) > 1 else name
 
 
-def set_colour_mode(window, mode):
-    """WebView2's preferred colour scheme for the page (prefers-color-scheme):
-    "light", "dark", or None for the PC's own. It changes only the media query
-    the page reads; the page's styles and checks are the same."""
+def emulated_media(mode):
+    """DevTools Emulation.setEmulatedMedia parameters for a colour mode ("" for
+    None: the PC's own again)."""
+    return json.dumps({"features": [{"name": "prefers-color-scheme", "value": mode or ""}]})
+
+
+def _outcome(task, wait):
+    """What a DevTools call's .NET Task came to, waiting up to `wait` seconds.
+    The task finishes on the window's UI thread, so it is never waited on there."""
+    import time
+    end = time.monotonic() + wait
+    while not task.IsCompleted and time.monotonic() < end:
+        time.sleep(0.05)
+    if not task.IsCompleted:
+        return "no answer"
+    if task.IsFaulted or task.IsCanceled:
+        return f"failed: {str(task.Exception)[:200]}"
+    return "set"
+
+
+def set_colour_mode(window, mode, wait=10.0):
+    """Draw this window's page in a colour mode ("light", "dark", or None for
+    the PC's own), in two ways, because WebView2's profile setting alone left
+    the page in Windows' mode (#328):
+    - the browser's media emulation for this page (the DevTools protocol's
+      Emulation.setEmulatedMedia), which overrides prefers-color-scheme;
+    - WebView2's preferred colour scheme for the window's profile.
+    Both change only what this check's window reports to its page, never
+    Windows' setting or the app, and the page's styles and checks are the
+    same. Returns what each did (for the error if the page does not switch);
+    show_colour_mode checks what the page shows."""
     from Microsoft.Web.WebView2.Core import CoreWebView2PreferredColorScheme as Scheme
     from System import Action
     form = window.native
     control = form.browser.webview
     scheme = {None: Scheme.Auto, "light": Scheme.Light, "dark": Scheme.Dark}[mode]
+    done = {}
 
     def apply():
-        control.CoreWebView2.Profile.PreferredColorScheme = scheme
+        core = control.CoreWebView2
+        try:
+            done["emulation"] = core.CallDevToolsProtocolMethodAsync(
+                "Emulation.setEmulatedMedia", emulated_media(mode))
+        except Exception as exc:
+            done["emulation"] = f"failed: {type(exc).__name__}: {exc}"[:200]
+        try:
+            core.Profile.PreferredColorScheme = scheme
+            done["profile"] = "set"
+        except Exception as exc:
+            done["profile"] = f"failed: {type(exc).__name__}: {exc}"[:200]
     form.Invoke(Action(apply))          # WebView2 must be used on the UI thread
+    if not isinstance(done.get("emulation"), str):
+        done["emulation"] = _outcome(done["emulation"], wait)
+    return done
 
 
-def show_colour_mode(window, mode):
+def show_colour_mode(window, mode, wait=10.0):
     """Draw the page in a colour mode (None: leave it in the PC's own) and
-    return the mode it shows."""
+    return the mode it shows, once the media query and the page's styles both
+    show it (within `wait` seconds); otherwise the run stops."""
     import time
 
     from workspace_ui_check import evaluate
-    if mode:
-        set_colour_mode(window, mode)
-        time.sleep(0.5)
-    return colour_mode_shown(mode, evaluate(window, COLOUR_MODE))
+    done = set_colour_mode(window, mode, wait) if mode else {}
+    end = time.monotonic() + wait
+    while True:
+        page = evaluate(window, PAGE_MODE) or {}
+        if not mode or (page.get("media") == page.get("drawn") == mode) \
+                or time.monotonic() >= end:
+            break
+        time.sleep(0.2)
+    try:
+        return colour_mode_shown(mode, page.get("media"), page.get("drawn"))
+    except RuntimeError as exc:
+        raise RuntimeError(f"{exc} (switched by: {done})" if done else str(exc)) from None
 
 PAGE = ("return {lang: document.documentElement.lang, title: document.title, "
         "live_status: document.getElementById('status')?.getAttribute('aria-live')};")
