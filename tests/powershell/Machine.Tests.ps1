@@ -456,6 +456,31 @@ Describe "install.ps1 -Machine" {
             Get-Kept | Should -BeExactly "3.0.0,4.2.0"
         }
 
+        It "leaves nothing with permissions of its own after installs and a rollback" {
+            # CI's elevated runner (23 October 2026): a file written over in place
+            # (current.json, uninstall.ps1) came out with permissions of its own, so
+            # the third run stopped with exit 4. Set-InheritedOnly resets the two.
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            foreach ($name in "current.json", "uninstall.ps1") {
+                $file = [IO.FileInfo]::new((Join-Path $script:Root $name))
+                $acl = $file.GetAccessControl()
+                $acl.SetAccessRuleProtection($true, $true)
+                $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($me, "Modify", "Allow"))
+                $file.SetAccessControl($acl)
+                Set-InheritedOnly $file.FullName
+                Test-AclChanged ([IO.FileInfo]::new($file.FullName)) | Should -BeFalse -Because $name
+            }
+            Invoke-TestInstall (New-TestZip "1.1.0")
+            Invoke-TestInstall (New-TestZip "1.2.0")
+            Invoke-TestInstall "" @{ Rollback = $true }
+            $Options.Rollback = $false
+            Get-Current | Should -BeExactly "1.1.0"
+            Get-AclChangeCount $script:Root | Should -Be 0
+            Invoke-TestInstall (New-TestZip "1.3.0")
+            Get-AclChangeCount $script:Root | Should -Be 0
+        }
+
         It "removes every newer storage format when an older one is installed (strict downgrade)" {
             Invoke-TestInstall (New-TestZip "2.0.0" -Schema 2)
             Invoke-TestInstall (New-TestZip "3.0.0" -Schema 3)
