@@ -6,7 +6,8 @@
 # docs/RELEASE_STANDARD.md); this keeps the views it found wanting from
 # drifting back between its runs:
 #   - every focusable control shows a focus indicator (2.4.7) at 3:1 (1.4.11),
-#     including on the pink of a hold and of a passage left out;
+#     including on the pink of a hold and of a passage left out, on Meetings
+#     and Settings as well;
 #   - text reaches 4.5:1 (1.4.3): the green tick of a done step, and
 #     "Optional" on the current setup step;
 #   - pointer targets are 24 by 24 CSS px or spaced (2.5.8): the back links,
@@ -39,6 +40,10 @@ EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
 # width, and the audit lists that must be empty.
 FOCUS = ["focus_not_measured", "no_focus_ring", "low_contrast_focus"]
 VIEWS = {
+    # The real-window run of 23 October 2026 reported no_focus_ring on these
+    # two (and on the meeting and hand off views); none is found headless.
+    "meetings": ("home", "", 1100, FOCUS),
+    "settings": ("settings", "", 1100, FOCUS),
     "setup speaker names": ("setup-3", "", 1100, ["low_contrast"] + FOCUS),
     "setup microphone": ("setup-4", "", 1100, ["low_contrast"] + FOCUS),
     "meeting": ("meeting", "", 1280,
