@@ -71,6 +71,8 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 5. Detection rule: the registry value `DisplayVersion` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
 6. Requirements: Windows 10 1809 or later, x64, and the WebView2 runtime.
 
+The scripts are not signed, and the install and uninstall commands run them with `-ExecutionPolicy Bypass`: an accepted risk (the owner's decision of 22 October 2026, SECURITY_MODEL.md T22). An environment that enforces `AllSigned` cannot run them as shipped; [PACKAGING.md](PACKAGING.md), "Signing and trust", lists the options for signing them yourself.
+
 Coming from 0.4.3 or earlier is not an update in place: users finish with the earlier version first. The order, and how to supersede the earlier app in Intune, are in [PACKAGING.md](PACKAGING.md), "Updates".
 
 ## Managed policy

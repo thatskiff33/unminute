@@ -89,8 +89,8 @@ jobs:
           "``````" >> $env:GITHUB_STEP_SUMMARY
 
   pester:
-    # Report only until it is stable (#111 B6a; the owner's decision B6-5 of 21
-    # October 2026: a new job, made required once stable). The installer's Pester
+    # Report only until it has passed on 5 consecutive pull requests (#111 B6a; the
+    # owner's decisions of 21 and 23 October 2026; docs/RELEASING.md). The installer's Pester
     # tests (tests/powershell) under Windows PowerShell 5.1, which runs the
     # installer. tools/run_pester.ps1 downloads Pester 5.9.1 from the PowerShell
     # Gallery and uses it only if the package's SHA-256 matches the one recorded

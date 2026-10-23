@@ -77,6 +77,9 @@ $script:TempExtract = $null
 $script:StagedCopy = $null           # versions\<version>.partial while this run owns it
 $script:InstallLock = $null
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+# The Start menu's Programs folder, for the shortcut. Read once, here, like $RegKey, so
+# the tests can point both at scratch places (tests/powershell/Isolation.ps1).
+$ProgramsFolder = [Environment]::GetFolderPath("Programs")
 # What the installer may put in the install folder, and so all the uninstaller
 # removes there (#297, #111 B6a): the versions, the record and its temporary copy,
 # the uninstaller, the log folder and the lock. install.ps1 and uninstall.ps1 list
@@ -839,9 +842,8 @@ function New-Shortcut([string]$Target) {
     Update-PinnedShortcut $Target
     if ($Options.SkipShortcut) { return }
     $name = Get-VersionAppName $Target
-    $programs = [Environment]::GetFolderPath("Programs")
     $shell = New-Object -ComObject WScript.Shell
-    $link = $shell.CreateShortcut((Join-Path $programs "$name.lnk"))
+    $link = $shell.CreateShortcut((Join-Path $ProgramsFolder "$name.lnk"))
     $link.TargetPath = Join-Path $Target "runtime\pythonw.exe"
     $link.Arguments = $LaunchArgs
     $link.WorkingDirectory = Join-Path $Target "app"

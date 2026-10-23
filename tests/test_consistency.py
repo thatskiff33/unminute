@@ -215,8 +215,8 @@ class InstallIdentityTests(unittest.TestCase):
     def test_the_identity_file_pins_the_install_names(self):
         # K1 (#111 B6a): packaging/identity.json mirrors the names, never replaces
         # them, so the names stay literals here and changing the file alone fails.
-        # The machine names (B6b) joined K1 with the owner's approval (22 October
-        # 2026, #111); the scripts do not use them yet.
+        # The machine names (B6b) joined K1 with the owner's approval (21 October
+        # 2026, confirmed 22 October 2026, #111); the scripts do not use them yet.
         identity = json.loads(read("packaging/identity.json"))
         self.assertEqual(identity["name"], "Unminute")
         self.assertEqual(identity["earlier_names"], ["Whisper Transcriber", "Meeting Workspace"])
