@@ -10,8 +10,9 @@
   and imported from that folder by path, so no other Pester (Windows ships 3.4.0)
   is used. Then every *.Tests.ps1 file under tests/powershell runs, with LOCALAPPDATA
   and APPDATA in a new scratch folder under -ModuleRoot; the run fails if this
-  computer's real install (its folder, Start menu shortcut, uninstall entry or pins)
-  changed meanwhile. Never run the tests any other way (docs/DEVELOPER_NOTES.md).
+  computer's real install, per user or machine (its folder, Start menu shortcut,
+  uninstall entry, pins or Event Log source), changed meanwhile. Never run the tests
+  any other way (docs/DEVELOPER_NOTES.md).
 
   Run it under Windows PowerShell 5.1, which runs the installer:
     powershell -NoProfile -ExecutionPolicy Bypass -File tools/run_pester.ps1 -ModuleRoot <folder>
@@ -72,9 +73,12 @@ if ($loaded.Version -ne [version]$PesterVersion -or
 # on top of that, they run here with LOCALAPPDATA and APPDATA in a new scratch folder,
 # and the run fails if the real install's folder, Start menu shortcut, uninstall entry
 # or pins of Unminute (TaskBar and StartMenu, which uninstall.ps1 -Offboard removes)
-# changed while they ran: Get-RealInstallState in Isolation.ps1, which only defines
-# functions and reads. The real places come from the shell, not those variables. Only
-# names, sizes, times, attributes and values are compared, in memory; nothing is printed.
+# changed while they ran, or, since B6b, the install for the whole computer (Program
+# Files\Unminute, the all-users shortcut, the HKLM uninstall entry and the Event Log
+# source, read in the 64-bit registry view; reading HKLM needs no administrator
+# rights): Get-RealInstallState in Isolation.ps1, which only defines functions and
+# reads. The real places come from the shell, not those variables. Only names, sizes,
+# times, attributes and values are compared, in memory; nothing is printed.
 . (Join-Path (Split-Path -Parent $PSScriptRoot) "tests\powershell\Isolation.ps1")
 
 $scratch = Join-Path $ModuleRoot ("s" + [guid]::NewGuid().ToString("N").Substring(0, 8))
@@ -97,7 +101,7 @@ $changed = (Get-RealInstallState) -cne $before
 try { Remove-Item -LiteralPath $module -Recurse -Force } catch { }
 try { Remove-Item -LiteralPath $scratch -Recurse -Force } catch { }
 if ($changed) {
-    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut, uninstall entry or pins). Check it.")
+    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut, uninstall entry, pins or Event Log source). Check it.")
     exit 1
 }
 if ($result.TotalCount -eq 0 -or $result.FailedCount -gt 0 -or $result.Result -ne "Passed") { exit 1 }

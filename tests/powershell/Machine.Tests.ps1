@@ -1,40 +1,27 @@
 # Pester 5 tests of machine mode (#111 B6b): install.ps1 -Machine and uninstall.ps1
 # -Machine. Run them with tools/run_pester.ps1 under Windows PowerShell 5.1.
 #
-# Nothing here needs administrator rights or touches this computer's install: each
-# script is dot-sourced (after Assert-DotSourceGuard has found its guard, as in
-# Installer.Tests.ps1), and the parts that would reach the computer are stood in by
-# Pester mocks: elevation and bitness (Test-Elevated, Test-64BitProcess), Program
-# Files and the all-users Start menu (folders in TestDrive), the HKLM uninstall entry
-# and the Event Log source key (keys in Pester's TestRegistry, under HKCU), the
-# folder's owner and permissions as read (Get-FolderSecurity, a list built in
-# memory with Get-MachineRootSecurity), the folder's creation with them
-# (New-MachineRoot, a plain folder), prerequisites and running processes.
-# Stop-Install and Stop-Uninstall throw "STOP <code>". LOCALAPPDATA and APPDATA point
-# into TestDrive. Packages are synthetic. ASCII only (Windows PowerShell 5.1 reads a
-# script without a byte-order mark in the system code page).
+# Safety (tests/powershell/Isolation.ps1, as in Installer.Tests.ps1): nothing here
+# needs administrator rights or can reach this computer's install, per user or
+# machine. LOCALAPPDATA and APPDATA point into TestDrive, and a script is loaded only
+# as ". (Confirm-Loadable $path); Set-ScratchTarget": refused without its dot-source
+# guard, or when it reaches the Start menu, Program Files, the uninstall keys or the
+# Event Log source other than through the variables at its top. Each test then gets
+# its own scratch places from Set-ScratchMachineTarget: a Program Files and an
+# all-users Start menu folder in TestDrive, and throwaway HKCU keys for the machine
+# uninstall entry and the Event Log source; "machine places" below proves it. What
+# remains is stood in by Pester mocks: elevation and bitness (Test-Elevated,
+# Test-64BitProcess), the folder's owner and permissions as read (Get-FolderSecurity,
+# a list built in memory with Get-MachineRootSecurity), the folder's creation with
+# them (New-MachineRoot, a plain folder), prerequisites and running processes.
+# Stop-Install and Stop-Uninstall throw "STOP <code>". Packages are synthetic. ASCII
+# only (Windows PowerShell 5.1 reads a script without a byte-order mark in the system
+# code page).
 
 BeforeAll {
-    $script:SavedLocal = $env:LOCALAPPDATA
-    $script:SavedRoaming = $env:APPDATA
-    $env:LOCALAPPDATA = [IO.Directory]::CreateDirectory((Join-Path $TestDrive "Local")).FullName
-    $env:APPDATA = [IO.Directory]::CreateDirectory((Join-Path $TestDrive "Roaming")).FullName
+    . (Join-Path $PSScriptRoot "Isolation.ps1")
+    Enter-ScratchProfile $TestDrive
     $script:Repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-
-    function Assert-DotSourceGuard([string]$Path) {
-        $tokens = $null; $errors = $null
-        $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
-        $statements = @($ast.EndBlock.Statements)
-        $guard = -1; $main = -1
-        for ($i = 0; $i -lt $statements.Count; $i++) {
-            $text = $statements[$i].Extent.Text
-            if ($guard -lt 0 -and $text -ceq 'if ($MyInvocation.InvocationName -eq ".") { return }') { $guard = $i }
-            if ($main -lt 0 -and $statements[$i] -is [Management.Automation.Language.TryStatementAst]) { $main = $i }
-        }
-        if ($errors.Count -or $guard -lt 0 -or $main -lt 0 -or $guard -gt $main) {
-            throw "$Path has no dot-source guard before its main part, so it was not loaded."
-        }
-    }
 
     # A new, unique folder in TestDrive.
     function New-TestFolder([string]$Prefix) {
@@ -95,23 +82,17 @@ BeforeAll {
 }
 
 AfterAll {
-    $env:LOCALAPPDATA = $script:SavedLocal
-    $env:APPDATA = $script:SavedRoaming
+    Exit-ScratchProfile
 }
 
 Describe "install.ps1 -Machine" {
     BeforeAll {
         $script:Install = Join-Path $script:Repo "packaging\install.ps1"
-        Assert-DotSourceGuard $script:Install
-        . $script:Install
+        . (Confirm-Loadable $script:Install); Set-ScratchTarget
         Mock Stop-Install { throw "STOP $Code" }
         Mock Test-Elevated { $true }
         Mock Test-64BitProcess { $true }
         Mock Test-Prerequisite { }
-        Mock Get-ProgramFilesFolder { $script:ProgramFiles }
-        Mock Get-CommonProgramsFolder { $script:CommonPrograms }
-        Mock Get-MachineRegKey { $script:RegPath }
-        Mock Get-EventSourceKey { $script:EventPath }
         Mock New-MachineRoot { [void][IO.Directory]::CreateDirectory($Root) }
         Mock Get-FolderSecurity { Get-MachineRootSecurity }
         Mock Get-Process { }
@@ -135,12 +116,12 @@ Describe "install.ps1 -Machine" {
     }
 
     BeforeEach {
-        $script:ProgramFiles = New-TestFolder "pf"
-        $script:CommonPrograms = New-TestFolder "cp"
+        Set-ScratchMachineTarget
+        $script:ProgramFiles = $ProgramFilesFolder
+        $script:CommonPrograms = $CommonProgramsFolder
+        $script:RegPath = $MachineRegKey
+        $script:EventPath = $EventSourceKey
         $script:Root = Join-Path $script:ProgramFiles "Unminute"
-        $suffix = [guid]::NewGuid().ToString("N").Substring(0, 8)
-        $script:RegPath = "TestRegistry:\u$suffix"
-        $script:EventPath = "TestRegistry:\e$suffix"
         $Options.Machine = $true; $Options.Silent = $true; $Options.SkipShortcut = $false
         $Options.InstallDirGiven = $false; $Options.SelfService = $false; $Options.Managed = $false
         $Options.Rollback = $false; $Options.RemoveSlot = ""; $Options.Package = ""
@@ -150,6 +131,44 @@ Describe "install.ps1 -Machine" {
     AfterEach {
         Clear-InstallRun
         $Options.Machine = $false
+    }
+
+    Context "machine places (the tests' own safety check)" {
+        It "gives every test its own scratch places, and refuses the real ones" {
+            Test-ScratchPath $ProgramFilesFolder | Should -BeTrue
+            Test-ScratchPath (Get-MachineRoot) | Should -BeTrue
+            Get-MachineRoot | Should -BeExactly $script:Root
+            Get-CommonProgramsFolder | Should -BeExactly $script:CommonPrograms
+            Test-ScratchKey (Get-MachineRegKey) | Should -BeTrue
+            Test-ScratchKey (Get-EventSourceKey) | Should -BeTrue
+            # Not the ones Set-ScratchTarget gave the loaded script: this test's own.
+            $ProgramFilesFolder | Should -Not -BeExactly $script:ScratchProgramFiles
+            $MachineRegKey | Should -Not -BeExactly $script:ScratchMachineKey
+            foreach ($case in @(
+                    @{ Name = "ProgramFilesFolder"; Value = [Environment]::GetFolderPath("ProgramFiles") }
+                    @{ Name = "CommonProgramsFolder"; Value = [Environment]::GetFolderPath("CommonPrograms") }
+                    @{ Name = "MachineRegKey"; Value = $script:RealMachineKey }
+                    @{ Name = "EventSourceKey"; Value = $script:RealEventSourceKey })) {
+                $saved = Get-Variable -Name $case.Name -ValueOnly
+                Set-Variable -Name $case.Name -Value $case.Value
+                { Assert-ScratchTarget } | Should -Throw "Not scratch*"
+                Set-Variable -Name $case.Name -Value $saved
+            }
+            { Assert-ScratchTarget } | Should -Not -Throw
+        }
+
+        It "installs, rolls back and removes a version writing only this test's scratch places" {
+            $before = Get-RealMachineState
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            Invoke-TestInstall (New-TestZip "1.1.0")
+            Invoke-TestInstall "" @{ Rollback = $true }
+            Invoke-TestInstall "" @{ Rollback = $false; RemoveSlot = "1.1.0" }
+            $Options.RemoveSlot = ""
+            Test-Path -LiteralPath (Join-Path $script:CommonPrograms "Unminute.lnk") -PathType Leaf | Should -BeTrue
+            (Get-ItemProperty -LiteralPath $script:RegPath).DisplayVersion | Should -BeExactly "1.0.0"
+            Test-Path -LiteralPath $script:EventPath | Should -BeTrue
+            Get-RealMachineState | Should -BeExactly $before
+        }
     }
 
     Context "where and how it may run" {
@@ -613,11 +632,10 @@ Describe "install.ps1 -Machine" {
 
     Context "a per-user install on a computer with a machine install" {
         It "finds the machine uninstall entry in the 64-bit view" {
-            $key = Get-Item -LiteralPath "TestRegistry:\"
-            $sub = $key.Name -replace '^HKEY_CURRENT_USER\\', ''
-            Test-MachineInstalled -Hive CurrentUser -SubKey "$sub\Uninstall\Unminute" | Should -BeFalse
-            New-Item -Path "TestRegistry:\Uninstall\Unminute" -Force | Out-Null
-            Test-MachineInstalled -Hive CurrentUser -SubKey "$sub\Uninstall\Unminute" | Should -BeTrue
+            # $MachineRegKey is this test's throwaway HKCU key (Set-ScratchMachineTarget).
+            Test-MachineInstalled | Should -BeFalse
+            New-Item -Path $MachineRegKey -Force | Out-Null
+            Test-MachineInstalled | Should -BeTrue
         }
     }
 }
@@ -625,15 +643,10 @@ Describe "install.ps1 -Machine" {
 Describe "uninstall.ps1 -Machine" {
     BeforeAll {
         $script:Uninstall = Join-Path $script:Repo "packaging\uninstall.ps1"
-        Assert-DotSourceGuard $script:Uninstall
-        . $script:Uninstall
+        . (Confirm-Loadable $script:Uninstall); Set-ScratchTarget
         Mock Stop-Uninstall { throw "STOP $Code" }
         Mock Test-Elevated { $true }
         Mock Test-64BitProcess { $true }
-        Mock Get-ProgramFilesFolder { $script:ProgramFiles }
-        Mock Get-CommonProgramsFolder { $script:CommonPrograms }
-        Mock Get-MachineRegKey { $script:RegPath }
-        Mock Get-EventSourceKey { $script:EventPath }
         Mock Get-FolderSecurity { Get-MachineRootSecurity }
         Mock Get-Process { }
         Mock Invoke-LidRestore { throw "a profile was read" }
@@ -670,16 +683,29 @@ Describe "uninstall.ps1 -Machine" {
     }
 
     BeforeEach {
-        $script:ProgramFiles = New-TestFolder "pf"
-        $script:CommonPrograms = New-TestFolder "cp"
-        $suffix = [guid]::NewGuid().ToString("N").Substring(0, 8)
-        $script:RegPath = "TestRegistry:\u$suffix"
-        $script:EventPath = "TestRegistry:\e$suffix"
+        Set-ScratchMachineTarget
+        $script:ProgramFiles = $ProgramFilesFolder
+        $script:CommonPrograms = $CommonProgramsFolder
+        $script:RegPath = $MachineRegKey
+        $script:EventPath = $EventSourceKey
         $Options.Machine = $true; $Options.Silent = $true; $Options.InstallDirGiven = $false
         $Options.IncludeKeptSlots = $false; $Options.Offboard = $false
     }
 
     AfterEach { Exit-InstallLock }
+
+    It "removes only this test's scratch places, and nothing of the real machine install" {
+        Test-ScratchPath (Get-MachineRoot) | Should -BeTrue
+        Test-ScratchPath (Get-CommonProgramsFolder) | Should -BeTrue
+        Test-ScratchKey (Get-MachineRegKey) | Should -BeTrue
+        Test-ScratchKey (Get-EventSourceKey) | Should -BeTrue
+        $before = Get-RealMachineState
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        Invoke-TestUninstall
+        [IO.Directory]::Exists($root) | Should -BeFalse
+        Test-Path -LiteralPath $script:RegPath | Should -BeFalse
+        Get-RealMachineState | Should -BeExactly $before
+    }
 
     It "removes the install, its Start menu entry, Event Log source and uninstall entry, never through a link" {
         $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"

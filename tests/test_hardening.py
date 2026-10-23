@@ -1604,14 +1604,17 @@ class EnvironmentTokenTests(unittest.TestCase):
         self.assertNotIn("hf_example", r.stdout + r.stderr)
 
 
-# -- keeping the installer tests off the real install (#111 B6a) ----------------------
+# -- keeping the installer tests off the real install (#111 B6a, B6b) -----------------
 # On 23 October 2026 a local test run uninstalled the owner's real per-user install.
 # So every test here that runs install.ps1 or uninstall.ps1 runs a scratch copy
 # (scratch_text: its Start menu folder and uninstall key swapped for a scratch folder
-# and a throwaway HKCU key) through run_installer, which refuses, before anything
-# runs, unless the copy, the install folder, LOCALAPPDATA and APPDATA are all scratch,
-# and fails the test if the real install's folder, Start menu shortcut, uninstall
-# entry or pins changed while the copy ran. The real places come from the shell's known
+# and a throwaway HKCU key, and machine mode's Program Files, all-users Start menu
+# folder, HKLM uninstall entry and Event Log source for scratch folders and throwaway
+# HKCU keys) through run_installer, which refuses, before anything runs, unless the
+# copy, the install folder (or, for a -Machine run, every machine place), LOCALAPPDATA
+# and APPDATA are all scratch, and fails the test if the real install, per user or
+# machine (its folder, Start menu shortcut, uninstall entry, pins or Event Log
+# source), changed while the copy ran. The real places come from the shell's known
 # folders, which do not read LOCALAPPDATA or APPDATA, so a test's scratch variables
 # cannot hide them. InstallerIsolationTests proves all of this.
 
@@ -1624,17 +1627,41 @@ TEST_KEY_LINE = '$RegKey = "HKCU:\\' + TEST_KEY + '"'
 # How uninstall.ps1 reads the roaming profile folder, where pins live (#111 B8b):
 # uninstaller_copy names a scratch folder there instead.
 ROAMING_READ = "$env:APPDATA"
-# What a copy may not hold: the ways a script reaches this account's own Start menu
-# or uninstall entries.
-REAL_REACH = ("GetFolderPath", "Start Menu\\", "CurrentVersion\\Uninstall", "Registry::")
 # Where this account's TaskBar and StartMenu pins live, inside its roaming folder.
 REAL_PINNED = ("Microsoft", "Internet Explorer", "Quick Launch", "User Pinned")
+# Machine mode's places (#111 B6b), each set once at the top of both scripts, and
+# the throwaway HKCU keys the copies use instead of the HKLM ones.
+PROGRAM_FILES_LINE = '$ProgramFilesFolder = [Environment]::GetFolderPath("ProgramFiles")'
+COMMON_PROGRAMS_LINE = '$CommonProgramsFolder = [Environment]::GetFolderPath("CommonPrograms")'
+REAL_MACHINE_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+REAL_EVENT_KEY = r"SYSTEM\CurrentControlSet\Services\EventLog\Application\Unminute"
+MACHINE_KEY_LINE = '$MachineRegKey = "HKLM:\\' + REAL_MACHINE_KEY + '"'
+EVENT_KEY_LINE = '$EventSourceKey = "HKLM:\\' + REAL_EVENT_KEY + '"'
+TEST_MACHINE_KEY = TEST_KEY + r"-machine\Uninstall\Unminute"
+TEST_EVENT_KEY = TEST_KEY + r"-machine\EventLog\Unminute"
+# What a copy may not hold: the ways a script reaches this account's own Start menu
+# or uninstall entries, or this computer's Program Files, all-users Start menu, HKLM
+# uninstall entries or Event Log sources.
+REAL_REACH = ("GetFolderPath", "SpecialFolder", "Start Menu\\", "CurrentVersion\\Uninstall",
+              "Registry::", "Services\\EventLog", "HKLM:\\SYSTEM",
+              "HKLM:\\SOFTWARE\\Microsoft\\Windows", "HKEY_", "$env:Program",
+              "$env:ALLUSERSPROFILE", "$env:PUBLIC", "CreateSubKey", "DeleteSubKey",
+              "DeleteValue", "EventSource(", "New-EventLog", "Remove-EventLog")
+# How a copy's machine places read (check_scratch_run).
+MACHINE_PLACES = (("Program Files", r'(?m)^\$ProgramFilesFolder = "([^"]*)"\r?$'),
+                  ("the all-users Start menu folder",
+                   r'(?m)^\$CommonProgramsFolder = "([^"]*)"\r?$'))
+MACHINE_KEYS = (("the machine uninstall key", r'(?m)^\$MachineRegKey = "([^"]*)"\r?$',
+                 "HKCU:\\" + TEST_MACHINE_KEY),
+                ("the Event Log source key", r'(?m)^\$EventSourceKey = "([^"]*)"\r?$',
+                 "HKCU:\\" + TEST_EVENT_KEY))
 
 
 def real_places():
     """This account's real install folder, data folder, Start menu Programs folder
-    and roaming folder, from the shell (SHGetFolderPathW), never from LOCALAPPDATA
-    or APPDATA."""
+    and roaming folder, and this computer's Program Files (both views) and all-users
+    Start menu Programs folder, from the shell (SHGetFolderPathW), never from
+    LOCALAPPDATA or APPDATA."""
     import ctypes
 
     def known(csidl):
@@ -1644,8 +1671,31 @@ def real_places():
         return Path(buf.value)
 
     local = known(0x1C)                         # CSIDL_LOCAL_APPDATA
-    return {"install": local / "Programs" / "Unminute", "data": local / "Unminute",
-            "programs": known(0x02), "roaming": known(0x1A)}   # CSIDL_PROGRAMS, CSIDL_APPDATA
+    program_files = known(0x26)                 # CSIDL_PROGRAM_FILES
+    places = {"install": local / "Programs" / "Unminute", "data": local / "Unminute",
+              "programs": known(0x02), "roaming": known(0x1A),   # CSIDL_PROGRAMS, CSIDL_APPDATA
+              "program_files": program_files,
+              "common_programs": known(0x17)}           # CSIDL_COMMON_PROGRAMS
+    try:
+        places["program_files_x86"] = known(0x2A)                 # CSIDL_PROGRAM_FILESX86
+    except OSError:
+        pass                                    # none on a 32-bit Windows
+    return places
+
+
+def _registry_state(hive, subkey):
+    """A registry key's values, subkeys and time in the 64-bit view, to compare in
+    memory (never shown): None when absent, "unreadable" when it cannot be read."""
+    import winreg
+    try:
+        with winreg.OpenKey(hive, subkey, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            info = winreg.QueryInfoKey(key)
+            return (info[2], sorted(winreg.EnumValue(key, i) for i in range(info[1])),
+                    sorted(winreg.EnumKey(key, i) for i in range(info[0])))
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "unreadable"
 
 
 def _names_unminute(entry):
@@ -1685,24 +1735,25 @@ def real_pin_state(roaming):
 
 
 def real_install_state():
-    """The real install folder's and Start menu shortcut's times and attributes, the
-    real uninstall entry's values and time, and the real pins of Unminute
-    (real_pin_state), to compare in memory (never shown)."""
+    """The real install folders' and Start menu shortcuts' times and attributes, per
+    user and machine, the real uninstall entries' and Event Log source's values and
+    times, and the real pins of Unminute (real_pin_state), to compare in memory
+    (never shown)."""
     import winreg
     places = real_places()
     state = []
-    for path in (places["install"], places["programs"] / "Unminute.lnk"):
+    for path in (places["install"], places["programs"] / "Unminute.lnk",
+                 places["program_files"] / "Unminute", places["common_programs"] / "Unminute.lnk"):
         try:
             st = os.lstat(path)
             state.append((st.st_mtime_ns, st.st_file_attributes))
         except FileNotFoundError:
             state.append(None)
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REAL_KEY) as key:
-            info = winreg.QueryInfoKey(key)
-            state.append((info[2], sorted(winreg.EnumValue(key, i) for i in range(info[1]))))
-    except FileNotFoundError:
-        state.append(None)
+        except OSError:
+            state.append("unreadable")
+    state.append(_registry_state(winreg.HKEY_CURRENT_USER, REAL_KEY))
+    state.append(_registry_state(winreg.HKEY_LOCAL_MACHINE, REAL_MACHINE_KEY))
+    state.append(_registry_state(winreg.HKEY_LOCAL_MACHINE, REAL_EVENT_KEY))
     state.extend(real_pin_state(places["roaming"]))
     return state
 
@@ -1735,29 +1786,63 @@ def local_form(folder):
     return m.group(1) if m.group(1) is not None else f"{m.group(2)}:\\{m.group(3) or ''}"
 
 
-def scratch_text(name, programs):
+def scratch_text(name, programs, program_files=None, common_programs=None):
     """packaging/<name>'s text with its Start menu folder replaced by programs and its
-    uninstall key by TEST_KEY. Write it into the scratch folder and run it with
-    run_installer."""
+    uninstall key by TEST_KEY; machine mode's Program Files and all-users Start menu
+    folder by program_files and common_programs (by default "Program Files" and
+    "CommonPrograms" beside programs), and its HKLM uninstall entry and Event Log
+    source by throwaway HKCU keys (TEST_MACHINE_KEY, TEST_EVENT_KEY). Write it into
+    the scratch folder and run it with run_installer."""
+    programs = Path(programs)
+    program_files = Path(program_files or programs.parent / "Program Files")
+    common_programs = Path(common_programs or programs.parent / "CommonPrograms")
     text = (ROOT / "packaging" / name).read_text(encoding="utf-8")
     if (text.count(PROGRAMS_CALL), text.count(REAL_KEY_LINE)) != (1, 1):
         raise AssertionError(f"{name} no longer sets its Start menu folder and uninstall "
                              "key once each, so the tests cannot redirect them")
-    return text.replace(PROGRAMS_CALL, f'"{programs}"').replace(REAL_KEY_LINE, TEST_KEY_LINE)
+    machine = (PROGRAM_FILES_LINE, COMMON_PROGRAMS_LINE, MACHINE_KEY_LINE, EVENT_KEY_LINE)
+    if [text.count(line) for line in machine] != [1, 1, 1, 1]:
+        raise AssertionError(f"{name} no longer sets each machine place once, so the tests "
+                             "cannot redirect them")
+    for folder in (program_files, common_programs):
+        folder.mkdir(parents=True, exist_ok=True)
+    return (text.replace(PROGRAMS_CALL, f'"{programs}"').replace(REAL_KEY_LINE, TEST_KEY_LINE)
+            .replace(PROGRAM_FILES_LINE, f'$ProgramFilesFolder = "{program_files}"')
+            .replace(COMMON_PROGRAMS_LINE, f'$CommonProgramsFolder = "{common_programs}"')
+            .replace(MACHINE_KEY_LINE, f'$MachineRegKey = "HKCU:\\{TEST_MACHINE_KEY}"')
+            .replace(EVENT_KEY_LINE, f'$EventSourceKey = "HKCU:\\{TEST_EVENT_KEY}"'))
 
 
-def check_scratch_run(script, install_dir, scratch, env, where):
+def check_scratch_run(script, install_dir, scratch, env, where, machine=False):
     """Refuses (AssertionError) unless a run of script would write only scratch places."""
+    import re
     script = Path(script)
     if not is_scratch(script, scratch) or not script.is_file():
         raise AssertionError("an installer test runs only a copy in its scratch folder")
     text = script.read_text(encoding="utf-8")
     if TEST_KEY_LINE not in text or any(r.lower() in text.lower() for r in REAL_REACH):
-        raise AssertionError("an installer test's copy still reaches the real Start menu "
-                             "or uninstall key (use scratch_text)")
+        raise AssertionError("an installer test's copy still reaches the real Start menu, "
+                             "Program Files, uninstall keys or Event Log (use scratch_text)")
+    # Machine mode's places (#111 B6b): wherever a copy sets one, it is scratch, and a
+    # -Machine run needs every one set.
+    for what, pattern in MACHINE_PLACES:
+        found = re.findall(pattern, text)
+        if (len(found) > 1 or (machine and not found)
+                or (found and not is_scratch(found[0], scratch))):
+            raise AssertionError(f"an installer test's {what} must be scratch")
+    for what, pattern, key in MACHINE_KEYS:
+        found = re.findall(pattern, text)
+        if len(found) > 1 or (machine and not found) or (found and found != [key]):
+            raise AssertionError(f"an installer test's {what} must be scratch")
     for name in ("LOCALAPPDATA", "APPDATA"):
         if not is_scratch(env.get(name), scratch):
             raise AssertionError(f"an installer test runs only with a scratch {name}")
+    if machine:
+        if install_dir is not None:
+            raise AssertionError("a machine run takes no install folder")
+        return
+    if install_dir is None:
+        raise AssertionError("a run without an install folder is a machine run (machine=True)")
     folder = str(install_dir)
     if folder == "":
         return                                  # refused by the script before anything
@@ -1842,22 +1927,27 @@ def module_cache():
 
 
 def run_installer(script, install_dir, scratch, extra="", env=None, location=None, cwd=None,
-                  silent=True, timeout=180, stdin=None):
+                  silent=True, timeout=180, stdin=None, machine=False):
     """The only way these tests run install.ps1 or uninstall.ps1: a scratch copy (from
     scratch_text), in Windows PowerShell 5.1 with its minimal environment, LOCALAPPDATA
     and APPDATA at scratch\\Local and scratch\\Roaming unless env gives other scratch
     folders, and -InstallDir install_dir, read from location (Set-Location) or cwd
-    when relative; stdin is text for its standard input (an answer to a question).
+    when relative; or, with machine=True and install_dir None, -Machine (#111 B6b);
+    stdin is text for its standard input (an answer to a question).
     Refused before anything runs unless every place is scratch (check_scratch_run);
-    fails if the real install changed during the run."""
+    fails if the real install, per user or machine, changed during the run."""
+    import re
+    if re.search(r"(?i)(^|\s)-Machine\b", extra):
+        raise AssertionError("a machine run goes through run_installer(..., machine=True)")
     scratch = Path(scratch)
     base = {"LOCALAPPDATA": str(scratch / "Local"), "APPDATA": str(scratch / "Roaming")}
     full = windows_powershell.environment({**base, **(env or {})})
-    check_scratch_run(script, install_dir, scratch, full, location or cwd)
+    check_scratch_run(script, install_dir, scratch, full, location or cwd, machine)
     full["PSModuleAnalysisCachePath"] = module_cache()      # speed only (above)
     for name in ("LOCALAPPDATA", "APPDATA"):
         Path(full[name]).mkdir(parents=True, exist_ok=True)
-    call = f"& '{script}' -InstallDir '{install_dir}' {'-Silent' if silent else ''} {extra}"
+    where = "-Machine" if machine else f"-InstallDir '{install_dir}'"
+    call = f"& '{script}' {where} {'-Silent' if silent else ''} {extra}"
     if location:
         # A relative -InstallDir is read from PowerShell's location, which
         # Set-Location moves away from the process's own folder.
@@ -1875,9 +1965,9 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
     finally:
         _INSTALLER_RUN.active = False
         if real_install_state() != before:
-            raise AssertionError("a test run changed this account's real install (its "
-                                 "folder, Start menu shortcut, uninstall entry or pins): "
-                                 "check it")
+            raise AssertionError("a test run changed this computer's real install (its "
+                                 "folder, Start menu shortcut, uninstall entry, pins or "
+                                 "Event Log source): check it")
 
 
 # -- every other process these tests start (#332 review) -------------------------------
@@ -3687,7 +3777,11 @@ class InstallerIsolationTests(unittest.TestCase):
     October 2026: no test here can reach this account's real install. run_installer
     refuses, before anything runs, every way a run could write a real place, and
     fails a run during which the real install changed; every test runs the scripts
-    through it. tests/powershell proves the same for the Pester tests."""
+    through it. tests/powershell proves the same for the Pester tests. #111 B6b: the
+    same for machine mode's places (Program Files, the all-users Start menu, the HKLM
+    uninstall entry and the Event Log source), in a -Machine run and every other."""
+
+    DEFAULT = object()
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -3696,14 +3790,115 @@ class InstallerIsolationTests(unittest.TestCase):
         self.copy, _ = DataFolderOverlapTests.uninstaller_copy(self, self.root)
         self.install = self.root / "Apps"
 
-    def refused(self, script=None, install=None, env=None, location=None, cwd=None):
+    def refused(self, script=None, install=DEFAULT, env=None, location=None, cwd=None,
+                extra="", machine=False):
         """run_installer's refusal, checked to come before anything runs."""
+        if install is self.DEFAULT:
+            install = None if machine else self.install
         with mock.patch.object(subprocess, "run", side_effect=RuntimeError("it ran")) as run:
             with self.assertRaises(AssertionError) as caught:
-                run_installer(script or self.copy, self.install if install is None else install,
-                              self.root, env=env, location=location, cwd=cwd)
+                run_installer(script or self.copy, install, self.root, extra, env=env,
+                              location=location, cwd=cwd, machine=machine)
         run.assert_not_called()
         return str(caught.exception)
+
+    def test_every_machine_place_in_a_copy_is_scratch(self):
+        # #111 B6b: scratch_text points Program Files, the all-users Start menu folder,
+        # the HKLM uninstall entry and the Event Log source at scratch, in both scripts.
+        import re
+        for name in ("install.ps1", "uninstall.ps1"):
+            with self.subTest(name):
+                text = scratch_text(name, self.root / "programs")
+                for what, pattern in MACHINE_PLACES:
+                    found = re.findall(pattern, text)
+                    self.assertEqual(len(found), 1, what)
+                    self.assertTrue(is_scratch(found[0], self.root), what)
+                for what, pattern, key in MACHINE_KEYS:
+                    self.assertEqual(re.findall(pattern, text), [key], what)
+                    self.assertTrue(key.startswith("HKCU:\\Software\\Unminute-UnitTest-"), what)
+                for reach in REAL_REACH:
+                    self.assertNotIn(reach.lower(), text.lower(), reach)
+
+    def test_a_machine_run_cannot_reach_the_real_places(self):
+        # #111 B6b: each machine place of a copy pointed back at a real one, or at
+        # anything but the copy's own throwaway key, is refused before anything runs,
+        # in a -Machine run and in a per-user one.
+        real = real_places()
+        good = scratch_text("install.ps1", self.root / "programs")
+        machine_key = '$MachineRegKey = "HKCU:\\' + TEST_MACHINE_KEY + '"'
+        event_key = '$EventSourceKey = "HKCU:\\' + TEST_EVENT_KEY + '"'
+        cases = (
+            ("Program Files", f'$ProgramFilesFolder = "{self.root / "Program Files"}"',
+             f'$ProgramFilesFolder = "{real["program_files"]}"', "Program Files must be scratch"),
+            ("Program Files inside", f'$ProgramFilesFolder = "{self.root / "Program Files"}"',
+             f'$ProgramFilesFolder = "{real["program_files"] / "Unminute"}"',
+             "Program Files must be scratch"),
+            ("Program Files (x86)", f'$ProgramFilesFolder = "{self.root / "Program Files"}"',
+             f'$ProgramFilesFolder = "{real.get("program_files_x86", real["program_files"])}"',
+             "Program Files must be scratch"),
+            ("the all-users Start menu",
+             f'$CommonProgramsFolder = "{self.root / "CommonPrograms"}"',
+             f'$CommonProgramsFolder = "{real["common_programs"]}"',
+             "still reaches"),              # its path names the Start Menu folder
+            ("a real profile folder",
+             f'$CommonProgramsFolder = "{self.root / "CommonPrograms"}"',
+             f'$CommonProgramsFolder = "{real["roaming"] / "Microsoft"}"',
+             "all-users Start menu folder must be scratch"),
+            ("Program Files by the shell", f'$ProgramFilesFolder = "{self.root / "Program Files"}"',
+             PROGRAM_FILES_LINE, "still reaches"),
+            ("the all-users Start menu by the shell",
+             f'$CommonProgramsFolder = "{self.root / "CommonPrograms"}"', COMMON_PROGRAMS_LINE,
+             "still reaches"),
+            ("the HKLM uninstall entry", machine_key, MACHINE_KEY_LINE, "still reaches"),
+            ("the Event Log source", event_key, EVENT_KEY_LINE, "still reaches"),
+            ("another HKCU key", machine_key, '$MachineRegKey = "HKCU:\\Software\\Unminute"',
+             "machine uninstall key must be scratch"),
+            ("another HKLM key", event_key, '$EventSourceKey = "HKLM:\\SOFTWARE\\Unminute"',
+             "Event Log source key must be scratch"),
+        )
+        for label, find, put, says in cases:
+            with self.subTest(label):
+                self.assertEqual(good.count(find), 1, find)
+                copy = self.root / "machine-copy.ps1"
+                copy.write_text(good.replace(find, put), encoding="utf-8")
+                self.assertIn(says, self.refused(copy, machine=True))
+                self.assertIn(says, self.refused(copy))
+        # The copy as scratch_text makes it is not refused (it would run).
+        copy = self.root / "machine-copy.ps1"
+        copy.write_text(good, encoding="utf-8")
+        with mock.patch.object(subprocess, "run", side_effect=RuntimeError("it ran")):
+            with self.assertRaises(RuntimeError):
+                run_installer(copy, None, self.root, machine=True)
+        # A copy without its machine places runs only per user.
+        per_user = self.root / "per-user-copy.ps1"
+        per_user.write_text("\n".join(line for line in good.splitlines()
+                                      if not line.startswith(("$ProgramFilesFolder =",
+                                                              "$MachineRegKey ="))),
+                            encoding="utf-8")
+        self.assertIn("Program Files must be scratch", self.refused(per_user, machine=True))
+        # -Machine only through machine=True, which takes no install folder.
+        self.assertIn("machine=True", self.refused(extra="-Machine"))
+        self.assertIn("machine=True", self.refused(extra="-Silent -machine"))
+        self.assertIn("takes no install folder", self.refused(copy, self.install, machine=True))
+        self.assertIn("is a machine run", self.refused(copy, None))
+
+    def test_the_real_state_covers_the_machine_install(self):
+        # Program Files\Unminute, the all-users shortcut, the HKLM uninstall entry and
+        # the Event Log source (read only, in the 64-bit view) are compared too.
+        import winreg
+        state = real_install_state()
+        self.assertEqual(len(state), 7)
+        calls = []
+        with mock.patch.object(sys.modules[__name__], "_registry_state",
+                               side_effect=lambda hive, key: calls.append((hive, key))):
+            real_install_state()
+        self.assertEqual(calls, [(winreg.HKEY_CURRENT_USER, REAL_KEY),
+                                 (winreg.HKEY_LOCAL_MACHINE, REAL_MACHINE_KEY),
+                                 (winreg.HKEY_LOCAL_MACHINE, REAL_EVENT_KEY)])
+        real = real_places()
+        for name in ("program_files", "common_programs"):
+            self.assertTrue(real[name].is_absolute(), name)
+        self.assertNotEqual(_folder(real["program_files"]), _folder(real["common_programs"]))
 
     def test_only_a_scratch_copy_runs(self):
         for name in ("install.ps1", "uninstall.ps1"):
@@ -3748,10 +3943,15 @@ class InstallerIsolationTests(unittest.TestCase):
                 self.assertIn(f"scratch {name}", self.refused(env={name: str(value)}))
 
     def test_the_real_places_come_from_the_shell(self):
-        # A test's own LOCALAPPDATA and APPDATA cannot move them.
+        # A test's own LOCALAPPDATA and APPDATA cannot move them, nor (#111 B6b)
+        # variables naming Program Files or the all-users folders.
         real = real_places()
         with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "Local"),
-                                          "APPDATA": str(self.root / "Roaming")}):
+                                          "APPDATA": str(self.root / "Roaming"),
+                                          "ProgramFiles": str(self.root / "PF"),
+                                          "ProgramW6432": str(self.root / "PF"),
+                                          "ProgramData": str(self.root / "PD"),
+                                          "ALLUSERSPROFILE": str(self.root / "PD")}):
             self.assertEqual(real_places(), real)
         self.assertNotIn(_folder(self.root), [_folder(p) for p in real.values()])
 
@@ -3782,7 +3982,7 @@ class InstallerIsolationTests(unittest.TestCase):
         with mock.patch.object(module, "real_install_state", side_effect=[["before"], ["after"]]):
             with self.assertRaises(AssertionError) as caught:
                 run_installer(self.copy, "", self.root, cwd=self.root)
-        self.assertIn("changed this account's real install", str(caught.exception))
+        self.assertIn("changed this computer's real install", str(caught.exception))
 
     def test_the_real_install_state_covers_its_pins(self):
         # #332 review: uninstall.ps1 -Offboard removes pins, so a change to a pin of
@@ -3828,7 +4028,8 @@ class InstallerIsolationTests(unittest.TestCase):
                     self.assertNotEqual(real_install_state(), base)
 
     def test_every_run_of_the_scripts_goes_through_run_installer(self):
-        # No other code in this file builds a command line with -InstallDir.
+        # No other code in this file builds a command line with -InstallDir or, since
+        # #111 B6b, -Machine, or dot-sources a script.
         import ast
         import re
         tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
@@ -3841,9 +4042,15 @@ class InstallerIsolationTests(unittest.TestCase):
                    and node.col_offset == 0]
         self.assertEqual(len(allowed), 1)
         inside = {id(n) for n in ast.walk(allowed[0])}
+        # This class's own refusals name -Machine to show run_installer refuses it.
+        inside |= {id(n) for node in ast.walk(tree)
+                   if isinstance(node, ast.ClassDef) and node.name == type(self).__name__
+                   for n in ast.walk(node)}
         found = [node.lineno for node in ast.walk(tree)
                  if isinstance(node, ast.Constant) and isinstance(node.value, str)
-                 and re.search(r"-InstallDir\s+(['\"]|$)", node.value)
+                 and (re.search(r"-InstallDir\s+(['\"]|$)", node.value)
+                      or re.search(r"(^|\s)-Machine(\s|$)", node.value)
+                      or re.search(r"(^|[;{(]\s*)\.\s+['\"&(]", node.value))
                  and id(node) not in docstrings
                  and id(node) not in inside]
         self.assertEqual(found, [], "an installer run outside run_installer")
@@ -3974,23 +4181,34 @@ class InstallerIsolationTests(unittest.TestCase):
         self.assertEqual(installer_starts(ast.parse(textwrap.dedent(other))), [])
 
 
-# The machine scripts' Program Files, as both define it (MachineModeScriptTests).
-MACHINE_PROGRAM_FILES = ('function Get-ProgramFilesFolder '
-                         '{ return [Environment]::GetFolderPath("ProgramFiles") }')
+def delete_test_key(subkey):
+    """Removes a throwaway HKCU key these tests made, with everything under it."""
+    import winreg
+    if not subkey.startswith("Software\\Unminute-UnitTest-"):
+        raise AssertionError("only a test's own key is removed")
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as key:
+            children = [winreg.EnumKey(key, i) for i in range(winreg.QueryInfoKey(key)[0])]
+    except FileNotFoundError:
+        return
+    for child in children:
+        delete_test_key(subkey + "\\" + child)
+    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
 
 
 @WINDOWS_ONLY
 class MachineModeScriptTests(unittest.TestCase):
     """#111 B6b: what of machine mode runs for real without administrator rights.
     The machine install and uninstall themselves are tested in tests/powershell
-    (Machine.Tests.ps1) with elevation, Program Files, HKLM and the folder's
-    permissions stood in; a real System-context install is a manual check (#189,
-    E1). Here: the per-user installer's refusal beside a machine install, the
+    (Machine.Tests.ps1) with elevation and the folder's permissions stood in and every
+    machine place a scratch one; a real System-context install is a manual check
+    (#189, E1). Here: the per-user installer's refusal beside a machine install, the
     switches that need -Machine, a run without elevation, and the machine section
-    both scripts share."""
+    both scripts share. Every run is a scratch copy through run_installer, so Program
+    Files, the all-users Start menu, the HKLM uninstall entry and the Event Log source
+    are scratch folders and throwaway HKCU keys (InstallerIsolationTests)."""
 
-    MAIN, PROGRAMS, KEY, TEST_KEY = StagedCopyTests.MAIN, StagedCopyTests.PROGRAMS, \
-        StagedCopyTests.KEY, StagedCopyTests.TEST_KEY
+    MAIN = StagedCopyTests.MAIN
     setUp = InstallFolderScopeTests.setUp
     installer_copy = InstallFolderScopeTests.installer_copy
     write_package = InstallFolderScopeTests.write_package
@@ -3998,16 +4216,28 @@ class MachineModeScriptTests(unittest.TestCase):
     variant = StagedCopyTests.variant
     EVERYONE = "already installed for everyone on this computer"
 
+    def machine_entry(self):
+        """The copies' stand-in for the HKLM uninstall entry (TEST_MACHINE_KEY), made
+        for this test and removed after it."""
+        import winreg
+        self.addCleanup(delete_test_key, TEST_KEY + "-machine")
+        winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, TEST_MACHINE_KEY, 0,
+                           winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY).Close()
+
     def test_a_per_user_install_is_refused_beside_a_machine_install(self):
+        # The real check (Test-MachineInstalled, through the 64-bit view) reads the
+        # copy's stand-in for the HKLM entry.
         self.write_package("1.0.0")
-        copy = self.variant("install-beside.ps1", self.MAIN,
-                            "function Test-MachineInstalled { $true }")
-        r = self.run_copy(copy=copy)
+        r = self.run_copy()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        shutil.rmtree(self.install)
+        self.machine_entry()
+        r = self.run_copy()
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn(self.EVERYONE, r.stderr)
         self.assertFalse(self.install.exists())
         # Also a rollback: nothing of the per-user install changes.
-        r = self.run_copy(copy=copy, extra="-Rollback")
+        r = self.run_copy(extra="-Rollback")
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertFalse(self.install.exists())
 
@@ -4019,17 +4249,6 @@ class MachineModeScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue((self.install / "versions" / "1.0.0").is_dir())
 
-    def test_the_real_check_finds_no_machine_install_here(self):
-        # Read only, in the 64-bit view. A computer with a machine install of
-        # Unminute would fail every per-user installer test, so say so plainly.
-        check = (f". '{self.copy}'; if (Test-MachineInstalled) {{ 'machine' }} else {{ 'none' }}")
-        r = subprocess.run([windows_powershell.executable(), "-NoProfile", "-ExecutionPolicy",
-                            "Bypass", "-Command", check], capture_output=True, text=True,
-                           timeout=120, cwd=self.root,
-                           env=windows_powershell.environment({"LOCALAPPDATA": str(self.local),
-                                                               "APPDATA": str(self.appdata)}))
-        self.assertEqual(r.stdout.strip(), "none", r.stdout + r.stderr)
-
     def test_remove_slot_needs_machine(self):
         self.write_package("1.0.0")
         r = self.run_copy(extra="-RemoveSlot 0.9.0")
@@ -4037,56 +4256,35 @@ class MachineModeScriptTests(unittest.TestCase):
         self.assertIn("-RemoveSlot is for a machine install", r.stderr)
         self.assertFalse(self.install.exists())
 
-    def test_a_machine_run_without_administrator_rights_changes_nothing(self):
-        # The real elevation check, without stand-ins. Program Files is pointed at a
-        # temporary folder all the same, so this run could never reach the real one.
+    def test_a_machine_run_writes_only_scratch_places(self):
+        # The real elevation check, without stand-ins, through run_installer: every
+        # machine place is scratch (refused otherwise), and the test fails if the real
+        # install, per user or machine, changed.
         import ctypes
-        fake = self.root / "Program Files"
-        fake.mkdir()
-        if ctypes.windll.shell32.IsUserAnAdmin():
-            # Elevated (as CI runs): a -Machine run would pass this check and go on
-            # to write this computer's HKLM and Start menu, so it is not made; the
-            # check's own answer is compared instead.
-            check = f". '{self.copy}'; Test-Elevated"
-            r = subprocess.run([windows_powershell.executable(), "-NoProfile", "-ExecutionPolicy",
-                                "Bypass", "-Command", check], capture_output=True, text=True,
-                               timeout=120, cwd=self.root,
-                               env=windows_powershell.environment({
-                                   "LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}))
-            self.assertEqual(r.stdout.strip(), "True", r.stdout + r.stderr)
-            return
-        text = self.copy.read_text(encoding="utf-8")
-        real = MACHINE_PROGRAM_FILES
-        self.assertEqual(text.count(real), 1)
-        stand_in = f"function Get-ProgramFilesFolder {{ return '{fake}' }}"
-        copy = self.root / "install-machine.ps1"
-        copy.write_text(text.replace(real, stand_in), encoding="utf-8")
+        program_files = self.root / "Program Files"      # scratch_text's, beside programs
+        uninstall = self.root / "uninstall-machine.ps1"
+        uninstall.write_text(scratch_text("uninstall.ps1", self.root / "programs"),
+                             encoding="utf-8")
         zpath = self.root / "Unminute-1.0.0.zip"
         zpath.write_bytes(b"not read")
-        for name in ("install", "uninstall"):
+        self.addCleanup(delete_test_key, TEST_KEY + "-machine")
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        env = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}
+        for name, script, extra in (("install", self.copy, f"-Package '{zpath}'"),
+                                    ("uninstall", uninstall, "")):
             with self.subTest(name):
-                script = copy if name == "install" else self.uninstall_copy(fake)
-                call = (f"& '{script}' -Machine -Silent" +
-                        (f" -Package '{zpath}'" if name == "install" else ""))
-                r = subprocess.run([windows_powershell.executable(), "-NoProfile",
-                                    "-ExecutionPolicy", "Bypass", "-Command",
-                                    f"{call}; exit $LASTEXITCODE"],
-                                   capture_output=True, text=True, timeout=120, cwd=self.root,
-                                   env=windows_powershell.environment({
-                                       "LOCALAPPDATA": str(self.local),
-                                       "APPDATA": str(self.appdata)}))
-                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-                self.assertIn("needs administrator rights", r.stderr)
-                self.assertEqual(list(fake.iterdir()), [])
-
-    def uninstall_copy(self, fake):
-        text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        real = MACHINE_PROGRAM_FILES
-        self.assertEqual(text.count(real), 1)
-        stand_in = f"function Get-ProgramFilesFolder {{ return '{fake}' }}"
-        copy = self.root / "uninstall-machine.ps1"
-        copy.write_text(text.replace(real, stand_in), encoding="utf-8")
-        return copy
+                r = run_installer(script, None, self.root, extra, env=env, cwd=self.root,
+                                  machine=True)
+                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+                if elevated:
+                    # As CI runs: past the elevation check, the run stops at the
+                    # package that is not one, or at nothing to remove, having
+                    # written (if anything) only its scratch places.
+                    self.assertNotIn("needs administrator rights", r.stderr)
+                else:
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("needs administrator rights", r.stderr)
+                    self.assertEqual(list(program_files.iterdir()), [])
 
     def test_both_scripts_have_the_same_machine_section(self):
         def section(name):
@@ -4099,6 +4297,10 @@ class MachineModeScriptTests(unittest.TestCase):
         for function in ("Get-MachineRoot", "Test-MachineRootSecurity", "Get-AclChangeCount",
                          "Test-OwnJunction", "Remove-Junction"):
             self.assertIn(f"function {function}", shared)
+        # Every machine place outside the install folder is set once, in this section,
+        # where the tests redirect it (scratch_text, tests/powershell/Isolation.ps1).
+        for line in (PROGRAM_FILES_LINE, COMMON_PROGRAMS_LINE, MACHINE_KEY_LINE, EVENT_KEY_LINE):
+            self.assertIn(line, shared)
         # Junctions are removed as links only, never with Remove-Item -Recurse.
         self.assertIn("[IO.Directory]::Delete($Path, $false)", shared)
         for name in ("install.ps1", "uninstall.ps1"):
