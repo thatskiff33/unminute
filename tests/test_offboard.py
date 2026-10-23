@@ -18,6 +18,8 @@
 #     exit 4); the earlier version's data is never looked at (22 Oct 2026).
 #   - A copy of the offboarded record still being reported at close (a
 #     mirror_gap) stops the run before anything is removed.
+#   - The workspace lock (B5a, instance.acquire) is held from the lid to
+#     after the root key's erase: another process cannot take it meanwhile.
 # Synthetic workspaces in temporary folders with the test key protector, fake
 # credentials, a fake lid and a fake Event Log; the one Credential Manager
 # test uses scratch names only.
@@ -26,6 +28,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,7 +41,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 import keyprotect  # noqa: E402
 
-from workspace import audit, diag, offboard, store  # noqa: E402
+from workspace import audit, diag, instance, offboard, store  # noqa: E402
 
 MARKER = "Zqxvmarker"                     # synthetic text that must never reach the output
 
@@ -95,6 +98,25 @@ def tree(folder):
                 continue
             out[p.relative_to(folder).as_posix()] = data
     return out
+
+
+def another_process_takes_the_lock(ws):
+    """Whether another process can take the workspace lock now, as the app
+    does at its start in any Windows session (instance.acquire): "took" or
+    "held". A process of its own, since POSIX record locks belong to the
+    process."""
+    code = ("import sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from workspace import instance\n"
+            "try:\n"
+            "    instance.acquire(sys.argv[2]).release()\n"
+            "except instance.Held:\n"
+            "    print('held')\n"
+            "else:\n"
+            "    print('took')\n")
+    done = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(ROOT), str(ws)],
+                          capture_output=True, text=True, timeout=60)
+    return done.stdout.strip() or done.returncode
 
 
 def make_link(link, target):
@@ -383,8 +405,9 @@ class RefusalTests(Base):
         self.assertEqual(tree(self.appdata), before)
 
     def test_a_meeting_added_after_the_first_look_stops_the_erase(self):
-        # An app started meanwhile in another session (before B5's lock is
-        # honoured) imports a meeting: the last look before the erase sees it.
+        # An app that does not take B5's lock (a version from before B5a),
+        # started meanwhile in another session, imports a meeting: the last
+        # look before the erase sees it.
         self.make_workspace()
 
         def lid(path, running):
@@ -404,6 +427,34 @@ class RefusalTests(Base):
             con.close()
         self.assertFalse((self.ws / "instance.lock").exists())   # as it found it
         self.assertTrue(self.creds.stored)
+
+    def test_the_app_cannot_open_the_workspace_from_the_lid_to_the_erase(self):
+        # B5a (#111 B5-10): the app takes instance.lock at its start, in any
+        # Windows session, before it opens the store (instance.acquire).
+        # Offboarding holds the same lock from the lid to after the root
+        # key's erase, so no other session can open the workspace and add a
+        # meeting between the last look and the erase (B8a review round 1).
+        self.assertEqual(offboard.LOCK, instance.NAME)
+        self.make_workspace()
+        self.assertEqual(another_process_takes_the_lock(self.ws), "took")   # free before
+        seen = []
+        real_erase = store.erase_root_key
+
+        def lid(path, running):
+            seen.append(("lid", another_process_takes_the_lock(self.ws)))
+            return "none"
+
+        def erase(db):
+            seen.append(("erase", another_process_takes_the_lock(self.ws)))
+            done = real_erase(db)
+            seen.append(("erased", another_process_takes_the_lock(self.ws)))
+            return done
+        with mock.patch.object(store, "erase_root_key", side_effect=erase):
+            out, code = offboard.run(self.where, True, account=False,
+                                     session_running=lambda: False, mirror=self.mirror,
+                                     tokens=("Scratch/Current",), creds=self.creds, lid=lid)
+        self.assertEqual((out["result"], code), ("offboarded", 0))
+        self.assertEqual(seen, [("lid", "held"), ("erase", "held"), ("erased", "held")])
 
     def test_a_record_that_does_not_reach_the_event_log_stops_removal(self):
         self.make_workspace()

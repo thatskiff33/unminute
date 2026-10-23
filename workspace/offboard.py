@@ -210,7 +210,7 @@ def _blockers(ws):
     return found
 
 
-LOCK = "instance.lock"           # B5's workspace lock (#111 B5-10): its first byte
+LOCK = "instance.lock"           # B5's workspace lock (#111 B5-10, instance.NAME): its first byte
 
 
 def _try_lock(fd):
@@ -381,8 +381,10 @@ def _prepare(where, facts, session_running, mirror, lid):
             return _failed("audit", facts)
     except Exception:
         return _failed("audit", facts)
-    # A last look before anything is erased: an app started meanwhile in
-    # another session (before B5's lock is honoured), or anything it added.
+    # A last look before anything is erased. Since B5a the app takes the
+    # lock held here at its start, in any session, so it cannot open the
+    # workspace meanwhile; this look still covers a version from before
+    # B5a, which does not take it, and anything it added.
     if running():
         return {"result": "running", **facts, "running": True}, RUNNING
     found = _blockers(ws)
