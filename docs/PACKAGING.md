@@ -296,6 +296,7 @@ Whichever route is chosen, record it in the release notes. A changed signature o
 ## Limits
 
 - Only per-user installation is provided. A per-machine (Program Files) installation that standard users cannot change is planned (#111 B6; [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md), "Not available yet").
+- A user can always install a per-user copy. Once the per-machine install (B6) ships, a current per-user installer refuses when a machine-wide install exists, but an older package's installer has no such check. On managed computers, IT stops per-user copies with application control (AppLocker or App Control for Business): example rules, not yet tested, are in [IT_DEPLOYMENT.md](IT_DEPLOYMENT.md#stopping-per-user-copies-on-managed-computers) (#304).
 - On the development machine (13 October 2026, Windows 11, while another heavy app was running), the 0.2.0 build was checked end to end:
   - **Build:** a 330 MB zip containing 27,746 files.
   - **Install:** `-Package` mode, verifying the checksum and every file, took 244 s.
