@@ -88,8 +88,17 @@ MIX_OFF = "mix_off"              # computer tap marker: the draft follows the mi
 MIX_HOLD_S = 1.0                 # microphone audio waits this long for the computer's (mix)
 MIX_REACH_S = 5.0                # computer audio placed further than this from the
                                  # microphone's latest audio is not used (draft only)
-MIX_PIECES = 400                 # computer pieces held at most (about 20 s at 50 ms)
-COMPUTER_TAP_S = 60.0            # computer audio held while the worker loads (mix)
+MIX_PIECES = 400                 # computer pieces the live mix holds at most (see below)
+COMPUTER_TAP_S = 60.0            # sets the computer tap's size, by count (see below)
+# Both bound memory by count, not time (draft only; no computer track opens
+# in this version, app.COMPUTER_AUDIO_STARTS). A mix piece is about BATCH_S,
+# but after a backlog up to MAX_BATCH_FRAMES (8 s at 48 kHz); pieces the
+# microphone audio has passed are let go. The computer tap holds
+# COMPUTER_TAP_S / 10 ms = 6,000 blocks, and the loopback hands on about one
+# block every loopback.POLL_S (50 ms), so while the worker loads it can hold
+# about 300 s (about 29 MB of 16-bit audio at 48 kHz). Once the worker is
+# ready, that backlog reaches the mix as float32: a passing peak of about
+# 58 MB in the worker.
 # The page shows draft text (#104 slice 3), so the switch can be turned on.
 # False keeps drafts off whatever the settings file says (fail closed): no
 # worker starts whose text nobody can see, and set_settings refuses the switch.
@@ -605,8 +614,9 @@ class DraftSession:
         self._target = target            # tests: another process target
         self._lock = threading.Lock()
         self._tap = queue.Queue(maxsize=max(1, int(TAP_S / 0.1)))
-        # Computer audio for the live mix: blocks of 10 to 200 ms, so held
-        # by count at the shortest (COMPUTER_TAP_S at 10 ms a block).
+        # Computer audio for the live mix, bounded by count: COMPUTER_TAP_S
+        # at 10 ms a block. The loopback's blocks are about 50 ms, so this can
+        # hold about five times COMPUTER_TAP_S (see COMPUTER_TAP_S above).
         self._ctap = queue.Queue(maxsize=max(1, int(COMPUTER_TAP_S / 0.01)))
         self._feeding = False            # the tap queues audio (not stopped or suspended)
         self._mixing = False             # tap_computer queues computer audio (live mix)
