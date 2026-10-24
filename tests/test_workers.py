@@ -220,6 +220,19 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(text, "env {'TORCH_FORCE_WEIGHTS_ONLY_LOAD': '1', "
                                "'TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD': None}")
 
+    def test_worker_adds_no_dll_folder_named_by_the_environment(self):
+        # #357 (T25): CTranslate2 4.8.3 adds %HIP_PATH%\bin to the DLL search
+        # path when it loads. A HIP_PATH the worker inherits, here a scratch
+        # folder, is removed first, so no folder outside the app is added; the
+        # app's own environment keeps it.
+        with tempfile.TemporaryDirectory() as hip:
+            Path(hip, "bin").mkdir()
+            with mock.patch.dict(os.environ, {"HIP_PATH": hip}):
+                self.h.load(fake("dll_folders"), 1)
+                self.assertEqual(os.environ["HIP_PATH"], hip)
+            text = self.h.transcribe(np.zeros(10, np.float32))[0][0].text
+        self.assertEqual(text, "folders []")
+
 
 class SlowToEnd:
     """A stand-in worker process that ends only after 8 s of waiting for it,

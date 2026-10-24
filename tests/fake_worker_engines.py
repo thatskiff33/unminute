@@ -263,6 +263,17 @@ def gpu_probe(threads, device="cpu"):
     return _whisper_like(lambda a: [_seg(0.0, 0.5, "probe " + report)], device)
 
 
+def dll_folders(threads, device="cpu"):
+    """The folder CTranslate2 4.8.3's __init__ adds to the DLL search path
+    from the environment when it loads (#357): %HIP_PATH%\\bin, when HIP_PATH
+    is set and no ROCm wheel is installed (its lines 15 to 24). A stand-in
+    for that check, read at load as the import is, that adds nothing, so the
+    test needs neither CTranslate2 nor a graphics card."""
+    hip = os.environ.get("HIP_PATH")
+    folders = [os.path.join(hip, "bin")] if hip else []
+    return _whisper_like(lambda a: [_seg(0.0, 0.1, f"folders {folders}")], device)
+
+
 def network(threads):
     def run(a):
         try:
