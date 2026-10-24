@@ -131,6 +131,19 @@ COPY_RETRY_JS = f"""
             status = await attempt();
         }}
         return {{status, retries}}; }};"""
+# A copy step can read its status as soon as the click leaves one, instead of
+# after a fixed wait that a slow answer under load could outlast (#318
+# review). The step clears the status before the click, so the first text that
+# appears is that click's answer. textAfter polls `read` every COPY_POLL_MS for
+# up to COPY_READ_MS, then returns whatever it reads ('' if nothing came). The
+# app takes about a second to say the clipboard is busy (workspace/clipboard.py).
+COPY_READ_MS = 3000
+COPY_POLL_MS = 100
+TEXT_AFTER_JS = f"""
+    const textAfter = async (read) => {{
+        for (let waited = 0; !read() && waited < {COPY_READ_MS}; waited += {COPY_POLL_MS})
+            await wait({COPY_POLL_MS});
+        return read(); }};"""
 
 
 def page_dialogs():
@@ -1318,13 +1331,15 @@ def locked_checks(window, ws, calls, report):
         # The copy is retried while another program briefly holds the
         # clipboard, as the handoff's are (#342); each click starts from an
         # empty status, so a slow answer is not read as the last click's. The
-        # status is read 1.5 s after the click, as the handoff's are: the app
-        # takes about 1 s to say the clipboard is busy.
-        copied = evaluate(window, WAIT + COPY_RETRY_JS + """
+        # status is read as soon as the click's answer appears, waiting up to
+        # COPY_READ_MS (textAfter): the app takes about 1 s to say the
+        # clipboard is busy, and longer under load.
+        copied = evaluate(window, WAIT + COPY_RETRY_JS + TEXT_AFTER_JS + """
             return await copyRetrying(async () => {
                 document.getElementById('status').textContent = '';
-                document.getElementById('locked-copy').click(); await wait(1500);
-                return document.getElementById('status').textContent; });""", timeout=60) or {}
+                document.getElementById('locked-copy').click();
+                return await textAfter(() => document.getElementById('status').textContent); });""",
+                          timeout=60) or {}
         report["copied"] = copied.get("status")
         report["copy_retries"] = copied.get("retries")
         evaluate(window, WAIT + "document.getElementById('locked-help').click(); await wait(800);"
