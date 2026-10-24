@@ -13,6 +13,18 @@
 #     while the app is open. A closed app sends no reminders and does not
 #     pretend to.
 #
+# Retention reminders (#111 C6)
+#   - Each meeting's next step (confirm a cleanup, a cleanup that did not
+#     finish, hand off, review) has its own clock. A step older than the
+#     policy's ReviewReminderDays (default 30) is "Review due"; older than
+#     ActionRequiredDays (default 0, off) it is "Action required". Shown while
+#     the app is open, and counted by --status and --health for IT.
+#   - Worked out from plain columns only (no title is opened) and stored
+#     nowhere. It blocks, deletes and expires nothing (C1, C2).
+#   - A step is exempt while a hold blocks the cleanup it leads to
+#     (cleanup.hold_scopes); such a meeting past the threshold is counted as
+#     held_overdue for IT, never shown on its row.
+#
 # Receipts
 #   - A completed cleanup leaves only a receipt: a fresh random id, the time
 #     cleanup was requested and completed, and the result. No meeting id,
@@ -29,6 +41,13 @@ DAY = 86400
 HOLD_REVIEW_DAYS = 30
 RECEIPT_DAYS = 30
 SCOPES = ("audio", "transcript", "all")
+
+
+def hold_scopes(phase):
+    """Hold scopes that block a cleanup phase ("audio" or "transcript"; also
+    cleanup.hold_scopes). Transcript cleanup removes everything that remains,
+    so any hold blocks it."""
+    return ("all", "audio", "transcript") if phase == "transcript" else ("all", phase)
 
 
 class HoldError(ValueError):
@@ -127,7 +146,8 @@ def purge_expired_receipts(store, now=None):
 
 def unfinished_work(store, now=None):
     """Meetings still in the workspace with their age and next action, for the
-    Active meetings list. Ordinary unfinished work gets no scheduled reminders."""
+    Active meetings list. Retention reminders for that work come from
+    retention_state (#111 C6)."""
     now = now or time.time()
     out = []
     held = {r["meeting_id"] for r in store._all(
@@ -147,3 +167,100 @@ def unfinished_work(store, now=None):
                     "age_days": int((now - m["created_at"]) // DAY), "action": action,
                     "held": m["id"] in held})
     return out
+
+
+# -- retention reminders (#111 C6) ----------------------------------------------------
+
+# The steps in the order they win when more than one applies: a cleanup job's
+# state comes before the meeting's stage, as it is what stops deletion now.
+CONFIRM_CLEANUP, CLEANUP_UNFINISHED, HAND_OFF, REVIEW = (
+    "confirm_cleanup", "cleanup_unfinished", "hand_off", "review")
+DUE, ACTION_REQUIRED = "due", "action_required"
+
+
+def thresholds(policy):
+    """The reminder thresholds in force, in days (0 = off), and whether IT set
+    each one: a value IT did not set validly is the app's default."""
+    return {"review_days": policy.get("ReviewReminderDays"),
+            "action_days": policy.get("ActionRequiredDays"),
+            "managed": {"review": "ReviewReminderDays" in policy.values,
+                        "action": "ActionRequiredDays" in policy.values}}
+
+
+def reminder_level(days, review_days, action_days):
+    if action_days and days >= action_days:
+        return ACTION_REQUIRED
+    if review_days and days >= review_days:
+        return DUE
+    return None
+
+
+def retention_from(query, policy, now=None):
+    """retention_state's work over any connection: query(sql) returns rows
+    indexed by position. Three grouped queries, whatever the number of
+    meetings, over plain columns only (no key needed, so --status can use
+    it while the workspace is locked)."""
+    now = now or time.time()
+    limits = thresholds(policy)
+    review_days, action_days = limits["review_days"], limits["action_days"]
+    # The threshold a held meeting is counted against for IT (C6-3).
+    overdue_days = action_days or review_days
+    meetings = query("SELECT id, created_at, reviewed_at, final_saved_at FROM meetings "
+                     "ORDER BY created_at")
+    active, released = {}, {}
+    for mid, scope, last_released, open_count in query(
+            "SELECT meeting_id, scope, MAX(released_at), SUM(released_at IS NULL) "
+            "FROM holds GROUP BY meeting_id, scope"):
+        if open_count:
+            active.setdefault(mid, set()).add(scope)
+        if last_released is not None:
+            released[mid] = max(released.get(mid, last_released), last_released)
+    jobs = {}
+    for mid, phase, state, intent_at in query(
+            "SELECT meeting_id, phase, state, MIN(intent_at) FROM cleanup_jobs "
+            "GROUP BY meeting_id, phase, state"):
+        jobs.setdefault(mid, []).append((phase, state, intent_at))
+    out = []
+    for mid, created_at, reviewed_at, final_saved_at in meetings:
+        mine = jobs.get(mid, [])
+        waiting = [j for j in mine if j[1] == "awaiting_confirmation"]
+        unfinished = [j for j in mine if j[1] in ("pending", "failed")]
+        if waiting:
+            # Only release_hold moves a job here: the clock starts at the
+            # latest release (the job's intent if no release is recorded).
+            step, phases = CONFIRM_CLEANUP, {j[0] for j in waiting}
+            since = released.get(mid) or min(j[2] for j in waiting)
+        elif unfinished:
+            step, phases = CLEANUP_UNFINISHED, {j[0] for j in unfinished}
+            since = min(j[2] for j in unfinished)
+        elif reviewed_at and not final_saved_at:
+            step, phases, since = HAND_OFF, {"transcript"}, reviewed_at
+        elif not reviewed_at:
+            # Confirming the review starts audio cleanup.
+            step, phases, since = REVIEW, {"audio"}, created_at
+        else:
+            continue                      # final output saved and nothing left to run
+        days = max(0, int((now - since) // DAY))     # a start in the future counts as 0
+        scopes = active.get(mid, set())
+        held = all(scopes & set(hold_scopes(phase)) for phase in phases)
+        level = reminder_level(days, review_days, action_days)
+        out.append({"meeting": mid, "step": step, "since": since, "days": days,
+                    "state": None if held else level,
+                    "held_overdue": held and bool(overdue_days) and days >= overdue_days})
+    return out
+
+
+def retention_state(store, policy, now=None):
+    """Each meeting's outstanding step, its age in days and its reminder
+    state: [{meeting, step, since, days, state, held_overdue}]. state is
+    "due", "action_required" or None; held_overdue is True when only a hold
+    keeps a step past the threshold quiet (counted for IT, C6-3)."""
+    with store._lock:
+        return retention_from(store._all, policy, now)    # one consistent view
+
+
+def retention_counts(rows):
+    """Counts only, for --status, --health and Copy diagnostics."""
+    return {"reminders_due": sum(r["state"] == DUE for r in rows),
+            "action_required": sum(r["state"] == ACTION_REQUIRED for r in rows),
+            "held_overdue": sum(bool(r["held_overdue"]) for r in rows)}

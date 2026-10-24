@@ -1238,6 +1238,92 @@ class WorkspaceTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class RetentionReminderTests(unittest.TestCase):
+    """reminders() carries the retention reminders (#111 C6): the state of
+    each meeting past a threshold, recovered recordings from the in-memory
+    report, and the thresholds with whether IT set each one."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.values, self.invalid = {}, ()
+        self.ws = Workspace(root / "ws", root / "models", start=False, battery=False,
+                            allow_test_engines=True,
+                            policy_reader=lambda: (self.values, self.invalid),
+                            protector=keyprotect.TestProtector())
+
+    def tearDown(self):
+        self.ws.close()
+        self.tmp.cleanup()
+
+    def meeting(self, days_ago, title="Synthetic old meeting"):
+        mid = self.ws.store.create_meeting(title)
+        with self.ws.store.tx() as db:
+            db.execute("UPDATE meetings SET created_at = ? WHERE id = ?",
+                       (time.time() - days_ago * 86400, mid))
+        return mid
+
+    def policy(self, **values):
+        self.values = values
+        self.ws.policy.refresh()
+
+    def test_reminders_list_meetings_past_a_threshold_with_their_titles(self):
+        old, recent = self.meeting(31), self.meeting(3, "Synthetic recent meeting")
+        r = self.ws.reminders()
+        self.assertEqual(r["retention"], [{"meeting": old, "title": "Synthetic old meeting",
+                                           "step": "review", "days": 31, "state": "due"}])
+        self.assertEqual(r["thresholds"], {"review_days": 30, "action_days": 0,
+                                           "managed": {"review": False, "action": False}})
+        self.policy(ReviewReminderDays=2, ActionRequiredDays=14)
+        r = self.ws.reminders()
+        self.assertEqual({x["meeting"]: x["state"] for x in r["retention"]},
+                         {old: "action_required", recent: "due"})
+        self.assertEqual(r["thresholds"], {"review_days": 2, "action_days": 14,
+                                           "managed": {"review": True, "action": True}})
+
+    def test_managed_only_when_it_set_the_value_in_force(self):
+        # C6-5: the banner claims the organisation's rule only for a value IT
+        # set validly; a bad value is the app's default, and not managed.
+        self.invalid = ("ReviewReminderDays",)
+        self.policy(ActionRequiredDays=14)
+        self.assertEqual(self.ws.reminders()["thresholds"],
+                         {"review_days": 30, "action_days": 14,
+                          "managed": {"review": False, "action": True}})
+        self.invalid = policy.UNREADABLE
+        self.policy()
+        self.assertEqual(self.ws.reminders()["thresholds"],
+                         {"review_days": 30, "action_days": 0,
+                          "managed": {"review": False, "action": False}})
+
+    def test_recovered_recordings_come_from_the_report_without_reading_journals(self):
+        from workspace import recorder
+        started = time.time() - 40 * 86400
+        self.ws._add_report({"title": None, "events": [], "pending": "rec1", "recovered": True,
+                             "started_at": started, "seconds": 12.0, "note": "x"})
+        self.ws._add_report({"title": None, "events": [], "pending": "rec2", "seconds": 0,
+                             "note": "could not be imported yet"})        # not a recovery
+        with mock.patch.object(recorder, "read_journal", side_effect=AssertionError("read")):
+            r = self.ws.reminders()
+        self.assertEqual([(w["days"], w["state"]) for w in r["recordings_waiting"]],
+                         [(40, "due")])
+
+    def test_no_state_deletes_holds_or_changes_a_job(self):
+        mids = [self.meeting(d) for d in (400, 90, 31)]
+        self.ws.store.add_hold(new_id(), mids[1], "audio", "Synthetic reason", time.time())
+        self.policy(ReviewReminderDays=1, ActionRequiredDays=2)
+        tables = ("meetings", "holds", "cleanup_jobs", "receipts", "content_keys")
+
+        def snapshot():
+            return {t: [tuple(r) for r in self.ws.store._all(f"SELECT * FROM {t}")]
+                    for t in tables}
+        before = snapshot()
+        for _ in range(3):
+            self.ws.reminders()
+            self.ws.diagnostics()
+        self.assertEqual(snapshot(), before)
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
 class ApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

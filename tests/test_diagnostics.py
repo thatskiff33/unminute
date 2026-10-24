@@ -462,6 +462,64 @@ class SharingTests(unittest.TestCase):
         with mock.patch.object(clipboard, "copy_text") as copy:
             self.assertEqual(self.ws.copy_diagnostics()["chars"], len(copy.call_args.args[0]))
 
+    # -- retention reminders (#111 C6) -------------------------------------------------
+
+    def old_meetings(self):
+        """A meeting 40 days old, and a held one as old: titles carry the marker."""
+        store, then = self.ws.store, time.time() - 40 * 86400
+        mids = [store.create_meeting(f"{MARKER} retention {i}") for i in range(2)]
+        with store.tx() as db:
+            db.executemany("UPDATE meetings SET created_at = ? WHERE id = ?",
+                           [(then, m) for m in mids])
+        store.add_hold("h-synthetic", mids[1], "all", f"{MARKER} reason", then)
+        return mids
+
+    def test_status_and_health_count_retention_reminders_only(self):
+        from workspace import __main__ as main
+        from workspace import policy
+        self.old_meetings()
+        report = main.status(self.ws.root, policy_reader=lambda: ({}, ()))
+        self.assertEqual((report["reminders_due"], report["action_required"],
+                          report["held_overdue"]), (1, 0, 1))
+        report = main.status(self.ws.root,
+                             policy_reader=lambda: ({"ActionRequiredDays": 14}, ()))
+        self.assertEqual((report["reminders_due"], report["action_required"],
+                          report["held_overdue"]), (0, 1, 1))
+        report = main.status(self.ws.root, policy_reader=lambda: ({}, policy.UNREADABLE))
+        self.assertEqual((report["reminders_due"], report["action_required"]), (1, 0))
+        self.assertNotIn(MARKER, json.dumps(report))
+        with mock.patch.object(policy, "read_registry",
+                               return_value=({"ActionRequiredDays": 14}, ())), \
+                mock.patch.object(main, "_app_running", return_value=False):
+            report = main.health(self.ws.root)
+            # A backlog of meetings is not an app fault: healthy is unchanged.
+            self.assertEqual((report["action_required"], report["held_overdue"],
+                              report["healthy"]), (1, 1, True))
+            self.assertNotIn(MARKER, json.dumps(report))
+            with mock.patch.object(main, "_system_account", return_value=True):
+                report = main.health(self.ws.root)
+            # Run as SYSTEM it counts nothing: null, never a false "no backlog".
+            self.assertEqual((report["workspace"], report["action_required"],
+                              report["held_overdue"], report["healthy"]),
+                             ("system_account", None, None, False))
+
+    def test_copy_diagnostics_shows_the_thresholds_and_counts(self):
+        self.old_meetings()
+        line = next(x for x in self.ws.diagnostics().splitlines()
+                    if x.startswith("Retention reminders:"))
+        self.assertEqual(line, "Retention reminders: review_days=30 (app default), "
+                               "action_days=off (app default); reminders_due=1, "
+                               "action_required=0, held_overdue=1")
+        self.values.update(ReviewReminderDays=30, ActionRequiredDays=14)
+        self.ws.policy.refresh()
+        text = self.ws.diagnostics()
+        line = next(x for x in text.splitlines() if x.startswith("Retention reminders:"))
+        self.assertEqual(line, "Retention reminders: review_days=30 (policy), "
+                               "action_days=14 (policy); reminders_due=0, "
+                               "action_required=1, held_overdue=1; the review-due threshold "
+                               "has no effect (action required comes first)")
+        self.assertNotIn(MARKER, text)
+
     # -- --health ----------------------------------------------------------------------
 
     def test_health_reports_how_the_last_run_ended(self):
@@ -474,7 +532,8 @@ class SharingTests(unittest.TestCase):
                              (True, "ok", "clean", 0, False))
             self.assertIsInstance(report["schema"], int)
             self.assertEqual(set(report), {"version", "workspace", "running", "last_run",
-                                           "crashes_7d", "schema", "healthy"})
+                                           "crashes_7d", "schema", "healthy",
+                                           "action_required", "held_overdue"})
             self.ws.log.open_run()
             marker.write_text(json.dumps({"pid": 0, "created": 1}))   # its process has ended
             report = main.health(root)

@@ -126,6 +126,26 @@
                  maxValue="1440" />
       </elements>
     </policy>
+    <policy name="ReviewReminderDays" class="Machine" displayName="$(string.ReviewReminderDays)"
+            explainText="$(string.ReviewReminderDays_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.ReviewReminderDays)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <decimal id="ReviewReminderDays" valueName="ReviewReminderDays" minValue="0"
+                 maxValue="365" />
+      </elements>
+    </policy>
+    <policy name="ActionRequiredDays" class="Machine" displayName="$(string.ActionRequiredDays)"
+            explainText="$(string.ActionRequiredDays_Help)" key="SOFTWARE\Policies\Unminute"
+            presentation="$(presentation.ActionRequiredDays)">
+      <parentCategory ref="Unminute" />
+      <supportedOn ref="SUPPORTED_Unminute" />
+      <elements>
+        <decimal id="ActionRequiredDays" valueName="ActionRequiredDays" minValue="0"
+                 maxValue="365" />
+      </elements>
+    </policy>
     <policy name="HandoffDefaultFolder" class="Machine" displayName="$(string.HandoffDefaultFolder)"
             explainText="$(string.HandoffDefaultFolder_Help)" key="SOFTWARE\Policies\Unminute"
             presentation="$(presentation.HandoffDefaultFolder)">

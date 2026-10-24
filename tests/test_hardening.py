@@ -183,6 +183,199 @@ class NavigationTests(unittest.TestCase):
             self.assertNotRegex(decls, r"display\s*:\s*(inline-)?grid", selector)
             self.assertNotRegex(decls, r"grid-(column|row|area|template)", selector)
 
+    def test_a_reminders_failure_still_draws_the_meeting_list(self):
+        # #111 C6 review: refresh fetches the reminders before the list, so the
+        # rows carry their retention chips. A failed reminders call must not
+        # skip renderLists (the list and sidebar count would go stale), and
+        # renderReminders must be a plain function, so a throw inside it
+        # reaches refresh's catch rather than becoming an unhandled rejection.
+        import re
+        script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+        body = re.search(r"\nasync function refresh\(\) \{\n(.*?)\n\}\n", script, re.S)
+        self.assertIsNotNone(body, "refresh not found")
+        before_list = body.group(1).split("await renderLists(", 1)[0]
+        own_catch = r"try \{\s*reminders = await call\(\"reminders\"\);\s*\}\s*catch \(err\) \{"
+        self.assertRegex(before_list, own_catch,
+                         "the reminders call must have its own catch before renderLists")
+        self.assertNotRegex(script, r"async function renderReminders\(")
+        self.assertRegex(script, r"\nfunction renderReminders\(r\) \{")
+
+
+def page_functions(*names):
+    """The source of each named top-level function in app.js (one line or a
+    block that ends with a closing brace at the start of a line), for a test
+    that runs the page's own code in Node.js."""
+    import re
+    script = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+    parts = []
+    for name in names:
+        head = r"^(?:async )?function " + name + r"\("
+        found = (re.search(head + r".*\}$", script, re.M)
+                 or re.search(head + r".*?^\}$", script, re.M | re.S))
+        if found is None:
+            raise AssertionError(f"{name} not found at the top level of app.js")
+        parts.append(found.group(0))
+    return "\n".join(parts) + "\n"
+
+
+# A failed reminders call, or a reminders banner that cannot be drawn, must
+# still let refresh draw the meeting list and report the error once, with no
+# unhandled rejection (#111 C6 review round 2: run the page's own refresh and
+# renderReminders rather than checking the shape of the source). Everything
+# else refresh touches is a stub.
+REFRESH_CASES = r"""
+const window = { pywebview: {} };
+const LIST_REFRESH_POLLS = 6;
+let refreshing = false, refreshAgain = false, pollTimer = null, pollTimerDelay = 0;
+const pollDelay = () => 0;
+const schedulePoll = () => {};
+const state = { view: "meetings", changes: 0, listsSeen: 0, listsView: "meetings", sinceLists: 0 };
+let said = [], listed = [], shown = {}, reply = null;
+const unhandled = [];
+process.on("unhandledRejection", (err) => unhandled.push(String((err && err.message) || err)));
+const say = (text) => { said.push(text); };
+const renderStatus = async () => {};
+const renderRecorder = async () => {};
+const renderLists = async (reminders) => { listed.push(reminders ? "reminders" : null); };
+const notice = (kind, text) => ({ kind, text });
+const button = () => ({});
+const linkButton = () => ({});
+const $ = () => ({ replaceChildren: (...lines) => { shown.lines = lines.length; },
+                   set hidden(value) { shown.hidden = value; } });
+const call = async (name) => {
+  if (name !== "reminders") throw new Error("unexpected call " + name);
+  return reply();
+};
+const thresholds = { review_days: 30, action_days: 0, managed: { review: false, action: false } };
+const good = { retention: [], recordings_waiting: [], thresholds,
+               holds_due: [], awaiting_confirmation: [] };
+const cases = {
+  call_fails: () => { throw new Error("reminders failed"); },
+  draw_fails: () => ({ ...good, holds_due: null }),       // renderReminders throws a TypeError
+  ok: () => good,
+};
+(async () => {
+  const out = {};
+  for (const [name, answer] of Object.entries(cases)) {
+    said = []; listed = []; shown = {}; unhandled.length = 0;
+    reply = answer;
+    state.changes += 1;                                    // a change: the lists are fetched
+    await refresh();
+    await new Promise((done) => setTimeout(done, 50));     // let any unhandled rejection surface
+    out[name] = { said: said.length, listed, shown, unhandled: unhandled.length };
+  }
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+class ReminderFailureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = page_functions("refresh", "renderReminders", "oneOrMany",
+                                    "retentionBanner") + REFRESH_CASES
+        cls.node = shutil.which("node")
+
+    def run_cases(self):
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
+                              text=True, timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_failed_reminders_call_still_draws_the_meeting_list(self):
+        out = self.run_cases()["call_fails"]
+        self.assertEqual(out["listed"], [None], "renderLists must still run, without reminders")
+        self.assertEqual(out["said"], 1, "the failure is reported once")
+        self.assertEqual(out["unhandled"], 0)
+        self.assertEqual(out["shown"], {}, "no banner is drawn from a failed call")
+
+    def test_a_banner_that_cannot_be_drawn_is_reported_not_lost(self):
+        # renderReminders must be a plain function: if it were async and not
+        # awaited, its throw would be an unhandled rejection, not a message.
+        out = self.run_cases()["draw_fails"]
+        self.assertEqual(out["listed"], ["reminders"])
+        self.assertEqual(out["said"], 1, "refresh's catch reports the error")
+        self.assertEqual(out["unhandled"], 0)
+
+    def test_reminders_with_nothing_due_hide_the_banner(self):
+        out = self.run_cases()["ok"]
+        self.assertEqual(out, {"said": 0, "listed": ["reminders"],
+                               "shown": {"lines": 0, "hidden": True}, "unhandled": 0})
+
+
+# The retention banner's wording (#111 C6). The owner's decision of 22 October
+# 2026: "Your organisation asks for each step to be finished within N days"
+# appears only for a managed ActionRequiredDays. A managed ReviewReminderDays
+# is a nudge, not a deadline, so "Review due" never claims a rule. The page's
+# own retentionBanner runs in Node.js (as tests/test_level_meter.py does).
+BANNER_CASES = r"""
+const notice = (kind, text) => ({ kind, text });
+const due = (n) => Array.from({ length: n }, () => ({ state: "due" }));
+const act = (n) => Array.from({ length: n }, () => ({ state: "action_required" }));
+// banner(meetings, recordings, review days, action days, [IT set review, IT set action])
+const banner = (retention, waiting, review, action, [mr, ma]) => retentionBanner({
+  retention, recordings_waiting: waiting,
+  thresholds: { review_days: review, action_days: action, managed: { review: mr, action: ma } } });
+const out = {
+  review_managed: banner(due(2), due(1), 7, 0, [true, false]),
+  review_managed_both: banner(due(1), [], 7, 14, [true, true]),
+  review_default: banner(due(1), [], 30, 0, [false, false]),
+  action_managed: banner(act(3), due(1), 7, 14, [true, true]),
+  action_only_managed: banner(act(1), act(2), 30, 60, [false, true]),
+  action_unmanaged: banner(act(1), [], 30, 60, [true, false]),
+  none: banner([], [], 30, 0, [true, true]),
+};
+console.log(JSON.stringify(out));
+"""
+
+
+class RetentionBannerTests(unittest.TestCase):
+    RULE = "Your organisation asks"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = page_functions("oneOrMany", "retentionBanner") + BANNER_CASES
+        cls.node = shutil.which("node")
+
+    def banners(self):
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        done = subprocess.run([self.node, "-"], input=self.source, capture_output=True,
+                              text=True, timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_managed_review_threshold_claims_no_organisation_rule(self):
+        out = self.banners()
+        for case in ("review_managed", "review_managed_both"):
+            with self.subTest(case=case):
+                self.assertEqual(out[case]["kind"], "hold")
+                self.assertNotIn(self.RULE, out[case]["text"])
+                self.assertIn("waited 7 days or more", out[case]["text"])
+        self.assertEqual(out["review_managed"]["text"],
+                         "2 meetings have waited 7 days or more for their next step. "
+                         "1 recording has waited 7 days or more for Keep or Delete.")
+
+    def test_the_app_default_review_threshold_claims_no_rule_either(self):
+        text = self.banners()["review_default"]["text"]
+        self.assertEqual(text, "1 meeting has waited 30 days or more for its next step.")
+
+    def test_only_a_managed_action_threshold_states_the_organisation_rule(self):
+        out = self.banners()
+        self.assertEqual(out["action_managed"],
+                         {"kind": "alert", "text": "3 meetings need action. Your organisation "
+                          "asks for each step to be finished within 14 days."})
+        self.assertEqual(out["action_only_managed"]["text"],
+                         "1 meeting needs action. 2 recordings need action: keep or delete "
+                         "them. Your organisation asks for each step to be finished within "
+                         "60 days.")
+        unmanaged = out["action_unmanaged"]["text"]
+        self.assertNotIn(self.RULE, unmanaged)
+        self.assertEqual(unmanaged, "1 meeting needs action. Each has waited 60 days or more.")
+        self.assertIsNone(out["none"])
+
 
 @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
 class DispatchGuardTests(unittest.TestCase):

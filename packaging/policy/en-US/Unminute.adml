@@ -71,6 +71,16 @@ Enabled: Save suggests the meeting title, except when speaker names are being re
 
 Disabled, not configured or 0: the app never clears the clipboard.</string>
 
+      <string id="ReviewReminderDays">Days before a meeting's next step shows "Review due"</string>
+      <string id="ReviewReminderDays_Help">Enabled: a meeting whose next step (review the transcript, hand off and confirm the final output is saved, or confirm or finish its cleanup) has waited this many days shows "Review due" on the Meetings page, at the top of its group after any that require action, with a banner, while the app is open (0 to 365; 0 turns it off). Each step counts from when it began: the review from the import, the handoff from the review confirmation. The banner says how long the meetings have waited; it does not say that your organisation asks for anything, because a reminder is not a deadline (only "Action required" does). Nothing is blocked or deleted. A step whose cleanup a hold blocks is not shown. --status counts these meetings.
+
+Disabled or not configured: 30 days, the app's default. To turn the reminder off, enable this policy and set 0.</string>
+
+      <string id="ActionRequiredDays">Days before a meeting's next step shows "Action required"</string>
+      <string id="ActionRequiredDays_Help">Enabled: a meeting whose next step has waited this many days shows "Action required" on the Meetings page and is listed first, with a banner saying that your organisation asks for each step to be finished within this many days (0 to 365; 0 turns it off). Nothing is blocked or deleted. A step whose cleanup a hold blocks is not shown. --health counts the meetings that require action (action_required) and held meetings past this threshold (held_overdue) without changing "healthy"; run it with the logged-on credentials.
+
+If this is less than or equal to "Review due", "Review due" is never shown. Enabling the policy suggests 60 days; change it to your organisation's rule. Disabled, not configured or 0: off.</string>
+
       <string id="HandoffDefaultFolder">Starting folder for saved handoffs</string>
       <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Use a full path that starts with a drive letter; a mapped drive is fine, but \\server\share paths are not accepted. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
 
@@ -96,6 +106,12 @@ Set this together with "Hand off assistant name". If only one of the two is set,
     <presentationTable>
       <presentation id="ClipboardClearMinutes">
         <decimalTextBox refId="ClipboardClearMinutes" defaultValue="10">Minutes</decimalTextBox>
+      </presentation>
+      <presentation id="ReviewReminderDays">
+        <decimalTextBox refId="ReviewReminderDays" defaultValue="30">Days</decimalTextBox>
+      </presentation>
+      <presentation id="ActionRequiredDays">
+        <decimalTextBox refId="ActionRequiredDays" defaultValue="60">Days</decimalTextBox>
       </presentation>
       <presentation id="HandoffDefaultFolder">
         <textBox refId="HandoffDefaultFolder">
