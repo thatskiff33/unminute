@@ -10,6 +10,11 @@ a:hover { color: var(--link-hover); }
 h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin: 8px 0 12px; }
 h2 { font-size: 17px; font-weight: 800; margin: 20px 0 8px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* On pink (a hold or a search match) orange falls below 3:1; the ring takes the
+   text colour there (WCAG 1.4.11, #298). */
+.notice.hold :focus-visible, .banner :focus-visible, .m-banner.hold :focus-visible, .holds li :focus-visible,
+.ho-next :focus-visible, .su-test.quiet :focus-visible { outline-color: var(--hold-fg); }
+#transcript li.hit :focus-visible, .ho-passages label:has(input:checked) :focus-visible { outline-color: var(--text); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .muted { color: var(--muted); }
 .error, .errors { color: var(--error); }
@@ -443,14 +448,26 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .m-head-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .m-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .back-link { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; text-decoration: none; }
+/* 24 px tall to point at (WCAG 2.5.8, #298); the negative margin keeps the layout.
+   Raised so the heading below (the meeting title's border box reaches 3 px
+   up into the target) never takes a click on its last rows. */
+.back-link.link-plain { padding-block: 4px; margin-block: -4px; position: relative; z-index: 1; }
 .title-edit { display: block; min-width: 0; }
-/* The title wraps like a heading and is edited in place; Enter saves it. */
+/* The title wraps like a heading and is edited in place; Enter saves it. It
+   has a control's border at rest, 3:1 like every field's (WCAG 1.4.11; owner
+   decision, #298), 2 px out from the text; the negative margin keeps the text
+   where it was. Hovered, the border takes the text colour. With keyboard
+   focus the page's 2 px ring covers the border, so focus is thicker and orange.
+   In a Windows contrast theme both take the theme's colours; the ring stays
+   thicker than the border. */
 .title-edit textarea {
-  display: block; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  display: block; width: calc(100% + 6px); min-height: 0; margin: -3px; padding: 2px;
+  border: 1px solid var(--control-line); border-radius: 8px; background: transparent;
   font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: normal; color: var(--text);
   resize: none; overflow: hidden;
 }
-.title-edit textarea:hover { background: var(--soft); }
+.title-edit textarea:hover { background: var(--soft); border-color: var(--text); }
+.title-edit textarea:focus-visible { outline-offset: -1px; }
 .m-meta { font-size: 14px; color: var(--muted); }
 .m-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .m-head-actions button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }
@@ -523,8 +540,9 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 #transcript li.current { outline: 2px solid var(--accent); outline-offset: -2px; }
 /* On the pink match colour, true blue and muted text fall below 4.5:1. */
 #transcript li.hit .t, #transcript li.hit .overlap, #transcript li.hit .edit-hint { color: var(--text); }
+/* 24 px tall to point at (WCAG 2.5.8, #298); the negative margins keep the text where it was. */
 .t {
-  align-self: start; min-height: 0; padding: 3px 0 0; border: 0; background: none; text-align: left;
+  align-self: start; min-height: 0; padding: 6px 0 4px; margin: -3px 0 -4px; border: 0; background: none; text-align: left;
   color: var(--link); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums;
 }
 .t:hover:not(:disabled) { background: none; text-decoration: underline; }
@@ -548,10 +566,10 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 /* A passage by the same speaker as the one above shows its label on hover or focus. */
 .who.again { position: absolute; top: 2px; right: 10px; opacity: 0; }
 #transcript li:hover .who.again, .who.again:focus-visible { opacity: 1; }
-.text { font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; }
+.text { font-size: 15px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 8px; padding-block: 1px; margin-block: -1px; }
 .text.edited { text-decoration: underline dotted var(--muted); text-underline-offset: 4px; }
 .text[contenteditable="plaintext-only"] {
-  padding: 6px 10px; border: 2px solid var(--primary); background: var(--input-bg); outline: none; text-decoration: none;
+  padding: 6px 10px; margin-block: 0; border: 2px solid var(--primary); background: var(--input-bg); outline: none; text-decoration: none;
 }
 .edit-hint { font-size: 12px; color: var(--muted); }
 .overlap { font-size: 12px; color: var(--muted); }
@@ -634,7 +652,9 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .p-time { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .p-seek { flex: 1; min-width: 80px; height: 6px; border-radius: 999px; position: relative; background: var(--player-track); cursor: pointer; }
 .p-seek::before { content: ""; position: absolute; inset: -10px 0; }   /* a taller target */
-.p-fill { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--record); }
+/* The fill only shows the position: the bar (a keyboard slider) takes the
+   pointer, so the fill is not a pointer target of its own (WCAG 2.1.1, #298). */
+.p-fill { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--record); pointer-events: none; cursor: default; }
 .p-who { font-size: 14px; white-space: nowrap; color: var(--player-muted); }
 .p-speed {
   min-width: 44px; height: 36px; min-height: 0; padding: 0 8px; border-radius: var(--r-sm);
@@ -788,8 +808,8 @@ dialog h2 { margin: 0; }
 .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .ho-template select { min-height: 36px; padding: 0 8px; border-radius: var(--r-sm); font-size: 15px; font-weight: 700; }
 .ho-template-links { align-self: flex-end; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.ho-template-links .link-plain { font-size: 13px; }
-.ho-check { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; line-height: 1.4; }
+.ho-template-links .link-plain { font-size: 13px; padding-block: 5px; margin-block: -5px; }
+.ho-check { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; line-height: 1.4; padding-block: 2px; margin-block: -2px; }
 .ho-check input[type="checkbox"] { width: 20px; height: 20px; }
 .ho-field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; font-weight: 600; }
 .ho-field textarea, .ho-field input { font-size: 14px; font-weight: 400; border-radius: var(--r); }
@@ -902,6 +922,7 @@ body[data-view="setup"] .sidebar, body[data-view="setup"] .topbar { display: non
 .su-steps .su-opt { font-size: 12px; color: var(--muted); }
 .su-steps li.done .su-dot { background: var(--done); border-color: var(--done); color: var(--done-fg); }
 .su-steps li.now { background: var(--side-sel); font-weight: 800; }
+.su-steps li.now .su-opt { color: var(--side-sel-text); }   /* 4.5:1 on --side-sel (#298) */
 .su-steps li.now .su-dot { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .su-privacy { margin: auto 0 0; display: flex; gap: 10px; font-size: 14px; line-height: 1.5; color: var(--muted); }
 .su-privacy svg { flex: none; margin-top: 2px; }
