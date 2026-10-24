@@ -167,9 +167,11 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 1. Verify the release (above), then wrap the extracted folder with the Microsoft Win32 Content Prep Tool, with `install.cmd` as the setup file.
 2. Install behaviour: **User**. Install command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Silent` (add `-Managed` if IT manages updates).
 3. Uninstall command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\Programs\Unminute\uninstall.ps1" -Silent`.
-4. Return codes: map 5 (the update is waiting for the workspace) to Retry, and 1, 2, 3, 4 and 6 to Failed. Code 3 (the app is running) is worth a retry. Code 6 means this version cannot open the user's existing workspace, for example a newer workspace after a downgrade, or one in a refused location such as OneDrive or a network drive (see "Updates and rollback" below, and the exit codes in [PACKAGING.md](PACKAGING.md)).
+4. Return codes: map 5 (the update is waiting for the workspace) to Retry, and 1, 2, 3, 4 and 6 to Failed. Code 3 (the app is running) is worth a retry. Code 6 means this version cannot open the user's existing workspace, for example a newer workspace after a downgrade, or one in a refused location such as OneDrive or a network drive (see "Updates and rollback" below, and the exit codes in [PACKAGING.md](PACKAGING.md)). For a failed install, the installer's log, `logs\install.log` in the install folder, gives the step it stopped at and its exit code, with no user name or path (**Not in v0.5.0-preview.3**, #111 B6a).
 5. Detection rule: the registry value `DisplayVersion` under `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute` equals the version.
 6. Requirements: Windows 10 1809 or later, x64, and the WebView2 runtime.
+
+The scripts are not signed, and the install and uninstall commands run them with `-ExecutionPolicy Bypass`: an accepted risk (the owner's decision of 22 October 2026, SECURITY_MODEL.md T22). An environment that enforces `AllSigned` cannot run them as shipped; [PACKAGING.md](PACKAGING.md), "Signing and trust", lists the options for signing them yourself.
 
 Coming from 0.4.3 or earlier is not an update in place: users finish with the earlier version first. The order, and how to supersede the earlier app in Intune, are in [PACKAGING.md](PACKAGING.md), "Updates".
 

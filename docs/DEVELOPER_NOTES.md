@@ -187,6 +187,47 @@ real time, and remove it when the cause is fixed.
 - **A regular expression's `$` matches before a final newline (#297).** In .NET, as in
   Python, a pattern `^...$` also accepts a name with a final newline, such as `"1.0.0\n"`.
   A check on a name that becomes a path ends in `\z` instead.
+- **Pester tests dot-source the installer scripts (#111 B6a).** `install.ps1` and
+  `uninstall.ps1` end their function definitions with a guard,
+  `if ($MyInvocation.InvocationName -eq ".") { return }`, so dot-sourcing defines the
+  functions and runs nothing. A script without that guard runs its main part when
+  dot-sourced, with its default `-InstallDir`: on 23 Oct 2026 a failing-first run of
+  the new Pester tests against the scripts from before B6a uninstalled the per-user copy
+  on the development computer.
+- **Installer tests never reach the real install (#111 B6a, after that incident).**
+  Pester: `tests/powershell/Isolation.ps1` points `LOCALAPPDATA` and `APPDATA` into
+  TestDrive, and a test loads a script only as
+  `. (Confirm-Loadable $path); Set-ScratchTarget`. `Confirm-Loadable` refuses, before
+  anything in the script runs, a script without the guard, one that reaches the Start
+  menu or the uninstall key other than through `$ProgramsFolder` and `$RegKey` (as every
+  script before B6a did), and a run whose variables are not scratch; `Set-ScratchTarget`
+  points `$RegKey` at a throwaway `HKCU\Software\Unminute-PesterTest-<guid>` key and
+  `$ProgramsFolder` at a scratch folder, and checks every place the script would write.
+  Above the guard a script may only define functions and assign values that run no
+  command and call no .NET method except two known reads, and its parameters' default
+  values may run only `Join-Path`; `Confirm-Loadable` refuses anything else. The
+  scratch checks resolve junctions, links and short names first. A test in the suite
+  checks that every load has that form and that no test file starts a script any
+  other way (`&`, `-File`, `Start-Process`, `Invoke-Expression`, jobs and the like:
+  `Find-UncheckedRun`). `tools/run_pester.ps1` also
+  runs the suite with scratch variables and fails if the real install's folder, Start
+  menu shortcut or uninstall entry changed. Python: every test runs a scratch copy
+  (`scratch_text`) through `run_installer` in `tests/test_hardening.py`, which refuses
+  unless the copy, `-InstallDir`, `LOCALAPPDATA` and `APPDATA` are scratch and fails if
+  the real install changed. Every other process a test in that module starts is
+  checked before it starts and refused if it names a packaging script, or a `.ps1`
+  that copies or runs one; and no process start in any test module may name an
+  installer script. `InstallerIsolationTests` proves it. The real places come
+  from the shell's known folders, which ignore `LOCALAPPDATA` and `APPDATA`. Never
+  dot-source an older revision of either script, and never run the scripts or Pester any
+  other way; show failing-first evidence for installer behaviour with the Python-driven
+  tests (a scratch copy of the older script through `run_installer`).
+- **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
+  page.** Keep the installer scripts and their Pester tests ASCII; build other characters
+  from their code points (`[char]0x212A`).
+- **Pester's package has deep paths.** Unpacked under a long folder it passes 260
+  characters and `ExtractToDirectory` fails; `tools/run_pester.ps1` unpacks into a short
+  folder name under `-ModuleRoot`, which should itself be short (CI uses `RUNNER_TEMP`).
 
 ## Claude Code hooks on Windows
 
