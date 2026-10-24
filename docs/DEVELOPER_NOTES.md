@@ -214,7 +214,8 @@ real time, and remove it when the cause is fixed.
   menu shortcut or uninstall entry changed. Python: every test runs a scratch copy
   (`scratch_text`) through `run_installer` in `tests/test_hardening.py`, which refuses
   unless the copy, `-InstallDir`, `LOCALAPPDATA` and `APPDATA` are scratch and fails if
-  the real install changed. Every other process a test in that module starts is
+  the real install changed (`tests/test_uninstall_offboard.py` runs its copies through
+  it too). Every other process a test in either module starts is
   checked before it starts and refused if it names a packaging script, or a `.ps1`
   that copies or runs one; and no process start in any test module may name an
   installer script. `InstallerIsolationTests` proves it. The real places come

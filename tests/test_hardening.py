@@ -1737,13 +1737,14 @@ def check_scratch_run(script, install_dir, scratch, env, where):
 
 
 def run_installer(script, install_dir, scratch, extra="", env=None, location=None, cwd=None,
-                  silent=True, timeout=180):
+                  silent=True, timeout=180, stdin=None):
     """The only way these tests run install.ps1 or uninstall.ps1: a scratch copy (from
     scratch_text), in Windows PowerShell 5.1 with its minimal environment, LOCALAPPDATA
     and APPDATA at scratch\\Local and scratch\\Roaming unless env gives other scratch
     folders, and -InstallDir install_dir, read from location (Set-Location) or cwd
-    when relative. Refused before anything runs unless every place is scratch
-    (check_scratch_run); fails if the real install changed during the run."""
+    when relative; stdin is text for its standard input (an answer to a question).
+    Refused before anything runs unless every place is scratch (check_scratch_run);
+    fails if the real install changed during the run."""
     scratch = Path(scratch)
     base = {"LOCALAPPDATA": str(scratch / "Local"), "APPDATA": str(scratch / "Roaming")}
     full = windows_powershell.environment({**base, **(env or {})})
@@ -1763,7 +1764,7 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
         return subprocess.run([windows_powershell.executable(), "-NoProfile",
                                "-ExecutionPolicy", "Bypass",
                                "-Command", f"{call}; exit $LASTEXITCODE"],
-                              capture_output=True, text=True, errors="replace",
+                              input=stdin, capture_output=True, text=True, errors="replace",
                               timeout=timeout, cwd=cwd, env=full)
     finally:
         _INSTALLER_RUN.active = False
@@ -3901,6 +3902,9 @@ class RemoteDebugTests(unittest.TestCase):
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
         self.assertEqual(uninstall.count(args), 1)
         self.assertIn('$start.Arguments = "$LaunchArgs --restore-lid"', uninstall)
+        # -Offboard's runs too (#111 B8b), and no other list of the options.
+        self.assertIn('$start.Arguments = "$LaunchArgs $Switch"', uninstall)
+        self.assertEqual(uninstall.count("-I -B "), 1)
         self.assertEqual(uninstall.count('-m workspace"'), 1)
         self.assertNotIn('"-m", "workspace"', uninstall)
         media = (ROOT / "workspace" / "media.py").read_text(encoding="utf-8")

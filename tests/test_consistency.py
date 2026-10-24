@@ -268,7 +268,7 @@ class InstallIdentityTests(unittest.TestCase):
         self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
                           for script, modes in identity["exit_codes"].items()},
                          {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"]},
-                          "uninstall.ps1": {"user": ["0", "1", "3"]}})
+                          "uninstall.ps1": {"user": ["0", "1", "2", "3", "5", "6"]}})
         # Repository only: the build copies named files, so it never ships.
         self.assertNotIn("identity.json", read("tools/build_package.py"))
 

@@ -410,7 +410,7 @@ function Get-OffboardLeft {
 function Invoke-AppSwitch([string]$Target, [string]$Switch) {
     $start = New-Object System.Diagnostics.ProcessStartInfo
     $start.FileName = [IO.Path]::Combine($Target, "runtime", "python.exe")
-    $start.Arguments = "-I -B -X disable-remote-debug -m workspace $Switch"
+    $start.Arguments = "$LaunchArgs $Switch"
     $start.WorkingDirectory = [IO.Path]::Combine($Target, "app")
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true

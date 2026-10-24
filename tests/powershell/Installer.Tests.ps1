@@ -476,6 +476,7 @@ Describe "uninstall.ps1 in both modes" {
         $ast = [Management.Automation.Language.Parser]::ParseFile($script:Uninstall, [ref]$tokens, [ref]$errors)
         $arguments = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and
             $n.Left.Extent.Text -match '\.Arguments$' }, $true) | ForEach-Object { $_.Right.Extent.Text })
-        $arguments -join "," | Should -BeExactly '"$LaunchArgs --restore-lid"'
+        # The lid restore, and -Offboard's report and removal (#111 B8b).
+        $arguments -join "," | Should -BeExactly '"$LaunchArgs --restore-lid","$LaunchArgs $Switch"'
     }
 }
