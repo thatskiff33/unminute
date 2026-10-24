@@ -992,8 +992,14 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         mic.feed(6)
         comp.feed(6)
         folder = ws._recording.folder
-        time.sleep(0.5)
-        self.assertTrue(any(folder.glob("sys-*.uma")))
+        # #330: wait for both tracks' first chunks, up to a bound, not a fixed
+        # time: a sealed chunk write (#111 C3b) is slower under coverage.
+        written = lambda: (any(folder.glob("chunk-*.uma"))  # noqa: E731
+                           and any(folder.glob("sys-*.uma")))
+        deadline = time.monotonic() + 10
+        while not written() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(written(), "both tracks' first chunks were not written within 10 s")
         ws.discard_recording()
         self.assertFalse(folder.exists())
         self.assertTrue(ws.wait_idle(60))
