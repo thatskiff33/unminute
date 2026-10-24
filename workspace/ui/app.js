@@ -491,11 +491,12 @@ async function renderMeeting() {
   }
 }
 
-// The title box grows with the title, so a long one wraps like a heading.
+// The title box grows with the title, so a long one wraps like a heading. Its
+// height includes its border, which scrollHeight leaves out.
 function fitTitle() {
   const t = $("m-title");
   t.style.height = "auto";
-  t.style.height = `${t.scrollHeight}px`;
+  t.style.height = `${t.scrollHeight + t.offsetHeight - t.clientHeight}px`;
 }
 
 // The header's action: Pause and Stop now while transcribing, Resume or Try

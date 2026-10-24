@@ -14,7 +14,11 @@
 #     the transcript's times and passages, the template links and the
 #     "Replace names" check box;
 #   - accessible names contain the visible label (2.5.3): playback speed,
-#     the speaker names dialog and the passages to leave out.
+#     the speaker names dialog and the passages to leave out;
+#   - the meeting title, a field, has a boundary at 3:1 at rest (1.4.11; the
+#     owner's decision of 23 October 2026 on #298), at 1280, 640 and 320 px,
+#     and its box is tall enough for its text with the border;
+#   - nothing that only a pointer can use (2.1.1): the seek bar's fill.
 
 import html
 import http.server
@@ -39,6 +43,7 @@ EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
 # Each view: the fixtures.js scenario, script run once it is ready, the window
 # width, and the audit lists that must be empty.
 FOCUS = ["focus_not_measured", "no_focus_ring", "low_contrast_focus"]
+TITLE = ["low_contrast_boundary", "pointer_only"]
 VIEWS = {
     # The real-window run of 23 October 2026 reported no_focus_ring on these
     # two (and on the meeting and hand off views); none is found headless.
@@ -47,12 +52,19 @@ VIEWS = {
     "setup speaker names": ("setup-3", "", 1100, ["low_contrast"] + FOCUS),
     "setup microphone": ("setup-4", "", 1100, ["low_contrast"] + FOCUS),
     "meeting": ("meeting", "", 1280,
-                ["low_contrast", "small_targets", "label_not_in_name"] + FOCUS),
-    "names dialog": ("names", "", 1100, ["low_contrast", "label_not_in_name"] + FOCUS),
+                ["low_contrast", "small_targets", "label_not_in_name"] + TITLE + FOCUS),
+    "meeting 640": ("meeting", "", 640, TITLE + FOCUS),
+    "meeting 320": ("meeting", "", 320, TITLE + FOCUS),
+    "names dialog": ("names", "", 1100, ["low_contrast", "label_not_in_name"] + TITLE + FOCUS),
     "handoff page": ("handoff", "const i = document.querySelector('#ho-passages input');"
                      "i.checked = true; i.dispatchEvent(new Event('change', {bubbles: true}));",
                      1100, ["low_contrast", "small_targets", "label_not_in_name"] + FOCUS),
 }
+
+# Narrow widths load the page in a frame of exactly that width (design_check's
+# frame.html): Edge will not make a window narrower than about 500 px, and its
+# page is a little narrower than the window.
+FRAMED = (640, 320)
 
 RUNNER = """
 (async () => {
@@ -67,10 +79,17 @@ RUNNER = """
   let out;
   try { out = await AUDIT(); } catch (e) { out = {error: String(e)}; }
   out.has_focus = document.hasFocus();
-  const pre = document.createElement('pre');
+  out.width = innerWidth;
+  // The meeting title's box holds its text, border included (no line cut off).
+  const title = document.getElementById('m-title');
+  out.title_fits = title.scrollHeight <= title.clientHeight;
+  // In a narrow view the page is in a frame: the result goes to the top page,
+  // which is the document Edge prints.
+  const top = window.top.document;
+  const pre = top.createElement('pre');
   pre.id = 'audit-result';
   pre.textContent = JSON.stringify(out);
-  document.body.append(pre);
+  top.body.append(pre);
 })();
 """
 
@@ -107,13 +126,17 @@ class Server(http.server.ThreadingHTTPServer):
 def audit(base, name, dark):
     scenario, _, width, _ = VIEWS[name]
     url = f"{base}/app/index.html?view={quote(name)}#{scenario}"
+    window = width
+    if width in FRAMED:
+        url = f"{base}/tools/design_check/frame.html?w={width}&h=760&src={quote(url, safe='')}"
+        window = max(width + 40, 500)
     # Headless Edge now and then never finishes a page: one more try, with a
     # fresh profile (the timed-out Edge may still hold the first).
     for attempt in (1, 2):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
             cmd = [str(EDGE), "--headless=new", "--disable-gpu", "--hide-scrollbars",
                    "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
-                   "--mute-audio", "--force-device-scale-factor=1", f"--window-size={width},760",
+                   "--mute-audio", "--force-device-scale-factor=1", f"--window-size={window},760",
                    "--autoplay-policy=no-user-gesture-required",
                    # prefers-color-scheme: 0 dark, 1 light (otherwise it follows Windows)
                    f"--blink-settings=preferredColorScheme={0 if dark else 1}",
@@ -155,6 +178,17 @@ class PageAuditTests(unittest.TestCase):
                 self.assertNotIn("error", r, r.get("error"))
                 self.assertGreater(r["controls"], 0)
                 self.assertTrue(r["has_focus"], "the page did not have focus: nothing measured")
+                width = VIEWS[name][2]
+                if width in FRAMED:
+                    self.assertEqual(width, r["width"], "the page is not at the view's width")
+                else:
+                    self.assertGreater(r["width"], 900, "the page is not in its wide layout")
+
+    def test_the_meeting_title_holds_its_text(self):
+        for (name, mode), r in self.results.items():
+            if VIEWS[name][0] == "meeting":
+                with self.subTest(view=name, mode=mode):
+                    self.assertIs(r.get("title_fits"), True, "the title's box cuts off its text")
 
     def test_no_findings_in_the_views_fixed_for_298(self):
         for (name, mode), r in self.results.items():

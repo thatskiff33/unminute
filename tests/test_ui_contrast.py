@@ -2,11 +2,15 @@
 # Non-text contrast of the page's own colours (WCAG 2.2 1.4.11, #298), worked
 # out from workspace/ui/tokens.css: the border of fields and buttons
 # (--control-line) and the focus ring (--accent) reach 3:1 against each surface
-# a control sits on, in the light and the dark theme. The meeting title, which
-# has no border, shows a --control-line boundary when the pointer is over it
-# and keeps the focus ring when it has focus. The design boards draw controls
-# with the same border colour as the tokens. tools/accessibility_check.py
-# measures the live page; these tests keep the tokens from drifting back.
+# a control sits on, in the light and the dark theme. The meeting title, a
+# field drawn as a heading, has a 1 px --control-line border at rest that
+# reaches 3:1, the border in the text colour when the pointer is over it, and
+# the 2 px focus ring over the border with keyboard focus (the owner's decision
+# of 23 October 2026, recorded on #298 at issuecomment-6379467125). The design
+# boards draw controls, and the title, with the same border colour as the
+# tokens. tools/accessibility_check.py measures the live page
+# (tests/test_ui_page_audit.py runs its audit headless); these tests keep the
+# tokens and rules from drifting back.
 
 import re
 import unittest
@@ -168,17 +172,98 @@ class TextAndRingOnColourTests(unittest.TestCase):
         self.assertIn(themes()["light"]["--done"].strip().upper(), text.upper())
 
 
-class MeetingTitleBoundaryTests(unittest.TestCase):
-    def test_hovering_the_title_shows_a_control_border(self):
-        hover = [body for sel, body in rules(APP_CSS, ".title-edit textarea:hover")]
-        self.assertTrue(any(re.search(r"\boutline\s*:\s*1px solid var\(--control-line\)", b)
-                            for b in hover),
-                        "the meeting title has no visible boundary on hover")
+def exact_rule(selector):
+    """The declarations of the rule with exactly this selector (empty if none)."""
+    found = [body for sel, body in rules(APP_CSS, selector) if sel == selector]
+    return found[0] if found else ""
 
-    def test_the_hover_boundary_gives_way_to_the_focus_ring(self):
-        for sel, body in rules(APP_CSS, ".title-edit textarea:hover"):
-            if "outline" in body:
-                self.assertIn(":not(:focus-visible)", sel)
+
+def board_title(board):
+    """The inline style of the sample meeting's title on a design board."""
+    text = (BOARDS / board).read_text(encoding="utf-8")
+    found = re.search(r"<h1 style=\"([^\"]*)\">Community garden planning", text)
+    return found[1] if found else ""
+
+
+class MeetingTitleBoundaryTests(unittest.TestCase):
+    """The meeting title is a field drawn as a heading. At rest it has a 1 px
+    border in the control border colour that reaches 3:1, which the hover
+    strengthens and keyboard focus covers with the 2 px ring (the owner's
+    decision of 23 October 2026, recorded on #298 at issuecomment-6379467125)."""
+
+    def test_the_title_has_a_control_border_at_rest(self):
+        body = exact_rule(".title-edit textarea")
+        self.assertRegex(body, r"\bborder\s*:\s*1px solid var\(--control-line\)",
+                         "the meeting title has no control border at rest")
+
+    def test_the_rest_border_reaches_3_to_1_where_the_title_sits(self):
+        # The title sits on the page; the side panel's card is the lightest
+        # neighbour in dark. Hovered, its fill is --soft.
+        for theme, tokens in themes().items():
+            line = rgba(tokens["--control-line"])
+            for name in ("page", "card"):
+                bg = surfaces(tokens)[name]
+                with self.subTest(theme=theme, surface=name):
+                    self.assertGreaterEqual(ratio(over(line, bg), bg), NON_TEXT)
+
+    def test_hovering_strengthens_the_border(self):
+        body = exact_rule(".title-edit textarea:hover")
+        token = re.search(r"\bborder-color\s*:\s*var\((--[\w-]+)\)", body)
+        if token is None:
+            self.fail("hovering the title does not change its border")
+        for theme, tokens in themes().items():
+            page = surfaces(tokens)["page"]
+            soft = over(rgba(tokens["--soft"]), page)
+            rest = ratio(over(rgba(tokens["--control-line"]), page), page)
+            hover = ratio(over(rgba(tokens[token[1]]), soft), soft)
+            with self.subTest(theme=theme):
+                self.assertGreater(hover, rest)
+                self.assertGreaterEqual(hover, NON_TEXT)
+
+    def test_keyboard_focus_stays_distinct_and_thicker(self):
+        # The page's ring (2 px, orange) is drawn over the 1 px border: the
+        # title's focus rule may move it, never thin, hide or recolour it.
+        ring = exact_rule(":focus-visible")
+        width = re.search(r"\boutline\s*:\s*(\d+)px solid var\(--accent\)", ring)
+        border = re.search(r"\bborder\s*:\s*(\d+)px solid", exact_rule(".title-edit textarea"))
+        self.assertIsNotNone(width)
+        self.assertIsNotNone(border)
+        self.assertGreater(int(width[1]), int(border[1]))
+        focus = exact_rule(".title-edit textarea:focus-visible")
+        self.assertNotRegex(focus, r"\boutline(-width|-color|-style)?\s*:")
+        offset = re.search(r"\boutline-offset\s*:\s*(-?\d+)px", focus)
+        if offset:      # the ring covers the border instead of sitting beside it
+            self.assertGreaterEqual(int(offset[1]), -int(border[1]))
+        for theme, tokens in themes().items():
+            bg = surfaces(tokens)["page"]
+            with self.subTest(theme=theme):
+                self.assertGreaterEqual(ratio(over(rgba(tokens["--accent"]), bg), bg), NON_TEXT)
+
+    def test_no_title_rule_draws_an_outline_of_its_own(self):
+        # The title's boundary is its border; an outline on it at rest or on
+        # hover would outrank or crowd the focus ring.
+        for sel, body in rules(APP_CSS, ".title-edit"):
+            with self.subTest(selector=sel):
+                self.assertNotRegex(body, r"\boutline(-width|-color|-style)?\s*:")
+
+    def test_the_boards_draw_the_title_with_the_control_border(self):
+        # Meeting.dc.html takes the colour from its theme (secBorder, which
+        # the board's controls use); Meeting-Narrow.dc.html, light only,
+        # writes it out.
+        meeting = (BOARDS / "Meeting.dc.html").read_text(encoding="utf-8")
+        self.assertRegex(board_title("Meeting.dc.html"),
+                         r"\bborder\s*:\s*1px solid \{\{t\.secBorder\}\}")
+        drawn = [rgba(v.replace(",", ", ")) for v in
+                 re.findall(r"\bsecBorder: '(rgba\([^']*\))'", meeting)]
+        for theme, tokens in themes().items():
+            with self.subTest(theme=theme):
+                self.assertIn(rgba(tokens["--control-line"]), drawn)
+        narrow = re.search(r"\bborder\s*:\s*1px solid (rgba\([^)]*\))",
+                           board_title("Meeting-Narrow.dc.html"))
+        self.assertIsNotNone(narrow, "the narrow board's title has no border")
+        if narrow:
+            self.assertEqual(rgba(themes()["light"]["--control-line"]),
+                             rgba(narrow[1].replace(",", ", ")))
 
     def test_the_title_keeps_the_focus_ring(self):
         for sel, body in rules(APP_CSS, ".title-edit"):

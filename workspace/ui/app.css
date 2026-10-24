@@ -451,16 +451,21 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 /* 24 px tall to point at (WCAG 2.5.8, #298); the negative margin keeps the layout. */
 .back-link.link-plain { padding-block: 4px; margin-block: -4px; }
 .title-edit { display: block; min-width: 0; }
-/* The title wraps like a heading and is edited in place; Enter saves it. */
+/* The title wraps like a heading and is edited in place; Enter saves it. It
+   has a control's border at rest, 3:1 like every field's (WCAG 1.4.11; owner
+   decision, #298), 2 px out from the text; the negative margin keeps the text
+   where it was. Hovered, the border takes the text colour. With keyboard
+   focus the page's 2 px ring covers the border, so focus is thicker and orange.
+   In a Windows contrast theme both take the theme's colours; the ring stays
+   thicker than the border. */
 .title-edit textarea {
-  display: block; width: 100%; min-height: 0; padding: 0; border: 0; border-radius: 6px; background: transparent;
+  display: block; width: calc(100% + 6px); min-height: 0; margin: -3px; padding: 2px;
+  border: 1px solid var(--control-line); border-radius: 8px; background: transparent;
   font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: normal; color: var(--text);
   resize: none; overflow: hidden;
 }
-.title-edit textarea:hover { background: var(--soft); }
-/* Hovered, it shows a control's border where the focus ring goes, so it reads as
-   editable (WCAG 1.4.11, #298); with focus, the focus ring replaces it. */
-.title-edit textarea:hover:not(:focus-visible) { outline: 1px solid var(--control-line); outline-offset: 2px; }
+.title-edit textarea:hover { background: var(--soft); border-color: var(--text); }
+.title-edit textarea:focus-visible { outline-offset: -1px; }
 .m-meta { font-size: 14px; color: var(--muted); }
 .m-head-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .m-head-actions button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }
@@ -645,7 +650,9 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .p-time { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .p-seek { flex: 1; min-width: 80px; height: 6px; border-radius: 999px; position: relative; background: var(--player-track); cursor: pointer; }
 .p-seek::before { content: ""; position: absolute; inset: -10px 0; }   /* a taller target */
-.p-fill { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--record); }
+/* The fill only shows the position: the bar (a keyboard slider) takes the
+   pointer, so the fill is not a pointer target of its own (WCAG 2.1.1, #298). */
+.p-fill { display: block; width: 0; height: 100%; border-radius: 999px; background: var(--record); pointer-events: none; cursor: default; }
 .p-who { font-size: 14px; white-space: nowrap; color: var(--player-muted); }
 .p-speed {
   min-width: 44px; height: 36px; min-height: 0; padding: 0 8px; border-radius: var(--r-sm);

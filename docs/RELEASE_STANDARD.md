@@ -314,7 +314,7 @@ Not checked by the tool, so left to the manual pass:
 
 - **New in WCAG 2.2:** 2.5.7 Dragging Movements, 3.2.6 Consistent Help, 3.3.7 Redundant Entry and 3.3.8 Accessible Authentication (Minimum), and the equivalent and essential exceptions to 2.5.8 for any target the tool reports.
 - **From 2.1 and earlier:** screen-reader output, reading and focus order (1.3.1, 1.3.2, 2.4.3), real Tab, Shift+Tab and Escape through each view and dialog (2.1.2), timing such as the confirmation button's delay (2.2.1), pausing moving content such as the live recording curve (2.2.2), non-text contrast of state indicators and graphics (1.4.11), overlapping text with the text spacing applied (1.4.12), content on hover or focus (1.4.13), headings and labels (2.4.6), changes of context on input (3.2.2), status messages as announced (4.1.3), and error identification and suggestions (3.3.1, 3.3.3).
-- **Windows contrast themes** (forced colours).
+- **Windows contrast themes** (forced colours). Expected, not yet checked: the theme's colours replace the page's, so borders and focus rings take the theme's colours. The meeting title keeps its 1 px border at rest and the 2 px focus ring with keyboard focus, so focus still shows by thickness; the hover change of colour may not show.
 - **The confirmation windows the app draws outside the page** (recording, deletion authority, discard; `workspace/consent.py`): they are not part of the page the tool audits.
 - **States the tool does not visit:** a recording in progress, a recovered recording, error and damage messages, and the Downloads page while a download runs.
 
