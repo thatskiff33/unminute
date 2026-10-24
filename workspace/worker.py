@@ -61,9 +61,12 @@ NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 # DLL placed there could load into the worker (in the Whisper GPU worker that
 # path is all Windows searches by name). Removed from every worker before any
 # model library is imported; the app's own process keeps them. ONNX Runtime
-# 1.30.0 reads none. A CTranslate2 upgrade checks this list again
-# (gpu.WHISPER_CTRANSLATE2).
+# 1.30.0 reads none. DLL_PATH_CHECKED_CTRANSLATE2 is the CTranslate2 version
+# this list was checked against: tests/test_consistency.py fails when the lock
+# moves CTranslate2 until its __init__ is read again, this list updated and
+# that version moved with it.
 DLL_PATH_VARIABLES = ("HIP_PATH",)
+DLL_PATH_CHECKED_CTRANSLATE2 = "4.8.3"
 
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
