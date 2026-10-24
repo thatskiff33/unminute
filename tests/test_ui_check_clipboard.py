@@ -142,9 +142,23 @@ const attempt = async () => {{
         self.assertIn("document.getElementById('status').textContent = '';", before[helper:])
         self.assertIn('report["copied"] = copied.get("status")', TOOL)
         self.assertIn('report["copy_retries"] = copied.get("retries")', TOOL)
+        # The status is read only after the app's busy answer can arrive: the
+        # app tries to open the clipboard 20 times, 50 ms apart (about 1 s),
+        # before it says the clipboard is busy. Read sooner and the cleared
+        # status is empty, so the retry never fires (#318 review, round 5).
+        # The 400 ms leaves room for building the diagnostics and the page's
+        # round trip.
+        read = re.search(r"locked-copy'\)\.click\(\); await wait\((\d+)\);", body)
+        self.assertIsNotNone(read, "no wait after the locked-copy click")
+        read_ms = int(read.group(1))
+        opens = re.search(r"def _open\(user32\):\n    for _ in range\((\d+)\):.*?"
+                          r"time\.sleep\(([\d.]+)\)", CLIPBOARD_PY, re.S)
+        self.assertIsNotNone(opens, "the app's clipboard wait not found")
+        busy_ms = int(opens.group(1)) * float(opens.group(2)) * 1000
+        self.assertGreaterEqual(read_ms, busy_ms + 400)
         # A copy busy throughout still finishes inside the step's time limit.
         tries, gap = self.parts["COPY_TRIES"], self.parts["COPY_GAP_MS"]
-        self.assertLess(tries * 1.0 + (tries - 1) * gap / 1000 + 5, timeout)
+        self.assertLess(tries * read_ms / 1000 + (tries - 1) * gap / 1000 + 5, timeout)
 
 
 if __name__ == "__main__":
