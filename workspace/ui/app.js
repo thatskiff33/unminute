@@ -2223,7 +2223,7 @@ function stopViz() {
 // spaced. requestAnimationFrame still drives it, so it stops when hidden.
 // About 60 a second is the owner's choice (23 Oct 2026): 30 a second saved too
 // little processor time for the drop in quality. tools/perf_check.py expects
-// the same rate.
+// the same rate, and tools/ui_idle_check.py reads this constant to check it.
 const METER_HZ = 60;
 // The easing rates below (0.3, 0.08, 0.25, 0.35, 0.1) are shares per frame. The
 // motion they give was seen and approved drawing on every frame of a 120 Hz

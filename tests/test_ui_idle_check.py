@@ -86,7 +86,7 @@ class RatchetTests(unittest.TestCase):
 
 
 GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"}
-RECORDING_METRICS = METRICS - {"list_rebuilds_per_minute"} | {
+RECORDING_METRICS = METRICS | {
     "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second"}
 
 
@@ -154,6 +154,25 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(RECORDING_METRICS, set(limits), mode)
         self.assertEqual(0, ratchets["hidden"]["meter_draws_per_second"])
         self.assertEqual(0, ratchets["hidden"]["bridge_calls_per_minute"])
+
+    def test_a_recording_poll_that_rebuilds_the_meeting_list_fails(self):
+        # The clock and level poll ten times a second; rebuilding the meeting
+        # list on any of those polls must fail the ratchets, visible or hidden
+        # (#348). Every other figure here sits exactly at its ratchet.
+        data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
+        ratchets = data["ui_recording"]["ratchets"]
+        for mode, limits in ratchets.items():
+            at_limit = {}
+            for metric, limit in limits.items():
+                group, dot, key = metric.partition(".")
+                if dot:
+                    at_limit.setdefault(group, {})[key] = limit
+                else:
+                    at_limit[metric] = limit
+            self.assertEqual([], ui_idle_check.compare({mode: at_limit}, {mode: limits}), mode)
+            rebuilt = dict(at_limit, list_rebuilds_per_minute=5)
+            self.assertEqual([(mode, "list_rebuilds_per_minute", 5, 0)],
+                             ui_idle_check.compare({mode: rebuilt}, {mode: limits}), mode)
 
 
 class TranscribingTests(unittest.TestCase):
