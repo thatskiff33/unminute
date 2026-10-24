@@ -67,7 +67,7 @@ Network, secrets and integrity
 - **I3** The page reaches Python only through `API_METHODS`, and only through `LOCKED_METHODS`
   while the workspace is locked (the user's decision, 21 October 2026, #111), with arguments
   checked; it renders text only and runs only in WebView2. Guard: `tests/test_consistency.py`,
-  `tests/test_hardening.py`.
+  `tests/test_hardening.py`, `tests/test_drafts.py`.
 
 Durability
 
@@ -115,7 +115,7 @@ Compatibility, installation and policy
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
   a governed area (downloads, GPU, microphone, computer audio, watched folders, network
   drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard:
-  `tests/test_policy.py`, `tests/test_two_track.py`.
+  `tests/test_policy.py`, `tests/test_two_track.py`, `tests/test_drafts.py`.
 
 Evidence
 

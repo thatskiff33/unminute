@@ -117,6 +117,18 @@
         </div>
       </div>
       <p id="rec-note" class="rec-note"></p>
+      <!-- Live drafts (#104): rough text while recording, memory only. Text only
+           (textContent); not announced as it changes, only its state is. -->
+      <div id="rec-draft" class="rec-draft" hidden>
+        <div class="rec-draft-head">
+          <h2 id="h-rec-draft" class="rec-draft-title">Draft text</h2>
+          <span class="rec-draft-label">Rough text. The full transcript replaces it after you stop.</span>
+          <button type="button" id="rec-draft-toggle" class="link-plain" aria-controls="rec-draft-box" aria-expanded="true">Hide draft</button>
+        </div>
+        <div id="rec-draft-box" class="rec-draft-box" role="region" aria-labelledby="h-rec-draft" aria-live="off" tabindex="0"></div>
+        <p id="rec-draft-status" class="rec-draft-status" role="status" aria-live="polite"></p>
+        <p class="rec-draft-share">Draft text shows on this screen. Hide it before sharing your screen.</p>
+      </div>
     </section>
     <ul id="rec-events" class="rec-events"></ul>
     <ul id="rec-reports" class="notices"></ul>
@@ -448,6 +460,17 @@
         <label class="toggle-row top" for="s-speakers"><span class="t-text"><span class="t-label strong">Name speakers after transcription</span>
           <span class="t-note">Works out who spoke when, after the text is ready.</span></span>
           <input type="checkbox" id="s-speakers" class="switch" role="switch"></label>
+        <label class="toggle-row top" for="s-drafts"><span class="t-text"><span class="t-label strong">Show draft text while recording</span>
+          <span id="s-drafts-note" class="t-note"></span></span>
+          <input type="checkbox" id="s-drafts" class="switch" role="switch"></label>
+        <div id="s-drafts-audio-box" class="set-display" hidden>
+          <span id="s-drafts-audio-label" class="t-label strong">With computer audio on, draft text follows</span>
+          <div class="segmented" role="radiogroup" aria-labelledby="s-drafts-audio-label">
+            <label><input type="radio" name="draftsaudio" value="microphone" class="sr"><span>The microphone</span></label>
+            <label><input type="radio" name="draftsaudio" value="mix" class="sr"><span>Both, mixed</span></label>
+          </div>
+          <span id="s-drafts-audio-note" class="t-note"></span>
+        </div>
         <div class="set-display">
           <span id="s-display-label" class="t-label strong">While recording, show</span>
           <div class="segmented" role="radiogroup" aria-labelledby="s-display-label">

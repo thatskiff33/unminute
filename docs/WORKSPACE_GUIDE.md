@@ -63,7 +63,19 @@ How it handles problems:
   - These lid and sleep behaviours come from Windows' documentation and have not yet been tested on a real laptop.
 - **Other work waits.** Transcription of other meetings pauses while you record, so recording gets the computer's full attention. It continues afterwards.
 - **Recording uses more processor time with the window visible.** It uses about 23% of one processor core while the window is visible, mostly to draw the moving recording display, and under 1% minimised (measured on an Intel Core Ultra 7 255H laptop with a 60 Hz screen on 23 October 2026). Minimise the window while you record if you do not need to watch it.
-- **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded, and there is no live transcription.
+- **Only the microphone.** Sound playing on the computer (for example the other side of a Teams call) is not recorded.
+
+### Draft text while recording
+
+Unminute can show rough text of what is said while you record, a few seconds behind. It is off until you turn on **Show draft text while recording** in Settings > Recording and speakers, and your organisation can turn it off.
+
+- **Rough, and replaced.** The draft is made on this computer with the Parakeet v2 speech model (download it in Settings > Manage downloads if it is not there). It is never saved: when you select **Stop and save**, it goes, and the meeting is transcribed in full as usual. Discarding the recording, or the app closing, also clears it.
+- **Where it shows.** Under the recording controls, in grey. You cannot select or copy it: check the full transcript instead.
+- **Screen sharing.** Draft text shows on your screen. Select **Hide draft** before you share your screen; it stays hidden for the rest of that recording unless you select **Show draft**.
+- **On battery** it pauses, unless **Process automatically on battery power** is on; it carries on when you plug in again. The recording itself is never affected.
+- **It costs some memory and processor time** while recording. If it falls behind, it skips the oldest part and says so; the recording is still complete.
+- **With computer audio** (a later version records it beside the microphone), you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
+- **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. The recording is not affected.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
 ## Working on a meeting

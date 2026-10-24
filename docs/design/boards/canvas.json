@@ -15,6 +15,9 @@
     "Home-Drop.dc.html": {"x": 3540, "y": 1140, "w": 1100, "h": 760, "title": "Dropping files to import"},
     "Home-States.dc.html": {"x": 4720, "y": 1140, "w": 1100, "h": 1180, "title": "Every meeting row state, reminders and import errors"},
     "Recording-States.dc.html": {"x": 5900, "y": 1140, "w": 1100, "h": 1180, "title": "Record card states"},
+    "Recording-Drafts.dc.html": {"x": 7080, "y": 1140, "w": 1100, "h": 760, "title": "Recording with draft text (#104)"},
+    "Recording-Drafts-Dark.dc.html": {"x": 8260, "y": 1140, "w": 1100, "h": 760, "title": "Recording with draft text, dark (#104)"},
+    "Recording-Drafts-States.dc.html": {"x": 9440, "y": 1140, "w": 1100, "h": 1180, "title": "Draft text states (#104)"},
 
     "Meeting.dc.html": {"x": 0, "y": 2700, "w": 1100, "h": 760, "title": "Review"},
     "Meeting-Transcribing.dc.html": {"x": 1180, "y": 2700, "w": 1100, "h": 760, "title": "Still transcribing"},
@@ -54,6 +57,7 @@
   "order": [
     "Main.dc.html", "Today-Inbox.dc.html", "Today-Meeting.dc.html",
     "Home.dc.html", "Recording.dc.html", "Home-Empty.dc.html", "Home-Drop.dc.html", "Home-States.dc.html", "Recording-States.dc.html",
+    "Recording-Drafts.dc.html", "Recording-Drafts-Dark.dc.html", "Recording-Drafts-States.dc.html",
     "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html",
     "Names.dc.html", "Confirm.dc.html", "Handoff.dc.html", "Handoff-Template.dc.html",
     "Setup-1.dc.html", "Setup.dc.html", "Setup-3.dc.html", "Setup-4.dc.html", "Setup-5.dc.html",
@@ -64,7 +68,7 @@
   ],
   "notes": {
     "row1": {"x": 0, "y": -260, "text": "1. Brand system, and the app today", "kind": "title1", "maxW": 3460},
-    "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 7000},
+    "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 10540},
     "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 7240},
     "row4": {"x": 0, "y": 3580, "text": "4. Name speakers, confirm and hand off", "kind": "title1", "maxW": 4640},
     "row5": {"x": 0, "y": 4720, "text": "5. First-run setup", "kind": "title1", "maxW": 5820},
