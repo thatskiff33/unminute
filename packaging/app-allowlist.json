@@ -30,6 +30,7 @@
   "workspace/jobs.py",
   "workspace/keystore.py",
   "workspace/launch.py",
+  "workspace/launchcheck.py",
   "workspace/loopback.py",
   "workspace/media.py",
   "workspace/mixdown.py",

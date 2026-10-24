@@ -2339,7 +2339,8 @@ foreach ($file in Get-ChildItem -LiteralPath $args[0] -Filter 'case-*.json' | So
         self.assertRegex(record["slots"]["1.0.0"]["installed"],
                          r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         state, read = update.read_slots(self.install)      # what the launcher reads
-        self.assertEqual((state, read["slots"]), ("ok", {"1.0.0": {"schema": 2, "seq": 1}}))
+        self.assertEqual((state, read["slots"]), ("ok", {"1.0.0": {
+            "schema": 2, "seq": 1, "installed": record["slots"]["1.0.0"]["installed"]}}))
 
     def test_an_update_from_format_1_numbers_the_kept_versions_oldest_first(self):
         # A version from before B5 states no format: recorded without one.
@@ -2642,7 +2643,8 @@ class RestoreLidFeatureTests(unittest.TestCase):
     def test_the_package_declares_the_switch_the_uninstaller_looks_for(self):
         build = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard"]', build)
+        self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard", '
+                      '"launch-check"]', build)
         self.assertIn('-notcontains "restore-lid"', uninstall)
         main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('if "--restore-lid" in sys.argv:', main)

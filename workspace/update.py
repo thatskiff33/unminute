@@ -308,6 +308,7 @@ ROLES = ("current", "compat", "fallback")
 _VERSION_NAME = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")
 _WORKING = re.compile(r"\.(partial|old)\Z")
 _RECORD_MAX = 64 * 1024                 # current.json and version.json are far smaller
+_INSTALLED = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
 def version_name(value):
@@ -343,8 +344,9 @@ def read_slots(install_root):
     install from before B5: no versions known beyond its current one) or
     "ok". record: {"format", "version", "previous", "slots"}, where slots maps
     each version name to {"schema": a whole number or None (unknown, never
-    handed over to), "seq": its install order}; None unless state is ok or
-    format1. No value read here becomes a path unless it is a plain name."""
+    handed over to), "seq": its install order, "installed": its UTC install
+    time or None}; None unless state is ok or format1. No value read here
+    becomes a path unless it is a plain name."""
     path = Path(install_root) / "current.json"
     if not path.exists():
         return "missing", None
@@ -356,7 +358,8 @@ def read_slots(install_root):
         return "damaged", None
     if "format" not in data:
         return "format1", {"format": 1, "version": version, "previous": previous,
-                           "slots": {version: {"schema": None, "seq": None}}}
+                           "slots": {version: {"schema": None, "seq": None,
+                                               "installed": None}}}
     slots = data.get("slots")
     if data["format"] != 2 or type(data["format"]) is not int or not isinstance(slots, dict):
         return "damaged", None
@@ -367,7 +370,13 @@ def read_slots(install_root):
         schema, seq = entry.get("schema"), entry.get("seq")
         if not whole(seq) or not (schema is None or whole(schema)):
             return "damaged", None
-        out[name] = {"schema": schema, "seq": seq}
+        installed = entry.get("installed")
+        out[name] = {"schema": schema, "seq": seq,
+                     # When it was last installed or repaired (B5b: a version
+                     # whose first-start check failed is tried again after a
+                     # repair). Anything but the installer's UTC form is None.
+                     "installed": installed if isinstance(installed, str)
+                     and _INSTALLED.fullmatch(installed) else None}
     seqs = [e["seq"] for e in out.values()]
     if version not in out or len(set(seqs)) != len(seqs):
         return "damaged", None
@@ -402,3 +411,77 @@ def launch_decision(workspace, has_blockers, record):
         compat = newest_of_schema(record["slots"], workspace)
         return (compat, "compat", None) if compat else (None, None, "blocked")
     return None, None, "too_new"
+
+
+# -- Unused graphics card components (#111 B5b, the owner's decision B5-4) ------------
+#
+# Each package's version.json names the graphics card component versions it
+# uses ("gpu_components", tools/build_package.py). A component folder in the
+# user's model cache that no installed version names is left over from an
+# earlier version (up to about 2.7 GB each). The current version removes it
+# (Workspace.remove_unused_gpu), and only when this user has one install: a
+# per-user and a machine install share the model cache.
+
+# The uninstall entry each install mode registers (K1; HKCU per user, HKLM
+# for the machine install, B6b).
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
+
+
+def gpu_keep(install_root):
+    """The graphics card component versions any installed version names, or
+    None when that cannot be known for every one of them (no format-2
+    current.json, a link at versions or at a version folder, or a version
+    whose version.json names none, as every build from before B5b): then
+    nothing is removed."""
+    state, record = read_slots(install_root)
+    if state != "ok":
+        return None
+    versions = Path(install_root) / "versions"
+    if _is_link(versions):
+        return None
+    keep = set()
+    for name in record["slots"]:
+        folder = versions / name
+        if _is_link(folder):
+            return None
+        info = read_record(folder / "version.json")
+        found = info.get("gpu_components") if info else None
+        if not (isinstance(found, list) and found and all(version_name(c) for c in found)):
+            return None
+        keep.update(found)
+    return keep
+
+
+def _is_link(path):
+    """A symbolic link or a junction (any reparse point). True when it
+    cannot be read, so nothing is decided through it; False when missing."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return os.path.islink(path) or bool(getattr(st, "st_file_attributes", 0) & 0x400)
+
+
+def other_install(mode, opener=None):
+    """Is the other install mode registered for this Windows user? A
+    per-user install looks for the machine install's uninstall entry (HKLM,
+    64-bit view), a machine install for a per-user one (HKCU). True, False,
+    or None when Windows cannot say, which removes nothing. Reads only;
+    opener: tests only, in place of winreg.OpenKey."""
+    try:
+        import winreg
+    except ImportError:                     # not Windows: cannot tell
+        return None
+    if mode == "machine":
+        hive, access = winreg.HKEY_CURRENT_USER, winreg.KEY_READ
+    else:
+        hive, access = winreg.HKEY_LOCAL_MACHINE, winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+    try:
+        (opener or winreg.OpenKey)(hive, UNINSTALL_KEY, 0, access).Close()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
