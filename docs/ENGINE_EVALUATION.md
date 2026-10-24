@@ -108,6 +108,53 @@ Insertions rose on three meetings (ES2004a, ES2004c and IS1009a, by 8, 11 and 6 
 
 **Not tested.** Far-field (table microphone) and telephone audio; business recordings with long silences or hold music (#25); Parakeet v3, which uses the same setting; the graphics-card path in `tools/gpu_trial.py`; the 148 short public clips below, which were not re-run; peak memory in the app's worker (only the benchmark tool's process was measured); the four held-out meetings in Quiet mode; and whether Parakeet was trained on AMI.
 
+## Live drafts: phrase cut length (#104)
+
+Live drafts (#104) transcribe each phrase while a meeting is recorded. A phrase ends after 0.6 s of silence, and unbroken speech is cut at about `drafts.MAX_PHRASE_S` seconds (8 s when measured; see the decision below). This trial compared cuts of 6, 8 and 10 s. Measured 24 October 2026 on the laptop above, on mains power, with the harness in #347, one run per setting, with the trial processes at below-normal priority.
+
+**Tools.**
+- `tools/live_trial.py run` feeds a recording at real time to the app's own draft session and draft worker process (the recorder's 0.1 s blocks at 48 kHz, the shipped tap, feeder, resampler, Silero scoring, phrase splitter and Parakeet v2 on 2 threads), once per cut. Only the cut changes. It then runs the full pass (Parakeet v2, Quiet mode threads) on the same audio. It reports counts, times and rates only, never text.
+- `tools/compare_engines.py run --draft-cut S` runs the same draft engine and phrase splitter offline, all at once rather than at real time, so draft accuracy can be scored like any engine. `tools/live_trial.py manifest` builds its AMI references.
+
+**Measures.**
+- Delay: when the phrase holding each correctly recognised word reached the draft session (the harness checks for new phrases every 20 ms), minus when the word finished being spoken (AMI word times). This is not when the word appears on screen: once the page shows drafts (#336), its own checks for new phrases will add to it, and they are not counted here.
+- Agreement: 100% minus the draft's word error rate measured against the full pass, that is, how close the draft is to the text that replaces it.
+- CPU: the draft worker process's processor time while the audio was fed, as a share of one core. The app's feeder thread is not included.
+
+**Real time, AMI ES2004a, first 7.5 minutes** (699 reference words; the full pass had a word error rate of 22.8%):
+
+| Cut | Phrases (median length) | Delay median / 90th percentile | Agreement with full pass | Draft word error rate | CPU (% of one core) | Peak memory | Skipped / lost audio |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 6 s | 71 (3.4 s) | 2.7 s / 5.3 s | 88.2% | 22.5% | 4.3% | 0.91 GB | 0 s / 0 s |
+| 8 s | 65 (3.3 s) | 3.0 s / 6.5 s | 86.1% | 24.6% | 7.3% | 0.89 GB | 0 s / 0 s |
+| 10 s | 62 (3.2 s) | 3.1 s / 7.9 s | 87.5% | 22.8% | 4.5% | 0.93 GB | 0 s / 0 s |
+
+The draft worker loaded in 2.5 to 2.7 s each time.
+
+**Offline, AMI ES2004a and ES2004c, whole meetings** (56.4 minutes, 9,582 reference words, `compare_engines.py`):
+
+| Run | Threads | Word error rate | Speed (x real time) | Peak memory (tool process) |
+| --- | --- | --- | --- | --- |
+| Full pass | 14 (Faster mode) | 16.6% | 28.3 | 1.45 GB |
+| Drafts, 6 s cut | 2 | 19.4% | 22.1 | 1.36 GB |
+| Drafts, 8 s cut | 2 | 18.7% | 22.5 | 1.37 GB |
+| Drafts, 10 s cut | 2 | 18.5% | 22.7 | 1.38 GB |
+
+**Reading the results.**
+- Every cut met the issue's limits on this laptop: a median delay of 5 s or less and draft CPU under 15% of one core on average.
+- The cut mainly changes the slowest words. The median delay moved only from 2.7 s to 3.1 s, but the 90th percentile rose from 5.3 s at 6 s to 7.9 s at 10 s, because long unbroken speech waits for its cut.
+- Longer cuts were slightly more accurate on the whole meetings (19.4%, 18.7%, 18.5%). On the 7.5-minute window the order was mixed, and the differences there (about 15 words in 700) are within what one short run can show.
+- CPU: the 8 s run's 7.3% is probably noise. The offline runs did the same work at every cut. The trial held the shared lock for heavy runs, so no other benchmark or test suite ran at the same time, but whatever lighter work was running on the laptop was not recorded. Treat the CPU column as 4 to 8% of one core, not as a ranking.
+
+**Recommendation (for the owner; not a decision).** Keep the 8 s cut shipped at the time.
+- 8 s. Pros: median delay 3.0 s and 90th percentile 6.5 s; 0.7 points more accurate than 6 s on whole meetings and within 0.2 points of 10 s; no change to the code. Cons: the slowest words arrive about 1.2 s later than at 6 s.
+- 6 s. Pros: the quickest draft (90th percentile 5.3 s). Cons: the least accurate on whole meetings (19.4%) and the most phrases.
+- 10 s. Pros: the most accurate on whole meetings (18.5%). Cons: the slowest words take 7.9 s at the 90th percentile, for 0.2 points of accuracy over 8 s.
+
+**Decision.** The owner chose 10 s on 24 October 2026 ([#104 comment](https://github.com/thatskiff33/unminute/issues/104#issuecomment-6376848260)), against the recommendation above, for the best draft accuracy on whole meetings, at the cost of the slower tail (90th percentile 7.9 s against 6.5 s at 8 s; the median barely moves, 3.1 s against 3.0 s). The code change is [PR #351](https://github.com/thatskiff33/unminute/pull/351).
+
+**Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), background load not recorded (see CPU above), and not repeated under a known load or on battery power. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
+
 ## Short clips (first screen)
 
 148 public clips (21.5 minutes, 3,457 reference words, from AMI, Earnings-22 and EdAcc), scored with `tools/compare_engines.py`:

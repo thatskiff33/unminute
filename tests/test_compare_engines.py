@@ -190,6 +190,51 @@ compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out +
 """
 
 
+# Draft mode (#104): the draft engine and the app's DraftPipeline, with only the
+# engine faked (loud 32 ms windows are speech). The full-pass loader is never used.
+DRAFT_PROBE = r"""
+import argparse, json, sys
+tools, repo, wav, out, cut = sys.argv[1:6]
+sys.path[:0] = [repo, tools]
+import compare_engines
+from workspace import drafts, engines
+loaded = []
+
+
+class FakeDraft:
+    description = "fake drafts"
+
+    def speech_prob(self, window):
+        import numpy as np
+        return 1.0 if float(np.sqrt(np.mean(np.square(window)))) > 0.02 else 0.0
+
+    def reset(self):
+        pass
+
+    def transcribe_phrase(self, audio):
+        return f"phrase {len(audio)}"
+
+
+def draft_loader(name, cache, threads):
+    loaded.append([name, threads, drafts.MAX_PHRASE_S])
+    return FakeDraft()
+
+
+def never(*args):
+    raise AssertionError("the full pass loaded")
+
+
+engines.load_engine, engines.load_draft_engine = never, draft_loader
+manifest = out + ".manifest"
+with open(manifest, "w", encoding="utf-8") as f:
+    f.write(json.dumps({"set": "s", "id": 1, "wav": wav}) + "\n")
+compare_engines.cmd_run(argparse.Namespace(repo=repo, engine="fake", cache=out + ".cache",
+                                           threads=None, manifest=[manifest], out=out,
+                                           draft_cut=float(cut)))
+print(json.dumps({"loaded": loaded, "after": drafts.MAX_PHRASE_S}))
+"""
+
+
 @unittest.skipUnless(sys.platform == "win32", "the app's decoder runs in a Windows job")
 class RunTests(unittest.TestCase):
     def test_a_clip_the_decoder_refuses_stops_the_run_naming_the_clip(self):
@@ -265,6 +310,60 @@ class RunTests(unittest.TestCase):
             lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
             self.assertEqual([lines[0]["engine"], lines[1]["audio_s"]], ["fake", 2.0])
             self.assertIn("peak_ram_gb", lines[-1])
+
+    def test_draft_mode_runs_the_draft_path_at_the_trial_cut(self):
+        import importlib.util
+        import json
+        import math
+        import struct
+        import subprocess
+        import tempfile
+        import wave
+        if not (importlib.util.find_spec("av") and importlib.util.find_spec("numpy")):
+            self.skipTest("PyAV and numpy are not installed")
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "synthetic.wav"
+            quiet = [0] * 8000
+            tone = [round(12000 * math.sin(2 * math.pi * 220 * i / 16000)) for i in range(80000)]
+            with wave.open(str(wav), "wb") as w:      # 0.5 s quiet, 5 s tone, 0.5 s quiet
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                samples = quiet + tone + quiet
+                w.writeframes(struct.pack(f"<{len(samples)}h", *samples))
+            out = Path(tmp) / "run.jsonl"
+            r = subprocess.run([sys.executable, "-B", "-c", DRAFT_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(out), "2"],
+                               capture_output=True, text=True, timeout=180)
+            self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+            probe = json.loads(r.stdout.strip().splitlines()[-1])
+            # Loaded as the draft worker loads (its thread count), with the cut in force,
+            # and the shipped cut back afterwards.
+            from workspace import drafts
+            self.assertEqual(probe["loaded"], [["fake", drafts.DRAFT_THREADS, 2.0]])
+            self.assertEqual(probe["after"], drafts.MAX_PHRASE_S)
+            lines = [json.loads(x) for x in out.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(lines[0]["engine"], "fake drafts 2 s")
+            self.assertEqual(lines[1]["audio_s"], 6.0)
+            # 5 s of unbroken "speech" cut at 2 s or less (at the quietest window of
+            # the last 1.5 s): at least three phrases, where the shipped cut gives one.
+            self.assertGreaterEqual(lines[1]["phrases"], 3)
+            self.assertEqual(len(lines[1]["hyp"].split()), 2 * lines[1]["phrases"])
+
+    def test_draft_mode_refuses_a_cut_outside_the_trial_range_before_loading(self):
+        import subprocess
+        import tempfile
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "present.wav"
+            wav.write_bytes(b"")
+            r = subprocess.run([sys.executable, "-B", "-c", DRAFT_PROBE, str(root / "tools"),
+                                str(root), str(wav), str(Path(tmp) / "run.jsonl"), "1"],
+                               capture_output=True, text=True, timeout=120)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("A cut must be 2 to 30 seconds", r.stderr)
+            self.assertFalse((Path(tmp) / "run.jsonl").exists())
 
 
 if __name__ == "__main__":
