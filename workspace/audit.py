@@ -47,7 +47,10 @@ from pathlib import Path
 
 from workspace import diag
 
-FORMAT = 1
+# The record format written now. 2 since #346 (recording_started's sources);
+# the formats still read are in EARLIER. The Event Log text keeps its own
+# "v1" (mirror_text): its shape has not changed.
+FORMAT = 2
 SOURCE = "Unminute"                  # the Event Log source (install.ps1 -Machine registers it)
 SEGMENT_BYTES = 1 << 20              # a segment rotates at 1 MB
 MAX_BYTES = 16 << 20                 # the folder keeps at most 16 MB (about 80,000 records)
@@ -185,13 +188,24 @@ COMMON = ("v", "chain", "seq", "at", "kind", "prev")      # every record's own k
 if any(set(rules) & set(COMMON) for _, _, rules in KINDS.values()):
     raise RuntimeError("an audit field takes the name of a key every record has")
 
+# Earlier formats: read and verified under their own rules, never written. The
+# folder outlives updates and an empty-workspace migration (and an older
+# version can open the workspace again), so a later version reads what an
+# earlier one wrote. Per format, the kinds whose rules differ from KINDS:
+# format 1 (#289 to #346) had recording_started without sources.
+EARLIER = {
+    1: {"recording_started": {name: rule for name, rule in KINDS["recording_started"][2].items()
+                              if name != "sources"}},
+}
 
-def check(kind, fields):
-    """Raise AuditError unless fields are exactly kind's fields, each within
-    its rule. The message names the kind and field only, never a value."""
+
+def check(kind, fields, version=FORMAT):
+    """Raise AuditError unless fields are exactly kind's fields in that
+    format, each within its rule. The message names the kind and field only,
+    never a value."""
     if not isinstance(kind, str) or kind not in KINDS:
         raise AuditError("unknown audit kind")
-    rules = KINDS[kind][2]
+    rules = KINDS[kind][2] if version == FORMAT else EARLIER[version].get(kind, KINDS[kind][2])
     if set(fields) != set(rules):
         raise AuditError(f"{kind}: fields differ from its rules")
     for name, rule in rules.items():
@@ -217,7 +231,7 @@ def mirror_text(record, sha):
 
 def parse(line):
     """A record from its line bytes, or None unless it is a canonical line
-    of a known kind whose every field keeps its rule."""
+    of a known format and kind whose every field keeps that format's rule."""
     try:
         text = line.decode("ascii")
         record = json.loads(text)
@@ -225,12 +239,15 @@ def parse(line):
         return None
     if not isinstance(record, dict) or _canonical(record) != text:
         return None
-    if record.get("v") != FORMAT or not _id(record.get("chain")) \
+    version = record.get("v")
+    # _count first: true is not 1, nor 2.0 two.
+    if not _count(version) or (version != FORMAT and version not in EARLIER) \
+            or not _id(record.get("chain")) \
             or not _count(record.get("seq")) or record["seq"] < 1 \
             or not _count(record.get("at")) or not _hash(record.get("prev")):
         return None
     try:
-        check(record.get("kind"), {k: v for k, v in record.items() if k not in COMMON})
+        check(record.get("kind"), {k: v for k, v in record.items() if k not in COMMON}, version)
     except AuditError:
         return None
     return record
