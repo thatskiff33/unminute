@@ -418,10 +418,6 @@
    "signer": ""
   },
   {
-   "path": "runtime/lib/ctranslate2/cudnn64_9.dll",
-   "signer": "CN=NVIDIA Corporation, OU=1-G, O=NVIDIA Corporation, L=Santa Clara, S=California, C=US"
-  },
-  {
    "path": "runtime/lib/ctranslate2/libiomp5md.dll",
    "signer": "CN=Intel Corporation, O=Intel Corporation, S=California, C=US"
   },
