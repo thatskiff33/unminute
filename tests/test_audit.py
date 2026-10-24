@@ -400,6 +400,15 @@ class FieldRuleTests(Base):
         ("handoff_copied", {"meeting": MEETING, "what": "combined", "template": "built_in",
                             "names_replaced": 1, "omitted": 0, "redactions": 0}),
         ("app_start", {"version": "C:\\Users\\someone", "schema": 2}),
+        # Which notice was confirmed (#346): one of two fixed words, always.
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window"}),                         # missing
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": None}),
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": "Speakers (sample)"}),
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": ["microphone"]}),
         ("suppressed", {"of_kind": "app_start", "count": 1}),    # only limited kinds
         ("suppressed", {"of_kind": "cleanup_started", "count": 1}),   # never limited
     ]
@@ -1115,8 +1124,10 @@ class WorkspaceAuditTests(unittest.TestCase):
                          [("file", True), ("recording", False)])
         started = next(r for r in rs if r["kind"] == "recording_started")
         self.assertEqual(imported[1]["recording"], started["recording"])   # consent to meeting
-        self.assertEqual((started["consent"], started["wording"], started["method"]),
-                         ("confirmed", consent.RECORDING_WORDING_VERSION, "app-window"))
+        self.assertEqual((started["consent"], started["wording"], started["method"],
+                          started["sources"]),
+                         ("confirmed", consent.RECORDING_WORDING_VERSION, "app-window",
+                          "mic_only"))
         self.assertEqual([r["result"] for r in rs if r["kind"] == "recording_ended"],
                          ["saved", "discarded"])
         copied = [r for r in rs if r["kind"] == "handoff_copied"]

@@ -373,10 +373,14 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
             ws.check_can_record(index, label)  # a refused request never shows the question
             record = None
             if ws.consent_required():
-                answer = ask(consent.recording_question())
+                # The wording names what will be recorded, from the app's own
+                # settings and policy (#108); the record keeps those sources,
+                # and start_recording refuses it if they changed meanwhile.
+                sources = ws.recording_sources()
+                answer = ask(consent.recording_question(sources))
                 if not answer:
                     return CANCELLED_WAIT if answer is None else CANCELLED
-                record = consent.recording_record()
+                record = consent.recording_record(sources)
             return ws.start_recording(index, label, consent=record)
         return _safe(run)
 

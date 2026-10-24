@@ -11,16 +11,18 @@ All names and text in the boards are fictional sample content.
 | Row | Boards |
 |---|---|
 | Brand system | `Main` (colour roles, type, buttons, speaker chips, contrast) |
-| Meetings page | `Home`, `Recording`, `Home-Empty`, `Home-Drop`, `Home-States`, `Recording-States` |
+| Meetings page | `Home`, `Recording`, `Home-Empty`, `Home-Drop`, `Home-States`, `Recording-States`, `Recording-Computer` |
 | Reviewing a meeting | `Meeting`, `Meeting-Transcribing`, `Meeting-Edit`, `Meeting-Reviewed`, `Meeting-Earlier`, `Meeting-Panels` |
 | Dialogs and hand off | `Names`, `Confirm`, `Handoff`, `Handoff-Template` |
 | First-run setup | `Setup-1`, `Setup` (step 2), `Setup-3`, `Setup-4`, `Setup-5` |
 | Settings and help | `Settings`, `Models` (Downloads), `Help` |
 | Narrow windows | `Meeting-Narrow` (900 px), `Meeting-640`, `Meeting-320`, `Home-640`, `Home-320` |
-| Dark theme | `Home-Dark`, `Meeting-Dark` |
+| Dark theme | `Home-Dark`, `Meeting-Dark`, `Recording-Computer-Dark` |
 | Explored, not chosen | `Home-B`, `Meeting-B` |
 
 The `Today-*` boards show the app before the redesign, for comparison.
+
+Added after that sign-off for computer audio (#108): `Recording-Computer` and `Recording-Computer-Dark` (the thin Computer audio bar on the recording card), the `computer` property on `Home` (the line under Record a meeting, and the card's note) and on `Settings` (the switch on), and the switch on `Setup` step 4.
 
 `assets/` holds canvas assets the boards use but the app does not ship (the white Unlimit logo); `tools/design_check/render.js` maps them.
 

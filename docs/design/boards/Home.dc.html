@@ -76,7 +76,7 @@ body{margin:0}
         </button>
       </div>
       <div style="display: flex; align-items: center; gap: 14px; margin-top: -14px; font-size: 14px; color: {{t.muted}}">
-        <span>Microphone: Laptop microphone</span>
+        <span>{{micLine}}</span>
         <a href="Recording-States.dc.html" style="font-weight: 600; color: #2B61BF">Change or test</a>
       </div>
     </sc-if>
@@ -98,7 +98,15 @@ body{margin:0}
             <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 18px; border-radius: 10px; border: 0; background: {{t.primaryBg}}; color: {{t.primaryFg}}">Stop and save</button>
           </div>
         </div>
-        <div style="font-size: 14px; color: {{t.muted}}">Laptop microphone. Only the microphone is recorded, not computer sound. Tell everyone present the meeting is being recorded.</div>
+        <sc-if value="{{computer}}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: center; gap: 12px; margin-top: -6px; font-size: 13px; font-weight: 600; color: {{t.muted}}">
+            <span style="flex: none; min-width: 150px">Computer audio</span>
+            <div role="meter" aria-label="Computer audio level" aria-valuemin="-60" aria-valuemax="0" aria-valuenow="-24" style="flex: 1; max-width: 420px; height: 6px; border-radius: 999px; overflow: hidden; background: {{t.track}}">
+              <span style="display: block; width: 72%; height: 100%; background: {{t.fill}}"></span>
+            </div>
+          </div>
+        </sc-if>
+        <div style="font-size: 14px; color: {{t.muted}}">{{recNote}}</div>
       </div>
     </sc-if>
 
@@ -154,7 +162,7 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
+<script type="text/x-dc" data-dc-script data-props='{"direction":{"editor":"enum","options":["H","A","B","Dark"],"default":"H"},"recording":{"editor":"boolean","default":false},"computer":{"editor":"boolean","default":false},"variant":{"editor":"enum","options":["default","empty","drop"],"default":"default"},"$preview":{"width":1100,"height":760}}'>
 class Component extends DCLogic {
   renderVals() {
     const themes = {
@@ -196,7 +204,13 @@ class Component extends DCLogic {
     const heights = [18, 30, 44, 26, 52, 60, 38, 22, 48, 64, 56, 34, 20, 40, 58, 46, 28, 16, 36, 54, 62, 44, 30, 24, 42, 50, 38, 26, 18, 14, 12, 10, 10, 8, 8, 8];
     const bars = heights.map((h, i) => ({ h: h + 'px', c: i < 30 ? '#E56600' : 'rgba(20,41,102,0.14)' }));
     const variant = this.props.variant ?? 'default';
-    return { t, recording, idle: !recording, bars, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
+    // Computer audio (#108): on in Settings, recorded as a second track.
+    const computer = String(this.props.computer ?? false) === 'true';
+    const micLine = 'Microphone: Laptop microphone' + (computer ? ' · Computer audio on' : '');
+    const recNote = 'Laptop microphone. ' + (computer
+      ? 'Microphone and computer audio are recorded. Tell everyone in the meeting, including people on the call.'
+      : 'Only the microphone is recorded. Tell everyone present the meeting is being recorded.');
+    return { t, recording, idle: !recording, bars, computer, micLine, recNote, empty: variant === 'empty', hasMeetings: variant !== 'empty', drop: variant === 'drop' };
   }
 }
 </script>

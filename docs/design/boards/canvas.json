@@ -15,6 +15,7 @@
     "Home-Drop.dc.html": {"x": 3540, "y": 1140, "w": 1100, "h": 760, "title": "Dropping files to import"},
     "Home-States.dc.html": {"x": 4720, "y": 1140, "w": 1100, "h": 1180, "title": "Every meeting row state, reminders and import errors"},
     "Recording-States.dc.html": {"x": 5900, "y": 1140, "w": 1100, "h": 1180, "title": "Record card states"},
+    "Recording-Computer.dc.html": {"x": 7080, "y": 1140, "w": 1100, "h": 760, "title": "Recording with computer audio"},
 
     "Meeting.dc.html": {"x": 0, "y": 2700, "w": 1100, "h": 760, "title": "Review"},
     "Meeting-Transcribing.dc.html": {"x": 1180, "y": 2700, "w": 1100, "h": 760, "title": "Still transcribing"},
@@ -47,30 +48,31 @@
 
     "Home-Dark.dc.html": {"x": 0, "y": 8960, "w": 1100, "h": 760, "title": "Meetings, dark"},
     "Meeting-Dark.dc.html": {"x": 1180, "y": 8960, "w": 1100, "h": 760, "title": "Review, dark"},
+    "Recording-Computer-Dark.dc.html": {"x": 2360, "y": 8960, "w": 1100, "h": 760, "title": "Recording with computer audio, dark"},
 
     "Home-B.dc.html": {"x": 0, "y": 10100, "w": 1100, "h": 760, "title": "Explored: Direction B sidebar"},
     "Meeting-B.dc.html": {"x": 1180, "y": 10100, "w": 1100, "h": 760, "title": "Explored: Direction B"}
   },
   "order": [
     "Main.dc.html", "Today-Inbox.dc.html", "Today-Meeting.dc.html",
-    "Home.dc.html", "Recording.dc.html", "Home-Empty.dc.html", "Home-Drop.dc.html", "Home-States.dc.html", "Recording-States.dc.html",
+    "Home.dc.html", "Recording.dc.html", "Home-Empty.dc.html", "Home-Drop.dc.html", "Home-States.dc.html", "Recording-States.dc.html", "Recording-Computer.dc.html",
     "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html",
     "Names.dc.html", "Confirm.dc.html", "Handoff.dc.html", "Handoff-Template.dc.html",
     "Setup-1.dc.html", "Setup.dc.html", "Setup-3.dc.html", "Setup-4.dc.html", "Setup-5.dc.html",
     "Settings.dc.html", "Models.dc.html", "Help.dc.html",
     "Meeting-Narrow.dc.html", "Meeting-640.dc.html", "Meeting-320.dc.html", "Home-640.dc.html", "Home-320.dc.html",
-    "Home-Dark.dc.html", "Meeting-Dark.dc.html",
+    "Home-Dark.dc.html", "Meeting-Dark.dc.html", "Recording-Computer-Dark.dc.html",
     "Home-B.dc.html", "Meeting-B.dc.html"
   ],
   "notes": {
     "row1": {"x": 0, "y": -260, "text": "1. Brand system, and the app today", "kind": "title1", "maxW": 3460},
-    "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 7000},
+    "row2": {"x": 0, "y": 880, "text": "2. Meetings page", "kind": "title1", "maxW": 8180},
     "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 7240},
     "row4": {"x": 0, "y": 3580, "text": "4. Name speakers, confirm and hand off", "kind": "title1", "maxW": 4640},
     "row5": {"x": 0, "y": 4720, "text": "5. First-run setup", "kind": "title1", "maxW": 5820},
     "row6": {"x": 0, "y": 5860, "text": "6. Settings and help", "kind": "title1", "maxW": 3460},
     "row7": {"x": 0, "y": 7560, "text": "7. Narrow windows and zoom", "kind": "title1", "maxW": 3140},
-    "row8": {"x": 0, "y": 8700, "text": "8. Dark theme", "kind": "title1", "maxW": 2280},
+    "row8": {"x": 0, "y": 8700, "text": "8. Dark theme", "kind": "title1", "maxW": 3460},
     "row9": {"x": 0, "y": 9840, "text": "Explored, not chosen", "kind": "title1", "maxW": 2280}
   },
   "designSystems": []

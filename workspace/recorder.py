@@ -31,7 +31,7 @@
 #     opened, so recovery never needs allow_incomplete: a temporary file is
 #     an unfinished chunk and is deleted.
 #
-# Computer audio (#108, groundwork; off unless the app asks for it): a second
+# Computer audio (#108; off unless the app asks for it): a second
 # track, captured by workspace/loopback.py, with its own queue and its own
 # chunk files (sys-NNNNNN.uma, under the same key, with the track in each
 # chunk's context, so a chunk cannot be swapped between tracks) saved by the
@@ -871,6 +871,9 @@ class Recording:
                 "device": self.journal["device_name"],
                 "computer": None if self._computer is None else {
                     "on": self._computer.on,
+                    # The output being recorded, shown to the user like the
+                    # microphone's name (never in diagnostics).
+                    "device": self.journal["tracks"][COMPUTER]["device_name"],
                     "level_db": round(self._computer.level_db, 1)
                     if self._computer.on and not self.paused else -96.0},
                 "events": events}

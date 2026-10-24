@@ -422,7 +422,7 @@
   ];
   const SETTINGS = {
     mode: "quiet", battery_override: false, speakers: true, gpu_speakers: false, microphone: true,
-    model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
+    computer_audio: false, model: "parakeet-tdt-0.6b-v2", onboarded: true, recording_display: "flow",
     // Each with its state as the Downloads page shows it (#244); CARDS above.
     choices: [{ name: "parakeet-tdt-0.6b-v2", label: "Parakeet v2", recommended: true,
                 state: "ready", offered: true, note: null },
@@ -512,7 +512,7 @@
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
-    recording: { enabled: true, display: "flow", recording: null, reports: [] },
+    recording: { enabled: true, computer_audio: false, display: "flow", recording: null, reports: [] },
     status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet", integrity: null },
     reminders: { holds_due: [], awaiting_confirmation: [] },
   };
@@ -563,6 +563,39 @@
         d.recording.recording = { state: "recording", seconds: 767, level_db: -60,
                                   device: "Laptop microphone", events: [] };
         d.levels = true;
+      },
+      steps: [],
+    },
+    // Computer audio (#108): on in Settings, so the line under Record says so.
+    "home-computer": { change: (d) => { d.recording.computer_audio = true; }, steps: [] },
+    // Recording with computer audio: the thin second bar under the display.
+    "recording-computer": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.recording.computer_audio = true;
+        d.recording.recording.computer = { on: true, level_db: -30, device: "Speakers (sample)" };
+        d.compLevels = true;
+      },
+      steps: [],
+    },
+    // A minute in, the microphone hears the room but the computer plays nothing.
+    "recording-computer-quiet": {
+      change: (d) => {
+        SCENARIOS["recording-computer"].change(d);
+        d.recording.recording.seconds = 75;
+        d.recording.recording.computer.level_db = -96;
+        d.compLevels = false;
+      },
+      steps: [wait(1200)],
+    },
+    // Policy turned computer audio off mid-recording: the bar says it stopped.
+    "recording-computer-stopped": {
+      change: (d) => {
+        SCENARIOS["recording-computer"].change(d);
+        d.recording.recording.computer = { on: false, level_db: -96, device: "Speakers (sample)" };
+        d.recording.recording.events = [{ kind: "computer_policy_stop", at_s: 512,
+          note: "Your organisation turned off computer audio. Only the microphone is recorded from here." }];
+        d.compLevels = false;
       },
       steps: [],
     },
@@ -677,6 +710,8 @@
     "setup-3": { change: firstRun, steps: [() => window.workspace.setStep(3)] },
     "setup-4": { change: (d) => { firstRun(d); d.micHeard = true; },
                  steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
+    "setup-4-computer": { change: (d) => { firstRun(d); d.settings.computer_audio = true; d.micHeard = true; },
+                          steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
     "setup-5": {
       change: (d) => { firstRun(d); d.settings.microphone = false; },
       steps: [() => window.workspace.setStep(4), wait(400), () => window.workspace.setStep(5)],
@@ -687,6 +722,19 @@
                        imported: 4, fetch_cloud: true, delete_originals: false }];
         d.receipts = [{ completed_at: at(9, 0) - DAY, result: "Audio and transcript removed (meeting 1)" },
                       { completed_at: at(9, 0) - 2 * DAY, result: "Audio removed after review (meeting 2)" }];
+      },
+      steps: [show("settings")],
+    },
+    // Computer audio (#108): turned on, and turned off by the organisation.
+    "settings-computer": {
+      change: (d) => { SCENARIOS.settings.change(d); d.settings = { ...d.settings, computer_audio: true }; },
+      steps: [show("settings")],
+    },
+    "settings-computer-managed": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.settings = { ...d.settings, managed: { managed: ["AllowComputerAudioRecording"], invalid: [],
+          allow: { AllowComputerAudioRecording: false }, assistant: null } };
       },
       steps: [show("settings")],
     },
@@ -800,6 +848,8 @@
         const db = LEVELS[levelAt % LEVELS.length];
         data.recording.recording.level_db = db;
         data.recording.recording.viz = sampleViz(db, levelAt++);
+        if (data.compLevels)                 // the other side of the call, out of step
+          data.recording.recording.computer.level_db = LEVELS[(levelAt + 11) % LEVELS.length];
       }
       return data.recording;
     },
