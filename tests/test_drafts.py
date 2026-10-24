@@ -1469,6 +1469,12 @@ class PagePartTests(DraftWorkspaceCase):
         # IT turns computer audio off: that track stops, and the draft follows
         # the microphone again (K3).
         self.set_policy({"AllowComputerAudioRecording": False})
+        # The mix checks the policy itself, not only the track the policy
+        # tick stops: with the computer track still on, it unmixes.
+        self.ws._draft_mix(rec, session)
+        self.assertTrue(rec.computer_on)
+        self.assertFalse(session.mixing)
+        self.assertIsNone(rec.tap_computer)
         self.ws._policy_tick()
         self.ws._policy_tick()
         self.assertFalse(rec.computer_on)
