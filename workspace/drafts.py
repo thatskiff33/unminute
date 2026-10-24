@@ -615,8 +615,9 @@ class DraftSession:
         self._lock = threading.Lock()
         self._tap = queue.Queue(maxsize=max(1, int(TAP_S / 0.1)))
         # Computer audio for the live mix, bounded by count: COMPUTER_TAP_S
-        # at 10 ms a block. The loopback's blocks are about 50 ms, so this can
-        # hold about five times COMPUTER_TAP_S (see COMPUTER_TAP_S above).
+        # at 10 ms a block. The loopback hands on about one block every
+        # loopback.POLL_S (50 ms), so this can hold about five times
+        # COMPUTER_TAP_S (see COMPUTER_TAP_S above).
         self._ctap = queue.Queue(maxsize=max(1, int(COMPUTER_TAP_S / 0.01)))
         self._feeding = False            # the tap queues audio (not stopped or suspended)
         self._mixing = False             # tap_computer queues computer audio (live mix)

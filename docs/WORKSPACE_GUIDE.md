@@ -71,12 +71,12 @@ How it handles problems:
 Unminute can show rough text of what is said while you record, a few seconds behind. It is off until you turn on **Show draft text while recording** in Settings > Recording and speakers, and your organisation can turn it off.
 
 - **Rough, and replaced.** The draft is made on this computer with the Parakeet v2 speech model (download it in Settings > Manage downloads if it is not there). It is never saved: when you select **Stop and save**, it goes, and the meeting is transcribed in full as usual. Discarding the recording, or the app closing, also clears it.
-- **Where it shows.** Under the recording controls, in grey. You cannot select or copy it: check the full transcript instead.
+- **Where it shows.** Under the recording controls, in grey. A stretch of talk with no pause shows in pieces of up to about 10 seconds. You cannot select or copy it: check the full transcript instead.
 - **Screen sharing.** Draft text shows on your screen. Select **Hide draft** before you share your screen; it stays hidden for the rest of that recording unless you select **Show draft**.
 - **On battery** it pauses, unless **Process automatically on battery power** is on; it carries on when you plug in again. The recording itself is never affected.
 - **It costs some memory and processor time** while recording. If it falls behind, it skips the oldest part and says so; the recording is still complete.
 - **With computer audio** (a later version records it beside the microphone), you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
-- **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. The recording is not affected.
+- **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. If draft text fails while you record, the line says it stopped. The recording is not affected.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
 ## Working on a meeting

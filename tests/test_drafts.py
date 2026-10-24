@@ -1569,8 +1569,9 @@ class PagePartTests(DraftWorkspaceCase):
 # Show must be dropped (draft.shown). The code is taken from app.js by name,
 # as tests/test_level_meter.py does; the CI images have Node.js.
 APP_JS = Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
-PAGE_PARTS = ("$", "el", "DRAFT_KEEP", "DRAFT_EMPTY", "draft", "putText", "putHidden",
-              "draftLine", "draftEmpty", "clearDraft", "renderDraft", "toggleDraft")
+PAGE_PARTS = ("$", "el", "REC_KIND", "DRAFT_KEEP", "DRAFT_EMPTY", "draft", "putText",
+              "putHidden", "draftLine", "draftEmpty", "clearDraft", "renderDraft",
+              "toggleDraft")
 
 
 def app_js_part(js, name):
@@ -1643,7 +1644,6 @@ for (const id of ["rec-draft", "rec-draft-box", "rec-draft-status", "rec-draft-t
   nodes[id] = new FakeNode("div", id);
 const document = { hidden: false, getElementById: (id) => nodes[id] || null,
                    createElement: (tag) => new FakeNode(tag) };
-const REC_KIND = { recording: "", paused: "paused", stopped: "saving" };
 const fetches = [];                    // recording_draft calls still on their way
 function call(name, since) {
   return new Promise((resolve) => fetches.push({ name, since, resolve }));
