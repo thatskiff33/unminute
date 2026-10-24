@@ -347,7 +347,7 @@ class RunTests(unittest.TestCase):
             self.assertEqual(lines[0]["engine"], "fake drafts 2 s")
             self.assertEqual(lines[1]["audio_s"], 6.0)
             # 5 s of unbroken "speech" cut at 2 s or less (at the quietest window of
-            # the last 1.5 s): at least three phrases, where the shipped 8 s gives one.
+            # the last 1.5 s): at least three phrases, where the shipped cut gives one.
             self.assertGreaterEqual(lines[1]["phrases"], 3)
             self.assertEqual(len(lines[1]["hyp"].split()), 2 * lines[1]["phrases"])
 

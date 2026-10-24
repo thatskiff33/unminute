@@ -123,7 +123,7 @@ class CutTests(unittest.TestCase):
                 pass
 
     def test_unbroken_speech_is_cut_at_the_trial_length(self):
-        # 12 s of tone (speech to the fake engine): cut near 6 s, not 8 s.
+        # 12 s of tone (speech to the fake engine): cut near 6 s, not at the shipped cut.
         engine = _FakeDraft()
         tone = _tone(12.0)
         with compare_engines.draft_cut(6.0):
@@ -171,7 +171,7 @@ class LiveRunTests(unittest.TestCase):
         phrases = run["phrases"]
         self.assertGreaterEqual(len(phrases), 2, run["state"])
         for p in phrases:
-            # The worker's own splitter used the 2 s cut (8 s would give one phrase).
+            # The worker's own splitter used the 2 s cut (the shipped cut would give one phrase).
             self.assertLessEqual(p["end"] - p["start"], _longest(2.0) + 1e-3)
             self.assertGreaterEqual(p["at"], 0.0)
         self.assertEqual(run["state"], drafts.RUNNING)

@@ -146,12 +146,12 @@ The draft worker loaded in 2.5 to 2.7 s each time.
 - Longer cuts were slightly more accurate on the whole meetings (19.4%, 18.7%, 18.5%). On the 7.5-minute window the order was mixed, and the differences there (about 15 words in 700) are within what one short run can show.
 - CPU: the 8 s run's 7.3% is probably noise. The offline runs did the same work at every cut. The trial held the shared lock for heavy runs, so no other benchmark or test suite ran at the same time, but whatever lighter work was running on the laptop was not recorded. Treat the CPU column as 4 to 8% of one core, not as a ranking.
 
-**Recommendation (for the owner; not a decision).** Keep the shipped 8 s cut.
+**Recommendation (for the owner; not a decision).** Keep the 8 s cut shipped at the time.
 - 8 s. Pros: median delay 3.0 s and 90th percentile 6.5 s; 0.7 points more accurate than 6 s on whole meetings and within 0.2 points of 10 s; no change to the code. Cons: the slowest words arrive about 1.2 s later than at 6 s.
 - 6 s. Pros: the quickest draft (90th percentile 5.3 s). Cons: the least accurate on whole meetings (19.4%) and the most phrases.
 - 10 s. Pros: the most accurate on whole meetings (18.5%). Cons: the slowest words take 7.9 s at the 90th percentile, for 0.2 points of accuracy over 8 s.
 
-**Decision.** The owner chose 10 s on 24 October 2026 (#104), for the best draft accuracy on whole meetings, at the cost of the slower tail (90th percentile 7.9 s against 6.5 s at 8 s). The code change is #351.
+**Decision.** The owner chose 10 s on 24 October 2026 ([#104 comment](https://github.com/thatskiff33/unminute/issues/104#issuecomment-6376848260)), against the recommendation above, for the best draft accuracy on whole meetings, at the cost of the slower tail (90th percentile 7.9 s against 6.5 s at 8 s; the median barely moves, 3.1 s against 3.0 s). The code change is [PR #351](https://github.com/thatskiff33/unminute/pull/351).
 
 **Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), background load not recorded (see CPU above), and not repeated under a known load or on battery power. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
 
