@@ -1164,6 +1164,48 @@ class ChildCheckTests(unittest.TestCase):
             self.assertEqual(launchcheck.light_check(bad), {"result": "slot_fault",
                                                             "part": "guard"})
 
+    @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
+    def test_the_self_test_adds_no_dll_folder_named_by_the_environment(self):
+        # #357 (T25), review of 96cc8ee: the launcher now starts --self-test on
+        # its own before a migration, with the user's environment, and it
+        # imports CTranslate2, which adds %HIP_PATH%\bin to the DLL search path
+        # when it loads. As in every worker, the self-test removes
+        # worker.DLL_PATH_VARIABLES before importing any library; if it cannot
+        # read that list it imports nothing and fails.
+        import io
+
+        from workspace import __main__ as main
+        from workspace import speaker_load, worker
+        seen = {}
+
+        def imp(name):
+            seen[name] = {v: os.environ.get(v) for v in worker.DLL_PATH_VARIABLES}
+        hip = {name: "C:\\synthetic-hip" for name in worker.DLL_PATH_VARIABLES}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.dict(os.environ, hip))
+            stack.enter_context(mock.patch("importlib.import_module", side_effect=imp))
+            stack.enter_context(mock.patch.object(main.offline_guard,
+                                                  "disable_onnxruntime_telemetry"))
+            stack.enter_context(mock.patch.object(speaker_load, "self_check", return_value=[]))
+            stack.enter_context(mock.patch.object(main, "dpapi_round_trip",
+                                                  return_value=(True, "dpapi round trip")))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            main.self_test()
+        self.assertIn("ctranslate2", seen)
+        self.assertIn("faster_whisper", seen)
+        nothing = {v: None for v in worker.DLL_PATH_VARIABLES}
+        self.assertEqual({name: env for name, env in seen.items() if env != nothing}, {})
+        # The list cannot be read: nothing is imported and the self-test fails.
+        seen.clear()
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, hip), \
+                mock.patch.dict(sys.modules, {"workspace.worker": None}), \
+                mock.patch("importlib.import_module", side_effect=imp), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(main.self_test(), 1)
+        self.assertEqual(seen, {})
+        self.assertEqual(out.getvalue().splitlines()[-1], "FAIL")
+
     @unittest.skipUnless(sys.platform == "win32" and HAVE_DEPS
                          and importlib.util.find_spec("webview"), "Windows app dependencies")
     def test_the_switch_prints_one_result_and_opens_nothing(self):
