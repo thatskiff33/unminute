@@ -393,6 +393,30 @@ def perf_not_drawn(body):
     return out
 
 
+def accessibility_views_missing(body):
+    """The views the tool audits (ACCESSIBILITY_VIEWS) that an accessibility
+    report does not name at all, in either mode or none: a run that stopped
+    early, or a report edited down, rather than a colour-mode gap. Empty when
+    the report records no views (accessibility_not_both says so)."""
+    views = body.get("views") if isinstance(body, dict) else None
+    if not isinstance(views, dict) or not views:
+        return []
+    named = set()
+    for key in views:
+        named.add(key)
+        for mode in ACCESSIBILITY_MODES:
+            suffix = f" ({mode})"
+            if key.endswith(suffix) and key != suffix:
+                named.add(key[:-len(suffix)])
+    return [name for name in ACCESSIBILITY_VIEWS if name not in named]
+
+
+def listed(items):
+    """Up to MAX_LISTED items, then how many more there are."""
+    more = len(items) - MAX_LISTED
+    return ", ".join(items[:MAX_LISTED]) + (f", and {more} more" if more > 0 else "")
+
+
 def accessibility_not_both(body):
     """What an accessibility report lacks to show every view audited in both
     light and dark (empty when it shows that): the run asked for both modes,
@@ -525,12 +549,21 @@ def check(expected_sha256, paths, commit=None):
                 found.append(f"does not show every visible window drawn on a display that was "
                              f"on (not shown: {', '.join(undrawn[:MAX_LISTED])})")
         if kind == "accessibility":
-            one_mode = accessibility_not_both(body)
+            # Whole views left out are a run that stopped early or a report
+            # edited down, said as such; what remains is a colour-mode gap.
+            missing = accessibility_views_missing(body)
+            if missing:
+                found.append(f"does not cover {len(missing)} of the "
+                             f"{len(ACCESSIBILITY_VIEWS)} views tools/accessibility_check.py "
+                             "audits, in either mode (a run that stopped early, or a report "
+                             "edited down: run the check again with --colour-mode both; "
+                             f"missing: {listed(missing)})")
+            gone = {f"{name} in {mode}" for name in missing for mode in ACCESSIBILITY_MODES}
+            one_mode = [what for what in accessibility_not_both(body) if what not in gone]
             if one_mode:
                 found.append("was not audited in both light and dark (owner decision, "
                              "22 Oct 2026: run tools/accessibility_check.py with "
-                             "--colour-mode both; not shown: "
-                             f"{', '.join(one_mode[:MAX_LISTED])})")
+                             f"--colour-mode both; not shown: {listed(one_mode)})")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():
         if kind not in seen:
