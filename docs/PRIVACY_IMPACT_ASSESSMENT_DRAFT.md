@@ -104,7 +104,7 @@ Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the u
 - `AllowModelDownloads` and `AllowGpuComponent`: whether staff can download models and the graphics card components.
 - `AllowLiveDrafts` (**not in v0.5.0-preview.3**): whether draft text while recording may be turned on once a version offers it (#104). On `main` only the back end is in place, off, and the app refuses to turn it on; the version that adds it will leave it off until the user turns it on. Set to 0, a draft in progress is stopped and cleared; the recording carries on.
 
-A value name the app does not recognise, such as a misspelling, grants and withholds nothing; on `main` the app keeps the first 20 such names, never their data. Settings lists them (#300), and Copy diagnostics says how many there are. The audit log has no policy value: it is always on. The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
+A value name the app does not recognise, such as a misspelling, grants and withholds nothing; on `main` the app keeps the first 20 such names, never their data. On `main`, Settings lists them (#300) and Copy diagnostics says how many there are. The audit log has no policy value: it is always on. The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
 
 ## Known limits
 
