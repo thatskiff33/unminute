@@ -121,9 +121,9 @@ class AllowedFilesTests(TempDir):
                 self.assertFalse(residue.allowed(rel, self.n))
 
     def test_the_list_follows_the_app_s_constants(self):
-        from workspace import app, diag
-        with mock.patch.object(app, "SETTINGS_FILE", "prefs.json"), \
-                mock.patch.object(app, "LOGS_FOLDER", "diagnostics"), \
+        from workspace import diag
+        with mock.patch.object(diag, "SETTINGS_FILE", "prefs.json"), \
+                mock.patch.object(diag, "LOGS_FOLDER", "diagnostics"), \
                 mock.patch.object(diag, "LOG_SUFFIX", ".txt"):
             n = residue.names()
         self.assertTrue(residue.allowed("prefs.json", n))
@@ -133,18 +133,29 @@ class AllowedFilesTests(TempDir):
         self.assertFalse(residue.allowed("diagnostics/app.log", n))
 
     def test_the_app_writes_with_those_constants(self):
-        # A rename in the app moves the list only if the app uses the
-        # constant: each name it writes at those places comes from it.
-        source = (ROOT / "workspace" / "app.py").read_text(encoding="utf-8")
-        for literal in ('"settings.json"', '"settings.unreadable.json"',
-                        '"power_restore.json"', 'root / "logs"', 'root / "audit"',
-                        'root / "workspace.db"'):
-            with self.subTest(literal=literal):
-                self.assertNotIn(literal, source.split("AUDIT_FOLDER = ", 1)[1])
+        # A rename moves the list only if every place that names these files
+        # uses the constant: the window, the support options with no window
+        # (--status, --health, --gate, --restore-lid, --verify-audit) and the
+        # packaged checks that open the workspace themselves (review of #335).
+        literals = ('"settings.json"', '"settings.unreadable.json"', '"power_restore.json"',
+                    '/ "logs"', '/ "audit"', '"workspace.db', '"app.running"', '"app.log"')
+        for rel in ("workspace/app.py", "workspace/__main__.py", "tools/packaged_check.py",
+                    "tools/packaged_crash_check.py", "tools/perf_check.py"):
+            source = (ROOT / rel).read_text(encoding="utf-8")
+            for literal in literals:
+                with self.subTest(rel=rel, literal=literal):
+                    self.assertNotIn(literal, source)
         diag_source = (ROOT / "workspace" / "diag.py").read_text(encoding="utf-8")
-        for literal in ('.log"', '.crash"', '.running"'):
+        for constant in ('DB_FILE = "workspace.db"', 'SETTINGS_FILE = "settings.json"',
+                         'LOGS_FOLDER = "logs"', 'AUDIT_FOLDER = "audit"'):
+            with self.subTest(constant=constant):
+                self.assertIn(constant, diag_source)
+        power_source = (ROOT / "workspace" / "power.py").read_text(encoding="utf-8")
+        self.assertEqual(1, power_source.count('"power_restore.json"'))   # RESTORE_FILE
+        after = diag_source.split('CRASH_SUFFIX = ".crash"', 1)[1]
+        for literal in ('.log"', '.crash"', '.running"', '/ "logs"', '"workspace.db'):
             with self.subTest(literal=literal):
-                self.assertNotIn(literal, diag_source.split('CRASH_SUFFIX = ".crash"', 1)[1])
+                self.assertNotIn(literal, after)
 
     def test_unexpected_lists_strays_and_anything_outside_the_workspace(self):
         profile = self.root / "Unminute"

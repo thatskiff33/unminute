@@ -15,15 +15,17 @@
 # runs with the Start menu shortcut's flags (-I -B -X disable-remote-debug).
 #
 # #111 phase C (C7) adds: kills placed by what the parent can see from outside
-# (no test seam ships in the package): during an encrypted import (when the
-# meeting's audio.partial appears), at two landings around audio cleanup (each
-# landing's state classified: the audio key and the audio both there, or the
-# key gone and the audio recorded as removed, never the key gone while the
-# audio shows as available) and while recording synthetic audio (once enough
-# is saved). After final cleanup the profile holds only the workspace's own
-# files and none of the content (tools/residue.py, with its positive
-# control). Crash dumps under the base fail the report; the app's own crash
-# files are counted, not failed, because this check kills the app on purpose.
+# (no test seam ships in the package): during an encrypted import (once the
+# meeting's audio.partial holds its first 12 blocks, about 12 s, so the scan
+# windows from its first 8 s were all decoded and written), at two landings
+# around audio cleanup (each landing's state classified: the audio key and
+# the audio both there, or the key gone and the audio recorded as removed,
+# never the key gone while the audio shows as available) and while recording
+# synthetic audio (once enough is saved). After final cleanup the profile
+# holds only the workspace's own files and none of the content
+# (tools/residue.py, with its positive control). Crash dumps under the base
+# fail the report; the app's own crash files are counted, not failed, because
+# this check kills the app on purpose.
 #
 # Uses throwaway LOCALAPPDATA profiles ("crash", "reference", "landing",
 # "import" and "recording"), each with its own TEMP, in one base folder deleted
@@ -57,6 +59,17 @@ FLAGS = ["-I", "-B", "-X", "disable-remote-debug"]   # as the Start menu shortcu
 WINDOW_BYTES = 4096 * 4             # a window of decoded audio (float32)
 RECORDING_WINDOW_BYTES = 2048       # from the middle of a synthetic block (int16)
 IMPORT_MINUTES = 60                 # the synthetic import that is killed part-way
+# Its scan windows come from its first IMPORT_WINDOWS_S seconds, and the kill
+# waits until audio.partial holds at least IMPORT_KILL_BLOCKS sealed blocks
+# (workspace/audiocrypt.py: a 64-byte header and its 16-byte tag, then blocks
+# of 16,384 float32 frames, about 1 s, each with a 16-byte tag). So every
+# window has been decoded and written before the kill, and "none of them
+# found" means something (review of #335).
+IMPORT_WINDOWS_S = 8
+IMPORT_KILL_BLOCKS = 12
+AUDIO_DATA_START = 64 + 16
+AUDIO_BLOCK_BYTES = 16384 * 4 + 16
+IMPORT_KILL_BYTES = AUDIO_DATA_START + IMPORT_KILL_BLOCKS * AUDIO_BLOCK_BYTES
 RECORDING_SAVED_S = 12              # recorded before the kill: at least two 5 s chunks
 LANDINGS = (0, 0.05)                # seconds after the review confirmation
 
@@ -79,17 +92,19 @@ def synthetic_wav(out, minutes, rate=16000):
             w.writeframes(os.urandom(rate * 60 * 2))
 
 
-def watch_for(folder, name, proc, timeout):
-    """Wait until a file called `name` appears anywhere under folder (the
-    parent sees only what is on disk), or the process ends. Returns its size
-    then (stat only), or None."""
+def watch_for(folder, name, proc, timeout, min_size=0):
+    """Wait until a file called `name` of at least min_size bytes is anywhere
+    under folder (the parent sees only what is on disk), or the process ends.
+    Returns its size then (stat only), or None."""
     end = time.time() + timeout
     while time.time() < end and proc.poll() is None:
         for p in (folder.rglob(name) if folder.exists() else ()):
             try:
-                return p.stat().st_size
+                size = p.stat().st_size
             except OSError:
                 continue
+            if size >= min_size:
+                return size
         time.sleep(0.05)
     return None
 
@@ -319,24 +334,27 @@ def check(version_dir, cache, wav, report, seconds):
     hold["residue"] = leftovers(base, ref, names, patterns)
     report["hold_race"] = hold
 
-    # 6. Kill during the encrypted import of a long synthetic recording, as
-    #    soon as its audio.partial appears; at the next start the import is
-    #    discarded and nothing of it is left.
+    # 6. Kill during the encrypted import of a long synthetic recording, once
+    #    its audio.partial holds the first IMPORT_KILL_BLOCKS blocks; at the
+    #    next start the import is discarded and nothing of it is left: no
+    #    window of its first IMPORT_WINDOWS_S seconds, all decoded before the
+    #    kill, is anywhere in the profile or its TEMP.
     imp = ctx("import")
     long_wav = base / "long.wav"
     synthetic_wav(long_wav, IMPORT_MINUTES)
     start = base / "long-start.wav"
-    clip(long_wav, 300, start)             # its first 5 minutes decode the same way
+    clip(long_wav, IMPORT_WINDOWS_S, start)   # its first seconds decode the same way
     windows_of(imp, start, base / "import-windows.bin")
     c = Child(imp, "run", imp["cache"], long_wav)
-    size = watch_for(imp["profile"], "audio.partial", c.p, 600)
+    size = watch_for(imp["profile"], "audio.partial", c.p, 600, IMPORT_KILL_BYTES)
     killed = c.kill()
     run_to_idle(imp)
     long_wav.unlink()
     import_patterns = residue.split_windows((base / "import-windows.bin").read_bytes(),
                                             WINDOW_BYTES)
     found = residue.find([imp["profile"]], import_patterns, base)
-    report["import_crash"] = {"partial_seen": size is not None, "killed": killed,
+    report["import_crash"] = {"partial_seen": size is not None, "partial_bytes": size,
+                              "killed": killed,
                               "state": inspect(imp), "windows": len(import_patterns),
                               "control_missed": residue.control(base, import_patterns),
                               "found": found["hits"], "unreadable": found["unreadable"]}
@@ -420,6 +438,7 @@ def verdict(r):
         "only the workspace's own files after final cleanup": own_files(fin["residue"])
             and own_files(h["residue"]),
         "interrupted import discarded, nothing of it left": imp["partial_seen"]
+            and (imp.get("partial_bytes") or 0) >= IMPORT_KILL_BYTES
             and imp["state"]["meetings"] == 0 and imp["state"]["audio_files"] == 0
             and imp["state"]["blockers"] == [] and imp["windows"] == 8
             and imp["control_missed"] == [] and not imp["found"] and not imp["unreadable"],
@@ -498,12 +517,13 @@ def act(ws, action, marker):
 
 def inspect(root, marker):
     from workspace import media
+    from workspace.diag import DB_FILE
     from workspace.store import Store
-    wal = root / "workspace.db-wal"          # before opening: closing may checkpoint
+    wal = root / (DB_FILE + "-wal")          # before opening: closing may checkpoint
     wal_bytes = wal.stat().st_size if wal.exists() else 0
     # Through the store, which opens content (#111). housekeeping=False: opening
     # must not mark running attempts interrupted, which this check measures.
-    store = Store(root / "workspace.db", housekeeping=False)
+    store = Store(root / DB_FILE, housekeeping=False)
     try:
         one = lambda q: store._one(q)[0]
         rows = store._all
@@ -558,7 +578,7 @@ def inspect(root, marker):
         store.close()
     out["wal_bytes"] = wal_bytes
     from workspace import update
-    out["blockers"] = [b["kind"] for b in update.blockers(root / "workspace.db")]
+    out["blockers"] = [b["kind"] for b in update.blockers(root / DB_FILE)]
     return out
 
 

@@ -1478,7 +1478,7 @@ class PackagedCheckTests(TempDir):
                           "key_after_discard": "missing", "recordings_waiting": 0,
                           "other_questions": [],
                           "during": {"seconds": 8.1, "windows": 8, "control_missed": [],
-                                     "found": {}, "unreadable": []}},
+                                     "found": {}, "unreadable": [], "chunks_scanned": 1}},
             "cleanup": {"meetings": 2, "after_audio_cleanup": [ERASED, ERASED],
                         "meetings_left": 0,
                         "receipts": ["audio removed", "audio removed", "transcript removed",
@@ -1509,6 +1509,16 @@ class PackagedCheckTests(TempDir):
 
     def test_a_good_run_passes(self):
         self.assertEqual([], self.tool.verdict(self.GOOD))
+
+    def test_only_finished_microphone_chunks_count_as_scanned(self):
+        scanned = ["Unminute/workspace/recordings/r1/chunk-000001.uma",
+                   "Unminute/workspace/recordings/r1/chunk-000002.uma",
+                   "Unminute/workspace/recordings/r1/chunk-000003.tmp",    # still filling
+                   "Unminute/workspace/recordings/r1/journal.json",
+                   "Unminute/workspace/media/abc/audio.uma",
+                   "temp/x.bin"]
+        self.assertEqual(2, self.tool.chunks_scanned(scanned))
+        self.assertEqual(0, self.tool.chunks_scanned(scanned[2:]))
 
     def test_each_criterion_fails_on_its_own(self):
         during = dict(self.GOOD["recording"]["during"])
@@ -1541,6 +1551,8 @@ class PackagedCheckTests(TempDir):
             "recording encrypted while it records": [
                 self.changed("recording", during=dict(during, found={"window_1": ["x"]})),
                 self.changed("recording", during=dict(during, control_missed=["window_1"])),
+                # Nothing found means something only if a chunk was scanned.
+                self.changed("recording", during=dict(during, chunks_scanned=0)),
                 self.changed("recording", during=None)],
             "recording confirmed, then its key erased": [
                 self.changed("recording", key_after_import="opens"),
@@ -1733,7 +1745,7 @@ class CrashVerdictTests(unittest.TestCase):
                           "confirm": {"result": 1, "killed": False},
                           "after_confirm": crash_state(audio_files=0),
                           "after_final": self.GONE, "residue": clean},
-            "import_crash": {"partial_seen": True, "killed": True,
+            "import_crash": {"partial_seen": True, "partial_bytes": 786704, "killed": True,
                              "state": crash_state(meetings=0, audio_files=0, blockers=[],
                                                   audio_key=None, audio_removed=None),
                              "windows": 8, "control_missed": [], "found": {},
@@ -1780,6 +1792,9 @@ class CrashVerdictTests(unittest.TestCase):
                 with_(("final_cleanup_crash", "state", "blockers"), ["media"])],
             "interrupted import discarded, nothing of it left": [
                 with_(("import_crash", "partial_seen"), False),
+                # Killed before the scan windows were all written: proves nothing.
+                with_(("import_crash", "partial_bytes"), 80),
+                with_(("import_crash", "partial_bytes"), None),
                 with_(("import_crash", "state", "meetings"), 1),
                 with_(("import_crash", "state", "blockers"), ["media"]),
                 with_(("import_crash", "found"), {"window_4": ["import/Unminute/x"]}),
@@ -1805,6 +1820,34 @@ class CrashVerdictTests(unittest.TestCase):
         self.assertEqual(["every kill landed on a live process",
                           "every cleanup landing consistent, then finished"],
                          self.tool.verdict(r))
+
+    def test_the_import_kill_waits_until_every_scan_window_is_written(self):
+        # The kill size follows the encrypted audio's layout, and the blocks
+        # it waits for cover the seconds the scan windows come from.
+        from workspace import audiocrypt, media
+        t = self.tool
+        self.assertEqual(audiocrypt.DATA_START, t.AUDIO_DATA_START)
+        self.assertEqual(audiocrypt.FRAMES_PER_BLOCK * 4 + audiocrypt.TAG_BYTES,
+                         t.AUDIO_BLOCK_BYTES)                      # float32 frames
+        written_s = t.IMPORT_KILL_BLOCKS * audiocrypt.FRAMES_PER_BLOCK / media.SAMPLE_RATE
+        self.assertGreaterEqual(written_s, t.IMPORT_WINDOWS_S + 2)
+        self.assertEqual(786704, t.IMPORT_KILL_BYTES)              # as in good()
+
+    def test_watch_for_waits_for_the_size(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            (folder / "m").mkdir()
+            partial = folder / "m" / "audio.partial"
+            partial.write_bytes(b"x" * 80)
+            alive = mock.Mock(poll=mock.Mock(return_value=None))
+            with mock.patch.object(self.tool.time, "sleep"):
+                self.assertIsNone(self.tool.watch_for(folder, "audio.partial", alive, 0.2,
+                                                      1000))
+                self.assertEqual(80, self.tool.watch_for(folder, "audio.partial", alive, 5))
+                partial.write_bytes(b"x" * 1000)
+                self.assertEqual(1000, self.tool.watch_for(folder, "audio.partial", alive, 5,
+                                                           1000))
 
     def test_a_landing_is_classified_by_the_key_and_the_audio(self):
         landing = self.tool.landing

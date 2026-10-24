@@ -142,6 +142,10 @@ LIDACTION = "5ca83367-6e45-459f-a27b-476b1d01c936"      # what closing the lid d
 LIDSWITCH_STATE = "ba3e0f4d-b817-4094-a2d1-d56379e6a0f3"  # GUID_LIDSWITCH_STATE_CHANGE
 DO_NOTHING = 0
 MAX_RESTORE_BYTES = 4096                                # a real restore record is about 80 bytes
+# The restore record, in the workspace folder: named here so the app, the
+# uninstaller's --restore-lid (which imports nothing else of the app) and
+# tools/residue.py's list of the workspace's own files (#111 C7) share it.
+RESTORE_FILE = "power_restore.json"
 # Where Group Policy (values ACSettingIndex/DCSettingIndex) or Intune (the
 # Power CSP values) set the lid action; either means it is managed.
 _SEP = chr(92)                                          # a backslash, kept out of literals

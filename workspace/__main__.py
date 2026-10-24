@@ -129,9 +129,9 @@ def status(root=None, policy_reader=None):
     from workspace import audit, diag, holds, policy
     from workspace.store import default_root
     root = Path(root or default_root()).absolute()
-    db = root / "workspace.db"
-    checked = diag.integrity_state(root / "logs")
-    keys = diag.keys_state(root / "logs")
+    db = root / diag.DB_FILE
+    checked = diag.integrity_state(root / diag.LOGS_FOLDER)
+    keys = diag.keys_state(root / diag.LOGS_FOLDER)
     locked = bool(keys and keys["result"] == "locked")
     out = {"version": package_version(), "workspace": db.exists(), "meetings": 0,
            "holds": 0, "pending_cleanup": 0, "receipts": 0, "schema": None,
@@ -140,7 +140,7 @@ def status(root=None, policy_reader=None):
            "keys": keys["result"] if keys else "unchecked",
            "lock_reason": keys["reason"] if locked else None,
            "lock_code": keys["winerror"] if locked else None,
-           "audit_seq": audit.tail_seq(root / "audit"),
+           "audit_seq": audit.tail_seq(root / diag.AUDIT_FOLDER),
            "reminders_due": 0, "action_required": 0, "held_overdue": 0}
     if db.exists():
         con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)   # as_uri: # and % escaped
@@ -214,10 +214,10 @@ def _health(out, root):
     except StoreError:
         out["workspace"] = "location"           # missing, synced, redirected or broken (#219, #266)
         return
-    logs = root / "logs"
+    logs = root / diag.LOGS_FOLDER
     from workspace import launchcheck
     out.update(launchcheck.health_state(logs))  # fixed words only (#111 B5b)
-    marker = logs / "app.running"
+    marker = logs / f"app{diag.RUNNING_SUFFIX}"
     left = marker.exists()                      # before asking whether it runs
     owner = diag.run_owner_alive(marker) if left else None
     out["running"] = bool(owner) or _app_running()
@@ -285,7 +285,7 @@ def verify_audit(argv, root=None):
     Run as SYSTEM, or when Windows cannot say who runs it, nothing is read.
     The token's user is read once: the same answer refuses SYSTEM and filters
     the local Event Log by SID (review round 3)."""
-    from workspace import audit
+    from workspace import audit, diag
     user = audit.token_user()
     account = _system_account(user)
     if account is None:
@@ -294,7 +294,7 @@ def verify_audit(argv, root=None):
         return {"result": "system_account"}, 1
     from workspace.store import StoreError, default_root
     try:
-        folder = Path(root or default_root()) / "audit"
+        folder = Path(root or default_root()) / diag.AUDIT_FOLDER
     except StoreError:
         return {"result": "location"}, 1    # missing, synced, redirected or broken (#219, #266)
     out = audit.verify(folder)
@@ -364,7 +364,7 @@ def restore_lid():
             root = default_root()               # the same refusals as the app's own start
         except Exception:
             return "location"
-        return power.restore_only(root / "power_restore.json", _app_running)
+        return power.restore_only(root / power.RESTORE_FILE, _app_running)
     except Exception:
         return "failed"
 
@@ -521,13 +521,13 @@ def main():
         print(json.dumps(result))
         return 0 if result["healthy"] else 1
     if "--gate" in sys.argv:
-        from workspace import update
+        from workspace import diag, update
         from workspace.store import SCHEMA_VERSION, default_root
         schema = SCHEMA_VERSION
         if "--schema" in sys.argv:          # for a version too old to check itself
             schema = int(sys.argv[sys.argv.index("--schema") + 1])
         try:
-            result = update.gate(default_root() / "workspace.db", schema)
+            result = update.gate(default_root() / diag.DB_FILE, schema)
         except StoreError as exc:
             result = {"code": update.TOO_NEW, "kind": "location", "current_schema": None,
                       "blockers": [], "message": str(exc)}
@@ -743,7 +743,7 @@ def _open_failed(exc):
         root = default_root()
     except StoreError:
         return str(exc)
-    db, logs = root / "workspace.db", root / "logs"
+    db, logs = root / diag.DB_FILE, root / diag.LOGS_FOLDER
     log = diag.Log(logs, "app")
     if isinstance(exc, KeyUnavailable):
         # The record holds the reason and the Windows error number only.
