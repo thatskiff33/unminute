@@ -301,6 +301,8 @@ function Test-UnderLocalAppData([string]$Dir) {
 # runtime as this account, offboard this account's own data, and remove their program,
 # leaving their data with nothing to offboard it. Local System, or an account Windows
 # cannot name, stops with exit 2 (as the app's own refusal) and never starts the app.
+# A guard rail against naming another account's folder, not a security boundary: it
+# trusts this account's own %LOCALAPPDATA% value and uninstall entry, which it can set.
 function Assert-OwnInstall([bool]$Registered) {
     $sid = $null
     try { $sid = [string](Get-AccountSid) } catch { $sid = $null }
@@ -562,7 +564,7 @@ function Invoke-Offboard {
                 "stopped part-way), so offboarding cannot run, nothing was removed and the program " +
                 "was kept. Install the current version again, then run this again.")
         }
-        Write-Warn ("This install's program files were incomplete (an earlier removal stopped part-way), " +
+        Write-Warn ("This install's program files were incomplete (an earlier removal may have stopped part-way), " +
             "so offboarding was not run again: no workspace or models are left. If a Hugging Face " +
             "token for $AppName is still saved, remove it in Windows Credential Manager.")
         if ($left.Others) { Write-OthersLeft "$($left.Others) other item(s)" }
