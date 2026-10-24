@@ -850,6 +850,54 @@
    "files": []
   },
   {
+   "id": "msvc-runtime-numpy",
+   "name": "Microsoft Visual C++ Runtime Files (numpy)",
+   "version": "cpython-3.14.8",
+   "licence": "Microsoft distributable code terms, as CPython's Additional Conditions for its Windows binary build state them (owner decision, 24 Oct 2026, #176 L8)",
+   "wheel": "numpy",
+   "wheel_version": "2.5.4",
+   "covers": [
+    "numpy.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/python/cpython",
+    "ref": "v3.14.8",
+    "commit": "8e6e75d9102e39bed2a2b279203a396741180f12"
+   },
+   "note": "numpy 2.5.4's msvcp140 copy (SHA-256 a4c2229bdc2a2a630acdc095b4d86008e5c3e3bc7773174354f3da4f5beb9cde, signed by Microsoft) is byte-identical to pandas 3.0.6's; neither wheel's own texts mention it. The owner chose CPython's PC/crtlicense.txt at tag v3.14.8 to cover it (24 Oct 2026, #176 L8).",
+   "files": [
+    {
+     "path": "msvc-runtime-numpy-cpython-3.14.8/crtlicense.txt",
+     "url": "https://raw.githubusercontent.com/python/cpython/8e6e75d9102e39bed2a2b279203a396741180f12/PC/crtlicense.txt",
+     "sha256": "3c71b3ae243121f6f227374cd1ef7c59ed07b1969b330d0e947f91a3a1b3fd73"
+    }
+   ]
+  },
+  {
+   "id": "msvc-runtime-pandas",
+   "name": "Microsoft Visual C++ Runtime Files (pandas)",
+   "version": "cpython-3.14.8",
+   "licence": "Microsoft distributable code terms, as CPython's Additional Conditions for its Windows binary build state them (owner decision, 24 Oct 2026, #176 L8)",
+   "wheel": "pandas",
+   "wheel_version": "3.0.6",
+   "covers": [
+    "pandas.libs/msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
+   ],
+   "source": {
+    "repository": "https://github.com/python/cpython",
+    "ref": "v3.14.8",
+    "commit": "8e6e75d9102e39bed2a2b279203a396741180f12"
+   },
+   "note": "pandas 3.0.6's msvcp140 copy (SHA-256 a4c2229bdc2a2a630acdc095b4d86008e5c3e3bc7773174354f3da4f5beb9cde, signed by Microsoft) is byte-identical to numpy 2.5.4's; neither wheel's own texts mention it. The owner chose CPython's PC/crtlicense.txt at tag v3.14.8 to cover it (24 Oct 2026, #176 L8).",
+   "files": [
+    {
+     "path": "msvc-runtime-pandas-cpython-3.14.8/crtlicense.txt",
+     "url": "https://raw.githubusercontent.com/python/cpython/8e6e75d9102e39bed2a2b279203a396741180f12/PC/crtlicense.txt",
+     "sha256": "3c71b3ae243121f6f227374cd1ef7c59ed07b1969b330d0e947f91a3a1b3fd73"
+    }
+   ]
+  },
+  {
    "id": "clr-loader-dll",
    "name": "clr-loader",
    "version": "0.3.1",

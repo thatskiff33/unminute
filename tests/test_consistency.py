@@ -103,12 +103,15 @@ class DependencyPinTests(unittest.TestCase):
     def test_whisper_gpu_component_matches_the_ctranslate2_pin(self):
         # #248: the cuBLAS component is the one CTranslate2's Windows build
         # loads. Upgrading CTranslate2 means checking that again (its DLL's
-        # imports and its build's CUDA version) and re-validating on a GPU.
+        # imports and its build's CUDA version) and re-validating on a GPU. The
+        # package also leaves out the wheel's cudnn64_9.dll (#176 D2), which holds
+        # only while CTranslate2's Windows build has no cuDNN.
         from workspace import gpu
         pinned = one(r"^ctranslate2==(\S+)", read("requirements.txt"), "ctranslate2 pin")
         self.assertEqual(pinned, gpu.WHISPER_CTRANSLATE2,
                          "requirements.txt moved CTranslate2: check the cuBLAS it loads and "
-                         "update workspace/gpu.py's Whisper component with it")
+                         "that it still needs no cuDNN (the package leaves cudnn64_9.dll "
+                         "out, #176 D2), and update workspace/gpu.py's Whisper component")
 
 
 class VersionTests(unittest.TestCase):

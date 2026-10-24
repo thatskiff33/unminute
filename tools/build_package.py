@@ -173,6 +173,11 @@ PRUNED_PATHS = (                        # under runtime/lib
     # and win-arm64 folders stay: importing its WebView2 module looks them all up
     # and fails if one is missing, which stops the window opening.
     "webview/lib/WebBrowserInterop.x86.dll",
+    # NVIDIA cuDNN (#176 D2). CTranslate2's Windows build has no cuDNN
+    # (-DWITH_CUDNN=OFF) and its ctranslate2.dll names none; the wheel copies the
+    # DLL in and its __init__.py loads every DLL in the folder. Whisper ran on
+    # the card without it (docs/RELEASE_CHECKLIST.md, "Whisper on the graphics card").
+    "ctranslate2/cudnn64_9.dll",
 )
 PRUNED_RUNTIME = ("libtommath.dll",)   # in the embeddable package; nothing loads it
 ZIP_EPOCH_MIN = 315532800      # 1980-01-01, the earliest time a zip entry can hold

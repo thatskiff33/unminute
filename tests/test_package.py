@@ -335,6 +335,30 @@ class ReproducibleBuildTests(unittest.TestCase):
         signer = {e["path"]: e["signer"] for e in entries}
         self.assertIn("Python Software Foundation", signer["runtime/python.exe"])
 
+    def test_no_allowlisted_binary_is_one_the_build_prunes(self):
+        # A pruned file never reaches the package, so an allowlist entry for it
+        # would only stop the build ("allowlisted but missing").
+        paths = [e["path"] for e in
+                 json.loads(bp.ALLOWLIST.read_text(encoding="utf-8"))["binaries"]]
+        prefix = f"runtime/{bp.SITE}/"
+        pruned = [p for p in paths if p.startswith(prefix) and any(
+            p[len(prefix):] == rel or p[len(prefix):].startswith(rel + "/")
+            for rel in bp.PRUNED_PATHS)]
+        pruned += [p for p in paths if p in {f"runtime/{n}" for n in bp.PRUNED_RUNTIME}]
+        # A distribution removed whole takes its folders with it (grpcio ships a
+        # .pyd, setuptools its launcher .exe files). The folders each locked
+        # wheel installs, read from the wheels (24 Oct 2026): a new entry in
+        # PRUNED_DISTRIBUTIONS must name its folders here too.
+        folders = {"grpcio": ("grpc",), "pyannoteai-sdk": ("pyannoteai",),
+                   "setuptools": ("setuptools", "_distutils_hack")}
+        self.assertEqual(set(folders), set(bp.PRUNED_DISTRIBUTIONS))
+        pruned += [p for p in paths if p.startswith(prefix) and any(
+            p[len(prefix):].startswith(top + "/") for tops in folders.values() for top in tops)]
+        self.assertEqual(pruned, [])
+        # cuDNN is not shipped (#176 D2): CTranslate2's Windows build has no cuDNN.
+        self.assertIn("ctranslate2/cudnn64_9.dll", bp.PRUNED_PATHS)
+        self.assertNotIn(f"{prefix}ctranslate2/cudnn64_9.dll", paths)
+
     def test_signatures_are_read_with_paths_outside_the_command(self):
         folder = self.root / "it's here"                  # a quote in the folder name
         paths = ["runtime/python.exe", "runtime/lib/a.dll"]
@@ -930,6 +954,8 @@ class PrunedBuildTests(unittest.TestCase):
                  "webview/lib/runtimes/win-arm64/native/WebView2Loader.dll",
                  "webview/lib/runtimes/win-x64/native/WebView2Loader.dll",
                  "webview/lib/WebBrowserInterop.x86.dll",
+                 # NVIDIA cuDNN: CTranslate2 is built without it (#176 D2).
+                 "ctranslate2/ctranslate2.dll", "ctranslate2/cudnn64_9.dll",
                  "torch-9.dist-info/licenses/third_party/x/test/LICENSE",  # licences stay
                  "torch-9.dist-info/licenses/third_party/y/include/z.h",
                  "pyannote/audio/data/config.yaml", "certifi/cacert.pem",   # run-time data
@@ -959,7 +985,8 @@ class PrunedBuildTests(unittest.TestCase):
         left = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
         self.assertEqual(left, [
             "certifi/cacert.pem",
-            "clr_loader/ffi/dlls/amd64/ClrLoader.dll", "jinja2/__init__.py", "jinja2/tests.py",
+            "clr_loader/ffi/dlls/amd64/ClrLoader.dll", "ctranslate2/ctranslate2.dll",
+            "jinja2/__init__.py", "jinja2/tests.py",
             "matplotlib/mpl-data/matplotlibrc",
             "numpy/__init__.py", "numpy/testing/__init__.py", "onnx_asr/models.json",
             "pyannote/audio/data/config.yaml",

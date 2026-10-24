@@ -1,0 +1,1 @@
+- **NVIDIA's cuDNN library is no longer in the package.** CTranslate2 bundles `cudnn64_9.dll` but its Windows build never uses it, so the package leaves it out. Whisper runs on the graphics card and on the processor as before, and one fewer NVIDIA library is redistributed (#176).
