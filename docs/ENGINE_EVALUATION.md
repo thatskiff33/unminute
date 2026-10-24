@@ -110,14 +110,14 @@ Insertions rose on three meetings (ES2004a, ES2004c and IS1009a, by 8, 11 and 6 
 
 ## Live drafts: phrase cut length (#104)
 
-Live drafts (#104) transcribe each phrase while a meeting is recorded. A phrase ends after 0.6 s of silence, and unbroken speech is cut at about `drafts.MAX_PHRASE_S` seconds (8 s as shipped). This trial compared cuts of 6, 8 and 10 s. Measured 24 October 2026 on the laptop above, on mains power, at commit b8eb5a9, one run per setting, with the trial processes at below-normal priority.
+Live drafts (#104) transcribe each phrase while a meeting is recorded. A phrase ends after 0.6 s of silence, and unbroken speech is cut at about `drafts.MAX_PHRASE_S` seconds (8 s when measured; see the decision below). This trial compared cuts of 6, 8 and 10 s. Measured 24 October 2026 on the laptop above, on mains power, with the harness in #347, one run per setting, with the trial processes at below-normal priority.
 
 **Tools.**
 - `tools/live_trial.py run` feeds a recording at real time to the app's own draft session and draft worker process (the recorder's 0.1 s blocks at 48 kHz, the shipped tap, feeder, resampler, Silero scoring, phrase splitter and Parakeet v2 on 2 threads), once per cut. Only the cut changes. It then runs the full pass (Parakeet v2, Quiet mode threads) on the same audio. It reports counts, times and rates only, never text.
 - `tools/compare_engines.py run --draft-cut S` runs the same draft engine and phrase splitter offline, all at once rather than at real time, so draft accuracy can be scored like any engine. `tools/live_trial.py manifest` builds its AMI references.
 
 **Measures.**
-- Delay: when the phrase holding each correctly recognised word reached the draft session (the harness checks for new phrases every 20 ms), minus when the word finished being spoken (AMI word times). This is not when the word appears on screen: the page's own checks for new phrases add to it and are not counted.
+- Delay: when the phrase holding each correctly recognised word reached the draft session (the harness checks for new phrases every 20 ms), minus when the word finished being spoken (AMI word times). This is not when the word appears on screen: once the page shows drafts (#336), its own checks for new phrases will add to it, and they are not counted here.
 - Agreement: 100% minus the draft's word error rate measured against the full pass, that is, how close the draft is to the text that replaces it.
 - CPU: the draft worker process's processor time while the audio was fed, as a share of one core. The app's feeder thread is not included.
 
@@ -150,6 +150,8 @@ The draft worker loaded in 2.5 to 2.7 s each time.
 - 8 s. Pros: median delay 3.0 s and 90th percentile 6.5 s; 0.7 points more accurate than 6 s on whole meetings and within 0.2 points of 10 s; no change to the code. Cons: the slowest words arrive about 1.2 s later than at 6 s.
 - 6 s. Pros: the quickest draft (90th percentile 5.3 s). Cons: the least accurate on whole meetings (19.4%) and the most phrases.
 - 10 s. Pros: the most accurate on whole meetings (18.5%). Cons: the slowest words take 7.9 s at the 90th percentile, for 0.2 points of accuracy over 8 s.
+
+**Decision.** The owner chose 10 s on 24 October 2026 (#104), for the best draft accuracy on whole meetings, at the cost of the slower tail (90th percentile 7.9 s against 6.5 s at 8 s). The code change is #351.
 
 **Limits.** One laptop, one run per cut, headset mix audio only (no far-field or business recordings), background load not recorded (see CPU above), and not repeated under a known load or on battery power. The app's own cost (feeder thread, page) is measured separately, against #216's budget.
 

@@ -147,10 +147,11 @@ def percentile(values, q):
 
 
 def score(phrases, spoken):
-    """Draft phrases ({start, end, text, at}: at is when the phrase appeared,
-    in seconds of the recording) against spoken words [(start, end, word)]:
-    word error rate, and each matched word's delay (appeared minus spoken
-    end). Phrases are scored in the order they were spoken."""
+    """Draft phrases ({start, end, text, at}: at is when the phrase reached
+    the draft session, in seconds of the recording) against spoken words
+    [(start, end, word)]: word error rate, and each matched word's delay
+    (reached the draft session minus spoken end). Phrases are scored in the
+    order they were spoken."""
     ref = [(tok, end) for _, end, text in spoken for tok in normalise(text)]
     ordered = sorted(phrases, key=lambda p: (p["start"], p["end"]))
     hyp = [(tok, p["at"]) for p in ordered for tok in normalise(p["text"])]
@@ -311,8 +312,8 @@ def run_cut(pcm, rate, cut_s, *, cache, model=None, allow_test=False, threads=No
     """Feed 16-bit audio at `rate` to a fresh DraftSession whose worker cuts
     at cut_s, in the recorder's blocks at real time (times speed), as the
     recorder's writer thread does, ending with a pause's flush. Returns the
-    phrases (with the text, in memory only, and `at`: when each appeared, in
-    seconds of the recording) and the session's figures."""
+    phrases (with the text, in memory only, and `at`: when each reached the
+    draft session, in seconds of the recording) and the session's figures."""
     import numpy as np
 
     from workspace import drafts
