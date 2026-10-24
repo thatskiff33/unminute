@@ -250,6 +250,21 @@ class InstallIdentityTests(unittest.TestCase):
         for script in (self.install, self.uninstall):
             self.assertIn('(Join-Path $env:LOCALAPPDATA "Unminute")', script)
 
+    def test_the_decoder_profile_and_grant_match_the_app(self):
+        # #299: the uninstaller removes the profile the app makes, and the
+        # installer grants read to the SID the app's container reads through.
+        # The name is pinned: a rename would leave the old profile behind.
+        profile = one(r'^PROFILE = "([^"]+)"', read("workspace/appcontainer.py"), "PROFILE")
+        self.assertEqual("Unminute.Decoder", profile)
+        self.assertEqual(profile, one(r'^\$DecoderProfile = "([^"]+)"', self.uninstall,
+                                      "$DecoderProfile in uninstall.ps1"))
+        sid = one(r'^ALL_APPLICATION_PACKAGES = "([^"]+)"', read("workspace/appcontainer.py"),
+                  "ALL_APPLICATION_PACKAGES")
+        self.assertEqual(sid, one(r'^\$AllApplicationPackages = "([^"]+)"', self.install,
+                                  "$AllApplicationPackages in install.ps1"))
+        self.assertIn("Grant-DecoderRead $versions", self.install)
+        self.assertIn('Grant-DecoderRead (Join-Path $Options.InstallDir "versions")', self.install)
+
     def test_no_earlier_app_name_is_left_in_shipped_code(self):
         # The app was "Whisper Transcriber", then "Meeting Workspace"; OpenAI's
         # Whisper speech model keeps its own name, so only the app's are listed.

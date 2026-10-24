@@ -402,9 +402,13 @@ def _decode(wav):
 
     import numpy as np
 
+    import decoder_runtime
+
     from workspace import media
     raw = io.BytesIO()
-    with tempfile.TemporaryDirectory(prefix="live-trial-") as tmp:
+    # The decoder runs in an AppContainer that cannot read this checkout's
+    # Python (#299): decode in a scratch copy it can read, removed after.
+    with tempfile.TemporaryDirectory(prefix="live-trial-") as tmp, decoder_runtime.session():
         samples = media.decode(str(wav), raw, folder=Path(tmp))
     out = np.frombuffer(raw.getbuffer(), dtype="<f4").copy()
     if len(out) != samples:

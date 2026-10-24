@@ -28,6 +28,20 @@ if HAVE_DEPS:
     from workspace.app import Workspace
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def fake(name):
     return f"test:fake_worker_engines:{name}"
 

@@ -49,6 +49,20 @@ if HAVE_DEPS:
     from workspace.store import KeyUnavailable
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def database_state(db):
     """Everything the database holds, read without writing: the schema and
     every table's rows (sorted), plus the write-ahead log's size."""

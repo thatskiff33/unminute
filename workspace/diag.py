@@ -177,6 +177,9 @@ FIELDS = {
     "why": _set("other_install", "unknown", "busy", "in_use"),
     "fatal": _pattern(re.compile(r"[A-Za-z0-9_]{1,64}")),
     "file": _set(*STATE_FILES.values()),   # #311: which state file was not written
+    # #299: which step of setting up the decoder's AppContainer failed
+    # (appcontainer.STEPS); its Windows error goes in winerror
+    "step": _set("profile", "start", "contain", "check", "ready"),
     "frames": _frames,
 }
 
