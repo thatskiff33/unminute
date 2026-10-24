@@ -90,15 +90,27 @@ class SplitterTests(unittest.TestCase):
         self.assertAlmostEqual(e2, 5.5 + drafts._windows(drafts.TAIL_S) * w, delta=w)
 
     def test_unbroken_speech_is_cut_at_the_quietest_window_near_the_limit(self):
-        dip_at = drafts.MAX_PHRASE_S - 0.8               # a quieter moment within the search span
-        speech = tone(20.0).astype(np.float32)
-        a, b = int(dip_at * 16000), int((dip_at + drafts.WINDOW_S) * 16000)
-        speech[a:b] *= 0.3                               # still speech, but the quietest
-        phrases = self.split(self.f(speech.astype(np.int16)))
+        w = drafts.WINDOW_S
+        # A quieter moment on a window boundary within the search span, 13 windows
+        # before the cut: 9.6 s at 10 s, 7.584 s at 8 s. The plain tone's own energy
+        # ripple must not put the cut there too, or the check proves nothing.
+        before_cut = 13                                  # windows; inside the 47-window search
+        dip_at = (drafts._windows(drafts.MAX_PHRASE_S) - before_cut) * w
+        expected_end = dip_at + w                        # the quiet window ends the phrase
+
+        def split_with_dip(scale):
+            speech = tone(20.0).astype(np.float32)
+            a, b = round(dip_at * 16000), round((dip_at + w) * 16000)
+            speech[a:b] *= scale
+            return self.split(self.f(speech.astype(np.int16)))
+
+        # Control: with no dip, the cut lands well away from the expected end.
+        self.assertNotAlmostEqual(split_with_dip(1.0)[0][1], expected_end, delta=2 * w)
+        phrases = split_with_dip(0.3)                    # still speech, but the quietest
         first_end = phrases[0][1]
-        longest = drafts._windows(drafts.MAX_PHRASE_S) * drafts.WINDOW_S   # whole windows
+        longest = drafts._windows(drafts.MAX_PHRASE_S) * w   # whole windows
         self.assertLessEqual(phrases[0][1] - phrases[0][0], longest + 1e-6)
-        self.assertAlmostEqual(first_end, dip_at + drafts.WINDOW_S, delta=2 * drafts.WINDOW_S)
+        self.assertAlmostEqual(first_end, expected_end, delta=2 * w)
         for (_, e, _), (s, _, _) in zip(phrases, phrases[1:], strict=False):
             self.assertAlmostEqual(e, s, places=6)      # cut, not lost: back to back
         self.assertAlmostEqual(phrases[-1][1], 20.0, delta=drafts.WINDOW_S)
