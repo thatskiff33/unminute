@@ -429,6 +429,35 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .privacy-note .link-plain { font-size: inherit; line-height: inherit; vertical-align: baseline; }
 @media (max-width: 800px) { .help-grid { grid-template-columns: minmax(0, 1fr); } }
 
+/* Locked (#111 C4b): the only screen while Windows will not unlock the key.
+   No sidebar or top bar; one column, centred. */
+.locked-page { max-width: 840px; margin: 0 auto; gap: 22px; justify-content: center; }
+.locked-head { display: flex; align-items: center; gap: 14px; }
+.locked-icon {
+  width: 52px; height: 52px; flex: none; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; background: var(--soft-strong); color: var(--text);
+}
+#h-locked:focus { outline: none; }   /* focused by the page only, to be read first */
+.locked-reason { margin: 0; font-size: 16px; line-height: 1.55; }
+.locked-codes {
+  margin: 0; padding: 14px 18px; border-radius: var(--r-lg); background: var(--soft);
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; font-size: 14px;
+}
+.locked-codes dt { color: var(--muted); font-weight: 600; }
+.locked-codes dd { margin: 0; font-family: var(--mono); overflow-wrap: anywhere; }
+.locked-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.locked-it { border: 1px solid var(--line); border-radius: var(--r-xl); padding: 16px 20px; }
+.locked-it h2 { margin: 0 0 8px; }
+.locked-it ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; line-height: 1.5; }
+/* A path breaks at its separators (<wbr> in the page), and anywhere only when
+   a part is still too long; a code breaks at its space first. */
+.locked-it code { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .locked-codes { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .locked-codes dd + dt { margin-top: 6px; }
+  .locked-actions button { flex: 1 1 100%; }
+}
+
 /* -- shared -------------------------------------------------------------------------- */
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }

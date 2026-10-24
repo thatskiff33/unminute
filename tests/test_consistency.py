@@ -85,6 +85,18 @@ class BridgeNameTests(unittest.TestCase):
             self.assertEqual(locked, set(re.findall(r"`(\w+)`", listed)),
                              f"{doc} lists different locked methods from workspace/api.py")
 
+    def test_the_design_fixtures_lock_as_the_app_does(self):
+        # #111 C4b: the fake bridge's locked scenario (the design check and
+        # tools/ui_idle_check.py) answers what the app's gate does.
+        from workspace import api, app
+        fixtures = read("tools/design_check/fixtures.js")
+        listed = one(r"const LOCKED_METHODS = new Set\(\[([^\]]*)\]\)", fixtures,
+                     "LOCKED_METHODS in tools/design_check/fixtures.js")
+        self.assertEqual(set(api.LOCKED_METHODS), set(re.findall(r'"(\w+)"', listed)))
+        text = one(r'const LOCKED_TEXT = "([^"]*)";', fixtures,
+                   "LOCKED_TEXT in tools/design_check/fixtures.js")
+        self.assertEqual(app.LOCKED_TEXT, text)
+
 
 class DependencyPinTests(unittest.TestCase):
     def test_gpu_wheels_match_requirement_pins(self):

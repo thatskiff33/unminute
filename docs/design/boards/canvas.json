@@ -38,6 +38,7 @@
     "Settings.dc.html": {"x": 0, "y": 6120, "w": 1100, "h": 1320, "title": "Settings (full page, scrolls)"},
     "Models.dc.html": {"x": 1180, "y": 6120, "w": 1100, "h": 760, "title": "Settings: Downloads"},
     "Help.dc.html": {"x": 2360, "y": 6120, "w": 1100, "h": 760, "title": "Help and shortcuts"},
+    "Locked.dc.html": {"x": 3540, "y": 6120, "w": 1100, "h": 760, "title": "Locked: Windows would not unlock the key"},
 
     "Meeting-Narrow.dc.html": {"x": 0, "y": 7820, "w": 900, "h": 760, "title": "Meeting at 900 px"},
     "Meeting-640.dc.html": {"x": 980, "y": 7820, "w": 640, "h": 760, "title": "Meeting at 640 px"},
@@ -57,7 +58,7 @@
     "Meeting.dc.html", "Meeting-Transcribing.dc.html", "Meeting-Edit.dc.html", "Meeting-Reviewed.dc.html", "Meeting-Earlier.dc.html", "Meeting-Panels.dc.html",
     "Names.dc.html", "Confirm.dc.html", "Handoff.dc.html", "Handoff-Template.dc.html",
     "Setup-1.dc.html", "Setup.dc.html", "Setup-3.dc.html", "Setup-4.dc.html", "Setup-5.dc.html",
-    "Settings.dc.html", "Models.dc.html", "Help.dc.html",
+    "Settings.dc.html", "Models.dc.html", "Help.dc.html", "Locked.dc.html",
     "Meeting-Narrow.dc.html", "Meeting-640.dc.html", "Meeting-320.dc.html", "Home-640.dc.html", "Home-320.dc.html",
     "Home-Dark.dc.html", "Meeting-Dark.dc.html",
     "Home-B.dc.html", "Meeting-B.dc.html"
@@ -68,7 +69,7 @@
     "row3": {"x": 0, "y": 2440, "text": "3. Reviewing a meeting", "kind": "title1", "maxW": 7240},
     "row4": {"x": 0, "y": 3580, "text": "4. Name speakers, confirm and hand off", "kind": "title1", "maxW": 4640},
     "row5": {"x": 0, "y": 4720, "text": "5. First-run setup", "kind": "title1", "maxW": 5820},
-    "row6": {"x": 0, "y": 5860, "text": "6. Settings and help", "kind": "title1", "maxW": 3460},
+    "row6": {"x": 0, "y": 5860, "text": "6. Settings, help and the locked screen", "kind": "title1", "maxW": 4640},
     "row7": {"x": 0, "y": 7560, "text": "7. Narrow windows and zoom", "kind": "title1", "maxW": 3140},
     "row8": {"x": 0, "y": 8700, "text": "8. Dark theme", "kind": "title1", "maxW": 2280},
     "row9": {"x": 0, "y": 9840, "text": "Explored, not chosen", "kind": "title1", "maxW": 2280}
