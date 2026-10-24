@@ -345,6 +345,15 @@ class ReproducibleBuildTests(unittest.TestCase):
             p[len(prefix):] == rel or p[len(prefix):].startswith(rel + "/")
             for rel in bp.PRUNED_PATHS)]
         pruned += [p for p in paths if p in {f"runtime/{n}" for n in bp.PRUNED_RUNTIME}]
+        # A distribution removed whole takes its folders with it (grpcio ships a
+        # .pyd, setuptools its launcher .exe files). The folders each locked
+        # wheel installs, read from the wheels (24 Oct 2026): a new entry in
+        # PRUNED_DISTRIBUTIONS must name its folders here too.
+        folders = {"grpcio": ("grpc",), "pyannoteai-sdk": ("pyannoteai",),
+                   "setuptools": ("setuptools", "_distutils_hack")}
+        self.assertEqual(set(folders), set(bp.PRUNED_DISTRIBUTIONS))
+        pruned += [p for p in paths if p.startswith(prefix) and any(
+            p[len(prefix):].startswith(top + "/") for tops in folders.values() for top in tops)]
         self.assertEqual(pruned, [])
         # cuDNN is not shipped (#176 D2): CTranslate2's Windows build has no cuDNN.
         self.assertIn("ctranslate2/cudnn64_9.dll", bp.PRUNED_PATHS)

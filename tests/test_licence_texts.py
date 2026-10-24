@@ -184,6 +184,42 @@ class CommittedTextsTests(unittest.TestCase):
                 for c in components for f in c["files"]}
         self.assertEqual(set(bp.LICENCE_HOSTS), used)
 
+    def test_every_allowlisted_dll_has_a_licence_text(self):
+        # A release stops on a bundled DLL with no text (#176). The binary
+        # allowlist names every DLL the package holds, so a gap shows here
+        # before a build does.
+        components, _ = bp.licence_texts()
+        prefix = f"runtime/{bp.SITE}/"
+        dlls = [e["path"][len(prefix):] for e in
+                json.loads(bp.ALLOWLIST.read_text(encoding="utf-8"))["binaries"]
+                if e["path"].startswith(prefix) and e["path"].lower().endswith(".dll")]
+        self.assertTrue(dlls)
+        uncovered = [d for d in dlls if not any(bp.licence_pattern(p).fullmatch(d)
+                                                for c in components for p in c["covers"])]
+        self.assertEqual(uncovered, [])
+
+    def test_the_microsoft_runtime_in_numpy_and_pandas_has_cpythons_conditions(self):
+        # Owner decision, 24 Oct 2026 (#176 L8): the msvcp140 copies in
+        # numpy.libs and pandas.libs are covered by CPython's "Additional
+        # Conditions for this Windows binary build" (PC/crtlicense.txt at tag
+        # v3.14.8), from a host the collector already uses.
+        components, files = bp.licence_texts()
+        dll = "msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll"
+        url = ("https://raw.githubusercontent.com/python/cpython/"
+               "8e6e75d9102e39bed2a2b279203a396741180f12/PC/crtlicense.txt")
+        for wheel in ("numpy", "pandas"):
+            with self.subTest(wheel=wheel):
+                found = [c for c in components if c["wheel"] == wheel
+                         and f"{wheel}.libs/{dll}" in c["covers"]]
+                self.assertEqual(len(found), 1)
+                c = found[0]
+                self.assertEqual(c["source"], {"repository": "https://github.com/python/cpython",
+                                               "ref": "v3.14.8",
+                                               "commit": url.split("/")[5]})
+                self.assertEqual([f["url"] for f in c["files"]], [url])
+                text = files[c["files"][0]["path"]]
+                self.assertIn(b"Additional Conditions for this Windows binary build", text)
+
     def test_coverage_is_required_for_a_release(self):
         # Owner decision, 22 Oct 2026 (#111, #176): a release fails if any
         # bundled wheel or native file lacks its licence text. A development
