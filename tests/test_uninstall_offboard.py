@@ -178,6 +178,11 @@ class UninstallOffboardTests(unittest.TestCase):
         self.assertEqual(len(versioned), 1, versioned)
         (runtime / f"{versioned[0].stem}._pth").write_text("\n".join(
             [str(base / "Lib"), str(base / "DLLs"), str(target / "app")]) + "\n")
+        # Every file the version holds, as tools/build_package.py lists them (sizes
+        # and hashes are not what the uninstaller looks at).
+        (target / "package-manifest.json").write_text(json.dumps(
+            {p.relative_to(target).as_posix(): [p.stat().st_size, "0" * 64]
+             for p in sorted(target.rglob("*")) if p.is_file()}))
         self.link.write_text("shortcut")
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
             winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ, str(install))
@@ -461,6 +466,150 @@ class UninstallOffboardTests(unittest.TestCase):
                 self.assertTrue(os.path.lexists(data))
         os.rmdir(data)                                           # the junction only
 
+    def test_a_part_removed_version_that_still_has_its_entry_points_is_incomplete(self):
+        # The removal walks a version's module files before __main__.py, and app
+        # before runtime: with __init__.py gone the app cannot start, so it is
+        # never run, and the rerun rule applies (review of 842aabb, finding 5).
+        data = self.local / "Unminute"
+        for name, left in (("data", True), ("clean", False)):
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                if left:
+                    (data / "workspace").mkdir(parents=True)
+                elif data.exists():
+                    shutil.rmtree(data)
+                install = self.install(f"Apps-part-{name}")
+                app = install / "versions" / "9.9.0" / "app" / "workspace"
+                (app / "__init__.py").unlink()
+                self.assertTrue((app / "__main__.py").is_file())
+                r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                             "--offboard": [0, OFFBOARDED]})
+                self.assertEqual(self.calls(), [])
+                self.assertIn("incomplete", r.stderr)
+                if left:
+                    self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                    self.assertIn("Install the current version again", r.stderr)
+                    self.assert_kept(install)
+                else:
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assert_removed(install)
+
+    def test_a_file_list_it_cannot_trust_is_never_run(self):
+        # The version's package-manifest.json is read for its names only: one
+        # that is not an object, lacks the entry points, or names a path out of
+        # the version folder is unusable, so nothing runs and nothing goes.
+        for name, listing in (("list", "[]"),
+                              ("entry", json.dumps({"app/workspace/__main__.py": [1, ""]})),
+                              ("dotdot", None), ("rooted", None)):
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                install = self.install(f"Apps-list-{name}")
+                manifest = install / "versions" / "9.9.0" / "package-manifest.json"
+                if listing is None:
+                    names = json.loads(manifest.read_text())
+                    names["app/../../current.json" if name == "dotdot" else "/runtime/x"] = [1, ""]
+                    listing = json.dumps(names)
+                manifest.write_text(listing)
+                r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                             "--offboard": [0, OFFBOARDED]})
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertIn("cannot be read", r.stderr)
+                self.assert_kept(install)
+
+    def test_an_unexpected_failure_says_to_install_again_if_it_repeats(self):
+        for step, says in (("unexpected", True), ("workspace", False)):
+            with self.subTest(step):
+                self.log.unlink(missing_ok=True)
+                install = self.install(f"Apps-{step}")
+                r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                             "--offboard": [1, {"result": "failed",
+                                                                "step": step}]})
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("Run this again", r.stderr)
+                self.assertEqual("install the current version again" in r.stderr, says)
+                self.assert_kept(install)
+
+    # -- only this account's own install, never as Local System (review of 842aabb) --
+
+    SID = "    return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value"
+
+    def test_another_accounts_install_is_never_run(self):
+        # An IT account naming a leaver's folder: not the folder this account's
+        # uninstall entry names, and not in this account's %LOCALAPPDATA%.
+        for name in ("entry elsewhere", "no entry"):
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                install = self.install(f"Leaver-{name.split()[0]}")
+                if name == "no entry":
+                    self.delete_test_key()
+                else:
+                    import winreg
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                        winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ,
+                                          str(self.root / "Mine"))
+                r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                             "--offboard": [0, OFFBOARDED]})
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertIn("this Windows user's own", r.stderr)
+                self.assertNotIn(str(self.root), r.stdout + r.stderr)
+                self.assertTrue((install / "current.json").is_file())
+                runtime = install / "versions" / "9.9.0" / "runtime"
+                self.assertTrue((runtime / "python.exe").is_file())
+                self.assertTrue(self.link.is_file())
+        # Without -Offboard nothing is run, so the plain removal is unchanged.
+        r = self.uninstall(install, offboard=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(install.exists())
+
+    def test_an_install_in_this_users_local_folder_needs_no_entry(self):
+        install = self.install("Local/Programs/Unminute")
+        self.delete_test_key()
+        r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                     "--offboard": [0, OFFBOARDED]})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([c["argv"] for c in self.calls()], [["--offboard-report"], ["--offboard"]])
+        self.assert_removed(install)
+
+    def test_a_link_into_another_folder_is_not_this_users_own(self):
+        # A junction in this account's %LOCALAPPDATA% that leads to another
+        # profile's install does not make that install this account's.
+        install = self.install("Leaver")
+        self.delete_test_key()
+        via = self.local / "Programs" / "Unminute"
+        via.parent.mkdir(parents=True)
+        hardening.mklink_junction(via, install, capture_output=True, check=True)
+        try:
+            r = self.uninstall(via, {"--offboard-report": [0, OK_REPORT],
+                                     "--offboard": [0, OFFBOARDED]})
+        finally:
+            os.rmdir(via)                                       # the junction only
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertIn("this Windows user's own", r.stderr)
+        self.assertTrue((install / "versions" / "9.9.0" / "runtime" / "python.exe").is_file())
+
+    def test_local_system_never_starts_the_app(self):
+        # Exit 2, as the app's own refusal, but before the user's runtime is run
+        # as Local System at all; also when Windows cannot say which account.
+        text = self.copy.read_text(encoding="utf-8")
+        self.assertEqual(text.count(self.SID), 1)
+        for name, line in (("system", '    return "S-1-5-18"'), ("none", "    return $null"),
+                           ("error", '    throw "no account"')):
+            with self.subTest(name):
+                self.log.unlink(missing_ok=True)
+                script = self.root / f"uninstall-{name}.ps1"
+                script.write_text(text.replace(self.SID, line), encoding="utf-8")
+                install = self.install(f"Apps-{name}")
+                r = self.uninstall(install, {"--offboard-report": [0, OK_REPORT],
+                                             "--offboard": [0, OFFBOARDED]}, script=script)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(self.calls(), [])
+                self.assertIn("Local System", r.stderr)
+                self.assertIn("could not say which account", r.stderr)
+                self.assert_kept(install)
+
     def test_the_uninstallers_own_refusals_come_first(self):
         # Something in the install folder the installer did not put there:
         # refused before the app is run at all.
@@ -655,6 +804,9 @@ class UninstallOffboardTextTests(unittest.TestCase):
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
         body = uninstall[uninstall.index("try {\n    # An empty -InstallDir"):]
         self.assertLess(body.index("did not put there"), body.index("    if ($Options.Offboard) {"))
+        # The account and ownership check comes before anything is run.
+        self.assertLess(body.index("Assert-OwnInstall $registered"),
+                        body.index("Invoke-Offboard\n"))
         self.assertLess(body.index("    if ($Options.Offboard) {"),
                         body.index("    Restore-LidSetting\n"))
         self.assertLess(body.index("    Restore-LidSetting\n"), body.index("Remove-Item"))

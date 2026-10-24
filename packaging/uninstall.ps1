@@ -30,14 +30,18 @@
   owner's decision of 23 Oct 2026). If anything else stops offboarding
   (meetings, holds or cleanup left, the app open, Local System), the
   uninstall stops too and the program is kept, so the person can still
-  finish with it. See docs/PACKAGING.md, "Offboarding". Without -Silent it
-  shows what will go and asks for REMOVE first.
+  finish with it. It runs only for an install that is the running account's
+  own (the folder its uninstall entry names, or one in its own
+  %LOCALAPPDATA%), and never as Local System: either stops it before anything
+  is run. See docs/PACKAGING.md, "Offboarding". Without -Silent it shows what
+  will go and asks for REMOVE first.
 
-  Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed), 3 the
-  app is running. With -Offboard, also --offboard's own codes when it stops the
-  uninstall: 1 a step failed, 2 Local System (or Windows could not say which
-  account), 3 the app is open, 5 blocked, 6 the data folder's location is
-  refused.
+  Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed, or not
+  this account's install), 3 the app is running. With -Offboard, also
+  --offboard's own codes when it stops the uninstall: 1 a step failed, 2 Local
+  System (or Windows could not say which account; the uninstaller refuses
+  this itself, before starting anything), 3 the app is open, 5 blocked, 6 the
+  data folder's location is refused.
 #>
 [CmdletBinding()]
 param(
@@ -256,19 +260,71 @@ function Remove-FolderTree([IO.DirectoryInfo]$Dir) {
 # -- offboarding, with -Offboard (#111 B8b) ---------------------------------------------
 # The installed app removes what Unminute keeps for this Windows user (python -m workspace
 # --offboard; docs/PACKAGING.md, "Offboarding"), run as this user, as the lid restore is
-# run: never as Local System, which it refuses. It first reports (--offboard-report),
-# and only a clean report ("ok", exit 0) and a clean removal ("offboarded", exit 0) let
-# the uninstall carry on. Anything else stops it with the app's own exit code and the
-# program kept, so a person with meetings, holds or cleanup left can still finish them
-# with it (the owner's decision B8-2, 21 Oct 2026). The app's output is one line of
-# counts and states (no path, name or content), passed on to standard output.
+# run, and only for an install that is this user's own (Assert-OwnInstall): never as
+# Local System, which the app refuses too. It first reports (--offboard-report), then
+# removes (--offboard). A clean result ("ok", then "offboarded", exit 0) lets the
+# uninstall carry on, and so does one that left only other entries in the data folder
+# ("others_left", exit 4: reported with their count, the owner's decision of 23 Oct
+# 2026). Anything else stops it with the app's own exit code and the program kept, so
+# a person with meetings, holds or cleanup left can still finish them with it (the
+# owner's decision B8-2, 21 Oct 2026). The app's output is one line of counts and
+# states (no path, name or content), passed on to standard output.
+
+# Who runs this: the account's SID, or $null when Windows cannot say.
+function Get-AccountSid {
+    return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+}
+
+# True when $Dir is inside this user's %LOCALAPPDATA% and no folder on the way down
+# from it is a link or junction (so it cannot lead into another profile).
+function Test-UnderLocalAppData([string]$Dir) {
+    try {
+        $local = $env:LOCALAPPDATA
+        if ([string]::IsNullOrWhiteSpace($local) -or -not [IO.Path]::IsPathRooted($local) -or
+            $local -match '^[\\/]{2}') { return $false }
+        $base = [IO.Path]::GetFullPath($local).TrimEnd("\")
+        $full = [IO.Path]::GetFullPath($Dir).TrimEnd("\")
+        if (-not $full.StartsWith($base + "\", [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        for ($at = $full; $at.Length -gt $base.Length; $at = [IO.Path]::GetDirectoryName($at)) {
+            # (Not $dir: PowerShell names are not case-sensitive, and $Dir is a string.)
+            $step = [IO.DirectoryInfo]::new($at)
+            if ($step.Exists -and (Test-Link $step)) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+# With -Offboard, before anything is run: the install must belong to the account
+# running this, as offboarding does ("as the user", the owner's decision B8-5). It is
+# the folder this account's uninstall entry names, or one in its own %LOCALAPPDATA%.
+# Otherwise (an IT account naming a leaver's folder, say) it would start that person's
+# runtime as this account, offboard this account's own data, and remove their program,
+# leaving their data with nothing to offboard it. Local System, or an account Windows
+# cannot name, stops with exit 2 (as the app's own refusal) and never starts the app.
+function Assert-OwnInstall([bool]$Registered) {
+    $sid = $null
+    try { $sid = [string](Get-AccountSid) } catch { $sid = $null }
+    if ([string]::IsNullOrWhiteSpace($sid) -or $sid -ceq "S-1-5-18") {
+        Stop-Uninstall 2 ("Offboarding runs only as the person whose data it is: this was run as " +
+            "Local System, or Windows could not say which account it runs as. Nothing was run or " +
+            "removed, and the program was kept. Run this in their own session (with Intune, with " +
+            "the logged-on user's credentials).")
+    }
+    if ($Registered -or (Test-UnderLocalAppData $Options.InstallDir)) { return }
+    Stop-Uninstall 1 ("With -Offboard the install must be this Windows user's own: the folder their " +
+        "uninstall entry names, or one in their own %LOCALAPPDATA%. Nothing was run or removed. " +
+        "Run this as the person whose install it is, in their own session.")
+}
 
 # The current version's folder, if it has the switch: as Get-LidRestoreVersion, and
 # never a version folder that is a link (#297). An older version would take --offboard
 # for an ordinary start and open its window. Returns @{ Why; Target }: Why is "ready",
 # "old" (its version.json lacks the feature), "incomplete" (current.json, the version
-# folder, its version.json, its runtime or its app is missing, as a removal that stopped
-# part-way leaves them) or "unusable" (a link, or files that cannot be read).
+# folder, its version.json, its package-manifest.json or any file that lists is
+# missing, as a removal that stopped part-way leaves them) or "unusable" (a link, or
+# files that cannot be read). Every listed file is looked for, not only the runtime and
+# __main__.py: the removal walks app before runtime, and the module files before
+# __main__.py, so a part-removed version can keep those two and still fail to run.
 function Get-OffboardVersion {
     try {
         $currentFile = [IO.Path]::Combine($Options.InstallDir, "current.json")
@@ -282,8 +338,25 @@ function Get-OffboardVersion {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return @{ Why = "incomplete" } }
         $info = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
         if (@($info.features) -notcontains "offboard") { return @{ Why = "old" } }
-        foreach ($part in @("runtime\python.exe", "app\workspace\__main__.py")) {
-            if (-not (Test-Path -LiteralPath ([IO.Path]::Combine($target, $part)) -PathType Leaf)) {
+        $listing = [IO.Path]::Combine($target, "package-manifest.json")
+        if (-not (Test-Path -LiteralPath $listing -PathType Leaf)) { return @{ Why = "incomplete" } }
+        $manifest = Get-Content -LiteralPath $listing -Raw | ConvertFrom-Json
+        if (-not ($manifest -is [Management.Automation.PSCustomObject])) { return @{ Why = "unusable" } }
+        $names = @($manifest.PSObject.Properties.Name)
+        foreach ($part in @("runtime/python.exe", "app/workspace/__main__.py")) {
+            if ($names -notcontains $part) { return @{ Why = "unusable" } }
+        }
+        foreach ($name in $names) {
+            # Relative names with forward slashes, as the build writes them; nothing
+            # rooted, no drive, no . or .. part. (Two matches, not a pipeline: a package
+            # lists thousands of files, and this stays near a second.)
+            # (-not -cmatch: tests/test_hardening.py finds the version pattern as the
+            # one -cnotmatch here.)
+            if (-not ($name -cmatch '\A[^\\/:*?"<>|\x00-\x1f]+(/[^\\/:*?"<>|\x00-\x1f]+)*\z') -or
+                $name -cmatch '(\A|/)\.{1,2}(/|\z)') {
+                return @{ Why = "unusable" }
+            }
+            if (-not [IO.File]::Exists([IO.Path]::Combine($target, $name.Replace("/", "\")))) {
                 return @{ Why = "incomplete" }
             }
         }
@@ -464,8 +537,14 @@ function Assert-Offboarded($Run, [string]$Expected) {
         1 {
             $step = "unknown"
             if ($result -and "$($result.step)" -cmatch '^[a-z_]{1,32}\z') { $step = $result.step }
+            # An error the app did not expect, or no readable step: its files may be
+            # damaged, and running it again alone would only repeat this.
+            $again = ""
+            if (@("unexpected", "unknown") -ccontains $step) {
+                $again = " If it stops at this step again, install the current version again, then run this again."
+            }
             Stop-Uninstall 1 ("Offboarding stopped at the step '$step', $kept. Run this again: it " +
-                "finishes what was started.")
+                "finishes what was started.$again")
         }
         default { Stop-Uninstall 1 "Offboarding gave a result this uninstaller does not know, $kept." }
     }
@@ -491,7 +570,9 @@ function Invoke-Offboard {
     }
     if ($version.Why -ne "ready") {
         $why = "it is older than the switch"
-        if ($version.Why -eq "unusable") { $why = "its version folder is a link or its files cannot be read" }
+        if ($version.Why -eq "unusable") {
+            $why = "its version folder is a link, or its files or their list cannot be read"
+        }
         Stop-Uninstall 1 ("This version of $AppName cannot offboard ($why), so nothing was removed and " +
             "the program was kept. Install the current version, then run this again.")
     }
@@ -678,8 +759,11 @@ try {
         }
     }
     # With -Offboard (#111 B8b): the person's data goes first, through the installed app.
-    # Anything but a clean result stops here, with the program kept (B8-2).
+    # Anything but a clean result stops here, with the program kept (B8-2). First, the
+    # install must be this account's own, and this never Local System: nothing is run
+    # otherwise.
     if ($Options.Offboard) {
+        Assert-OwnInstall $registered
         Invoke-Offboard
         $pinPrefixes = Get-PinPrefix
     }
