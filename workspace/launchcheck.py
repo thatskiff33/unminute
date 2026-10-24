@@ -6,11 +6,15 @@
 # waiting" message are machine mode only.
 #
 #   Light check: at a version's first start for this user, a child process,
-#       <runtime>\pythonw.exe LAUNCH_ARGS --launch-check, limited to 30 s. It
+#       <runtime>\pythonw.exe LAUNCH_ARGS --launch-check, limited to 30 s and
+#       run once more at once if it runs past that (a first run after an
+#       install can be slow while the antivirus scans the new files). It
 #       imports the window process's modules and pywebview's WebView2 module,
 #       confirms the offline guard, and protects and unlocks a random value
 #       with Windows Data Protection. It prints one JSON line: a result and,
-#       for a fault, which part failed (fixed words only).
+#       for a fault, which part failed (fixed words only). Its result is
+#       recorded only once the workspace folder exists (the launcher never
+#       makes it), so on a new profile it runs again until the app has.
 #   Full check: before the start that would migrate the workspace (a
 #       migration cannot be undone), --self-test in a child process, limited
 #       to 180 s, while a notice says the update is being got ready. It always
@@ -18,7 +22,7 @@
 #
 # Fault classes:
 #   slot_fault  an import, the WebView2 module or the guard failed, or the
-#               check hung or gave no answer: the version itself is at fault.
+#               check hung twice or gave no answer: the version itself is at fault.
 #               It is recorded and not tried again until the version is
 #               reinstalled or repaired (its "installed" time in current.json
 #               changes); the launcher falls back to another kept version of
@@ -100,14 +104,20 @@ def _guard_holds():
 
 # -- In the launcher: running the checks ---------------------------------------------
 
+_TIMED_OUT = object()
+
+
 def _run(exe, app, switch, limit, runner):
-    """(exit code, output) of exe LAUNCH_ARGS switch from app, or None when
-    it could not start or ran past limit (subprocess.run then ends it)."""
+    """(exit code, output) of exe LAUNCH_ARGS switch from app; _TIMED_OUT
+    when it ran past limit (subprocess.run then ends it); None when it could
+    not start."""
     try:
         done = runner([str(exe), *update.LAUNCH_ARGS, switch], cwd=str(app),
                       stdin=subprocess.DEVNULL, capture_output=True, timeout=limit,
                       creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0)
-    except (subprocess.TimeoutExpired, OSError, ValueError):
+    except subprocess.TimeoutExpired:
+        return _TIMED_OUT
+    except (OSError, ValueError):
         return None
     out = done.stdout
     if isinstance(out, bytes):
@@ -116,9 +126,16 @@ def _run(exe, app, switch, limit, runner):
 
 
 def run_light(exe, app, runner=subprocess.run, limit=LIGHT_LIMIT_S):
-    """(result, part) of the light check run by that version's own runtime."""
+    """(result, part) of the light check run by that version's own runtime.
+    A run past the limit is run once more at once: a version's first run
+    after an install can be slow while the antivirus scans its new files and
+    nothing is cached, and that run has done both (docs/WORKSPACE_DESIGN.md,
+    "Launch", step 6, has the timings). Only a second hang is a slot fault,
+    which is then recorded until a repair or reinstall (B5-5)."""
     ran = _run(exe, app, "--launch-check", limit, runner)
-    if ran is None:
+    if ran is _TIMED_OUT:
+        ran = _run(exe, app, "--launch-check", limit, runner)
+    if ran is None or ran is _TIMED_OUT:
         return "slot_fault", "hung"
     lines = [line for line in ran[1].splitlines() if line.strip()]
     try:
@@ -138,7 +155,7 @@ def run_full(exe, app, runner=subprocess.run, limit=FULL_LIMIT_S):
     output is classified by its fixed prefixes and never kept: a failure of
     the Windows Data Protection round trip alone is an environment fault."""
     ran = _run(exe, app, "--self-test", limit, runner)
-    if ran is None:
+    if ran is None or ran is _TIMED_OUT:
         return "slot_fault", "hung"
     code, out = ran
     lines = out.splitlines()

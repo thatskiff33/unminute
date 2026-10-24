@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -994,6 +995,28 @@ class PerUserCheckTests(unittest.TestCase):
         self.assertEqual(checks.calls, [("light", "3.0")])
         self.assertEqual((FakeNotice.opened, self.shown), (0, []))
 
+    def test_with_no_workspace_yet_nothing_is_made_and_the_check_runs_again(self):
+        # A new profile's first start: the workspace does not exist yet, and
+        # the launcher never makes it (D3, C1; only the app's first start
+        # does), so nothing is recorded and the next start checks again
+        # (review of 836d308, nit 2).
+        shutil.rmtree(self.ws)
+        for fault in (None, ("slot_fault", "guard")):
+            for _ in range(2):
+                checks = FakeChecks(light={"3.0": fault} if fault else None)
+                out = self.run_pass(checks)
+                self.assertEqual(checks.calls[0], ("light", "3.0"))
+                self.assertEqual(out, launch.Outcome(exit=0) if fault else launch.Outcome())
+                self.assertEqual(len(self.shown), 1 if fault else 0)    # each time
+                self.assertFalse(self.ws.exists())
+        # Once the app has made the workspace, the result is kept.
+        self.ws.mkdir()
+        for calls in ([("light", "3.0")], []):
+            checks = FakeChecks()
+            self.assertEqual(self.run_pass(checks), launch.Outcome())
+            self.assertEqual(checks.calls, calls)
+        self.assertEqual(self.record()["slots"]["3.0"]["result"], "ok")
+
     def test_what_cannot_be_checked_starts_as_before(self):
         def damaged():
             (self.layout.root / "current.json").write_text("{", encoding="utf-8")
@@ -1066,6 +1089,40 @@ class ChildCheckTests(unittest.TestCase):
         for runner, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(launchcheck.run_light("x", "y", runner), expected)
+
+    def test_a_light_check_past_its_limit_is_run_once_more(self):
+        # A first run after an install can be slow while the antivirus scans
+        # the new files (review of 836d308): one hang is run again at once,
+        # and only a second hang is a slot fault. Nothing else is repeated.
+        ok = subprocess.CompletedProcess([], 0, '{"result": "ok", "part": null}', "")
+        hang = subprocess.TimeoutExpired("x", launchcheck.LIGHT_LIMIT_S)
+        cases = (((hang, ok), ("ok", None), 2),
+                 ((hang, hang), ("slot_fault", "hung"), 2),
+                 ((hang, OSError("no runtime")), ("slot_fault", "hung"), 2),
+                 ((OSError("no runtime"), ok), ("slot_fault", "hung"), 1),
+                 ((subprocess.CompletedProcess([], 0, "", ""), ok),
+                  ("slot_fault", "no_answer"), 1))
+        for answers, expected, runs in cases:
+            calls = []
+
+            def run(argv, answers=answers, calls=calls, **kw):
+                calls.append((argv, kw["timeout"]))
+                answer = answers[len(calls) - 1]
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+            with self.subTest(expected=expected, runs=runs):
+                self.assertEqual(launchcheck.run_light("x", "y", run), expected)
+                self.assertEqual(len(calls), runs)
+                self.assertTrue(all(c == calls[0] for c in calls))   # the same check, limit
+        # The full check (180 s, behind a notice) is not repeated.
+        calls = []
+
+        def hung(argv, **kw):
+            calls.append(argv)
+            raise subprocess.TimeoutExpired("x", launchcheck.FULL_LIMIT_S)
+        self.assertEqual(launchcheck.run_full("x", "y", hung), ("slot_fault", "hung"))
+        self.assertEqual(len(calls), 1)
 
     def test_what_the_full_check_reports(self):
         ok = "ok      import numpy\nok      dpapi round trip\nPASS\n"
