@@ -1,1 +1,1 @@
-- **Live drafts run a phrase for up to about 10 seconds.** When someone talks without a pause, the draft text can now run a phrase for up to about 10 seconds before showing it, which makes the draft slightly more accurate (#104).
+- **Draft text, when it arrives, will cut unbroken speech at about 10 seconds.** Draft text while recording is not available in the app yet. When it is, a stretch of talk with no pause will be shown in pieces of up to about 10 seconds, a length chosen after trials of 6, 8 and 10 seconds (#104).

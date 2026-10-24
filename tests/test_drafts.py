@@ -96,7 +96,8 @@ class SplitterTests(unittest.TestCase):
         speech[a:b] *= 0.3                               # still speech, but the quietest
         phrases = self.split(self.f(speech.astype(np.int16)))
         first_end = phrases[0][1]
-        self.assertLessEqual(phrases[0][1] - phrases[0][0], drafts.MAX_PHRASE_S + 1e-6)
+        longest = drafts._windows(drafts.MAX_PHRASE_S) * drafts.WINDOW_S   # whole windows
+        self.assertLessEqual(phrases[0][1] - phrases[0][0], longest + 1e-6)
         self.assertAlmostEqual(first_end, dip_at + drafts.WINDOW_S, delta=2 * drafts.WINDOW_S)
         for (_, e, _), (s, _, _) in zip(phrases, phrases[1:], strict=False):
             self.assertAlmostEqual(e, s, places=6)      # cut, not lost: back to back
@@ -108,7 +109,9 @@ class SplitterTests(unittest.TestCase):
         self.assertEqual(drafts.MAX_PHRASE_S, 10.0)
         phrases = self.split(self.f(tone(25.0)))
         length = phrases[0][1] - phrases[0][0]
-        self.assertLessEqual(length, 10.0 + 1e-6)
+        # 10 s is 312.5 windows of 32 ms, so the cut falls at 313 windows at most (10.016 s).
+        longest = drafts._windows(drafts.MAX_PHRASE_S) * drafts.WINDOW_S
+        self.assertLessEqual(length, longest + 1e-6)
         self.assertGreaterEqual(length, 10.0 - drafts.CUT_SEARCH_S - drafts.WINDOW_S)
 
     def test_short_blips_are_dropped(self):
