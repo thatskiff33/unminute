@@ -113,6 +113,21 @@ class DependencyPinTests(unittest.TestCase):
                          "that it still needs no cuDNN (the package leaves cudnn64_9.dll "
                          "out, #176 D2), and update workspace/gpu.py's Whisper component")
 
+    def test_dll_path_variables_were_checked_against_the_ctranslate2_pin(self):
+        # #357 (T25): every worker removes the environment variables CTranslate2's
+        # __init__ reads to add a DLL folder (4.8.3: HIP_PATH only). The list is
+        # right only for the version it was checked against, so moving the pin
+        # fails here until someone reads the new __init__ again. Read from the
+        # source, as workspace/worker.py imports numpy.
+        checked = one(r'^DLL_PATH_CHECKED_CTRANSLATE2 = "([^"]+)"$',
+                      read("workspace/worker.py"), "DLL_PATH_CHECKED_CTRANSLATE2")
+        pinned = one(r"^ctranslate2==(\S+)", read("requirements.txt"), "ctranslate2 pin")
+        self.assertEqual(pinned, checked,
+                         "requirements.txt moved CTranslate2: read its __init__ for the "
+                         "environment variables it uses to add DLL folders, update "
+                         "worker.DLL_PATH_VARIABLES (and T25 in docs/SECURITY_MODEL.md), "
+                         "then set worker.DLL_PATH_CHECKED_CTRANSLATE2 to the new version")
+
 
 class VersionTests(unittest.TestCase):
     def test_version_file_matches_the_newest_changelog_heading(self):

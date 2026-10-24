@@ -55,6 +55,19 @@ GPU_TIMEOUT_FACTOR = 1.0
 WEIGHTS_ONLY = {"TORCH_FORCE_WEIGHTS_ONLY_LOAD": "1"}
 NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 
+# Environment variables a locked speech library reads when it loads to add a
+# folder outside the app to the DLL search path (T25, #357). CTranslate2
+# 4.8.3's __init__ adds %HIP_PATH%\bin when no ROCm wheel is installed, so a
+# DLL placed there could load into the worker (in the Whisper GPU worker that
+# path is all Windows searches by name). Removed from every worker before any
+# model library is imported; the app's own process keeps them. ONNX Runtime
+# 1.30.0 reads none. DLL_PATH_CHECKED_CTRANSLATE2 is the CTranslate2 version
+# this list was checked against: tests/test_consistency.py fails when the lock
+# moves CTranslate2 until its __init__ is read again, this list updated and
+# that version moved with it.
+DLL_PATH_VARIABLES = ("HIP_PATH",)
+DLL_PATH_CHECKED_CTRANSLATE2 = "4.8.3"
+
 
 # A worker whose pipe has just closed is ending: wait this long for it, so its
 # own exit code (a crash's) is kept rather than replaced by terminate()'s.
@@ -94,8 +107,9 @@ def safe_message(exc):
 
 def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
     """A worker process's start-up, before any model library is imported:
-    its log, no telemetry, the offline guard (N1), weights-only loading and,
-    if quiet, below-normal priority. Shared by the main, GPU and draft
+    its log, no telemetry, the offline guard (N1), weights-only loading, no
+    DLL folder named by the environment (T25) and, if quiet, below-normal
+    priority. Shared by the main, GPU and draft
     workers. Returns (log, the device it runs speech models on)."""
     # Launched from pythonw there is no console: libraries that write to
     # stdout/stderr must not crash the worker. What they write is free text,
@@ -121,6 +135,8 @@ def _start_up(log_dir, log_name, quiet, gpu_site=None, gpu_component=None):
         offline_guard.install()
         os.environ.update(WEIGHTS_ONLY)
         os.environ.pop(NOT_WEIGHTS_ONLY, None)
+        for name in DLL_PATH_VARIABLES:  # no DLL folder named by the environment (#357)
+            os.environ.pop(name, None)
         # ONNX Runtime (Parakeet, and the voice detection Whisper uses) has its own
         # Windows telemetry events, switched off by a call rather than a variable.
         offline_guard.disable_onnxruntime_telemetry()

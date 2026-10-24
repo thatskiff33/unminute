@@ -1111,6 +1111,22 @@ class WorkspaceWhisperGpuTests(unittest.TestCase):
         self.assertNotEqual(os.path.normcase(report["path0"]), os.path.normcase(str(site)))
         self.assertNotEqual(report["pid"], self.ws.handle.pid)
 
+    def test_the_whisper_worker_adds_no_dll_folder_named_by_hip_path(self):
+        # #357 (T25): CTranslate2 4.8.3 adds %HIP_PATH%\bin to the DLL search
+        # path when it loads, and in this worker that path is all Windows
+        # searches by name (SetDefaultDllDirectories). A HIP_PATH the worker
+        # inherits, here a scratch folder, is removed before then.
+        import numpy as np
+        site = install_cublas(self, self.ws.cache_dir, loadable_dll())
+        worker = self.ws.handle.whisper_gpu_worker(str(site), gpu.WHISPER_COMPONENT)
+        with tempfile.TemporaryDirectory() as hip:
+            Path(hip, "bin").mkdir()
+            with mock.patch.dict(os.environ, {"HIP_PATH": hip}):
+                _, device, _ = worker.load("test:fake_worker_engines:dll_folders", 1)
+            [seg], _ = worker.transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(device, "cuda")
+        self.assertEqual(seg.text, "folders []")
+
     def test_removing_one_component_keeps_the_other_and_the_switch(self):
         install_cublas(self, self.ws.cache_dir)
         torch, w1 = make_wheel("torch", "2.13.0+cu130", {"torch/__init__.py": b""})
