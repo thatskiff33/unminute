@@ -965,5 +965,207 @@ class JobObjectTests(unittest.TestCase):
                 jobs.contain(1234, 200 << 20)           # other failures are not retried
 
 
+# What a compromised decoder can reach (#299; D2 red team, part 2, finding 2).
+# READ_UP_PROBE stands in for native code that a hostile recording has taken
+# over inside the decoder. media.decode starts and contains it exactly as it
+# does the real decoder (media._python(), jobs.contain, then a Low integrity
+# check from outside), and it lowers its own integrity with
+# decode_child.lower_integrity(), as decode_child.main does. It does not
+# install the network guard, which covers Python code only. Its "recording"
+# is a JSON file that names what to try; it answers with one audio frame
+# holding JSON. Everything it touches is in the test's temporary folder, or a
+# listener in this process.
+READ_UP_PROBE = r"""
+import hashlib, json, os, socket, sqlite3, struct, sys
+sys.path[:] = json.loads(sys.stdin.readline())
+from pathlib import Path
+from workspace import decode_child, dpapi, vault
+out = os.fdopen(os.dup(1), "wb")
+def send(kind, payload=b""):
+    out.write(kind + struct.pack("<I", len(payload)) + payload)
+    out.flush()
+send(b"R", struct.pack("<I", decode_child.lower_integrity() or 0))
+req = json.loads(sys.stdin.buffer.readline())
+with open(req["src"], "rb") as f:
+    cfg = json.loads(f.read())
+res = {"recording": "allowed: read"}
+def attempt(name, fn):
+    try:
+        res[name] = "allowed: " + str(fn())
+    except Exception as exc:
+        res[name] = "denied: %s %s" % (type(exc).__name__, getattr(exc, "winerror", "") or "")
+def read(path):
+    with open(path, "rb") as f:
+        return "read %d bytes" % len(f.read())
+for name, path in cfg["files"].items():
+    attempt("read " + name, lambda p=path: read(p))
+for name, path in cfg["folders"].items():
+    attempt("list " + name, lambda p=path: "listed %d" % len(os.listdir(p)))
+def key():
+    con = sqlite3.connect(Path(cfg["db"]).as_uri() + "?mode=ro&immutable=1", uri=True)
+    try:
+        blob = con.execute("SELECT root FROM crypto_meta").fetchone()[0]
+    finally:
+        con.close()
+    return "unprotected " + hashlib.sha256(dpapi.unprotect(blob, vault.ROOT_ENTROPY)).hexdigest()
+attempt("unprotect workspace key", key)
+def write():
+    with open(os.path.join(cfg["folders"]["workspace"], "written-at-low.txt"), "wb") as f:
+        f.write(b"x")
+    return "wrote"
+attempt("write workspace", write)
+def loopback():
+    with socket.create_connection(("127.0.0.1", cfg["port"]), 5) as s:
+        s.sendall(b"sent by the decoder")
+    return "connected and sent"
+attempt("loopback", loopback)
+body = json.dumps(res).encode()
+send(b"A", body + b" " * (-len(body) % 4))
+send(b"D")
+"""
+
+# Files and folders of a scratch workspace laid out like the real one
+# (%LOCALAPPDATA%\Unminute: workspace\ and models\; docs/SECURITY_MODEL.md,
+# "Data inventory"), relative to its Unminute folder. workspace.db is made by
+# the store with the app's own key protector; the rest hold synthetic bytes.
+SCRATCH_FILES = {
+    "workspace.db": "workspace/workspace.db",
+    "settings.json": "workspace/settings.json",
+    "templates.sealed": "workspace/templates.sealed",
+    "decoded audio": "workspace/media/1/audio.uma",
+    "recording chunk": "workspace/recordings/r1/chunk-000001.uma",
+    "diagnostics log": "workspace/logs/app.log",
+    "audit log": "workspace/audit/audit-000001.jsonl",
+    "model file": "models/model.bin",
+}
+SCRATCH_FOLDERS = {"Unminute": "", "workspace": "workspace", "media": "workspace/media",
+                   "models": "models"}
+
+
+def make_scratch_workspace(base):
+    """A scratch workspace at base (its Unminute folder) and the SHA-256 of
+    its root key. The store makes workspace.db with Windows Data Protection,
+    as the app does; nothing here is under the real data folder."""
+    import hashlib
+    import sqlite3
+
+    from workspace import keystore, vault
+    from workspace.store import Store
+    s = Store(base / SCRATCH_FILES["workspace.db"], protector=keystore.DpapiProtector())
+    try:
+        s.create_meeting("synthetic title")
+    finally:
+        s.close()
+    for name, rel in SCRATCH_FILES.items():
+        path = base / rel
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"synthetic " + name.encode())
+    con = sqlite3.connect(base / SCRATCH_FILES["workspace.db"])
+    try:
+        blob = con.execute("SELECT root FROM crypto_meta").fetchone()[0]
+    finally:
+        con.close()
+    return hashlib.sha256(vault.open_root(blob)).hexdigest()
+
+
+def probe_scratch_workspace(base, folder):
+    """Run READ_UP_PROBE through media.decode against the scratch workspace
+    at base. folder: where its JSON "recording" goes (outside base). Returns
+    (the probe's results, the integrity level media.decode saw, what a
+    loopback listener here received)."""
+    import json
+    import socket
+    import threading
+
+    from workspace import decode_child, media
+    received = []
+    listener = socket.create_server(("127.0.0.1", 0))
+    listener.settimeout(20)
+
+    def accept():
+        try:
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(5)
+                received.append(conn.recv(100))
+        except OSError:
+            pass
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    cfg = {"files": {n: str(base / r) for n, r in SCRATCH_FILES.items()},
+           "folders": {n: str(base / r) for n, r in SCRATCH_FOLDERS.items()},
+           "db": str(base / SCRATCH_FILES["workspace.db"]),
+           "port": listener.getsockname()[1]}
+    src = Path(folder) / "probe-request.json"
+    src.write_text(json.dumps(cfg), encoding="utf-8")
+    out = io.BytesIO()
+    try:
+        with mock.patch.object(decode_child, "BOOT", READ_UP_PROBE):
+            media.decode(src, out)
+    finally:
+        try:
+            # Ends the accept() if the probe never connected.
+            socket.create_connection(("127.0.0.1", cfg["port"]), 2).close()
+        except OSError:
+            pass
+        thread.join(10)
+        listener.close()
+    return json.loads(out.getvalue()), media.last_decoder_integrity, received
+
+
+@unittest.skipUnless(WINDOWS and HAVE_DEPS, "Windows decoder process")
+class ReadUpTests(unittest.TestCase):
+    """#299 acceptance criterion 1: a process started and contained exactly as
+    the decoder is cannot read the workspace, cannot unprotect its key, and
+    (with an AppContainer, option 2) cannot open a loopback connection.
+
+    The three gaps are open on main (docs/SECURITY_MODEL.md T2 residual), so
+    their tests are marked as expected failures until #299's control lands;
+    removing a mark then is the fix's own test. The first test is not marked:
+    it checks the probe ran contained like the decoder and still reads its
+    own recording, so the expected failures cannot pass for the wrong reason
+    (a probe that never ran)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.base = root / "LocalAppData" / "Unminute"
+        cls.key_hash = make_scratch_workspace(cls.base)
+        cls.results, cls.level, cls.received = probe_scratch_workspace(cls.base, root)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_probe_runs_contained_like_the_decoder(self):
+        self.assertEqual(0x1000, self.level)                   # Low, checked from outside
+        expected = ({"recording", "unprotect workspace key", "write workspace", "loopback"}
+                    | {"read " + n for n in SCRATCH_FILES} | {"list " + n for n in SCRATCH_FOLDERS})
+        self.assertEqual(expected, set(self.results))
+        self.assertEqual("allowed: read", self.results["recording"])   # it can still decode
+        self.assertTrue(self.results["write workspace"].startswith("denied"), self.results)
+        self.assertFalse((self.base / "workspace" / "written-at-low.txt").exists())
+
+    @unittest.expectedFailure        # #299: Low integrity stops writes, not reads
+    def test_a_contained_decoder_cannot_read_the_workspace(self):
+        readable = {k: v for k, v in self.results.items()
+                    if k.startswith(("read ", "list ")) and not v.startswith("denied")}
+        self.assertEqual({}, readable)
+
+    @unittest.expectedFailure        # #299: DPAPI unprotects a user blob at Low integrity
+    def test_a_contained_decoder_cannot_unprotect_the_workspace_key(self):
+        got = self.results["unprotect workspace key"]
+        self.assertTrue(got.startswith("denied"),
+                        "the probe unprotected the scratch workspace's root key"
+                        + (" (it matches)" if got.endswith(self.key_hash) else ""))
+
+    @unittest.expectedFailure        # #299 option 2 (AppContainer): Low integrity allows it
+    def test_a_contained_decoder_cannot_open_a_loopback_connection(self):
+        self.assertEqual(([], True), (self.received,
+                                      self.results["loopback"].startswith("denied")))
+
+
 if __name__ == "__main__":
     unittest.main()
