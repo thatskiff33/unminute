@@ -1515,8 +1515,9 @@ def build(version, out, cache, release=False, update_allowlist=False):
             "schema": schema_version(folder / "app" / "workspace" / "store.py"),
             # Installers check for features before relying on them (#26): "gate"
             # is --gate, "restore-lid" is --restore-lid (the uninstaller, #191),
-            # "launch-gate" is the launcher pass and --slot (#111 B5).
-            "features": ["gate", "restore-lid", "launch-gate"]}
+            # "launch-gate" is the launcher pass and --slot (#111 B5); "offboard"
+            # is --offboard-report and --offboard (uninstall.ps1 -Offboard, #111 B8b).
+            "features": ["gate", "restore-lid", "launch-gate", "offboard"]}
         (folder / "version.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
         (folder / "model-manifest.json").write_text(
             json.dumps(model_manifest(folder / "app" / "workspace" / "asr_engines.py"), indent=1),

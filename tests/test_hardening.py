@@ -1192,6 +1192,7 @@ class DataFolderOverlapTests(unittest.TestCase):
 
     MESSAGE = "must not be in, or hold"
     PROGRAMS = '[Environment]::GetFolderPath("Programs")'
+    ROAMING = "$env:APPDATA"
     KEY = r'$RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"'
     # The copy's uninstall key: absent unless a test creates it, and removed after.
     TEST_KEY = rf"Software\Unminute-UnitTest-uninstall-{os.getpid()}"
@@ -1265,15 +1266,20 @@ class DataFolderOverlapTests(unittest.TestCase):
             self.assertFalse(folder.exists())
 
     def uninstaller_copy(self, tmp):
-        """uninstall.ps1 with this computer's Start menu folder and uninstall key
-        swapped for a temporary folder and a key that does not exist, so a
-        mistake removes nothing real."""
+        """uninstall.ps1 with this computer's Start menu folder, roaming
+        profile folder (where pins live, #111 B8b) and uninstall key swapped
+        for temporary folders and a key that does not exist, so a mistake
+        removes nothing real."""
         text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertEqual((text.count(self.PROGRAMS), text.count(self.KEY)), (1, 1))
+        self.assertEqual((text.count(self.PROGRAMS), text.count(self.KEY),
+                          text.count(self.ROAMING)), (1, 1, 1))
         programs = Path(tmp) / "programs"
         programs.mkdir()
+        roaming = Path(tmp) / "roaming"
+        roaming.mkdir()
         text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
-            self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"')
+            self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"').replace(
+            self.ROAMING, f'"{roaming}"')
         # Nothing else in it may reach this computer's own shortcuts or registry.
         for reach in ("GetFolderPath", "Start Menu\\", "$env:APPDATA", "HKCU:\\Software\\Microsoft",
                       "HKLM", "Registry::", "ComObject"):
@@ -1545,6 +1551,7 @@ class FolderInUseTests(unittest.TestCase):
     PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
                                DataFolderOverlapTests.TEST_KEY)
     uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
+    ROAMING = DataFolderOverlapTests.ROAMING
     BOUND = "$LockRetrySeconds = 30\n"
     START = '$ErrorActionPreference = "Stop"\n'
     MAIN = "    if ($Options.Rollback) { Invoke-Rollback }\n"
@@ -2467,6 +2474,7 @@ class UninstallLidRestoreTests(unittest.TestCase):
     PROGRAMS, KEY, TEST_KEY = (DataFolderOverlapTests.PROGRAMS, DataFolderOverlapTests.KEY,
                                DataFolderOverlapTests.TEST_KEY)
     uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
+    ROAMING = DataFolderOverlapTests.ROAMING
     WARNING = "Warning: Unminute could not put back what closing the lid does."
     TIMEOUT = "$LidRestoreSeconds = 60"
 
@@ -2634,7 +2642,7 @@ class RestoreLidFeatureTests(unittest.TestCase):
     def test_the_package_declares_the_switch_the_uninstaller_looks_for(self):
         build = (ROOT / "tools" / "build_package.py").read_text(encoding="utf-8")
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
-        self.assertIn('"features": ["gate", "restore-lid", "launch-gate"]', build)
+        self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard"]', build)
         self.assertIn('-notcontains "restore-lid"', uninstall)
         main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('if "--restore-lid" in sys.argv:', main)
