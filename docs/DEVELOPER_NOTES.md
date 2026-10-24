@@ -203,12 +203,21 @@ real time, and remove it when the cause is fixed.
   script before B6a did), and a run whose variables are not scratch; `Set-ScratchTarget`
   points `$RegKey` at a throwaway `HKCU\Software\Unminute-PesterTest-<guid>` key and
   `$ProgramsFolder` at a scratch folder, and checks every place the script would write.
-  A test in the suite checks that every load has that form. `tools/run_pester.ps1` also
+  Above the guard a script may only define functions and assign values that run no
+  command and call no .NET method except two known reads, and its parameters' default
+  values may run only `Join-Path`; `Confirm-Loadable` refuses anything else. The
+  scratch checks resolve junctions, links and short names first. A test in the suite
+  checks that every load has that form and that no test file starts a script any
+  other way (`&`, `-File`, `Start-Process`, `Invoke-Expression`, jobs and the like:
+  `Find-UncheckedRun`). `tools/run_pester.ps1` also
   runs the suite with scratch variables and fails if the real install's folder, Start
   menu shortcut or uninstall entry changed. Python: every test runs a scratch copy
   (`scratch_text`) through `run_installer` in `tests/test_hardening.py`, which refuses
   unless the copy, `-InstallDir`, `LOCALAPPDATA` and `APPDATA` are scratch and fails if
-  the real install changed; `InstallerIsolationTests` proves it. The real places come
+  the real install changed. Every other process a test in that module starts is
+  checked before it starts and refused if it names a packaging script, or a `.ps1`
+  that copies or runs one; and no process start in any test module may name an
+  installer script. `InstallerIsolationTests` proves it. The real places come
   from the shell's known folders, which ignore `LOCALAPPDATA` and `APPDATA`. Never
   dot-source an older revision of either script, and never run the scripts or Pester any
   other way; show failing-first evidence for installer behaviour with the Python-driven

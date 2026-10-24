@@ -37,6 +37,23 @@ Describe "the tests' own safety check" {
         $late = Join-Path $TestDrive "late.ps1"
         [IO.File]::WriteAllText($late, "try { } finally { }`r`nif (`$MyInvocation.InvocationName -eq `".`") { return }`r`n")
         { Confirm-Loadable $late } | Should -Throw "*no dot-source guard*"
+        # #332 review: above the guard, only function definitions and assignments that
+        # run no command and call no .NET method but the two reads the scripts use.
+        $guard = "if (`$MyInvocation.InvocationName -eq `".`") { return }`r`ntry { } finally { }`r`n"
+        $early = Join-Path $TestDrive "early.ps1"
+        foreach ($line in @("Remove-Item -LiteralPath 'x'", "`$gone = Remove-Item -LiteralPath 'x'",
+                            "`$later = { Remove-Item -LiteralPath 'x' }", "if (`$true) { `$x = 1 }",
+                            "`$gone = [IO.File]::Delete('x')", "`$gone = `"`$(Remove-Item 'x')`"")) {
+            [IO.File]::WriteAllText($early, "function Get-One { 1 }`r`n`$one = 1`r`n$line`r`n" + $guard)
+            { Confirm-Loadable $early } | Should -Throw "*runs something above its dot-source guard*"
+        }
+        # A parameter's default value runs too; Join-Path is the only command allowed there.
+        [IO.File]::WriteAllText($early, "param([string]`$Dir = (Remove-Item -LiteralPath 'x'))`r`n" + $guard)
+        { Confirm-Loadable $early } | Should -Throw "*runs something above its dot-source guard*"
+        [IO.File]::WriteAllText($early, "param([string]`$Dir = (Join-Path `$env:LOCALAPPDATA `"x`"))`r`n" +
+            "function Get-One { 1 }`r`n`$one = [Environment]::GetFolderPath(`"MyDocuments`")`r`n" +
+            "`$clock = [Diagnostics.Stopwatch]::StartNew()`r`n" + $guard)
+        { Assert-DotSourceGuard $early } | Should -Not -Throw
     }
 
     It "refuses a script that reaches the Start menu or the uninstall key directly" {
@@ -102,27 +119,69 @@ Describe "the tests' own safety check" {
         (Get-ItemProperty -LiteralPath $script:ScratchKey).DisplayVersion | Should -BeExactly "1.0.0"
     }
 
-    It "loads every script in these tests only through the checks" {
-        $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.Tests.ps1" -File)
-        $files.Count | Should -BeGreaterThan 0
+    It "loads every script in these tests only through the checks, and starts none" {
+        $files = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter "*.ps1" -File)
+        @($files | Where-Object { $_.Name -like "*.Tests.ps1" }).Count | Should -BeGreaterThan 0
         $loads = 0
         foreach ($file in $files) {
+            @(Find-UncheckedRun $file.FullName) | Should -BeNullOrEmpty -Because $file.Name
             $tokens = $null; $errors = $null
             $ast = [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
-            $dots = $ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and
-                $n.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot }, $true)
-            foreach ($dot in $dots) {
-                if ($dot.Extent.Text -ceq '. (Join-Path $PSScriptRoot "Isolation.ps1")') { continue }
-                $dot.Extent.Text | Should -BeLike ". (Confirm-Loadable *)"
-                $pipeline = $dot.Parent
-                $statements = @($pipeline.Parent.Statements)
-                $at = [array]::IndexOf($statements, $pipeline)
-                $at | Should -BeLessThan ($statements.Count - 1)
-                $statements[$at + 1].Extent.Text | Should -BeExactly "Set-ScratchTarget"
-                $loads++
-            }
+            $loads += @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and
+                $n.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot -and
+                $n.Extent.Text -clike ". (Confirm-Loadable *)" }, $true)).Count
         }
         $loads | Should -BeGreaterThan 0
+    }
+
+    It "finds every way a test could run a script other than by the checked load" {
+        # #332 review: the 23 October incident was a script run with its default
+        # -InstallDir. Each line below is one such way; the file is parsed, never run.
+        $forms = @(
+            '. $path'
+            '. (Confirm-Loadable $path)'
+            '& $path -Silent'
+            '& (Join-Path $repo "packaging\uninstall.ps1") -Silent'
+            '.\uninstall.ps1 -Silent'
+            'C:\repo\packaging\uninstall.ps1 -Silent'
+            'powershell -NoProfile -File $path -Silent'
+            'pwsh -File $path'
+            'cmd /c powershell -File $path'
+            'Start-Process powershell -ArgumentList "-File", $path'
+            'Invoke-Expression "& ''$path''"'
+            'iex "& ''$path''"'
+            'Start-Job -FilePath $path'
+            'Invoke-Command -FilePath $path -ComputerName localhost'
+            'Invoke-Item $path'
+            '[Diagnostics.Process]::Start("powershell.exe", "-File $path")'
+            '$info = New-Object Diagnostics.ProcessStartInfo'
+            '[PowerShell]::Create().AddScript("x").Invoke()'
+            '([scriptblock]::Create("& ''$path''")).Invoke()'
+            '$ExecutionContext.InvokeCommand.InvokeScript("& ''$path''")'
+        )
+        $unsafe = Join-Path $TestDrive "unsafe.Tests.ps1"
+        [IO.File]::WriteAllText($unsafe, ($forms -join "`r`n") + "`r`n")
+        $lines = @(Find-UncheckedRun $unsafe | ForEach-Object { [int]($_ -split ":", 2)[0] } | Sort-Object -Unique)
+        ($lines -join ",") | Should -BeExactly ((1..$forms.Count) -join ",")
+        # The checked load itself is not one of them.
+        [IO.File]::WriteAllText($unsafe, ". (Confirm-Loadable `$path); Set-ScratchTarget`r`n")
+        @(Find-UncheckedRun $unsafe) | Should -BeNullOrEmpty
+    }
+
+    It "treats a junction in the scratch folder as the place it leads to" {
+        # #332 review: links are resolved, as the Python tests' is_scratch does. The
+        # junction leads to a throwaway folder outside scratch, never to a real place,
+        # and only the junction itself is removed.
+        $outside = [IO.Directory]::CreateDirectory((Join-Path $TestDrive "outside")).FullName
+        $link = Join-Path $script:ScratchRoot "linked"
+        New-Item -ItemType Junction -Path $link -Target $outside | Out-Null
+        try {
+            Test-ScratchPath $link | Should -BeFalse
+            Test-ScratchPath (Join-Path $link "Programs\Unminute") | Should -BeFalse
+            Test-ScratchPath (Join-Path $script:ScratchRoot "plain\Programs\Unminute") | Should -BeTrue
+        } finally {
+            [IO.Directory]::Delete($link)
+        }
     }
 }
 
