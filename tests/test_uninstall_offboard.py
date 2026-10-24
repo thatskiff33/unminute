@@ -91,19 +91,33 @@ class Creds:
         return False
 
 
+class Profiles:                         # the decoder's profile (#299), never the real one
+    present = True
+
+    @classmethod
+    def profile_exists(cls):
+        return cls.present
+
+    @classmethod
+    def delete_profile(cls):
+        return cls.present
+
+
 out, code = offboard.run(offboard.Where(os.environ["LOCALAPPDATA"]), sys.argv[-1] == "--offboard",
                          account=False, session_running=lambda: False, mirror=None,
                          tokens=("Scratch/UninstallOffboard",), creds=Creds,
-                         lid=lambda path, running: "none")
+                         lid=lambda path, running: "none", profiles=Profiles)
 print(json.dumps(out))
 sys.exit(code)
 '''
 
 OK_REPORT = {"result": "ok", "workspace": "empty", "blockers": {}, "leftover": 0, "others": 0,
              "models_mb": 12, "models_link": False, "token": True, "lid_record": False,
-             "running": False}
+             "running": False, "decoder_profile": True}
 OFFBOARDED = dict(OK_REPORT, result="offboarded", workspace="none", models_mb=0, token=False,
-                  removed={"workspace": True, "models": True, "token": True}, residuals=["x"])
+                  decoder_profile=False,
+                  removed={"workspace": True, "models": True, "token": True,
+                           "decoder_profile": True}, residuals=["x"])
 
 
 def is_reparse_point(path):
@@ -354,6 +368,7 @@ class UninstallOffboardTests(unittest.TestCase):
             "unknown field": [0, dict(OK_REPORT, note=MARKER)],
             "text for a count": [0, dict(OK_REPORT, others=MARKER)],
             "text for yes or no": [0, dict(OK_REPORT, token=MARKER)],
+            "text for the decoder's profile": [0, dict(OK_REPORT, decoder_profile=MARKER)],  # #299
             "not a fixed word": [0, dict(OK_REPORT, workspace=MARKER)],
             "blocker not a count": [0, dict(OK_REPORT, blockers={"meetings": MARKER})],
             "result for another code": [0, dict(OK_REPORT, result="blocked")],

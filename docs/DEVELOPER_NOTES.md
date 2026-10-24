@@ -53,6 +53,19 @@ real time, and remove it when the cause is fixed.
   evidence whose tools come from a different commit than the package.
 - **`time.monotonic()` counts from boot.** Never start a "last run" timer at 0.0, or a check
   is skipped for the first minutes after boot. Start at `float("-inf")`.
+- **The decoder cannot read a development Python (#299).** The app decodes in a Windows
+  AppContainer, which reads only what ALL APPLICATION PACKAGES may read: an installed app's
+  `versions` folder (the installer grants it), not a development or CI Python, a virtual
+  environment or a checkout. It never falls back, so a decode from a checkout is refused
+  (`media.SandboxUnavailable`, step `start` or `ready`). Tests that decode call
+  `decoder_runtime.use()` (`tools/decoder_runtime.py`) in `setUpModule`, and the tools that
+  decode from a checkout call it too: it copies the interpreter, the standard library, numpy,
+  PyAV and the imported `workspace` package into a temporary folder (about 3 s and 2,500
+  files), grants ALL APPLICATION PACKAGES read on that folder only, and uses a throwaway
+  AppContainer profile, removing both at exit. A new test module or tool that decodes needs the
+  same call. Never grant the container read on a whole checkout: `extracted/` can hold real
+  content (P2). In a package's own runtime it does nothing, so release evidence uses the real
+  container.
 - **PyAV 17 and 8-channel planar audio.** An 8-channel planar frame reports 9 planes, and
   `to_ndarray()` on one read past them and crashed the process (found in #220; 7 and 16
   channels were fine). Convert to an interleaved format (`flt`, not `fltp`) before reading

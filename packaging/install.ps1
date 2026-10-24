@@ -13,6 +13,8 @@
   - Installs side by side under <InstallDir>\versions\<version> and keeps the
     previous version for rollback; workspace data and models are separate and
     never touched.
+  - Lets ALL APPLICATION PACKAGES read the versions folder, so the app's
+    decoder can run in its AppContainer (#299); a rollback makes sure of it too.
   - Registers a per-user uninstall entry (used for Intune detection) and a
     Start menu shortcut.
 
@@ -441,10 +443,39 @@ function Invoke-LockRetry([scriptblock]$Action) {
     }
 }
 
+# -- the decoder's read access (#299) -------------------------------------------------
+# The app decodes recordings in a Windows AppContainer with no capabilities, which can
+# read only what ALL APPLICATION PACKAGES (S-1-15-2-1) may read. Program Files grants
+# that by default; a per-user install folder does not. So the versions folder grants it
+# read and execute, inherited by every version in it (the runtime and the app code; the
+# install record and the uninstaller beside versions are not covered). Nothing here lets
+# a container write. Each install, update, repair and rollback makes sure the grant is
+# there; it stays harmless for a version from before #299, which does not use it.
+$AllApplicationPackages = "S-1-15-2-1"
+
+function Grant-DecoderRead([string]$Folder) {
+    $dir = [IO.DirectoryInfo]::new($Folder)
+    $sid = New-Object Security.Principal.SecurityIdentifier $AllApplicationPackages
+    $rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $inherit = [Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit"
+    $acl = $dir.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference -eq $sid -and $rule.AccessControlType -eq "Allow" -and
+            ($rule.FileSystemRights -band $rights) -eq $rights -and
+            ($rule.InheritanceFlags -band $inherit) -eq $inherit -and
+            $rule.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None) { return }
+    }
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($sid, $rights, $inherit,
+        [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
+    $dir.SetAccessControl($acl)                 # Windows passes it on to what is inside
+}
+
 function Install-Version([string]$Root, [string]$Version) {
     $versions = Join-Path $Options.InstallDir "versions"
     $target = Join-Path $versions $Version
     New-Item -ItemType Directory -Force -Path $versions | Out-Null
+    # Before the copy, so every new file inherits it (#299).
+    Grant-DecoderRead $versions
     $staging = "$target.partial"
     Remove-OwnFolder $staging
     Write-Step "Copying files..."
@@ -728,6 +759,9 @@ function Invoke-Rollback {
     } else {
         Test-WorkspaceGate $target -Checker (Join-Path $Options.InstallDir "versions\$version") -Schema 1
     }
+    # The decoder's read access (#299), in case it was taken away since: a version that
+    # decodes in the container cannot import anything without it.
+    Grant-DecoderRead (Join-Path $Options.InstallDir "versions")
     Copy-Item -LiteralPath (Join-Path $target "uninstall.ps1") -Destination (Join-Path $Options.InstallDir "uninstall.ps1") -Force
     # Format 2 (#111 B5): both versions keep their seq and installed time.
     $slots = Get-SlotRecord $current @($previous, $version) $null

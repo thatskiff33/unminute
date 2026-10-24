@@ -78,6 +78,20 @@ if HAVE_NUMPY:
             return segs, dur
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def make_words(total_s, gap=0.35, word=0.4, repeat_every=7, pause_every=13, pause=1.2):
     """Words every ~0.75 s with occasional longer pauses and repeated phrases."""
     words, t, i = [], 0.5, 0

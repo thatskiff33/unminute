@@ -644,6 +644,11 @@ def main():
     args = ap.parse_args()
     modes = colour_modes(args.colour_mode)
     before = evidence.prepare(ap, args, APP if args.app else None)
+    # The decoder runs in an AppContainer that cannot read a development
+    # Python (#299): decode in a scratch copy it can read (nothing to do in a
+    # package's own runtime, whose install it reads).
+    import decoder_runtime
+    decoder_runtime.use()
     out = Path(args.report)
     report = {"colour_mode": args.colour_mode}
     with tempfile.TemporaryDirectory() as tmp:

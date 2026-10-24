@@ -243,7 +243,11 @@ def cmd_run(args):
     missing = [f"{c.get('set')}/{c.get('id')}" for c in clips if not Path(c["wav"]).is_file()]
     if missing:                      # before the model loads, which takes a while
         sys.exit(f"{len(missing)} clip(s) not found: {', '.join(missing[:5])}")
-    with mode:                       # a cut outside CUT_RANGE is refused here
+    # The decoder runs in an AppContainer that cannot read this checkout's
+    # Python (#299): decode in a scratch copy it can read, removed after.
+    sys.path.append(str(Path(__file__).resolve().parent))      # after the standard library
+    import decoder_runtime
+    with mode, decoder_runtime.session():   # a cut outside CUT_RANGE is refused here
         t0 = time.perf_counter()
         engine = load(args.engine, str(cache), threads)
         load_s = time.perf_counter() - t0

@@ -28,6 +28,20 @@ HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 SR = 16000
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def damage(db_path, table="meetings"):
     """Overwrite a table's root page: the database still opens, and SQLite's
     quick check reports the damage."""

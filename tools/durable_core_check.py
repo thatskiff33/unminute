@@ -81,6 +81,11 @@ def transcribe(root, src, engine, crash_at=None):
 def main():
     src, cache = Path(sys.argv[1]), sys.argv[2]
     crash_at = int(sys.argv[3]) if len(sys.argv) > 3 else 5
+    # The decoder runs in an AppContainer that cannot read this checkout's
+    # Python (#299): decode in a scratch copy it can read.
+    sys.path.append(str(Path(__file__).resolve().parent))      # after the standard library
+    import decoder_runtime
+    decoder_runtime.use()
     from faster_whisper.audio import decode_audio
     engine = asr_engines.ParakeetEngine("parakeet-tdt-0.6b-v2", cache, 4, decode_audio).load()
     with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

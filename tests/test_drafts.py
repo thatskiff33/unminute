@@ -33,6 +33,20 @@ CONSENT = consent.recording_record(clock=lambda: 1000.0)
 FAKE = "test:fake_worker_engines:"
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def tone(seconds, rate=16000, freq=220.0, amp=0.25):
     t = np.arange(int(round(seconds * rate))) / rate
     return (np.sin(2 * np.pi * freq * t) * amp * 32767).astype(np.int16)

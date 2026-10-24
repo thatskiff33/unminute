@@ -32,6 +32,20 @@ MARKER = "Zqmarker"          # also in tests/fake_worker_engines.py
 SR = 16000
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def records(folder):
     out = []
     for path in diag.files(folder):
@@ -808,6 +822,29 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('"area":"page"', shared)
         self.assertIn("Unminute diagnostics (no meeting content)", shared)
         self.assertEqual(leaks(self.logs(), shared, *ws.status()["import_errors"]), [])
+
+    def test_a_decoder_container_that_cannot_start_is_logged_for_it(self):
+        # #299: the import is refused with the IT message and a code; the log
+        # says which step failed and its Windows error, and nothing else (P3).
+        from workspace import media
+        ws = self.ws
+        rec = write_wav(self.root / MARKER / f"{MARKER}.wav", 2)
+        ws.start()
+        with mock.patch.object(media, "_launch",
+                               side_effect=media.SandboxUnavailable("start", 5)), \
+                mock.patch.object(subprocess, "Popen",
+                                  side_effect=AssertionError("a decoder outside the container")):
+            self.assertEqual(ws.import_paths([str(rec)])["accepted"], 1)
+            self.assertTrue(ws.wait_idle(60))
+        error = ws.status()["import_errors"][-1]
+        self.assertRegex(error, r"^" + media.SANDBOX_REFUSED.replace(".", r"\.")
+                         + r" \(code U-[0-9A-F]{6}\)$")
+        self.assertEqual(ws.meetings(), [])
+        [rec_] = [r for r in records(self.logs()) if r.get("kind") == "incident"]
+        self.assertEqual((rec_["area"], rec_["error"], rec_["step"], rec_["winerror"]),
+                         ("import", "SandboxUnavailable", "start", 5))
+        self.assertIn(rec_["code"], error)
+        self.assertEqual(leaks(self.logs(), error), [])
 
     def test_a_worker_crash_is_recorded_with_a_code(self):
         from workspace.worker import WorkerCrashed

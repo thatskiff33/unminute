@@ -7,8 +7,10 @@
 #   python -m workspace --offboard          removes it: run as the user, app closed
 #
 # What is covered: the workspace (%LOCALAPPDATA%\Unminute\workspace) as a
-# whole, the per-user models (Unminute\models), the Hugging Face token, and
-# the lid record (put back first, with the app's own rules). The program
+# whole, the per-user models (Unminute\models), the Hugging Face token, the
+# decoder's AppContainer profile (#299: workspace/appcontainer.py, a registry
+# key and a folder under %LOCALAPPDATA%\Packages, holding nothing of the
+# user's), and the lid record (put back first, with the app's own rules). The program
 # itself is the uninstaller's (B8b, uninstall.ps1 -Offboard). The earlier
 # version's data (0.4.3 and before) is not looked at (the owner's decision
 # of 22 Oct 2026, replacing B8-3). Anything else in Unminute (for example a
@@ -268,14 +270,27 @@ def _running(ws, session_running, holding=False):
     return not holding and _lock_held(ws)
 
 
-def assess(where, session_running, creds, tokens=TOKENS):
+def _decoder_profile(profiles):
+    """Is the decoder's AppContainer profile there? None when Windows cannot
+    say (never reported as absent on a guess)."""
+    try:
+        return bool(profiles.profile_exists())
+    except Exception:
+        return None
+
+
+def assess(where, session_running, creds, tokens=TOKENS, profiles=None):
     """The report's facts: counts, states and yes or no. tokens: the token
-    names; tests give scratch ones."""
+    names; tests give scratch ones. profiles: profile_exists and
+    delete_profile (workspace.appcontainer; tests give a stand-in)."""
+    if profiles is None:
+        from workspace import appcontainer as profiles
     ws = where.workspace
     out = {"workspace": "none", "blockers": {}, "leftover": len(_leftovers(where)),
            "others": _others(where),
            "models_mb": 0, "models_link": is_link(where.models),
            "token": any(creds.has_token(t) for t in tokens),
+           "decoder_profile": _decoder_profile(profiles),
            "lid_record": os.path.lexists(ws / "power_restore.json"),
            "running": False}
     if os.path.lexists(where.models) and not out["models_link"]:
@@ -328,13 +343,14 @@ def _others_left(facts):
 
 
 def run(where, remove, *, account, session_running, mirror=None, tokens=TOKENS,
-        creds=None, lid=None):
+        creds=None, lid=None, profiles=None):
     """--offboard-report (remove False) or --offboard (remove True): (result,
     exit code). account: audit.token_user's answer reduced to True (Local
     System), False (a user) or None (Windows cannot say). session_running:
     whether the app is open in this session. mirror: the Event Log copy
     (audit.EventLogMirror in the app; None off Windows). creds: has_token
-    and remove_token (workspace.credentials). lid: power.restore_only."""
+    and remove_token (workspace.credentials). lid: power.restore_only.
+    profiles: the decoder's profile (workspace.appcontainer)."""
     if account is None:
         return {"result": "account_unknown"}, ACCOUNT
     if account:
@@ -345,8 +361,10 @@ def run(where, remove, *, account, session_running, mirror=None, tokens=TOKENS,
         from workspace import credentials as creds
     if lid is None:
         from workspace.power import restore_only as lid
+    if profiles is None:
+        from workspace import appcontainer as profiles
     tokens = tuple(tokens)
-    facts = assess(where, session_running, creds, tokens)
+    facts = assess(where, session_running, creds, tokens, profiles)
     if facts["running"]:
         return {"result": "running", **facts}, RUNNING
     if not remove:
@@ -355,7 +373,7 @@ def run(where, remove, *, account, session_running, mirror=None, tokens=TOKENS,
         if _others_left(facts):
             return {"result": "others_left", **facts}, OTHERS_LEFT
         return {"result": "ok", **facts}, OK
-    return _remove(where, facts, session_running, mirror, creds, lid, tokens)
+    return _remove(where, facts, session_running, mirror, creds, lid, tokens, profiles)
 
 
 def _failed(step, facts):
@@ -401,7 +419,7 @@ def _prepare(where, facts, session_running, mirror, lid):
     return None
 
 
-def _remove(where, facts, session_running, mirror, creds, lid, tokens):
+def _remove(where, facts, session_running, mirror, creds, lid, tokens, profiles):
     ws = where.workspace
     # A removal a crash or a file in use stopped part-way was checked and
     # erased then: finish it first (C1: intent persists).
@@ -412,7 +430,7 @@ def _remove(where, facts, session_running, mirror, creds, lid, tokens):
         return _failed("leftover", facts)
     if facts["blockers"]:
         return {"result": "blocked", **facts}, BLOCKED
-    removed = {"workspace": False, "models": False, "token": False}
+    removed = {"workspace": False, "models": False, "token": False, "decoder_profile": False}
     if os.path.lexists(ws):
         made = not os.path.lexists(ws / LOCK)
         try:
@@ -458,10 +476,14 @@ def _remove(where, facts, session_running, mirror, creds, lid, tokens):
     except Exception:
         return _failed("token", facts)
     try:
+        removed["decoder_profile"] = bool(profiles.delete_profile())   # none there: False
+    except Exception:
+        return _failed("decoder_profile", facts)
+    try:
         os.rmdir(where.base)            # only if now empty
     except OSError:
         pass
-    after = assess(where, session_running, creds, tokens)
+    after = assess(where, session_running, creds, tokens, profiles)
     after["models_link"] = facts["models_link"]          # what was removed was a link
     # Anything else in Unminute (a renamed workspace, say) is left alone (C1)
     # and counted: never reported as a clean result.
