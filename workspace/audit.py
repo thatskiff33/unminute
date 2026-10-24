@@ -129,10 +129,15 @@ KINDS = {
                                       "source": _one_of("file", "folder", "recording"),
                                       "folder": _opt_id, "recording": _opt_id,
                                       "seconds": _count, "delete_original": _bool}),
+    # sources: what the recording opened, so with consent "confirmed" which
+    # notice was confirmed (the start refuses a confirmation for other
+    # sources). Two fixed words, never null (the owner's decision, 24 Oct
+    # 2026, #346).
     "recording_started": (1110, INFO, {"recording": _id,
                                        "consent": _one_of("confirmed", "not_required"),
                                        "wording": _opt_count,
-                                       "method": _one_of("app-window", None)}),
+                                       "method": _one_of("app-window", None),
+                                       "sources": _one_of("mic_only", "mic_and_computer")}),
     "recording_ended": (1111, INFO, {"recording": _id,
                                      "result": _one_of("saved", "discarded", "recovered"),
                                      "seconds": _count}),

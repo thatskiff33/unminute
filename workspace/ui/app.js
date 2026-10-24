@@ -2761,7 +2761,7 @@ function renderComputer(rec, kind) {
   const shown = !!comp && (kind === "" || kind === "paused");
   $("rec-computer").hidden = !shown;
   if (compSeen.id !== rec.id) Object.assign(compSeen, { id: rec.id, mic: false, comp: false, said: 0 });
-  if (!shown) { $("rec-computer-hint").hidden = true; return; }
+  if (!shown) { $("rec-computer-hint").hidden = true; $("rec-computer-hint").textContent = ""; return; }
   const db = comp.on && kind === "" ? comp.level_db : -96;
   if (kind === "" && rec.level_db > -50) compSeen.mic = true;
   if (db > -60) compSeen.comp = true;
@@ -2773,11 +2773,22 @@ function renderComputer(rec, kind) {
     compSeen.said = now;
     $("rec-computer-level").setAttribute("aria-valuenow", String(Math.round(Math.max(-60, Math.min(0, db)))));
   }
-  // A call app playing through another device records silence: say so once
-  // the microphone has heard something for a minute and the computer nothing.
+  // A call app playing through another device records silence. A check at
+  // the start of each recording: from 60 s of recorded time, if the
+  // microphone has heard anything and the computer nothing at all, say so.
+  // Once the computer has played anything the hint stays off for this
+  // recording: later silence is normal (a quiet call, a muted pause), and a
+  // change of output has its own note under the card. The hint is a polite
+  // live region: a screen reader reads a change made while it is shown, not
+  // text that arrives with it, so it is shown empty first and filled at the
+  // next poll, and its text is set only when it changes (never re-read at
+  // each poll).
   const quiet = kind === "" && comp.on && rec.seconds >= 60 && compSeen.mic && !compSeen.comp;
-  $("rec-computer-hint").hidden = !quiet;
-  if (quiet) $("rec-computer-hint").textContent = `No sound from the computer yet. If you are on a call, check that it plays through ${comp.device || "the Windows default output"}.`;
+  const hint = $("rec-computer-hint");
+  if (!quiet) { hint.hidden = true; hint.textContent = ""; return; }
+  const text = `No sound from the computer yet. If you are on a call, check that it plays through ${comp.device || "the Windows default output"}.`;
+  if (hint.hidden) hint.hidden = false;
+  else if (hint.textContent !== text) hint.textContent = text;
 }
 
 function reportItem(rep) {
