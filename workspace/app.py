@@ -31,6 +31,10 @@ from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, eng
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
+# The workspace's own files and folders (#111 C7): named once, in diag (and
+# the lid's restore record in power).
+from workspace.diag import (AUDIT_FOLDER, DB_FILE, LOGS_FOLDER, SETTINGS_FILE,
+                            SETTINGS_UNREADABLE_FILE)
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import (DAMAGED_REFUSAL, DamagedContent, KeyMissing, Store, StoreError,
                              default_root, mark_compaction_owed, quick_check_file)
@@ -74,15 +78,6 @@ ASSISTANT_WITHHELD = {
     "unreadable": ("Your organisation's settings could not be read, so Copy and open is not "
                    "available. Use Copy prompt and transcript instead, and ask your IT team."),
 }
-# The workspace's own files and folders. tools/residue.py builds the list of
-# files allowed after final cleanup from these (#111 C7), so a rename here
-# moves that list with it.
-DB_FILE = "workspace.db"
-SETTINGS_FILE = "settings.json"
-SETTINGS_UNREADABLE_FILE = "settings.unreadable.json"   # a copy kept when it cannot be read
-POWER_RESTORE_FILE = "power_restore.json"   # the lid action to put back (power.LidSwitch)
-LOGS_FOLDER = "logs"
-AUDIT_FOLDER = "audit"
 SETTINGS_VERSION = 1                # settings.json format (R11): raise if a key's meaning changes
 SETTINGS_MAX_BYTES = 64 * 1024      # a larger settings.json is not one the app wrote
 
@@ -358,7 +353,7 @@ class Workspace:
         # The lid (#172): a "Do nothing" left by a crash or power cut is put
         # back first of all, before anything that could fail (the database
         # may be damaged by the same power cut). It never stops the start.
-        self.lid = lid_switch or power.LidSwitch(self.root / POWER_RESTORE_FILE)
+        self.lid = lid_switch or power.LidSwitch(self.root / power.RESTORE_FILE)
         try:
             self.lid.restore()
         except Exception:

@@ -128,20 +128,21 @@ def split_windows(raw, size):
 
 def names():
     """The workspace's own file names and patterns, from the app's constants
-    (import the app first: evidence.add_app). Folders are relative to the
+    (workspace/diag.py and the others named here; import the app first:
+    evidence.add_app). Folders are relative to the
     workspace folder (%LOCALAPPDATA%\\Unminute\\workspace)."""
-    from workspace import app, audit, diag, handoff, store
+    from workspace import audit, diag, handoff, power, store
     return {
-        "db": app.DB_FILE,
-        "files": (app.DB_FILE, app.DB_FILE + "-wal", app.DB_FILE + "-shm",
-                  app.SETTINGS_FILE, app.SETTINGS_UNREADABLE_FILE, handoff.TEMPLATES_FILE,
-                  app.POWER_RESTORE_FILE, store.compaction_marker(app.DB_FILE).name),
-        "logs": app.LOGS_FOLDER,
+        "db": diag.DB_FILE,
+        "files": (diag.DB_FILE, diag.DB_FILE + "-wal", diag.DB_FILE + "-shm",
+                  diag.SETTINGS_FILE, diag.SETTINGS_UNREADABLE_FILE, handoff.TEMPLATES_FILE,
+                  power.RESTORE_FILE, store.compaction_marker(diag.DB_FILE).name),
+        "logs": diag.LOGS_FOLDER,
         "log_files": (diag.INTEGRITY_FILE, diag.KEYS_FILE),
         "log_stem": diag.LOG_NAME.pattern,
         "log_suffixes": (diag.LOG_SUFFIX, diag.RUNNING_SUFFIX),
         "crash_suffix": diag.CRASH_SUFFIX,
-        "audit": app.AUDIT_FOLDER,
+        "audit": diag.AUDIT_FOLDER,
         "audit_segment": audit.SEGMENT.pattern,
     }
 

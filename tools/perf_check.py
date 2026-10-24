@@ -1582,7 +1582,8 @@ def measure_store(root, protector=None, meetings=STORE_MEETINGS, passages=STORE_
 
     import numpy as np
 
-    from workspace.app import DB_FILE, Workspace
+    from workspace.app import Workspace
+    from workspace.diag import DB_FILE
     root = Path(root)
     models = root / "models"
     rng = np.random.default_rng(11)

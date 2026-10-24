@@ -23,8 +23,9 @@
 #         name, hold reason) and windows of the decoded audio are in no file
 #         under the profile or TEMP, and --verify-audit says "ok";
 #       * a microphone recording through the shipped confirmation, from a
-#         synthetic stream: its audio is in no file while it records, and its
-#         key is gone after import and after a discard;
+#         synthetic stream: its audio is in no file while it records (the
+#         scan must include at least one finished chunk), and its key is
+#         gone after import and after a discard;
 #       * erase evidence through the store: after audio cleanup the audio key
 #         is gone while the text key opens and the media folder is gone; after
 #         final cleanup no meeting, no update blocker, no free page and an
@@ -137,6 +138,15 @@ def last_json(text):
 def scan(base, roots, patterns):
     """residue.find over roots, with the names relative to base."""
     return residue.find(roots, patterns, base)
+
+
+def chunks_scanned(scanned):
+    """How many of the scanned files are finished microphone chunks (named by
+    the package's recorder: chunk-NNNNNN.uma). "Not found while it records"
+    means something only if at least one was scanned (review of #335)."""
+    from workspace import recorder
+    return sum(1 for rel in scanned if Path(rel).name.startswith(recorder.MIC_PREFIX)
+               and Path(rel).suffix == recorder.CHUNK_SUFFIX)
 
 
 def check(version_dir, cache, wav, report, system_dumps=False):
@@ -295,7 +305,8 @@ def record(command, rest, env, app, base, profile, temp, timeout=1800):
                 found = scan(base, [profile, temp], patterns)
                 during = {"seconds": msg.get("seconds"), "windows": len(patterns),
                           "control_missed": missed, "found": found["hits"],
-                          "unreadable": found["unreadable"]}
+                          "unreadable": found["unreadable"],
+                          "chunks_scanned": chunks_scanned(found["scanned"])}
                 proc.stdin.write("go\n")
                 proc.stdin.flush()
             elif "result" in msg:
@@ -487,7 +498,7 @@ def record(ws, pc, base):
     """Through the bridge, as the page does: the app asks its own recording
     question and the answerer says yes to it only (tools/perf_check.py)."""
     from workspace import api, consent, update
-    from workspace.app import DB_FILE
+    from workspace.diag import DB_FILE
     out = {}
     ws.settings.update(onboarded=True, speakers=True, microphone=True)
     ws.start()
@@ -568,7 +579,7 @@ def at_end(root):
     free pages and its write-ahead log (read before opening: closing may
     checkpoint), through the store."""
     from workspace import update
-    from workspace.app import DB_FILE
+    from workspace.diag import DB_FILE
     from workspace.store import Store
     db = root / DB_FILE
     wal = db.with_name(db.name + "-wal")
@@ -658,6 +669,7 @@ def verdict(r):
         "audit log verified, no content in it": rest.get("verify_audit") == "ok"
             and (rest.get("audit_files") or 0) > 0,
         "recording encrypted while it records": during.get("windows") == 8
+            and (during.get("chunks_scanned") or 0) >= 1
             and during.get("control_missed") == [] and during.get("found") == {}
             and during.get("unreadable") == [],
         "recording confirmed, then its key erased": not rec.get("error")

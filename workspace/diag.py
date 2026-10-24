@@ -79,6 +79,17 @@ NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
            "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
+# The workspace's own files and folders (the lid's restore record is
+# power.RESTORE_FILE). Here, in a module with no heavy or app imports, so the
+# window (workspace/app.py) and the support options that open no window
+# (--status, --health, --gate, --verify-audit in workspace/__main__.py) name
+# them from one place. tools/residue.py builds the list of files allowed after
+# final cleanup from these (#111 C7), so a rename here moves that list with it.
+DB_FILE = "workspace.db"
+SETTINGS_FILE = "settings.json"
+SETTINGS_UNREADABLE_FILE = "settings.unreadable.json"   # a copy kept when it cannot be read
+LOGS_FOLDER = "logs"
+AUDIT_FOLDER = "audit"
 # A log's files: <stem>.log, <name>.running while its run is open and <name>.crash
 # (faulthandler's output). tools/residue.py allows these after cleanup (#111 C7).
 LOG_SUFFIX = ".log"
