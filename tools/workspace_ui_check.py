@@ -1294,9 +1294,16 @@ def locked_checks(window, ws, calls, report):
         before = len(calls)
         time.sleep(LOCKED_IDLE_S)
         report["calls_while_idle"] = calls[before:]
-        report["copied"] = evaluate(window, WAIT + """
-            document.getElementById('locked-copy').click(); await wait(1000);
-            return document.getElementById('status').textContent;""")
+        # The copy is retried while another program briefly holds the
+        # clipboard, as the handoff's are (#342); each click starts from an
+        # empty status, so a slow answer is not read as the last click's.
+        copied = evaluate(window, WAIT + COPY_RETRY_JS + """
+            return await copyRetrying(async () => {
+                document.getElementById('status').textContent = '';
+                document.getElementById('locked-copy').click(); await wait(1000);
+                return document.getElementById('status').textContent; });""", timeout=60) or {}
+        report["copied"] = copied.get("status")
+        report["copy_retries"] = copied.get("retries")
         evaluate(window, WAIT + "document.getElementById('locked-help').click(); await wait(800);"
                                 "return true;")
         report["help_opened"] = list(OPENED)
