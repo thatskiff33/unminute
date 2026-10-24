@@ -44,7 +44,7 @@
     "uninstall.ps1": {
       "user": {
         "0": "removed",
-        "1": "failed; with -Offboard also not confirmed, not this account's install, or offboarding stopped at a step",
+        "1": "failed; with -Offboard also not confirmed, not this account's install, a version too old for the switch or whose files it cannot trust, program files incomplete while data is left, or offboarding stopped at a step, at its 15-minute limit or with a result it cannot read (docs/PACKAGING.md)",
         "2": "with -Offboard, run as Local System or an account Windows cannot name",
         "3": "the app, or an install or update, is running",
         "5": "with -Offboard, offboarding is blocked by meetings, holds, cleanup or audio left",

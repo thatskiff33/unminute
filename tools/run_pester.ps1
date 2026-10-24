@@ -10,7 +10,7 @@
   and imported from that folder by path, so no other Pester (Windows ships 3.4.0)
   is used. Then every *.Tests.ps1 file under tests/powershell runs, with LOCALAPPDATA
   and APPDATA in a new scratch folder under -ModuleRoot; the run fails if this
-  computer's real install (its folder, Start menu shortcut or uninstall entry)
+  computer's real install (its folder, Start menu shortcut, uninstall entry or pins)
   changed meanwhile. Never run the tests any other way (docs/DEVELOPER_NOTES.md).
 
   Run it under Windows PowerShell 5.1, which runs the installer:
@@ -70,24 +70,12 @@ if ($loaded.Version -ne [version]$PesterVersion -or
 # The tests must never reach this computer's real install (on 23 October 2026 a local
 # run uninstalled it). They load the scripts only through tests/powershell/Isolation.ps1;
 # on top of that, they run here with LOCALAPPDATA and APPDATA in a new scratch folder,
-# and the run fails if the real install's folder, Start menu shortcut or uninstall entry
-# changed while they ran. The real places come from the shell, not those variables.
-# Only times, attributes and values are compared, in memory; nothing is printed.
-function Get-RealInstallState {
-    $local = [Environment]::GetFolderPath("LocalApplicationData")
-    $paths = @((Join-Path $local "Programs\Unminute"),
-               (Join-Path ([Environment]::GetFolderPath("Programs")) "Unminute.lnk"))
-    $state = @(foreach ($path in $paths) {
-        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
-        if ($item) { "{0} {1}" -f $item.LastWriteTimeUtc.Ticks, $item.Attributes } else { "absent" }
-    })
-    $entry = Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute" -ErrorAction SilentlyContinue
-    if ($entry) {
-        $state += (@($entry.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } |
-            ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "|")
-    } else { $state += "absent" }
-    return ($state -join "`n")
-}
+# and the run fails if the real install's folder, Start menu shortcut, uninstall entry
+# or pins of Unminute (TaskBar and StartMenu, which uninstall.ps1 -Offboard removes)
+# changed while they ran: Get-RealInstallState in Isolation.ps1, which only defines
+# functions and reads. The real places come from the shell, not those variables. Only
+# names, sizes, times, attributes and values are compared, in memory; nothing is printed.
+. (Join-Path (Split-Path -Parent $PSScriptRoot) "tests\powershell\Isolation.ps1")
 
 $scratch = Join-Path $ModuleRoot ("s" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 $saved = @{ LOCALAPPDATA = $env:LOCALAPPDATA; APPDATA = $env:APPDATA }
@@ -109,7 +97,7 @@ $changed = (Get-RealInstallState) -cne $before
 try { Remove-Item -LiteralPath $module -Recurse -Force } catch { }
 try { Remove-Item -LiteralPath $scratch -Recurse -Force } catch { }
 if ($changed) {
-    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut or uninstall entry). Check it.")
+    [Console]::Error.WriteLine("A test changed this computer's real install (its folder, Start menu shortcut, uninstall entry or pins). Check it.")
     exit 1
 }
 if ($result.TotalCount -eq 0 -or $result.FailedCount -gt 0 -or $result.Result -ne "Passed") { exit 1 }

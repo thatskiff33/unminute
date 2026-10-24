@@ -794,6 +794,14 @@ class UninstallOffboardTests(unittest.TestCase):
         self.assertTrue((self.pins / "TaskBar" / "Unminute.lnk").is_file())
 
 
+class UninstallOffboardGuardTests(unittest.TestCase):
+    """#332 review: this module's guard is on, so dropping setUpModule fails here."""
+
+    def test_the_guard_is_on_for_every_test_here(self):
+        self.assertIs(subprocess.Popen, hardening._GuardedPopen)
+        self.assertIs(subprocess.run, hardening._guarded_run)
+
+
 class UninstallOffboardTextTests(unittest.TestCase):
     """What the package and the uninstaller say to each other."""
 

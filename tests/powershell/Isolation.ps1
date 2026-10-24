@@ -36,6 +36,66 @@ function Get-RealPlace {
     )
 }
 
+# This account's real TaskBar and StartMenu pin folders, inside its roaming folder from
+# the shell. uninstall.ps1 -Offboard removes the pins of Unminute there (#111 B8b).
+function Get-RealPinFolder {
+    $roaming = (Get-RealPlace)[3]
+    $pinned = Join-Path $roaming "Microsoft\Internet Explorer\Quick Launch\User Pinned"
+    return @((Join-Path $pinned "TaskBar"), (Join-Path $pinned "StartMenu"))
+}
+
+# True when a pin's name, or its first megabyte read as ASCII or UTF-16 (either byte
+# alignment), names Unminute in any case: a pin of the real install names its folder.
+# Read only; nothing is shown.
+function Test-UnminutePin([IO.FileInfo]$File) {
+    if ($File.Name.IndexOf("unminute", [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    try {
+        $stream = [IO.File]::Open($File.FullName, "Open", "Read", "ReadWrite")
+        try {
+            $bytes = New-Object byte[] ([Math]::Min($stream.Length, 1MB))
+            $count = $stream.Read($bytes, 0, $bytes.Length)
+        } finally { $stream.Dispose() }
+    } catch { return $false }
+    $texts = @([Text.Encoding]::GetEncoding(28591).GetString($bytes, 0, $count),
+               [Text.Encoding]::Unicode.GetString($bytes, 0, $count))
+    if ($count -gt 1) { $texts += [Text.Encoding]::Unicode.GetString($bytes, 1, $count - 1) }
+    foreach ($text in $texts) {
+        if ($text.IndexOf("unminute", [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+
+# The real install as tools/run_pester.ps1 compares it before and after the tests (#332
+# review): the install folder's and Start menu shortcut's times and attributes, the
+# uninstall entry's values, and each pin of Unminute's name, size, time and attributes
+# (Test-UnminutePin; other apps' pins are left out, so the user pinning something
+# meanwhile is no change). Compared in memory; never printed.
+function Get-RealInstallState {
+    $places = Get-RealPlace
+    $state = @(foreach ($path in @($places[0], (Join-Path $places[2] "Unminute.lnk"))) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item) { "{0} {1}" -f $item.LastWriteTimeUtc.Ticks, $item.Attributes } else { "absent" }
+    })
+    $entry = Get-ItemProperty -LiteralPath $script:RealUninstallKey -ErrorAction SilentlyContinue
+    if ($entry) {
+        $state += (@($entry.PSObject.Properties | Where-Object { $_.Name -notlike "PS*" } |
+            ForEach-Object { "$($_.Name)=$($_.Value)" }) -join "|")
+    } else { $state += "absent" }
+    foreach ($folder in Get-RealPinFolder) {
+        $dir = [IO.DirectoryInfo]::new($folder)
+        if (-not $dir.Exists) { $state += "absent"; continue }
+        try {
+            $pins = @(foreach ($file in $dir.GetFiles("*.lnk")) {
+                if ($file.Extension -ieq ".lnk" -and (Test-UnminutePin $file)) {
+                    "{0} {1} {2} {3}" -f $file.Name, $file.Length, $file.LastWriteTimeUtc.Ticks, $file.Attributes
+                }
+            })
+            $state += (@($pins | Sort-Object) -join "|")
+        } catch { $state += "unreadable" }
+    }
+    return ($state -join "`n")
+}
+
 # The final path Windows opens for an existing file or folder: links, junctions and
 # 8.3 short names resolved (GetFinalPathNameByHandle), or $null when it cannot be
 # opened. Compiled once per session.

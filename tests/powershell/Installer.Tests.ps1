@@ -183,6 +183,43 @@ Describe "the tests' own safety check" {
             [IO.Directory]::Delete($link)
         }
     }
+
+    It "counts a change to a pin of Unminute as a change to the real install, and no other pin" {
+        # #332 review: uninstall.ps1 -Offboard removes pins, so tools/run_pester.ps1
+        # compares them too (Get-RealInstallState). Here the pin folders are stand-ins
+        # in TestDrive; the rest of the state is only read.
+        $script:TestPins = @(
+            [IO.Directory]::CreateDirectory((Join-Path $TestDrive "pins\TaskBar")).FullName,
+            [IO.Directory]::CreateDirectory((Join-Path $TestDrive "pins\StartMenu")).FullName)
+        Mock Get-RealPinFolder { $script:TestPins }
+        $target = "C:\Users\x\AppData\Local\Programs\Unminute\versions\1.0.0\runtime\pythonw.exe"
+        $ascii = [Text.Encoding]::ASCII
+        $pins = [ordered]@{
+            (Join-Path $script:TestPins[0] "Unminute.lnk") = $ascii.GetBytes("Lsynthetic")
+            (Join-Path $script:TestPins[1] "Renamed.lnk") = $ascii.GetBytes("L" + $target)
+            # UTF-16 at an odd offset, as it can sit inside a shortcut.
+            (Join-Path $script:TestPins[0] "Other name.lnk") = [byte[]](@(76) + [Text.Encoding]::Unicode.GetBytes($target))
+        }
+        foreach ($pin in $pins.Keys) { [IO.File]::WriteAllBytes($pin, $pins[$pin]) }
+        $editor = Join-Path $script:TestPins[1] "Editor.lnk"
+        [IO.File]::WriteAllBytes($editor, $ascii.GetBytes("LC:\Program Files\Editor\editor.exe"))
+        $before = Get-RealInstallState
+        # Another app's pin changed, added or removed: no change to the real install.
+        [IO.File]::WriteAllBytes($editor, $ascii.GetBytes("LC:\Program Files\Editor\editor2.exe"))
+        [IO.File]::WriteAllBytes((Join-Path $script:TestPins[0] "Browser.lnk"), $ascii.GetBytes("LC:\Browser\b.exe"))
+        Get-RealInstallState | Should -BeExactly $before
+        Remove-Item -LiteralPath $editor
+        Get-RealInstallState | Should -BeExactly $before
+        foreach ($pin in $pins.Keys) {
+            $base = Get-RealInstallState
+            Remove-Item -LiteralPath $pin
+            Get-RealInstallState | Should -Not -BeExactly $base
+            [IO.File]::WriteAllBytes($pin, $pins[$pin])
+            $base = Get-RealInstallState
+            (Get-Item -LiteralPath $pin).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(5)
+            Get-RealInstallState | Should -Not -BeExactly $base
+        }
+    }
 }
 
 Describe "packaging/identity.json mirrors the scripts" {

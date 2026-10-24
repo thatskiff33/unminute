@@ -1610,8 +1610,8 @@ class EnvironmentTokenTests(unittest.TestCase):
 # (scratch_text: its Start menu folder and uninstall key swapped for a scratch folder
 # and a throwaway HKCU key) through run_installer, which refuses, before anything
 # runs, unless the copy, the install folder, LOCALAPPDATA and APPDATA are all scratch,
-# and fails the test if the real install's folder, Start menu shortcut or uninstall
-# entry changed while the copy ran. The real places come from the shell's known
+# and fails the test if the real install's folder, Start menu shortcut, uninstall
+# entry or pins changed while the copy ran. The real places come from the shell's known
 # folders, which do not read LOCALAPPDATA or APPDATA, so a test's scratch variables
 # cannot hide them. InstallerIsolationTests proves all of this.
 
@@ -1627,6 +1627,8 @@ ROAMING_READ = "$env:APPDATA"
 # What a copy may not hold: the ways a script reaches this account's own Start menu
 # or uninstall entries.
 REAL_REACH = ("GetFolderPath", "Start Menu\\", "CurrentVersion\\Uninstall", "Registry::")
+# Where this account's TaskBar and StartMenu pins live, inside its roaming folder.
+REAL_PINNED = ("Microsoft", "Internet Explorer", "Quick Launch", "User Pinned")
 
 
 def real_places():
@@ -1646,9 +1648,46 @@ def real_places():
             "programs": known(0x02), "roaming": known(0x1A)}   # CSIDL_PROGRAMS, CSIDL_APPDATA
 
 
+def _names_unminute(entry):
+    """A pin's name, or its first megabyte read as ASCII or UTF-16, names Unminute in
+    any case (a pin of the real install names its folder): read only, never shown."""
+    if "unminute" in entry.name.lower():
+        return True
+    try:
+        with open(entry.path, "rb") as f:
+            data = f.read(1 << 20).lower()
+    except OSError:
+        return False
+    return b"unminute" in data or "unminute".encode("utf-16-le") in data
+
+
+def real_pin_state(roaming):
+    """The TaskBar and StartMenu pins of Unminute under this roaming folder, which
+    uninstall.ps1 -Offboard removes (#111 B8b; #332 review): each one's name, size,
+    time and attributes. Other apps' pins are left out, so the user pinning something
+    meanwhile is no change to the real install."""
+    state = []
+    for kind in ("TaskBar", "StartMenu"):
+        folder = Path(roaming).joinpath(*REAL_PINNED, kind)
+        try:
+            with os.scandir(folder) as entries:
+                pins = [(e.name, e.stat(follow_symlinks=False)) for e in entries
+                        if e.name.lower().endswith(".lnk") and _names_unminute(e)]
+        except FileNotFoundError:
+            state.append((kind, None))
+            continue
+        except OSError:
+            state.append((kind, "unreadable"))
+            continue
+        state.append((kind, sorted((name, st.st_size, st.st_mtime_ns, st.st_file_attributes)
+                                   for name, st in pins)))
+    return state
+
+
 def real_install_state():
-    """The real install folder's and Start menu shortcut's times and attributes, and
-    the real uninstall entry's values and time, to compare in memory (never shown)."""
+    """The real install folder's and Start menu shortcut's times and attributes, the
+    real uninstall entry's values and time, and the real pins of Unminute
+    (real_pin_state), to compare in memory (never shown)."""
     import winreg
     places = real_places()
     state = []
@@ -1664,6 +1703,7 @@ def real_install_state():
             state.append((info[2], sorted(winreg.EnumValue(key, i) for i in range(info[1]))))
     except FileNotFoundError:
         state.append(None)
+    state.extend(real_pin_state(places["roaming"]))
     return state
 
 
@@ -1770,7 +1810,8 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
         _INSTALLER_RUN.active = False
         if real_install_state() != before:
             raise AssertionError("a test run changed this account's real install (its "
-                                 "folder, Start menu shortcut or uninstall entry): check it")
+                                 "folder, Start menu shortcut, uninstall entry or pins): "
+                                 "check it")
 
 
 # -- every other process these tests start (#332 review) -------------------------------
@@ -1858,6 +1899,92 @@ def setUpModule():
                   mock.patch.object(subprocess, "run", _guarded_run)):
         patch.start()
         unittest.addModuleCleanup(patch.stop)
+
+
+def installer_starts(tree, exempt=()):
+    """The lines of process starts (subprocess, os, asyncio) in tree, outside the
+    nodes in exempt, whose arguments name an installer script or -InstallDir, either
+    in the call itself or through a name or attribute set from such text first (#332
+    review: B8b's first test module built its command in a variable). A name counts
+    within its own function, class or module body; an attribute (self.copy) anywhere
+    in tree. A value carries it through str(), Path(), scratch_text() and any method
+    call (.read_text(), os.path.join), but not through another function called by its
+    bare name (such as a helper that reads a pattern out of a script). Text passed in
+    through a function's parameters is not followed: the runtime guard (setUpModule)
+    sees those starts in the two modules that run them."""
+    import ast
+    starters = {"run", "Popen", "call", "check_call", "check_output", "system",
+                "startfile", "create_subprocess_exec", "create_subprocess_shell"}
+    scopes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+    def own(scope):
+        """scope's nodes, without those of the functions and classes inside it."""
+        todo = list(ast.iter_child_nodes(scope))
+        while todo:
+            node = todo.pop()
+            yield node
+            if not isinstance(node, scopes):
+                todo.extend(ast.iter_child_nodes(node))
+
+    def carried(node):
+        """node's parts whose text a value built from node can hold."""
+        todo = [node]
+        while todo:
+            part = todo.pop()
+            yield part
+            if not (isinstance(part, ast.Call) and isinstance(part.func, ast.Name)
+                    and part.func.id not in ("str", "repr", "format", "Path", "scratch_text")):
+                todo.extend(ast.iter_child_nodes(part))
+
+    def reaches(node, names, attributes, parts=ast.walk):
+        return any(
+            (isinstance(inner, ast.Constant) and isinstance(inner.value, str)
+             and re.search(r"(?i)install\.ps1|-InstallDir", inner.value)) or
+            (isinstance(inner, ast.Name) and inner.id in names) or
+            (attributes and isinstance(inner, ast.Attribute)
+             and ast.unparse(inner) in attributes)
+            for inner in parts(node))
+
+    def assignments(nodes):
+        for node in nodes:
+            if isinstance(node, ast.Assign):
+                yield node.targets, node.value
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+                yield [node.target], node.value
+            elif isinstance(node, ast.NamedExpr):
+                yield [node.target], node.value
+
+    every = [n for n in ast.walk(tree) if isinstance(n, scopes)]
+    attributes = set()
+    names = {id(scope): set() for scope in every}
+    grew = True
+    while grew:                                 # until nothing more is reached
+        grew = False
+        for scope in every:
+            for targets, value in assignments(own(scope)):
+                if not reaches(value, names[id(scope)], attributes, carried):
+                    continue
+                for target in targets:
+                    for part in ast.walk(target):
+                        if isinstance(part, ast.Name) and part.id not in names[id(scope)]:
+                            names[id(scope)].add(part.id)
+                            grew = True
+                        elif (isinstance(part, ast.Attribute)
+                              and ast.unparse(part) not in attributes):
+                            attributes.add(ast.unparse(part))
+                            grew = True
+    found = set()
+    for scope in every:
+        for node in own(scope):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in ("subprocess", "os", "asyncio")
+                    and (node.func.attr in starters
+                         or node.func.attr.startswith(("spawn", "exec")))
+                    and id(node) not in exempt
+                    and reaches(node, names[id(scope)], attributes)):
+                found.add(node.lineno)
+    return sorted(found)
 
 
 class DataFolderOverlapTests(unittest.TestCase):
@@ -3573,6 +3700,49 @@ class InstallerIsolationTests(unittest.TestCase):
                 run_installer(self.copy, "", self.root, cwd=self.root)
         self.assertIn("changed this account's real install", str(caught.exception))
 
+    def test_the_real_install_state_covers_its_pins(self):
+        # #332 review: uninstall.ps1 -Offboard removes pins, so a change to a pin of
+        # Unminute in this account's TaskBar or StartMenu pin folder is a change to the
+        # real install. Here the real places are stand-ins in the scratch folder; other
+        # apps' pins never count, so a pin the user changes meanwhile fails nothing.
+        real = self.root / "real"
+        places = {"install": real / "Local" / "Programs" / "Unminute",
+                  "data": real / "Local" / "Unminute", "programs": real / "Programs",
+                  "roaming": real / "Roaming"}
+        pinned = places["roaming"].joinpath(*REAL_PINNED)
+        target = str(places["install"] / "versions" / "1.0.0" / "runtime" / "pythonw.exe")
+        pins = {
+            "by its name": pinned / "TaskBar" / "Unminute.lnk",
+            "by its target": pinned / "StartMenu" / "Renamed.lnk",
+            "by its target, in UTF-16": pinned / "TaskBar" / "Other name.lnk",
+        }
+        for label, pin in pins.items():
+            pin.parent.mkdir(parents=True, exist_ok=True)
+            body = (target if "target" in label else "synthetic").encode(
+                "utf-16-le" if "UTF-16" in label else "ascii")
+            pin.write_bytes(b"L\0\0\0" + body)
+        editor = pinned / "StartMenu" / "Editor.lnk"
+        editor.write_bytes(b"L\0\0\0C:\\Program Files\\Editor\\editor.exe")
+        module = sys.modules[__name__]
+        with mock.patch.object(module, "real_places", return_value=places):
+            before = real_install_state()
+            # Another app's pin changed, added or removed: no change to the real install.
+            editor.write_bytes(b"L\0\0\0C:\\Program Files\\Editor\\editor2.exe")
+            (pinned / "TaskBar" / "Browser.lnk").write_bytes(b"L\0\0\0C:\\Browser\\b.exe")
+            self.assertEqual(real_install_state(), before)
+            editor.unlink()
+            self.assertEqual(real_install_state(), before)
+            for label, pin in pins.items():
+                with self.subTest(label):
+                    base = real_install_state()
+                    kept = pin.read_bytes()
+                    pin.unlink()
+                    self.assertNotEqual(real_install_state(), base)
+                    pin.write_bytes(kept)
+                    base = real_install_state()
+                    os.utime(pin, ns=(os.stat(pin).st_atime_ns, os.stat(pin).st_mtime_ns + 10**9))
+                    self.assertNotEqual(real_install_state(), base)
+
     def test_every_run_of_the_scripts_goes_through_run_installer(self):
         # No other code in this file builds a command line with -InstallDir.
         import ast
@@ -3650,28 +3820,72 @@ class InstallerIsolationTests(unittest.TestCase):
         # installer script or -InstallDir, outside run_installer (the guard above also
         # sees names built at run time, in this module).
         import ast
-        starters = {"run", "Popen", "call", "check_call", "check_output", "system",
-                    "startfile", "create_subprocess_exec", "create_subprocess_shell"}
         found = []
         for module in sorted((ROOT / "tests").glob("*.py")):
             tree = ast.parse(module.read_text(encoding="utf-8"))
             exempt = set()
             if module.name == Path(__file__).name:
-                exempt = {id(n) for node in tree.body if isinstance(node, ast.FunctionDef)
-                          and node.name == "run_installer" for n in ast.walk(node)}
-                self.assertTrue(exempt)
-            for node in ast.walk(tree):
-                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                        and isinstance(node.func.value, ast.Name)
-                        and node.func.value.id in ("subprocess", "os", "asyncio")
-                        and (node.func.attr in starters
-                             or node.func.attr.startswith(("spawn", "exec")))
-                        and id(node) not in exempt):
-                    if any(isinstance(inner, ast.Constant) and isinstance(inner.value, str)
-                           and re.search(r"(?i)install\.ps1|-InstallDir", inner.value)
-                           for inner in ast.walk(node)):
-                        found.append(f"{module.name}:{node.lineno}")
+                # run_installer, which runs the copies; and the test above that proves
+                # the guard refuses a copy's text as input, with the start replaced
+                # (named since the scan follows variables; #332 review).
+                exempt = {id(n) for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+                          and (node.name == "run_installer" and node.col_offset == 0
+                               or node.name == "test_no_other_run_reaches_an_installer_script")
+                          for n in ast.walk(node)}
+                self.assertEqual(
+                    sum(isinstance(n, ast.FunctionDef) for n in ast.walk(tree) if id(n) in exempt),
+                    2)
+            found += [f"{module.name}:{line}" for line in installer_starts(tree, exempt)]
         self.assertEqual(found, [], "a process start that names an installer script")
+
+    def test_the_static_scan_sees_a_command_built_first(self):
+        # #332 review: B8b's first test module built the command in a variable and
+        # then started it, which a scan of the start call alone does not see.
+        import ast
+        import textwrap
+        shapes = {
+            "in the call": """
+                subprocess.run([ps, "-Command", f"& '{s}' -InstallDir '{d}'"])
+                """,
+            "in a variable": """
+                call = f"& '{s}' -InstallDir '{d}'" + (" -Silent" if silent else "")
+                subprocess.run([ps, "-Command", f"{call}; exit $LASTEXITCODE"])
+                """,
+            "through two variables": """
+                call = f"& '{s}' -InstallDir '{d}'"
+                args = [ps, "-Command", call]
+                subprocess.Popen(args)
+                """,
+            "added to later": """
+                call = "exit 0"
+                call += " -InstallDir 'x'"
+                os.system(call)
+                """,
+            "in an attribute": """
+                self.script = root / "uninstall.ps1"
+                os.system(f"powershell -File {self.script}")
+                """,
+            "inside a function": """
+                def go():
+                    call = "& 'x.ps1' -InstallDir 'y'"
+                    return subprocess.run([ps, "-Command", call])
+                """,
+        }
+        for label, source in shapes.items():
+            with self.subTest(label):
+                self.assertNotEqual(installer_starts(ast.parse(textwrap.dedent(source))), [])
+        # A name that holds something else, or the same name in another function,
+        # does not count.
+        other = """
+            def one():
+                call = "& 'x.ps1' -InstallDir 'y'"
+                return call
+
+            def two():
+                call = "exit 0"
+                return subprocess.run([ps, "-Command", call])
+            """
+        self.assertEqual(installer_starts(ast.parse(textwrap.dedent(other))), [])
 
 
 STUB_APP = '''\

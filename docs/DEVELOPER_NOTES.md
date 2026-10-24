@@ -211,14 +211,16 @@ real time, and remove it when the cause is fixed.
   other way (`&`, `-File`, `Start-Process`, `Invoke-Expression`, jobs and the like:
   `Find-UncheckedRun`). `tools/run_pester.ps1` also
   runs the suite with scratch variables and fails if the real install's folder, Start
-  menu shortcut or uninstall entry changed. Python: every test runs a scratch copy
+  menu shortcut, uninstall entry or pins of Unminute (TaskBar and StartMenu, which
+  `-Offboard` removes; `Get-RealInstallState` in `Isolation.ps1`) changed. Python: every test runs a scratch copy
   (`scratch_text`) through `run_installer` in `tests/test_hardening.py`, which refuses
   unless the copy, `-InstallDir`, `LOCALAPPDATA` and `APPDATA` are scratch and fails if
-  the real install changed (`tests/test_uninstall_offboard.py` runs its copies through
-  it too). Every other process a test in either module starts is
-  checked before it starts and refused if it names a packaging script, or a `.ps1`
-  that copies or runs one; and no process start in any test module may name an
-  installer script. `InstallerIsolationTests` proves it. The real places come
+  the real install, pins included (`real_install_state`), changed
+  (`tests/test_uninstall_offboard.py` runs its copies through it too). Every other
+  process a test in either module starts is checked before it starts and refused if it
+  names a packaging script, or a `.ps1` that copies or runs one (each module has a test
+  that its guard is on); and no process start in any test module may name an installer
+  script, in the call or through a variable or attribute set first. `InstallerIsolationTests` proves it. The real places come
   from the shell's known folders, which ignore `LOCALAPPDATA` and `APPDATA`. Never
   dot-source an older revision of either script, and never run the scripts or Pester any
   other way; show failing-first evidence for installer behaviour with the Python-driven
