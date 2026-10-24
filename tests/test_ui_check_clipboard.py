@@ -124,6 +124,28 @@ const attempt = async () => {{
         worst_s = 2 * (tries * 1.5 + (tries - 1) * gap / 1000) + 12
         self.assertLess(worst_s, timeout)
 
+    def test_the_locked_screen_copy_retries_and_reports_it(self):
+        # The locked screen's "Copy details for IT" puts the diagnostics on
+        # the same clipboard, so it is retried the same way (#318 review).
+        step = re.search(r'copied = evaluate\(window, (.*?)timeout=(\d+)\)', TOOL, re.S)
+        self.assertIsNotNone(step, "locked screen copy step not found in the tool")
+        body, timeout = step.group(1), int(step.group(2))
+        self.assertTrue(body.startswith("WAIT + COPY_RETRY_JS + "))
+        click = "document.getElementById('locked-copy').click()"
+        self.assertEqual(1, TOOL.count(click))
+        self.assertEqual(1, body.count(click))
+        before = body[:body.index(click)]
+        helper = before.rfind("await copyRetrying(")
+        self.assertGreater(helper, -1, "locked-copy is clicked outside the helper")
+        # Each click starts from an empty status, so a slow answer is not read
+        # as the last click's.
+        self.assertIn("document.getElementById('status').textContent = '';", before[helper:])
+        self.assertIn('report["copied"] = copied.get("status")', TOOL)
+        self.assertIn('report["copy_retries"] = copied.get("retries")', TOOL)
+        # A copy busy throughout still finishes inside the step's time limit.
+        tries, gap = self.parts["COPY_TRIES"], self.parts["COPY_GAP_MS"]
+        self.assertLess(tries * 1.0 + (tries - 1) * gap / 1000 + 5, timeout)
+
 
 if __name__ == "__main__":
     unittest.main()
