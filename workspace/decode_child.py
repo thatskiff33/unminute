@@ -346,10 +346,12 @@ def main():
         os.environ[var] = "1"
     # The protocol gets a private copy of the output handle; file descriptor 1
     # and sys.stdout go to the null device, so a library that prints cannot
-    # corrupt the frames.
+    # corrupt the frames. That is the null device the app gave as stderr
+    # (file descriptor 2): this process never opens it by name, which Windows
+    # may refuse in the AppContainer (Windows Server 2025 does).
     out = os.fdopen(os.dup(1), "wb")
-    os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
-    sys.stdout = open(os.devnull, "w")
+    os.dup2(2, 1)
+    sys.stdout = open(1, "w", closefd=False)
 
     def send(kind, payload=b""):
         out.write(kind + struct.pack("<I", len(payload)) + payload)

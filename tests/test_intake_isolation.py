@@ -849,6 +849,16 @@ SILENT = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl))
 READY_THEN_WAIT = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
                               "sys.stdin.buffer.readline();time.sleep(120)")
 NEVER_READY = STAND_IN + "time.sleep(120)"
+# Put before the real BOOT: every open of the null device by name fails, as
+# it does in an AppContainer on Windows Server 2025 (the hosted CI runner,
+# measured 25 October 2026) though not on Windows 11 build 26300.
+NULL_REFUSED = (
+    "import os,builtins;_o,_b=os.open,builtins.open;"
+    "_x=lambda p:(_ for _ in ()).throw(PermissionError(13,'Access is denied',p));"
+    "_n=lambda p:isinstance(p,str) and p.lower()==os.devnull.lower();"
+    "os.open=lambda p,*a,**k:_x(p) if _n(p) else _o(p,*a,**k);"
+    "builtins.open=lambda p,*a,**k:_x(p) if _n(p) else _b(p,*a,**k);"
+)
 ENDS_AT_ONCE = "import sys;sys.exit(3)"
 TRICKLE = STAND_IN + ("lvl=d.lower_integrity() or 0;w(b'R',struct.pack('<I',lvl));"
                       "sys.stdin.readline()\nwhile True:\n w(b'A',b'\\0'*4);time.sleep(0.2)")
@@ -1368,6 +1378,15 @@ class AppContainerTests(unittest.TestCase):
         self.assertEqual(inherit[:3], std)
         self.assertLessEqual(set(env), set(appcontainer.ENV_NAMES) | {
             "PATH", "OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"})
+
+    def test_the_decoder_never_opens_the_null_device_itself(self):
+        # Windows may refuse the null device to a process in an AppContainer
+        # (Windows Server 2025 does: every decode there failed at "ready").
+        # The decoder silences its output with the null device the app hands
+        # it as stderr, so it decodes even where opening NUL is refused.
+        from workspace import decode_child, media
+        with mock.patch.object(decode_child, "BOOT", NULL_REFUSED + decode_child.BOOT):
+            self.assertEqual(media.decode(self.src, io.BytesIO()), 16000)
 
     def test_a_throwaway_profile_is_made_found_and_removed(self):
         import secrets

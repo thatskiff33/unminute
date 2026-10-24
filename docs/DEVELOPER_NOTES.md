@@ -80,6 +80,11 @@ real time, and remove it when the cause is fixed.
   same call. Never grant the container read on a whole checkout: `extracted/` can hold real
   content (P2). In a package's own runtime it does nothing, so release evidence uses the real
   container.
+- **In the AppContainer, the decoder never opens the null device by name.** Windows Server 2025
+  (the hosted CI runner) refuses `NUL` to a process in an AppContainer, though Windows 11 build
+  26300 allows it, so `open(os.devnull)` there failed every decode at `ready` on CI only. The
+  decoder sends stray output to the null device the app hands it as stderr (descriptor 2).
+  Code that runs in the decoder opens nothing by name; it uses what it was given.
 - **PyAV 17 and 8-channel planar audio.** An 8-channel planar frame reports 9 planes, and
   `to_ndarray()` on one read past them and crashed the process (found in #220; 7 and 16
   channels were fine). Convert to an interleaved format (`flt`, not `fltp`) before reading
