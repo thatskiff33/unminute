@@ -1,0 +1,1 @@
+- **Release accessibility evidence covers light and dark mode.** The release's evidence check now refuses an accessibility report unless it shows every view of the app window audited in both light and dark mode, as the release steps require. Nothing changes in the app itself.

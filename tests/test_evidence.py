@@ -158,12 +158,26 @@ def report(kind, sha=SHA, **change):
           "folder_differences": 0, "tools_commit": COMMIT, "tools_clean": True,
           "check_passed": True, "pass": True}
     body = {"evidence": ev}
+    if kind == "accessibility":
+        body["colour_mode"] = "both"
+        body["views"] = both_modes()
     if kind == "perf":
         ev["run"] = dict(evidence.PERF_RELEASE, quick=False)
         body["machine"] = dict(MACHINE)
         body["each_run"] = json.loads(json.dumps(EACH_RUN))
     ev.update(change)
     return body
+
+
+# Every view tools/accessibility_check.py audits; its report names each one
+# for its mode when it audits each view in light and then in dark (view_key).
+A11Y_VIEWS = evidence.ACCESSIBILITY_VIEWS
+
+
+def both_modes(views=A11Y_VIEWS):
+    """The views of an accessibility report run with --colour-mode both."""
+    return {f"{name} ({mode})": {"colour_mode": mode, "unnamed": []}
+            for name in views for mode in ("light", "dark")}
 
 
 # A synthetic machine, below the 8-core, 16 GB design aim on purpose: there is
@@ -674,6 +688,145 @@ class MachineEvidenceTests(TempDir):
                 self.assertTrue(out.call_args.args[0].startswith("MACHINE PROBLEM: "))
         with mock.patch("builtins.print"):
             self.assertEqual(1, evidence.main(["machine", str(self.root / "absent.json")]))
+
+
+class AccessibilityEvidenceTests(TempDir):
+    """Owner decision, 22 Oct 2026 (#111, #298): release evidence runs the
+    accessibility check in both light and dark mode. A report audited in one
+    mode, or with a view missing from either, is not evidence."""
+
+    write, complete = CheckTests.write, CheckTests.complete
+
+    def problems_with(self, body):
+        return evidence.check(SHA, self.complete(accessibility=body))
+
+    def refused(self, body, shown):
+        self.assertEqual([f"accessibility.json: accessibility was not audited in both light "
+                          f"and dark (owner decision, 22 Oct 2026: run "
+                          f"tools/accessibility_check.py with --colour-mode both; not shown: "
+                          f"{shown})"], self.problems_with(body))
+
+    def test_both_modes_pass(self):
+        self.assertEqual([], self.problems_with(report("accessibility")))
+        self.assertEqual([], evidence.accessibility_not_both(report("accessibility")))
+
+    def test_a_run_in_one_mode_is_refused(self):
+        for asked, modes in (("light", ["light"]), ("dark", ["dark"]),
+                             ("system", ["light"]), ("system", ["dark"])):
+            with self.subTest(asked=asked, modes=modes):
+                body = report("accessibility")
+                body["colour_mode"] = asked
+                # As the tool names them in one mode: the view's own name.
+                body["views"] = {name: {"colour_mode": mode, "unnamed": []}
+                                 for name in A11Y_VIEWS for mode in modes}
+                problems = self.problems_with(body)
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("was not audited in both light and dark", problems[0])
+                self.assertIn(f"the run asked for {asked!r}, not 'both'", problems[0])
+
+    def test_a_report_made_before_modes_were_recorded_is_refused(self):
+        body = report("accessibility")
+        del body["colour_mode"]
+        body["views"] = {name: {"unnamed": []} for name in A11Y_VIEWS}
+        listed = (["the run asked for None, not 'both'"]
+                  + [f"{name} (no colour mode)" for name in A11Y_VIEWS]
+                  + [f"{name} in {mode}" for name in A11Y_VIEWS for mode in ("light", "dark")])
+        more = len(listed) - evidence.MAX_LISTED
+        self.assertGreater(more, 0)     # more than are listed, so the rest are counted
+        self.refused(body, ", ".join(listed[:evidence.MAX_LISTED]) + f", and {more} more")
+
+    def test_each_view_needs_both_modes(self):
+        body = report("accessibility")
+        del body["views"]["meetings (dark)"]
+        del body["views"]["handoff page (light)"]
+        self.refused(body, "meetings in dark, handoff page in light")
+
+    def missing(self, names):
+        """The refusal of a report that leaves out whole views."""
+        return (f"accessibility.json: accessibility does not cover {len(names)} of the "
+                f"{len(A11Y_VIEWS)} views tools/accessibility_check.py audits, in either mode "
+                f"(a run that stopped early, or a report edited down: run the check again "
+                f"with --colour-mode both; missing: {', '.join(names)})")
+
+    def test_every_view_the_tool_audits_is_required(self):
+        # A report with a view left out in both modes (a run that stopped
+        # early, or one edited down) is refused, not passed on what it has,
+        # and the refusal says views are missing, not that a mode is.
+        body = report("accessibility")
+        del body["views"]["meetings (light)"]
+        del body["views"]["meetings (dark)"]
+        self.assertEqual([self.missing(["meetings"])], self.problems_with(body))
+        self.assertEqual(["meetings"], evidence.accessibility_views_missing(body))
+        for name in A11Y_VIEWS:
+            with self.subTest(left_out=name):
+                body = report("accessibility")
+                body["views"] = both_modes([n for n in A11Y_VIEWS if n != name])
+                self.assertEqual([self.missing([name])], self.problems_with(body))
+        body = report("accessibility")
+        body["views"] = both_modes(["setup", "meetings"])
+        self.assertEqual([self.missing([n for n in A11Y_VIEWS if n not in ("setup", "meetings")])],
+                         self.problems_with(body))
+        # A view the tool does not define still needs both modes.
+        body = report("accessibility")
+        body["views"]["extra view (light)"] = {"colour_mode": "light", "unnamed": []}
+        self.refused(body, "extra view in dark")
+
+    def test_missing_views_and_a_missing_mode_are_told_apart(self):
+        # A view left out entirely is listed once, as missing; a view audited
+        # in one mode only is still a colour-mode gap, in its own refusal.
+        body = report("accessibility")
+        for key in ("meetings (light)", "meetings (dark)", "help (dark)"):
+            del body["views"][key]
+        self.assertEqual([self.missing(["meetings"]),
+                          "accessibility.json: accessibility was not audited in both light and "
+                          "dark (owner decision, 22 Oct 2026: run tools/accessibility_check.py "
+                          "with --colour-mode both; not shown: help in dark)"],
+                         self.problems_with(body))
+        # A view recorded under the wrong mode was audited: a mode problem.
+        body = report("accessibility")
+        body["views"]["meetings (dark)"]["colour_mode"] = "light"
+        self.assertEqual([], evidence.accessibility_views_missing(body))
+        # No views at all stays "no views recorded", not seventeen missing.
+        for views in (None, {}):
+            with self.subTest(views=views):
+                body = report("accessibility")
+                body["views"] = views
+                self.assertEqual([], evidence.accessibility_views_missing(body))
+
+    def test_a_view_must_show_the_mode_it_is_named_for(self):
+        body = report("accessibility")
+        body["views"]["meetings (dark)"]["colour_mode"] = "light"
+        self.refused(body, "meetings (dark) (shows light), meetings in dark")
+        for value in (None, "both", "system", 1):
+            with self.subTest(value=value):
+                body = report("accessibility")
+                body["views"]["meetings (dark)"]["colour_mode"] = value
+                self.refused(body, "meetings (dark) (no colour mode), meetings in dark")
+
+    def test_no_views_or_malformed_views_fail_without_a_crash(self):
+        for views in (None, {}, [], "meetings"):
+            with self.subTest(views=views):
+                body = report("accessibility")
+                body["views"] = views
+                self.refused(body, "no views recorded")
+        body = report("accessibility")
+        body["views"]["meetings (dark)"] = "audit"
+        self.refused(body, "meetings (dark) (no colour mode), meetings in dark")
+
+    def test_other_kinds_need_no_colour_mode(self):
+        self.assertNotIn("colour_mode", report("ui"))
+        self.assertEqual([], evidence.check(SHA, self.complete()))
+
+    def test_the_modes_are_the_accessibility_checks_both(self):
+        # tools/evidence.py reads the report tools/accessibility_check.py
+        # writes: the same two modes, and each view named for its mode.
+        import accessibility_check
+        modes = accessibility_check.colour_modes("both")
+        self.assertEqual(list(evidence.ACCESSIBILITY_MODES), modes)
+        self.assertEqual("meetings (dark)", accessibility_check.view_key("meetings", "dark",
+                                                                          modes))
+        # Every view the tool audits, and only those, is required.
+        self.assertEqual(evidence.ACCESSIBILITY_VIEWS, tuple(accessibility_check.VIEWS))
 
 
 class PrepareTests(TempDir):

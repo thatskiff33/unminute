@@ -13,7 +13,7 @@ This lists what a workspace release needs, what has been verified, and what stil
 
 ## Verified on the development machine
 
-Most of this evidence was gathered on the 0.2.0 previews (14 October 2026). It has not been re-run in full on later releases. #124 (performance) and #111 slice B3 (release evidence) will make each release produce its own evidence against its own package. Performance evidence is measured on whichever Windows machine prepares the release, with that machine's specification recorded in `evidence-perf.json` and the release notes; there is no named reference machine, and 8 cores and 16 GB is a design aim, not a gate (#121).
+Most of this evidence was gathered on the 0.2.0 previews (14 October 2026). It has not been re-run in full on later releases. Since #124 (performance) and #111 slice B3 (release evidence), each release carries its own evidence against its own package: the five evidence reports attached to every release from v0.5.0-preview.2 ([RELEASING.md](RELEASING.md)). This table has not been refreshed from them. Performance evidence is measured on whichever Windows machine prepares the release, with that machine's specification recorded in `evidence-perf.json` and the release notes; there is no named reference machine, and 8 cores and 16 GB is a design aim, not a gate (#121).
 
 Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy transcription app was running, so the timings in PR #47 and #56 are pessimistic.
 
@@ -40,13 +40,13 @@ Machine: Windows 11, 16 logical CPUs. For much of the testing another heavy tran
 
 ## Before a business release (needs people or hardware)
 
-Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md).
+Step-by-step instructions for each item: [VALIDATION_RUNBOOK.md](VALIDATION_RUNBOOK.md). Each open item is tracked in validation tracker #189, by sitting; the closed issues it came from keep their earlier evidence.
 
-- [ ] **#11:** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Choose the signing route.
-- [ ] **#12 and #25:** transcription quality on consented, representative business recordings (anonymous aggregate results only).
-- [ ] **Validation tracker #189 (carried from #27, closed):** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
-- [ ] **#28:** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
-- [ ] **#109:** Copy and open on the installed package, with synthetic content (sitting logged in #189): one tab opens on the assistant's page with Edge as the default browser (then Chrome if installed), both with the browser already open and closed (a browser the app starts inherits its environment); paste works; Win+V history does not show the copy. Policy by registry: another name and address, an invalid address, only one of the two set, and `AllowHandoffAssistant` = 0 (button gone; Settings says why). Narrator and keyboard on the button and its messages.
+- [ ] **#189 sitting 3 (from #11, closed):** a clean standard-user Windows profile, and an Intune deployment and detection on a managed device. Signing is not part of it: the owner dropped the signing requirement on 22 October 2026 (#111), so the installer scripts stay unsigned and run with `-ExecutionPolicy Bypass`, an accepted risk under [SECURITY_MODEL.md](SECURITY_MODEL.md) T22, which security plan B6 updates to say so.
+- [ ] **#189 sitting 4 (from #12 and #25, closed):** transcription quality on consented, representative business recordings (anonymous aggregate results only).
+- [ ] **#189 sitting 5 (from #27, closed):** a screen-reader pass (NVDA or Narrator), high-contrast themes, and an end-to-end task with three nontechnical users.
+- [ ] **#189 sitting 2 (from #28, closed):** run `tools/packaged_check.py` and `tools/packaged_crash_check.py` on the lowest-supported laptop (idle and peak resources, lifecycle residue, crash recovery).
+- [ ] **Copy and open (from #109, closed; logged as a sitting item in #189):** on the installed package, with synthetic content: one tab opens on the assistant's page with Edge as the default browser (then Chrome if installed), both with the browser already open and closed (a browser the app starts inherits its environment); paste works; Win+V history does not show the copy. Policy by registry: another name and address, an invalid address, only one of the two set, and `AllowHandoffAssistant` = 0 (button gone; Settings says why). Narrator and keyboard on the button and its messages.
 - [x] **#30:** unplug a USB microphone during a recording (runbook section 6). Done with a USB microphone; see the table above.
 - [x] **#20:** importing by dragging a recording onto the window. Done; see the table above.
 

@@ -13,7 +13,10 @@
 #   - for performance, the run's shape (a full release run or not), the
 #     specification of the machine it ran on (PERF_MACHINE), and that every
 #     window measured in a visible state was drawn on a display that was on
-#     (PERF_VISIBLE_STATES; #292).
+#     (PERF_VISIBLE_STATES; #292);
+#   - for accessibility, that the run audited every view the tool defines
+#     (ACCESSIBILITY_VIEWS) in both light and dark mode (ACCESSIBILITY_MODES;
+#     the owner's decision of 22 Oct 2026, #111).
 # The Release workflow refuses to publish unless one passing report of each kind
 # is attached, each naming the zip it publishes and made by a clean checkout of
 # the commit the zip was built from:
@@ -50,6 +53,18 @@ KINDS = {
 }
 # A performance run that counts as evidence (docs/RELEASING.md): at least this.
 PERF_RELEASE = {"runs": 3, "settle_s": 60, "window_s": 300, "leak_minutes": 30}
+# The colour modes release evidence audits each view in (tools/accessibility_check.py
+# --colour-mode both; the owner's decision of 22 Oct 2026, #111 and #298).
+ACCESSIBILITY_MODES = ("light", "dark")
+# Every view tools/accessibility_check.py audits (its VIEWS, in order; a test
+# keeps the two equal): release evidence needs each one in both modes, so a
+# report with a view left out is refused, not passed on the views it has.
+ACCESSIBILITY_VIEWS = (
+    "setup", "setup speech model", "setup speaker names", "setup microphone", "setup ready",
+    "downloads", "meetings", "microphone chooser", "settings", "help", "meeting",
+    "versions tab", "holds tab", "identify again", "names dialog", "confirm dialog",
+    "handoff page",
+)
 # The performance states with the window on screen (tools/perf_check.py): each
 # window measured in one counts only if it was drawn (its "drawing" block; #292).
 PERF_VISIBLE_STATES = ("meetings", "settings", "recording")
@@ -378,6 +393,60 @@ def perf_not_drawn(body):
     return out
 
 
+def accessibility_views_missing(body):
+    """The views the tool audits (ACCESSIBILITY_VIEWS) that an accessibility
+    report does not name at all, in either mode or none: a run that stopped
+    early, or a report edited down, rather than a colour-mode gap. Empty when
+    the report records no views (accessibility_not_both says so)."""
+    views = body.get("views") if isinstance(body, dict) else None
+    if not isinstance(views, dict) or not views:
+        return []
+    named = set()
+    for key in views:
+        named.add(key)
+        for mode in ACCESSIBILITY_MODES:
+            suffix = f" ({mode})"
+            if key.endswith(suffix) and key != suffix:
+                named.add(key[:-len(suffix)])
+    return [name for name in ACCESSIBILITY_VIEWS if name not in named]
+
+
+def listed(items):
+    """Up to MAX_LISTED items, then how many more there are."""
+    more = len(items) - MAX_LISTED
+    return ", ".join(items[:MAX_LISTED]) + (f", and {more} more" if more > 0 else "")
+
+
+def accessibility_not_both(body):
+    """What an accessibility report lacks to show every view audited in both
+    light and dark (empty when it shows that): the run asked for both modes,
+    and every view the tool audits (ACCESSIBILITY_VIEWS), and any other the
+    report names, is there once in each, named for the mode the page showed
+    (tools/accessibility_check.py, view_key) and recording that mode."""
+    out = []
+    asked = body.get("colour_mode") if isinstance(body, dict) else None
+    if asked != "both":
+        out.append(f"the run asked for {asked!r}, not 'both'")
+    views = body.get("views") if isinstance(body, dict) else None
+    if not isinstance(views, dict) or not views:
+        return out + ["no views recorded"]
+    shown = {}
+    for key, audit in views.items():
+        mode = audit.get("colour_mode") if isinstance(audit, dict) else None
+        if mode not in ACCESSIBILITY_MODES:
+            out.append(f"{key} (no colour mode)")
+            continue
+        suffix = f" ({mode})"
+        if not key.endswith(suffix) or key == suffix:
+            out.append(f"{key} (shows {mode})")
+            continue
+        shown.setdefault(key[:-len(suffix)], set()).add(mode)
+    for name in dict.fromkeys((*ACCESSIBILITY_VIEWS, *shown)):
+        modes = shown.get(name, set())
+        out += [f"{name} in {mode}" for mode in ACCESSIBILITY_MODES if mode not in modes]
+    return out
+
+
 def stamp(report, kind, zpath, version_dir, passed, before=None, run=None):
     """Add the evidence block to a check's report and return it. It counts only
     if the check passed and the folder held exactly the package before and
@@ -479,6 +548,22 @@ def check(expected_sha256, paths, commit=None):
             if undrawn:
                 found.append(f"does not show every visible window drawn on a display that was "
                              f"on (not shown: {', '.join(undrawn[:MAX_LISTED])})")
+        if kind == "accessibility":
+            # Whole views left out are a run that stopped early or a report
+            # edited down, said as such; what remains is a colour-mode gap.
+            missing = accessibility_views_missing(body)
+            if missing:
+                found.append(f"does not cover {len(missing)} of the "
+                             f"{len(ACCESSIBILITY_VIEWS)} views tools/accessibility_check.py "
+                             "audits, in either mode (a run that stopped early, or a report "
+                             "edited down: run the check again with --colour-mode both; "
+                             f"missing: {listed(missing)})")
+            gone = {f"{name} in {mode}" for name in missing for mode in ACCESSIBILITY_MODES}
+            one_mode = [what for what in accessibility_not_both(body) if what not in gone]
+            if one_mode:
+                found.append("was not audited in both light and dark (owner decision, "
+                             "22 Oct 2026: run tools/accessibility_check.py with "
+                             f"--colour-mode both; not shown: {listed(one_mode)})")
         problems += [f"{name}: {kind} {what}" for what in found]
     for kind, tool in KINDS.items():
         if kind not in seen:

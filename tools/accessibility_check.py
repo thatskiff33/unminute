@@ -554,6 +554,39 @@ def reflow(window):
     return out
 
 
+# Each view the check opens, in order, with the page script that opens it
+# ({mid}: the synthetic meeting's id). tools/evidence.py requires every one
+# of them, in light and in dark, in release evidence (ACCESSIBILITY_VIEWS).
+VIEWS = {
+    "setup": "window.workspace.show('setup'); await wait(1200);",
+    "setup speech model": "window.workspace.setStep(2); await wait(500);",
+    "setup speaker names": "window.workspace.setStep(3); await wait(500);",
+    "setup microphone": "window.workspace.setStep(4); await wait(800);",
+    "setup ready": "window.workspace.setStep(5); await wait(500);",
+    "downloads": "window.workspace.show('downloads'); await wait(1200);",
+    "meetings": "window.workspace.show('meetings'); await wait(1500);",
+    "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
+    "settings": "window.workspace.show('settings'); await wait(800);",
+    "help": "window.workspace.show('help'); await wait(400);",
+    "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
+    "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
+                    "await wait(300);",
+    "holds tab": "document.querySelector('.wide-tabs [data-tab=holds]').click();"
+                 "await wait(300);",
+    "identify again": "document.querySelector('.wide-tabs [data-tab=speakers]').click();"
+                      "document.getElementById('m-again').click(); await wait(300);",
+    "names dialog": "document.getElementById('m-names').click(); await wait(1500);",
+    "confirm dialog": "document.getElementById('names').close(); await wait(300);"
+                      "document.getElementById('m-primary').click();"
+                      "await wait(500);",
+    # The handoff opens only after the review confirmation.
+    "handoff page": "document.getElementById('c-check').click();"
+                    "const c = document.getElementById('confirm');"
+                    "c.returnValue = 'ok'; c.close('ok'); await wait(4000);"
+                    "document.getElementById('m-primary').click(); await wait(2500);",
+}
+
+
 def checks(window, ws, mid, report, modes=(None,)):
     import time
 
@@ -572,38 +605,10 @@ def checks(window, ws, mid, report, modes=(None,)):
             key('0'); await wait(800); const reset = window.devicePixelRatio;
             return {before, zoomed, reset};""")
         report["page"] = evaluate(window, PAGE)
-        views = {
-            "setup": "window.workspace.show('setup'); await wait(1200);",
-            "setup speech model": "window.workspace.setStep(2); await wait(500);",
-            "setup speaker names": "window.workspace.setStep(3); await wait(500);",
-            "setup microphone": "window.workspace.setStep(4); await wait(800);",
-            "setup ready": "window.workspace.setStep(5); await wait(500);",
-            "downloads": "window.workspace.show('downloads'); await wait(1200);",
-            "meetings": "window.workspace.show('meetings'); await wait(1500);",
-            "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
-            "settings": "window.workspace.show('settings'); await wait(800);",
-            "help": "window.workspace.show('help'); await wait(400);",
-            "meeting": f"await window.workspace.openMeeting('{mid}'); await wait(1500);",
-            "versions tab": "document.querySelector('.wide-tabs [data-tab=versions]').click();"
-                            "await wait(300);",
-            "holds tab": "document.querySelector('.wide-tabs [data-tab=holds]').click();"
-                         "await wait(300);",
-            "identify again": "document.querySelector('.wide-tabs [data-tab=speakers]').click();"
-                              "document.getElementById('m-again').click(); await wait(300);",
-            "names dialog": "document.getElementById('m-names').click(); await wait(1500);",
-            "confirm dialog": "document.getElementById('names').close(); await wait(300);"
-                              "document.getElementById('m-primary').click();"
-                              "await wait(500);",
-            # The handoff opens only after the review confirmation.
-            "handoff page": "document.getElementById('c-check').click();"
-                              "const c = document.getElementById('confirm');"
-                              "c.returnValue = 'ok'; c.close('ok'); await wait(4000);"
-                              "document.getElementById('m-primary').click(); await wait(2500);",
-        }
         report["views"] = {}
         # Each view is opened once and audited in each colour mode asked for.
-        for name, go in views.items():
-            evaluate(window, WAIT + go + "return true;")
+        for name, go in VIEWS.items():
+            evaluate(window, WAIT + go.replace("{mid}", mid) + "return true;")
             for mode in modes:
                 shown = show_colour_mode(window, mode)
                 audit = evaluate(window, AUDIT)
