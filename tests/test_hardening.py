@@ -9,6 +9,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1333,6 +1334,7 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
         # Set-Location moves away from the process's own folder.
         call = f"Set-Location -LiteralPath '{location}'; {call}"
     before = real_install_state()
+    _INSTALLER_RUN.active = True                # checked above, so the guard lets it start
     try:
         # errors="replace": Windows PowerShell writes in the console's code page, so an
         # unlisted name such as one with a ligature can be a byte the locale codec lacks.
@@ -1342,9 +1344,97 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
                               capture_output=True, text=True, errors="replace",
                               timeout=timeout, cwd=cwd, env=full)
     finally:
+        _INSTALLER_RUN.active = False
         if real_install_state() != before:
             raise AssertionError("a test run changed this account's real install (its "
                                  "folder, Start menu shortcut or uninstall entry): check it")
+
+
+# -- every other process these tests start (#332 review) -------------------------------
+# The 23 October incident was a run of an installer script with its default -InstallDir.
+# run_installer checks each run it makes. Every other process a test in this module
+# starts goes through the guard below (setUpModule), which refuses, before the process
+# starts, a command line or input that names a packaging script, or names a .ps1 file
+# that is a copy of one (renamed or scratch) or that names one in turn, however it is
+# spelt: -File, -Command, a dot-source, one string, or a path relative to cwd.
+
+_INSTALLER_RUN = threading.local()
+# A .ps1 name in a command line or a script: quoted (spaces allowed) or bare.
+_PS1_NAME = re.compile(r"""'([^'\r\n]+?\.ps1)'|"([^"\r\n]+?\.ps1)"|([^\s'"`;&|(){}]+\.ps1)""",
+                       re.IGNORECASE)
+# Text that only an installer script, or a copy of one, holds.
+INSTALLER_MARKS = REAL_REACH + ("$RegKey", "$OwnEntries",
+                                'if ($MyInvocation.InvocationName -eq ".")')
+_UNGUARDED_POPEN = subprocess.Popen
+_UNGUARDED_RUN = subprocess.run
+
+
+def installer_reach(args, cwd=None, stdin_text=None):
+    """What installer script a process with this command line (and input) would run,
+    or None: a packaging script, or a .ps1 file that copies one or names one."""
+    if isinstance(args, (str, bytes, os.PathLike)):
+        args = [args]
+    texts = [os.fsdecode(a) if isinstance(a, (bytes, os.PathLike)) else str(a) for a in args]
+    if isinstance(stdin_text, (str, bytes)):
+        texts.append(os.fsdecode(stdin_text) if isinstance(stdin_text, bytes) else stdin_text)
+    packaging = _folder(ROOT / "packaging")
+    seen = set()
+    queue = [(text, 0) for text in texts]
+    while queue:
+        text, depth = queue.pop()
+        if any(mark.lower() in text.lower() for mark in INSTALLER_MARKS):
+            return "an installer script's copy"
+        names = [next(group for group in match.groups() if group)
+                 for match in _PS1_NAME.finditer(text)]
+        if text.strip().lower().endswith(".ps1") and "\n" not in text.strip():
+            names.append(text.strip())          # one argument that is a path with spaces
+        for name in names:
+            path = Path(name)
+            if not path.is_absolute():
+                path = Path(cwd or os.getcwd()) / path
+            try:
+                full = _folder(path)
+                found = path.is_file()
+            except (OSError, ValueError):       # a name no file can have
+                continue
+            if full.startswith(packaging):
+                return "a packaging script"
+            if full in seen or depth >= 3 or not found:
+                continue
+            seen.add(full)
+            queue.append((path.read_text(encoding="utf-8", errors="replace"), depth + 1))
+    return None
+
+
+def _refuse_installer_reach(args, cwd, stdin_text=None):
+    if getattr(_INSTALLER_RUN, "active", False):
+        return
+    reach = installer_reach(args, cwd, stdin_text)
+    if reach:
+        raise AssertionError(f"a test started {reach} other than through run_installer, "
+                             "which alone runs them, with scratch places only")
+
+
+class _GuardedPopen(_UNGUARDED_POPEN):
+    """subprocess.Popen while this module's tests run: refuses an installer script."""
+
+    def __init__(self, args, *rest, **kwargs):
+        _refuse_installer_reach(args, kwargs.get("cwd"))
+        super().__init__(args, *rest, **kwargs)
+
+
+def _guarded_run(*args, **kwargs):
+    """subprocess.run while this module's tests run: also checks the input it sends."""
+    _refuse_installer_reach(args[0] if args else kwargs.get("args"), kwargs.get("cwd"),
+                            kwargs.get("input"))
+    return _UNGUARDED_RUN(*args, **kwargs)
+
+
+def setUpModule():
+    for patch in (mock.patch.object(subprocess, "Popen", _GuardedPopen),
+                  mock.patch.object(subprocess, "run", _guarded_run)):
+        patch.start()
+        unittest.addModuleCleanup(patch.stop)
 
 
 class DataFolderOverlapTests(unittest.TestCase):
@@ -3075,6 +3165,85 @@ class InstallerIsolationTests(unittest.TestCase):
                  and id(node) not in inside]
         self.assertEqual(found, [], "an installer run outside run_installer")
 
+    def test_the_guard_is_on_for_every_test_here(self):
+        self.assertIs(subprocess.Popen, _GuardedPopen)
+        self.assertIs(subprocess.run, _guarded_run)
+
+    def test_no_other_run_reaches_an_installer_script(self):
+        # #332 review: a run with the script's default -InstallDir, the 23 October
+        # incident, is refused before the process starts, however it is spelt. The
+        # process start itself is replaced too, so nothing can run here even if the
+        # guard let it through.
+        real = {name: ROOT / "packaging" / name for name in ("install.ps1", "uninstall.ps1")}
+        renamed = self.root / "renamed.ps1"
+        shutil.copy(real["uninstall.ps1"], renamed)
+        spaced = self.root / "with space" / "plain copy.ps1"
+        spaced.parent.mkdir()
+        shutil.copy(real["install.ps1"], spaced)
+        wrapper = self.root / "wrapper.ps1"
+        wrapper.write_text(f"& '{real['uninstall.ps1']}' -Silent\n", encoding="utf-8")
+        nested = self.root / "nested.ps1"
+        nested.write_text(f". \"{wrapper}\"\n", encoding="utf-8")
+        ps = windows_powershell.executable()
+        forms = {
+            "-File, the script": ([ps, "-File", real["uninstall.ps1"], "-Silent"], None),
+            "-File, relative to cwd": ([ps, "-File", "packaging\\install.ps1"], ROOT),
+            "-File, in its folder": ([ps, "-File", "uninstall.ps1"], ROOT / "packaging"),
+            "-Command": ([ps, "-Command", f"& '{real['uninstall.ps1']}' -Silent"], None),
+            "a dot-source": ([ps, "-Command", f". \"{real['install.ps1']}\""], None),
+            "one string": (f'"{ps}" -File "{real["uninstall.ps1"]}" -Silent', None),
+            "a renamed copy": ([ps, "-File", renamed], None),
+            "a copy in a folder with a space": ([ps, "-File", str(spaced)], None),
+            "a scratch copy, default -InstallDir": ([ps, "-File", self.copy, "-Silent"], None),
+            "a script that runs it": ([ps, "-File", wrapper], None),
+            "a script that runs one that runs it": ([ps, "-File", nested], None),
+        }
+        with mock.patch.object(_UNGUARDED_POPEN, "_execute_child",
+                               side_effect=RuntimeError("it ran")):
+            for label, (args, cwd) in forms.items():
+                for start in (subprocess.run, subprocess.Popen, subprocess.check_output):
+                    with self.subTest(label, start=start.__name__):
+                        with self.assertRaises(AssertionError) as caught:
+                            start(args, cwd=cwd)
+                        self.assertIn("other than through run_installer", str(caught.exception))
+            text = scratch_text("uninstall.ps1", self.root)
+            with self.subTest("the script as input"):
+                with self.assertRaises(AssertionError):
+                    subprocess.run([ps, "-Command", "-"], input=text, text=True)
+            # Any other script still starts (here, as far as the replaced start).
+            other = self.root / "other.ps1"
+            other.write_text("exit 0\n", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "it ran"):
+                subprocess.run([ps, "-File", other], cwd=self.root)
+
+    def test_no_test_module_starts_an_installer_script_itself(self):
+        # Static: in every test module, no call that starts a process names an
+        # installer script or -InstallDir, outside run_installer (the guard above also
+        # sees names built at run time, in this module).
+        import ast
+        starters = {"run", "Popen", "call", "check_call", "check_output", "system",
+                    "startfile", "create_subprocess_exec", "create_subprocess_shell"}
+        found = []
+        for module in sorted((ROOT / "tests").glob("*.py")):
+            tree = ast.parse(module.read_text(encoding="utf-8"))
+            exempt = set()
+            if module.name == Path(__file__).name:
+                exempt = {id(n) for node in tree.body if isinstance(node, ast.FunctionDef)
+                          and node.name == "run_installer" for n in ast.walk(node)}
+                self.assertTrue(exempt)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)
+                        and node.func.value.id in ("subprocess", "os", "asyncio")
+                        and (node.func.attr in starters
+                             or node.func.attr.startswith(("spawn", "exec")))
+                        and id(node) not in exempt):
+                    if any(isinstance(inner, ast.Constant) and isinstance(inner.value, str)
+                           and re.search(r"(?i)install\.ps1|-InstallDir", inner.value)
+                           for inner in ast.walk(node)):
+                        found.append(f"{module.name}:{node.lineno}")
+        self.assertEqual(found, [], "a process start that names an installer script")
+
 
 STUB_APP = '''\
 # A stand-in for the app: records how the uninstaller started it, then acts as told.
@@ -3112,7 +3281,7 @@ class UninstallLidRestoreTests(unittest.TestCase):
     app's switch is run only with records that never reach the power scheme."""
 
     uninstaller_copy = DataFolderOverlapTests.uninstaller_copy
-    WARNING ="Warning: Unminute could not put back what closing the lid does."
+    WARNING = "Warning: Unminute could not put back what closing the lid does."
     TIMEOUT = "$LidRestoreSeconds = 60"
 
     def setUp(self):

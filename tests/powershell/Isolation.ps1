@@ -36,18 +36,80 @@ function Get-RealPlace {
     )
 }
 
+# The final path Windows opens for an existing file or folder: links, junctions and
+# 8.3 short names resolved (GetFinalPathNameByHandle), or $null when it cannot be
+# opened. Compiled once per session.
+if (-not ("UnminuteTest.FinalPath" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace UnminuteTest {
+    public static class FinalPath {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path,
+            uint size, uint flags);
+        public static string Of(string path) {
+            // No access, any sharing, open existing, folders too (backup semantics).
+            using (SafeFileHandle file = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+                if (file.IsInvalid) { return null; }
+                StringBuilder found = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandleW(file, found, (uint)found.Capacity, 0);
+                if (length == 0 || length >= found.Capacity) { return null; }
+                return found.ToString();
+            }
+        }
+    }
+}
+'@
+}
+
+# $Path in one spelling, as the Python tests' is_scratch reads it (realpath): the
+# nearest part that exists resolved to its final path, the rest added as written.
+# $null when a part that exists, or a link that leads nowhere, cannot be resolved, so
+# a junction in the scratch folder that leads to a real place counts as that place.
+function Resolve-FinalPath([string]$Path) {
+    $probe = [IO.Path]::GetFullPath($Path).TrimEnd("\")
+    $rest = @()
+    while ($probe) {
+        $item = Get-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        if ($item) {
+            $final = [UnminuteTest.FinalPath]::Of($probe)
+            if (-not $final) { return $null }
+            if ($final.StartsWith("\\?\UNC\", [StringComparison]::OrdinalIgnoreCase)) {
+                $final = "\\" + $final.Substring(8)
+            } elseif ($final.StartsWith("\\?\", [StringComparison]::Ordinal)) {
+                $final = $final.Substring(4)
+            }
+            return ((@($final.TrimEnd("\")) + $rest) -join "\")
+        }
+        $rest = @([IO.Path]::GetFileName($probe)) + $rest
+        $probe = [IO.Path]::GetDirectoryName($probe)
+    }
+    return [IO.Path]::GetFullPath($Path).TrimEnd("\")
+}
+
 # True when $Path is inside the scratch folder and is not, does not hold and does not
-# sit inside any real place.
+# sit inside any real place, after links, junctions and short names are resolved.
 function Test-ScratchPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path) -or
         $Path -match '^[\\/]{2}') { return $false }
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd("\") + "\"
-    $root = [IO.Path]::GetFullPath($script:ScratchRoot).TrimEnd("\") + "\"
-    if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $full = Resolve-FinalPath $Path
+    $root = Resolve-FinalPath $script:ScratchRoot
+    if (-not $full -or -not $root -or $full -match '^[\\/]{2}') { return $false }
+    $full = $full + "\"
+    if (-not $full.StartsWith($root + "\", [StringComparison]::OrdinalIgnoreCase)) { return $false }
     foreach ($place in Get-RealPlace) {
-        $real = [IO.Path]::GetFullPath($place).TrimEnd("\") + "\"
-        if ($full.StartsWith($real, [StringComparison]::OrdinalIgnoreCase) -or
-            $real.StartsWith($full, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        foreach ($form in @([IO.Path]::GetFullPath($place).TrimEnd("\"), (Resolve-FinalPath $place))) {
+            if (-not $form) { continue }
+            $real = $form + "\"
+            if ($full.StartsWith($real, [StringComparison]::OrdinalIgnoreCase) -or
+                $real.StartsWith($full, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
     }
     return $true
 }
@@ -57,12 +119,17 @@ function Test-ScratchPath([string]$Path) {
 # throwaway HKCU key. Exit-ScratchProfile puts the variables back and removes the key.
 function Enter-ScratchProfile([string]$Root) {
     $script:ScratchRoot = [IO.Directory]::CreateDirectory((Join-Path $Root "scratch")).FullName
+    $mine = Resolve-FinalPath $script:ScratchRoot
+    if (-not $mine) { throw "The scratch folder could not be resolved, so no test ran." }
+    $mine = $mine + "\"
     foreach ($place in Get-RealPlace) {
-        $real = [IO.Path]::GetFullPath($place).TrimEnd("\") + "\"
-        $mine = $script:ScratchRoot.TrimEnd("\") + "\"
-        if ($mine.StartsWith($real, [StringComparison]::OrdinalIgnoreCase) -or
-            $real.StartsWith($mine, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "The scratch folder overlaps a real place, so no test ran."
+        foreach ($form in @([IO.Path]::GetFullPath($place).TrimEnd("\"), (Resolve-FinalPath $place))) {
+            if (-not $form) { continue }
+            $real = $form + "\"
+            if ($mine.StartsWith($real, [StringComparison]::OrdinalIgnoreCase) -or
+                $real.StartsWith($mine, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "The scratch folder overlaps a real place, so no test ran."
+            }
         }
     }
     $script:SavedLocal = $env:LOCALAPPDATA
@@ -84,7 +151,11 @@ function Exit-ScratchProfile {
 
 # A script may be dot-sourced only when it has the guard (a top-level
 # "if ($MyInvocation.InvocationName -eq ".") { return }" before the main part), since
-# without it the main part would install or uninstall for real.
+# without it the main part would install or uninstall for real. Everything above the
+# guard runs when the script is dot-sourced, so it may only define functions and
+# assign values that run no command and call no .NET method but two known reads, and
+# the parameters' default values may run only Join-Path; anything else there is
+# refused too (#332 review).
 function Assert-DotSourceGuard([string]$Path) {
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
@@ -98,6 +169,36 @@ function Assert-DotSourceGuard([string]$Path) {
     if ($errors.Count -or $guard -lt 0 -or $main -lt 0 -or $guard -gt $main) {
         throw "$Path has no dot-source guard before its main part, so it was not loaded."
     }
+    # The parameters' default values run too: there, Join-Path is the only command.
+    $parameters = @()
+    if ($ast.ParamBlock) { $parameters = @($ast.ParamBlock.Parameters | Where-Object { $_.DefaultValue }) }
+    foreach ($parameter in $parameters) {
+        if (-not (Test-ReadOnlyValue $parameter.DefaultValue @("Join-Path"))) {
+            throw "$Path runs something above its dot-source guard, so it was not loaded."
+        }
+    }
+    for ($i = 0; $i -lt $guard; $i++) {
+        $statement = $statements[$i]
+        if ($statement -is [Management.Automation.Language.FunctionDefinitionAst]) { continue }
+        $plain = $statement -is [Management.Automation.Language.AssignmentStatementAst] -and
+            (Test-ReadOnlyValue $statement.Right @())
+        if (-not $plain) {
+            throw "$Path runs something above its dot-source guard, so it was not loaded."
+        }
+    }
+}
+
+# True when evaluating $Value runs no command but those in $Commands, makes no script
+# block and calls no .NET method but the reads the scripts use at the top
+# ([Environment]::GetFolderPath, [Diagnostics.Stopwatch]::StartNew).
+function Test-ReadOnlyValue($Value, [string[]]$Commands) {
+    $reads = @("[Environment]::GetFolderPath", "[Diagnostics.Stopwatch]::StartNew")
+    $found = $Value.Find({ param($n)
+        ($n -is [Management.Automation.Language.CommandAst] -and $Commands -notcontains $n.GetCommandName()) -or
+        $n -is [Management.Automation.Language.ScriptBlockExpressionAst] -or
+        ($n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and
+         $reads -cnotcontains ($n.Expression.Extent.Text + "::" + $n.Member.Extent.Text)) }, $true)
+    return -not $found
 }
 
 # The script reaches the Start menu and the uninstall key only through $ProgramsFolder
@@ -133,6 +234,59 @@ function Confirm-Loadable([string]$Path) {
     Assert-DotSourceGuard $Path
     Assert-RedirectableTarget $Path
     return $Path
+}
+
+# Every place in a test file that could run a script other than by the checked load
+# (#332 review), as "<line>: <text>": a dot-source other than
+# ". (Confirm-Loadable ...)" followed by Set-ScratchTarget, any "&" call, a command
+# named by its path (.\uninstall.ps1), and anything that starts a process or another
+# PowerShell (powershell, pwsh, cmd, Start-Process, Invoke-Expression, jobs,
+# Invoke-Command, Invoke-Item, [Diagnostics.Process], [PowerShell], script blocks made
+# from text, InvokeScript). The file is parsed only, never run.
+function Find-UncheckedRun([string]$Path) {
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { return @("0: the file does not parse") }
+    $starters = @("powershell", "powershell.exe", "pwsh", "pwsh.exe", "cmd", "cmd.exe",
+        "Start-Process", "saps", "start", "Invoke-Expression", "iex", "Start-Job", "sajb",
+        "Start-ThreadJob", "Invoke-Command", "icm", "Invoke-Item", "ii")
+    $found = @()
+    foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true)) {
+        $text = $node.Extent.Text
+        $name = $node.GetCommandName()
+        $bad = $false
+        if ($node.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot) {
+            if ($text -ceq '. (Join-Path $PSScriptRoot "Isolation.ps1")') { continue }
+            $bad = $true
+            if ($text -clike ". (Confirm-Loadable *)") {
+                $pipeline = $node.Parent
+                $statements = @($pipeline.Parent.Statements)
+                $at = [array]::IndexOf($statements, $pipeline)
+                $bad = $at -lt 0 -or $at -ge ($statements.Count - 1) -or
+                    $statements[$at + 1].Extent.Text -cne "Set-ScratchTarget"
+            }
+        } elseif ($node.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Ampersand) {
+            $bad = $true
+        } elseif ($name -and ($starters -contains $name -or $name -match '[\\/]|\.(ps1|exe|cmd|bat)$')) {
+            $bad = $true
+        } elseif ($name -eq "New-Object" -and $text -match 'Process|PowerShell|Runspace') {
+            $bad = $true
+        }
+        if ($bad) { $found += "$($node.Extent.StartLineNumber): $text" }
+    }
+    $types = '(^|\.)(Process|ProcessStartInfo|PowerShell|Runspace|RunspaceFactory|ScriptBlock)$'
+    foreach ($node in $ast.FindAll({ param($n)
+            ($n -is [Management.Automation.Language.TypeExpressionAst] -or
+             $n -is [Management.Automation.Language.TypeConstraintAst]) -and
+            $n.TypeName.FullName -match $types }, $true)) {
+        $found += "$($node.Extent.StartLineNumber): $($node.Extent.Text)"
+    }
+    foreach ($node in $ast.FindAll({ param($n)
+            $n -is [Management.Automation.Language.MemberExpressionAst] -and
+            $n.Member.Extent.Text -match '^(InvokeScript|InvokeCommand|NewScriptBlock)$' }, $true)) {
+        $found += "$($node.Extent.StartLineNumber): $($node.Extent.Text)"
+    }
+    return $found
 }
 
 # Right after the dot-source, in the same scope: the uninstall key and the Start menu
