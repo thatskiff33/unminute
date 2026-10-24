@@ -94,7 +94,8 @@ class SplitterTests(unittest.TestCase):
         # A quieter moment on a window boundary within the search span, 13 windows
         # before the cut: 9.6 s at 10 s, 7.584 s at 8 s. The plain tone's own energy
         # ripple must not put the cut there too, or the check proves nothing.
-        dip_at = (drafts._windows(drafts.MAX_PHRASE_S) - 13) * w
+        before_cut = 13                                  # windows; inside the 47-window search
+        dip_at = (drafts._windows(drafts.MAX_PHRASE_S) - before_cut) * w
         expected_end = dip_at + w                        # the quiet window ends the phrase
 
         def split_with_dip(scale):
