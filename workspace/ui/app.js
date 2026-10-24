@@ -2497,12 +2497,19 @@ function reportItem(rep) {
 // the draft's state and counts, never text; the text is fetched only when
 // the count or generation changes, never while the window is hidden or the
 // user has hidden the draft, and at most DRAFT_KEEP phrases stay on the page.
+// renderDraft runs with every clock tick (10 a second), so it changes the
+// page only when something has changed (#216's budget; #340's ratchets).
 const DRAFT_KEEP = 300;
 const DRAFT_EMPTY = {
   starting: "Getting draft text ready…",
   running: "Draft text appears here a few seconds after people speak.",
 };
-const draft = { rec: null, gen: null, count: 0, hidden: false, reading: false, said: null };
+// shown: how many times Hide or Show was selected, so a fetch that either
+// overtook is dropped rather than added to the box.
+const draft = { rec: null, gen: null, count: 0, hidden: false, reading: false, said: null, shown: 0 };
+
+function putText(node, text) { if (node.textContent !== text) node.textContent = text; }
+function putHidden(node, hidden) { if (node.hidden !== hidden) node.hidden = hidden; }
 
 function draftLine(p) {
   return p.kind === "skipped"
@@ -2513,11 +2520,11 @@ function draftLine(p) {
 
 function draftEmpty(stateName) {
   const box = $("rec-draft-box");
-  const lines = box.querySelectorAll(".rec-draft-line, .rec-draft-skip").length;
+  const lines = box.querySelector(".rec-draft-line, .rec-draft-skip");
   const text = lines ? "" : DRAFT_EMPTY[stateName] || "";
   const empty = box.querySelector(".rec-draft-empty");
   if (!text) { if (empty) empty.remove(); return; }
-  if (empty) empty.textContent = text;
+  if (empty) putText(empty, text);
   else box.append(el("p", { class: "rec-draft-empty", textContent: text }));
 }
 
@@ -2529,7 +2536,7 @@ function clearDraft() {
 async function renderDraft(rec, d) {
   const area = $("rec-draft");
   const live = !!(rec && d && REC_KIND[rec.state] !== "saving" && REC_KIND[rec.state] !== "lost");
-  area.hidden = !live;
+  putHidden(area, !live);
   if (!live) {                                      // stopped, saving or off: nothing kept
     if (draft.rec !== null) { clearDraft(); draft.rec = draft.gen = draft.said = null; }
     return;
@@ -2547,16 +2554,20 @@ async function renderDraft(rec, d) {
     $("rec-draft-status").textContent = said;
   }
   $("rec-draft-status").classList.toggle("sr", !draft.hidden && !d.note);
-  $("rec-draft-box").hidden = draft.hidden;
-  $("rec-draft-toggle").textContent = draft.hidden ? "Show draft" : "Hide draft";
-  $("rec-draft-toggle").setAttribute("aria-expanded", String(!draft.hidden));
+  putHidden($("rec-draft-box"), draft.hidden);
+  const toggle = $("rec-draft-toggle");
+  putText(toggle, draft.hidden ? "Show draft" : "Hide draft");
+  if (toggle.getAttribute("aria-expanded") !== String(!draft.hidden))
+    toggle.setAttribute("aria-expanded", String(!draft.hidden));
   if (draft.hidden) return;
   draftEmpty(d.state);
   if (d.count === draft.count || draft.reading || document.hidden) return;
   draft.reading = true;
+  const shown = draft.shown;
   try {
     const got = await call("recording_draft", Math.max(draft.count, d.count - DRAFT_KEEP));
-    if (got.generation !== draft.gen || draft.hidden || draft.rec !== rec.id) return;
+    if (got.generation !== draft.gen || draft.hidden || draft.rec !== rec.id
+        || draft.shown !== shown) return;
     const box = $("rec-draft-box");
     const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 8;
     box.append(...got.phrases.map(draftLine));
@@ -2572,6 +2583,7 @@ async function renderDraft(rec, d) {
 
 function toggleDraft() {
   draft.hidden = !draft.hidden;
+  draft.shown++;                                     // a fetch already on its way is dropped
   clearDraft();                                      // hidden: the page keeps no draft text
   draft.said = null;
   renderRecorder().catch(() => {});
