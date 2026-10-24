@@ -1066,7 +1066,9 @@ class Workspace:
                           consent="confirmed" if consent is not None else "not_required",
                           wording=consent.get("wording") if consent is not None else None,
                           method=("app-window" if consent is not None
-                                  and consent.get("method") == "app-window" else None))
+                                  and consent.get("method") == "app-window" else None),
+                          sources=("mic_and_computer" if computer is not None
+                                   else "mic_only"))
         threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
                          name="recorder-watch").start()
         return rec.status()
@@ -2933,8 +2935,9 @@ class Workspace:
         if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
         if changes.get("computer_audio") is True:
-            # Fail closed until the page slice: nothing is saved early, so no
-            # value set now is carried over to the version that offers it.
+            # The page part of #108 offers the switch (COMPUTER_AUDIO_STARTS
+            # is True). If the feature is ever turned off again, this keeps the
+            # switch refused and nothing in the same change is saved.
             if not COMPUTER_AUDIO_STARTS:
                 raise WorkspaceError("Computer audio is not available in this version.")
             if not self._computer_audio_allowed():

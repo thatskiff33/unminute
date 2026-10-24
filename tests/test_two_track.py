@@ -1143,6 +1143,42 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         self.assertTrue(ws.wait_idle(60))
         self.assertEqual(ws.meetings(), [])
 
+    def test_the_audit_log_says_which_notice_was_confirmed(self):
+        # The owner's decision of 24 Oct 2026 (#346): recording_started says
+        # which notice the person confirmed, microphone only or with computer
+        # audio, as a fixed word. Never a device name (P3).
+        from workspace import audit
+        ws = self.make()
+        ws.settings.update(microphone=True)
+        ws.start()
+        ws.start_recording(3, consent=CONSENT)
+        ws.discard_recording()
+        ws.settings.update(computer_audio=True)
+        ws.start_recording(3, consent=both_consent())
+        self.assertIn("comp", self.holder)
+        ws.discard_recording()
+        # Policy turns the confirmation off: no notice was confirmed, and the
+        # record still says what the recording opened.
+        ws = self.make({"RequireRecordingConsent": False})
+        ws.settings.update(microphone=True, computer_audio=True)
+        ws.start()
+        ws.start_recording(3)
+        ws.discard_recording()
+        self.assertEqual(ws.audit.stats["refused"], 0)
+        ws.close()
+        self.ws = None
+        folder = self.root / "ws" / "audit"
+        started = [json.loads(line) for _, path in audit.segments(folder)
+                   for line in path.read_bytes().splitlines()
+                   if b'"kind":"recording_started"' in line]
+        self.assertEqual([(r["consent"], r["wording"], r["sources"]) for r in started],
+                         [("confirmed", 2, "mic_only"), ("confirmed", 2, "mic_and_computer"),
+                          ("not_required", None, "mic_and_computer")])
+        everything = b"".join(p.read_bytes() for _, p in audit.segments(folder))
+        for needle in (b"Test speakers", b"Test microphone", b"speakers", b"microphone"):
+            self.assertNotIn(needle, everything, needle)
+        self.assertEqual(audit.verify(folder)["result"], "ok")
+
     def test_a_journal_from_a_newer_version_is_kept_not_half_imported(self):
         ws = self.make()
         ws.settings.update(microphone=True)
