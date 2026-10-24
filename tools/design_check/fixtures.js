@@ -700,6 +700,16 @@
       },
       steps: [show("settings")],
     },
+    // #300: a policy value name Unminute does not recognise (a trailing
+    // space), so Settings names it for IT; nothing else is managed.
+    "settings-unrecognised": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.settings = { ...d.settings, managed: {
+          managed: [], invalid: [], allow: {}, unrecognised: ["AllowModelDownloads\\x20"] } };
+      },
+      steps: [show("settings")],
+    },
     downloads: { steps: [show("downloads")] },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.

@@ -40,6 +40,12 @@ body{margin:0}
     <!-- #109: IT set the Hand off assistant ("set"); also off, invalid or unreadable, worded in app.js renderAssistantSetting. -->
     <sc-if value="{{assistantSet}}" hint-placeholder-val="{{ false }}">
       <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Some settings are managed by your organisation. Ask your IT team if you need one changed.</p>
+    </sc-if>
+    <!-- #300: policy value names Unminute does not recognise ("set"; one name here), worded in app.js unrecognisedNote. -->
+    <sc-if value="{{unrecognisedSet}}" hint-placeholder-val="{{ false }}">
+      <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591; overflow-wrap: anywhere">Your organisation's policy has a value Unminute does not recognise: AllowModelDownloads\x20. Ask your IT team to check its name.</p>
+    </sc-if>
+    <sc-if value="{{assistantSet}}" hint-placeholder-val="{{ false }}">
       <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Hand off assistant: Copilot, copilot.example.org (set by your organisation).</p>
     </sc-if>
 
@@ -150,13 +156,14 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"$preview":{"width":1100,"height":1320}}'>
+<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"unrecognised":{"editor":"enum","options":["none","set"],"default":"none"},"$preview":{"width":1100,"height":1320}}'>
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
     const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.24)' });
     return {
       assistantSet: (this.props.assistant ?? 'none') === 'set',
+      unrecognisedSet: (this.props.unrecognised ?? 'none') === 'set',
       toggles: [
         on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
         on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),

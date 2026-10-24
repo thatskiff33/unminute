@@ -2008,6 +2008,24 @@ function renderRepaired(r) {
   $("s-repaired").hidden = !text;
 }
 
+// Policy value names Unminute does not recognise (#300), such as a misspelling
+// or a trailing space: they grant and withhold nothing, so Settings names them
+// for IT to fix. The bridge sends them as printable ASCII with escapes for
+// anything else (policy.shown_name); they are shown as text only.
+function unrecognisedNote(m) {
+  const names = (m && Array.isArray(m.unrecognised) ? m.unrecognised : [])
+    .filter((n) => typeof n === "string" && n);
+  if (!names.length) return "";
+  return names.length === 1
+    ? `Your organisation's policy has a value Unminute does not recognise: ${names[0]}. Ask your IT team to check its name.`
+    : `Your organisation's policy has values Unminute does not recognise: ${names.join(", ")}. Ask your IT team to check their names.`;
+}
+function renderUnrecognised(m) {
+  const text = unrecognisedNote(m);
+  $("s-unrecognised").textContent = text;
+  $("s-unrecognised").hidden = !text;
+}
+
 // Hand off's Copy and open (#109), when the organisation's policy sets it:
 // the name and host in force, or why there is no button.
 function renderAssistantSetting(a) {
@@ -2031,6 +2049,7 @@ async function renderSettings() {
   const s = await call("settings");
   state.managed = s.managed;
   $("s-managed").hidden = !(s.managed && s.managed.managed.length);
+  renderUnrecognised(s.managed);
   renderAssistantSetting(s.managed && s.managed.assistant);
   renderRepaired(s.repaired);
   for (const r of document.querySelectorAll('input[name="mode"]')) r.checked = r.value === s.mode;
