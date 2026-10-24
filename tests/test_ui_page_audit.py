@@ -12,7 +12,9 @@
 #     "Optional" on the current setup step;
 #   - pointer targets are 24 by 24 CSS px or spaced (2.5.8): the back links,
 #     the transcript's times and passages, the template links and the
-#     "Replace names" check box;
+#     "Replace names" check box; and nothing covers part of a back link's
+#     target (the meeting title's border box and the hand-off page's heading
+#     reach into it), which the audit's box measurement cannot see;
 #   - accessible names contain the visible label (2.5.3): playback speed,
 #     the speaker names dialog and the passages to leave out;
 #   - the meeting title, a field, has a boundary at 3:1 at rest (1.4.11; the
@@ -83,6 +85,32 @@ RUNNER = """
   // The meeting title's box holds its text, border included (no line cut off).
   const title = document.getElementById('m-title');
   out.title_fits = title.scrollHeight <= title.clientHeight;
+  // Each shown back link answers a pointer over its whole 24 px target: no
+  // later element (such as the meeting title's border box) covers part of it.
+  // The audit measures the link's box, which an overlap leaves unchanged.
+  // Every row is tried at a quarter, half and three quarters across, clear of
+  // the rounded corners; a link behind an open modal dialog is not a target.
+  out.back_links = 0;
+  out.back_link_covered = [];
+  const modal = document.querySelector('dialog:modal');
+  for (const link of document.querySelectorAll('.back-link')) {
+    let r = link.getBoundingClientRect();
+    if (!r.width || !r.height || (modal && !modal.contains(link))) continue;
+    // The audit may have scrolled it out of view, where nothing is hit.
+    link.scrollIntoView({block: 'center'});
+    r = link.getBoundingClientRect();
+    out.back_links++;
+    for (let y = r.top + 0.5; y < r.bottom; y += 1) {
+      for (const x of [0.25, 0.5, 0.75].map(f => r.left + f * r.width)) {
+        const hit = document.elementFromPoint(x, y);
+        if (!link.contains(hit)) {
+          const by = hit ? (hit.id ? '#' + hit.id : hit.tagName) : 'nothing';
+          out.back_link_covered.push('#' + link.id + ' row ' + Math.floor(y - r.top)
+            + ' of ' + Math.round(r.height) + ': ' + by);
+        }
+      }
+    }
+  }
   // In a narrow view the page is in a frame: the result goes to the top page,
   // which is the document Edge prints.
   const top = window.top.document;
@@ -189,6 +217,15 @@ class PageAuditTests(unittest.TestCase):
             if VIEWS[name][0] == "meeting":
                 with self.subTest(view=name, mode=mode):
                     self.assertIs(r.get("title_fits"), True, "the title's box cuts off its text")
+
+    def test_back_links_answer_over_their_whole_target(self):
+        for (name, mode), r in self.results.items():
+            with self.subTest(view=name, mode=mode):
+                scenario, _, width, _ = VIEWS[name]
+                if scenario == "meeting" and width > 480:
+                    # Below 481 px the meeting hides its back link.
+                    self.assertGreater(r.get("back_links", 0), 0, "no back link was checked")
+                self.assertEqual([], r.get("back_link_covered", ["(no result)"]))
 
     def test_no_findings_in_the_views_fixed_for_298(self):
         for (name, mode), r in self.results.items():

@@ -448,8 +448,10 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
 .m-head-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .m-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .back-link { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 14px; text-decoration: none; }
-/* 24 px tall to point at (WCAG 2.5.8, #298); the negative margin keeps the layout. */
-.back-link.link-plain { padding-block: 4px; margin-block: -4px; }
+/* 24 px tall to point at (WCAG 2.5.8, #298); the negative margin keeps the layout.
+   Raised so the heading below (the meeting title's border box reaches 3 px
+   up into the target) never takes a click on its last rows. */
+.back-link.link-plain { padding-block: 4px; margin-block: -4px; position: relative; z-index: 1; }
 .title-edit { display: block; min-width: 0; }
 /* The title wraps like a heading and is edited in place; Enter saves it. It
    has a control's border at rest, 3:1 like every field's (WCAG 1.4.11; owner
