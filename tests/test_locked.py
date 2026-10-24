@@ -617,6 +617,27 @@ class LockedStartTests(unittest.TestCase):
         with mock.patch.object(main, "_app_running", return_value=False):
             self.assertEqual("ok", main.health(self.root)["workspace"])
 
+    def test_retention_reminders_are_counted_while_locked(self):
+        # #111 C6 on C4a: the retention counts read plain columns only, so a
+        # locked workspace still gives them to Copy diagnostics and --status,
+        # without unlocking the key. The review meeting waited 40 days; the
+        # held one is quiet, counted only as held_overdue; the meeting
+        # confirmed for removal started its cleanup clock today.
+        from workspace import __main__ as main
+        self.fill()
+        self.raw(f"UPDATE meetings SET created_at = {time.time() - 40 * 86400}")
+        ws = self.locked(policy_reader=lambda: ({}, ()))          # no managed policy
+        text = ws.diagnostics()
+        self.close(ws)
+        self.assertIn("Retention reminders: review_days=30 (app default), action_days=off "
+                      "(app default); reminders_due=1, action_required=0, held_overdue=1", text)
+        with mock.patch("workspace.dpapi.unprotect", side_effect=AssertionError("dpapi")), \
+                mock.patch("workspace.store.Store", side_effect=AssertionError("store")):
+            report = main.status(self.root, policy_reader=lambda: ({}, ()))
+        self.assertEqual(("locked", 1, 0, 1),
+                         (report["keys"], report["reminders_due"], report["action_required"],
+                          report["held_overdue"]))
+
 
 @unittest.skipUnless(HAVE_DEPS, "numpy/av/cryptography not installed")
 class KeysFileTests(unittest.TestCase):

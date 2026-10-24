@@ -261,7 +261,12 @@ Failure reasons are stored without file paths.
   - They run only after the user confirms again, either with `confirm_pending_cleanup` or by repeating the original confirmation.
   - Job updates never overwrite `awaiting_confirmation`.
 - **Review reminders.** `due_for_review` lists holds that have not been reviewed for 30 days. The app shows them while it is open. A closed app sends no reminders.
-- **Unfinished work.** `unfinished_work` lists each meeting's age and next action. Ordinary unfinished work gets no scheduled reminders.
+- **Unfinished work.** `unfinished_work` lists each meeting's age and next action.
+- **Retention state (#111 C6).** `retention_state(store, policy, now)` gives each meeting's outstanding step, its age in days and its state. Nothing is stored: it is worked out from plain columns of `meetings`, `holds` and `cleanup_jobs` in three grouped queries, whatever the number of meetings, and no title is opened. It deletes, holds, expires and blocks nothing.
+  - **Steps, first match wins** (a job's state before the meeting's stage): confirm cleanup (a job `awaiting_confirmation`, from the latest `holds.released_at`); cleanup did not finish (a `pending` or `failed` job, from the oldest `intent_at`); hand off (`reviewed_at` set, `final_saved_at` not, from `reviewed_at`); review (`reviewed_at` not set, from `created_at`). A start in the future counts as 0 days.
+  - **State:** `action_required` at `ActionRequiredDays` or more (policy, default 0, off), else `due` at `ReviewReminderDays` or more (policy, default 30); 0 turns each off. Action required at or below the reminder threshold wins from its own.
+  - **Holds:** a step is exempt while an active hold's scope is in `hold_scopes(phase)` for the cleanup the step leads to (review leads to audio cleanup, hand off to transcript cleanup, a job step to its own phase). `hold_scopes` is the rule cleanup itself uses (`cleanup.hold_scopes` is the same function). A held step past the action threshold (or the reminder threshold when action required is off) is counted as `held_overdue`: in `--status`, `--health` and Copy diagnostics, never on the row.
+  - **Shown** through the existing `reminders` bridge method (`retention`, `recordings_waiting` from the in-memory reports of recordings recovered after a crash, and `thresholds` with whether IT set each), so the page makes no extra call: a chip per row, rows that require action first in their group and then those due (other rows keep their order), and one banner whose wording claims an organisation's rule only for "Action required" and only when IT set `ActionRequiredDays`. "Review due" never claims one, even when IT set `ReviewReminderDays`: a reminder is a nudge, not a deadline (the owner's decision, 22 October 2026).
 
 ### Receipts
 
@@ -406,7 +411,7 @@ Nothing in the pass reads meeting content, opens the key or writes anything. Fin
 ### Views
 
 - **Inbox:** import, plus meetings still being processed, with progress, Pause, Stop now and Resume.
-- **Active meetings:** meetings in review, handoff or cleanup. Each shows its age, next action and held status. No scheduled reminders.
+- **Active meetings:** meetings in review, handoff or cleanup. Each shows its age, next action and held status, and a "Review due" or "Action required" chip when its next step has waited past the threshold in force (#111 C6). Nothing is scheduled outside the app.
 - **Meeting:**
   - the transcript, with speaker labels and overlap notes;
   - search: Ctrl+F, Enter for the next match;

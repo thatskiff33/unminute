@@ -2607,9 +2607,27 @@ class Workspace:
         }
 
     def reminders(self):
-        """Shown while the app is open: holds due for review and cleanup that
-        waits for a confirmation. Nothing is scheduled outside the app."""
+        """Shown while the app is open: holds due for review, cleanup that
+        waits for a confirmation, and the retention reminders (#111 C6):
+        meetings whose next step is "due" or "action_required" under the
+        thresholds in force, and recordings recovered after a crash that
+        still wait for Keep or Delete (their start time from the in-memory
+        report; no journal is read). Nothing is scheduled outside the app."""
         titles = {m["id"]: m["title"] for m in self.store.meetings(content=("title",))}
+        p, now = self.policy.current(), time.time()
+        limits = holds.thresholds(p)
+        try:
+            retention = holds.retention_state(self.store, p, now)
+        except StoreError:
+            retention = []        # a damaged database (R11): its own notice says so
+        waiting = []
+        for r in list(self._recording_reports):
+            if r.get("recovered") and r.get("pending") and not r.get("discarded"):
+                started = r.get("started_at")
+                days = (max(0, int((now - started) // holds.DAY))
+                        if isinstance(started, (int, float)) else 0)
+                waiting.append({"id": r["id"], "days": days, "state": holds.reminder_level(
+                    days, limits["review_days"], limits["action_days"])})
         return {
             "holds_due": [{"id": h["id"], "meeting": h["meeting_id"],
                            "title": titles.get(h["meeting_id"], ""), "reason": h["reason"]}
@@ -2618,6 +2636,11 @@ class Workspace:
                                        "title": titles.get(j["meeting_id"], ""),
                                        "phase": j["phase"]}
                                       for j in holds.awaiting_confirmation(self.store)],
+            "retention": [{"meeting": r["meeting"], "title": titles.get(r["meeting"], ""),
+                           "step": r["step"], "days": r["days"], "state": r["state"]}
+                          for r in retention if r["state"]],
+            "recordings_waiting": waiting,
+            "thresholds": limits,
         }
 
     # -- diagnostics (R9b, #130) ---------------------------------------------------------
@@ -2635,6 +2658,26 @@ class Workspace:
         code = diag.new_code()
         self.log.write("incident", code=code, area="page", event=event, line=line, col=col)
         return code
+
+    def _retention_line(self, p):
+        """Copy diagnostics: the reminder thresholds in force, who set them,
+        and counts only (#111 C6)."""
+        limits = holds.thresholds(p)
+        try:
+            counts = holds.retention_counts(holds.retention_state(self.store, p))
+        except StoreError:
+            # A damaged database (R11): the rest of the diagnostics still count.
+            counts = {"counts": "unreadable"}
+
+        def shown(key):
+            days = limits[f"{key}_days"]
+            return f"{key}_days={days or 'off'}" + (
+                " (policy)" if limits["managed"][key] else " (app default)")
+        line = ("Retention reminders: " + shown("review") + ", " + shown("action") + "; "
+                + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        if limits["action_days"] and limits["action_days"] <= limits["review_days"]:
+            line += "; the review-due threshold has no effect (action required comes first)"
+        return line
 
     def diagnostics(self):
         """What Copy diagnostics copies: versions, settings and policy values,
@@ -2703,6 +2746,7 @@ class Workspace:
             # meetings already confirmed for removal stay in the renamed folder.
             lines.append(f"Active holds: {counts['holds']}")
             lines.append(f"Cleanup confirmed and not finished: {counts['unfinished']}")
+        lines.append(self._retention_line(p))
         try:
             cards = self._display_value("cards", lambda: setup.cards(self.cache_dir))
             lines.append("Models: " + ", ".join(f"{word(c['name'])}={word(c['state'])}"

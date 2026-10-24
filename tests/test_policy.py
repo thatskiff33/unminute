@@ -167,6 +167,25 @@ class ParseTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=(name, value)):
                 policy._parse(name, value, kind)
 
+    def test_retention_reminder_days(self):
+        # #111 C6: whole days, 0 (off) to 365. Not permissions: a bad or
+        # unreadable value gives the app's default (review due at 30 days,
+        # action required off), never something stricter or looser.
+        import winreg
+        for name in ("ReviewReminderDays", "ActionRequiredDays"):
+            for value in (0, 14, 365):
+                self.assertEqual(policy._parse(name, value, winreg.REG_DWORD), value)
+            for value, kind in ((366, winreg.REG_DWORD), (-1, winreg.REG_DWORD),
+                                ("14", winreg.REG_SZ), (14, winreg.REG_QWORD)):
+                with self.assertRaises(ValueError, msg=(name, value)):
+                    policy._parse(name, value, kind)
+        defaults = {"ReviewReminderDays": 30, "ActionRequiredDays": 0}
+        for p in (policy.Policy(), policy.Policy({}, policy.UNREADABLE),
+                  policy.Policy(invalid=tuple(defaults))):
+            self.assertEqual({n: p.get(n) for n in defaults}, defaults)
+        p = policy.Policy({"ReviewReminderDays": 7, "ActionRequiredDays": 14})
+        self.assertEqual((p.get("ReviewReminderDays"), p.get("ActionRequiredDays")), (7, 14))
+
     def test_folder_expands_environment_variables(self):
         import os
         import winreg

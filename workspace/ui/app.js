@@ -183,10 +183,16 @@ function discardLink(m) {
   }), "Delete a meeting you do not need (for example a test recording)");
 }
 
+// Retention reminders (#111 C6): a meeting whose next step has waited past the
+// threshold in force. It blocks nothing; the chip and the banner only say so.
+const RETENTION = { action_required: "Action required", due: "Review due" };
+
 function titleLine(m) {
   return el("div", { class: "row-title" },
     el("button", { type: "button", class: "open", textContent: m.title, on: { click: () => openMeeting(m.id) } }),
-    m.held ? el("span", { class: "held", textContent: "Held" }) : null);
+    m.held ? el("span", { class: "held", textContent: "Held" }) : null,
+    m.retention ? el("span", { class: `chip-retention ${m.retention === "due" ? "retention-due" : "retention-action"}`,
+                               textContent: RETENTION[m.retention] }) : null);
 }
 
 // What a meeting needs next decides its group: needs attention, ready for
@@ -310,8 +316,15 @@ const GROUPS = [
   ["cleanup", "Cleaning up", "rows"],
 ];
 
-async function renderLists() {
-  const items = await call("meetings");
+// Rows that require action first, then those due, otherwise as listed.
+const RETENTION_ORDER = { action_required: 0, due: 1 };
+const byRetention = (a, b) => (RETENTION_ORDER[a.retention] ?? 2) - (RETENTION_ORDER[b.retention] ?? 2);
+
+// reminders: what renderReminders shows (the Meetings view only), so each row
+// carries its retention state without another bridge call.
+async function renderLists(reminders) {
+  const states = new Map(((reminders && reminders.retention) || []).map((r) => [r.meeting, r.state]));
+  const items = (await call("meetings")).map((m) => ({ ...m, retention: states.get(m.id) || null }));
   // The sidebar count: meetings waiting for the user.
   const waiting = items.filter((m) => ["attention", "ready"].includes(groupOf(m))).length;
   $("nav-count").hidden = !waiting;
@@ -324,7 +337,7 @@ async function renderLists() {
   const busy = items.find((m) => m.busy === "transcribe");
   const sections = [];
   for (const [key, title, kind] of GROUPS) {
-    const mine = items.filter((m) => groupOf(m) === key);
+    const mine = items.filter((m) => groupOf(m) === key).sort(byRetention);
     if (!mine.length) continue;
     const row = { attention: attentionRow, ready: readyRow, cleanup: cleanupRow,
                   work: (m) => workRow(m, busy && busy.id !== m.id ? busy.title : null) }[key];
@@ -381,9 +394,36 @@ function renderIntegrity(info) {
   if (appeared) say(text);              // announced once; the notice itself stays
 }
 
-async function renderReminders() {
-  const r = await call("reminders");
+// The banner says what the organisation asks only for "Action required", and
+// only when IT set ActionRequiredDays (C6-5). "Review due" is a nudge, not a
+// deadline, so it never claims a rule, even when IT set ReviewReminderDays
+// (the owner's decision, 22 October 2026).
+function oneOrMany(n, one, many) { return n === 1 ? one : many; }
+function retentionBanner(r) {
+  const count = (list, level) => (list || []).filter((x) => x.state === level).length;
+  const t = r.thresholds;
+  const action = [count(r.retention, "action_required"), count(r.recordings_waiting, "action_required")];
+  const due = [count(r.retention, "due"), count(r.recordings_waiting, "due")];
+  const parts = [];
+  if (action[0] || action[1]) {
+    const days = t.action_days;
+    if (action[0]) parts.push(`${action[0]} ${oneOrMany(action[0], "meeting needs", "meetings need")} action.`);
+    if (action[1]) parts.push(`${action[1]} ${oneOrMany(action[1], "recording needs", "recordings need")} action: keep or delete ${oneOrMany(action[1], "it", "them")}.`);
+    parts.push(t.managed.action ? `Your organisation asks for each step to be finished within ${days} days.`
+                                : `Each has waited ${days} days or more.`);
+    return notice("alert", parts.join(" "));
+  }
+  if (!(due[0] || due[1])) return null;
+  const days = t.review_days;
+  if (due[0]) parts.push(`${due[0]} ${oneOrMany(due[0], "meeting has", "meetings have")} waited ${days} days or more for ${oneOrMany(due[0], "its", "their")} next step.`);
+  if (due[1]) parts.push(`${due[1]} ${oneOrMany(due[1], "recording has", "recordings have")} waited ${days} days or more for Keep or Delete.`);
+  return notice("hold", parts.join(" "));
+}
+
+function renderReminders(r) {
   const lines = [];
+  const banner = retentionBanner(r);
+  if (banner) lines.push(banner);
   for (const h of r.holds_due)
     lines.push(notice("hold", `Hold due for review: ${h.title}.`,
       button("Keep", () => attempt(() => call("keep_hold", h.id).then(refresh)),
@@ -2603,8 +2643,19 @@ async function refresh() {
     const lists = state.changes === undefined || state.changes !== state.listsSeen ||
                   state.view !== state.listsView || state.sinceLists >= LIST_REFRESH_POLLS;
     if (lists) {
-      await renderLists();
-      if (state.view === "meetings") await renderReminders();
+      // The reminders first, so the rows can carry their retention chips:
+      // the same two calls as before, in the other order. A failed reminders
+      // call is reported but still lets the list and sidebar count draw.
+      let reminders = null;
+      if (state.view === "meetings") {
+        try {
+          reminders = await call("reminders");
+        } catch (err) {
+          say(String((err && err.message) || err));
+        }
+      }
+      await renderLists(reminders);
+      if (reminders) renderReminders(reminders);
       state.listsSeen = state.changes;
       state.listsView = state.view;
       state.sinceLists = 0;
