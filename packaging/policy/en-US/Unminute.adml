@@ -79,7 +79,7 @@ Disabled or not configured: 30 days, the app's default. To turn the reminder off
       <string id="ActionRequiredDays">Days before a meeting's next step shows "Action required"</string>
       <string id="ActionRequiredDays_Help">Enabled: a meeting whose next step has waited this many days shows "Action required" on the Meetings page and is listed first, with a banner saying that your organisation asks for each step to be finished within this many days (0 to 365; 0 turns it off). Nothing is blocked or deleted. A step whose cleanup a hold blocks is not shown. --health counts the meetings that require action (action_required) and held meetings past this threshold (held_overdue) without changing "healthy"; run it with the logged-on credentials.
 
-If this is less than "Review due", "Review due" is never shown. Enabling the policy suggests 60 days; change it to your organisation's rule. Disabled, not configured or 0: off.</string>
+If this is less than or equal to "Review due", "Review due" is never shown. Enabling the policy suggests 60 days; change it to your organisation's rule. Disabled, not configured or 0: off.</string>
 
       <string id="HandoffDefaultFolder">Starting folder for saved handoffs</string>
       <string id="HandoffDefaultFolder_Help">Enabled: the handoff Save dialog starts in this folder, for example a client files location. Use a full path that starts with a drive letter; a mapped drive is fine, but \\server\share paths are not accepted. Environment variables such as %USERPROFILE% are expanded. Users can still choose another folder.
