@@ -93,7 +93,8 @@ WHISPER_LICENCE = ("NVIDIA CUDA Toolkit licence (cuBLAS), published by NVIDIA on
 # CUDA library besides the driver's nvcuda.dll (checked 22 October 2026).
 # record_sha256 is the SHA-256 of the wheel's own RECORD, read from that file.
 # A CTranslate2 upgrade must check which cuBLAS it loads before this changes
-# (tests/test_consistency.py ties the two).
+# (tests/test_consistency.py ties the two), and which environment variables
+# its __init__ reads to add DLL folders (worker.DLL_PATH_VARIABLES, #357).
 WHISPER_CTRANSLATE2 = "4.8.3"
 WHISPER_WHEELS = (
     {"name": "nvidia_cublas_cu12", "version": "12.8.4.1", "size": 567544208,
