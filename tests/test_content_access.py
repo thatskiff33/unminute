@@ -132,6 +132,20 @@ DELETE_FROM_CONTENT = re.compile(
     + _SQL_GAP + r"(?:(?:" + "|".join(store.CONTENT_COLUMNS) + r")\b|\x00)")
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 def _fold(node, env=None):
     """The text of a string expression, or None if it is not one. With env,
     a name it holds stands for that text."""

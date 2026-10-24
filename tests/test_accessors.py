@@ -43,6 +43,20 @@ if HAVE_DEPS:
     from workspace.store import Store, StoreError
 
 
+sys.path.append(str(Path(__file__).resolve().parents[1] / "tools"))
+import decoder_runtime  # noqa: E402  (tools/decoder_runtime.py)
+
+
+def setUpModule():
+    # #299: the decoder runs in an AppContainer that cannot read this Python:
+    # decodes here use a scratch runtime it can read and a throwaway profile.
+    decoder_runtime.use()
+
+
+def tearDownModule():
+    decoder_runtime.stop()
+
+
 class Counting:
     """Wraps a store's codec and counts the values it opens, by (table,
     logical column)."""

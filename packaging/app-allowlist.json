@@ -9,6 +9,7 @@
   "workspace/__main__.py",
   "workspace/api.py",
   "workspace/app.py",
+  "workspace/appcontainer.py",
   "workspace/asr_engines.py",
   "workspace/audiocrypt.py",
   "workspace/audit.py",

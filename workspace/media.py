@@ -47,15 +47,23 @@ def sha256_file(path, chunk=8 << 20):
 # Recordings can come from clients or shared folders, so the file is treated
 # as hostile (#111 slice A3, threats T2 to T4 in docs/SECURITY_MODEL.md). It is
 # decoded by workspace/decode_child.py in a separate process that this app:
-#   - starts as a plain child process (it gets no handle to the app);
-#   - puts in a Windows job before giving it the file (workspace/jobs.py:
-#     memory limit, no child processes, no clipboard or desktop access,
-#     killed with the app);
-#   - requires to report Low integrity first (it lowers its own level), so
-#     Windows stops it writing the user's files or opening this process;
+#   - starts in a Windows AppContainer with no capabilities (#299,
+#     workspace/appcontainer.py), suspended, so Windows gives it no access to
+#     the user's files, the workspace or its key, and no network, loopback
+#     included; it gets no handle to the app;
+#   - puts in a Windows job before it runs (workspace/jobs.py: memory limit,
+#     no child processes, no clipboard or desktop access, killed with the app),
+#     and checks its token from outside (that container, no capabilities, Low
+#     integrity) before resuming it;
+#   - gives the recording as one read-only handle opened here (the container
+#     cannot open it by its path), only after it reports READY at Low
+#     integrity, checked here too;
 #   - never trusts: replies are fixed binary frames, checked here; this
 #     process writes (encrypts) the audio itself and enforces the length and
 #     disk limits.
+# If the container cannot be set up the import is refused (SandboxUnavailable,
+# with a message pointing to IT); it never falls back to a decoder outside the
+# container (the owner's decision of 24 October 2026, #299).
 # FFmpeg in the decoder may only use the supported recording types' demuxers,
 # their audio decoders and the local file protocol (decode_child.OPEN_OPTIONS).
 # Input sample rates outside 4 kHz to 384 kHz are refused, and a file may
@@ -83,6 +91,23 @@ last_decoder_integrity = None      # what the last decoder reported (tests, diag
 
 class DecodeError(ValueError):
     """The recording could not be decoded (message is safe to show)."""
+
+
+# Shown when the decoder's container cannot be set up on this computer (#299).
+# The IT guide's section is docs/IT_DEPLOYMENT.md, "Protected decoder".
+SANDBOX_REFUSED = ("This recording can't be opened safely on this computer: Unminute's "
+                   "protected decoder could not start. Ask your IT team to check "
+                   "\"Protected decoder\" in Unminute's IT guide.")
+
+
+class SandboxUnavailable(DecodeError):
+    """The decoder's AppContainer could not be set up, so the recording was
+    not given to any decoder. step (appcontainer.STEPS) and winerror (a
+    number) go to the log for IT; neither holds a path or text (P3)."""
+
+    def __init__(self, step, winerror=0):
+        super().__init__(SANDBOX_REFUSED)
+        self.step, self.winerror = step, int(winerror or 0)
 
 
 def _free_bytes(folder):
@@ -278,6 +303,87 @@ def _python():
     return getattr(sys, "_base_executable", None) or sys.executable
 
 
+def _runtime():
+    """The decoder's interpreter and import path: this process's own (the
+    installed runtime and app folders, which the container can read). Tests
+    point it at a scratch copy the container can read (tests/decoder_runtime.py)."""
+    return _python(), list(sys.path)
+
+
+# -X disable-remote-debug: no other process can make the decoder run code
+# through Python 3.14's debugger interface (PEP 768; older Pythons ignore it).
+DECODER_ARGS = ("-I", "-B", "-X", "disable-remote-debug", "-c")
+_THREADS = {"OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
+
+
+def _launch(exe, source):
+    """Start the decoder: (process, job, request line 2 for a file or None).
+    source: the open recording (a binary file), or None for the stdin form.
+    On Windows it starts in the AppContainer, in its job and with its token
+    checked before it runs; any failure raises SandboxUnavailable and nothing
+    else is started. Elsewhere (only the Linux test job: the app runs on
+    Windows) it is a plain child process given the file descriptor."""
+    from workspace import decode_child
+    argv = [exe, *DECODER_ARGS, decode_child.BOOT]
+    if sys.platform != "win32":
+        import subprocess
+        fds = (source.fileno(),) if source is not None else ()
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=dict(os.environ, **_THREADS),
+                                pass_fds=fds)
+        return proc, None, ({"handle": fds[0]} if fds else None)
+    import msvcrt
+
+    from workspace import appcontainer, jobs
+    held = []
+
+    def contain(pid):
+        try:
+            held.append(jobs.contain(pid, DECODER_MEMORY))
+        except jobs.JobError as exc:
+            raise appcontainer.SandboxError("contain", exc.errno or 0) from exc
+    handles = [msvcrt.get_osfhandle(source.fileno())] if source is not None else []
+    try:
+        proc = appcontainer.start(argv, contain, handles=handles,
+                                  env=appcontainer.environment(_THREADS))
+    except (appcontainer.SandboxError, OSError) as exc:
+        for job in held:
+            job.close()
+        if isinstance(exc, appcontainer.SandboxError):
+            raise SandboxUnavailable(exc.step, exc.code) from exc
+        raise SandboxUnavailable("start", getattr(exc, "winerror", None) or 0) from exc
+    return proc, held[0], ({"handle": handles[0]} if handles else None)
+
+
+def _await_ready(proc, frames, path):
+    """Send the import path, then wait for READY at Low integrity (checked
+    from outside on Windows too). Anything else means the container could not
+    run the decoder: SandboxUnavailable, before the recording is given."""
+    import json
+    import struct
+
+    from workspace import decode_child
+    global last_decoder_integrity
+    try:
+        proc.stdin.write((json.dumps(path) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+        kind, payload = frames.next(READY_TIMEOUT_S)
+    except (OSError, DecodeError) as exc:          # it ended, or never answered
+        raise SandboxUnavailable("ready") from exc
+    if kind != b"R" or len(payload) != 4:
+        raise SandboxUnavailable("ready")
+    last_decoder_integrity = struct.unpack("<I", payload)[0]
+    if sys.platform == "win32":
+        # Checked here too, not only taken from the decoder's own report.
+        try:
+            actual = decode_child.process_integrity(proc.pid)
+        except OSError as exc:
+            raise SandboxUnavailable("check", getattr(exc, "errno", 0) or 0) from exc
+        last_decoder_integrity = max(last_decoder_integrity, actual)
+        if last_decoder_integrity > LOW_INTEGRITY:
+            raise SandboxUnavailable("check")      # not sandboxed: never give it the file
+
+
 def decode(src, out, folder=None, feed=None):
     """Decode `src` in the contained decoder process, writing raw float32
     16 kHz mono to `out` (anything with write(bytes)). Returns the number of
@@ -285,55 +391,36 @@ def decode(src, out, folder=None, feed=None):
     feed: a WavFeed instead of src (#111 C3b): the decoder reads the WAV
     from its stdin, written by a feeder thread (never this thread: it reads
     the decoder's output, and the two pipes would deadlock). Raises
-    DecodeError with a safe message, or the feed's own error (for example
-    AudioCryptError when a chunk changed after it was checked). The app
-    writes only through decode_to_file (encrypted); tools that compare
-    engines on public clips pass their own plain writer."""
-    global last_decoder_integrity
+    DecodeError with a safe message (SandboxUnavailable when the decoder's
+    container could not be set up: no decoder then got the recording), or
+    the feed's own error (for example AudioCryptError when a chunk changed
+    after it was checked). The app writes only through decode_to_file
+    (encrypted); tools that compare engines on public clips pass their own
+    plain writer."""
     import json
-    import struct
     import subprocess
     import threading
-
-    from workspace import decode_child, jobs
-    if feed is not None:
-        dense_limit = max_samples_for(feed.size)
-    else:
-        try:
-            dense_limit = max_samples_for(os.path.getsize(src))
-        except OSError as exc:
-            raise DecodeError(_GENERIC) from exc
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
-    # -X disable-remote-debug: no other process can make the decoder run code
-    # through Python 3.14's debugger interface (PEP 768; older Pythons ignore it).
-    proc = subprocess.Popen([_python(), "-I", "-B", "-X", "disable-remote-debug", "-c",
-                             decode_child.BOOT],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, creationflags=flags, env=env)
     import time
-    job, frames, feeder = None, None, None
-    try:
+    source = None
+    if feed is None:
         try:
-            job = jobs.contain(proc.pid, DECODER_MEMORY)
-        except jobs.JobError as exc:
-            raise DecodeError(MESSAGES[E_SETUP]) from exc
-        frames = _Frames(proc.stdout, deadline=time.monotonic() + (
-            _deadline_s(size=feed.size) if feed is not None else _deadline_s(src)))
-        proc.stdin.write((json.dumps(sys.path) + "\n").encode("utf-8"))
-        proc.stdin.flush()
-        kind, payload = frames.next(READY_TIMEOUT_S)
-        if kind != b"R" or len(payload) != 4:
-            raise _error(kind, payload)
-        last_decoder_integrity = struct.unpack("<I", payload)[0]
-        if sys.platform == "win32":
-            # Checked here too, not only taken from the decoder's own report.
-            actual = decode_child.process_integrity(proc.pid)
-            last_decoder_integrity = max(last_decoder_integrity, actual)
-            if last_decoder_integrity > LOW_INTEGRITY:
-                raise DecodeError(MESSAGES[E_SETUP])    # not sandboxed: never give it the file
-        request = ({"stdin": "wav", "bytes": feed.size} if feed is not None
-                   else {"src": str(src)})
+            source = open(src, "rb")           # this process opens it; the decoder cannot
+            size = os.fstat(source.fileno()).st_size
+        except OSError as exc:
+            if source is not None:
+                source.close()
+            raise DecodeError(_GENERIC) from exc
+    else:
+        size = feed.size
+    dense_limit = max_samples_for(size)
+    proc, job, frames, feeder = None, None, None, None
+    try:
+        exe, path = _runtime()
+        proc, job, request = _launch(exe, source)
+        frames = _Frames(proc.stdout, deadline=time.monotonic() + _deadline_s(size=size))
+        _await_ready(proc, frames, path)
+        if feed is not None:
+            request = {"stdin": "wav", "bytes": feed.size}
         proc.stdin.write((json.dumps(request) + "\n").encode("utf-8"))
         proc.stdin.flush()
         if feed is not None:
@@ -355,10 +442,10 @@ def decode(src, out, folder=None, feed=None):
     except OSError as exc:          # broken pipe and the like: the decoder went away
         raise DecodeError("The recording could not be decoded (the decoder stopped). It may "
                           "be damaged.") from exc
-    except DecodeError:
+    except DecodeError as exc:
         # The feed's own failure (a chunk that changed after it was checked)
         # explains a decoder that stopped early better than the decoder can.
-        if feed is not None and feed.error is not None \
+        if feed is not None and feed.error is not None and not isinstance(exc, SandboxUnavailable) \
                 and not isinstance(feed.error, (OSError, DecodeError)):
             raise feed.error from None
         raise
@@ -370,23 +457,29 @@ def decode(src, out, folder=None, feed=None):
             frames.stop()
         if job is not None:
             job.close()                          # ends the decoder if it is still running
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        try:
-            proc.wait(10)
-        except subprocess.TimeoutExpired:
-            pass
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                pass
         if frames is not None:
             frames.join(5)                       # its read ends once the process is gone
         if feeder is not None:
             feeder.join(10)                      # its write fails once the process is gone
-        for pipe in (proc.stdin, proc.stdout):
-            try:
-                pipe.close()
-            except OSError:
-                pass
+        if proc is not None:
+            for pipe in (proc.stdin, proc.stdout):
+                try:
+                    pipe.close()
+                except OSError:
+                    pass
+            if hasattr(proc, "close"):
+                proc.close()                     # the container process's handle
+        if source is not None:
+            source.close()
 
 
 def decode_to_file(src, dest, key, context, feed=None):

@@ -36,6 +36,10 @@
   is run. See docs/PACKAGING.md, "Offboarding". Without -Silent it shows what
   will go and asks for REMOVE first.
 
+  With the program it removes the decoder's AppContainer profile (#299), unless
+  the uninstall entry names another install that still uses it: see
+  Remove-DecoderProfile. That step never stops the uninstall either.
+
   Exit codes: 0 removed, 1 failed (or, with -Offboard, not confirmed, or not
   this account's install), 3 the app is running. With -Offboard, also
   --offboard's own codes when it stops the uninstall: 1 a step failed, 2 Local
@@ -149,6 +153,31 @@ function Restore-LidSetting {
         Write-Warn ("$AppName could not put back what closing the lid does. Check it in Windows " +
             "Settings > System > Power & battery > Lid & power button controls.")
     }
+}
+
+# -- the decoder's AppContainer profile (#299) ------------------------------------------
+# The app decodes recordings in a Windows AppContainer, which Windows starts only with a
+# profile registered for the user: a key under HKCU\Software\Classes\Local Settings and
+# a folder under %LOCALAPPDATA%\Packages, made by the app and holding nothing of the
+# user's. It belongs to the program, so it goes with it. Windows removes both, and treats
+# a profile that is not there as removed already. The name must match PROFILE in
+# workspace/appcontainer.py (tests/test_consistency.py keeps them equal).
+$DecoderProfile = "Unminute.Decoder"
+
+# Returns Windows's result: 0 when the profile is gone.
+function Remove-DecoderProfile([string]$Name) {
+    if (-not ([System.Management.Automation.PSTypeName]'UnminuteUninstall.AppContainer').Type) {
+        Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+namespace UnminuteUninstall {
+    public static class AppContainer {
+        [DllImport("userenv.dll", CharSet = CharSet.Unicode)]
+        public static extern int DeleteAppContainerProfile(string name);
+    }
+}
+'@
+    }
+    return [UnminuteUninstall.AppContainer]::DeleteAppContainerProfile($Name)
 }
 
 function Stop-Uninstall([int]$Code, [string]$Message) {
@@ -438,6 +467,8 @@ function Test-OffboardShape($Result) {
         elseif (@("leftover", "models_mb") -ccontains $name) { $ok = Test-Count $v }
         elseif ($name -ceq "others") { $ok = ($null -eq $v) -or (Test-Count $v) }
         elseif (@("models_link", "token", "lid_record", "running") -ccontains $name) { $ok = $v -is [bool] }
+        # The decoder's AppContainer profile (#299): yes, no, or null when Windows cannot say.
+        elseif ($name -ceq "decoder_profile") { $ok = ($null -eq $v) -or ($v -is [bool]) }
         elseif (@("blockers", "removed") -ccontains $name) {
             $ok = $v -is [Management.Automation.PSCustomObject]
             if ($ok) {
@@ -590,6 +621,9 @@ function Invoke-Offboard {
             Write-Host "  - the downloaded models ($($facts.models_mb) MB)"
         }
         if ($facts.token -eq $true) { Write-Host "  - the saved Hugging Face token" }
+        if ($facts.decoder_profile -eq $true) {
+            Write-Host "  - the Windows profile of $AppName's decoder (it holds none of your files)"
+        }
         Write-Host "  - then the program, its Start menu shortcut, its pins and its uninstall entry."
         if ($facts.result -ceq "others_left") {
             Write-Host ("It keeps $((Format-OtherCount $facts).ToLower()) in $AppName's data folder: " +
@@ -793,6 +827,16 @@ try {
     if ((-not $elsewhere) -and (Test-Path -LiteralPath $link)) { Remove-Item -LiteralPath $link -Force }
     # Pins that run this install's versions would only break: with -Offboard they go too.
     if ($Options.Offboard) { Remove-OwnPin $pinPrefixes }
+    # The decoder's profile, unless the install in another folder still uses it (#299).
+    # A failure only warns: the profile holds nothing of the user's.
+    if (-not $elsewhere) {
+        $removed = $false
+        try { $removed = (Remove-DecoderProfile $DecoderProfile) -eq 0 } catch { }
+        if (-not $removed) {
+            Write-Warn ("$AppName could not remove its decoder's Windows profile. It holds none " +
+                "of your files or meetings.")
+        }
+    }
     # Last: while any file remains, the app still shows as installed (Intune detection).
     if ($elsewhere) {
         Write-Step ("$AppName has been removed from this folder. The Start menu shortcut and the " +

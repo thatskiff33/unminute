@@ -5,6 +5,8 @@
 #     an empty locked one, each blocker, a refused location and an open app.
 #   - Removal refused for every blocker, with every file byte for byte as it
 #     was (C1, C2, C4: nothing deletes meeting content or expires a hold).
+#   - The decoder's AppContainer profile (#299) reported and removed after
+#     the token, with a stand-in, and once with a real throwaway profile.
 #   - An empty workspace, the models and the tokens removed; the lid put back
 #     first; the offboarded audit record written and mirrored before anything
 #     is removed; the root key erased before the rename.
@@ -57,6 +59,41 @@ class FakeMirror:
         if self.failing:
             raise OSError("the event log refused it")
         self.events.append(("mirror", text.split(" kind=")[1].split(" ")[0]))
+
+
+def setUpModule():
+    # A run that is given no profiles stand-in uses workspace.appcontainer:
+    # point it at a throwaway name that is never made, so no test here looks
+    # at or removes the decoder's real profile for the user running it (#299).
+    from workspace import appcontainer
+    patch = mock.patch.object(appcontainer, "PROFILE", f"Unminute.Test.Offboard.{os.getpid()}")
+    patch.start()
+    _patches.append(patch)
+
+
+def tearDownModule():
+    while _patches:
+        _patches.pop().stop()
+
+
+_patches = []
+
+
+class FakeProfiles:
+    """The decoder's AppContainer profile (#299; workspace.appcontainer)."""
+
+    def __init__(self, events, present=True, failing=False):
+        self.events, self.present, self.failing = events, present, failing
+
+    def profile_exists(self):
+        return self.present
+
+    def delete_profile(self):
+        self.events.append(("decoder_profile",))
+        if self.failing:
+            raise OSError("Windows kept it")
+        was, self.present = self.present, False
+        return was
 
 
 class FakeCredentials:
@@ -139,6 +176,7 @@ class Base(unittest.TestCase):
         self.events = []
         self.mirror = FakeMirror(self.events)
         self.creds = FakeCredentials(self.events, {"Scratch/Current"})
+        self.profiles = FakeProfiles(self.events)
         self.lid_result = "none"
         # Beside Unminute: must never change.
         (self.appdata / "Programs" / "Unminute").mkdir(parents=True)
@@ -159,7 +197,8 @@ class Base(unittest.TestCase):
         return offboard.run(self.where, remove, account=account,
                             session_running=lambda: running,
                             mirror=self.mirror if mirror == "fake" else mirror,
-                            tokens=("Scratch/Current",), creds=self.creds, lid=self.lid)
+                            tokens=("Scratch/Current",), creds=self.creds, lid=self.lid,
+                            profiles=self.profiles)
 
     def make_workspace(self, models=True):
         """An empty workspace with every kind of file a used one has."""
@@ -493,8 +532,43 @@ class RemovalTests(Base):
         self.assertLess(kinds.index("mirror"), kinds.index("token"))
         self.assertEqual(order, ["erase"])
         self.assertEqual(self.creds.stored, set())
-        self.assertEqual(out["removed"], {"workspace": True, "models": True, "token": True})
+        self.assertEqual(out["removed"], {"workspace": True, "models": True, "token": True,
+                                          "decoder_profile": True})
+        self.assertLess(kinds.index("token"), kinds.index("decoder_profile"))   # #299
+        self.assertFalse(out["decoder_profile"])                 # gone, as the report after says
         self.assertEqual((out["workspace"], out["others"]), ("none", 0))
+
+    def test_the_decoders_profile_is_reported_and_removed_on_its_own(self):
+        # #299: the profile goes even when there is no workspace; none there
+        # is not an error; one Windows keeps stops the run at its own step.
+        out, code = self.run_(remove=False)
+        self.assertEqual((out["decoder_profile"], code), (True, 0))
+        out, code = self.run_()
+        self.assertEqual((out["result"], code), ("offboarded", 0))
+        self.assertEqual(out["removed"]["decoder_profile"], True)
+        out, code = self.run_()
+        self.assertEqual((out["removed"]["decoder_profile"], code), (False, 0))
+        self.profiles = FakeProfiles(self.events, failing=True)
+        out, code = self.run_()
+        self.assertEqual((out["result"], out["step"], code), ("failed", "decoder_profile",
+                                                              offboard.FAILED))
+        self.profiles.profile_exists = mock.Mock(side_effect=OSError("cannot say"))
+        out, _ = self.run_(remove=False)
+        self.assertIsNone(out["decoder_profile"])                # never "not there" on a guess
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows AppContainer profiles")
+    def test_a_real_throwaway_profile_is_removed(self):
+        from workspace import appcontainer
+        name = f"Unminute.Test.Offboard.{uuid.uuid4().hex[:12]}"
+        self.addCleanup(appcontainer.delete_profile, name)
+        appcontainer.ensure_profile(name).close()
+        with mock.patch.object(appcontainer, "PROFILE", name):
+            out, code = offboard.run(self.where, True, account=False,
+                                     session_running=lambda: False, mirror=self.mirror,
+                                     tokens=("Scratch/Current",), creds=self.creds, lid=self.lid)
+        self.assertEqual((out["result"], code), ("offboarded", 0))
+        self.assertTrue(out["removed"]["decoder_profile"])
+        self.assertFalse(appcontainer.profile_exists(name))
         self.assertTrue(out["residuals"])
         self.assertTrue(all(isinstance(r, str) for r in out["residuals"]))
 

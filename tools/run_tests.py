@@ -78,6 +78,12 @@ def main():
 
     # Same as "python -m unittest discover -s tests" run from the repo root.
     sys.path.insert(0, str(ROOT))
+    # The decoder runs in an AppContainer that cannot read this Python (#299):
+    # every decode in the run uses a scratch runtime it can read and a
+    # throwaway profile, never the app's own (tools/decoder_runtime.py).
+    sys.path.append(str(ROOT / "tools"))           # after the standard library
+    import decoder_runtime
+    decoder_runtime.use()
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
 

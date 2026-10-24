@@ -1178,6 +1178,11 @@ def main():
                     "evidence (tools/evidence.py); exit 1 unless that evidence passes")
     args = ap.parse_args()
     before = evidence.prepare(ap, args, APP if args.app else None)
+    # The decoder runs in an AppContainer that cannot read a development
+    # Python (#299): decode in a scratch copy it can read (nothing to do in a
+    # package's own runtime, whose install it reads).
+    import decoder_runtime
+    decoder_runtime.use()
     out = Path(args.report)
     report = {}
     with tempfile.TemporaryDirectory() as tmp:

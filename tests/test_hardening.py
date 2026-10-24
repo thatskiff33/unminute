@@ -45,6 +45,42 @@ def mklink_junction(link, target, **kwargs):
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 HAVE_WEBVIEW = importlib.util.find_spec("webview") is not None
 
+# The uninstaller's decoder profile (#299), and the throwaway name copies of it
+# use instead, so no test removes the app's own profile for the user running it.
+DECODER_PROFILE_LINE = '$DecoderProfile = "Unminute.Decoder"'
+DECODER_TEST_PROFILE = f"Unminute.Test.Uninstall.{os.getpid()}"
+
+
+def dacl_sddl(path):
+    """The DACL of `path` as SDDL ("D:..."), read without any tool whose
+    output depends on the system language. ALL APPLICATION PACKAGES is "AC"."""
+    import ctypes
+    from ctypes import wintypes
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv.GetNamedSecurityInfoW.argtypes = [wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+                                          ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                                          ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+    adv.GetNamedSecurityInfoW.restype = wintypes.DWORD
+    adv.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.c_void_p]
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    if adv.GetNamedSecurityInfoW(str(path), 1, 4, None, None, None, None, ctypes.byref(sd)):
+        raise OSError("the permissions could not be read")
+    try:
+        text = wintypes.LPWSTR()
+        if not adv.ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, 1, 4,
+                                                                       ctypes.byref(text), None):
+            raise OSError("the permissions could not be read")
+        try:
+            return text.value
+        finally:
+            k32.LocalFree(text)
+    finally:
+        k32.LocalFree(sd)
+
 
 class DomEventTests(unittest.TestCase):
     """Only dragover and drop on the document reach pywebview, rebuilt so a
@@ -1267,19 +1303,22 @@ class DataFolderOverlapTests(unittest.TestCase):
 
     def uninstaller_copy(self, tmp):
         """uninstall.ps1 with this computer's Start menu folder, roaming
-        profile folder (where pins live, #111 B8b) and uninstall key swapped
-        for temporary folders and a key that does not exist, so a mistake
+        profile folder (where pins live, #111 B8b), uninstall key and the
+        decoder's AppContainer profile (#299) swapped for temporary folders, a
+        key that does not exist and a throwaway profile name, so a mistake
         removes nothing real."""
         text = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
         self.assertEqual((text.count(self.PROGRAMS), text.count(self.KEY),
-                          text.count(self.ROAMING)), (1, 1, 1))
+                          text.count(self.ROAMING), text.count(DECODER_PROFILE_LINE)),
+                         (1, 1, 1, 1))
         programs = Path(tmp) / "programs"
         programs.mkdir()
         roaming = Path(tmp) / "roaming"
         roaming.mkdir()
         text = text.replace(self.PROGRAMS, f'"{programs}"').replace(
             self.KEY, f'$RegKey = "HKCU:\\{self.TEST_KEY}"').replace(
-            self.ROAMING, f'"{roaming}"')
+            self.ROAMING, f'"{roaming}"').replace(
+            DECODER_PROFILE_LINE, f'$DecoderProfile = "{DECODER_TEST_PROFILE}"')
         # Nothing else in it may reach this computer's own shortcuts or registry.
         for reach in ("GetFolderPath", "Start Menu\\", "$env:APPDATA", "HKCU:\\Software\\Microsoft",
                       "HKLM", "Registry::", "ComObject"):
@@ -1420,6 +1459,41 @@ class DataFolderOverlapTests(unittest.TestCase):
                     self.assertFalse(self.key_exists())
                     registered.mkdir(parents=True, exist_ok=True)
             os.rmdir(junction)
+
+    @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+    def test_the_uninstaller_removes_the_decoders_profile_unless_another_install_uses_it(self):
+        # #299: the decoder's AppContainer profile (a throwaway one here) goes with
+        # the program; when the uninstall entry names another install that is still
+        # there, that install still uses it, so it stays.
+        import winreg
+
+        from workspace import appcontainer
+        self.addCleanup(self.delete_test_key)
+        self.addCleanup(appcontainer.delete_profile, DECODER_TEST_PROFILE)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / "Local"
+            local.mkdir()
+            copy, link = self.uninstaller_copy(tmp)
+            install = local / "Programs" / "Unminute"
+            other = Path(tmp) / "Other" / "Unminute"
+            (other / "versions" / "0.5.0").mkdir(parents=True)
+            (other / "current.json").write_text("{}")
+            for elsewhere in (True, False):
+                with self.subTest(elsewhere=elsewhere):
+                    appcontainer.ensure_profile(DECODER_TEST_PROFILE).close()
+                    (install / "versions" / "0.5.0").mkdir(parents=True, exist_ok=True)
+                    (install / "current.json").write_text("{}")
+                    if elsewhere:
+                        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, self.TEST_KEY) as key:
+                            winreg.SetValueEx(key, "InstallLocation", 0, winreg.REG_SZ,
+                                              str(other))
+                    else:
+                        self.delete_test_key()
+                    r = self.run_script(copy, install, local, cwd=tmp)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                    self.assertFalse(install.exists())
+                    self.assertEqual(appcontainer.profile_exists(DECODER_TEST_PROFILE), elsewhere)
+                    self.assertNotIn("decoder's Windows profile", r.stderr)
 
     def key_exists(self):
         import winreg
@@ -1942,6 +2016,47 @@ class InstallFolderScopeTests(unittest.TestCase):
         made = mklink_junction(link, target, capture_output=True, text=True, timeout=30)
         self.assertEqual(0, made.returncode, made.stdout + made.stderr)
         self.addCleanup(lambda: os.path.lexists(link) and os.rmdir(link))
+
+    # ALL APPLICATION PACKAGES ("AC") may read and execute (0x1200a9), inherited by
+    # folders and files (OICI): what the decoder's AppContainer needs (#299).
+    DECODER_GRANT = "(A;OICI;0x1200a9;;;AC)"
+
+    def test_the_versions_folder_lets_the_decoders_container_read_it(self):
+        self.write_package("1.0.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(self.DECODER_GRANT, dacl_sddl(self.versions))
+        for inside in ("1.0.0", "1.0.0/runtime", "1.0.0/runtime/python.exe",
+                       "1.0.0/app/held.txt"):
+            self.assertRegex(dacl_sddl(self.versions / inside), r"\(A;(OICI)?ID;0x1200a9;;;AC\)",
+                             inside)                        # inherited, copied in after the grant
+        for beside in ("current.json", "uninstall.ps1"):    # not the record or the uninstaller
+            self.assertNotIn(";;;AC)", dacl_sddl(self.install / beside), beside)
+        self.write_package("1.1.0")
+        r = self.run_installer()                                  # an update: still one entry
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(dacl_sddl(self.versions).count(";;;AC)"), 1)
+        self.assertRegex(dacl_sddl(self.versions / "1.1.0" / "runtime" / "python.exe"),
+                         r"\(A;ID;0x1200a9;;;AC\)")
+
+    def test_a_rollback_puts_the_decoders_read_access_back(self):
+        self.write_package("1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.write_package("1.1.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        # Taken away since (a scratch folder only): the rollback grants it again.
+        removed = subprocess.run([windows_powershell.system_program("icacls.exe"),
+                                  str(self.versions), "/remove:g", "*S-1-15-2-1"],
+                                 capture_output=True, text=True,
+                                 env=windows_powershell.environment())
+        self.assertEqual(removed.returncode, 0, removed.stdout + removed.stderr)
+        self.assertNotIn(";;;AC)", dacl_sddl(self.versions / "1.0.0" / "runtime" / "python.exe"))
+        r = self.run_installer("-Rollback")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.current()["version"], "1.0.0")
+        self.assertIn(self.DECODER_GRANT, dacl_sddl(self.versions))
+        self.assertRegex(dacl_sddl(self.versions / "1.0.0" / "runtime" / "python.exe"),
+                         r"\(A;ID;0x1200a9;;;AC\)")
 
     def test_an_update_removes_only_the_versions_unminute_made(self):
         # The current and previous versions stay, an older Unminute version goes,

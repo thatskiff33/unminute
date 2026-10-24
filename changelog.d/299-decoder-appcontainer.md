@@ -1,0 +1,4 @@
+Security hardening (#299):
+- **Recordings are decoded in a Windows AppContainer.** The decoder now runs in a sandbox with no file or network access: a recording crafted to exploit a decoder flaw can no longer read your meetings, the workspace key or your other files, or send anything out. The app hands it just the recording, read only.
+- **If the sandbox cannot start, the recording is not opened.** Unminute says "This recording can't be opened safely on this computer" with a code, and points IT to the fix; it never decodes the recording any other way. `--check-decoder` lets IT check the sandbox on a computer.
+- **The installer lets the sandbox read the program.** Each install, update, repair and rollback gives Windows' "ALL APPLICATION PACKAGES" read access to the install's `versions` folder. Uninstalling and offboarding (`--offboard`) also remove the sandbox's Windows profile.
