@@ -36,7 +36,7 @@ body{margin:0}
             <ul style="list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px">
               <sc-for list="{{p.examples}}" as="e" hint-placeholder-count="3">
                 <li style="display: flex; align-items: flex-start; gap: 10px">
-                  <button aria-label="{{e.label}}" style="font: inherit; flex: none; width: 72px; min-height: 36px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">
+                  <button aria-label="{{e.label}}" style="font: inherit; flex: none; width: 72px; min-height: 36px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.51)">
                     <svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l16 9-16 9z" fill="currentColor"/></svg>{{e.time}}
                   </button>
                   <span style="font-size: 14px; line-height: 1.45; padding-top: 7px">{{e.text}}</span>
@@ -47,7 +47,7 @@ body{margin:0}
               <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: #2B61BF">More examples</button>
               <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 14px">
                 Same person as
-                <select style="font: inherit; font-size: 14px; min-height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(20,41,102,0.28); color: #142966; background: #FFFFFF"><option>{{p.other}}</option></select>
+                <select style="font: inherit; font-size: 14px; min-height: 36px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(20,41,102,0.51); color: #142966; background: #FFFFFF"><option>{{p.other}}</option></select>
               </label>
             </div>
           </div>
@@ -55,7 +55,7 @@ body{margin:0}
       </div>
 
       <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
-        <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 16px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">
+        <button style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 16px; border-radius: 10px; display: inline-flex; align-items: center; gap: 6px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.51)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>Undo last change
         </button>
         <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 28px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF">Done</button>
@@ -80,7 +80,7 @@ class Component extends DCLogic {
         },
         {
           who: 'Sam', label: 'Speaker 2', count: '17 passages', ini: 'SA', bg: '#FDCAEA', fg: '#440638', tint: '#FFF7FC', other: 'Alex',
-          inputBorder: '1px solid rgba(20,41,102,0.28)',
+          inputBorder: '1px solid rgba(20,41,102,0.51)',
           examples: [
             { time: '0:10', text: 'The main thing from last week is the budget.', label: 'Play 0:10' },
             { time: '0:26', text: 'The water tank was the bigger saving.', label: 'Play 0:26' },
