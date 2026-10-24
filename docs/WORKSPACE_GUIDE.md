@@ -75,7 +75,7 @@ Unminute can show rough text of what is said while you record, a few seconds beh
 - **On battery** it pauses, unless **Process automatically on battery power** is on; it carries on when you plug in again. The recording itself is never affected.
 - **It costs some memory and processor time** while recording. If it falls behind, it skips the oldest part and says so; the recording is still complete.
 - **With computer audio** (a later version records it beside the microphone), you choose whether the draft follows your microphone only or both mixed. The full transcript always uses both.
-- **Not available** shows when Parakeet v2 is not downloaded or needs repair, while a speech model is being downloaded or removed, or when your organisation has turned it off.
+- **When there is no draft**, a line in the draft area says why: Parakeet v2 is not downloaded or needs repair; draft text waits while a speech model is downloaded or removed; draft text stopped for this recording because a speech model was downloaded or removed; or your organisation has turned it off. The recording is not affected.
 - **Stays local.** Until it is imported, a recording is kept in the workspace folder. An update that changes the storage format waits for it, as it does for meetings.
 
 ## Working on a meeting

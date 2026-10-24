@@ -1,12 +1,17 @@
 # Live drafts while recording (#104), back end: the phrase splitter, the
 # resampler, the draft worker with fake engines, the recorder tap, and the
 # workspace lifecycle (off by default, policy, battery, every way a recording
-# ends, D4). Synthetic audio only: tone bursts are "speech", zeros are silence.
+# ends, D4), and the page's draft area run in Node.js with a fake DOM.
+# Synthetic audio only: tone bursts are "speech", zeros are silence.
 #   python tools/run_tests.py
 
 import importlib.util
+import json
 import math
 import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1532,6 +1537,194 @@ class PagePartTests(DraftWorkspaceCase):
         self.assertIn("textContent: p.text", body)
         self.assertIn("user-select: none", (ui / "app.css").read_text(encoding="utf-8"))
 
+
+# The page's draft area (workspace/ui/app.js), run in Node.js against a small
+# fake DOM that records every change it is asked to make. renderDraft runs on
+# every clock tick (10 a second), so a tick with nothing new must change
+# nothing (#216's budget, #340's ratchets), and a fetch overtaken by Hide or
+# Show must be dropped (draft.shown). The code is taken from app.js by name,
+# as tests/test_level_meter.py does; the CI images have Node.js.
+APP_JS = Path(__file__).resolve().parents[1] / "workspace" / "ui" / "app.js"
+PAGE_PARTS = ("$", "el", "DRAFT_KEEP", "DRAFT_EMPTY", "draft", "putText", "putHidden",
+              "draftLine", "draftEmpty", "clearDraft", "renderDraft", "toggleDraft")
+
+
+def app_js_part(js, name):
+    """A top-level constant or function from app.js, as written there."""
+    word = re.escape(name)
+    found = (re.search(r"^const " + word + r" = .*?;$", js, re.M | re.S)
+             or re.search(r"^(?:async )?function " + word + r"\(.*\}$", js, re.M)
+             or re.search(r"^(?:async )?function " + word + r"\(.*?^\}$", js, re.M | re.S))
+    if found is None:
+        raise AssertionError(f"{name} not found at the top level of app.js")
+    return found.group(0)
+
+
+DRAFT_PAGE_SIM = r"""
+let writes = [];                       // every change made to the fake page
+class FakeClassList {
+  constructor(node) { this.node = node; this.names = new Set(); }
+  toggle(name, force) {                // as the DOM: no change when already so
+    const on = force === undefined ? !this.names.has(name) : !!force;
+    if (on !== this.names.has(name)) {
+      writes.push(`${this.node.label} class`);
+      if (on) this.names.add(name); else this.names.delete(name);
+    }
+    return on;
+  }
+}
+class FakeNode {
+  constructor(tag, id) {
+    this.tag = tag; this.id = id || ""; this._text = ""; this._hidden = false;
+    this._class = ""; this.children = []; this.parent = null; this.attrs = {};
+    this.classList = new FakeClassList(this); this.scrollTop = 0; this.clientHeight = 100;
+  }
+  get label() { return this.id || `${this.tag}.${this._class}`; }
+  get textContent() {
+    return this.children.length ? this.children.map((c) => c.textContent).join("") : this._text;
+  }
+  set textContent(v) {
+    writes.push(`${this.label} text`); this.children = []; this._text = String(v);
+  }
+  get hidden() { return this._hidden; }
+  set hidden(v) { writes.push(`${this.label} hidden`); this._hidden = !!v; }
+  get className() { return this._class; }
+  set className(v) { this._class = String(v); }
+  get scrollHeight() { return this.children.length * 20; }
+  getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }
+  setAttribute(k, v) { writes.push(`${this.label} @${k}`); this.attrs[k] = String(v); }
+  append(...nodes) {
+    for (const n of nodes) {
+      writes.push(`${this.label} append`); n.parent = this; this.children.push(n);
+    }
+  }
+  replaceChildren(...nodes) {
+    writes.push(`${this.label} replace`); this.children = []; this.append(...nodes);
+  }
+  remove() {
+    if (!this.parent) return;
+    writes.push(`${this.parent.label} remove`);
+    this.parent.children = this.parent.children.filter((c) => c !== this);
+    this.parent = null;
+  }
+  matches(sel) {                       // ".a, .b": any of these classes
+    return sel.split(",").some((s) => this._class.split(" ").includes(s.trim().slice(1)));
+  }
+  querySelectorAll(sel) { return this.children.filter((c) => c.matches(sel)); }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  addEventListener() {}
+}
+const nodes = {};
+for (const id of ["rec-draft", "rec-draft-box", "rec-draft-status", "rec-draft-toggle"])
+  nodes[id] = new FakeNode("div", id);
+const document = { hidden: false, getElementById: (id) => nodes[id] || null,
+                   createElement: (tag) => new FakeNode(tag) };
+const REC_KIND = { recording: "", paused: "paused", stopped: "saving" };
+const fetches = [];                    // recording_draft calls still on their way
+function call(name, since) {
+  return new Promise((resolve) => fetches.push({ name, since, resolve }));
+}
+function renderRecorder() { return Promise.resolve(); }
+const phrases = (since, n) => Array.from({ length: n }, (_, i) =>
+  ({ kind: "phrase", text: `Synthetic line ${since + i}.`, start: i, end: i + 1 }));
+const lines = () => nodes["rec-draft-box"].querySelectorAll(".rec-draft-line").length;
+
+// One clock tick; any fetch it starts is answered with `answer` phrases.
+async function tick(rec, d, answer) {
+  writes = [];
+  const done = renderDraft(rec, d);
+  if (answer !== undefined && fetches.length) {
+    const f = fetches.shift();
+    f.resolve({ generation: d.generation, state: d.state, since: f.since,
+                phrases: phrases(f.since, answer) });
+  }
+  await done;
+  return writes.slice();
+}
+async function steady(rec, d, n = 20) {
+  const all = [];
+  for (let i = 0; i < n; i++) all.push(...await tick(rec, d));
+  return all;
+}
+const base = (over) => Object.assign(
+  { state: "running", note: null, count: 0, generation: 1, mix: false }, over);
+const battery = { count: 2, state: "battery", note: "Draft text is paused." };
+
+(async () => {
+  const result = {};
+  const rec = { id: "rec-1", state: "recording" };
+  result.first = await tick(rec, base());
+  result.idle = await steady(rec, base());
+  result.fetched = await tick(rec, base({ count: 2 }), 2);
+  result.lines_after_fetch = lines();
+  result.idle_with_text = await steady(rec, base({ count: 2 }));
+  result.battery = await tick(rec, base(battery));
+  result.idle_on_battery = await steady(rec, base(battery));
+  toggleDraft();                                     // Hide draft
+  result.hidden = await tick(rec, base({ count: 2 }));
+  result.idle_hidden = await steady(rec, base({ count: 2 }));
+  toggleDraft();                                     // Show draft
+  await tick(rec, base({ count: 2 }), 2);
+
+  // A fetch on its way when Hide then Show are selected is dropped: its
+  // phrases are not added, and the next tick fetches again.
+  const rec2 = { id: "rec-2", state: "recording" };
+  await tick(rec2, base({ count: 0 }));
+  const late = renderDraft(rec2, base({ count: 3 }));
+  result.fetch_started = fetches.length;
+  toggleDraft();                                     // Hide draft
+  toggleDraft();                                     // Show draft
+  const f = fetches.shift();
+  f.resolve({ generation: 1, state: "running", since: f.since, phrases: phrases(f.since, 3) });
+  await late;
+  result.lines_after_overtaken = lines();
+  result.count_after_overtaken = draft.count;
+  await tick(rec2, base({ count: 3 }), 3);
+  result.lines_after_refetch = lines();
+  console.log(JSON.stringify(result));
+})().catch((e) => { console.error(e && e.stack || e); process.exit(1); });
+"""
+
+
+class DraftPageTests(unittest.TestCase):
+    """The page's draft area, run in Node.js with a fake DOM (no app, no deps)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = shutil.which("node")
+
+    def simulate(self):
+        if not self.node:
+            self.skipTest("Node.js not installed")
+        js = APP_JS.read_text(encoding="utf-8")
+        script = "\n".join(app_js_part(js, n) for n in PAGE_PARTS) + "\n" + DRAFT_PAGE_SIM
+        done = subprocess.run([self.node, "-"], input=script, capture_output=True, text=True,
+                              encoding="utf-8", timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return json.loads(done.stdout)
+
+    def test_a_tick_with_nothing_new_changes_nothing_on_the_page(self):
+        result = self.simulate()
+        # The first tick draws the area; a fetch adds its lines; a change of
+        # state writes the status line. Each is followed by ticks with nothing
+        # new, which must not touch the page at all.
+        self.assertTrue(result["first"])
+        self.assertIn("rec-draft-box append", result["fetched"])
+        self.assertEqual(result["lines_after_fetch"], 2)
+        self.assertIn("rec-draft-status text", result["battery"])
+        self.assertIn("rec-draft-box hidden", result["hidden"])
+        for key in ("idle", "idle_with_text", "idle_on_battery", "idle_hidden"):
+            with self.subTest(key=key):
+                self.assertEqual(result[key], [],
+                                 f"{key}: a tick with nothing new wrote to the page")
+
+    def test_a_fetch_overtaken_by_hide_and_show_is_dropped(self):
+        result = self.simulate()
+        self.assertEqual(result["fetch_started"], 1)
+        self.assertEqual(result["lines_after_overtaken"], 0,
+                         "a fetch started before Hide and Show added its lines")
+        self.assertEqual(result["count_after_overtaken"], 0)
+        self.assertEqual(result["lines_after_refetch"], 3)      # the next tick fetches again
 
 
 if __name__ == "__main__":
