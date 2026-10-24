@@ -90,17 +90,29 @@ class SplitterTests(unittest.TestCase):
         self.assertAlmostEqual(e2, 5.5 + drafts._windows(drafts.TAIL_S) * w, delta=w)
 
     def test_unbroken_speech_is_cut_at_the_quietest_window_near_the_limit(self):
-        dip_at = 7.2                                     # a quieter moment within the search span
+        dip_at = drafts.MAX_PHRASE_S - 0.8               # a quieter moment within the search span
         speech = tone(20.0).astype(np.float32)
         a, b = int(dip_at * 16000), int((dip_at + drafts.WINDOW_S) * 16000)
         speech[a:b] *= 0.3                               # still speech, but the quietest
         phrases = self.split(self.f(speech.astype(np.int16)))
         first_end = phrases[0][1]
-        self.assertLessEqual(phrases[0][1] - phrases[0][0], drafts.MAX_PHRASE_S + 1e-6)
+        longest = drafts._windows(drafts.MAX_PHRASE_S) * drafts.WINDOW_S   # whole windows
+        self.assertLessEqual(phrases[0][1] - phrases[0][0], longest + 1e-6)
         self.assertAlmostEqual(first_end, dip_at + drafts.WINDOW_S, delta=2 * drafts.WINDOW_S)
         for (_, e, _), (s, _, _) in zip(phrases, phrases[1:], strict=False):
             self.assertAlmostEqual(e, s, places=6)      # cut, not lost: back to back
         self.assertAlmostEqual(phrases[-1][1], 20.0, delta=drafts.WINDOW_S)
+
+    def test_unbroken_speech_is_cut_at_about_10_seconds_the_owners_decision(self):
+        # The owner's decision of 24 October 2026 (#104), from the 6, 8 and 10 s
+        # trial in #347. Changing the cut is the owner's call, not a tuning step.
+        self.assertEqual(drafts.MAX_PHRASE_S, 10.0)
+        phrases = self.split(self.f(tone(25.0)))
+        length = phrases[0][1] - phrases[0][0]
+        # 10 s is 312.5 windows of 32 ms, so the cut falls at 313 windows at most (10.016 s).
+        longest = drafts._windows(drafts.MAX_PHRASE_S) * drafts.WINDOW_S
+        self.assertLessEqual(length, longest + 1e-6)
+        self.assertGreaterEqual(length, 10.0 - drafts.CUT_SEARCH_S - drafts.WINDOW_S)
 
     def test_short_blips_are_dropped(self):
         audio = self.f(np.concatenate([silence(1.0), tone(0.1), silence(2.0)]))
@@ -117,7 +129,7 @@ class SplitterTests(unittest.TestCase):
         parts, speech = [], []
         t = 0.0
         for _ in range(30):
-            n = float(rng.uniform(0.2, 9.0))
+            n = float(rng.uniform(0.2, drafts.MAX_PHRASE_S + 1.0))   # some longer than the cut
             loud = bool(rng.integers(0, 2))
             parts.append(tone(n) if loud else silence(n))
             if loud:
