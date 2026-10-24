@@ -3840,34 +3840,36 @@ class InstallerIsolationTests(unittest.TestCase):
 
     def test_the_static_scan_sees_a_command_built_first(self):
         # #332 review: B8b's first test module built the command in a variable and
-        # then started it, which a scan of the start call alone does not see.
+        # then started it, which a scan of the start call alone does not see. (Here
+        # -InstallDir takes no quotes, so the run_installer check above does not take
+        # these shapes for runs.)
         import ast
         import textwrap
         shapes = {
             "in the call": """
-                subprocess.run([ps, "-Command", f"& '{s}' -InstallDir '{d}'"])
+                subprocess.run([ps, "-Command", f"& '{s}' -InstallDir {d}"])
                 """,
             "in a variable": """
-                call = f"& '{s}' -InstallDir '{d}'" + (" -Silent" if silent else "")
+                call = f"& '{s}' -InstallDir {d}" + (" -Silent" if silent else "")
                 subprocess.run([ps, "-Command", f"{call}; exit $LASTEXITCODE"])
                 """,
             "through two variables": """
-                call = f"& '{s}' -InstallDir '{d}'"
+                call = f"& '{s}' -InstallDir {d}"
                 args = [ps, "-Command", call]
                 subprocess.Popen(args)
                 """,
             "added to later": """
                 call = "exit 0"
-                call += " -InstallDir 'x'"
+                call += " -InstallDir x"
                 os.system(call)
                 """,
             "in an attribute": """
                 self.script = root / "uninstall.ps1"
-                os.system(f"powershell -File {self.script}")
+                os.system(f"{ps} -File {self.script}")
                 """,
             "inside a function": """
                 def go():
-                    call = "& 'x.ps1' -InstallDir 'y'"
+                    call = "& 'x.ps1' -InstallDir y"
                     return subprocess.run([ps, "-Command", call])
                 """,
         }
@@ -3878,7 +3880,7 @@ class InstallerIsolationTests(unittest.TestCase):
         # does not count.
         other = """
             def one():
-                call = "& 'x.ps1' -InstallDir 'y'"
+                call = "& 'x.ps1' -InstallDir y"
                 return call
 
             def two():
