@@ -55,20 +55,36 @@ class CheckTests(unittest.TestCase):
         rollup = [check("Ruff", "SUCCESS"), check("Lint", "SKIPPED"),
                   check("Unit tests (Windows)", None, "IN_PROGRESS"),
                   check("Syntax check", "FAILURE"), check("Old", "CANCELLED"),
-                  {"__typename": "StatusContext", "context": "ext", "state": "PENDING"}]
+                  {"__typename": "StatusContext", "context": "ext", "state": "PENDING"},
+                  {"__typename": "StatusContext", "context": "ok", "state": "SUCCESS"},
+                  {"__typename": "StatusContext", "context": "bad", "state": "ERROR"}]
         self.assertEqual({"Ruff": "SUCCESS", "Lint": "SUCCESS",
                           "Unit tests (Windows)": "WAITING", "Syntax check": "FAILURE",
-                          "Old": "FAILURE", "ext": "WAITING"},
+                          "Old": "FAILURE", "ext": "WAITING", "ok": "SUCCESS",
+                          "bad": "FAILURE"},
                          dev_status.check_states(rollup))
 
-    def test_a_rerun_check_keeps_its_worst_state(self):
-        rollup = [check("Ruff", "FAILURE"), check("Ruff", "SUCCESS")]
-        self.assertEqual({"Ruff": "FAILURE"}, dev_status.check_states(rollup))
+    def test_a_rerun_check_keeps_its_latest_run(self):
+        # #364 review: a re-run that passes (a label added for Changelog entry, a
+        # flaky job) is what GitHub merges on, whatever order gh lists them in.
+        early = {**check("Ruff", "FAILURE"), "startedAt": "2026-10-25T13:26:00Z"}
+        late = {**check("Ruff", "SUCCESS"), "startedAt": "2026-10-25T14:00:00Z"}
+        for rollup in ([early, late], [late, early]):
+            self.assertEqual({"Ruff": "SUCCESS"}, dev_status.check_states(rollup))
+        rerunning = {**check("Ruff", None, "IN_PROGRESS"), "startedAt": "2026-10-25T15:00:00Z"}
+        self.assertEqual({"Ruff": "WAITING"}, dev_status.check_states([late, rerunning]))
 
     def test_summary_names_required_checks_that_never_reported(self):
         failing, waiting, missing = dev_status.check_summary([check("Ruff", "FAILURE")],
                                                              REQUIRED)
         self.assertEqual((["Ruff"], [], ["Unit tests (Windows)"]), (failing, waiting, missing))
+
+    def test_required_checks_from_the_rules_api(self):
+        rules = [{"type": "pull_request", "parameters": {}},
+                 {"type": "required_status_checks", "parameters": {
+                     "required_status_checks": [{"context": "Ruff"}, {"context": "Unit"}]}},
+                 {"type": "code_scanning", "parameters": {}}]
+        self.assertEqual(["Ruff", "Unit"], dev_status.parse_required(rules))
 
 
 class OverlapTests(unittest.TestCase):
@@ -78,33 +94,70 @@ class OverlapTests(unittest.TestCase):
         self.assertEqual({"AGENTS.md": [1, 2], "a.py": [1, 3]}, dev_status.overlaps(self.PRS))
 
     def test_touching_normalises_paths(self):
-        self.assertEqual({"a.py": [1, 3], "docs/x.md": []},
-                         dev_status.touching(self.PRS, [".\\a.py", "docs\\x.md"]))
+        root = Path("C:/r/unminute") if sys.platform == "win32" else Path("/r/unminute")
+        self.assertEqual({"a.py": [1, 3], "agents.md": [1, 2], "docs/x.md": []},
+                         dev_status.touching(self.PRS, [r".\a.py", r"docs\x.md", "agents.md",
+                                                        str(root / "a.py")], root))
+
+    def test_a_pr_past_the_file_limit_is_flagged(self):
+        self.assertTrue(dev_status.capped(pr(4, [f"f{i}" for i in range(100)])))
+        self.assertFalse(dev_status.capped(pr(5, ["a.py"])))
 
 
-class BlockerTests(unittest.TestCase):
-    def test_a_clean_reviewed_pr_has_none(self):
-        ready = pr(9, statusCheckRollup=[check(n, "SUCCESS") for n in REQUIRED])
-        self.assertEqual([], dev_status.blockers(ready, REQUIRED,
-                                                 ["Review of abcdef1: approve"]))
+class AssessTests(unittest.TestCase):
+    GREEN = [check(n, "SUCCESS") for n in REQUIRED]
+
+    def test_a_clean_reviewed_pr_has_no_blockers(self):
+        blockers, info = dev_status.assess(pr(9, statusCheckRollup=self.GREEN), REQUIRED,
+                                           ["Review of abcdef1: approve"])
+        self.assertEqual([], blockers)
+        self.assertIn("its verdict is not read", " ".join(info))
+
+    def test_draft_and_unrequired_failures_are_notes_not_blockers(self):
+        # #364 review: otherwise "run gh pr ready when nothing blocks it" never arrives.
+        rollup = self.GREEN + [check("Coverage", "FAILURE")]
+        blockers, info = dev_status.assess(pr(9, isDraft=True, mergeStateStatus="BLOCKED",
+                                              statusCheckRollup=rollup), REQUIRED, ["abcdef1"])
+        self.assertEqual([], blockers)
+        self.assertIn("draft", info[0])
+        self.assertIn("check failing, not required: Coverage", " ".join(info))
 
     def test_each_blocker_is_named(self):
-        stuck = pr(9, isDraft=True, mergeStateStatus="DIRTY",
-                   statusCheckRollup=[check("Ruff", "FAILURE"), check("Coverage", "FAILURE")])
-        found = "\n".join(dev_status.blockers(stuck, REQUIRED, ["Review of 1234567"]))
-        for text in ("draft", "merge state DIRTY", "range-diff",
-                     "check failing: Ruff (required)",
-                     "check failing: Coverage (not required: record the reason",
-                     "required check not reported: Unit tests (Windows)",
-                     "no comment or review names the head commit abcdef1"):
+        stuck = pr(9, mergeStateStatus="DIRTY",
+                   statusCheckRollup=[check("Ruff", "FAILURE"),
+                                      check("Unit tests (Windows)", None, "QUEUED")])
+        blockers, _ = dev_status.assess(stuck, REQUIRED, ["Review of 1234567"])
+        found = " | ".join(blockers)
+        for text in ("required check failing: Ruff",
+                     "required check still running: Unit tests (Windows)",
+                     "no comment or review names the head commit abcdef1",
+                     "merge state DIRTY", "range-diff"):
             with self.subTest(text=text):
                 self.assertIn(text, found)
 
-    def test_a_running_required_check_blocks(self):
-        running = pr(9, statusCheckRollup=[check("Ruff", "SUCCESS"),
-                                           check("Unit tests (Windows)", None, "QUEUED")])
-        self.assertEqual(["check still running: Unit tests (Windows)"],
-                         dev_status.blockers(running, REQUIRED, ["abcdef1"]))
+    def test_github_blocking_for_a_reason_not_read_here_is_reported(self):
+        for merge, text in (("BLOCKED", "unresolved review threads"),
+                            ("UNKNOWN", "not worked out yet")):
+            with self.subTest(merge=merge):
+                blockers, _ = dev_status.assess(pr(9, mergeStateStatus=merge,
+                                                   statusCheckRollup=self.GREEN),
+                                                REQUIRED, ["abcdef1"])
+                self.assertEqual(1, len(blockers))
+                self.assertIn(text, blockers[0])
+
+    def test_a_closed_or_merged_pr_is_not_ready(self):
+        blockers, _ = dev_status.assess(pr(9, state="MERGED"), REQUIRED, [])
+        self.assertEqual(["the PR is merged"], blockers)
+
+    def test_notes_come_from_comments_and_reviews(self):
+        view = {"comments": [{"body": "a"}, {"body": None}], "reviews": [{"body": "b"}]}
+        self.assertEqual(["a", "", "b"], dev_status.notes_of(view))
+
+    def test_the_output_says_what_it_does_not_check(self):
+        for text in ("verdict", "unresolved review threads", "code-scanning",
+                     "owner decisions", "range-diff"):
+            with self.subTest(text=text):
+                self.assertIn(text, dev_status.NOT_CHECKED)
 
 
 class SkillTests(unittest.TestCase):

@@ -4,13 +4,18 @@
 # and gh instead of an earlier session's memory: how far each worktree is behind
 # origin/main and which open PR it belongs to, every open PR with its draft, merge
 # and required-check state, and the files two or more open PRs change.
-# It changes nothing except refreshing origin's refs (skip with --no-fetch), and
-# prints branch names, PR numbers, check names and repository paths only: never
-# file contents, and nothing from a checkout's ignored folders (extracted/).
+# It changes nothing except refreshing origin's refs (skip with --no-fetch); git
+# status runs without optional locks, so another session's commit is never held
+# up. It prints branch names, PR numbers and titles, check names and repository
+# paths only: never file contents, and nothing from ignored folders (extracted/).
 #
 #   python tools/dev_status.py                     # the whole picture
 #   python tools/dev_status.py --files a.py b.md   # which open PRs change these files
 #   python tools/dev_status.py --pr 363            # what still stops this PR (exit 1 if anything)
+#
+# --pr reads what the repository shows. It does not read a review's verdict,
+# unresolved review threads, code-scanning alerts, open owner decisions or a
+# range-diff after a rebase; it says so each time, and AGENTS.md "Authority" decides.
 
 import argparse
 import json
@@ -21,9 +26,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BASE = "main"
 PR_FIELDS = "number,title,headRefName,isDraft,mergeStateStatus,files,statusCheckRollup"
+VIEW_FIELDS = ("number,state,isDraft,mergeStateStatus,headRefOid,statusCheckRollup,"
+               "comments,reviews")
 GH_FILE_LIMIT = 100          # gh returns at most this many files per pull request
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
+NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
+               "review threads, code-scanning alerts, open owner decisions, the reason for "
+               "any failing check that is not required, and range-diff after a rebase "
+               "(AGENTS.md, Authority).")
 
 
 # --- Reading git and gh -------------------------------------------------------
@@ -43,12 +54,16 @@ def gh_json(args):
 
 def required_checks():
     """The status checks the base branch's rulesets require, as GitHub reports them."""
-    rules = gh_json(["api", f"repos/{{owner}}/{{repo}}/rules/branches/{BASE}"])
-    return sorted({c["context"] for r in rules if r.get("type") == "required_status_checks"
-                   for c in r["parameters"]["required_status_checks"]})
+    return parse_required(gh_json(["api", f"repos/{{owner}}/{{repo}}/rules/branches/{BASE}"]))
 
 
 # --- Pure analysis (tested with canned data) ----------------------------------
+
+def parse_required(rules):
+    """Required status check names from the rules/branches API response."""
+    return sorted({c["context"] for r in rules if r.get("type") == "required_status_checks"
+                   for c in r.get("parameters", {}).get("required_status_checks", [])})
+
 
 def parse_worktrees(porcelain):
     """[{path, head, branch}] from `git worktree list --porcelain`; branch is None
@@ -70,17 +85,21 @@ def parse_worktrees(porcelain):
 
 def check_states(rollup):
     """{check name: state} from a statusCheckRollup, for check runs and status
-    contexts alike; a check reported more than once keeps its worst state."""
-    rank = {"FAILURE": 3, "WAITING": 2, "SUCCESS": 1}
-    states = {}
-    for item in rollup or []:
+    contexts alike. A check run more than once keeps its latest run, as GitHub
+    does for merging: the latest start time wins, then the later entry."""
+    latest = {}
+    for order, item in enumerate(rollup or []):
         name = item.get("name") or item.get("context") or "?"
+        key = (item.get("startedAt") or item.get("completedAt") or "", order)
+        if name not in latest or key >= latest[name][0]:
+            latest[name] = (key, item)
+    states = {}
+    for name, (_, item) in latest.items():
         raw = (item.get("conclusion") or item.get("state") or "").upper()
         if item.get("status") and item["status"].upper() != "COMPLETED":
             raw = "IN_PROGRESS"
-        state = "SUCCESS" if raw in PASSED else "WAITING" if raw in WAITING else "FAILURE"
-        if rank[state] > rank.get(states.get(name), 0):
-            states[name] = state
+        states[name] = ("SUCCESS" if raw in PASSED else "WAITING" if raw in WAITING
+                        else "FAILURE")
     return states
 
 
@@ -98,6 +117,10 @@ def pr_files(pr):
     return {f["path"] for f in pr.get("files") or []}
 
 
+def capped(pr):
+    return len(pr_files(pr)) >= GH_FILE_LIMIT
+
+
 def overlaps(prs):
     """{path: [PR numbers]} for every path that two or more open PRs change."""
     seen = {}
@@ -107,36 +130,67 @@ def overlaps(prs):
     return {p: sorted(n) for p, n in sorted(seen.items()) if len(n) > 1}
 
 
-def touching(prs, paths):
-    """{path: [PR numbers]} for the given repository paths (forward slashes)."""
-    wanted = {p.replace("\\", "/").removeprefix("./") for p in paths}
-    return {p: sorted(pr["number"] for pr in prs if p in pr_files(pr)) for p in sorted(wanted)}
+def repo_path(path, root=ROOT):
+    """A path as the repository names it: relative to root, forward slashes."""
+    given = Path(path)
+    if given.is_absolute():
+        try:
+            path = str(given.resolve().relative_to(Path(root).resolve()))
+        except ValueError:
+            pass                    # outside the checkout: matched as written
+    return path.replace("\\", "/").removeprefix("./")
 
 
-def blockers(pr, required, notes):
-    """What still stops the PR being marked ready and merged under AGENTS.md
-    "Authority", as far as the repository can tell. notes is the text of its
-    comments and reviews; a review counts as recorded when one names the head
-    commit (its first 7 characters), which is a heuristic, not a check of the
-    review's quality."""
-    found = []
-    if pr.get("isDraft"):
-        found.append("draft: mark ready (gh pr ready) once checks pass and the review is recorded")
-    state = pr.get("mergeStateStatus", "")
-    if state in {"DIRTY", "BEHIND"}:
-        found.append(f"merge state {state}: rebase onto origin/{BASE} "
-                     "(a rebase keeps the review only if git range-diff shows every commit '=')")
-    failing, waiting, missing = check_summary(pr.get("statusCheckRollup"), required)
-    for name in failing:
-        found.append(f"check failing: {name}" + (" (required)" if name in required else
-                                                 " (not required: record the reason on the PR)"))
-    found += [f"check still running: {name}" for name in waiting if name in required]
-    found += [f"required check not reported: {name}" for name in missing]
-    head = (pr.get("headRefOid") or "")[:7]
-    if head and not any(head in text for text in notes):
-        found.append(f"no comment or review names the head commit {head}: "
-                     "record the independent review of this exact commit")
+def touching(prs, paths, root=ROOT):
+    """{path: [PR numbers]} for the given paths, matched without regard to case
+    (Windows file names are not case-sensitive)."""
+    found = {}
+    for path in sorted({repo_path(p, root) for p in paths}):
+        found[path] = sorted(pr["number"] for pr in prs
+                             if path.lower() in {f.lower() for f in pr_files(pr)})
     return found
+
+
+def notes_of(pr):
+    """The text of a PR's comments and reviews."""
+    return ([c.get("body") or "" for c in pr.get("comments") or []]
+            + [r.get("body") or "" for r in pr.get("reviews") or []])
+
+
+def assess(pr, required, notes):
+    """(blockers, notes) for one PR. Blockers are what the repository shows still
+    stops a merge under AGENTS.md "Authority"; notes are true but not, by
+    themselves, a reason to wait (the draft state is lifted by `gh pr ready` once
+    the blockers are gone). A review counts as found when a comment or review
+    names the head commit's first 7 characters; its verdict is not read."""
+    blockers, info = [], []
+    state = pr.get("state", "OPEN")
+    if state != "OPEN":
+        return [f"the PR is {state.lower()}"], info
+    if pr.get("isDraft"):
+        info.append("draft: run gh pr ready once nothing blocks it, then run --pr again")
+    failing, waiting, missing = check_summary(pr.get("statusCheckRollup"), required)
+    blockers += [f"required check failing: {n}" for n in failing if n in required]
+    blockers += [f"required check still running: {n}" for n in waiting if n in required]
+    blockers += [f"required check not reported: {n}" for n in missing]
+    info += [f"check failing, not required: {n} (record the reason on the PR)"
+             for n in failing if n not in required]
+    head = (pr.get("headRefOid") or "")[:7]
+    if head and any(head in text for text in notes):
+        info.append(f"a comment or review names {head} (its verdict is not read here)")
+    elif head:
+        blockers.append(f"no comment or review names the head commit {head}: record the "
+                        "independent review of this exact commit")
+    merge = pr.get("mergeStateStatus", "")
+    if merge in {"DIRTY", "BEHIND"}:
+        blockers.append(f"merge state {merge}: rebase onto origin/{BASE} (a rebase keeps the "
+                        "review only if git range-diff shows every commit '=')")
+    elif merge == "UNKNOWN":
+        blockers.append("merge state not worked out yet by GitHub: run --pr again shortly")
+    elif merge == "BLOCKED" and not blockers and not pr.get("isDraft"):
+        blockers.append("GitHub still blocks the merge: look for unresolved review threads "
+                        "or a code-scanning alert")
+    return blockers, info
 
 
 def behind_ahead(counts):
@@ -161,7 +215,8 @@ def show_status(prs, required):
         try:
             behind, ahead = behind_ahead(run(["git", "rev-list", "--left-right", "--count",
                                               f"origin/{BASE}...{tree['head']}"]))
-            dirty = len(run(["git", "-C", tree["path"], "status", "--porcelain"]).splitlines())
+            dirty = len(run(["git", "--no-optional-locks", "-C", tree["path"], "status",
+                             "--porcelain"]).splitlines())
         except SystemExit:          # a worktree whose folder has gone
             print(f"  {short_path(tree['path'])}  {tree['branch'] or 'detached'}  (unreadable: "
                   "git worktree prune?)")
@@ -180,7 +235,7 @@ def show_status(prs, required):
             flags.append(f"{len(waiting)} running")
         if missing:
             flags.append(f"{len(missing)} required not reported")
-        if len(pr_files(pr)) >= GH_FILE_LIMIT:
+        if capped(pr):
             flags.append(f"{GH_FILE_LIMIT}+ files: overlap list may be incomplete")
         print(f"  #{pr['number']} {pr['headRefName']}  [{'; '.join(flags)}]")
         print(f"      {pr['title'][:100]}")
@@ -194,43 +249,46 @@ def show_files(prs, paths):
     for path, numbers in touching(prs, paths).items():
         owners = " ".join(f"#{n}" for n in numbers) or "no open PR"
         print(f"  {path}: {owners}")
+    for pr in prs:
+        if capped(pr):
+            print(f"  note: #{pr['number']} changes {GH_FILE_LIMIT}+ files and gh lists only "
+                  f"{GH_FILE_LIMIT}; check it with gh pr diff {pr['number']} --name-only")
 
 
 def show_pr(number, required):
-    pr = gh_json(["pr", "view", str(number), "--json",
-                  "number,isDraft,mergeStateStatus,headRefOid,statusCheckRollup,comments,reviews"])
-    notes = [c.get("body") or "" for c in pr.get("comments") or []]
-    notes += [r.get("body") or "" for r in pr.get("reviews") or []]
-    found = blockers(pr, required, notes)
+    pr = gh_json(["pr", "view", str(number), "--json", VIEW_FIELDS])
+    blockers, info = assess(pr, required, notes_of(pr))
     print(f"PR #{number} at {pr['headRefOid'][:7]}: "
-          + ("nothing found that stops it" if not found else f"{len(found)} to resolve"))
-    for item in found:
+          + ("nothing found that stops it" if not blockers else f"{len(blockers)} to resolve"))
+    for item in blockers:
         print(f"  - {item}")
-    print("  Not checked here: open owner decisions, review findings answered, "
-          "range-diff after a rebase (AGENTS.md, Authority).")
-    return 1 if found else 0
+    for item in info:
+        print(f"  note: {item}")
+    print(f"  {NOT_CHECKED}")
+    return 1 if blockers else 0
 
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")   # PR titles may hold any character
     parser = argparse.ArgumentParser(description="Live worktree, pull request and "
                                      "overlap state for agents (AGENTS.md).")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--files", nargs="+", metavar="PATH",
-                       help="list the open PRs that change these repository paths")
+                       help="list the open PRs that change these paths")
     group.add_argument("--pr", type=int, help="list what still stops this PR")
     parser.add_argument("--no-fetch", action="store_true",
                         help="use origin's refs as they are")
     args = parser.parse_args(argv)
     if not args.no_fetch:
         run(["git", "fetch", "origin", "--prune", "--quiet"])
-    required = required_checks()
     if args.pr:
-        return show_pr(args.pr, required)
+        return show_pr(args.pr, required_checks())
     prs = gh_json(["pr", "list", "--state", "open", "--limit", "100", "--json", PR_FIELDS])
     if args.files:
         show_files(prs, args.files)
     else:
-        show_status(prs, required)
+        show_status(prs, required_checks())
     return 0
 
 
