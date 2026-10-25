@@ -26,9 +26,10 @@
 # misbehaved; 2 headless Edge timed out (EDGE_LIMIT_S) and returned nothing, so
 # nothing was measured: not a page result, and never a pass. The tool then says
 # which run in one paragraph; rerun when no other headless Edge run is active.
-# CI's "UI idle (headless Edge)" job fails on any code but 0. Lower a ratchet
-# when the figure drops (#127); raise one only with a reason in the pull
-# request. Needs Microsoft Edge; no Python packages.
+# (argparse's usage errors also exit 2.) CI's "UI idle (headless Edge)" job
+# fails on any code but 0. Lower a ratchet when the figure drops (#127); raise
+# one only with a reason in the pull request. Needs Microsoft Edge; no Python
+# packages.
 
 import argparse
 import http.server

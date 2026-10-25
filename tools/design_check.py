@@ -15,7 +15,8 @@
 # Exit codes: 0 every case rendered (the scores are for a person to read; none
 # fails the run); 2 headless Edge timed out (EDGE_LIMIT_S) and returned
 # nothing, so that case was not measured: the tool says which case in one
-# paragraph and keeps results.json for the cases before it; 1 any other error.
+# paragraph and keeps results.json for the cases before it; 1 any other error
+# (argparse's usage errors also exit 2).
 
 """Compare the approved design boards with the app, screen by screen."""
 
