@@ -2102,7 +2102,12 @@ class HookProcessTests(unittest.TestCase):
     def test_configured_command_blocks_through_powershell(self):
         # Runs the exact command from settings.json the way Claude Code does with
         # "shell": "powershell". Catches the exit code being lost (2 becoming 1)
-        # and stdin not reaching Python.
+        # and stdin not reaching Python. Windows only, where the hook runs: the
+        # command accepts only a drive or network path for CLAUDE_PROJECT_DIR (#363
+        # review R1), so on Linux's pwsh every call blocks. The Windows CI job runs
+        # with --strict-skips, so this test cannot be skipped there.
+        if sys.platform != "win32":
+            self.skipTest("the hook command runs on Windows only")
         shell_exe = shutil.which("powershell") or shutil.which("pwsh")
         if not shell_exe:
             self.skipTest("PowerShell not installed")
@@ -2142,13 +2147,10 @@ class HookProcessTests(unittest.TestCase):
             self.assertNotEqual(2, result.returncode, result.stderr)
         # Without a CLAUDE_PROJECT_DIR that is an existing folder named by a drive or
         # network path the hook file cannot be found; that blocks rather than being taken for a
-        # checkout from before the hook (#363 reviews, F3, N1 and R1). Drive-only,
-        # root and drive-relative forms are Windows paths.
+        # checkout from before the hook (#363 reviews, F3, N1 and R1).
         unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
         values = ["", " ", "\t", "0", ".", "tests", str(ROOT / "no-such-folder"),
-                  str(ROOT / "AGENTS.md")]
-        if sys.platform == "win32":
-            values += ["C:", "\\", "/", "C:tests"]
+                  str(ROOT / "AGENTS.md"), "C:", "\\", "/", "C:tests"]
         for env in [unset] + [{**unset, "CLAUDE_PROJECT_DIR": v} for v in values]:
             with self.subTest(project_dir=env.get("CLAUDE_PROJECT_DIR", "unset")):
                 result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
@@ -2158,10 +2160,6 @@ class HookProcessTests(unittest.TestCase):
         # Fail closed (owner, 25 Oct 2026): with no Python on PATH, or a python that
         # fails before the guard decides (a Store stub, a broken install), even an
         # ordinary call is blocked. Claude Code lets a call through on exit 1.
-        # Windows only, where the hook runs: elsewhere pwsh's own folder (/usr/bin)
-        # holds a working python, so no PATH here leaves Python out.
-        if sys.platform != "win32":
-            return
         system = os.environ.get("SystemRoot", r"C:\Windows")
         bare = os.pathsep.join([os.path.join(system, "System32"), system,
                                 os.path.dirname(shell_exe)])
