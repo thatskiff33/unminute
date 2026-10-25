@@ -23,6 +23,10 @@
 # meeting title on the page. The last does the same when the page's first
 # status() fails: the page starts as usual, and its next status must still end
 # on the locked screen, quiet.
+# The recording runs also count changes to the text of live
+# regions (polite or assertive, or role status, alert or log): a steady
+# recording has no change of state, so none may change, or a screen reader
+# reads the region again at every poll (Narrator, #346, 26 Oct 2026).
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
@@ -399,7 +403,9 @@ def main():
               f"({(r.get('calls_per_minute') or {}).get('recording_status', 0)} recording_status), "
               f"{r.get('timeouts_per_minute')} timeouts/min, {r.get('live_intervals')} "
               f"interval(s), fastest {r.get('fastest_interval_ms')} ms, meter "
-              f"{r.get('meter_draws_per_second')} draws/s at {r.get('display_hz')} Hz")
+              f"{r.get('meter_draws_per_second')} draws/s at {r.get('display_hz')} Hz, "
+              f"live region changes {r.get('live_region_changes_per_minute')}/min "
+              f"{r.get('live_regions_changed') or ''}")
     print(f"locked: {locked.get('bridge_calls_per_minute')} bridge calls/min, "
           f"{locked.get('timeouts_per_minute')} timeouts/min, "
           f"{locked.get('live_intervals')} interval(s); called "

@@ -93,7 +93,8 @@ class RatchetTests(unittest.TestCase):
 
 GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"}
 RECORDING_METRICS = METRICS | {
-    "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second"}
+    "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second",
+    "live_region_changes_per_minute"}
 
 
 class RecordingTests(unittest.TestCase):
@@ -179,6 +180,19 @@ class RecordingTests(unittest.TestCase):
             rebuilt = dict(at_limit, list_rebuilds_per_minute=5)
             self.assertEqual([(mode, "list_rebuilds_per_minute", 5, 0)],
                              ui_idle_check.compare({mode: rebuilt}, {mode: limits}), mode)
+
+    def test_a_steady_recording_that_changes_a_live_region_fails(self):
+        # A screen reader may read a live region again at each change, even to
+        # the same text: Narrator stuttered "Rec... Rec..." when the card's
+        # state line was set at every poll (#346, 26 Oct 2026). A steady
+        # recording has no change of state, so no live region may change.
+        data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
+        for mode, limits in data["ui_recording"]["ratchets"].items():
+            self.assertEqual(0, limits["live_region_changes_per_minute"], mode)
+            self.assertEqual([(mode, "live_region_changes_per_minute", 600, 0)],
+                             ui_idle_check.compare(
+                                 {mode: {"live_region_changes_per_minute": 600}},
+                                 {mode: {"live_region_changes_per_minute": 0}}))
 
 
 class TranscribingTests(unittest.TestCase):

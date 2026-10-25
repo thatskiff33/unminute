@@ -2715,7 +2715,10 @@ function fmtDuration(s) {
 function renderRecCard(rec, display, lidOverride, lidRefused) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
-  $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
+  // A live region (polite): set only when the state changes. Set at every
+  // poll, even to the same text, Narrator read it again ten times a second
+  // ("Rec... Rec...", the owner's check of 26 Oct 2026, #346).
+  putText($("rec-state"), REC_TEXT[rec.state] || rec.state);
   state.recSeconds = rec.seconds;
   $("rec-clock").textContent = fmtSeconds(rec.seconds);
   $("rec-icon").hidden = kind !== "lost";

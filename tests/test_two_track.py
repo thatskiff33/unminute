@@ -976,6 +976,76 @@ class MixdownTests(unittest.TestCase):
         # The separate tracks are never changed by the mix (D1).
         self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, saved)
 
+    # -- loudness matching (the owner's check of 26 Oct 2026: the microphone
+    # was much quieter than the computer audio in playback) ---------------------
+
+    def level_mix(self, mic, comp):
+        """The mix of two whole tracks lined up from the same start."""
+        journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
+        notes = []
+        mixed, _ = mix(self.folder, journal, notes)
+        self.assertEqual(notes, [])
+        return mixed
+
+    def component_db(self, x, rate, hz):
+        """The level of one tone in a mix, in dB (relative)."""
+        x = x.astype(np.float64)
+        spectrum = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+        freqs = np.fft.rfftfreq(len(x), 1 / rate)
+        return 20 * np.log10(spectrum[np.argmin(np.abs(freqs - hz))] + 1e-9)
+
+    def test_a_quieter_microphone_is_raised_to_the_computer_audios_level(self):
+        mic = tone(30 * RATE, RATE, 220, amp=2000)                # about -27 dB
+        comp = tone(30 * CRATE, CRATE, 1000, amp=8000)            # about -15 dB
+        mixed = self.level_mix(mic, comp)[5 * RATE:25 * RATE]
+        gap = self.component_db(mixed, RATE, 1000) - self.component_db(mixed, RATE, 220)
+        self.assertLess(abs(gap), 1.0)                            # matched (12 dB apart before)
+
+    def test_quieter_computer_audio_is_raised_to_the_microphones_level(self):
+        mic = tone(30 * RATE, RATE, 220, amp=8000)
+        comp = tone(30 * CRATE, CRATE, 1000, amp=2000)            # 12 dB quieter
+        mixed = self.level_mix(mic, comp)[5 * RATE:25 * RATE]
+        gap = self.component_db(mixed, RATE, 220) - self.component_db(mixed, RATE, 1000)
+        self.assertLess(abs(gap), 1.0)
+        # The louder track is never turned down: the microphone is as recorded.
+        self.assertAlmostEqual(self.component_db(mixed, RATE, 220),
+                               self.component_db(mic[5 * RATE:25 * RATE], RATE, 220), delta=0.2)
+
+    def test_the_raise_is_capped(self):
+        mic = tone(30 * RATE, RATE, 220, amp=200)                 # about -44 dB
+        comp = tone(30 * CRATE, CRATE, 1000, amp=8000)            # 32 dB louder
+        mixed = self.level_mix(mic, comp)[5 * RATE:25 * RATE]
+        gap = self.component_db(mixed, RATE, 1000) - self.component_db(mixed, RATE, 220)
+        self.assertAlmostEqual(gap, 32.0 - mixdown.LEVEL_MAX_GAIN_DB, delta=1.0)
+
+    def test_a_track_that_is_mostly_silent_is_not_blown_up(self):
+        # The computer plays one 2 s notification in 60 s, and a faint hiss
+        # below the gate: too little sound to measure, so nothing is raised.
+        rng = np.random.default_rng(5)
+        mic = tone(60 * RATE, RATE, 220, amp=8000)
+        comp = (rng.standard_normal(60 * CRATE) * 20).astype(np.int16)    # about -64 dB
+        comp[10 * CRATE:12 * CRATE] = tone(2 * CRATE, CRATE, 1000, amp=1000)
+        mixed = self.level_mix(mic, comp)
+        hiss = mixed[30 * RATE:40 * RATE].astype(np.float64) - mic[30 * RATE:40 * RATE]
+        self.assertLess(np.sqrt(np.mean(hiss ** 2)), 40)          # the hiss as recorded, not +15 dB
+        ding = mixed[10 * RATE + 100:12 * RATE - 100]
+        self.assertAlmostEqual(self.component_db(ding, RATE, 1000),
+                               self.component_db(comp[10 * CRATE + 300:12 * CRATE - 300]
+                                                 .astype(np.float64)[::3], RATE, 1000),
+                               delta=1.5)
+        # A quiet microphone with the computer silent is left as it is too.
+        quiet = tone(60 * RATE, RATE, 220, amp=500)
+        mixed = self.level_mix(quiet, np.zeros(60 * CRATE, np.int16))
+        self.assertTrue(np.array_equal(mixed, quiet))
+
+    def test_level_matching_never_changes_the_saved_tracks(self):
+        mic = tone(30 * RATE, RATE, 220, amp=1000)
+        comp = tone(30 * CRATE, CRATE, 1000, amp=8000)
+        journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
+        saved = {p.name: p.read_bytes() for p in self.folder.iterdir()}
+        mix(self.folder, journal, [])
+        self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, saved)
+
     def test_marks_that_cannot_be_used_fall_back_to_start_times_and_say_so(self):
         mic = np.full(2 * RATE, 1000, np.int16)
         comp = np.full(2 * CRATE, 3000, np.int16)

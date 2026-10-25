@@ -486,8 +486,7 @@ PLAYBACK_PIECE = 16384               # one encrypted block (audiocrypt.FRAMES_PE
 PLAYBACK_SAMPLE_EVERY = 30           # blocks: about 1 s read in every 30 s
 PLAYBACK_WHOLE_BLOCKS = 64           # a meeting this short (about a minute) is read whole
 PLAYBACK_WINDOW = 4096               # frames per loudness window (0.256 s)
-_ABSOLUTE_GATE = 10 ** (-70.0 / 10)
-_RELATIVE_GATE = 10 ** (-10.0 / 10)
+_ABSOLUTE_GATE_DB = -70.0           # then windows 10 dB below the mean of the rest (mixdown)
 
 
 def playback_gain(reader):
@@ -505,12 +504,10 @@ def playback_gain(reader):
             powers.append(np.mean(w * w, axis=1))
     if not powers:
         return 1.0
-    p = np.concatenate(powers)
-    p = p[p > _ABSOLUTE_GATE]
-    if not len(p):
+    from workspace.mixdown import gated_level_db    # the mix's measure; loaded when first played
+    level = gated_level_db(np.concatenate(powers), _ABSOLUTE_GATE_DB)
+    if level is None:
         return 1.0
-    p = p[p >= _RELATIVE_GATE * np.mean(p)]
-    level = 10 * np.log10(np.mean(p))
     gain_db = min(PLAYBACK_MAX_GAIN_DB, max(PLAYBACK_MIN_GAIN_DB, PLAYBACK_TARGET_DB - level))
     return float(10 ** (gain_db / 20))
 

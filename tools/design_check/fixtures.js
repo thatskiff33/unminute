@@ -28,8 +28,18 @@
   // meter's canvas (#rec-canvas) was cleared for drawing, one count per frame,
   // as tools/perf_check.py counts them in the real window.
   // allCalls: every bridge call since the page loaded, never reset (locked mode).
-  const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [],
+  // live: changes to the text of a live region (polite or assertive, or role
+  // status, alert or log) while measured. A screen reader may read a live
+  // region again at each change, even to the same text, so an idle page or a
+  // steady recording must make none (Narrator, 26 Oct 2026, #346).
+  const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [], live: 0, liveIds: new Set(),
                  intervals: new Map(), pendingFrames: new Set(), draws: 0, drawnFrame: -1 };
+  const LIVE = '[aria-live="polite"], [aria-live="assertive"], [role="status"], [role="alert"], [role="log"]';
+  function liveRegion(node) {
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    const region = element && element.closest(LIVE);
+    return region && region.getAttribute("aria-live") !== "off" ? region : null;
+  }
   // The simulated display (perf mode with &display=Hz). Headless Edge runs
   // almost no animation frames while virtual time skips ahead, so the meter's
   // frame rate cannot be seen there. Instead, frames come from a timer here,
@@ -130,9 +140,16 @@
       new MutationObserver((records) => { perf.rebuilds += records.length; })
         .observe(groups, { childList: true });
     }
+    new MutationObserver((records) => {
+      for (const r of records) {
+        const region = liveRegion(r.target);
+        if (region) { perf.live++; perf.liveIds.add(region.id || region.className || "?"); }
+      }
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
     // Count from here, before the page becomes hidden, so work it does on the
     // visibilitychange itself counts too.
     perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0; perf.draws = 0;
+    perf.live = 0; perf.liveIds.clear();
     perf.ticksFrom = sim.ticks; perf.framesFrom = sim.frames;
     if (perfMode === "hidden") {
       pageHidden = true;
@@ -168,6 +185,7 @@
     return { calls: { ...perf.calls }, timeouts: perf.timeouts, rebuilds: perf.rebuilds,
              intervals: [...perf.intervals.values()], frames: perf.pendingFrames.size,
              rows: document.querySelectorAll("#groups li").length, draws: perf.draws,
+             live: perf.live, liveIds: [...perf.liveIds],
              ticks: sim.ticks - perf.ticksFrom, simFrames: sim.frames - perf.framesFrom };
   }
   function finish(ms, seen, catchUp, redrawn = null, catchUpDraws = null) {
@@ -184,6 +202,8 @@
       timeouts_per_minute: perMinute(seen.timeouts),
       pending_animation_frames: seen.frames,
       list_rebuilds_per_minute: perMinute(seen.rebuilds),
+      live_region_changes_per_minute: perMinute(seen.live),
+      live_regions_changed: seen.liveIds,
       live_intervals: seen.intervals.length,
       fastest_interval_ms: seen.intervals.length ? Math.min(...seen.intervals) : null,
       meeting_rows: seen.rows,
