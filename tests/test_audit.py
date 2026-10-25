@@ -1362,6 +1362,10 @@ class WorkspaceAuditTests(unittest.TestCase):
         return ws
 
     def test_a_recovered_recording_and_a_deleted_one_are_recorded(self):
+        from workspace import recorder
+        # The crashed recordings' streams are never stopped, so their count
+        # would stay for every later test (#372 review B2): put it back.
+        self.addCleanup(setattr, recorder, "_open_streams", recorder._open_streams)
         holder = {}
         ws = self.reopen(holder)
         kept = self.crashed_recording(ws, holder, 3)

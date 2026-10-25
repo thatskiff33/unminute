@@ -131,24 +131,26 @@ class RecordingTests(unittest.TestCase):
             recorder.list_devices()
             return inner(*args)
 
-        before = recorder._open_streams
-        with mock.patch.dict(sys.modules, {"sounddevice": sd}):
+        # From no open stream, whatever earlier tests left counted (#372
+        # review B2): only then would the old order re-initialise PortAudio.
+        with (mock.patch.object(recorder, "_open_streams", 0),
+              mock.patch.dict(sys.modules, {"sounddevice": sd})):
             rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
                                                   open_stream=open_while_listing, key=KEY))
-        self.assertEqual([], terminated, "PortAudio was re-initialised under the stream")
-        self.assertEqual(before + 1, recorder._open_streams)
-        rec.stop()
-        self.assertEqual(before, recorder._open_streams)
+            self.assertEqual([], terminated, "PortAudio was re-initialised under the stream")
+            self.assertEqual(1, recorder._open_streams)
+            rec.stop()
+            self.assertEqual(0, recorder._open_streams)
 
     def test_a_stream_that_does_not_open_is_not_left_counted(self):
         def broken(*args):
             raise OSError("no such device")
-        before = recorder._open_streams
         rec = recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
                                  open_stream=broken, key=KEY)
-        with self.assertRaises(recorder.RecorderError):
-            rec.start()
-        self.assertEqual(before, recorder._open_streams)
+        with mock.patch.object(recorder, "_open_streams", 0):
+            with self.assertRaises(recorder.RecorderError):
+                rec.start()
+            self.assertEqual(0, recorder._open_streams)
 
     def test_every_frame_is_saved_in_durable_chunks(self):
         rec, s = self.start()
