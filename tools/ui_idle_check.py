@@ -21,16 +21,19 @@
 #
 #   python tools/ui_idle_check.py [report.json] [--page-ms 60000]
 #
-# Exit code 1 when a figure is over its ratchet in tests/budgets.json ("ui_idle",
-# "ui_transcribing", "ui_recording"). Lower a ratchet when the figure drops (#127);
-# raise one only with a reason in the pull request. Needs Microsoft Edge; no
-# Python packages.
+# Exit codes: 0 within the ratchets; 1 a figure is over its ratchet in
+# tests/budgets.json ("ui_idle", "ui_transcribing", "ui_recording") or the page
+# misbehaved; 2 headless Edge timed out (EDGE_LIMIT_S) and returned nothing, so
+# nothing was measured: not a page result, and never a pass. The tool then says
+# which run in one paragraph; rerun when no other headless Edge run is active.
+# CI's "UI idle (headless Edge)" job fails on any code but 0. Lower a ratchet
+# when the figure drops (#127); raise one only with a reason in the pull
+# request. Needs Microsoft Edge; no Python packages.
 
 import argparse
 import http.server
 import json
 import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -54,17 +57,21 @@ RESULT = re.compile(r'<pre id="perf-result">(.*?)</pre>', re.DOTALL)
 EARLY_RESULT = re.compile(r'<pre id="early-result">(.*?)</pre>', re.DOTALL)
 # Ratchets are maxima, except where a smaller value is worse.
 AT_LEAST = {"fastest_interval_ms"}
+EDGE_LIMIT_S = 300           # this tool's own limit for one headless Edge run
 
 
-def final_dom(url, budget_ms):
-    """Edge's dump of the page's DOM after budget_ms of page time."""
+def final_dom(url, budget_ms, mode, scenario):
+    """Edge's dump of the page's DOM after budget_ms of page time. Raises
+    design_check.EdgeTimeout, naming mode and scenario, when Edge does not
+    return within EDGE_LIMIT_S."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
         cmd = [str(design_check.edge()), "--headless=new", "--disable-gpu", "--no-first-run",
                "--disable-extensions", f"--user-data-dir={profile}", "--mute-audio",
                "--window-size=1100,760", f"--virtual-time-budget={budget_ms}",
                "--dump-dom", url]
-        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                              errors="replace", timeout=300)
+        return design_check.run_edge(cmd, EDGE_LIMIT_S, "app/index.html", mode, scenario,
+                                     capture_output=True, text=True, encoding="utf-8",
+                                     errors="replace")
 
 
 def run_page(base, mode, page_ms, scenario=SCENARIO, display_hz=None):
@@ -74,7 +81,7 @@ def run_page(base, mode, page_ms, scenario=SCENARIO, display_hz=None):
     # (visible), or 1 s of catch-up (hidden).
     display = f"&display={display_hz}" if display_hz else ""
     out = final_dom(f"{base}/app/index.html?perf={mode}&ms={page_ms}{display}#{scenario}",
-                    page_ms + 90000)
+                    page_ms + 90000, mode, scenario)
     found = RESULT.search(out.stdout or "")
     if not found:
         ready = 'data-ready="1"' in (out.stdout or "")
@@ -90,7 +97,8 @@ def run_page(base, mode, page_ms, scenario=SCENARIO, display_hz=None):
 def run_transcribing(base):
     """What the page fetched and drew while a long meeting was transcribed
     (fixtures.js, transcribing mode)."""
-    out = final_dom(f"{base}/app/index.html?perf=transcribing#{GROW_SCENARIO}", GROW_PAGE_MS)
+    out = final_dom(f"{base}/app/index.html?perf=transcribing#{GROW_SCENARIO}", GROW_PAGE_MS,
+                    "transcribing", GROW_SCENARIO)
     found = RESULT.search(out.stdout or "")
     if not found:
         raise RuntimeError(f"Edge returned no transcribing result (exit {out.returncode}). "
@@ -130,7 +138,7 @@ def transcribing_problems(result):
 def run_early(base):
     """What the page reported of the errors fixtures.js threw before the bridge
     was ready (early-error mode)."""
-    out = final_dom(f"{base}/app/index.html?early=1#{SCENARIO}", 5000)
+    out = final_dom(f"{base}/app/index.html?early=1#{SCENARIO}", 5000, "early-error", SCENARIO)
     found = EARLY_RESULT.search(out.stdout or "")
     if not found:
         raise RuntimeError(f"Edge returned no early-error result (exit {out.returncode}). "
@@ -277,6 +285,9 @@ def main():
         growing = run_transcribing(base)
         recording = {mode: run_page(base, mode, args.page_ms, RECORDING_SCENARIO, DISPLAY_HZ)
                      for mode in MODES}
+    except design_check.EdgeTimeout as timeout:
+        print(f"NOT MEASURED: {timeout}", file=sys.stderr)
+        return design_check.NOT_MEASURED
     finally:
         server.shutdown()
     budgets = json.loads(BUDGETS.read_text(encoding="utf-8"))

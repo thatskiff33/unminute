@@ -3,13 +3,18 @@
 # section 3). The check itself runs the page in headless Edge, in the CI
 # workflow's "UI idle (headless Edge)" job (.github/workflows/ci.yml).
 
+import contextlib
+import io
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+import design_check  # noqa: E402
 import ui_idle_check  # noqa: E402
 
 METRICS = {"bridge_calls_per_minute", "list_rebuilds_per_minute", "timeouts_per_minute",
@@ -258,6 +263,69 @@ class EarlyErrorTests(unittest.TestCase):
                                              "thrown_after_ready": 1})
         self.assertEqual(1, len(late))
         self.assertIn("after its bridge was ready", late[0])
+
+
+class EdgeTimeoutTests(unittest.TestCase):
+    """Headless Edge that does not return in time measured nothing: the check
+    says so in one paragraph and exits 2, never with a raw traceback and never 0
+    (AGENTS.md E2). No real Edge runs here."""
+
+    def timed_out(self, *before):
+        """subprocess.run as Edge would go: each of before's dumps, then a timeout."""
+        def run(cmd, timeout=None, **kwargs):
+            if calls:
+                return calls.pop(0)
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        calls = [subprocess.CompletedProcess([], 0, stdout=s, stderr="") for s in before]
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(design_check, "edge",
+                                              return_value=Path("msedge.exe")))
+        stack.enter_context(mock.patch("subprocess.run", side_effect=run))
+        return stack
+
+    def main(self):
+        err = io.StringIO()
+        with (mock.patch.object(sys, "argv", ["ui_idle_check.py"]),
+              contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO())):
+            code = ui_idle_check.main()
+        return code, err.getvalue()
+
+    def assert_says_not_measured(self, message, mode, scenario):
+        for words in ("app/index.html", f"{mode} mode", f"scenario {scenario}",
+                      f"own limit of {ui_idle_check.EDGE_LIMIT_S} s", "returned nothing",
+                      "nothing was measured", "not a page result",
+                      "no other headless Edge run is active"):
+            self.assertIn(words, message)
+        self.assertNotIn("Traceback", message)
+
+    def test_a_timeout_on_the_first_run_is_not_measured_and_exits_2(self):
+        with self.timed_out():
+            code, message = self.main()
+        self.assertEqual(2, code)
+        self.assert_says_not_measured(message, "visible", "home")
+
+    def test_a_timeout_in_hidden_mode_names_hidden_mode(self):
+        # As on 25 Oct 2026 (#336): the visible run returned, the hidden one did not.
+        with self.timed_out('<pre id="perf-result">{}</pre>'):
+            code, message = self.main()
+        self.assertEqual(2, code)
+        self.assert_says_not_measured(message, "hidden", "home")
+
+    def test_each_run_names_its_own_mode_and_scenario(self):
+        base = "http://127.0.0.1:1"
+        runs = ((lambda: ui_idle_check.run_early(base), "early-error", "home"),
+                (lambda: ui_idle_check.run_transcribing(base), "transcribing",
+                 "meeting-transcribing-long"),
+                (lambda: ui_idle_check.run_page(base, "hidden", 60000, "recording", 120),
+                 "hidden", "recording"))
+        for run, mode, scenario in runs:
+            with self.timed_out(), self.assertRaises(design_check.EdgeTimeout) as caught:
+                run()
+            self.assert_says_not_measured(str(caught.exception), mode, scenario)
+
+    def test_the_exit_codes_stay_apart(self):
+        # 1 is a page result (over a ratchet or a page problem); a timeout is not one.
+        self.assertEqual(2, design_check.NOT_MEASURED)
 
 
 if __name__ == "__main__":
