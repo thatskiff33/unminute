@@ -181,6 +181,14 @@ This laptop's NPU is architecture 3720 (driver 32.0.100.4778), tested with OpenV
 
 Conclusion: no usable NPU path on this hardware. The Arc graphics ran OpenVINO models reliably and could be an option for laptops without an NVIDIA card.
 
+## Whisper run to run (#374)
+
+Whisper large-v3 transcribing a whole file in one call is not repeatable. On the public AMI ES2004a meeting, identical one-call runs at int8_float16 on the same NVIDIA card ranged from 21.2% to 27.9% word error rate (25 October 2026). The cause is faster-whisper's temperature fallback: a 30-second window that fails faster-whisper's checks at temperature 0 (here a repetition loop) is retried by random sampling. CTranslate2 seeds that sampler differently in each process, and every later window in the call follows from the sampled text. Decoding at temperature 0 was repeatable, and speech detection kept the same audio in every run. The same happened on the processor, and under CTranslate2 4.8.0 as under 4.8.3.
+
+Through Unminute's own path (45-second parts with context, `workspace/chunking.py`), large-v3 gave identical words and word times in every repeat on ES2004a and ES2004c, and no window fell back. Turbo was repeatable both in one call and through the parts. The figures and conditions are in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) "Whisper on the graphics card".
+
+For measurement: measure Whisper through the app's parts, as the whole-meeting test above did, or record the windows that fell back. Never compare single one-call runs. A part that does fall back is still random: through the parts with speech detection off, one window in 49 fell back.
+
 ## Limits
 
 - Public datasets only. Some models may have been trained on AMI; this was not checked. Treat these results as a filter, not proof of performance on New Zealand business meetings.
