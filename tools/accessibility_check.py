@@ -804,11 +804,12 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
 
 def main():
     sys.path.append(str(Path(__file__).resolve().parent))   # also under -I; after the stdlib
-    # workspace_ui_check puts the app checked (this checkout, or --app) on the path.
-    import draft_scenario
+    # workspace_ui_check puts the app checked (this checkout, or --app) on the path,
+    # so it comes first: draft_scenario and the rest import workspace from there.
     import evidence
     from workspace_ui_check import APP, FAKE, write_wav
 
+    import draft_scenario  # noqa: I001  (after the line above: it imports workspace)
     from workspace import api, shell
     from workspace.app import Workspace
     ap = argparse.ArgumentParser(description="Technical accessibility audit (#27, #298).",

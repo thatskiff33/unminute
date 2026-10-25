@@ -262,6 +262,31 @@ if HAVE_DEPS:
                              [app[1] - app[0], app[2] - app[1]])
 
 
+@unittest.skipUnless(HAVE_DEPS and sys.platform == "win32",
+                     "the real-window tools run on Windows")
+class ToolStartTests(unittest.TestCase):
+    """Both tools start as the orchestrator and release evidence run them:
+    as scripts from the repository root, so the script's folder (tools/) is
+    the first path entry, or with -I, which leaves even that out (and
+    PYTHONPATH). --help runs every import the tool makes before its checks
+    (draft_scenario imports workspace, so it must come after the tool has put
+    the app it checks on the path). Both failed this way on 26 October."""
+
+    def start(self, tool, *flags):
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        return subprocess.run([sys.executable, *flags, str(Path("tools") / tool), "--help"],
+                              cwd=ROOT, env=env, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=180, check=False)
+
+    def test_each_tool_starts_from_the_repository_root(self):
+        for tool in ("accessibility_check.py", "workspace_ui_check.py"):
+            for flags in (("-B",), ("-I", "-B", "-X", "disable-remote-debug")):
+                with self.subTest(tool=tool, flags=flags):
+                    done = self.start(tool, *flags)
+                    self.assertEqual(done.returncode, 0, done.stderr[-1500:])
+                    self.assertIn("usage:", done.stdout)
+
+
 class SeamTests(unittest.TestCase):
     """The feed is the tools' alone: the shipped app cannot reach it (I3)."""
 
