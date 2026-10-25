@@ -145,7 +145,21 @@ class AssessTests(unittest.TestCase):
                       ["Commit reviewed: none yet (abcdef1 awaits review)"],
                       ["**Commit reviewed:** `1234567` (head abcdef1 not yet)"],
                       ["**Range reviewed:** `abcdef1..1234567`"],
-                      ["Range-diff: 1234567..abcdef1 shows two commits changed"]):
+                      ["Range-diff: 1234567..abcdef1 shows two commits changed"],
+                      # round 4: a range starting at the head, by backtracking (F-C) ...
+                      ["Range reviewed: abcdef1...1234567"], ["Range reviewed: `abcdef1..HEAD`"],
+                      ["Range reviewed: abcdef1..123456"],
+                      # ... the label and the commit on different lines (F-D) ...
+                      ["Commit reviewed:\nabcdef1 pushed, review to follow"],
+                      ["**Commit reviewed:**\n\n- abcdef1 awaits"],
+                      # ... a commit that only shares the first 7 characters (N-2) ...
+                      ["Commit reviewed: abcdef1999"],
+                      # ... "identical" not straight after the range (F-B) ...
+                      ["Commit reviewed: 1234567", "Range-diff: 1234567..abcdef1 not identical"],
+                      ["Commit reviewed: 1234567",
+                       "Range-diff: 1234567..abcdef1 commit 2 changed, the others identical"],
+                      # ... and a range-diff from a commit nobody reviewed (F-A).
+                      ["Range-diff: `0000000..abcdef1` identical"]):
             with self.subTest(notes=notes):
                 blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
                                                 REQUIRED, notes)
@@ -155,12 +169,22 @@ class AssessTests(unittest.TestCase):
                       ["- **Commit reviewed:** `ABCDEF1234` against base `x`."],
                       ["**Commit reviewed**: abcdef1234\r\n"],
                       # round 3, N6: a rebase that range-diff shows unchanged keeps the
-                      # review (AGENTS.md, Authority).
-                      ["Range-diff: `9999999..abcdef1` identical, every commit '='"]):
+                      # review of the commit it started from (AGENTS.md, Authority) ...
+                      ["**Commit reviewed:** `9999999aaa`",
+                       "Range-diff: `9999999..abcdef1` identical, every commit '='"],
+                      # ... also across two rebases.
+                      ["Commit reviewed: 1111111", "Range-diff: 1111111..2222222 identical",
+                       "Range-diff: 2222222..abcdef1234 identical"]):
             with self.subTest(notes=notes):
                 blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
                                                 REQUIRED, notes)
                 self.assertEqual([], blockers)
+
+    def test_a_full_head_commit_matches_a_full_review_line(self):
+        oid = "abcdef1234567890abcdef1234567890abcdef12"
+        blockers, _ = dev_status.assess(pr(9, headRefOid=oid, statusCheckRollup=self.GREEN),
+                                        REQUIRED, [f"**Commit reviewed:** `{oid}`"])
+        self.assertEqual([], blockers)
 
     def test_draft_and_unrequired_failures_are_notes_not_blockers(self):
         # #364 review: otherwise "run gh pr ready when nothing blocks it" never arrives.

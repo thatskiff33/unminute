@@ -14,8 +14,9 @@
 #   python tools/dev_status.py --pr 363            # what still stops this PR (exit 1 if anything)
 #
 # --pr reads what the repository shows. It does not read a review's verdict,
-# unresolved review threads, code-scanning alerts, open owner decisions or a
-# range-diff after a rebase; it says so each time, and AGENTS.md "Authority" decides.
+# unresolved review threads, code-scanning alerts or open owner decisions, and it
+# takes a recorded range-diff as written; it says so each time, and AGENTS.md
+# "Authority" decides.
 
 import argparse
 import json
@@ -33,14 +34,19 @@ GH_FILE_LIMIT = 100          # gh returns at most this many files per pull reque
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
 UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
-REVIEWED = re.compile(r"(?im)^\W*(?:commit|range) reviewed\W*:\W*"
-                      r"(?:[0-9a-f]{7,40}\.\.)?([0-9a-f]{7,40})\b")
-RANGE_DIFF = re.compile(r"(?im)^\W*range-diff\W*:\W*[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\b"
-                        r".*\bidentical\b")
+# Review records, one per line (the finish-pr skill asks for them). A commit is a
+# 7 to 40 character hex name not followed by a dot or word character, so a range's
+# end is never read as its start; [^\w\n] keeps the label and the commit on one line.
+_GAP = r"[^\w\n]*"
+_SHA = r"[0-9a-f]{7,40}(?![.\w])"
+REVIEWED = re.compile(rf"(?im)^{_GAP}(?:commit|range) reviewed{_GAP}:{_GAP}"
+                      rf"(?:[0-9a-f]{{7,40}}\.\.)?({_SHA})")
+RANGE_DIFF = re.compile(rf"(?im)^{_GAP}range-diff{_GAP}:{_GAP}([0-9a-f]{{7,40}})\.\.({_SHA})"
+                        rf"{_GAP}identical\b")
 NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
                "review threads, code-scanning alerts, open owner decisions, the reason for "
-               "any failing check that is not required, and range-diff after a rebase "
-               "(AGENTS.md, Authority).")
+               "any failing check that is not required, and the range-diff itself (a "
+               "recorded one is taken as written) (AGENTS.md, Authority).")
 
 
 # --- Reading git and gh -------------------------------------------------------
@@ -167,17 +173,30 @@ def notes_of(pr):
             + [r.get("body") or "" for r in pr.get("reviews") or []])
 
 
+def same_commit(a, b):
+    """Two abbreviations (7 or more characters) of one commit name."""
+    a, b = a.lower(), b.lower()
+    return a.startswith(b) or b.startswith(a)
+
+
 def reviews_of(head, notes):
-    """The commits that comments and reviews record as reviewed and that are the
-    head: the first commit after a line's "Commit reviewed:" or "Range reviewed:"
-    label (the end of a range), or the new end of a "Range-diff: old..new
-    identical" line after a rebase (the finish-pr skill asks for these). An
-    author's note that only mentions the commit does not count, and the verdict
-    is not read."""
-    head = head.lower()
-    found = [m.group(1) for text in notes for m in REVIEWED.finditer(text)]
-    found += [m.group(1) for text in notes for m in RANGE_DIFF.finditer(text)]
-    return [sha for sha in found if len(sha) >= 7 and head.startswith(sha.lower())]
+    """The recorded reviews that cover the head commit. A "Commit reviewed:" or
+    "Range reviewed:" line records the commit after its label (the end of a
+    range). A "Range-diff: old..new identical" line carries a review across a
+    rebase, as AGENTS.md "Authority" allows, only when old is itself recorded as
+    reviewed (chains resolve). An author's note that only mentions the commit
+    does not count, and the verdict is not read."""
+    reviewed = {m.group(1).lower() for text in notes for m in REVIEWED.finditer(text)}
+    carried = [(m.group(1), m.group(2).lower()) for text in notes
+               for m in RANGE_DIFF.finditer(text)]
+    grew = True
+    while grew:
+        grew = False
+        for old, new in carried:
+            if new not in reviewed and any(same_commit(old, r) for r in reviewed):
+                reviewed.add(new)
+                grew = True
+    return sorted(r for r in reviewed if head.lower().startswith(r))
 
 
 def assess(pr, required, notes):
