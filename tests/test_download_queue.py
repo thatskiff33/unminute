@@ -8,8 +8,11 @@
 
 import importlib.util
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -18,6 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import keyprotect  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import test_hardening as hardening  # noqa: E402  (page_functions: the page's own code in Node.js)
 
 HAVE_DEPS = all(importlib.util.find_spec(m) for m in ("numpy", "av"))
 
@@ -207,6 +211,94 @@ class DownloadQueueTests(unittest.TestCase):
         self.wait_started(self.b)
         self.release(self.b)
         self.wait(self.b, "ready")
+
+    def test_repair_during_its_own_check_says_it_is_being_checked(self):
+        with self.ws.downloads._lock:
+            self.ws.downloads._running = self.a                # Check every file is running
+            self.ws.downloads.state[self.a] = {"state": "running", "message": "Checking",
+                                               "log": [], "verify": True}
+        with self.assertRaisesRegex(WorkspaceError, "^This model is being checked. Repair it "
+                                    "once the check has finished.$"):
+            self.ws.download_model(self.a)
+        with self.ws.downloads._lock:
+            self.ws.downloads._running = None
+
+    def test_a_click_between_one_download_and_the_next_waits_its_turn(self):
+        # When a download ends, the slot is free for a moment before the next
+        # is taken from the queue (after() runs in that gap): a click then
+        # queues behind the ones clicked earlier (#368 review, nit 1).
+        clicked = []
+        after = self.ws.downloads.after
+
+        def click_in_the_gap():
+            after()
+            if not clicked:
+                clicked.append(self.ws.download_model(self.c))
+        self.ws.downloads.after = click_in_the_gap
+        self.assertEqual(self.ws.download_model(self.a), "started")
+        self.wait_started(self.a)
+        self.assertEqual(self.ws.download_model(self.b), "queued")
+        self.release(self.a)
+        self.wait(self.a, "ready")
+        self.wait_started(self.b)
+        self.assertEqual(clicked, ["queued"])
+        self.assertEqual(self.order(), [self.a, self.b])
+        self.release(self.b)
+        self.wait_started(self.c)
+        self.release(self.c)
+        self.wait(self.c, "ready")
+        self.assertEqual(self.order(), [self.a, self.b, self.c])
+
+    def test_cancelling_an_entry_taken_from_the_queue_before_it_starts(self):
+        # b has left the queue and holds the slot, but its download process
+        # has not started (the checks before it run): Cancel still stops it,
+        # and says so (#368 review, nit 2).
+        reached, gate = threading.Event(), threading.Event()
+        prepare = self.ws.downloads.prepare
+
+        def held(name, token):
+            if name == self.b:
+                reached.set()
+                gate.wait(30)
+            return prepare(name, token)
+        self.ws.downloads.prepare = held
+        self.three()
+        self.release(self.a)
+        self.assertTrue(reached.wait(30))
+        self.assertEqual(self.state(self.b), "running")        # taken from the queue
+        self.assertTrue(self.ws.cancel_download(self.b))
+        gate.set()
+        self.assertEqual(self.wait(self.b, "failed")["message"], setup.CANCELLED)
+        self.wait_started(self.c)
+        self.assertEqual(self.order(), [self.a, self.c])        # b never started
+        self.release(self.c)
+        self.wait(self.c, "ready")
+        self.assertFalse(self.queue_file().exists())
+
+    def test_the_page_says_removed_only_when_something_was(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js not installed")
+        source = hardening.page_functions("cancelQueued") + r"""
+const said = [];
+const say = (text) => { said.push(text); };
+const button = (label, onClick) => onClick;
+const attempt = async (fn) => fn();
+let reply = null;
+const call = async (name, model) => reply;
+(async () => {
+  for (const value of [true, false]) {
+    reply = value;
+    await cancelQueued({ name: "large-v3" }, () => {})();
+  }
+  console.log(JSON.stringify(said));
+})();
+"""
+        done = subprocess.run([node, "-"], input=source, capture_output=True, text=True,
+                              timeout=60, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout),
+                         ["Removed from the queue.", "It is no longer in the queue."])
 
     # -- persistence and restart (criterion 3) -----------------------------------------
 

@@ -569,6 +569,10 @@ class Downloads:
         # or QueueStopped (every queued entry fails). The app re-reads policy there.
         self.prepare = None
         self._closing = False
+        # Cancel on an entry already taken from the queue whose download
+        # process has not started yet (prepare, workers shutting down): it
+        # stops before the process starts, or as soon as it has.
+        self._cancel_claimed = None
 
     def start(self, name, token=None, on_success=None):
         """Start a download now, or queue it behind the download or check
@@ -580,9 +584,15 @@ class Downloads:
         with self._lock:
             if self._closing:
                 raise SetupError("Unminute is closing.")
+            if name == self._running and self._download != name:
+                raise SetupError("This model is being checked. Repair it once the check "
+                                 "has finished.")
             if name == self._running or any(q[0] == name for q in self._queue):
                 raise SetupError("This one is already downloading or queued.")
-            if self._running:
+            # Behind the one running, and behind any still waiting: between one
+            # download ending and the next being taken from the queue the slot
+            # is free for a moment, and a click then must not jump the queue.
+            if self._running or self._queue:
                 self._queue.append([name, token, on_success, False])
                 self.state[name] = {"state": "queued", "message": QUEUED, "log": []}
                 self._save()
@@ -596,6 +606,7 @@ class Downloads:
         """Under the lock: name takes the one download slot."""
         self._running = self._download = name
         self._proc = None
+        self._cancel_claimed = None
         # started: only what this attempt writes counts towards its progress.
         self.state[name] = {"state": "running", "message": "Starting the download…",
                             "log": [], "started": time.time()}
@@ -682,6 +693,12 @@ class Downloads:
                         self._save()
                         return True
                 return False
+            if (self._running is not None and self._running == self._download
+                    and getattr(self, "_proc", None) is None):
+                # Taken from the queue, its process not started yet: it stops
+                # before it starts (_run checks this under the lock).
+                self._cancel_claimed = self._running
+                return True
         proc = getattr(self, "_proc", None)
         if self._running and proc is not None and proc.is_alive():
             self._cancelled = True
@@ -747,18 +764,21 @@ class Downloads:
         if self.queue_path is None or self._closing:
             return
         names = ([self._download] if self._download else []) + [q[0] for q in self._queue]
+        tmp = self.queue_path.with_suffix(".tmp")
         try:
             if not names:
                 self.queue_path.unlink(missing_ok=True)
                 return
-            tmp = self.queue_path.with_suffix(".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 f.write(json.dumps({"queue": names}))
                 f.flush()
                 os.fsync(f.fileno())
             tmp.replace(self.queue_path)
         except OSError:
-            pass
+            try:                                 # a failed write leaves no temporary file
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def verify(self, name):
         """Full SHA-256 check of an installed model (in the background)."""
@@ -819,6 +839,9 @@ class Downloads:
                 self.before_install()
             if self._closing:
                 return                           # the app closed meanwhile: next start
+            if self._cancel_claimed == name:     # cancelled before its process started
+                self._cancelled = True
+                return
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
             started = ctx.Process(target=_download_entry,
@@ -826,8 +849,10 @@ class Downloads:
                                   daemon=True, name="model-download")
             self._cancelled = False
             started.start()
-            proc = self._proc = started      # only a started process is joined below
-            if self._closing:                # close() ran while it started
+            with self._lock:                 # cancel() and close() read _proc under it
+                proc = self._proc = started  # only a started process is joined below
+                stop = self._closing or self._cancel_claimed == name
+            if stop:                         # closed or cancelled while it started
                 self._cancelled = True
                 proc.terminate()
             child.close()

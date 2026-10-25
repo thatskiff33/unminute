@@ -442,8 +442,8 @@ class Workspace:
         # Downloads replace model files: the draft worker and the inference
         # worker let go of them first.
         # Downloads the user queued are kept (model names only) and carry on
-        # at the next start (#366); policy and the token are read again as
-        # each one starts (_prepare_queued_download).
+        # at the next start (#366); the current policy and the token are
+        # checked again as each one starts (_prepare_queued_download).
         self.downloads = setup.Downloads(self.cache_dir, before_install=self._before_model_change,
                                          before_gpu_install=self._release_gpu_worker,
                                          queue_path=self.root / setup.QUEUE_FILE)
@@ -3435,7 +3435,7 @@ class Workspace:
         # DISPLAY_CACHE_S. Download progress is live.
         cards = [dict(c) for c in self._display_value("cards",
                                                       lambda: setup.cards(self.cache_dir))]
-        self._queue_policy()                   # policy is re-read while Downloads is open
+        self._queue_policy()                   # the current policy, while Downloads is open
         waiting = self.downloads.queued()
         for c in cards:
             dl = self.downloads.state.get(c["name"])

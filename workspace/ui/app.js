@@ -1737,10 +1737,12 @@ function queueNote(dl) {
   const where = dl.position === 1 ? "Next in the queue." : `Number ${dl.position} in the queue.`;
   return dl.resumed ? `${where} ${RESUMED}` : where;
 }
+// Python says whether anything was cancelled: the entry may have finished or
+// failed since the page was drawn, and then nothing was removed (#368 review).
 function cancelQueued(c, then) {
   return button("Cancel", () => attempt(async () => {
-    await call("cancel_download", c.name);
-    say("Removed from the queue.");
+    const cancelled = await call("cancel_download", c.name);
+    say(cancelled ? "Removed from the queue." : "It is no longer in the queue.");
     then();
   }));
 }

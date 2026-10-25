@@ -54,7 +54,8 @@ Network, secrets and integrity
   #109). Guard: `tests/test_download_process.py`.
 - **N3** The Hugging Face token lives in Windows Credential Manager and reaches the download
   process by pipe only, never by command line, environment, log or message; cached models work
-  without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`.
+  without it. Guard: `tests/test_setup.py`, `tests/test_hardening.py`,
+  `tests/test_download_queue.py`.
 - **I1** Model files are pinned by revision and SHA-256 and checked when downloaded. At load,
   the speaker model is read once, re-hashed in full and built from those bytes in memory with
   weights-only unpickling and fixed classes (`workspace/speaker_load.py`); the others are
@@ -120,7 +121,8 @@ Compatibility, installation and policy
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
   a governed area (downloads, GPU, microphone, computer audio, watched folders, network
   drives, handoff, clipboard) reads it, and an unreadable policy grants nothing. Guard:
-  `tests/test_policy.py`, `tests/test_two_track.py`, `tests/test_drafts.py`.
+  `tests/test_policy.py`, `tests/test_two_track.py`, `tests/test_drafts.py`,
+  `tests/test_download_queue.py`.
 
 Evidence
 
