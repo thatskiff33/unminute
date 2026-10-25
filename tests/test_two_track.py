@@ -530,6 +530,26 @@ class MixerTests(unittest.TestCase):
         block, _ = mixed(m, 2.0)                              # both have reached 2 s
         self.assertEqual(block.tolist(), [6] * int(round(1.1 * CRATE)))
 
+    def test_the_mix_is_handed_on_in_short_pieces_after_a_hold(self):
+        # After a slow output catches up (up to MIX_HOLD_S, 1 s) or at Stop,
+        # a mix can cover more than a second at once. It is handed on in
+        # pieces of at most MIX_PIECE_S, shorter than the live drafts' tap
+        # cuts a computer block to (#375), so no real audio is cut there.
+        from workspace import drafts
+        self.assertLess(loopback.MIX_PIECE_S, drafts.COMPUTER_BLOCK_S)
+        m = loopback.Mixer(CRATE, 0.0)
+        m.join("a", 0.0)
+        m.join("slow", 0.0)
+        m.add("a", np.full(2 * CRATE, 1, np.int16), 0.0)
+        m.add("slow", np.full(2 * CRATE, 2, np.int16), 0.0)     # caught up: 2 s at once
+        out = m.mix(2.0) + loopback.Mixer(CRATE, 0.0).mix(3.0)    # and silence at a Stop
+        self.assertTrue(all(len(b) <= loopback.MIX_PIECE_S * CRATE for b, _ in out))
+        self.assertEqual(sum(len(b) for b, _ in out), 5 * CRATE)
+        first = out[:4]
+        self.assertEqual(np.concatenate([b for b, _ in first]).tolist(), [3] * (2 * CRATE))
+        for (b, s), (_, s2) in zip(first, first[1:], strict=False):
+            self.assertAlmostEqual(s + len(b) / CRATE, s2)
+
     def test_all_silent_or_no_output_is_continuous_silence(self):
         m = loopback.Mixer(CRATE, 0.0)
         out = []

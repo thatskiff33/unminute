@@ -68,6 +68,7 @@ ALL_GRACE_S = 10.0               # all outputs: listed but not recording this lo
 MIX_HOLD_S = BUFFER_S            # the mix waits this long for a slow output (as long as
                                  # Windows keeps its audio), then goes without it
 MIX_RESYNC_S = 0.1               # an output's blocks this far from their stamps are realigned
+MIX_PIECE_S = 0.5                # the mix is handed on in pieces no longer than this
 NAME_LIMIT = 120                 # an output's name (or all the outputs' names) is cut here
 
 ENDPOINT = "endpoint"
@@ -177,7 +178,8 @@ class Mixer:
     audio is then left out); with no inputs, silence up to now. Each output
     keeps its own level: where one plays alone its samples pass unchanged,
     and where two or more play at once their sum goes through the same soft
-    limiter as the mix at Stop (mixdown.soft_limit).
+    limiter as the mix at Stop (mixdown.soft_limit). The blocks are at most
+    MIX_PIECE_S long.
 
     Clock drift (an engineering decision, 1c03917 review F2): the track is
     stamped on the app's own clock (start + frames / rate), so each output's
@@ -255,7 +257,12 @@ class Mixer:
             self.done = end
         if many.any():
             out[many] = np.round(soft_limit(out[many].astype(np.float64)))
-        return [(np.clip(out, -32768, 32767).astype(np.int16), stamp)]
+        out = np.clip(out, -32768, 32767).astype(np.int16)
+        # In pieces of at most MIX_PIECE_S: after a hold, or at Stop, a mix
+        # can cover more than a second, and the live drafts' tap cuts a
+        # computer block longer than drafts.COMPUTER_BLOCK_S (#375).
+        step = max(1, int(MIX_PIECE_S * self.rate))
+        return [(out[i:i + step], stamp + i / self.rate) for i in range(0, n, step)]
 
 
 def all_name(idents, names):
