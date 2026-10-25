@@ -1069,9 +1069,12 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         def model_change():
             ws._before_model_change()                     # setup.Downloads' before_install
             ws._policy_tick()
-        ends = {"unavailable": unavailable, "model change": model_change,
-                "start failure": ws._policy_tick}
-        for how, end in ends.items():
+        # The note each way of ending shows; a worker that cannot start shows
+        # "failed", not "ended" (#381).
+        ends = {"unavailable": (unavailable, "unavailable"),
+                "model change": (model_change, "ended"),
+                "start failure": (ws._policy_tick, "failed")}
+        for how, (end, expected) in ends.items():
             with (self.subTest(how=how),
                   mock.patch.object(drafts.DraftSession, "start", start)):
                 self.set_policy()
@@ -1081,7 +1084,7 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
                 try:
                     end()
                     note = ws.recording_draft()["state"]
-                    self.assertIn(note, ("unavailable", "ended", "failed"))
+                    self.assertEqual(expected, note)
                     made = len(tries)
                     for step, change in (("battery", lambda: setattr(ws, "_battery", True)),
                                          ("mains", lambda: setattr(ws, "_battery", False)),

@@ -1320,7 +1320,7 @@ class Workspace:
             self._draft_why = "unavailable"   # Parakeet v2 is not downloaded or is damaged
             with self._lock:
                 self._drafts_ended = rec.journal["id"]
-                self._drafts_ended_why = self._draft_why
+                self._drafts_ended_why = "unavailable"
             return
         self._start_drafts(rec)
 
