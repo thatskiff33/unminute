@@ -77,7 +77,8 @@ STATE_RETRIES_S = (0.02, 0.05, 0.1, 0.2, 0.4)   # _write_state's pauses while a 
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
-           "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s"}
+           "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s",
+           "computer_dropped_s"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
 BIG = 10 ** 12                  # no number the app writes is this large
 INCIDENT_REPEATS = 3            # the same incident is written this often a run,
