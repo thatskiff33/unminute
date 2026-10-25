@@ -11,6 +11,12 @@
 # Needs Microsoft Edge and Pillow (Pillow only for the comparison, so
 # tools/ui_idle_check.py can reuse the server and Edge helpers on CI without
 # it). Development tool only; not shipped.
+#
+# Exit codes: 0 every case rendered (the scores are for a person to read; none
+# fails the run); 2 headless Edge timed out (EDGE_LIMIT_S) and returned
+# nothing, so that case was not measured: the tool says which case in one
+# paragraph and keeps results.json for the cases before it; 1 any other error
+# (argparse's usage errors also exit 2).
 
 """Compare the approved design boards with the app, screen by screen."""
 
@@ -31,6 +37,8 @@ EDGE = [Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")]
 APP_TAG = '<script src="app.js"></script>'   # the fake bridge is injected before it
 VISIBLE = 40         # a channel difference above this counts as a visible change
+EDGE_LIMIT_S = 120   # this tool's own limit for one headless Edge screenshot
+NOT_MEASURED = 2     # exit code: headless Edge timed out, so nothing was measured
 
 # Each case pairs a board (and its props) with an app scenario from fixtures.js.
 # An empty "app" renders the board only (no app screen to compare yet).
@@ -142,8 +150,30 @@ def edge():
     sys.exit("Microsoft Edge was not found.")
 
 
-def shoot(url, out, width, height, dark=False):
-    """Screenshot a page in headless Edge at width x height CSS pixels."""
+class EdgeTimeout(Exception):
+    """Headless Edge did not return within the tool's own limit, so nothing was
+    measured. Not a page result: the tools exit NOT_MEASURED with this message
+    rather than a traceback that reads like a page failure."""
+
+
+def run_edge(cmd, timeout, page, mode, scenario, **kwargs):
+    """subprocess.run for headless Edge, raising EdgeTimeout (naming the page,
+    mode and scenario) when Edge does not return within timeout seconds."""
+    try:
+        return subprocess.run(cmd, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        raise EdgeTimeout(
+            f"Headless Edge timed out on {page} ({mode} mode, scenario {scenario}) at this "
+            f"tool's own limit of {timeout} s. Edge returned nothing, so nothing was measured: "
+            "this is not a page result, and the check has neither passed nor failed the page. "
+            "Edge does this when another headless Edge run competes with it "
+            "(docs/DEVELOPER_NOTES.md, \"Checks that can fail for reasons other than the "
+            "code\"). Rerun when no other headless Edge run is active.") from None
+
+
+def shoot(url, out, width, height, dark, what):
+    """Screenshot a page in headless Edge at width x height CSS pixels. what is
+    (page, mode, scenario), for the message if Edge times out."""
     # Edge's crash handler can outlive it and keep the profile folder open.
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
         cmd = [str(edge()), "--headless=new", "--disable-gpu", "--hide-scrollbars",
@@ -153,7 +183,7 @@ def shoot(url, out, width, height, dark=False):
                "--virtual-time-budget=15000", f"--screenshot={out}",
                # prefers-color-scheme: 0 dark, 1 light (headless otherwise follows Windows)
                f"--blink-settings=preferredColorScheme={0 if dark else 1}", url]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        run_edge(cmd, EDGE_LIMIT_S, *what, check=True, capture_output=True)
     if not Path(out).is_file():
         raise RuntimeError(f"Edge made no screenshot of {url}")
 
@@ -203,7 +233,7 @@ def main():
             props = "".join(f"&{k}={quote(str(v))}" for k, v in c.get("props", {}).items())
             board_png = args.out / f"{c['name']}-board.png"
             shoot(f"{base}/tools/design_check/render.html?board={quote(c['board'])}{props}",
-                  board_png, w, h, c.get("dark", False))
+                  board_png, w, h, c.get("dark", False), (c["board"], "board", c["name"]))
             row = {"case": c["name"], "board": c["board"], "size": f"{w}x{h}"}
             if c["app"]:
                 app_png = args.out / f"{c['name']}-app.png"
@@ -211,15 +241,20 @@ def main():
                 if w < 500:     # Edge's narrowest window: use a frame of the exact width
                     url = (f"{base}/tools/design_check/frame.html?w={w}&h={h}"
                            f"&src={quote(url, safe='')}")
-                shoot(url, app_png, w, h, c.get("dark", False))
+                shoot(url, app_png, w, h, c.get("dark", False),
+                      ("app/index.html", "app", c["name"]))
                 row["changed_percent"] = compare(board_png, app_png,
                                                  args.out / f"{c['name']}-compare.png")
             results.append(row)
             print(json.dumps(row))
+    except EdgeTimeout as timeout:
+        print(f"NOT MEASURED: {timeout}", file=sys.stderr)
+        return NOT_MEASURED
     finally:
         server.shutdown()
         (args.out / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

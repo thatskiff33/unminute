@@ -275,9 +275,16 @@ real time, and remove it when the cause is fixed.
 
 ## Checks that can fail for reasons other than the code
 
-- **`tools/design_check.py`** runs headless Edge with a 120 s timeout, and times out when another
-  session runs headless Edge at the same time. Rerun the missed cases one at a time. The "names"
-  case varies slightly between runs on `main` itself.
+- **Headless Edge times out when another headless Edge run competes with it.**
+  `tools/design_check.py` (120 s per screenshot) and `tools/ui_idle_check.py` (300 s per run)
+  then print one paragraph starting `NOT MEASURED: Headless Edge timed out on`, naming the page,
+  mode and scenario and the tool's own limit, and exit 2. Edge returned nothing, so nothing was
+  measured: it is not a page result, and never a pass (the "UI idle (headless Edge)" CI job
+  fails on it). Rerun when no other headless Edge run is active; for `design_check.py`, rerun
+  the missed cases one at a time. Until #361 both tools died here with a raw
+  `subprocess.TimeoutExpired` traceback, which read like a page failure (seen on #336's lane,
+  25 October 2026). The "names" case of `design_check.py` varies slightly between runs on
+  `main` itself.
 - **`tools/accessibility_check.py`** fails a view with `focus_not_measured` when its window loses
   keyboard focus during the focus pass (another window came to the front): Edge then draws no
   focus style at all. Keep the window in front and rerun; it is not a page fault. It does the
