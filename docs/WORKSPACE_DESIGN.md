@@ -437,6 +437,7 @@ Nothing in the pass reads meeting content or opens the key. Since B5b (the owner
   - the checkpoint steps, with the cleanup limits shown in each confirmation;
   - holds;
   - versions.
+- **Microphone lists** (the Meetings page's microphone chooser and Setup step 4, #369): `recorder.list_devices` lists the devices afresh only while no stream is open, so the page asks `microphone_devices` again when a list is opened or focused (not again within 3 s), on returning to the page (another view and back, the Setup step shown again, or the window shown again) and once a recording has ended. It never asks while a recording is open or saving, nor on an idle poll. The microphone selected stays selected while it is listed (matched by its name, as the app opens it); if it has gone, the page selects the Windows default and says so in a message without the device's name. Nothing starts or is tested. An unchanged answer leaves the list alone, so an open drop-down is not disturbed. Settings has the on/off switch only, no list.
 - **Settings:**
   - Quiet or Faster;
   - battery override;

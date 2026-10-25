@@ -26,6 +26,7 @@ const state = {
   active: false,                 // something is being processed or imported
   wasActive: false,              // ...at the poll before
   recordingLive: false,          // a recording is open and running
+  recActive: false,              // a recording is open or saving: the microphone lists wait (#369)
 };
 
 // -- bridge -----------------------------------------------------------------
@@ -94,6 +95,7 @@ function show(view) {
   if (view !== "meeting") stopAudio();
   if (view !== "meeting" && view !== "handoff") stopEditing();
   if (view !== state.view) { suState.sig = ""; state.downloadsSig = ""; state.listsSig = ""; }   // rebuilt on arrival
+  if (view !== state.view) micsStale();                 // returning: the microphones may have changed (#369)
   if (view !== "meetings") stopRecTimer();
   state.view = view;
   document.body.dataset.view = view;
@@ -1723,7 +1725,7 @@ function wireHandoff() {
 const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Optional"],
                   ["Microphone", "Optional"], ["Ready", ""]];
 // returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
-const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, returnTo: null };
+const suState = { step: 1, skipSpeakers: false, mic: null, returnTo: null };
 
 // A card's short name and a download's progress (a number, or
 // null when it cannot be told) come from Python as they are: the page never
@@ -1770,7 +1772,7 @@ function setStep(n) {
   for (let i = 1; i <= 5; i++) $(`su-${i}`).hidden = i !== n;
   renderSuSteps();
   window.scrollTo(0, 0);
-  if (n === 4) renderSuMic();
+  if (n === 4) { micLists["su-device"].stale = true; renderSuMic(); }   // the step shown again (#369)
   if (state.setup) renderSummary(state.setup);
   // Focus moves into the new step (its first control) and the step is announced.
   const first = [...$(`su-${n}`).querySelectorAll("button, input, select, summary")]
@@ -1888,6 +1890,9 @@ async function renderSetup() {
   state.setup = s;
   state.managed = s.managed;
   renderSuSteps();
+  // Back on step 4 (from another view, or the window shown again): ask again (#369).
+  if (suState.step === 4 && suState.mic && micLists["su-device"].stale)
+    await attempt(() => relistMics("su-device", showSuMics));
   const speech = s.cards.filter((c) => c.role === "speech");
   const rec = speech.find((c) => c.recommended) || speech[0];
   const others = speech.filter((c) => c !== rec);
@@ -1941,15 +1946,8 @@ async function renderSuMic() {
   $("su-mic").checked = suState.mic;
   $("su-mic-row").hidden = !suState.mic;
   if (!suState.mic) $("su-test-result").hidden = true;
-  if (suState.mic && !suState.devices) {
-    const devices = await attempt(() => call("microphone_devices")) || [];
-    $("su-device").replaceChildren(...devices.map(deviceOption));
-    const def = devices.find((d) => d.default);
-    if (def) $("su-device").value = String(def.index);
-    suState.devices = devices.length > 0;
-    $("su-test").disabled = !devices.length;
-    if (!devices.length) { $("su-test-result").hidden = false; $("su-test-result").textContent = "No microphone found."; }
-  }
+  if (suState.mic && (micLists["su-device"].stale || !$("su-device").options.length))
+    await attempt(() => relistMics("su-device", showSuMics));
 }
 
 function startDownload(name, extra = {}) {
@@ -1985,7 +1983,7 @@ function wireSetup() {
   $("su-next-3").addEventListener("click", () => { suState.skipSpeakers = false; setStep(4); });
   $("su-mic").addEventListener("change", () => attempt(async () => {
     await call("set_settings", { microphone: $("su-mic").checked });
-    suState.devices = suState.devices && $("su-mic").checked;
+    micLists["su-device"].stale = true;
     renderSuMic();
   }));
   $("su-skip-4").addEventListener("click", () => {
@@ -1998,11 +1996,17 @@ function wireSetup() {
     box.hidden = false; box.classList.remove("quiet");
     box.textContent = "Listening for 3 seconds…";
     const opt = $("su-device").selectedOptions[0];
-    const t = await call("test_microphone", Number($("su-device").value), opt ? opt.dataset.name : "");
+    const t = await call("test_microphone", Number($("su-device").value), opt ? opt.dataset.name : "")
+      .catch(async (err) => {             // a changed device list: reload it (#369)
+        if (/changed/.test(String(err && err.message)))
+          await relistMics("su-device", showSuMics).catch(() => {});
+        throw err;
+      });
     box.classList.toggle("quiet", !t.heard);
     box.textContent = t.heard ? `Sound heard (loudest ${t.peak_db} dB).`
       : `Very quiet (loudest ${t.peak_db} dB). Speak, or check the microphone and its volume.`;
   }));
+  relistOnFocus("su-device", showSuMics);
   $("s-finish").addEventListener("click", () => attempt(async () => {
     const speaker = state.setup.cards.find((c) => c.role === "speakers") || {};
     // First run: speaker names are on when their model is downloaded or downloading, unless
@@ -2488,6 +2492,89 @@ function deviceLabel() {
 const deviceOption = (d) => el("option", { value: String(d.index), "data-name": d.name,
   "data-label": d.label || d.name, textContent: (d.label || d.name) + (d.default ? " (default)" : "") });
 
+// -- microphone lists (#369) -----------------------------------------------------------
+// The app lists the microphones afresh on each microphone_devices call while no
+// stream is open, so one plugged in or out while the app is open is seen. The
+// page asks again when a list is opened or focused and on returning to it
+// (another view and back, or the window shown again); never while recording,
+// and not on idle polls. sig: what the list shows, so an unchanged answer
+// leaves the list (and an open drop-down) alone. at: when it was last asked, so
+// a focus just after opening the chooser does not ask twice.
+const MIC_ASK_AGAIN_MS = 3000;
+const micLists = { "rec-device": { stale: true, busy: null, at: -Infinity, sig: null },
+                   "su-device": { stale: true, busy: null, at: -Infinity, sig: null } };
+
+function micsStale() {
+  for (const m of Object.values(micLists)) m.stale = true;
+}
+
+// Fill a list, keeping the microphone selected if it is still there (matched by
+// the name the app opens it by), otherwise the Windows default. False if the
+// selected microphone has gone.
+function fillMics(sel, devices) {
+  const m = micLists[sel.id];
+  const sig = JSON.stringify(devices.map((d) => [d.index, d.name, d.label || "", !!d.default]));
+  if (sig === m.sig && sel.options.length === devices.length) return true;
+  const prev = sel.selectedOptions[0];
+  const name = prev && prev.dataset.name, index = prev && prev.value;
+  sel.replaceChildren(...devices.map(deviceOption));
+  m.sig = sig;
+  const kept = prev && (devices.find((d) => d.name === name && String(d.index) === index)
+                        || devices.find((d) => d.name === name));
+  const pick = kept || devices.find((d) => d.default);
+  if (pick) sel.value = String(pick.index);
+  return !prev || !!kept;
+}
+
+// Said on the page only (P3): no device name, which the list already shows.
+function micGone(devices) {
+  say("The chosen microphone is no longer connected. " + (devices.some((d) => d.default)
+    ? "The Windows default is selected instead." : devices.length ? "Choose another." : "No microphone found."));
+}
+
+// Ask for a list again and show it with render(devices). One request at a time
+// per list; nothing while a recording is going (state.recActive).
+function relistMics(id, render) {
+  const m = micLists[id];
+  if (state.recActive) return Promise.resolve();
+  if (m.busy) return m.busy;
+  m.busy = (async () => {
+    try {
+      const devices = await call("microphone_devices");
+      m.stale = false;
+      m.at = performance.now();
+      if (!fillMics($(id), devices)) micGone(devices);
+      render(devices);
+    } finally {
+      m.busy = null;
+    }
+  })();
+  return m.busy;
+}
+
+// Focusing a list asks again, unless it was asked just now.
+function relistOnFocus(id, render) {
+  $(id).addEventListener("focus", () => {
+    if (performance.now() - micLists[id].at >= MIC_ASK_AGAIN_MS) attempt(() => relistMics(id, render));
+  });
+}
+
+function showRecMics(devices) {
+  const sel = $("rec-device");
+  $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
+  $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
+  const result = $("rec-test-result");
+  if (!devices.length) result.textContent = "No microphone found.";
+  else if (result.textContent === "No microphone found.") result.textContent = "";
+}
+
+function showSuMics(devices) {
+  $("su-test").disabled = !devices.length;
+  const box = $("su-test-result");
+  if (!devices.length) { box.hidden = false; box.textContent = "No microphone found."; }
+  else if (box.textContent === "No microphone found.") { box.hidden = true; box.textContent = ""; }
+}
+
 // "under a minute", "1 minute", "23 minutes", "1 hour 5 minutes".
 function fmtDuration(s) {
   const m = Math.round(s / 60);
@@ -2676,13 +2763,13 @@ async function renderRecorder(tick = false) {
   let r;
   try { r = await call("recording_status"); } finally { recReading = false; }
   const sel = $("rec-device");
-  if (r.enabled && !sel.options.length) {
-    const devices = await call("microphone_devices");
-    sel.replaceChildren(...devices.map(deviceOption));
-    const def = devices.find((d) => d.default);
-    if (def) sel.value = String(def.index);
-    if (!devices.length) $("rec-test-result").textContent = "No microphone found.";
-  }
+  // While recording (or saving) the list is not asked for (#369): it can wait,
+  // and is asked for once the recording has ended (its microphone may be gone).
+  const wasActive = state.recActive;
+  state.recActive = !!r.recording || !!state.recSaving;
+  if (wasActive && !state.recActive) micsStale();
+  if (r.enabled && (!sel.options.length || micLists["rec-device"].stale))
+    await relistMics("rec-device", showRecMics);
   const now = r.recording || {};
   const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || state.recSeconds || 0, events: now.events || [] }
     : r.recording;
@@ -2718,8 +2805,13 @@ function stopRecTimer() {
 
 function wireRecorder() {
   const device = () => Number($("rec-device").value);
-  // A changed device list means choosing again: reload it.
-  const relist = (err) => { if (/changed/.test(String(err && err.message))) $("rec-device").replaceChildren(); throw err; };
+  // A changed device list means choosing again: reload it, keeping the choice if
+  // that microphone is still there.
+  const relist = async (err) => {
+    if (/changed/.test(String(err && err.message)))
+      await relistMics("rec-device", showRecMics).catch(() => {});
+    throw err;
+  };
   const start = (btn) => attempt(async () => {
     btn.disabled = true;           // one recording per click
     let r;
@@ -2736,8 +2828,12 @@ function wireRecorder() {
     const open = $("mic-chooser").hidden;
     $("mic-chooser").hidden = !open;
     $("mic-change").setAttribute("aria-expanded", String(open));
-    if (open) $("rec-device").focus();
+    if (open) {
+      attempt(() => relistMics("rec-device", showRecMics));   // opened: ask again (#369)
+      $("rec-device").focus();
+    }
   });
+  relistOnFocus("rec-device", showRecMics);
   $("rec-device").addEventListener("change", () => {
     $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel();
   });
@@ -2893,6 +2989,7 @@ document.addEventListener("visibilitychange", () => {
     restartMeter(viz, meterClock);           // minimised: the meter's frames pause (#216)
   } else {
     state.sinceLists = LIST_REFRESH_POLLS;   // hidden for a while: ages and reviews moved on
+    micsStale();                             // and microphones may have come or gone (#369)
     pollNow();
   }
 });
