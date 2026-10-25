@@ -2140,14 +2140,16 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             result = run(shell("git add meeting.m4a"), empty)
             self.assertNotEqual(2, result.returncode, result.stderr)
-        # Without a CLAUDE_PROJECT_DIR that names a folder the hook file cannot be
-        # found; that blocks rather than being taken for a checkout from before the
-        # hook (#363 reviews, F3 and N1).
+        # Without a CLAUDE_PROJECT_DIR that is the full path of an existing folder
+        # the hook file cannot be found; that blocks rather than being taken for a
+        # checkout from before the hook (#363 reviews, F3, N1 and R1). Drive-only,
+        # root and drive-relative forms are Windows paths.
         unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
-        for env in (unset, {**unset, "CLAUDE_PROJECT_DIR": ""},
-                    {**unset, "CLAUDE_PROJECT_DIR": " "},
-                    {**unset, "CLAUDE_PROJECT_DIR": "\t"},
-                    {**unset, "CLAUDE_PROJECT_DIR": str(ROOT / "no-such-folder")}):
+        values = ["", " ", "\t", "0", ".", "tests", str(ROOT / "no-such-folder"),
+                  str(ROOT / "AGENTS.md")]
+        if sys.platform == "win32":
+            values += ["C:", "\\", "/", "C:tests"]
+        for env in [unset] + [{**unset, "CLAUDE_PROJECT_DIR": v} for v in values]:
             with self.subTest(project_dir=env.get("CLAUDE_PROJECT_DIR", "unset")):
                 result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
                                          command], input=json.dumps(shell("git status")),
