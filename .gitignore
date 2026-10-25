@@ -24,10 +24,12 @@ __pycache__/
 .venv/
 
 # Local tooling / editor state. The shared Claude Code settings and hook are
-# committed (AGENTS.md, invariant P2); personal Claude files stay local.
+# committed (AGENTS.md, invariant P2), and so are the skill pointers to
+# .agents/skills; personal Claude files stay local.
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+!.claude/skills/
 .vscode/
 .idea/
 *.log
