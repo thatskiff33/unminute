@@ -2,7 +2,8 @@
 # installs torch or the models: the full stack is ~1.5 GB and needs a gated
 # Hugging Face model, so the end-to-end smoke test stays a local step before a
 # release (see docs/RELEASING.md). Every job name below is a required status
-# check in the branch ruleset.
+# check in the branch ruleset, except the chunks of the Windows unit tests:
+# the "Unit tests (Windows)" job that needs them all stands for them.
 #
 # Supply-chain rules for this file (docs/RELEASING.md):
 # - no permissions by default; each job asks only for what it needs;
@@ -68,15 +69,23 @@ jobs:
           if ($failed) { exit 1 }
 
 
-  windows-tests:
-    # The app is Windows-only. This job installs the window shell's packages
-    # too, and fails if any test is skipped for a reason other than the short
-    # list in tools/run_tests.py, so clipboard, Credential Manager, junction,
-    # file-lock and Windows path tests are really exercised.
-    name: Unit tests (Windows)
+  windows-tests-chunk:
+    # The app is Windows-only. These jobs install the window shell's packages
+    # too, and each fails if any test is skipped for a reason other than the
+    # short list in tools/run_tests.py, so clipboard, Credential Manager,
+    # junction, file-lock and Windows path tests are really exercised. The
+    # suite runs in parts on separate machines at once (#386): tools/run_tests.py
+    # deals whole test classes out by their measured times, every class to
+    # exactly one part. The number of parts is the length of the list below;
+    # tests/test_run_tests.py checks it runs 1 to N.
+    name: Windows tests, chunk ${{ matrix.chunk }} of ${{ strategy.job-total }}
     runs-on: windows-2025
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -84,6 +93,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
+          # pip's download cache, keyed on the lock; every file is still
+          # checked against its hash when it is installed.
+          cache: pip
+          cache-dependency-path: requirements.txt
       - name: Install test dependencies
         # The window shell's packages, numpy, PyAV, cryptography, and the download stack
         # (huggingface_hub, httpx) for the download-process tests: these and
@@ -97,8 +110,31 @@ jobs:
             --require-hashes --no-deps --find-links packaging/wheels `
             -r "$env:RUNNER_TEMP/test-requirements.txt"
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - name: Unit tests (strict skips)
-        run: python tools/run_tests.py --strict-skips
+      - name: Unit tests (strict skips), this chunk
+        env:
+          CHUNK: ${{ matrix.chunk }}
+          CHUNKS: ${{ strategy.job-total }}
+        run: python tools/run_tests.py --strict-skips --chunk "$env:CHUNK/$env:CHUNKS"
+
+  windows-tests:
+    # The required check. It passes only when every chunk above passed: a
+    # failed, cancelled or skipped chunk fails it, and always() makes it run
+    # (and fail) then rather than be skipped, which would count as passing.
+    name: Unit tests (Windows)
+    needs: windows-tests-chunk
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner image's Python is enough: the check uses the standard library.
+      - name: Every chunk passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 tools/run_tests.py --gate
 
   resolve:
     # Prove the locks are current and complete (#111 B1). tools/lock.py --check

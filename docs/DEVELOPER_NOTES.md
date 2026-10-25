@@ -21,7 +21,11 @@ real time, and remove it when the cause is fixed.
   that builds a `Workspace` must put everything under `if __name__ == "__main__":`. Otherwise
   each worker re-runs it: one demo opened duplicate windows and leaked temporary folders.
 - **Run tests through `tools/run_tests.py`.** It puts `tests/` on the import path, which spawned
-  workers need for `tests/fake_worker_engines.py`.
+  workers need for `tests/fake_worker_engines.py`. CI runs it in chunks (`--chunk K/N`, #386),
+  each a separate process on its own machine, so a test that only passes after another class
+  has run in the same process can fail there: reproduce with the same `--chunk`. When the
+  chunks drift apart in time, refresh `tools/test_durations.json` with `--update-durations`
+  and the chunks' saved CI logs.
 - **Join workers before removing a test's folder.** A worker that is still ending holds its
   `logs\worker.crash` open, and Windows will not delete an open file, so a tear-down that removes
   the folder first fails with `WinError 32` (#278). After closing a `Workspace` or `WorkerHandle`,
