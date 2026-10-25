@@ -188,7 +188,8 @@ Run-to-run variation (large-v3, #374, 25 October 2026). Why identical one-call r
 - **Not voice detection:** it kept the same 796.5 s in every run, and with it off the runs still diverged at a fallback window.
 - **Not new with CTranslate2 4.8.3:** 4.8.0 diverges at the same point (356.1 s in the 20 October runs). Five runs under each cannot show whether the version changes how often a run goes badly.
 - **Through the app's parts, large-v3 was repeatable:** with the app's settings, no large-v3 window fell back on the GPU (0 of 141 over the two meetings) or on the processor (0 of 14). Each part restarts the prompt, which may make repetition loops less likely (not tested).
-- **What remains:** a part that does fall back is still random (one window in 49 with voice detection off). Turning fallback off (temperature 0 only) would make every run repeatable but would keep a looping part's text instead of retrying it. Not decided; through the parts it changed nothing on ES2004a (22.78%, identical).
+- **What remains:** a part that does fall back is still random (one window in 49 with voice detection off). Turning fallback off (temperature 0 only) would make every run repeatable but would keep a looping part's text instead of retrying it; through the parts it changed nothing on ES2004a (22.78%, identical).
+- **Decided: the fallback stays as it is** (engineering decision, 26 October 2026, recorded on PR #373). The app's path through 45-second parts is repeatable, so turning the fallback off would only trade retries for keeping looping text, with no measured benefit. Reopen this if a real recording shows a run-to-run difference through the parts.
 - **How to measure Whisper from now on:** through the app's parts, or with the windows that fell back recorded. Never compare single one-call runs. The one-call figures in this section are single draws.
 
 Findings:
