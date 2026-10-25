@@ -3,7 +3,10 @@
 # workspace with synthetic audio and fake engines, drive the page like a user
 # and record evidence as JSON. Opens a window for about a minute; audio is muted.
 # Includes a meeting that stops because its speech model is not ready and is
-# moved to another model (#244); no real model is downloaded or loaded.
+# moved to another model (#244); no real model is downloaded or loaded. Ends
+# with a recording showing draft text (#370): invented sample sentences from
+# tools/draft_scenario.py, with no microphone, speech model or audio; the
+# window is minimised and restored once during it.
 #
 #   python tools/workspace_ui_check.py <report.json>
 #
@@ -37,6 +40,8 @@ import evidence  # noqa: E402
 APP = evidence.app_folder(TOOLS.parent)
 evidence.add_app(APP)
 from process_listeners import listeners, process_tree  # noqa: E402
+
+import draft_scenario  # noqa: E402  (after the app is on the path: it imports workspace)
 
 from workspace import asr_engines  # noqa: E402
 from workspace import api, shell  # noqa: E402
@@ -752,6 +757,7 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
         report["growing"] = growing_checks(window, ws, grow_mid)
         report["native"] = native_checks(window, ws, long_mid)
         report["failed_meeting"] = failed_meeting_checks(window, ws, fail_mid)
+        report["drafts"] = draft_area_checks(window, ws)
         tree = process_tree(os.getpid())
         report["listeners"] = listeners(tree)
         report["blocked_calls"] = list(shell.blocked_calls)
@@ -759,6 +765,21 @@ def checks(window, ws, mid, long_mid, grow_mid, fail_mid, report):
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         window.destroy()
+
+
+def draft_area_checks(window, ws):
+    """#370: the recording card's draft area (tools/draft_scenario.py), with
+    draft text from DraftFeed: no microphone, speech model or audio. The
+    window is minimised and restored as a person would, with the app's own
+    minimise handling (shell.watch_minimise, as workspace/__main__.py sets
+    it), which keeps the page running, hidden, while a recording is open."""
+    feed = draft_scenario.DraftFeed(ws).install()
+    try:
+        shell.watch_minimise(window, lambda: feed.active)
+        return draft_scenario.draft_checks(window, feed, evaluate,
+                                           hide=window.minimize, show=window.restore)
+    finally:
+        feed.remove()
 
 
 GROW_FIRST = 3000      # passages in the growing meeting's first chunk
@@ -1219,6 +1240,7 @@ def main():
     report["growing_problems"] = growing_problems(report.get("growing") or {})
     report["failed_meeting_problems"] = failed_meeting_problems(
         report.get("failed_meeting") or {})
+    report["draft_problems"] = draft_scenario.draft_problems(report.get("drafts") or {})
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
@@ -1292,6 +1314,8 @@ def main():
         bad.append("growing transcript (" + "; ".join(report["growing_problems"]) + ")")
     if report["failed_meeting_problems"]:
         bad.append("failed meeting (" + "; ".join(report["failed_meeting_problems"]) + ")")
+    if report["draft_problems"]:
+        bad.append("draft text (" + "; ".join(report["draft_problems"]) + ")")
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
         ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,

@@ -22,6 +22,13 @@
 #   - status badges that carry text, not colour alone (1.4.1, in part);
 #   - once: Ctrl+plus zoom (1.4.4, in part), the page language (3.1.1), the
 #     window title (2.4.2) and a polite or assertive status region (4.1.3).
+# The recording card with draft text (#370; tools/draft_scenario.py, invented
+# sentences, no microphone or model) is one of the views, with the draft
+# area's own points in each colour mode: the box is not announced as it grows
+# (aria-live off), its status line is polite and outside it, the box and its
+# button are named and reachable by keyboard, and the grey text's contrast;
+# and once, that the status line speaks at a change of state only, not for
+# each new line.
 # docs/RELEASE_STANDARD.md, "Accessibility against WCAG 2.2 AA", says what
 # each check leaves out. It does not replace testing with screen-reader users
 # and pilot users (#27), and passing it is not conformance.
@@ -593,6 +600,25 @@ def page_problems(page):
     return out
 
 
+def draft_findings(report):
+    """The draft area's own points (#370): in each view of it, and the
+    announcements, as lines. Read only when the report has the view, so the
+    report logic needs the app only for a report that holds it."""
+    views = {v: a for v, a in report.get("views", {}).items()
+             if v == DRAFT_VIEW or v.startswith(DRAFT_VIEW + " (")}
+    if not views:
+        return []
+    import draft_scenario
+    out = []
+    for view, a in views.items():
+        if "draft" not in a:
+            out.append(f"{view}: the draft area was not audited")
+        out += [f"{view}: {p}" for p in draft_scenario.draft_a11y_problems(a.get("draft"))]
+    out += [f"{DRAFT_VIEW}: {p}" for p in draft_scenario.announcement_problems(
+        report.get("draft_announcements"))]
+    return out
+
+
 def findings(report):
     """Every finding in a report, as lines; empty when it passes."""
     out = [] if not report.get("error") else [report["error"]]
@@ -613,7 +639,7 @@ def findings(report):
             if r["horizontal_overflow_px"] > 0 or r["cut_off"]:
                 out.append(f"{view}: content cut off or scrolling at {width} CSS px "
                            f"({', '.join(r['cut_off'][:3]) or 'page'})")
-    return out
+    return out + draft_findings(report)
 
 
 def owner_exceptions(report):
@@ -647,6 +673,8 @@ def reflow(window):
     return out
 
 
+DRAFT_VIEW = "recording draft"      # draft_scenario.DRAFT_VIEW (a test keeps them equal)
+
 # Each view the check opens, in order, with the page script that opens it
 # ({mid}: the synthetic meeting's id). tools/evidence.py requires every one
 # of them, in light and in dark, in release evidence (ACCESSIBILITY_VIEWS).
@@ -659,6 +687,8 @@ VIEWS = {
     "downloads": "window.workspace.show('downloads'); await wait(1200);",
     "meetings": "window.workspace.show('meetings'); await wait(1500);",
     "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
+    # A recording with draft text (#370): the check's DraftFeed starts it first.
+    "recording draft": "window.workspace.show('meetings'); await wait(1500);",
     "settings": "window.workspace.show('settings'); await wait(800);",
     "help": "window.workspace.show('help'); await wait(400);",
     "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
@@ -680,10 +710,15 @@ VIEWS = {
 }
 
 
-def checks(window, ws, mid, report, modes=(None,)):
+def checks(window, ws, mid, report, modes=(None,), feed=None):
+    """feed: the check's draft_scenario.DraftFeed, installed on ws, for the
+    recording draft view."""
     import time
 
+    import draft_scenario
     from workspace_ui_check import WAIT, evaluate
+
+    from workspace import drafts
     try:
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
@@ -701,6 +736,9 @@ def checks(window, ws, mid, report, modes=(None,)):
         report["views"] = {}
         # Each view is opened once and audited in each colour mode asked for.
         for name, go in VIEWS.items():
+            if name == DRAFT_VIEW:                  # a recording with draft text showing
+                feed.begin(drafts.RUNNING)
+                feed.say(draft_scenario.FOLLOW_LINES)
             evaluate(window, WAIT + go.replace("{mid}", mid) + "return true;")
             for mode in modes:
                 shown = show_colour_mode(window, mode)
@@ -709,7 +747,14 @@ def checks(window, ws, mid, report, modes=(None,)):
                 audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
                                                          "'dialog[open]')].map(d => d.id);")
                 audit["reflow"] = reflow(window)
+                if name == DRAFT_VIEW:
+                    audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
                 report["views"][view_key(name, shown, modes)] = audit
+            if name == DRAFT_VIEW:                  # once, in the last mode: then it stops
+                report["draft_announcements"] = draft_scenario.draft_announcements(
+                    window, feed, evaluate)
+                feed.end()
+                evaluate(window, WAIT + "await wait(800); return true;")
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -719,6 +764,7 @@ def checks(window, ws, mid, report, modes=(None,)):
 def main():
     sys.path.append(str(Path(__file__).resolve().parent))   # also under -I; after the stdlib
     # workspace_ui_check puts the app checked (this checkout, or --app) on the path.
+    import draft_scenario
     import evidence
     from workspace_ui_check import APP, FAKE, write_wav
 
@@ -763,7 +809,9 @@ def main():
         finally:
             webview.create_window = real
         holder["window"] = window
-        shell.run(checks, (window, ws, mid, report, modes))
+        feed = draft_scenario.DraftFeed(ws).install()       # the recording draft view (#370)
+        shell.run(checks, (window, ws, mid, report, modes, feed))
+        feed.remove()
         ws.close()
     excepted = owner_exceptions(report)
     report["owner_exceptions"] = {"decision": DECISION_298, "findings": excepted}
