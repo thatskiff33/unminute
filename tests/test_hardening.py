@@ -3998,7 +3998,7 @@ sys.exit(int(mode) if mode.isdigit() else 0)
 '''
 
 
-@unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+@unittest.skipUnless(sys.platform == "win32", "Windows PowerShell's cache")
 class ModuleCacheTests(unittest.TestCase):
     """#389, CI time: CI restores the module analysis cache from an earlier run and names
     it in UNMINUTE_PSMODULE_CACHE. A restored file is used as it is, with no warm-up; a
@@ -4022,7 +4022,8 @@ class ModuleCacheTests(unittest.TestCase):
         if name is not None:
             os.environ["UNMINUTE_PSMODULE_CACHE"] = str(name)
         done = subprocess.CompletedProcess([], 0, "", "")
-        with mock.patch.object(subprocess, "run", return_value=done) as run:
+        with (mock.patch.object(subprocess, "run", return_value=done) as run,
+              mock.patch("sys.stderr")):                      # its notes for the CI log
             path = module_cache()
             self.assertEqual(path, module_cache())          # once per process
         return path, [c.kwargs["env"]["PSModuleAnalysisCachePath"] for c in run.call_args_list]
@@ -4054,6 +4055,7 @@ class ModuleCacheTests(unittest.TestCase):
                 self.assertTrue(Path(path).parent.name.startswith("unminute-psmodules-"))
 
 
+@unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
 class UninstallLidRestoreTests(unittest.TestCase):
     """#191: before removing anything, the uninstaller runs the installed app
     once with --restore-lid, with a hard time limit, and carries on whatever
