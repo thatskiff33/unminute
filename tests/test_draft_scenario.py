@@ -270,7 +270,8 @@ class ToolStartTests(unittest.TestCase):
     the first path entry, or with -I, which leaves even that out (and
     PYTHONPATH). --help runs every import the tool makes before its checks
     (draft_scenario imports workspace, so it must come after the tool has put
-    the app it checks on the path). Both failed this way on 26 October."""
+    the app it checks on the path). accessibility_check failed this way, in
+    both modes, on 26 October; workspace_ui_check already started."""
 
     def start(self, tool, *flags):
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
@@ -440,10 +441,11 @@ class VerdictTests(unittest.TestCase):
 
 UI = ROOT / "workspace" / "ui"
 # The page's own policy, with the changes this harness needs and the real
-# window does not: script from the check (unsafe-eval), the bridge reached
-# over this local server (connect-src 'self'), and, for a narrow page, a
-# frame on this server's own host page (frame-ancestors 'self'). Nothing
-# else changes.
+# window does not: script from the check (unsafe-eval) and the bridge
+# reached over this local server (connect-src 'self'). It also turns
+# frame-ancestors 'none' into 'self' for the narrow page's frame, which is
+# harmless and not needed: browsers ignore frame-ancestors in a <meta>
+# policy, so the page could be framed anyway. Nothing else changes.
 CSP = re.compile(r'(<meta http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")')
 SHIM = r"""
 "use strict";
