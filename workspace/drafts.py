@@ -34,9 +34,11 @@
 #     the microphone (the default), or a live mix of both tracks. For the mix,
 #     the writer thread also hands each computer block to tap_computer, placed
 #     on the microphone's time line from the two tracks' arrival times; the
-#     draft worker resamples it to the microphone's rate and mixes it as the
-#     recording's own mix does (LiveMix: the mean of the two, as
-#     workspace/mixdown.py). Draft only: the recording and its mix are unchanged.
+#     draft worker resamples it to the microphone's rate and mixes the two
+#     (LiveMix: their mean, as the recording's own mix was before #346; the
+#     recording's mix now adds them at full level through a soft limiter,
+#     workspace/mixdown.py; the draft keeps the mean). Draft only: the
+#     recording and its mix are unchanged.
 #   - A session is tied to one recording and a generation number. After stop()
 #     nothing more is kept and a late result is dropped.
 #   - A crashed draft worker is restarted once per session; a second crash, or
@@ -341,7 +343,8 @@ class LiveMix:
     and is resampled to the microphone's rate by linear interpolation. Each
     stretch of microphone audio waits until the computer audio for it has
     arrived, or MIX_HOLD_S at most, then goes on mixed as the recording's own
-    mix is (the mean of the two, workspace/mixdown.py). Where no computer
+    mix was before #346 (the mean of the two; workspace/mixdown.py now adds
+    them at full level with a soft limiter, draft text keeps the mean). Where no computer
     audio covers it, the microphone goes on alone and unchanged. Draft
     quality: the recording and its mix are never touched. Returns
     [(start_frame, int16 pcm)] in order."""

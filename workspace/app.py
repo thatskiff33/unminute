@@ -2576,9 +2576,11 @@ class Workspace:
         decision 2(b), 25 Oct 2026; media.playback_gain), worked out on the
         meeting's first clip and kept in memory for this audio file only:
         the file's random id changes whenever the meeting's audio is written
-        again, so a gain is never stale. Audio that cannot be measured (a
-        damaged block where the sample is read) plays as it is. Never logged,
-        shown or kept on disk (P3); the saved audio never changes."""
+        again, so a gain is never stale. Damaged audio (a block where the
+        sample is read that does not open) plays as it is, and that is
+        remembered; a file error that may pass (another program holding the
+        file) plays this clip as it is and is tried again on the next. Never
+        logged, shown or kept on disk (P3); the saved audio never changes."""
         key = (mid, reader.file_id)
         with self._playback_gains_lock:
             gain = self._playback_gains.get(key)
@@ -2586,8 +2588,10 @@ class Workspace:
             return gain
         try:
             gain = media.playback_gain(reader)
+        except OSError:
+            return 1.0                     # may pass: not remembered (review nit 3)
         except Exception as exc:
-            if not (media.damaged_audio(exc) or isinstance(exc, OSError)):
+            if not media.damaged_audio(exc):
                 raise
             gain = 1.0
         with self._playback_gains_lock:

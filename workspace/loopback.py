@@ -51,6 +51,8 @@ import time
 
 import numpy as np
 
+from workspace.mixdown import soft_limit    # numpy only, like this module
+
 LOOPBACK_RATE = 48000            # every computer track is saved at this rate
 LOOPBACK_CHANNELS = 2            # asked of Windows; mixed to mono at once
 POLL_S = 0.05                    # the reader drains WASAPI this often
@@ -63,7 +65,8 @@ ACTIVATE_TIMEOUT_S = 5.0         # process loopback activation is asynchronous
 ALL_CHECK_S = 1.0                # all outputs: how often the list of outputs is checked
 ALL_RETRY_S = 2.0                # all outputs: an output that would not open is tried again
 ALL_GRACE_S = 10.0               # all outputs: listed but not recording this long is "removed"
-MIX_HOLD_S = 0.5                 # the mix waits this long for a slow output, then goes without it
+MIX_HOLD_S = BUFFER_S            # the mix waits this long for a slow output (as long as
+                                 # Windows keeps its audio), then goes without it
 MIX_RESYNC_S = 0.1               # an output's blocks this far from their stamps are realigned
 NAME_LIMIT = 120                 # an output's name (or all the outputs' names) is cut here
 
@@ -104,7 +107,9 @@ class Pacer:
     data(frames, now) is called for each block that arrives. It returns
     (lead, stamp): the stamp is the monotonic time of the block's first frame,
     estimated from when it arrived (so the stamps carry the device clock's
-    drift, which the mix corrects); lead is the silence, in frames, to put
+    drift: the ENDPOINT and PROCESS sources hand them on, and the mix at Stop
+    corrects the drift smoothly; the ALL source's Mixer corrects it in steps
+    instead, see there); lead is the silence, in frames, to put
     before the block when it is the first audio after an idle spell (or the
     start), or when audio was lost between blocks (a gap past GAP_TOL_S, or
     any gap Windows flagged), so the frames keep pace with the clock. While
@@ -169,15 +174,27 @@ class Mixer:
     the Pacer did not fill): then at the stamp, never writing a frame of that
     input twice. mix(now) returns [(block, stamp)] up to the time every
     input has reached, or to now - MIX_HOLD_S when an input is slow (its late
-    audio is then left out); with no inputs, silence up to now. A block is
-    the sum of the inputs, clipped to 16 bits, so each output keeps its own
-    level."""
+    audio is then left out); with no inputs, silence up to now. Each output
+    keeps its own level: where one plays alone its samples pass unchanged,
+    and where two or more play at once their sum goes through the same soft
+    limiter as the mix at Stop (mixdown.soft_limit).
+
+    Clock drift (an engineering decision, 1c03917 review F2): the track is
+    stamped on the app's own clock (start + frames / rate), so each output's
+    device clock drift is corrected here, in steps, not smoothly at Stop. An
+    output whose blocks drift more than MIX_RESYNC_S from their stamps is
+    realigned at the stamp: a fast clock loses up to that much of its audio,
+    a slow one gets that much silence. A simulation of one output for an hour
+    gave one step at +-30 ppm and three to six at +-100 ppm, each up to 0.1 s.
+    The mix at Stop then lines up a computer track already on the app's clock.
+    Smooth per-output rate correction is a follow-up (#379)."""
 
     def __init__(self, rate, start):
         self.rate = int(rate)
         self.start = start                       # monotonic time of output frame 0
         self.done = 0                            # output frames handed on
         self.acc = np.zeros(0, dtype=np.int32)   # summed frames from self.done on
+        self.count = np.zeros(0, dtype=np.uint8)  # how many inputs wrote each of them
         self.inputs = {}                         # key -> the next frame it writes
         self._lock = threading.Lock()
 
@@ -212,7 +229,12 @@ class Mixer:
                 grown = np.zeros(off + len(block), dtype=np.int32)
                 grown[:len(self.acc)] = self.acc
                 self.acc = grown
+                counted = np.zeros(off + len(block), dtype=np.uint8)
+                counted[:len(self.count)] = self.count
+                self.count = counted
             self.acc[off:off + len(block)] += block
+            span = self.count[off:off + len(block)]
+            np.minimum(span.astype(np.uint16) + 1, 255, out=span, casting="unsafe")
 
     def mix(self, now):
         with self._lock:
@@ -223,11 +245,16 @@ class Mixer:
             if n <= 0:
                 return []
             out = np.zeros(n, dtype=np.int32)
+            many = np.zeros(n, dtype=bool)
             have = min(n, len(self.acc))
             out[:have] = self.acc[:have]
+            many[:have] = self.count[:have] > 1
             self.acc = self.acc[have:]
+            self.count = self.count[have:]
             stamp = self.start + self.done / self.rate
             self.done = end
+        if many.any():
+            out[many] = np.round(soft_limit(out[many].astype(np.float64)))
         return [(np.clip(out, -32768, 32767).astype(np.int16), stamp)]
 
 
@@ -687,6 +714,11 @@ class _OutputReader:
     def opening(self):
         return not (self.live or self.gone)
 
+    @property
+    def alive(self):
+        """Its thread is still running (stopped readers too, until they end)."""
+        return self._thread.is_alive()
+
     def stop(self, wait=True):
         self._stop.set()
         if wait and self._thread.is_alive() and self._thread is not threading.current_thread():
@@ -719,7 +751,8 @@ class _OutputReader:
             pass                               # would not open: the stream tries it again
         finally:
             self.mixer.drop(self)
-            self.live, self.gone = False, True
+            self.gone = True                   # first, so it never looks "opening" as it ends
+            self.live = False
             if client is not None:
                 client.close()
             if enumerator is not None:
@@ -1004,10 +1037,15 @@ class LoopbackStream:
 
     @staticmethod
     def _stop_readers(readers):
+        """Tell every reader to stop, then wait for those that are reading
+        (each closes its client and leaves the mixer). One still opening is
+        let go without waiting: a driver that never answers must not hold up
+        Stop, and the reader ends, releasing what it holds, when it does."""
         for r in readers.values():
             r.stop(wait=False)
         for r in readers.values():
-            r.stop()
+            if not r.opening:
+                r.stop()
         readers.clear()
 
     def _supervise(self, api, enumerator, mixer, readers, names, recorded):
@@ -1022,6 +1060,12 @@ class LoopbackStream:
         after ALL_GRACE_S, unless no other output is recording: then the track
         carries on with silence, and ends after REOPEN_LIMIT_S."""
         ever, interrupted, down, retry_at = set(recorded), set(), {}, {}
+        # Readers told to stop before they had ended (stuck opening, or their
+        # output went), by device: no new reader starts for a device while
+        # one of these is still running, so a driver whose activation never
+        # returns holds one thread, not one more every ALL_RETRY_S (1c03917
+        # review F1). They are let go at the end, and end when Windows answers.
+        stopped = {}
         listed = set(names)
         checked = self._tick()
         failing = None                # when listing the outputs began to fail
@@ -1041,6 +1085,7 @@ class LoopbackStream:
                 went = True
                 if stuck:
                     r.stop(wait=False)     # it leaves the mixer itself when it returns
+                    stopped.setdefault(ident, []).append(r)
                 if r.was_live:
                     retry_at[ident] = now
                     if ident in recorded:
@@ -1062,8 +1107,16 @@ class LoopbackStream:
                     names.update(found)
                     listed = set(found)
                     for ident in [i for i in readers if i not in listed]:
-                        readers.pop(ident).stop(wait=False)
+                        r = readers.pop(ident)
+                        r.stop(wait=False)
+                        stopped.setdefault(ident, []).append(r)
+                    for ident in list(stopped):
+                        stopped[ident] = [r for r in stopped[ident] if r.alive]
+                        if not stopped[ident]:
+                            del stopped[ident]
                     for ident in listed:
+                        if ident in stopped:
+                            continue           # its earlier reader has not ended yet
                         if ident not in readers and now >= retry_at.get(ident, now):
                             retry_at.pop(ident, None)
                             readers[ident] = _OutputReader(ident, mixer, self._tick).start()

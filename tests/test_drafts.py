@@ -723,7 +723,10 @@ class DraftWorkspaceCase(unittest.TestCase):
         if drafts_on:
             self.ws.settings.update(live_drafts=True)
         self.ws.start()
-        self.ws.start_recording(3, consent=CONSENT)
+        # A confirmation for what the app will record: with computer audio
+        # on, it must name it (wording version 2, #108; #346).
+        self.ws.start_recording(3, consent=consent.recording_record(
+            sources=self.ws.recording_sources(), clock=lambda: 1000.0))
         return self.ws._recording
 
     def speech(self, bursts):

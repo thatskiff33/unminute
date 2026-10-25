@@ -484,15 +484,20 @@ class MixerTests(unittest.TestCase):
         self.assertEqual(block.max(), 1)                      # 0.8 to 1 s not written twice
         self.assertEqual(int(np.count_nonzero(block)), int(1.1 * CRATE))
 
-    def test_the_mix_is_the_sum_clipped_so_each_output_keeps_its_level(self):
+    def test_the_mix_is_the_sum_with_the_soft_limiter_where_outputs_overlap(self):
+        # Each output keeps its own level; where two or more play at once,
+        # the sum goes through the same soft limiter as the mix at Stop
+        # (1c03917 review nit 4). One output alone is never changed.
         m = loopback.Mixer(CRATE, 0.0)
         for key in ("a", "b"):
             m.join(key, 0.0)
-        m.add("a", np.array([30000, -30000, 100, 0, -5], np.int16), 0.0)
+        m.add("a", np.array([30000, -30000, 100, 0, -5, 30000, 29000], np.int16), 0.0)
         m.add("b", np.array([30000, -30000, 0, 200, 5], np.int16), 0.0)
-        block, _ = mixed(m, 5 / CRATE)
+        block, _ = mixed(m, 7 / CRATE + loopback.MIX_HOLD_S)
+        loud = int(np.round(mixdown.soft_limit(np.array([60000.0]))[0]))
         self.assertEqual(block.dtype, np.int16)
-        self.assertEqual(block.tolist(), [32767, -32768, 100, 200, 0])
+        self.assertLess(loud, 32767.5)
+        self.assertEqual(block.tolist(), [loud, -loud, 100, 200, 0, 30000, 29000])
 
     def test_an_output_added_and_removed_mid_recording(self):
         m = loopback.Mixer(CRATE, 0.0)
@@ -512,15 +517,18 @@ class MixerTests(unittest.TestCase):
         self.assertEqual(mixed(m, 0.4)[0].tolist(), [2] * 4800)
 
     def test_a_slow_output_holds_the_mix_back_only_so_long(self):
+        # As long as Windows keeps its audio (its 1 s buffer): nothing it
+        # still holds is left out (1c03917 review F4).
+        self.assertEqual(loopback.MIX_HOLD_S, loopback.BUFFER_S)
         m = loopback.Mixer(CRATE, 0.0)
         m.join("a", 0.0)
         m.join("slow", 0.0)
-        m.add("a", np.full(CRATE, 1, np.int16), 0.0)          # 1 s; "slow" sends nothing
-        block, stamp = mixed(m, 1.0)
-        self.assertEqual((len(block), stamp), (int(0.5 * CRATE), 0.0))   # MIX_HOLD_S
-        m.add("slow", np.full(CRATE, 5, np.int16), 0.0)       # too late for the first half
-        block, _ = mixed(m, 1.0 + 0.5)
-        self.assertEqual(block.tolist(), [6] * int(0.5 * CRATE))
+        m.add("a", np.full(2 * CRATE, 1, np.int16), 0.0)      # 2 s; "slow" sends nothing
+        block, stamp = mixed(m, 1.9)
+        self.assertEqual((len(block), stamp), (int(round(0.9 * CRATE)), 0.0))  # 1 s held back
+        m.add("slow", np.full(2 * CRATE, 5, np.int16), 0.0)   # too late for the first 0.9 s
+        block, _ = mixed(m, 2.0)                              # both have reached 2 s
+        self.assertEqual(block.tolist(), [6] * int(round(1.1 * CRATE)))
 
     def test_all_silent_or_no_output_is_continuous_silence(self):
         m = loopback.Mixer(CRATE, 0.0)
@@ -628,6 +636,8 @@ class AllOutputsLoopTests(unittest.TestCase):
         listing.append(("dev2", "Headset"))                       # a headset connects
         self.assertTrue(wait_for(lambda: events))
         self.assertTrue(wait_for(lambda: phone.reads >= 5))      # it is heard for a while
+        # Both outputs summed (1c03917 review F3: waited for, not assumed).
+        self.assertTrue(wait_for(lambda: any(3 in b for b, _ in list(blocks))))
         listing.remove(("dev2", "Headset"))                       # and goes again
         self.assertTrue(wait_for(lambda: len(events) >= 2))
         self.assertTrue(wait_for(lambda: phone.closed))           # its reader closes it
@@ -635,7 +645,6 @@ class AllOutputsLoopTests(unittest.TestCase):
         self.assertEqual(events, [("output_added", "Headset, Speakers"),
                                   ("output_removed", "Speakers")])
         self.assertEqual(stream.device_name, "Speakers")
-        self.assertTrue(any(3 in b for b, _ in blocks))           # both outputs summed
         self.assert_continuous(blocks)
 
     def test_an_output_that_drops_out_and_comes_back_is_reopened_not_removed(self):
@@ -710,6 +719,37 @@ class AllOutputsLoopTests(unittest.TestCase):
         self.assertTrue(wait_for(lambda: not thread.is_alive()))
         self.assertEqual(events, [("failed", None)])              # never "removed" with none left
         self.assertGreater(sum(len(b) for b, _ in blocks if not np.any(b)), 0.2 * CRATE)
+
+    def test_an_open_that_never_returns_holds_one_thread_and_lets_it_go_at_the_end(self):
+        # 1c03917 review F1: a reader stuck opening is given up on, but no new
+        # reader starts for that output while the stuck one's thread is alive,
+        # so a driver that hangs costs one thread, not one every few seconds.
+        listing = [("dev1", "Speakers"), ("dev2", "Headset")]
+        release = threading.Event()
+        calls = []
+
+        def hangs():
+            calls.append(time.monotonic())
+            release.wait(30)
+            return loopback.LoopbackError("Computer audio could not be opened.")
+
+        self.addCleanup(release.set)
+
+        def output_threads():
+            return [t for t in threading.enumerate()
+                    if t.name == "loopback-output" and t.is_alive()]
+
+        before = len(output_threads())
+        stream, thread, events, _ = self.start_all(
+            listing, {"dev1": FakeOutputClient(1), "dev2": hangs}, activate=0.05)
+        # About ten retry periods (a 0.05 s timeout, then ALL_RETRY_S 0.05 s).
+        time.sleep(1.0)
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(len(output_threads()) - before, 2)  # the speakers and the stuck one
+        self.finish(stream, thread)
+        release.set()                                            # the driver answers at last
+        self.assertTrue(wait_for(lambda: len(output_threads()) == before))
+        self.assertEqual(events, [])
 
     def test_an_output_slow_to_open_does_not_hold_up_the_start(self):
         listing = [("dev1", "Speakers"), ("dev2", "Headset")]

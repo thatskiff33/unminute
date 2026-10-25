@@ -191,6 +191,27 @@ class ClipLevelTests(unittest.TestCase):
         out = self.ws.clip("m1", 0.0, 5.0)
         self.assertTrue(np.array_equal(out, self.audio[:5 * SR]))
 
+    def test_a_passing_file_error_is_not_remembered(self):
+        # 1c03917 review nit 3: the clip plays as it is, and the gain is
+        # worked out again next time, not kept at 1.0 until a restart.
+        real = media.playback_gain
+        with mock.patch.object(media, "playback_gain",
+                               side_effect=[OSError(32, "sharing violation"), real(
+                                   FakeReader(self.audio))]) as measured:
+            first = self.ws.clip("m1", 0.0, 5.0)
+            second = self.ws.clip("m1", 0.0, 5.0)
+            self.assertEqual(measured.call_count, 2)
+        self.assertTrue(np.array_equal(first, self.audio[:5 * SR]))
+        self.assertGreater(db(second) - db(first), 10.0)
+
+    def test_damaged_audio_is_remembered_as_unmeasurable(self):
+        # A damaged block stays damaged: measured once, then played as it is.
+        self.fail_from = 60 * SR
+        with mock.patch.object(media, "playback_gain", wraps=media.playback_gain) as measured:
+            self.ws.clip("m1", 0.0, 5.0)
+            self.ws.clip("m1", 0.0, 5.0)
+            self.assertEqual(measured.call_count, 1)
+
     def test_the_saved_audio_is_never_changed(self):
         before = self.audio.copy()
         self.ws.clip("m1", 0.0, 10.0)

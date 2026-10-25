@@ -40,7 +40,8 @@ LIMIT_KNEE = 0.8             # the limiter leaves samples below this share of fu
 def soft_limit(x, full=32767.0):
     """Samples (float array) through a soft limiter: unchanged up to
     LIMIT_KNEE * full; above it, bent smoothly (tanh, no jump in level or
-    slope at the knee) so no sample reaches full. The same both ways round
+    slope at the knee) so no sample is ever past full scale (a sample driven
+    far over comes out at full scale exactly). The same both ways round
     and in order: a louder sample is never made quieter than a softer one.
     A float array of the same shape is returned."""
     x = np.asarray(x, dtype=np.float64)
