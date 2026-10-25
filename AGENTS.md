@@ -46,7 +46,9 @@ Network, secrets and integrity
 - **N2** Only the download process reaches the network: user-started, to the hosts in
   `setup.DOWNLOAD_HOSTS` (and files.pythonhosted.org for the Whisper GPU component's download
   only, `setup.download_hosts`; the user's decision, 20 October 2026, #248), every request
-  and redirect checked. No background calls, update
+  and redirect checked. Downloads the user queued, and one cut off by closing the app, are
+  user-started too and carry on at the next start (the user's decision, 25 October 2026,
+  #366). No background calls, update
   checks, telemetry or remote transcription. Opening a fixed or IT-set web address in the
   user's own browser when the user clicks (the help links; Copy and open) is the browser's
   network use, not Unminute's, and is allowed: Unminute itself sends nothing, and handoff
