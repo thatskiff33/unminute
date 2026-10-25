@@ -24,7 +24,6 @@ import sys
 import tempfile
 import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -226,14 +225,19 @@ class Handler(design_check.Handler):
 
 
 class Server(http.server.ThreadingHTTPServer):
+    # Edge asks for the page's files at once: a longer queue than the default
+    # five, so no connection is refused (as tests/test_ui_page_audit.py).
+    request_queue_size = 64
     daemon_threads = True
 
 
 def run_page(base, run):
     url = f"{base}/app/index.html?mic={run}#{RUNS[run]}"
-    # Headless Edge now and then never finishes a page: one more try, with a
-    # fresh profile (the timed-out Edge may still hold the first).
-    for attempt in (1, 2):
+    # Headless Edge now and then never finishes a page, or loses one of its
+    # files: one more try, with a fresh profile (a timed-out Edge may still
+    # hold the first).
+    problem = None
+    for _attempt in (1, 2):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
             cmd = [str(EDGE), "--headless=new", "--disable-gpu", "--hide-scrollbars",
                    "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
@@ -242,15 +246,15 @@ def run_page(base, run):
             try:
                 out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                                      errors="replace", timeout=180)
-                break
             except subprocess.TimeoutExpired:
-                if attempt == 2:
-                    return {"error": f"Edge did not finish {run} twice in 180 seconds"}
-    found = re.search(r'<pre id="mic-result">(.*?)</pre>', out.stdout or "", re.DOTALL)
-    if not found:
-        return {"error": f"Edge returned no result (exit {out.returncode}): "
-                         f"{(out.stderr or '').strip()[-300:]}"}
-    return json.loads(html.unescape(found.group(1)))
+                problem = f"Edge did not finish {run} in 180 seconds"
+                continue
+        found = re.search(r'<pre id="mic-result">(.*?)</pre>', out.stdout or "", re.DOTALL)
+        if found:
+            return json.loads(html.unescape(found.group(1)))
+        problem = (f"Edge returned no result (exit {out.returncode}): "
+                   f"{(out.stderr or '').strip()[-300:]}")
+    return {"error": f"twice: {problem}"}
 
 
 @unittest.skipUnless(EDGE, "Microsoft Edge not installed")
@@ -261,9 +265,9 @@ class MicrophoneListTests(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         base = f"http://127.0.0.1:{server.server_address[1]}"
         try:
-            with ThreadPoolExecutor(max_workers=len(RUNS)) as pool:
-                cls.results = dict(zip(RUNS, pool.map(lambda r: run_page(base, r), RUNS),
-                                       strict=True))
+            # One Edge at a time: each run takes seconds, and none competes
+            # with another for the server or the machine.
+            cls.results = {run: run_page(base, run) for run in RUNS}
         finally:
             server.shutdown()
             server.server_close()
