@@ -1354,6 +1354,11 @@ class Workspace:
         with self._lock:
             if self._drafts is session:
                 self._drafts = None
+            # Its text is forgotten, so the page must forget it too: it clears
+            # what it shows when the generation changes. With the same one it
+            # kept the text and, its count above this 0, asked for it again
+            # on every clock tick (#370).
+            self._draft_gen += 1
         self._wake.set()                      # processing that waited for it carries on
 
     def _before_model_change(self):
