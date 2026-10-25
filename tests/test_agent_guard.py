@@ -2143,6 +2143,10 @@ class HookProcessTests(unittest.TestCase):
         # Fail closed (owner, 25 Oct 2026): with no Python on PATH, or a python that
         # fails before the guard decides (a Store stub, a broken install), even an
         # ordinary call is blocked. Claude Code lets a call through on exit 1.
+        # Windows only, where the hook runs: elsewhere pwsh's own folder (/usr/bin)
+        # holds a working python, so no PATH here leaves Python out.
+        if sys.platform != "win32":
+            return
         system = os.environ.get("SystemRoot", r"C:\Windows")
         bare = os.pathsep.join([os.path.join(system, "System32"), system,
                                 os.path.dirname(shell_exe)])
