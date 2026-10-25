@@ -216,8 +216,9 @@ real time, and remove it when the cause is fixed.
 - **`tools/accessibility_check.py` lists "OWNER EXCEPTIONS"** before its findings: field
   boundaries in the brand `--control-line` colour and the meeting title at rest (#298, the
   owner's decision of 25 October 2026). They are expected and do not fail the run. Each is
-  matched by its colour (or, for the title, its id and transparent border), so a field drawn
-  with any other border colour below 3:1 is still a finding. Don't widen `OWNER_EXCEPTIONS`
+  matched by its colour for the mode the view was audited in (the light token in light, the
+  dark token in dark; for the title, its id and transparent border), so a field drawn with
+  any other border colour below 3:1 is still a finding. Don't widen `OWNER_EXCEPTIONS`
   to clear one; that is the owner's decision (AGENTS.md E2).
 - **Clipboard tests** skip as "clipboard busy" while another app holds the clipboard.
 - **A busy clipboard in `tools/workspace_ui_check.py` (#342).** The app waits about a second

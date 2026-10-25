@@ -389,8 +389,10 @@ CHECKS = {
 # the brand look, by their decision of 25 October 2026 (NZ time), recorded at
 # DECISION_298. Each names the check and criterion, what it covers and the
 # decision. A finding counts as an owner exception only when its exception's
-# pattern matches the whole finding; any other finding of the same check still
-# fails the run. The tick on a done step is recorded here too, with no check:
+# pattern for the colour mode the view was audited in matches the whole
+# finding (the light token in light, the dark token in dark; a view with no
+# recorded mode has none); any other finding of the same check still fails
+# the run. The tick on a done step is recorded here too, with no check:
 # drawn by the style as a graphic (1.4.11, 3:1), it is not text for the 1.4.3
 # check to find. tests/test_ui_contrast.py keeps each value equal to the
 # page's tokens and rules; tests/test_accessibility_check.py shows a finding
@@ -401,10 +403,11 @@ _BOUNDARY = r"\S+ \d+\.\d\d "      # a low_contrast_boundary finding: what, rati
 OWNER_EXCEPTIONS = {
     "control borders": {
         "check": "low_contrast_boundary", "criterion": "1.4.11",
-        "covers": "--control-line (fields, buttons and switches)",
+        "covers": "--control-line (fields, lists, buttons, switches and its other uses)",
         "what": "the brand border colour, about 1.8:1 on white, below 3:1",
         "tokens": {"light": "rgba(20, 41, 102, 0.28)", "dark": "rgba(255, 255, 255, 0.32)"},
-        "pattern": _BOUNDARY + r"(rgba\(20, 41, 102, 0\.28\)|rgba\(255, 255, 255, 0\.32\))",
+        "patterns": {"light": _BOUNDARY + r"rgba\(20, 41, 102, 0\.28\)",
+                     "dark": _BOUNDARY + r"rgba\(255, 255, 255, 0\.32\)"},
         "decision": DECISION_298,
     },
     "meeting title at rest": {
@@ -412,7 +415,8 @@ OWNER_EXCEPTIONS = {
         "covers": ".title-edit textarea (textarea#m-title)",
         "what": "the meeting title's border is transparent at rest and shows on hover; "
                 "keyboard focus draws the focus ring",
-        "pattern": r"textarea#m-title \d+\.\d\d rgba\(0, 0, 0, 0\)",
+        "patterns": {mode: r"textarea#m-title \d+\.\d\d rgba\(0, 0, 0, 0\)"
+                     for mode in ("light", "dark")},
         "decision": DECISION_298,
     },
     "done tick": {
@@ -420,16 +424,18 @@ OWNER_EXCEPTIONS = {
         "covers": "--done, .done-tick",
         "what": "the white tick on the brand green #00A275 (3.27:1) is a graphic at 3:1, "
                 "drawn by the style with an empty text alternative, not text at 4.5:1",
-        "pattern": None,
+        "patterns": None,
         "decision": DECISION_298,
     },
 }
 
 
-def owner_exception(check, finding):
-    """The name of the owner exception that covers this finding, or None."""
+def owner_exception(check, finding, mode):
+    """The name of the owner exception that covers this finding of a view
+    audited in this colour mode ("light" or "dark"), or None."""
     for name, ex in OWNER_EXCEPTIONS.items():
-        if ex["check"] == check and re.fullmatch(ex["pattern"], finding):
+        if ex["check"] == check and mode in ex["patterns"] \
+                and re.fullmatch(ex["patterns"][mode], finding):
             return name
     return None
 
@@ -597,7 +603,8 @@ def findings(report):
     out += page_problems(report.get("page"))
     for view, a in report.get("views", {}).items():
         for key in CHECKS:
-            failing = [f for f in a.get(key) or [] if not owner_exception(key, f)]
+            failing = [f for f in a.get(key) or []
+                       if not owner_exception(key, f, a.get("colour_mode"))]
             if failing:
                 out.append(f"{view}: {key} ({len(failing)})")
         for width, r in a.get("reflow", {}).items():
@@ -615,7 +622,7 @@ def owner_exceptions(report):
     for view, a in report.get("views", {}).items():
         for key in CHECKS:
             for f in a.get(key) or []:
-                name = owner_exception(key, f)
+                name = owner_exception(key, f, a.get("colour_mode"))
                 if name:
                     out.append(f"{view}: {key}: {f} (owner exception: {name}, "
                                f"WCAG {OWNER_EXCEPTIONS[name]['criterion']})")

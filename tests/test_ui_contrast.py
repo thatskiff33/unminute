@@ -130,10 +130,14 @@ class OwnerExceptionRecordTests(unittest.TestCase):
         for theme, tokens in themes().items():
             with self.subTest(theme=theme):
                 self.assertEqual(rgba(recorded["tokens"][theme]), rgba(tokens["--control-line"]))
-                # The pattern matches the colour as the browser reports it.
+                # The pattern for this mode matches its colour as the browser
+                # reports it; the other mode's colour is not excused here.
                 drawn = recorded["tokens"][theme]
+                other = recorded["tokens"]["dark" if theme == "light" else "light"]
                 self.assertEqual("control borders", accessibility_check.owner_exception(
-                    "low_contrast_boundary", f"input#x 1.80 {drawn}"))
+                    "low_contrast_boundary", f"input#x 1.80 {drawn}", theme))
+                self.assertIsNone(accessibility_check.owner_exception(
+                    "low_contrast_boundary", f"input#x 1.80 {other}", theme))
 
     def test_the_title_exception_names_the_title_rule(self):
         self.assertIn(".title-edit textarea", EXCEPTIONS["meeting title at rest"]["covers"])

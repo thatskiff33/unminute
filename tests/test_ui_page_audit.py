@@ -260,7 +260,8 @@ class PageAuditTests(unittest.TestCase):
                 with self.subTest(view=name, mode=mode, check=key):
                     found = r.get(key, ["(no result)"])
                     self.assertEqual(
-                        [], [f for f in found if not accessibility_check.owner_exception(key, f)])
+                        [], [f for f in found
+                             if not accessibility_check.owner_exception(key, f, mode)])
 
     def test_the_meeting_title_at_rest_is_the_owner_s_exception(self):
         # Measured at rest: no boundary, and that finding is the named exception.
@@ -272,7 +273,7 @@ class PageAuditTests(unittest.TestCase):
                          if f.startswith("textarea#m-title ")]
                 self.assertEqual(1, len(title), "the title was not measured at rest")
                 self.assertEqual("meeting title at rest", accessibility_check.owner_exception(
-                    "low_contrast_boundary", title[0]))
+                    "low_contrast_boundary", title[0], mode))
 
     def test_the_done_tick_is_a_graphic_at_3_to_1(self):
         for (name, mode), r in self.results.items():

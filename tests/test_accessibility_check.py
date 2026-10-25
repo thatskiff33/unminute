@@ -545,15 +545,17 @@ class ReportTests(unittest.TestCase):
 
 class OwnerExceptionTests(unittest.TestCase):
     """The owner's exceptions of 25 October 2026 (#298): a finding counts as one
-    only when its named exception matches the whole finding; anything else of
-    the same check still fails the run."""
+    only when its named exception, for the colour mode its view was audited
+    in, matches the whole finding; anything else of the same check still fails
+    the run."""
     ZOOM, PAGE = ReportTests.ZOOM, ReportTests.PAGE
     LIGHT = "input#ho-template.small 1.83 rgba(20, 41, 102, 0.28)"
     DARK = "select#mic 1.75 rgba(255, 255, 255, 0.32)"
     TITLE = "textarea#m-title 1.00 rgba(0, 0, 0, 0)"
 
-    def report(self, key, found):
-        return {**self.ZOOM, "page": self.PAGE, "views": {"meeting (light)": {key: found}}}
+    def report(self, key, found, mode="light"):
+        return {**self.ZOOM, "page": self.PAGE,
+                "views": {f"meeting ({mode})": {key: found, "colour_mode": mode}}}
 
     def test_each_exception_is_named_with_its_rule_and_the_decision(self):
         self.assertEqual({"control borders", "meeting title at rest", "done tick"},
@@ -566,17 +568,41 @@ class OwnerExceptionTests(unittest.TestCase):
                 self.assertTrue(ex["criterion"] and ex["covers"] and ex["what"])
                 self.assertIn(ex["check"], (None, *accessibility_check.CHECKS))
                 # Only the boundary check is excused; the tick has no finding to excuse.
-                self.assertEqual(ex["check"] is None, ex["pattern"] is None)
+                self.assertEqual(ex["check"] is None, ex["patterns"] is None)
                 if ex["check"]:
                     self.assertEqual("low_contrast_boundary", ex["check"])
+                    self.assertEqual({"light", "dark"}, set(ex["patterns"]))
 
     def test_the_excepted_findings_do_not_fail_and_are_reported(self):
-        report = self.report("low_contrast_boundary", [self.LIGHT, self.DARK, self.TITLE])
-        self.assertEqual([], accessibility_check.findings(report))
-        excepted = accessibility_check.owner_exceptions(report)
-        self.assertEqual(3, len(excepted))
-        self.assertIn("(owner exception: control borders, WCAG 1.4.11)", excepted[0])
-        self.assertIn("(owner exception: meeting title at rest, WCAG 1.4.11)", excepted[2])
+        for mode, border in (("light", self.LIGHT), ("dark", self.DARK)):
+            with self.subTest(mode=mode):
+                report = self.report("low_contrast_boundary", [border, self.TITLE], mode)
+                self.assertEqual([], accessibility_check.findings(report))
+                excepted = accessibility_check.owner_exceptions(report)
+                self.assertEqual(2, len(excepted))
+                self.assertIn("(owner exception: control borders, WCAG 1.4.11)", excepted[0])
+                self.assertIn("(owner exception: meeting title at rest, WCAG 1.4.11)",
+                              excepted[1])
+
+    def test_each_mode_excuses_only_its_own_token(self):
+        # The dark token's colour in a light view (and the reverse) is not the
+        # exception: on that surface it is a different, unaccepted boundary.
+        for mode, other in (("light", self.DARK), ("dark", self.LIGHT)):
+            with self.subTest(mode=mode):
+                self.assertIsNone(accessibility_check.owner_exception(
+                    "low_contrast_boundary", other, mode))
+                found = accessibility_check.findings(
+                    self.report("low_contrast_boundary", [other], mode))
+                self.assertEqual([f"meeting ({mode}): low_contrast_boundary (1)"], found)
+        # A view with no recorded colour mode has no exception at all.
+        for finding in (self.LIGHT, self.DARK, self.TITLE):
+            with self.subTest(mode=None, finding=finding):
+                self.assertIsNone(accessibility_check.owner_exception(
+                    "low_contrast_boundary", finding, None))
+        report = {**self.ZOOM, "page": self.PAGE,
+                  "views": {"meeting": {"low_contrast_boundary": [self.LIGHT]}}}
+        self.assertEqual(["meeting: low_contrast_boundary (1)"],
+                         accessibility_check.findings(report))
 
     def test_any_other_finding_still_fails(self):
         others = [
@@ -591,7 +617,7 @@ class OwnerExceptionTests(unittest.TestCase):
         for finding in others:
             with self.subTest(finding=finding):
                 self.assertIsNone(accessibility_check.owner_exception(
-                    "low_contrast_boundary", finding))
+                    "low_contrast_boundary", finding, "light"))
                 found = accessibility_check.findings(
                     self.report("low_contrast_boundary", [self.LIGHT, finding]))
                 self.assertEqual(["meeting (light): low_contrast_boundary (1)"], found)
