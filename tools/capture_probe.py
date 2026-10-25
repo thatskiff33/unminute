@@ -1,14 +1,15 @@
 # tools/capture_probe.py
 # Computer audio probe (#108): checks that Windows loopback capture opens on
-# this computer, for both sources the app can record, and prints numbers only.
+# this computer, for each source the back end can record, and prints numbers only.
 #
-#   python tools/capture_probe.py            # list outputs, then probe both sources
+#   python tools/capture_probe.py            # list outputs, then probe every source
 #   python tools/capture_probe.py --list     # only count the output devices
 #
 # What it does, and what it never does:
 #   - Lists the active output devices (a count, and how many are the default;
 #     device names are not printed).
-#   - Opens a loopback stream on the default output for at most one second,
+#   - Opens loopback on every active output, mixed (the source the app
+#     records), then on the default output, for at most one second each,
 #     then process loopback of this probe's own process (which plays nothing)
 #     for at most one second, and prints how many frames arrived, how many were
 #     not silent, and the device events seen.
@@ -42,7 +43,7 @@ def main(argv=None):
     except loopback.LoopbackError as exc:
         report["outputs"] = {"error": str(exc)}
     if not args.list:
-        for name, source in (("endpoint", {"kind": "endpoint"}),
+        for name, source in (("all", {"kind": "all"}), ("endpoint", {"kind": "endpoint"}),
                              ("process_self", {"kind": "process", "pid": os.getpid()})):
             try:
                 report[name] = loopback.probe(source, args.seconds)

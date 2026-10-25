@@ -208,9 +208,11 @@ class LoopbackHelperTests(unittest.TestCase):
 
     def test_only_known_sources_are_accepted(self):
         self.assertEqual(loopback.check_source({"kind": "endpoint"}), {"kind": "endpoint"})
+        self.assertEqual(loopback.check_source({"kind": "all"}), {"kind": "all"})
         self.assertEqual(loopback.check_source({"kind": "process", "pid": 42}),
                          {"kind": "process", "pid": 42})
-        for bad in (None, "endpoint", {"kind": "endpoint", "id": "x"}, {"kind": "process"},
+        for bad in (None, "endpoint", "all", {"kind": "endpoint", "id": "x"},
+                    {"kind": "all", "pid": 1}, {"kind": "all", "id": "x"}, {"kind": "process"},
                     {"kind": "process", "pid": True}, {"kind": "process", "pid": -1},
                     {"kind": "process", "pid": "42"}, {"kind": "file", "path": "C:\\x"}):
             with self.assertRaises(loopback.LoopbackError, msg=repr(bad)):
@@ -428,6 +430,336 @@ class LoopbackProcessLoopTests(unittest.TestCase):
         self.assertEqual(sound, client.reads * 480)
 
 
+# -- loopback: every active output, mixed (the source the app records) --------------------
+
+def mixed(mixer, now):
+    """mixer.mix(now) joined into one block, and the first block's stamp."""
+    out = mixer.mix(now)
+    if not out:
+        return np.zeros(0, np.int16), None
+    return np.concatenate([b for b, _ in out]), out[0][1]
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class MixerTests(unittest.TestCase):
+    def test_inputs_are_lined_up_by_their_stamps(self):
+        q = CRATE // 10                                   # 0.1 s
+        m = loopback.Mixer(CRATE, 100.0)
+        m.join("a", 100.0)
+        m.join("b", 100.2)                                # b opened 0.2 s later
+        m.add("a", np.full(4 * q, 1, np.int16), 100.0)
+        m.add("b", np.full(2 * q, 2, np.int16), 100.2)
+        block, stamp = mixed(m, 100.4)
+        self.assertEqual(stamp, 100.0)
+        self.assertEqual(block.tolist(), [1] * (2 * q) + [3] * (2 * q))
+        # An input's audio lands at its stamp past MIX_RESYNC_S (c started
+        # 0.2 s after it opened), and the next mix carries on where this ended.
+        m.join("c", 100.4)
+        m.add("a", np.full(4 * q, 1, np.int16), 100.4)
+        m.add("b", np.full(4 * q, 2, np.int16), 100.4)
+        m.add("c", np.full(2 * q, 4, np.int16), 100.6)
+        block, stamp = mixed(m, 100.8)
+        self.assertAlmostEqual(stamp, 100.4)
+        self.assertEqual(block.tolist(), [3] * (2 * q) + [7] * (2 * q))
+
+    def test_blocks_within_jitter_follow_on_and_a_real_gap_is_silence(self):
+        m = loopback.Mixer(CRATE, 0.0)
+        m.join("a", 0.0)
+        m.add("a", np.full(480, 1, np.int16), 0.0)
+        m.add("a", np.full(480, 1, np.int16), 0.01 + 0.02)   # 20 ms late: arrival jitter
+        m.add("a", np.full(480, 1, np.int16), 0.02 - 0.02)   # 20 ms early: jitter too
+        block, _ = mixed(m, 1440 / CRATE)
+        self.assertEqual(block.tolist(), [1] * 1440)          # no gap, no frame twice
+        m.add("a", np.full(480, 1, np.int16), 0.03 + 0.5)    # a real gap (past MIX_RESYNC_S)
+        block, _ = mixed(m, 0.53 + 0.01)
+        self.assertEqual(int(np.count_nonzero(block)), 480)
+        self.assertEqual(len(block), int(round(0.53 * CRATE)) + 480 - 1440)
+        # An input whose blocks run ahead of their stamps is realigned
+        # without writing any of its frames twice.
+        m2 = loopback.Mixer(CRATE, 0.0)
+        m2.join("a", 0.0)
+        m2.add("a", np.full(CRATE, 1, np.int16), 0.0)        # 1 s of audio
+        m2.add("a", np.full(14400, 1, np.int16), 0.8)         # 0.3 s stamped 0.2 s early
+        block, _ = mixed(m2, 1.1)
+        self.assertEqual(block.max(), 1)                      # 0.8 to 1 s not written twice
+        self.assertEqual(int(np.count_nonzero(block)), int(1.1 * CRATE))
+
+    def test_the_mix_is_the_sum_clipped_so_each_output_keeps_its_level(self):
+        m = loopback.Mixer(CRATE, 0.0)
+        for key in ("a", "b"):
+            m.join(key, 0.0)
+        m.add("a", np.array([30000, -30000, 100, 0, -5], np.int16), 0.0)
+        m.add("b", np.array([30000, -30000, 0, 200, 5], np.int16), 0.0)
+        block, _ = mixed(m, 5 / CRATE)
+        self.assertEqual(block.dtype, np.int16)
+        self.assertEqual(block.tolist(), [32767, -32768, 100, 200, 0])
+
+    def test_an_output_added_and_removed_mid_recording(self):
+        m = loopback.Mixer(CRATE, 0.0)
+        m.join("a", 0.0)
+        m.add("a", np.full(4800, 1, np.int16), 0.0)          # 0 to 0.1 s
+        self.assertEqual(mixed(m, 0.1)[0].tolist(), [1] * 4800)
+        m.join("b", 0.1)                                      # a headset connects
+        m.add("a", np.full(4800, 1, np.int16), 0.1)
+        self.assertEqual(mixed(m, 0.2)[0].tolist(), [])       # waits for the new output
+        m.add("b", np.full(4800, 2, np.int16), 0.1)
+        self.assertEqual(mixed(m, 0.2)[0].tolist(), [3] * 4800)
+        m.add("b", np.full(4800, 2, np.int16), 0.2)
+        m.drop("a")                                           # the speakers go
+        self.assertEqual(mixed(m, 0.3)[0].tolist(), [2] * 4800)
+        m.add("a", np.full(4800, 9, np.int16), 0.3)           # late audio of a dropped output
+        m.add("b", np.full(4800, 2, np.int16), 0.3)
+        self.assertEqual(mixed(m, 0.4)[0].tolist(), [2] * 4800)
+
+    def test_a_slow_output_holds_the_mix_back_only_so_long(self):
+        m = loopback.Mixer(CRATE, 0.0)
+        m.join("a", 0.0)
+        m.join("slow", 0.0)
+        m.add("a", np.full(CRATE, 1, np.int16), 0.0)          # 1 s; "slow" sends nothing
+        block, stamp = mixed(m, 1.0)
+        self.assertEqual((len(block), stamp), (int(0.5 * CRATE), 0.0))   # MIX_HOLD_S
+        m.add("slow", np.full(CRATE, 5, np.int16), 0.0)       # too late for the first half
+        block, _ = mixed(m, 1.0 + 0.5)
+        self.assertEqual(block.tolist(), [6] * int(0.5 * CRATE))
+
+    def test_all_silent_or_no_output_is_continuous_silence(self):
+        m = loopback.Mixer(CRATE, 0.0)
+        out = []
+        for i in range(1, 11):                                # no output at all
+            out.extend(m.mix(i * 0.05))
+        m.join("a", 0.5)
+        m.join("b", 0.5)
+        for i in range(11, 21):                               # two idle outputs
+            for key in ("a", "b"):
+                m.add(key, np.zeros(2400, np.int16), (i - 1) * 0.05)
+            out.extend(m.mix(i * 0.05))
+        self.assertEqual(sum(len(b) for b, _ in out), CRATE)
+        self.assertFalse(any(np.any(b) for b, _ in out))
+        for (b, s), (_, s2) in zip(out, out[1:], strict=False):
+            self.assertAlmostEqual(s + len(b) / CRATE, s2)
+
+
+class FakeOutputClient(FakeClient):
+    """One output's loopback client: a level of its own."""
+
+    def __init__(self, level, gone_after=None):
+        super().__init__(gone_after)
+        self.level = level
+
+    def read(self):
+        blocks, lost = super().read()
+        return [np.full(len(b), self.level, np.int16) for b in blocks], lost
+
+
+def wait_for(condition, seconds=10.0):
+    """Wait until condition() holds (or the time is up); returns it."""
+    deadline = time.time() + seconds
+    while not condition() and time.time() < deadline:
+        time.sleep(0.005)
+    return condition()
+
+
+@unittest.skipUnless(HAVE_NUMPY, "numpy not installed")
+class AllOutputsLoopTests(unittest.TestCase):
+    """The ALL source's own thread with fake COM and fake output clients.
+    Each test waits for conditions, never for a fixed time, so a slow or busy
+    machine cannot change what it sees (the trial's intermittent failure: an
+    output that dropped out before the first check was never counted as
+    recorded, so its return was called a switch and "reopened" never came)."""
+
+    def start_all(self, listing, opens, grace=5.0, limit=None, activate=None):
+        """Run the ALL source on its own thread. listing: the (id, name)
+        pairs Windows reports, which the test changes. opens: id -> a client,
+        an exception, a function returning either, or a list of those taken
+        in turn (the last one repeats)."""
+        api, events, blocks = FakeApi(), [], []
+
+        def open_client(api_, enumerator, ident):
+            steps = opens[ident]
+            step = (steps.pop(0) if len(steps) > 1 else steps[0]) \
+                if isinstance(steps, list) else steps
+            if callable(step):
+                step = step()
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+        patches = [mock.patch.object(loopback, "_com", lambda: api),
+                   mock.patch.object(loopback, "_enumerator", lambda api_: "enum"),
+                   mock.patch.object(loopback, "_active_outputs",
+                                     lambda api_, e: list(listing)),
+                   mock.patch.object(loopback, "_output_client", open_client),
+                   mock.patch.object(loopback, "POLL_S", 0.005),
+                   mock.patch.object(loopback, "ALL_CHECK_S", 0.02),
+                   mock.patch.object(loopback, "ALL_RETRY_S", 0.05),
+                   mock.patch.object(loopback, "ALL_GRACE_S", grace)]
+        if limit is not None:
+            patches.append(mock.patch.object(loopback, "REOPEN_LIMIT_S", limit))
+        if activate is not None:
+            patches.append(mock.patch.object(loopback, "ACTIVATE_TIMEOUT_S", activate))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        stream = loopback.LoopbackStream({"kind": "all"},
+                                         lambda b, s: blocks.append((b, s)),
+                                         lambda kind, name: events.append((kind, name)))
+        thread = threading.Thread(target=stream._run, daemon=True)
+        thread.start()
+        self.assertTrue(stream._opened.wait(10))
+        self.assertIsNone(stream._error)
+        return stream, thread, events, blocks
+
+    def finish(self, stream, thread):
+        stream._stop.set()
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
+
+    def assert_continuous(self, blocks):
+        self.assertTrue(blocks)
+        for (b, s), (_, s2) in zip(blocks, blocks[1:], strict=False):
+            self.assertAlmostEqual(s + len(b) / CRATE, s2, places=6)
+
+    def test_outputs_that_come_and_go_are_followed_and_the_track_stays_continuous(self):
+        listing = [("dev1", "Speakers")]
+        phone = FakeOutputClient(2)
+        opens = {"dev1": FakeOutputClient(1), "dev2": phone}
+        stream, thread, events, blocks = self.start_all(listing, opens)
+        self.assertEqual(stream.device_name, "Speakers")
+        listing.append(("dev2", "Headset"))                       # a headset connects
+        self.assertTrue(wait_for(lambda: events))
+        self.assertTrue(wait_for(lambda: phone.reads >= 5))      # it is heard for a while
+        listing.remove(("dev2", "Headset"))                       # and goes again
+        self.assertTrue(wait_for(lambda: len(events) >= 2))
+        self.assertTrue(wait_for(lambda: phone.closed))           # its reader closes it
+        self.finish(stream, thread)
+        self.assertEqual(events, [("output_added", "Headset, Speakers"),
+                                  ("output_removed", "Speakers")])
+        self.assertEqual(stream.device_name, "Speakers")
+        self.assertTrue(any(3 in b for b, _ in blocks))           # both outputs summed
+        self.assert_continuous(blocks)
+
+    def test_an_output_that_drops_out_and_comes_back_is_reopened_not_removed(self):
+        # The trial's gap: a reopen that fails once (a device still settling)
+        # was reported as the output going ("switched"), then "reopened".
+        listing = [("dev1", "Speakers"), ("dev2", "Headset")]
+        settling = loopback.LoopbackError("Computer audio could not be opened.")
+        headset = FakeOutputClient(2)
+        opens = {"dev1": FakeOutputClient(1),
+                 "dev2": [FakeOutputClient(2, gone_after=3), settling, headset]}
+        stream, thread, events, blocks = self.start_all(listing, opens)
+        self.assertTrue(wait_for(lambda: events))
+        self.assertTrue(wait_for(lambda: headset.reads >= 5))
+        self.finish(stream, thread)
+        self.assertEqual(events, [("reopened", "Headset, Speakers")])
+        self.assert_continuous(blocks)
+
+    def test_an_output_that_drops_out_while_another_opens_still_counts_as_recorded(self):
+        # The trial's intermittent failure, made certain: the headset opens
+        # and drops out while the speakers are still opening, so it has gone
+        # before the stream first looks. It was recorded, so its return is
+        # "reopened" (the trial called it a switch, then never said reopened).
+        listing = [("dev1", "Speakers"), ("dev2", "Headset")]
+        headset = FakeOutputClient(2)
+
+        def slow_speakers():
+            time.sleep(0.2)
+            return FakeOutputClient(1)
+
+        opens = {"dev1": slow_speakers,
+                 "dev2": [FakeOutputClient(2, gone_after=0),
+                          lambda: (time.sleep(0.3), headset)[1]]}
+        stream, thread, events, _ = self.start_all(listing, opens)
+        self.assertEqual(stream.device_name, "Headset, Speakers")
+        self.assertTrue(wait_for(lambda: events))
+        self.assertTrue(wait_for(lambda: headset.reads >= 3))
+        self.finish(stream, thread)
+        self.assertEqual(events, [("reopened", "Headset, Speakers")])
+
+    def test_an_output_still_listed_but_silent_past_the_grace_is_reported_removed(self):
+        listing = [("dev1", "Speakers"), ("dev2", "Headset")]
+        error = loopback.LoopbackError("Computer audio could not be opened.")
+        opens = {"dev1": FakeOutputClient(1), "dev2": [FakeOutputClient(2, gone_after=3), error]}
+        stream, thread, events, _ = self.start_all(listing, opens, grace=0.2)
+        self.assertTrue(wait_for(lambda: events))
+        self.assertEqual(events, [("output_removed", "Speakers")])
+        opens["dev2"] = FakeOutputClient(2)                       # it opens again later
+        self.assertTrue(wait_for(lambda: len(events) >= 2))
+        self.finish(stream, thread)
+        self.assertEqual(events[1], ("reopened", "Headset, Speakers"))
+
+    def test_with_no_outputs_left_silence_is_recorded_until_one_returns(self):
+        listing = [("dev1", "Speakers")]
+        stream, thread, events, blocks = self.start_all(listing,
+                                                        {"dev1": FakeOutputClient(1)})
+        listing.clear()
+        self.assertTrue(wait_for(lambda: events))
+        self.assertTrue(wait_for(lambda: sum(len(b) for b, _ in blocks if not np.any(b))
+                                 > 0.1 * CRATE))
+        listing.append(("dev1", "Speakers"))
+        self.assertTrue(wait_for(lambda: len(events) >= 2))
+        self.finish(stream, thread)
+        self.assertEqual(events, [("no_output", None), ("reopened", "Speakers")])
+        self.assert_continuous(blocks)
+
+    def test_outputs_listed_that_never_reopen_end_the_track_after_the_limit(self):
+        listing = [("dev1", "Speakers")]
+        error = loopback.LoopbackError("Computer audio could not be opened.")
+        stream, thread, events, blocks = self.start_all(
+            listing, {"dev1": [FakeOutputClient(1, gone_after=3), error]}, grace=0.1, limit=0.4)
+        self.assertTrue(wait_for(lambda: events))
+        self.assertTrue(wait_for(lambda: not thread.is_alive()))
+        self.assertEqual(events, [("failed", None)])              # never "removed" with none left
+        self.assertGreater(sum(len(b) for b, _ in blocks if not np.any(b)), 0.2 * CRATE)
+
+    def test_an_output_slow_to_open_does_not_hold_up_the_start(self):
+        listing = [("dev1", "Speakers"), ("dev2", "Headset")]
+        release = threading.Event()
+
+        def stuck():
+            release.wait(10)
+            return loopback.LoopbackError("Computer audio could not be opened.")
+
+        self.addCleanup(release.set)
+        stream, thread, events, _ = self.start_all(
+            listing, {"dev1": FakeOutputClient(1), "dev2": stuck}, activate=0.1)
+        self.assertEqual(stream.device_name, "Speakers")
+        release.set()
+        self.finish(stream, thread)
+        self.assertEqual(events, [])
+
+    def test_it_does_not_start_when_no_output_can_be_opened(self):
+        error = loopback.LoopbackError("Computer audio could not be opened.")
+        for listing, opens, message in (
+                ([], {}, "This computer has no sound output to record."),
+                ([("dev1", "Speakers")], {"dev1": error}, "Computer audio could not be opened.")):
+            api = FakeApi()
+
+            def fail(a, e, ident, opens=opens):
+                raise opens[ident]
+
+            with self.subTest(message=message), \
+                    mock.patch.object(loopback, "_com", mock.Mock(return_value=api)), \
+                    mock.patch.object(loopback, "_enumerator", lambda api_: "enum"), \
+                    mock.patch.object(loopback, "_active_outputs",
+                                      mock.Mock(return_value=list(listing))), \
+                    mock.patch.object(loopback, "_output_client", fail), \
+                    mock.patch.object(loopback.sys, "platform", "win32"):
+                stream = loopback.LoopbackStream({"kind": "all"}, lambda b, s: None,
+                                                 lambda k, n: None)
+                with self.assertRaises(loopback.LoopbackError) as caught:
+                    stream.start()
+                self.assertEqual(str(caught.exception), message)
+                stream.close()
+                self.assertIn("enum", api.released)
+
+    def test_the_name_is_every_output_recorded_and_kept_short(self):
+        names = {f"dev{i}": f"Output {i} " + "x" * 40 for i in range(5)}
+        self.assertEqual(loopback.all_name({"dev1", "dev0"}, names),
+                         ", ".join(sorted([names["dev0"], names["dev1"]])))
+        self.assertLessEqual(len(loopback.all_name(set(names), names)), 120)
+        self.assertEqual(loopback.all_name(set(), names), "")
+
+
 # -- mixdown: one mix, lined up ----------------------------------------------------------
 
 def write_track(folder, track, samples, chunk_s, rate):
@@ -549,14 +881,40 @@ class MixdownTests(unittest.TestCase):
         self.assertLess(abs(found[0] / RATE - 5.0), 0.005)
         self.assertLess(abs(found[1] / RATE - 14.5), 0.005)     # 1019.5 is 4.5 s into part two
 
-    def test_the_mix_is_the_mean_of_the_tracks_and_silence_where_one_has_none(self):
+    def test_the_mix_is_the_sum_of_the_tracks_and_silence_where_one_has_none(self):
+        # The owner's decision 2 (25 Oct 2026): each track at full level, not
+        # the mean (which put each about 6 dB lower).
         mic = np.full(4 * RATE, 1000, np.int16)
         comp = np.full(2 * CRATE, 3000, np.int16)                 # the computer stops at 2 s
         journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
         mixed, seconds = mix(self.folder, journal, [])
         self.assertEqual(seconds, 4.0)
-        self.assertTrue(np.all(mixed[100:2 * RATE - 100] == 2000))  # (1000 + 3000) / 2
-        self.assertTrue(np.all(mixed[2 * RATE + 100:] == 500))      # 1000 / 2: computer silent
+        self.assertTrue(np.all(mixed[100:2 * RATE - 100] == 4000))  # 1000 + 3000
+        self.assertTrue(np.all(mixed[2 * RATE + 100:] == 1000))     # the microphone, as it was
+
+    def test_the_limiter_acts_only_as_the_sum_nears_full_scale(self):
+        x = np.arange(-70000, 70001, 7, dtype=np.float64)
+        y = mixdown.soft_limit(x)
+        knee = mixdown.LIMIT_KNEE * 32767
+        below = np.abs(x) <= knee
+        self.assertTrue(np.array_equal(y[below], x[below]))         # untouched below the knee
+        self.assertTrue(np.all(np.abs(y) < 32767.5))                 # never past full scale
+        self.assertTrue(np.all(np.diff(y) > 0))                      # keeps the order of samples
+        step = np.abs(np.diff(y)).max()
+        self.assertLessEqual(step, 7.0 + 1e-9)                       # no jump at the knee
+        self.assertTrue(np.array_equal(mixdown.soft_limit(-x), -y))  # the same both ways
+
+    def test_two_loud_tracks_are_limited_not_clipped(self):
+        mic = tone(4 * RATE, RATE, 220, amp=24000)
+        comp = tone(4 * CRATE, CRATE, 220, amp=24000)                # in phase: sums to 48000
+        journal = self.journal(mic, comp, [[0, 50.0, 1]], [[0, 50.0, 1]])
+        saved = {p.name: p.read_bytes() for p in self.folder.iterdir()}
+        mixed, _ = mix(self.folder, journal, [])
+        part = mixed[RATE:3 * RATE].astype(np.int32)
+        self.assertGreater(part.max(), int(mixdown.LIMIT_KNEE * 32767))
+        self.assertLess(int(np.sum(np.abs(part) >= 32767)), 10)     # no flat-topped plateau
+        # The separate tracks are never changed by the mix (D1).
+        self.assertEqual({p.name: p.read_bytes() for p in self.folder.iterdir()}, saved)
 
     def test_marks_that_cannot_be_used_fall_back_to_start_times_and_say_so(self):
         mic = np.full(2 * RATE, 1000, np.int16)
@@ -570,7 +928,7 @@ class MixdownTests(unittest.TestCase):
             mixed, seconds = mix(self.folder, journal, notes)
             self.assertEqual(seconds, 2.0)
             self.assertEqual([n["kind"] for n in notes], ["mix_by_start"])
-            self.assertTrue(np.all(mixed[100:-100] == 2000))
+            self.assertTrue(np.all(mixed[100:-100] == 4000))
 
     def test_an_implausible_clock_keeps_the_nominal_rate_and_says_so(self):
         mic = np.zeros(60 * RATE, np.int16)
@@ -596,7 +954,7 @@ class MixdownTests(unittest.TestCase):
         mixed, seconds = mix(self.folder, journal, notes)
         self.assertEqual(seconds, 2.0)
         self.assertEqual([n["kind"] for n in notes], ["damaged"])
-        self.assertTrue(np.all(mixed[100:-100] == 1500))   # silence for the microphone
+        self.assertTrue(np.all(mixed[100:-100] == 3000))   # silence for the microphone
 
 
 # -- the recorder's two tracks ------------------------------------------------------------
@@ -750,6 +1108,22 @@ class TwoTrackRecordingTests(unittest.TestCase):
         self.assertAlmostEqual(rec._computer.queue.maxsize * loopback.POLL_S,
                                rec._queue.maxsize * recorder.BLOCK_S)
         self.assertAlmostEqual(rec._queue.maxsize * recorder.BLOCK_S, recorder.QUEUE_S)
+
+    def test_outputs_added_or_removed_are_events_that_name_no_device(self):
+        # Every active output is recorded (the owner's decision 1, 25 Oct
+        # 2026): an output turned on or off is not a "new Windows default".
+        rec, mic, comp = self.start()
+        comp.notify("output_added", "Headset, Speakers")
+        self.assertEqual(rec.status()["computer"]["device"], "Headset, Speakers")
+        comp.notify("output_removed", "Speakers")
+        self.assertEqual(rec.status()["computer"]["device"], "Speakers")
+        journal = rec.stop()
+        self.assertEqual([e["kind"] for e in journal["events"]],
+                         ["computer_output_added", "computer_output_removed"])
+        for event in journal["events"]:
+            self.assertNotIn("default", event["note"])
+            self.assertNotIn("Headset", event["note"])
+            self.assertNotIn("Speakers", event["note"])
 
     def test_reopening_the_same_output_is_not_called_a_switch(self):
         rec, mic, comp = self.start()
@@ -1118,8 +1492,9 @@ class WorkspaceTwoTrackTests(unittest.TestCase):
         ws.settings.update(microphone=True, computer_audio=True)
         with mock.patch("workspace.app.COMPUTER_AUDIO_STARTS", True):
             spec = ws._computer_track()
+        # Every active output, mixed (the owner's decision 1, 25 Oct 2026).
         self.assertEqual((spec["source"], spec["rate"], spec["block_s"]),
-                         ({"kind": "endpoint"}, loopback.LOOPBACK_RATE, loopback.POLL_S))
+                         ({"kind": "all"}, loopback.LOOPBACK_RATE, loopback.POLL_S))
 
     def test_resume_checks_the_policy_again(self):
         from workspace import policy

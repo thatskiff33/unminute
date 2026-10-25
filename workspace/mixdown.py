@@ -14,9 +14,13 @@
 #      moment and read it by linear interpolation: this resamples the computer
 #      track to the microphone's rate. Where the computer track has nothing
 #      (paused, stopped by policy, before it started) it is silence.
-#   3. The plain mix: the mean of the two tracks, as #220 mixes the channels of
-#      an import. An echo-aware mix comes only if measurement shows the plain
-#      mix doubles words (the owner's decision 3); that is a later slice.
+#   3. The plain mix: the two tracks added at full level (the owner's
+#      decision 2, 25 Oct 2026: the mean put each source about 6 dB lower),
+#      through a soft limiter (soft_limit) that changes nothing below
+#      LIMIT_KNEE of full scale and bends louder sums smoothly under full
+#      scale instead of clipping them. Only the mix is limited: the saved
+#      tracks are read, never changed (D1). Echo cancellation is not done
+#      (a later idea, #376).
 #
 # Lines that cannot be trusted (damaged marks, a drift beyond MAX_DRIFT) fall
 # back to lining the tracks up by their start times, with an event: never a
@@ -30,6 +34,25 @@ import numpy as np
 BLOCK_S = 10.0               # microphone seconds mixed at a time
 MAX_DRIFT = 0.005            # a fitted clock more than 0.5 % off its nominal rate is not trusted
 MIN_FIT_S = 20.0             # a segment shorter than this keeps the nominal rate
+LIMIT_KNEE = 0.8             # the limiter leaves samples below this share of full scale alone
+
+
+def soft_limit(x, full=32767.0):
+    """Samples (float array) through a soft limiter: unchanged up to
+    LIMIT_KNEE * full; above it, bent smoothly (tanh, no jump in level or
+    slope at the knee) so no sample reaches full. The same both ways round
+    and in order: a louder sample is never made quieter than a softer one.
+    A float array of the same shape is returned."""
+    x = np.asarray(x, dtype=np.float64)
+    knee = LIMIT_KNEE * full
+    room = full - knee
+    mag = np.abs(x)
+    over = mag > knee
+    if not over.any():
+        return x
+    out = x.copy()
+    out[over] = np.sign(x[over]) * (knee + room * np.tanh((mag[over] - knee) / room))
+    return out
 
 
 class MixError(ValueError):
@@ -173,5 +196,6 @@ class Mix:
                 voice = self.mic.read(a, b)
                 times = seg.time(np.arange(a, b, dtype=np.float64))
                 other = computer_at(times, self.comp_lines, self.comp)
-                mix = np.clip(np.round((voice + other) / 2.0), -32768, 32767)
+                mix = np.clip(np.round(soft_limit(voice.astype(np.float64) + other)),
+                              -32768, 32767)
                 yield mix.astype("<i2").tobytes()

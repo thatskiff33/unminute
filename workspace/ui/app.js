@@ -2773,9 +2773,10 @@ function renderComputer(rec, kind) {
     compSeen.said = now;
     $("rec-computer-level").setAttribute("aria-valuenow", String(Math.round(Math.max(-60, Math.min(0, db)))));
   }
-  // A call app playing through another device records silence. A check at
-  // the start of each recording: from 60 s of recorded time, if the
-  // microphone has heard anything and the computer nothing at all, say so.
+  // Every active output is recorded, so silence here means nothing has
+  // played yet (a call not joined, or its sound off). A check at the start
+  // of each recording: from 60 s of recorded time, if the microphone has
+  // heard anything and the computer nothing at all, say so.
   // Once the computer has played anything the hint stays off for this
   // recording: later silence is normal (a quiet call, a muted pause), and a
   // change of output has its own note under the card. The hint is a polite
@@ -2786,7 +2787,7 @@ function renderComputer(rec, kind) {
   const quiet = kind === "" && comp.on && rec.seconds >= 60 && compSeen.mic && !compSeen.comp;
   const hint = $("rec-computer-hint");
   if (!quiet) { hint.hidden = true; hint.textContent = ""; return; }
-  const text = `No sound from the computer yet. If you are on a call, check that it plays through ${comp.device || "the Windows default output"}.`;
+  const text = "No sound from the computer yet. If you are on a call, check that you can hear it on this computer.";
   if (hint.hidden) hint.hidden = false;
   else if (hint.textContent !== text) hint.textContent = text;
 }

@@ -40,6 +40,7 @@ AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
                     ".ogg", ".aac", ".wma", ".webm", ".avi")
 MAX_IMPORT_BYTES = 8 << 30          # 8 GB: several hours of video
 MAX_CLIP_S = 30.0
+PLAYBACK_GAINS_KEPT = 64                 # meetings whose playback gain is kept in memory
 MAX_EDIT_CHARS = 5000
 MAX_TITLE_CHARS = 200
 FAILED_RETRY_S = 60.0               # a failed cleanup is retried at most this often
@@ -492,6 +493,10 @@ class Workspace:
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self.open_loopback = None          # computer audio: loopback.open_loopback; tests a fake
+        # Playback level (#108): (meeting, audio file id) -> gain, in memory
+        # only, never logged or shown (P3); a new audio file gets a new id.
+        self._playback_gains = {}
+        self._playback_gains_lock = threading.Lock()
         if not held and self.locked is None:
             self._upkeep()
         if start:
@@ -998,13 +1003,15 @@ class Workspace:
 
     def _computer_track(self):
         """The computer track for a recording about to start, or None. The
-        source is the Windows default output (the meeting-app source needs a
-        choice of app on the page, a later slice)."""
+        source is every active output, mixed (the owner's decision 1, 25 Oct
+        2026, after real-sound trials: the default output alone missed a call
+        on a headset's hands-free output, and a meeting app's own process gave
+        silence)."""
         if not self._computer_wanted():
             return None
         from workspace import loopback       # only when a recording needs it
         return {"open": self.open_loopback or loopback.open_loopback,
-                "source": {"kind": loopback.ENDPOINT}, "rate": loopback.LOOPBACK_RATE,
+                "source": {"kind": loopback.ALL}, "rate": loopback.LOOPBACK_RATE,
                 "block_s": loopback.POLL_S}
 
     def microphone_devices(self):
@@ -2552,6 +2559,7 @@ class Workspace:
             raise WorkspaceError(f"Clips are limited to {MAX_CLIP_S:.0f} seconds.")
         reader = self._user_audio(mid)
         try:
+            gain = self._playback_gain(mid, reader)
             samples = reader.read(int(start * SR), int(end * SR))
         except Exception as exc:
             if media.damaged_audio(exc):
@@ -2561,7 +2569,34 @@ class Workspace:
             reader.close()               # never keep the audio open (cleanup, #17)
         if not len(samples):
             raise WorkspaceError("That time is after the end of the recording.")
-        return samples
+        return media.apply_playback_gain(samples, gain)
+
+    def _playback_gain(self, mid, reader):
+        """The gain that plays this meeting at a standard level (the owner's
+        decision 2(b), 25 Oct 2026; media.playback_gain), worked out on the
+        meeting's first clip and kept in memory for this audio file only:
+        the file's random id changes whenever the meeting's audio is written
+        again, so a gain is never stale. Audio that cannot be measured (a
+        damaged block where the sample is read) plays as it is. Never logged,
+        shown or kept on disk (P3); the saved audio never changes."""
+        key = (mid, reader.file_id)
+        with self._playback_gains_lock:
+            gain = self._playback_gains.get(key)
+        if gain is not None:
+            return gain
+        try:
+            gain = media.playback_gain(reader)
+        except Exception as exc:
+            if not (media.damaged_audio(exc) or isinstance(exc, OSError)):
+                raise
+            gain = 1.0
+        with self._playback_gains_lock:
+            for old in [k for k in self._playback_gains if k[0] == mid]:
+                del self._playback_gains[old]          # an earlier audio file of this meeting
+            while len(self._playback_gains) >= PLAYBACK_GAINS_KEPT:
+                del self._playback_gains[next(iter(self._playback_gains))]
+            self._playback_gains[key] = gain
+        return gain
 
     # -- lists and details --------------------------------------------------------------
 

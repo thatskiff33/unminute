@@ -2,8 +2,21 @@
 # Computer audio for two-track recording (#108): Windows loopback capture of
 # what the computer plays, through WASAPI with ctypes (no new dependency).
 #
-# Two sources, as the design names them (owner's decisions 1 and 2, 20 Oct 2026):
-#   - ENDPOINT: everything playing on the Windows default output device
+# Three sources. The app records ALL (the owner's decision 1, 25 Oct 2026,
+# after real-sound trials: the default output alone missed a call on a
+# headset's hands-free output, and the meeting app's process gave silence).
+#   - ALL: every active output device at once, each on its own reader thread
+#     with its own Pacer, summed by time into one track (the Mixer). Outputs
+#     that appear are added and outputs that go are dropped, each with an
+#     event, within about ALL_CHECK_S. An output that is interrupted but still
+#     listed is reopened at once, then tried every ALL_RETRY_S, and reported
+#     gone only after ALL_GRACE_S, so a device that is settling is one
+#     "reopened", never a removal followed by a return. With no output at the
+#     start the recording does not start; with none left mid-recording,
+#     silence is recorded until one appears; if outputs are listed but none
+#     records for REOPEN_LIMIT_S, the computer track ends.
+#   - ENDPOINT (kept; the app no longer uses it): everything playing on the
+#     Windows default output device
 #     (eConsole). When Windows changes the default output, or the device goes,
 #     capture follows the new default and says so (decision 6). With no output
 #     device at the start, the recording does not start; if the output goes
@@ -47,9 +60,16 @@ GAP_TOL_S = 0.03                 # a gap between blocks longer than this is fill
 DEFAULT_CHECK_S = 1.0            # how often the endpoint reader checks the default output
 REOPEN_LIMIT_S = 30.0            # the default output cannot be reopened this long: track ends
 ACTIVATE_TIMEOUT_S = 5.0         # process loopback activation is asynchronous
+ALL_CHECK_S = 1.0                # all outputs: how often the list of outputs is checked
+ALL_RETRY_S = 2.0                # all outputs: an output that would not open is tried again
+ALL_GRACE_S = 10.0               # all outputs: listed but not recording this long is "removed"
+MIX_HOLD_S = 0.5                 # the mix waits this long for a slow output, then goes without it
+MIX_RESYNC_S = 0.1               # an output's blocks this far from their stamps are realigned
+NAME_LIMIT = 120                 # an output's name (or all the outputs' names) is cut here
 
 ENDPOINT = "endpoint"
 PROCESS = "process"
+ALL = "all"
 
 
 class LoopbackError(RuntimeError):
@@ -138,14 +158,95 @@ def deliver(pacer, blocks, now, callback, lost=False):
         callback(np.zeros(gap[0], dtype=np.int16), gap[1])
 
 
+class Mixer:
+    """Sums the ALL source's outputs into one track by time. Thread-safe:
+    each output's reader calls add(); the stream's thread calls mix().
+
+    join(key, start) adds an input whose first frame is due at monotonic
+    time start; drop(key) removes it (its audio already added stays in).
+    add(key, block, stamp) places a block where that input's last block
+    ended, unless its stamp is more than MIX_RESYNC_S away (drift, or a gap
+    the Pacer did not fill): then at the stamp, never writing a frame of that
+    input twice. mix(now) returns [(block, stamp)] up to the time every
+    input has reached, or to now - MIX_HOLD_S when an input is slow (its late
+    audio is then left out); with no inputs, silence up to now. A block is
+    the sum of the inputs, clipped to 16 bits, so each output keeps its own
+    level."""
+
+    def __init__(self, rate, start):
+        self.rate = int(rate)
+        self.start = start                       # monotonic time of output frame 0
+        self.done = 0                            # output frames handed on
+        self.acc = np.zeros(0, dtype=np.int32)   # summed frames from self.done on
+        self.inputs = {}                         # key -> the next frame it writes
+        self._lock = threading.Lock()
+
+    def _frame(self, t):
+        return int(round((t - self.start) * self.rate))
+
+    def join(self, key, start):
+        with self._lock:
+            self.inputs[key] = max(self.done, self._frame(start))
+
+    def drop(self, key):
+        with self._lock:
+            self.inputs.pop(key, None)
+
+    def add(self, key, block, stamp):
+        block = np.asarray(block, dtype=np.int16).reshape(-1)
+        with self._lock:
+            cursor = self.inputs.get(key)
+            if cursor is None:
+                return                           # dropped: its late audio is not wanted
+            at = self._frame(stamp)
+            if abs(at - cursor) <= MIX_RESYNC_S * self.rate:
+                at = cursor
+            skip = max(0, self.done - at, cursor - at)
+            self.inputs[key] = max(cursor, at + len(block))
+            at += skip
+            block = block[skip:]
+            if not len(block):
+                return
+            off = at - self.done
+            if off + len(block) > len(self.acc):
+                grown = np.zeros(off + len(block), dtype=np.int32)
+                grown[:len(self.acc)] = self.acc
+                self.acc = grown
+            self.acc[off:off + len(block)] += block
+
+    def mix(self, now):
+        with self._lock:
+            floor = self._frame(now - MIX_HOLD_S)
+            reach = min(self.inputs.values()) if self.inputs else self._frame(now)
+            end = max(reach, floor)
+            n = end - self.done
+            if n <= 0:
+                return []
+            out = np.zeros(n, dtype=np.int32)
+            have = min(n, len(self.acc))
+            out[:have] = self.acc[:have]
+            self.acc = self.acc[have:]
+            stamp = self.start + self.done / self.rate
+            self.done = end
+        return [(np.clip(out, -32768, 32767).astype(np.int16), stamp)]
+
+
+def all_name(idents, names):
+    """The outputs being recorded, as one name: their names in order, at
+    most NAME_LIMIT characters. Kept with the recording's details and shown
+    to the user like a single output's name; never in diagnostics."""
+    return ", ".join(sorted(names.get(i) or "?" for i in idents))[:NAME_LIMIT]
+
+
 def check_source(source):
-    """A source as the recorder stores it: {"kind": "endpoint"} or
-    {"kind": "process", "pid": N}. Raises LoopbackError otherwise."""
+    """A source as the recorder stores it: {"kind": "all"}, {"kind":
+    "endpoint"} or {"kind": "process", "pid": N}. Raises LoopbackError
+    otherwise."""
     if not isinstance(source, dict):
         raise LoopbackError("Unknown computer audio source.")
     kind = source.get("kind")
-    if kind == ENDPOINT and set(source) == {"kind"}:
-        return {"kind": ENDPOINT}
+    if kind in (ALL, ENDPOINT) and set(source) == {"kind"}:
+        return {"kind": kind}
     pid = source.get("pid")
     if (kind == PROCESS and set(source) == {"kind", "pid"} and isinstance(pid, int)
             and not isinstance(pid, bool) and 0 < pid < 2 ** 32):
@@ -178,7 +279,7 @@ INCLUDE_TARGET_PROCESS_TREE = 0               # PROCESS_LOOPBACK_MODE
 VIRTUAL_PROCESS_LOOPBACK = "VAD\\Process_Loopback"
 
 # vtable slots (IUnknown takes 0 to 2)
-_ENUM_ENDPOINTS, _ENUM_DEFAULT = 3, 4                 # IMMDeviceEnumerator
+_ENUM_ENDPOINTS, _ENUM_DEFAULT, _ENUM_GET = 3, 4, 5   # IMMDeviceEnumerator
 _COLL_COUNT, _COLL_ITEM = 3, 4                        # IMMDeviceCollection
 _DEV_ACTIVATE, _DEV_PROPS, _DEV_ID = 3, 4, 5          # IMMDevice
 _PROPS_GET = 5                                        # IPropertyStore::GetValue
@@ -364,7 +465,7 @@ def _propvariant_text(api, value):
     characters; "" for any other type or a null pointer."""
     if value.vt != VT_LPWSTR or not value.pwszVal:
         return ""
-    return " ".join(api.ctypes.wstring_at(value.pwszVal).split())[:120]
+    return " ".join(api.ctypes.wstring_at(value.pwszVal).split())[:NAME_LIMIT]
 
 
 def _default_id(api, enumerator):
@@ -394,39 +495,44 @@ def list_outputs():
     """Active output devices as [{"name", "default"}], for the probe and,
     later, Settings. Opens nothing and plays nothing."""
     api = _com()
-    ct = api.ctypes
     owned = _co_initialize(api)
     enumerator = None
     try:
         enumerator = _enumerator(api)
         default_id = _default_id(api, enumerator)
-        collection = ct.c_void_p()
-        _check(api.call(enumerator, _ENUM_ENDPOINTS, E_RENDER, DEVICE_STATE_ACTIVE,
-                        ct.byref(collection),
-                        argtypes=(ct.c_int, api.wintypes.DWORD, ct.c_void_p)),
-               "Windows audio is not available.")
-        out = []
-        try:
-            count = ct.c_uint()
-            _check(api.call(collection.value, _COLL_COUNT, ct.byref(count),
-                            argtypes=(ct.c_void_p,)), "Windows audio is not available.")
-            for i in range(count.value):
-                device = ct.c_void_p()
-                if api.call(collection.value, _COLL_ITEM, i, ct.byref(device),
-                            argtypes=(ct.c_uint, ct.c_void_p)) & 0x80000000:
-                    continue
-                try:
-                    out.append({"name": _friendly_name(api, device.value),
-                                "default": _device_id(api, device.value) == default_id})
-                finally:
-                    api.release(device.value)
-        finally:
-            api.release(collection.value)
-        return out
+        return [{"name": name, "default": ident == default_id}
+                for ident, name in _active_outputs(api, enumerator)]
     finally:
         api.release(enumerator)
         if owned:
             api.ole32.CoUninitialize()
+
+
+def _active_outputs(api, enumerator):
+    """Every active output device as [(device id, name)], in Windows' order."""
+    ct = api.ctypes
+    collection = ct.c_void_p()
+    _check(api.call(enumerator, _ENUM_ENDPOINTS, E_RENDER, DEVICE_STATE_ACTIVE,
+                    ct.byref(collection),
+                    argtypes=(ct.c_int, api.wintypes.DWORD, ct.c_void_p)),
+           "Windows audio is not available.")
+    out = []
+    try:
+        count = ct.c_uint()
+        _check(api.call(collection.value, _COLL_COUNT, ct.byref(count),
+                        argtypes=(ct.c_void_p,)), "Windows audio is not available.")
+        for i in range(count.value):
+            device = ct.c_void_p()
+            if api.call(collection.value, _COLL_ITEM, i, ct.byref(device),
+                        argtypes=(ct.c_uint, ct.c_void_p)) & 0x80000000:
+                continue
+            try:
+                out.append((_device_id(api, device.value), _friendly_name(api, device.value)))
+            finally:
+                api.release(device.value)
+    finally:
+        api.release(collection.value)
+    return out
 
 
 def _capture_format(api):
@@ -523,20 +629,103 @@ def _endpoint_client(api, enumerator):
     """(client, name, device id) for the default output, or (None, None, None)
     when there is none. The name and id are read before the stream starts,
     so an error there leaves nothing running."""
-    ct = api.ctypes
     device = _default_render(api, enumerator)
     if device is None:
         return None, None, None
     try:
         name, ident = _friendly_name(api, device), _device_id(api, device)
-        audio_client = ct.c_void_p()
-        _check(api.call(device, _DEV_ACTIVATE, ct.byref(api.IID_IAudioClient), CLSCTX_ALL,
-                        None, ct.byref(audio_client),
-                        argtypes=(ct.c_void_p, api.wintypes.DWORD, ct.c_void_p, ct.c_void_p)),
-               "Computer audio could not be opened.")
-        return _Client(api, audio_client.value), name, ident
+        return _activate(api, device), name, ident
     finally:
         api.release(device)
+
+
+def _activate(api, device):
+    """A started loopback client on an output device (IMMDevice pointer)."""
+    ct = api.ctypes
+    audio_client = ct.c_void_p()
+    _check(api.call(device, _DEV_ACTIVATE, ct.byref(api.IID_IAudioClient), CLSCTX_ALL,
+                    None, ct.byref(audio_client),
+                    argtypes=(ct.c_void_p, api.wintypes.DWORD, ct.c_void_p, ct.c_void_p)),
+           "Computer audio could not be opened.")
+    return _Client(api, audio_client.value)
+
+
+def _output_client(api, enumerator, ident):
+    """A started loopback client on the output device with this id (ALL)."""
+    ct = api.ctypes
+    device = ct.c_void_p()
+    _check(api.call(enumerator, _ENUM_GET, ident, ct.byref(device),
+                    argtypes=(ct.c_wchar_p, ct.c_void_p)),
+           "Computer audio could not be opened.")
+    try:
+        return _activate(api, device.value)
+    finally:
+        api.release(device.value)
+
+
+class _OutputReader:
+    """One output device's loopback for the ALL source, on its own reader
+    thread with its own COM objects and Pacer, adding its blocks to the
+    mixer (keyed by this reader, so a reopened output is a new input). It is
+    opening, then live (open and reading), then gone (it would not open, the
+    device went, or it was stopped). was_live stays True once it has been
+    live. A gone reader has left the mixer."""
+
+    def __init__(self, ident, mixer, tick):
+        self.ident, self.mixer, self._tick = ident, mixer, tick
+        self.began = tick()
+        self.live = self.gone = self.was_live = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="loopback-output",
+                                        daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    @property
+    def opening(self):
+        return not (self.live or self.gone)
+
+    def stop(self, wait=True):
+        self._stop.set()
+        if wait and self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join(5)
+
+    def _run(self):
+        api = client = enumerator = None
+        owned = False
+        try:
+            api = _com()
+            owned = _co_initialize(api)
+            enumerator = _enumerator(api)
+            client = _output_client(api, enumerator, self.ident)
+            if self._stop.is_set():
+                return                         # given up on while it was opening
+            pacer = Pacer(LOOPBACK_RATE, self._tick())
+            self.mixer.join(self, pacer.end)
+            self.live = self.was_live = True
+
+            def add(block, stamp):
+                self.mixer.add(self, block, stamp)
+
+            while not self._stop.wait(POLL_S):
+                try:
+                    blocks, lost = client.read()
+                except LoopbackError:
+                    break                      # the device went (or Windows audio restarted)
+                deliver(pacer, blocks, self._tick(), add, lost)
+        except Exception:
+            pass                               # would not open: the stream tries it again
+        finally:
+            self.mixer.drop(self)
+            self.live, self.gone = False, True
+            if client is not None:
+                client.close()
+            if enumerator is not None:
+                api.release(enumerator)
+            if owned:
+                api.ole32.CoUninitialize()
 
 
 def _process_client(api, pid, event):
@@ -606,11 +795,15 @@ def _process_client(api, pid, event):
 class LoopbackStream:
     """Computer audio from one source. callback(block, stamp) gets each
     16-bit mono block at LOOPBACK_RATE with the monotonic time of its first
-    frame; notify(kind, name) is told "switched" (now following a new default
-    output, name given), "reopened" (the same output again after it was
-    interrupted or after a spell with none, name given), "no_output" (no
-    output device: silence until one appears) and "failed" (capture stopped;
-    nothing more arrives). Both are called on the reader thread. start()
+    frame; notify(kind, name) is told "switched" (ENDPOINT: now following a
+    new default output), "output_added" (ALL: an output not recorded before
+    in this recording is recorded too), "output_removed" (ALL: an output
+    went; the others carry on), "reopened" (an output recorded earlier is
+    back after it was interrupted, or after a spell with none), "no_output"
+    (no output device: silence until one appears) and "failed" (capture
+    stopped; nothing more arrives). The name given is the output now
+    recorded (ALL: every output now recorded). Both are called on the
+    stream's own thread. start()
     returns once capture is running, or raises LoopbackError; stop() and
     close() may be called more than once."""
 
@@ -657,6 +850,8 @@ class LoopbackStream:
         try:
             if self.source["kind"] == PROCESS:
                 self._run_process(api)
+            elif self.source["kind"] == ALL:
+                self._run_all(api)
             else:
                 self._run_endpoint(api)
         except Exception as exc:
@@ -771,6 +966,152 @@ class LoopbackStream:
             if client is not None:
                 client.close()
             api.release(enumerator)
+
+    def _run_all(self, api):
+        """Every active output, each on its own reader, summed by time
+        (Mixer). This thread checks the list of outputs every ALL_CHECK_S (at
+        once when a reader has gone), opens new ones, drops those that went,
+        hands the mix on every POLL_S and tells the recorder what changed."""
+        enumerator = _enumerator(api)
+        readers = {}                  # device id -> its current _OutputReader
+        try:
+            mixer = Mixer(LOOPBACK_RATE, self._tick())
+            names = dict(_active_outputs(api, enumerator))
+            if not names:
+                raise LoopbackError("This computer has no sound output to record.")
+            for ident in names:
+                readers[ident] = _OutputReader(ident, mixer, self._tick).start()
+            deadline = time.monotonic() + ACTIVATE_TIMEOUT_S
+            while (any(r.opening for r in readers.values())
+                   and time.monotonic() < deadline):
+                time.sleep(0.01)
+            # Recorded from the start: every output that has been live, even
+            # one that has already dropped out again (it is reopened below).
+            recorded = {i for i, r in readers.items() if r.was_live}
+            if not recorded:
+                raise LoopbackError("Computer audio could not be opened.")
+            self.device_name = all_name(recorded, names)
+            self._opened.set()
+            self._supervise(api, enumerator, mixer, readers, names, recorded)
+            # The readers stop first (each leaves the mixer as it ends); what
+            # they read before the stop is then mixed and handed on, not dropped.
+            self._stop_readers(readers)
+            for block, stamp in mixer.mix(self._tick()):
+                self._callback(block, stamp)
+        finally:
+            self._stop_readers(readers)
+            api.release(enumerator)
+
+    @staticmethod
+    def _stop_readers(readers):
+        for r in readers.values():
+            r.stop(wait=False)
+        for r in readers.values():
+            r.stop()
+        readers.clear()
+
+    def _supervise(self, api, enumerator, mixer, readers, names, recorded):
+        """The ALL source's loop, until stop() or a failure (raised).
+
+        recorded: the outputs the recorder has been told are recorded. ever:
+        every output recorded at some point in this recording; one of these
+        back is "reopened", any other "output_added". interrupted: recorded
+        outputs whose reader went while Windows still lists them (reopened at
+        once, then every ALL_RETRY_S). down: when each recorded output stopped
+        recording; it is "output_removed" when Windows no longer lists it or
+        after ALL_GRACE_S, unless no other output is recording: then the track
+        carries on with silence, and ends after REOPEN_LIMIT_S."""
+        ever, interrupted, down, retry_at = set(recorded), set(), {}, {}
+        listed = set(names)
+        checked = self._tick()
+        failing = None                # when listing the outputs began to fail
+        none_since = None             # when outputs were listed but none recorded
+        while not self._stop.wait(POLL_S):
+            now = self._tick()
+            for block, stamp in mixer.mix(now):
+                self._callback(block, stamp)
+            # Readers that went: one that was live is reopened at once; one
+            # that would not open (a reopen too), or is stuck opening, is
+            # tried again after ALL_RETRY_S.
+            went = False
+            for ident, r in list(readers.items()):
+                stuck = r.opening and now - r.began > ACTIVATE_TIMEOUT_S
+                if not (r.gone or stuck):
+                    continue
+                went = True
+                if stuck:
+                    r.stop(wait=False)     # it leaves the mixer itself when it returns
+                if r.was_live:
+                    retry_at[ident] = now
+                    if ident in recorded:
+                        interrupted.add(ident)
+                else:
+                    retry_at[ident] = now + ALL_RETRY_S
+                del readers[ident]
+            if went or now - checked >= ALL_CHECK_S:
+                checked = now
+                try:
+                    found = dict(_active_outputs(api, enumerator))
+                except LoopbackError:
+                    failing = now if failing is None else failing
+                    if now - failing >= REOPEN_LIMIT_S:
+                        raise
+                    found = None
+                if found is not None:
+                    failing = None
+                    names.update(found)
+                    listed = set(found)
+                    for ident in [i for i in readers if i not in listed]:
+                        readers.pop(ident).stop(wait=False)
+                    for ident in listed:
+                        if ident not in readers and now >= retry_at.get(ident, now):
+                            retry_at.pop(ident, None)
+                            readers[ident] = _OutputReader(ident, mixer, self._tick).start()
+            # Tell the recorder only once no reader is opening, so a reopen
+            # is seen as one change, never as a removal and then a return.
+            if any(r.opening for r in readers.values()):
+                continue
+            live = {i for i, r in readers.items() if r.live}
+            if not listed:
+                none_since = None
+                interrupted.clear()
+                if recorded:
+                    recorded.clear()
+                    down.clear()
+                    self._say("no_output", None)
+                continue
+            if live:
+                none_since = None
+            elif none_since is None:
+                none_since = now
+            elif now - none_since >= REOPEN_LIMIT_S:
+                raise LoopbackError("Computer audio stopped.")
+            for ident in recorded - live:
+                down.setdefault(ident, now)
+            gone = {i for i in recorded - live
+                    if i not in listed or now - down[i] >= ALL_GRACE_S}
+            if gone and live:
+                recorded -= gone
+                interrupted -= gone
+                for ident in gone:
+                    down.pop(ident, None)
+                self.device_name = all_name(live, names)
+                self._say("output_removed", self.device_name)
+            new = live - recorded
+            back = (new & ever) | (live & interrupted)
+            added = new - ever
+            if not (back or added):
+                continue
+            recorded |= new
+            ever |= new
+            interrupted -= live
+            for ident in live:
+                down.pop(ident, None)
+            self.device_name = all_name(live, names)
+            if added:
+                self._say("output_added", self.device_name)
+            if back:
+                self._say("reopened", self.device_name)
 
 
 def open_loopback(source, callback, notify):
