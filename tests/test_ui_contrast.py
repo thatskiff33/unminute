@@ -1,26 +1,39 @@
 # tests/test_ui_contrast.py
 # Non-text contrast of the page's own colours (WCAG 2.2 1.4.11, #298), worked
-# out from workspace/ui/tokens.css: the border of fields and buttons
-# (--control-line) and the focus ring (--accent) reach 3:1 against each surface
-# a control sits on, in the light and the dark theme. The meeting title, a
-# field drawn as a heading, has a 1 px --control-line border at rest that
-# reaches 3:1, the border in the text colour when the pointer is over it, and
-# the 2 px focus ring over the border with keyboard focus (the owner's decision
-# of 23 October 2026, recorded on #298 at issuecomment-6379467125). The design
-# boards draw controls, and the title, with the same border colour as the
-# tokens. tools/accessibility_check.py measures the live page
-# (tests/test_ui_page_audit.py runs its audit headless); these tests keep the
-# tokens and rules from drifting back.
+# out from workspace/ui/tokens.css: the focus ring (--accent) reaches 3:1
+# against each surface a control sits on, in the light and the dark theme, and
+# so does the ring on pink and the darker "Optional" on the current setup step.
+#
+# Three things fall short of WCAG 2.2 AA for the brand look, by the owner's
+# decision of 25 October 2026 (NZ time), recorded on #298 at
+# issuecomment-6391966468. Each is a named owner exception in
+# tools/accessibility_check.py (OWNER_EXCEPTIONS), and these tests keep the
+# page, the boards and that record agreeing, so nothing else slips under it:
+#   - control borders (--control-line, 1.4.11): the brand values, below 3:1;
+#   - the meeting title at rest (1.4.11): no border until hovered; the hover
+#     border reaches 3:1 and keyboard focus draws the 2 px ring over it;
+#   - the tick on a done step (--done): a graphic drawn by the style, at 3:1
+#     (1.4.11), not text at 4.5:1 (1.4.3).
+# tools/accessibility_check.py measures the live page (tests/test_ui_page_audit.py
+# runs its audit headless); these tests keep the tokens and rules from drifting.
 
 import re
+import sys
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+import accessibility_check  # noqa: E402
+
 TOKENS = (ROOT / "workspace" / "ui" / "tokens.css").read_text(encoding="utf-8")
 APP_CSS = (ROOT / "workspace" / "ui" / "app.css").read_text(encoding="utf-8")
+APP_JS = (ROOT / "workspace" / "ui" / "app.js").read_text(encoding="utf-8")
+INDEX = (ROOT / "workspace" / "ui" / "index.html").read_text(encoding="utf-8")
 BOARDS = ROOT / "docs" / "design" / "boards"
 NON_TEXT = 3.0      # WCAG 2.2 1.4.11; no rounding up
+EXCEPTIONS = accessibility_check.OWNER_EXCEPTIONS
+DECISION = "https://github.com/thatskiff33/unminute/issues/298#issuecomment-6391966468"
 
 
 def declarations(block):
@@ -87,6 +100,10 @@ def rules(css, selector_part):
             if selector_part in sel]
 
 
+def board_text():
+    return "".join(b.read_text(encoding="utf-8") for b in sorted(BOARDS.glob("*.dc.html")))
+
+
 class LuminanceTests(unittest.TestCase):
     def test_the_srgb_threshold_is_wcag_2_2s(self):
         # A blended channel can fall between the WCAG 2.0 threshold (0.03928)
@@ -95,13 +112,54 @@ class LuminanceTests(unittest.TestCase):
         self.assertAlmostEqual(v / 255 / 12.92, luminance((v, v, v)), places=12)
 
 
+class OwnerExceptionRecordTests(unittest.TestCase):
+    """The owner's exceptions of 25 October 2026 are named, with their rule,
+    what they cover and the decision, and match the page exactly."""
+
+    def test_the_three_exceptions_and_no_others(self):
+        self.assertEqual({"control borders": "1.4.11", "meeting title at rest": "1.4.11",
+                          "done tick": "1.4.3 (as text); 1.4.11 (as a graphic)"},
+                         {name: ex["criterion"] for name, ex in EXCEPTIONS.items()})
+        for name, ex in EXCEPTIONS.items():
+            with self.subTest(exception=name):
+                self.assertEqual(DECISION, ex["decision"])
+
+    def test_the_control_border_exception_is_the_token_s_value(self):
+        recorded = EXCEPTIONS["control borders"]
+        self.assertIn("--control-line", recorded["covers"])
+        for theme, tokens in themes().items():
+            with self.subTest(theme=theme):
+                self.assertEqual(rgba(recorded["tokens"][theme]), rgba(tokens["--control-line"]))
+                # The pattern for this mode matches its colour as the browser
+                # reports it; the other mode's colour is not excused here.
+                drawn = recorded["tokens"][theme]
+                other = recorded["tokens"]["dark" if theme == "light" else "light"]
+                self.assertEqual("control borders", accessibility_check.owner_exception(
+                    "low_contrast_boundary", f"input#x 1.80 {drawn}", theme))
+                self.assertIsNone(accessibility_check.owner_exception(
+                    "low_contrast_boundary", f"input#x 1.80 {other}", theme))
+
+    def test_the_title_exception_names_the_title_rule(self):
+        self.assertIn(".title-edit textarea", EXCEPTIONS["meeting title at rest"]["covers"])
+        self.assertIn("--done", EXCEPTIONS["done tick"]["covers"])
+        self.assertIn(".done-tick", EXCEPTIONS["done tick"]["covers"])
+
+
 class ControlBorderContrastTests(unittest.TestCase):
-    def test_the_control_border_reaches_3_to_1_on_every_surface(self):
+    def test_the_control_border_is_3_to_1_or_the_owner_s_exception(self):
+        # Below 3:1 only at the brand values the owner accepted; any other
+        # value must reach 3:1 on every surface. An exception no longer needed
+        # (the value reaches 3:1 everywhere) is taken out of the record.
+        recorded = EXCEPTIONS["control borders"]["tokens"]
         for theme, tokens in themes().items():
             line = rgba(tokens["--control-line"])
-            for name, bg in surfaces(tokens).items():
-                with self.subTest(theme=theme, surface=name):
-                    self.assertGreaterEqual(ratio(over(line, bg), bg), NON_TEXT)
+            excepted = line == rgba(recorded[theme])
+            lowest = min(ratio(over(line, bg), bg) for bg in surfaces(tokens).values())
+            with self.subTest(theme=theme):
+                if excepted:
+                    self.assertLess(lowest, NON_TEXT, "the owner exception is no longer needed")
+                else:
+                    self.assertGreaterEqual(lowest, NON_TEXT)
 
     def test_the_focus_ring_reaches_3_to_1_on_the_page_and_a_card(self):
         for theme, tokens in themes().items():
@@ -114,11 +172,11 @@ class ControlBorderContrastTests(unittest.TestCase):
     def test_the_boards_draw_controls_with_the_token_colour(self):
         # The boards write colours inline, without spaces: the control border
         # (and the switch's off track, which the page draws with the same
-        # token) as the token's value, never the values before #298.
-        before_298 = ("rgba(20,41,102,0.28)", "rgba(255,255,255,0.32)", "rgba(20,41,102,0.24)")
-        text = "".join(b.read_text(encoding="utf-8") for b in sorted(BOARDS.glob("*.dc.html")))
-        for old in before_298:
-            self.assertNotIn(old, text, "a board draws a control with the old border colour")
+        # token) as the token's value, never #319's values or an older one.
+        others = ("rgba(20,41,102,0.51)", "rgba(255,255,255,0.38)", "rgba(20,41,102,0.24)")
+        text = board_text()
+        for old in others:
+            self.assertNotIn(old, text, "a board draws a control with another border colour")
         for theme, tokens in themes().items():
             with self.subTest(theme=theme):
                 self.assertIn(tokens["--control-line"].replace(" ", ""), text)
@@ -128,11 +186,34 @@ class TextAndRingOnColourTests(unittest.TestCase):
     """The tick on a done step, "Optional" on the current setup step, and the
     focus ring on pink (#298, from the real-window run of the extended check)."""
 
-    def test_the_done_tick_reaches_4_5_to_1(self):
+    def test_the_done_tick_is_a_graphic_at_3_to_1(self):
+        # WCAG 1.4.11 for a graphic (the owner's decision: not text at 4.5:1).
         for theme, tokens in themes().items():
             with self.subTest(theme=theme):
                 done = rgba(tokens["--done"])[:3]
-                self.assertGreaterEqual(ratio(rgba(tokens["--done-fg"])[:3], done), 4.5)
+                self.assertGreaterEqual(ratio(rgba(tokens["--done-fg"])[:3], done), NON_TEXT)
+
+    def test_the_done_tick_is_drawn_by_the_style_not_written_as_text(self):
+        # The style draws the tick with an empty text alternative; the page
+        # writes no tick as text, and each done step's marker is aria-hidden.
+        body = "".join(b for sel, b in rules(APP_CSS, ".done-tick::before"))
+        self.assertRegex(body, r'\bcontent\s*:\s*"\\2713"\s*/\s*""')
+        for name, source in (("app.js", APP_JS), ("index.html", INDEX)):
+            with self.subTest(file=name):
+                self.assertNotIn("\u2713", source)
+                self.assertNotIn("&#10003;", source)
+        for marker in ('class: done[i] ? "step-dot done-tick" : "step-dot", "aria-hidden": "true"',
+                       'class: kind === "done" ? "su-dot done-tick" : "su-dot", '
+                       '"aria-hidden": "true"'):
+            self.assertIn(marker, APP_JS)
+        self.assertIn('<span class="ho-n done-tick" aria-hidden="true"></span>', INDEX)
+        # Each done marker is drawn in --done-fg on --done.
+        for sel in (".stepper li.done .step-dot", ".su-steps li.done .su-dot",
+                    ".ho-step.done .ho-n"):
+            with self.subTest(selector=sel):
+                drawn = "".join(b for s, b in rules(APP_CSS, sel))
+                self.assertIn("background: var(--done)", drawn)
+                self.assertIn("color: var(--done-fg)", drawn)
 
     def test_optional_on_the_current_setup_step_reaches_4_5_to_1(self):
         body = "".join(b for sel, b in rules(APP_CSS, ".su-steps li.now .su-opt"))
@@ -167,9 +248,9 @@ class TextAndRingOnColourTests(unittest.TestCase):
                     self.assertGreaterEqual(ratio(over(rgba(tokens[token[1]]), bg), bg), NON_TEXT)
 
     def test_the_boards_draw_done_steps_with_the_token_colour(self):
-        text = "".join(b.read_text(encoding="utf-8") for b in sorted(BOARDS.glob("*.dc.html")))
-        self.assertNotIn("#00A275", text.upper(), "a board draws a done step in the old green")
-        self.assertIn(themes()["light"]["--done"].strip().upper(), text.upper())
+        text = board_text().upper()
+        self.assertNotIn("#008661", text, "a board draws a done step in #319's green")
+        self.assertIn(themes()["light"]["--done"].strip().upper(), text)
 
 
 def exact_rule(selector):
@@ -182,43 +263,29 @@ def board_title(board):
     """The inline style of the sample meeting's title on a design board."""
     text = (BOARDS / board).read_text(encoding="utf-8")
     found = re.search(r"<h1 style=\"([^\"]*)\">Community garden planning", text)
-    return found[1] if found else ""
+    return found[1] if found else None
 
 
 class MeetingTitleBoundaryTests(unittest.TestCase):
-    """The meeting title is a field drawn as a heading. At rest it has a 1 px
-    border in the control border colour that reaches 3:1, which the hover
-    strengthens and keyboard focus covers with the 2 px ring (the owner's
-    decision of 23 October 2026, recorded on #298 at issuecomment-6379467125)."""
+    """The meeting title is a field drawn as a heading. At rest it shows no
+    border (the owner exception "meeting title at rest"); hovered, its border
+    takes a colour at 3:1, and keyboard focus covers it with the 2 px ring."""
 
-    def test_the_title_has_a_control_border_at_rest(self):
+    def test_the_title_has_no_visible_border_at_rest(self):
         body = exact_rule(".title-edit textarea")
-        self.assertRegex(body, r"\bborder\s*:\s*1px solid var\(--control-line\)",
-                         "the meeting title has no control border at rest")
+        self.assertRegex(body, r"\bborder\s*:\s*1px solid transparent\s*(;|$)",
+                         "the meeting title shows a border at rest")
+        self.assertRegex(body, r"\bbackground\s*:\s*transparent\b")
 
-    def test_the_rest_border_reaches_3_to_1_where_the_title_sits(self):
-        # The title sits on the page; the side panel's card is the lightest
-        # neighbour in dark. Hovered, its fill is --soft.
-        for theme, tokens in themes().items():
-            line = rgba(tokens["--control-line"])
-            for name in ("page", "card"):
-                bg = surfaces(tokens)[name]
-                with self.subTest(theme=theme, surface=name):
-                    self.assertGreaterEqual(ratio(over(line, bg), bg), NON_TEXT)
-
-    def test_hovering_strengthens_the_border(self):
+    def test_hovering_shows_a_border_at_3_to_1(self):
         body = exact_rule(".title-edit textarea:hover")
         token = re.search(r"\bborder-color\s*:\s*var\((--[\w-]+)\)", body)
         if token is None:
-            self.fail("hovering the title does not change its border")
+            self.fail("hovering the title shows no border")
         for theme, tokens in themes().items():
-            page = surfaces(tokens)["page"]
-            soft = over(rgba(tokens["--soft"]), page)
-            rest = ratio(over(rgba(tokens["--control-line"]), page), page)
-            hover = ratio(over(rgba(tokens[token[1]]), soft), soft)
+            soft = over(rgba(tokens["--soft"]), surfaces(tokens)["page"])
             with self.subTest(theme=theme):
-                self.assertGreater(hover, rest)
-                self.assertGreaterEqual(hover, NON_TEXT)
+                self.assertGreaterEqual(ratio(over(rgba(tokens[token[1]]), soft), soft), NON_TEXT)
 
     def test_keyboard_focus_stays_distinct_and_thicker(self):
         # The page's ring (2 px, orange) is drawn over the 1 px border: the
@@ -246,24 +313,13 @@ class MeetingTitleBoundaryTests(unittest.TestCase):
             with self.subTest(selector=sel):
                 self.assertNotRegex(body, r"\boutline(-width|-color|-style)?\s*:")
 
-    def test_the_boards_draw_the_title_with_the_control_border(self):
-        # Meeting.dc.html takes the colour from its theme (secBorder, which
-        # the board's controls use); Meeting-Narrow.dc.html, light only,
-        # writes it out.
-        meeting = (BOARDS / "Meeting.dc.html").read_text(encoding="utf-8")
-        self.assertRegex(board_title("Meeting.dc.html"),
-                         r"\bborder\s*:\s*1px solid \{\{t\.secBorder\}\}")
-        drawn = [rgba(v.replace(",", ", ")) for v in
-                 re.findall(r"\bsecBorder: '(rgba\([^']*\))'", meeting)]
-        for theme, tokens in themes().items():
-            with self.subTest(theme=theme):
-                self.assertIn(rgba(tokens["--control-line"]), drawn)
-        narrow = re.search(r"\bborder\s*:\s*1px solid (rgba\([^)]*\))",
-                           board_title("Meeting-Narrow.dc.html"))
-        self.assertIsNotNone(narrow, "the narrow board's title has no border")
-        if narrow:
-            self.assertEqual(rgba(themes()["light"]["--control-line"]),
-                             rgba(narrow[1].replace(",", ", ")))
+    def test_the_boards_draw_the_title_without_a_border(self):
+        # The boards show the title at rest.
+        for board in ("Meeting.dc.html", "Meeting-Narrow.dc.html"):
+            with self.subTest(board=board):
+                style = board_title(board)
+                self.assertIsNotNone(style, "the board has no sample title")
+                self.assertNotRegex(style or "", r"\bborder\b")
 
     def test_the_title_keeps_the_focus_ring(self):
         for sel, body in rules(APP_CSS, ".title-edit"):

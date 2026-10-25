@@ -8,8 +8,11 @@
 #   - every focusable control shows a focus indicator (2.4.7) at 3:1 (1.4.11),
 #     including on the pink of a hold and of a passage left out, on Meetings
 #     and Settings as well;
-#   - text reaches 4.5:1 (1.4.3): the green tick of a done step, and
-#     "Optional" on the current setup step;
+#   - text reaches 4.5:1 (1.4.3): "Optional" on the current setup step, and
+#     no text finding in the setup steps, the meeting or the hand off page;
+#   - the tick on a done step is a graphic, not text (the owner's decision of
+#     25 October 2026 on #298): drawn by the style, with no text of its own,
+#     aria-hidden, at 3:1 on the brand green (1.4.11);
 #   - pointer targets are 24 by 24 CSS px or spaced (2.5.8): the back links,
 #     the transcript's times and passages, the template links and the
 #     "Replace names" check box; and nothing covers part of a back link's
@@ -17,10 +20,15 @@
 #     reach into it), which the audit's box measurement cannot see;
 #   - accessible names contain the visible label (2.5.3): playback speed,
 #     the speaker names dialog and the passages to leave out;
-#   - the meeting title, a field, has a boundary at 3:1 at rest (1.4.11; the
-#     owner's decision of 23 October 2026 on #298), at 1280, 640 and 320 px,
-#     and its box is tall enough for its text with the border;
+#   - field boundaries reach 3:1 (1.4.11) in every view, except where a named
+#     owner exception in tools/accessibility_check.py (OWNER_EXCEPTIONS; the
+#     owner's decision of 25 October 2026 on #298) covers the finding: a
+#     border in the brand --control-line colour, and the meeting title at
+#     rest, which shows no border until hovered (at 1280, 640 and 320 px); the
+#     title's box is tall enough for its text with the border;
 #   - nothing that only a pointer can use (2.1.1): the seek bar's fill.
+# A finding an owner exception covers is not a failure here, as in the tool;
+# any other finding of the same check is.
 
 import html
 import http.server
@@ -44,8 +52,10 @@ EDGE = next((p for p in design_check.EDGE if p.is_file()), None)
 
 # Each view: the fixtures.js scenario, script run once it is ready, the window
 # width, and the audit lists that must be empty.
-FOCUS = ["focus_not_measured", "no_focus_ring", "low_contrast_focus"]
-TITLE = ["low_contrast_boundary", "pointer_only"]
+FOCUS = ["focus_not_measured", "no_focus_ring", "low_contrast_focus", "low_contrast_boundary"]
+TITLE = ["pointer_only"]
+# The views whose sample shows a done step's tick.
+TICKS = ("setup speaker names", "setup microphone", "meeting", "handoff page")
 VIEWS = {
     # The real-window run of 23 October 2026 reported no_focus_ring on these
     # two (and on the meeting and hand off views); none is found headless.
@@ -85,6 +95,22 @@ RUNNER = """
   // The meeting title's box holds its text, border included (no line cut off).
   const title = document.getElementById('m-title');
   out.title_fits = title.scrollHeight <= title.clientHeight;
+  // Each shown done step's tick: text of its own (there should be none), its
+  // generated content, whether it is hidden from assistive technology, and
+  // the tick's contrast on the marker's fill (WCAG 2.2 luminance).
+  const lum = (c) => { const [r, g, b] = c.match(/[0-9.]+/g).slice(0, 3).map((v) => {
+    v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  out.done_ticks = [...document.querySelectorAll('.done-tick')].filter((el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && !el.closest('[hidden]');
+  }).map((el) => {
+    const fg = lum(getComputedStyle(el, '::before').color);
+    const bg = lum(getComputedStyle(el).backgroundColor);
+    return {cls: el.className, text: el.textContent, hidden: !!el.closest('[aria-hidden="true"]'),
+            content: getComputedStyle(el, '::before').content,
+            ratio: (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05)};
+  });
   // Each shown back link answers a pointer over its whole 24 px target: no
   // later element (such as the meeting title's border box) covers part of it.
   // The audit measures the link's box, which an overlap leaves unchanged.
@@ -228,10 +254,39 @@ class PageAuditTests(unittest.TestCase):
                 self.assertEqual([], r.get("back_link_covered", ["(no result)"]))
 
     def test_no_findings_in_the_views_fixed_for_298(self):
+        # Only a finding a named owner exception covers is left out, as in the tool.
         for (name, mode), r in self.results.items():
             for key in VIEWS[name][3]:
                 with self.subTest(view=name, mode=mode, check=key):
-                    self.assertEqual([], r.get(key, ["(no result)"]))
+                    found = r.get(key, ["(no result)"])
+                    self.assertEqual(
+                        [], [f for f in found
+                             if not accessibility_check.owner_exception(key, f, mode)])
+
+    def test_the_meeting_title_at_rest_is_the_owner_s_exception(self):
+        # Measured at rest: no boundary, and that finding is the named exception.
+        for (name, mode), r in self.results.items():
+            if VIEWS[name][0] != "meeting":
+                continue
+            with self.subTest(view=name, mode=mode):
+                title = [f for f in r.get("low_contrast_boundary", [])
+                         if f.startswith("textarea#m-title ")]
+                self.assertEqual(1, len(title), "the title was not measured at rest")
+                self.assertEqual("meeting title at rest", accessibility_check.owner_exception(
+                    "low_contrast_boundary", title[0], mode))
+
+    def test_the_done_tick_is_a_graphic_at_3_to_1(self):
+        for (name, mode), r in self.results.items():
+            if name not in TICKS:
+                continue
+            with self.subTest(view=name, mode=mode):
+                ticks = r.get("done_ticks", [])
+                self.assertGreater(len(ticks), 0, "no done step's tick was shown")
+                for tick in ticks:
+                    self.assertEqual("", tick["text"], "the tick is written as text")
+                    self.assertTrue(tick["hidden"], "the tick is not aria-hidden")
+                    self.assertEqual('"✓" / ""', tick["content"])
+                    self.assertGreaterEqual(tick["ratio"], 3.0)
 
 
 if __name__ == "__main__":

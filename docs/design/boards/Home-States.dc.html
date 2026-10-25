@@ -92,7 +92,7 @@ body{margin:0}
 class Component extends DCLogic {
   renderVals() {
     const P = (label) => ({ label, weight: 700, bg: '#142966', fg: '#FFFFFF', border: '#142966' });
-    const S = (label) => ({ label, weight: 600, bg: '#FFFFFF', fg: '#142966', border: 'rgba(20,41,102,0.51)' });
+    const S = (label) => ({ label, weight: 600, bg: '#FFFFFF', fg: '#142966', border: 'rgba(20,41,102,0.28)' });
     const row = (o) => ({ held: false, bar: false, discard: false, metaColor: '#566591', pct: 0, width: '0%', fill: '#2B61BF', buttons: [], ...o });
     return {
       groups: [
@@ -110,7 +110,7 @@ class Component extends DCLogic {
           row({ title: 'Quarterly planning (sample)', meta: 'Yesterday · 42 min · 4 speakers · audio removed', pill: 'Ready to hand off', dot: '#DD5EB9', held: true, buttons: [P('Hand off…')] })
         ] },
         { title: 'Cleaning up', rows: [
-          row({ title: 'Board meeting (sample)', meta: '3 days old · removing the transcript', pill: 'Cleanup pending', dot: '#008661' }),
+          row({ title: 'Board meeting (sample)', meta: '3 days old · removing the transcript', pill: 'Cleanup pending', dot: '#00A275' }),
           row({ title: 'Strategy day (sample)', meta: 'Cleanup failed: a file is in use. Close it and try again.', metaColor: '#B3261E', pill: 'Cleanup failed', dot: '#B3261E', buttons: [P('Try again')] })
         ] }
       ]
