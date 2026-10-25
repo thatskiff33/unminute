@@ -158,16 +158,19 @@ class AssessTests(unittest.TestCase):
                       ["Commit reviewed: 1234567", "Range-diff: 1234567..abcdef1 not identical"],
                       ["Commit reviewed: 1234567",
                        "Range-diff: 1234567..abcdef1 commit 2 changed, the others identical"],
-                      # ... and a range-diff from a commit nobody reviewed (F-A).
-                      ["Range-diff: `0000000..abcdef1` identical"]):
+                      # ... and a range-diff or a range review from a commit nobody
+                      # reviewed (F-A, round 5 R5-3).
+                      ["Range-diff: `0000000..abcdef1` identical"],
+                      ["**Range reviewed:** `1234567..abcdef1`"]):
             with self.subTest(notes=notes):
                 blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
                                                 REQUIRED, notes)
                 self.assertIn("no 'Commit reviewed:' line names the head commit abcdef1",
                               " ".join(blockers))
-        for notes in (["**Range reviewed:** `1234567..abcdef1`"],
+        for notes in (["**Commit reviewed:** `1234567`", "**Range reviewed:** `1234567..abcdef1`"],
                       ["- **Commit reviewed:** `ABCDEF1234` against base `x`."],
                       ["**Commit reviewed**: abcdef1234\r\n"],
+                      ["Commit reviewed: abcdef1."],      # end of a sentence (R5-1)
                       # round 3, N6: a rebase that range-diff shows unchanged keeps the
                       # review of the commit it started from (AGENTS.md, Authority) ...
                       ["**Commit reviewed:** `9999999aaa`",

@@ -35,12 +35,12 @@ PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
 UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
 # Review records, one per line (the finish-pr skill asks for them). A commit is a
-# 7 to 40 character hex name not followed by a dot or word character, so a range's
+# 7 to 40 character hex name not followed by a word character or "..", so a range's
 # end is never read as its start; [^\w\n] keeps the label and the commit on one line.
 _GAP = r"[^\w\n]*"
-_SHA = r"[0-9a-f]{7,40}(?![.\w])"
+_SHA = r"[0-9a-f]{7,40}(?!\w|\.\.)"
 REVIEWED = re.compile(rf"(?im)^{_GAP}(?:commit|range) reviewed{_GAP}:{_GAP}"
-                      rf"(?:[0-9a-f]{{7,40}}\.\.)?({_SHA})")
+                      rf"(?:([0-9a-f]{{7,40}})\.\.)?({_SHA})")
 RANGE_DIFF = re.compile(rf"(?im)^{_GAP}range-diff{_GAP}:{_GAP}([0-9a-f]{{7,40}})\.\.({_SHA})"
                         rf"{_GAP}identical\b")
 NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
@@ -180,15 +180,20 @@ def same_commit(a, b):
 
 
 def reviews_of(head, notes):
-    """The recorded reviews that cover the head commit. A "Commit reviewed:" or
-    "Range reviewed:" line records the commit after its label (the end of a
-    range). A "Range-diff: old..new identical" line carries a review across a
-    rebase, as AGENTS.md "Authority" allows, only when old is itself recorded as
-    reviewed (chains resolve). An author's note that only mentions the commit
-    does not count, and the verdict is not read."""
-    reviewed = {m.group(1).lower() for text in notes for m in REVIEWED.finditer(text)}
-    carried = [(m.group(1), m.group(2).lower()) for text in notes
-               for m in RANGE_DIFF.finditer(text)]
+    """The recorded reviews that cover the head commit. A "Commit reviewed:" line
+    naming one commit is a root. A range, "Range reviewed: old..new" (a review of
+    the changes since old) or "Range-diff: old..new identical" (a rebase that
+    changed nothing, as AGENTS.md "Authority" allows), covers new only when old
+    is itself covered, so every commit traces back to a root. An author's note
+    that only mentions the commit does not count, and the verdict is not read."""
+    reviewed, carried = set(), []
+    for text in notes:
+        for m in REVIEWED.finditer(text):
+            if m.group(1):
+                carried.append((m.group(1), m.group(2).lower()))
+            else:
+                reviewed.add(m.group(2).lower())
+        carried += [(m.group(1), m.group(2).lower()) for m in RANGE_DIFF.finditer(text)]
     grew = True
     while grew:
         grew = False
@@ -223,8 +228,9 @@ def assess(pr, required, notes):
                     "its verdict")
     elif oid:
         blockers.append(f"no 'Commit reviewed:' line names the head commit {head}: record "
-                        "the independent review of this exact commit (or a 'Range-diff: "
-                        "old..new identical' line after a rebase)")
+                        "the independent review of this exact commit; a 'Range reviewed:' "
+                        "or 'Range-diff: ... identical' line counts only from a commit that "
+                        "is itself recorded as reviewed")
     merge = pr.get("mergeStateStatus", "")
     if merge in {"DIRTY", "BEHIND"}:
         blockers.append(f"merge state {merge}: rebase onto origin/{BASE} (a rebase keeps the "
