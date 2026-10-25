@@ -1325,7 +1325,7 @@ class Workspace:
             self.handle.shutdown()
             session.start()
         except Exception as exc:
-            self.log.incident("drafts", exc)      # its type name only (P3)
+            self.log.incident("drafts", exc)      # type name and code frames, never its text (P3)
             self._end_drafts(rec, final=True, why="failed")   # not "ended" (#381)
 
     def _end_drafts(self, rec=None, final=False, why="ended"):
