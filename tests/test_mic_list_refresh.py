@@ -39,20 +39,32 @@ USB = "USB microphone (sample)"
 
 # Loaded after fixtures.js and before app.js: the fixture bridge, with the
 # devices and the recording state under the test's control, every call counted
-# and the window's visibility settable.
+# and the window's visibility settable. delay: how long the device list takes;
+# fail: the list cannot be read (the app's error when PortAudio cannot load);
+# changed: Start and Test are refused as the app refuses a device that no
+# longer matches the list.
 BRIDGE = """
 (() => {
   const real = window.pywebview.api;
   const t = window.__mic = {
     mics: [{ index: 1, name: __LAPTOP__, default: true }],
-    recording: false, hidden: false, calls: {},
+    recording: false, hidden: false, calls: {}, delay: 0, fail: false, changed: false,
   };
   Object.defineProperty(document, "hidden", { configurable: true, get: () => t.hidden });
   Object.defineProperty(document, "visibilityState", { configurable: true,
     get: () => (t.hidden ? "hidden" : "visible") });
   window.pywebview = { api: new Proxy({}, { get: (_, method) => async (...args) => {
     t.calls[method] = (t.calls[method] || 0) + 1;
-    if (method === "microphone_devices") return { ok: true, value: t.mics.map((d) => ({ ...d })) };
+    if (method === "microphone_devices") {
+      const mics = t.mics.map((d) => ({ ...d }));
+      if (t.delay) await new Promise((r) => setTimeout(r, t.delay));
+      return t.fail ? { ok: false, error: "Microphone support could not start in this "
+                        + "installation. Reinstall the app, or contact support." }
+        : { ok: true, value: mics };
+    }
+    if (t.changed && (method === "start_recording" || method === "test_microphone"))
+      return { ok: false,
+               error: "The list of microphones has changed. Choose the microphone again." };
     const r = await real[method](...args);
     if (method === "recording_status" && t.recording && r.ok)
       return { ok: true, value: { ...r.value, recording: { state: "recording", seconds: 5,
@@ -132,6 +144,52 @@ STEPS = """
       sel.focus();
       await wait(1500);
       out.focused = { calls: n() - c, ...look(sel) };
+      // A microphone other than the default is chosen; another one leaves. It
+      // stays chosen, and nothing is said.
+      choose(sel, 3);
+      await wait(4000);
+      t.mics = [LAPTOP, HEADSET];
+      $("status").textContent = "";
+      sel.blur();
+      sel.focus();
+      await wait(1500);
+      out.kept = { ...look(sel), toast: $("status").textContent };
+      // Its number changes (PortAudio renumbers after a change), its name does
+      // not: still the one chosen, at its new number. Back from Settings.
+      t.mics = [LAPTOP, { ...USB, index: 2 }, { ...HEADSET, index: 5 }];
+      ws.show("settings");
+      await wait(1500);
+      ws.show("meetings");
+      await wait(1500);
+      out.shifted = { ...look(sel), value: sel.value, toast: $("status").textContent };
+      // Focused again within 3 s of the last ask: not asked again; after: asked.
+      t.mics = [LAPTOP, { ...HEADSET, index: 5 }];
+      c = n();
+      sel.blur();
+      sel.focus();
+      await wait(1000);
+      out.throttled = { calls: n() - c, ...look(sel) };
+      await wait(2500);
+      sel.blur();
+      sel.focus();
+      await wait(1500);
+      out.after_throttle = { calls: n() - c, ...look(sel) };
+      // Test refused as "changed": the list is reloaded, keeping the choice
+      // at its new number.
+      t.mics = [LAPTOP, { ...HEADSET, index: 7 }];
+      t.changed = true;
+      c = n();
+      $("rec-test").click();
+      await wait(1500);
+      out.changed_test = { calls: n() - c, ...look(sel), value: sel.value,
+                           toast: $("status").textContent };
+      // Start refused as "changed", the chosen one gone: the default is selected.
+      t.mics = [LAPTOP];
+      c = n();
+      $("rec-start-chosen").click();
+      await wait(1500);
+      out.changed_start = { calls: n() - c, ...look(sel), toast: $("status").textContent };
+      t.changed = false;
     } else if (run === "recording") {
       const sel = $("rec-device");
       t.recording = true;
@@ -151,10 +209,15 @@ STEPS = """
       await wait(20000);                           // ten 2 s polls while recording
       out.recording_calls = n() - c;
       out.during = look(sel);
-      // Once the recording has ended, the list catches up.
+      // Once the recording has ended, the card goes at once, without waiting
+      // for the list, and the list catches up when it arrives.
+      t.delay = 3000;
       t.recording = false;
-      await ws.refresh();
-      await wait(1500);
+      ws.refresh();
+      await wait(500);
+      out.drawn = { card_hidden: $("rec-card").hidden, start_shown: !$("start").hidden,
+                    ...look(sel) };
+      await wait(4000);
       out.after = look(sel);
     } else if (run === "setup") {
       const sel = $("su-device");
@@ -185,6 +248,28 @@ STEPS = """
       ws.setStep(4);
       await wait(1500);
       out.step_again = look(sel);
+      // Test refused as "changed": reloaded, keeping the choice at its new number.
+      choose(sel, 3);
+      t.mics = [LAPTOP, { ...HEADSET, index: 8 }];
+      t.changed = true;
+      c = n();
+      $("su-test").click();
+      await wait(1500);
+      out.changed_test = { calls: n() - c, ...look(sel), value: sel.value,
+                           toast: $("status").textContent };
+      t.changed = false;
+      // The list cannot be read: asked once when the step is shown, not on
+      // every 2 s poll after.
+      t.fail = true;
+      ws.setStep(3);
+      await wait(500);
+      c = n();
+      ws.setStep(4);
+      await wait(1000);
+      const said = $("status").textContent;   // a toast that is not a confirmation clears after 8 s
+      await wait(9000);
+      out.failed = { calls: n() - c, toast: said };
+      t.fail = false;
     }
   } catch (e) {
     out.error = String((e && e.stack) || e);
@@ -305,6 +390,40 @@ class MicrophoneListTests(unittest.TestCase):
         self.assertEqual([LAPTOP, HEADSET, USB], r["focused"]["options"])
         self.assertEqual(LAPTOP, r["focused"]["chosen"])
 
+    def test_a_chosen_microphone_stays_chosen_while_it_is_connected(self):
+        r = self.result("meetings")
+        self.assertEqual({"options": [LAPTOP, HEADSET], "chosen": HEADSET, "toast": ""},
+                         r["kept"])
+        shifted = r["shifted"]
+        self.assertEqual(([LAPTOP, USB, HEADSET], HEADSET, "5", ""),
+                         (shifted["options"], shifted["chosen"], shifted["value"],
+                          shifted["toast"]))
+
+    def test_focusing_again_within_3_seconds_does_not_ask(self):
+        r = self.result("meetings")
+        self.assertEqual(0, r["throttled"]["calls"])
+        self.assertEqual([LAPTOP, USB, HEADSET], r["throttled"]["options"])
+        self.assertEqual(1, r["after_throttle"]["calls"])
+        self.assertEqual([LAPTOP, HEADSET], r["after_throttle"]["options"])
+
+    def test_a_changed_list_reloads_it_keeping_the_choice_where_it_can(self):
+        changed = "The list of microphones has changed"
+        test = self.result("meetings")["changed_test"]
+        self.assertEqual((1, HEADSET, "7"), (test["calls"], test["chosen"], test["value"]))
+        self.assertIn(changed, test["toast"])
+        start = self.result("meetings")["changed_start"]
+        self.assertEqual((1, [LAPTOP], LAPTOP),
+                         (start["calls"], start["options"], start["chosen"]))
+        self.assertIn(changed, start["toast"])
+        setup = self.result("setup")["changed_test"]
+        self.assertEqual((1, HEADSET, "8"), (setup["calls"], setup["chosen"], setup["value"]))
+        self.assertIn(changed, setup["toast"])
+
+    def test_setup_does_not_ask_again_on_every_poll_after_a_failure(self):
+        r = self.result("setup")["failed"]
+        self.assertEqual(1, r["calls"])
+        self.assertIn("could not start", r["toast"])
+
     def test_an_idle_page_does_not_ask(self):
         self.assertEqual(0, self.result("meetings")["idle_calls"])
         self.assertEqual(0, self.result("setup")["idle_calls"])
@@ -314,6 +433,8 @@ class MicrophoneListTests(unittest.TestCase):
         self.assertTrue(r["recording_shown"], "the recording did not show: nothing was tested")
         self.assertEqual(0, r["recording_calls"])
         self.assertEqual([LAPTOP], r["during"]["options"])
+        self.assertEqual({"card_hidden": True, "start_shown": True, "options": [LAPTOP],
+                          "chosen": LAPTOP}, r["drawn"], "the card waited for the list")
         self.assertEqual({"options": [LAPTOP, HEADSET], "chosen": LAPTOP}, r["after"])
 
     def test_setup_step_4_follows_the_microphones_too(self):

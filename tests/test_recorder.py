@@ -114,6 +114,42 @@ class RecordingTests(unittest.TestCase):
                                               open_stream=opener(self.holder), key=KEY))
         return rec, self.holder["stream"]
 
+    def test_a_device_listing_while_the_stream_opens_leaves_portaudio_alone(self):
+        # #369 review N6: the page may ask for the microphones (the window shown
+        # again) while a recording starts. The stream is counted before it
+        # opens, so that listing never re-initialises PortAudio under it.
+        terminated = []
+        sd = type(sys)("sounddevice")
+        sd._terminate = lambda: terminated.append(True)
+        sd._initialize = lambda: None
+        sd.query_devices = lambda: []
+        sd.query_hostapis = lambda: []
+        sd.default = type("D", (), {"device": (0, 0)})()
+        inner = opener(self.holder)
+
+        def open_while_listing(*args):
+            recorder.list_devices()
+            return inner(*args)
+
+        before = recorder._open_streams
+        with mock.patch.dict(sys.modules, {"sounddevice": sd}):
+            rec = self.started(recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
+                                                  open_stream=open_while_listing, key=KEY))
+        self.assertEqual([], terminated, "PortAudio was re-initialised under the stream")
+        self.assertEqual(before + 1, recorder._open_streams)
+        rec.stop()
+        self.assertEqual(before, recorder._open_streams)
+
+    def test_a_stream_that_does_not_open_is_not_left_counted(self):
+        def broken(*args):
+            raise OSError("no such device")
+        before = recorder._open_streams
+        rec = recorder.Recording(self.root / "rec", 3, "Test microphone", RATE,
+                                 open_stream=broken, key=KEY)
+        with self.assertRaises(recorder.RecorderError):
+            rec.start()
+        self.assertEqual(before, recorder._open_streams)
+
     def test_every_frame_is_saved_in_durable_chunks(self):
         rec, s = self.start()
         s.feed(12.3)

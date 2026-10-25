@@ -2533,7 +2533,9 @@ function micGone(devices) {
 }
 
 // Ask for a list again and show it with render(devices). One request at a time
-// per list; nothing while a recording is going (state.recActive).
+// per list; nothing while a recording is going (state.recActive). A failed ask
+// counts as asked too: it is tried again on the next trigger, not on every
+// poll (an empty list is the exception, as before: see renderRecorder).
 function relistMics(id, render) {
   const m = micLists[id];
   if (state.recActive) return Promise.resolve();
@@ -2541,11 +2543,11 @@ function relistMics(id, render) {
   m.busy = (async () => {
     try {
       const devices = await call("microphone_devices");
-      m.stale = false;
-      m.at = performance.now();
       if (!fillMics($(id), devices)) micGone(devices);
       render(devices);
     } finally {
+      m.stale = false;
+      m.at = performance.now();
       m.busy = null;
     }
   })();
@@ -2768,8 +2770,12 @@ async function renderRecorder(tick = false) {
   const wasActive = state.recActive;
   state.recActive = !!r.recording || !!state.recSaving;
   if (wasActive && !state.recActive) micsStale();
+  // Not awaited: the card is drawn now, and the list (with the microphone line
+  // and Start) when it arrives. Safe, as Start and Test send the microphone's
+  // index and name, and the app refuses any that no longer match. While no
+  // microphone is listed, every poll asks, as before #369.
   if (r.enabled && (!sel.options.length || micLists["rec-device"].stale))
-    await relistMics("rec-device", showRecMics);
+    relistMics("rec-device", showRecMics).catch((err) => say(String((err && err.message) || err)));
   const now = r.recording || {};
   const rec = state.recSaving ? { ...now, state: "saving", seconds: now.seconds || state.recSeconds || 0, events: now.events || [] }
     : r.recording;

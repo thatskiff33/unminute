@@ -793,9 +793,16 @@ class Recording:
         try:
             self.folder.mkdir(parents=True, exist_ok=False)
             self._save_journal()
-            self._stream = self._open_stream(self.journal["device"], self.rate,
-                                             self._callback, self._finished)
+            # Counted before it opens, as measure_level does: a device listing
+            # meanwhile (the page asking again, #369) then never re-initialises
+            # PortAudio under the new stream.
             _stream_opened(+1)
+            try:
+                self._stream = self._open_stream(self.journal["device"], self.rate,
+                                                 self._callback, self._finished)
+            except BaseException:
+                _stream_opened(-1)           # never opened: _close_stream has nothing to count
+                raise
             self._stream.start()
         except Exception as exc:
             self._close_stream()
