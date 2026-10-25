@@ -30,7 +30,9 @@
 # A finding an owner exception covers is not a failure here, as in the tool;
 # any other finding of the same check is.
 
+import contextlib
 import html
+import io
 import http.server
 import json
 import re
@@ -41,6 +43,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 from urllib.parse import quote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -184,9 +187,16 @@ def audit(base, name, dark):
     if width in FRAMED:
         url = f"{base}/tools/design_check/frame.html?w={width}&h=760&src={quote(url, safe='')}"
         window = max(width + 40, 500)
-    # Headless Edge now and then never finishes a page: one more try, with a
-    # fresh profile (the timed-out Edge may still hold the first).
-    for attempt in (1, 2):
+    # Headless Edge now and then never finishes a page, or exits 0 with no
+    # result for one view (#377): one more try, with a fresh profile (a
+    # timed-out Edge may still hold the first), reported on stderr. A page
+    # that gave a result is never tried again, whatever it found.
+    view = f"{name} ({'dark' if dark else 'light'})"
+    problem = None
+    for _attempt in (1, 2):
+        if problem:
+            print(f"test_ui_page_audit: {view}: {problem}; retried once",
+                  file=sys.stderr, flush=True)
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as profile:
             cmd = [str(EDGE), "--headless=new", "--disable-gpu", "--hide-scrollbars",
                    "--no-first-run", "--disable-extensions", f"--user-data-dir={profile}",
@@ -198,15 +208,15 @@ def audit(base, name, dark):
             try:
                 out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                                      errors="replace", timeout=120)
-                break
             except subprocess.TimeoutExpired:
-                if attempt == 2:
-                    return {"error": f"Edge did not finish {name} twice in 120 seconds"}
-    found = re.search(r'<pre id="audit-result">(.*?)</pre>', out.stdout or "", re.DOTALL)
-    if not found:
-        return {"error": f"Edge returned no result (exit {out.returncode}): "
-                         f"{(out.stderr or '').strip()[-300:]}"}
-    return json.loads(html.unescape(found.group(1)))
+                problem = "Edge did not finish in 120 seconds"
+                continue
+        found = re.search(r'<pre id="audit-result">(.*?)</pre>', out.stdout or "", re.DOTALL)
+        if found:
+            return json.loads(html.unescape(found.group(1)))
+        problem = (f"Edge returned no result (exit {out.returncode}): "
+                   f"{(out.stderr or '').strip()[-300:]}")
+    return {"error": f"{view}, twice: {problem}"}
 
 
 @unittest.skipUnless(EDGE, "Microsoft Edge not installed")
@@ -287,6 +297,80 @@ class PageAuditTests(unittest.TestCase):
                     self.assertTrue(tick["hidden"], "the tick is not aria-hidden")
                     self.assertEqual('"✓" / ""', tick["content"])
                     self.assertGreaterEqual(tick["ratio"], 3.0)
+
+
+class FakeEdge:
+    """Stands in for the subprocess module in audit(): each run gives the next
+    answer, a dumped page (a dict, printed as the runner prints it), None for
+    a page with no result, or "timeout"."""
+    TimeoutExpired = subprocess.TimeoutExpired
+    CompletedProcess = subprocess.CompletedProcess    # the real ones, kept here
+
+    def __init__(self, *answers):
+        self.answers, self.calls = list(answers), 0
+
+    def run(self, cmd, **kw):
+        self.calls += 1
+        answer = self.answers.pop(0)
+        if answer == "timeout":
+            raise self.TimeoutExpired(cmd, kw.get("timeout"))
+        page = "<html><body></body></html>" if answer is None else (
+            '<html><body><pre id="audit-result">' + html.escape(json.dumps(answer))
+            + "</pre></body></html>")
+        stderr = "" if answer is not None else "fallback_task_provider.cc:126] no task"
+        return self.CompletedProcess(cmd, 0, stdout=page, stderr=stderr)
+
+
+class NoResultRetryTests(unittest.TestCase):
+    """#377: headless Edge now and then exits 0 with no result for one view.
+    That view is tried once more, and the retry is reported; a result is
+    never retried, whatever it finds, and no assertion above is changed."""
+    CLEAN = {"controls": 3, "low_contrast": []}
+    FINDINGS = {"controls": 3, "low_contrast": ["span#x 2.1:1"]}
+
+    def audit(self, *answers):
+        edge = FakeEdge(*answers)
+        said = io.StringIO()
+        with (mock.patch.object(sys.modules[__name__], "subprocess", edge),
+              contextlib.redirect_stderr(said)):
+            result = audit("http://127.0.0.1:9", "names dialog", True)
+        return result, edge.calls, said.getvalue()
+
+    def test_no_result_then_a_result_passes_and_the_retry_is_reported(self):
+        result, calls, said = self.audit(None, self.CLEAN)
+        self.assertEqual(self.CLEAN, result)
+        self.assertEqual(2, calls)
+        self.assertIn("names dialog (dark)", said)
+        self.assertIn("no result", said)
+        self.assertIn("retried once", said)
+
+    def test_no_result_twice_fails(self):
+        result, calls, _ = self.audit(None, None)
+        self.assertEqual(2, calls)
+        self.assertIn("no result", result.get("error", ""))
+
+    def test_a_result_with_findings_is_never_retried(self):
+        result, calls, said = self.audit(self.FINDINGS, self.CLEAN)
+        self.assertEqual(self.FINDINGS, result)
+        self.assertEqual(1, calls)
+        self.assertEqual("", said)
+
+    def test_a_result_holding_the_audit_s_own_error_is_never_retried(self):
+        failed = {"error": "TypeError: audit failed", "has_focus": True}
+        result, calls, _ = self.audit(failed, self.CLEAN)
+        self.assertEqual(failed, result)
+        self.assertEqual(1, calls)
+
+    def test_a_timeout_then_a_result_passes(self):
+        result, calls, said = self.audit("timeout", self.CLEAN)
+        self.assertEqual(self.CLEAN, result)
+        self.assertEqual(2, calls)
+        self.assertIn("retried once", said)
+
+    def test_a_timeout_and_no_result_fail(self):
+        result, calls, _ = self.audit("timeout", None)
+        self.assertEqual(2, calls)
+        self.assertIn("error", result)
 
 
 if __name__ == "__main__":
