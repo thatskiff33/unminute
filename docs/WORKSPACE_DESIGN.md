@@ -353,6 +353,7 @@ Failure reasons are stored without file paths.
 ### Process and threads
 
 - **One state-owning process.** `workspace/__main__.py` installs the offline guard. It then creates a `Workspace` (`workspace/app.py`), which owns the Store, the media folder and the worker, and opens the WebView2 shell.
+- **The window's backend loads early (#339).** Once the launcher pass has decided this process opens the window, `shell.preload_backend()` loads pywebview's WebView2 backend (.NET through pythonnet, Windows Forms, the WebView2 assemblies) on a background thread, with Python's WMI-backed `platform.uname()` on another, while the app's other modules import and the workspace opens. It changes no setting and shows nothing. `create_window` and `check_backend` wait for it, then put the hardening switches, the dispatch guard (which also replaces the reference the already loaded backend holds) and the alert guard in place as before; a failed preload is not reported, and `check_backend` loads again and refuses to start. A native crash while .NET loads now happens before `diag.install`, so it would not be recorded as a crash.
 - **Processing thread.** One background thread finds work by scanning the database, in this order:
   1. due cleanup jobs;
   2. the oldest unpaused, unfinished transcription;

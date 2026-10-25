@@ -627,6 +627,98 @@ class BackendCheckTests(unittest.TestCase):
                 shell.check_backend()
 
 
+class PreloadTests(unittest.TestCase):
+    """#339: the window's backend loads early, on a background thread. The
+    window waits for it, then puts every guard in place as before."""
+
+    def setUp(self):
+        self.saved = shell._preload["thread"]
+        shell._preload["thread"] = None
+
+    def tearDown(self):
+        shell.wait_preload()
+        shell._preload["thread"] = self.saved
+
+    def test_loads_once_and_wait_returns_only_after_it(self):
+        started, release = [], threading.Event()
+
+        def load():
+            started.append(threading.current_thread().name)
+            release.wait(10)
+        with mock.patch.object(shell, "_load_backend", load):
+            shell.preload_backend()
+            shell.preload_backend()                      # once per process
+            waiter = threading.Thread(target=shell.wait_preload)
+            waiter.start()
+            waiter.join(0.3)
+            self.assertTrue(waiter.is_alive())           # still loading
+            release.set()
+            waiter.join(10)
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual(started, ["preload-backend"])
+
+    def test_wait_without_a_preload_returns_at_once(self):
+        shell.wait_preload()
+
+    @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
+    def test_a_failed_preload_still_refuses_to_start(self):
+        # The preload swallows the failure; check_backend loads again and
+        # refuses with its message, as it did before there was a preload.
+        guilib = importlib.import_module("webview.guilib")
+        with mock.patch.object(guilib, "initialize", side_effect=OSError("no .NET")), \
+                mock.patch.dict(sys.modules, {"clr": type(sys)("clr")}):
+            shell.preload_backend()
+            shell.wait_preload()
+            with self.assertRaises(shell.ShellError):
+                shell.check_backend()
+
+    @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
+    def test_the_backend_check_waits_for_the_preload(self):
+        guilib = importlib.import_module("webview.guilib")
+        order = []
+
+        def initialize(gui):
+            order.append("load")
+            raise OSError("stop here")
+        with mock.patch.object(shell, "wait_preload", lambda: order.append("wait")), \
+                mock.patch.object(guilib, "initialize", initialize):
+            with self.assertRaises(shell.ShellError):
+                shell.check_backend()
+        self.assertEqual(order, ["wait", "load"])
+
+    @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
+    def test_the_window_waits_for_the_preload_before_its_guard(self):
+        import webview
+        order = []
+        settings = dict(webview.settings)               # create_window sets three
+        try:
+            with mock.patch.object(shell, "wait_preload", lambda: order.append("wait")), \
+                    mock.patch.object(shell, "install_dispatch_guard",
+                                      lambda allowed: order.append("guard")), \
+                    mock.patch.object(webview, "create_window", mock.MagicMock()):
+                shell.create_window(object(), allowed=frozenset({"status"}), harden=False)
+        finally:
+            for key, value in settings.items():
+                webview.settings[key] = value
+        self.assertEqual(order, ["wait", "guard"])
+
+    @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
+    def test_a_backend_loaded_first_still_gets_the_dispatch_guard(self):
+        # With the backend module already imported (by the preload), the
+        # guard replaces the reference it holds, which check_backend checks.
+        import webview.util as util
+        original = util.js_bridge_call
+        fake = type(sys)("webview.platforms.edgechromium")
+        fake.js_bridge_call = original                   # imported by name, unguarded
+        try:
+            with mock.patch.dict(sys.modules, {"webview.platforms.edgechromium": fake}):
+                shell.install_dispatch_guard({"status"})
+            self.assertTrue(getattr(fake.js_bridge_call, "unminute_guard", False))
+            self.assertIs(fake.js_bridge_call, util.js_bridge_call)
+        finally:
+            util.js_bridge_call = original
+
+
 class StorageFolderTests(unittest.TestCase):
     def test_leftovers_are_removed_and_a_fresh_folder_returned(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -759,6 +851,26 @@ class StartUpTests(unittest.TestCase):
             self.assertEqual((r.returncode, r.stdout.strip(), r.stderr),
                              (3, '{"lid": "running"}', ""))
             self.assertTrue(record.exists())
+
+    # #339: the window's backend starts loading only once the launcher pass has
+    # decided this process opens the window. launch.start, the backend load,
+    # the mutex and the message are stand-ins: nothing loads, opens or shows.
+    PRELOAD_ORDER = ("import sys; sys.argv = ['x']; "
+                     "import workspace.__main__ as m; from workspace import launch, shell; "
+                     "seen = []; "
+                     "shell.preload_backend = lambda: seen.append('preload'); "
+                     "m._single_instance = lambda name=None: seen.append('mutex'); "
+                     "m._message = lambda text: seen.append('message'); "
+                     "launch.start = lambda argv: launch.Outcome(exit={exit}); "
+                     "print(m.main(), seen)")
+
+    def test_the_backend_loads_after_the_launcher_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, LOCALAPPDATA=tmp)
+            r = self.run_main(self.PRELOAD_ORDER.format(exit=None), env)
+            self.assertEqual(r.stdout.strip(), "0 ['preload', 'mutex', 'message']", r.stderr)
+            r = self.run_main(self.PRELOAD_ORDER.format(exit=1), env)   # handed over
+            self.assertEqual(r.stdout.strip(), "1 []", r.stderr)
 
     @unittest.skipUnless(sys.platform == "win32", "Windows named mutex")
     def test_only_one_copy_holds_the_workspace(self):
