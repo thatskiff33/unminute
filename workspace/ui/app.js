@@ -40,7 +40,7 @@ async function call(name, ...args) {
 // Short messages appear as a toast. Confirmations ("Saved") clear after a few
 // seconds, other messages after longer; a sticky one (an import in progress)
 // stays until the app replaces it.
-const OK_MESSAGE = /^(Saved|Copied|Name saved|Template saved|Download started|Folder added|Meeting discarded|Recording saved|Edit undone|Speaker change undone|Token removed|Removed)/;
+const OK_MESSAGE = /^(Saved|Copied|Name saved|Template saved|Download started|Queued|Folder added|Meeting discarded|Recording saved|Edit undone|Speaker change undone|Token removed|Removed)/;
 let toastTimer = null;
 function say(message, { sticky = false } = {}) {
   const t = $("status");
@@ -1730,6 +1730,20 @@ const suState = { step: 1, skipSpeakers: false, mic: null, devices: false, retur
 // reads them out of a title or a message (R12, #133).
 const cardName = (c) => c.label;
 const isRunning = (c) => !!(c && c.download && c.download.state === "running");
+// Waiting behind the download (or check) running (#366): position 1 is next.
+const isQueued = (c) => !!(c && c.download && c.download.state === "queued");
+const RESUMED = "Carried on from the last time Unminute was open.";
+function queueNote(dl) {
+  const where = dl.position === 1 ? "Next in the queue." : `Number ${dl.position} in the queue.`;
+  return dl.resumed ? `${where} ${RESUMED}` : where;
+}
+function cancelQueued(c, then) {
+  return button("Cancel", () => attempt(async () => {
+    await call("cancel_download", c.name);
+    say("Removed from the queue.");
+    then();
+  }));
+}
 
 function progressBlock(c, note) {
   const dl = c.download;
@@ -1795,16 +1809,16 @@ function renderSuSteps() {
 
 function modelCard(c, s) {
   const dl = c.download;
-  const busy = s.cards.some(isRunning);
   let action;
-  if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download").then(renderSetup)));
+  if (isRunning(c)) action = button("Cancel", () => attempt(() => call("cancel_download", c.name).then(renderSetup)));
+  else if (isQueued(c)) action = cancelQueued(c, renderSetup);
   else if (c.state === "ready")
     action = el("span", { class: "su-ready" }, el("span", { class: "tick" }, icon("tick", 13)), "Ready");
   else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
     action = itManaged(c);
   else {
+    // Another download running: this one queues behind it (#366).
     action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
-    action.disabled = busy;
   }
   return el("div", { class: "su-model" },
     el("div", { class: "su-model-top" },
@@ -1814,6 +1828,8 @@ function modelCard(c, s) {
         el("span", { class: "su-model-about", textContent: `${c.about} ${c.size_gb} GB, downloaded once.` })),
       action),
     isRunning(c) ? progressBlock(c, "Each file is checked before use") : null,
+    isQueued(c) ? el("span", { class: "dl-msg", textContent: queueNote(dl) }) : null,
+    isRunning(c) && dl.resumed ? el("span", { class: "dl-msg", textContent: RESUMED }) : null,
     dl && dl.state === "failed" ? el("span", { class: "su-failed", textContent: dl.message }) : null);
 }
 
@@ -1834,17 +1850,20 @@ function replaceKeeping(box, ...children) {
 // One row per model or component, for Other options and the Downloads page.
 function downloadRow(c, s, inUse) {
   const dl = c.download;
-  const running = isRunning(c);
-  const busy = s.cards.some(isRunning);
+  const running = isRunning(c), queued = isQueued(c);
+  // Check every file and Remove wait for every download, queued ones too.
+  const busy = s.cards.some((x) => isRunning(x) || isQueued(x));
   const tag = c.role === "speech"
     ? joinParts(c.recommended ? "Recommended" : null, inUse ? "in use" : null) : "Optional";
   const about = c.role === "speech" ? `Speech to text. ${c.about}` : c.about.split(/(?<=\.)\s/)[0];
   const [pillKind, pillText] = running ? ["", "Downloading"]
+    : queued ? ["queued", "Queued"]
     : c.state === "ready" ? ["ready", "Ready"]
     : dl && dl.state === "failed" ? ["bad", "Needs attention"]
     : c.state === "invalid" ? ["bad", "Damaged"] : ["", "Not downloaded"];
   let action;
-  if (running) action = button("Cancel", () => attempt(() => call("cancel_download").then(refresh)));
+  if (running) action = button("Cancel", () => attempt(() => call("cancel_download", c.name).then(refresh)));
+  else if (queued) action = cancelQueued(c, refresh);
   else if (c.state === "ready")
     action = button("Check every file", () => attempt(() => call("verify_model", c.name).then(refresh)),
                     { title: "Compare every file with its published checksum" });
@@ -1858,8 +1877,9 @@ function downloadRow(c, s, inUse) {
   else if (!allowed("AllowModelDownloads") || (c.role === "gpu" && !allowed("AllowGpuComponent")))
     action = itManaged(c);
   else action = button(c.state === "missing" ? `Download (${c.size_gb} GB)` : "Repair", () => startDownload(c.name), { primary: true });
-  if (action.tagName === "BUTTON") action.disabled = busy && !running;
-  const remove = c.removable && !running ? linkButton("Remove…", () => confirmDialog({
+  // Download, Repair and Set up stay available: another download queues (#366).
+  if (c.state === "ready" && !running && !queued && action.tagName === "BUTTON") action.disabled = busy;
+  const remove = c.removable && !running && !queued ? linkButton("Remove…", () => confirmDialog({
     title: `Remove ${cardName(c)}?`,
     body: `This deletes it from this computer, including any damaged or unfinished copies. Meetings already transcribed keep their text. You can download it again from Downloads.`,
     check: "Remove it from this computer.", limits: false, danger: true,
@@ -1877,6 +1897,8 @@ function downloadRow(c, s, inUse) {
       el("span", { class: `dl-pill ${pillKind}`.trim(), textContent: pillText }),
       action, remove),
     running ? progressBlock(c, null) : null,
+    running && dl.resumed ? el("span", { class: "dl-msg", textContent: RESUMED }) : null,
+    queued ? el("span", { class: "dl-msg", textContent: queueNote(dl) }) : null,
     !running && dl && dl.state === "failed" ? el("span", { class: "dl-msg bad", textContent: dl.message }) : null,
     el("details", {}, el("summary", { textContent: "Details" }),
       el("p", { textContent: c.status }),
@@ -1900,18 +1922,20 @@ async function renderSetup() {
   updateProgress($("su-model"), s.cards);
   updateProgress($("setup-cards"), s.cards);
   $("su-other-title").textContent = `Other options: ${others.map(cardName).join(", ")}`;
-  $("su-2-note").textContent = isRunning(rec) ? "You can keep going while it downloads" : "";
+  $("su-2-note").textContent = isRunning(rec) || isQueued(rec) ? "You can keep going while it downloads" : "";
   const speaker = s.cards.find((c) => c.role === "speakers") || {};
   $("speaker-setup").hidden = speaker.state === "ready";
-  $("s-download-speakers").disabled = isRunning(speaker) || !allowed("AllowModelDownloads");
+  $("s-download-speakers").disabled = isRunning(speaker) || isQueued(speaker) || !allowed("AllowModelDownloads");
   $("s-token").disabled = !allowed("AllowModelDownloads");
   $("s-use-remembered").hidden = !s.token_remembered || speaker.state === "ready"
     || !allowed("AllowModelDownloads");
+  $("s-use-remembered").disabled = isRunning(speaker) || isQueued(speaker);
   $("s-remove-token").hidden = !s.token_remembered;
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
   $("su-speaker-status").textContent = speaker.state === "ready" ? "The speaker model is downloaded and ready."
+    : isQueued(speaker) ? queueNote(speaker.download)
     : speaker.download ? speaker.download.message : "";
   renderSummary(s);
   $("s-finish").disabled = !s.speech_ready;
@@ -1925,10 +1949,12 @@ function renderSummary(s) {
   const line = (label, value, on) => el("li", {},
     el("span", { class: `s-icon${on ? "" : " off"}` }, on ? icon("tick", 14) : el("span", { "aria-hidden": "true", textContent: "–" })),
     el("span", { class: "s-label", textContent: label }), el("span", { class: "s-value", textContent: value }));
-  const speech = ready ? `${cardName(ready)}, ready` : isRunning(rec) ? "Downloading…" : "Not downloaded yet";
+  const speech = ready ? `${cardName(ready)}, ready` : isRunning(rec) ? "Downloading…"
+    : isQueued(rec) ? "Queued" : "Not downloaded yet";
   const names = speaker.state === "ready" && !suState.skipSpeakers ? "Ready"
     : suState.skipSpeakers ? "Skipped. Turn on in Settings."
-    : isRunning(speaker) ? "Downloading…" : "Not set up. You can add it later in Settings.";
+    : isRunning(speaker) ? "Downloading…" : isQueued(speaker) ? "Queued"
+    : "Not set up. You can add it later in Settings.";
   const mic = suState.mic ? "On" : "Skipped. Turn on in Settings.";
   $("su-summary").replaceChildren(line("Speech model", speech, !!ready),
     line("Speaker names", names, names === "Ready"), line("Microphone", mic, !!suState.mic));
@@ -1954,8 +1980,8 @@ async function renderSuMic() {
 
 function startDownload(name, extra = {}) {
   return attempt(async () => {
-    await call("download_model", name, extra.token || null, extra.remember !== false);
-    say("Download started");
+    const how = await call("download_model", name, extra.token || null, extra.remember !== false);
+    say(how === "queued" ? "Queued. It starts when the download before it finishes." : "Download started");
     refresh();
   });
 }
@@ -2008,7 +2034,7 @@ function wireSetup() {
     // First run: speaker names are on when their model is downloaded or downloading, unless
     // skipped. Later visits (a speech model went missing) keep the Settings choice.
     const speakers = state.setup.onboarded ? !!(await call("settings")).speakers
-      : !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker));
+      : !suState.skipSpeakers && (speaker.state === "ready" || isRunning(speaker) || isQueued(speaker));
     await call("finish_setup", speakers);
     show("meetings");
   }));

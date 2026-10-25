@@ -303,6 +303,33 @@ def fake_download_crashes(conn, name, cache_dir):
     _access_violation()
 
 
+def fake_download_held(conn, name, cache_dir):
+    """Runs until the test releases it (#366): a file "release-<name>" in
+    cache_dir holding "ok" or "fail". Each start is appended to "order.txt",
+    so a test can see the queue's order. Gives up after 60 s."""
+    token = conn.recv()
+    conn.send(("log", "Downloading (test)..."))
+    os.makedirs(cache_dir, exist_ok=True)
+    safe = name.replace("/", "_")
+    with open(os.path.join(cache_dir, "order.txt"), "a", encoding="utf-8") as f:
+        f.write(name + "\n")
+    flag = os.path.join(cache_dir, "release-" + safe)
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        if os.path.exists(flag):
+            with open(flag, encoding="utf-8") as f:
+                how = f.read()
+            if how == "fail":
+                conn.send(("error", "Could not reach Hugging Face. Check the internet "
+                                    "connection and try again."))
+            else:
+                conn.send(("done", {"token_received": bool(token),
+                                    "token_matches": token == "hf_TESTtokenNOTreal0123456789"}))
+            return
+        time.sleep(0.05)
+    conn.send(("error", "The test did not release this download."))
+
+
 def fake_download_fails(conn, name, cache_dir):
     conn.recv()
     conn.send(("error", "Could not reach Hugging Face. Check the internet connection and "

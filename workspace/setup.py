@@ -12,6 +12,7 @@
 # copy is set aside, never deleted, and an interrupted download is retried by
 # simply starting it again.
 
+import json
 import multiprocessing as mp
 import os
 import threading
@@ -523,10 +524,28 @@ def known(name):
     return name in asr_engines.MANAGED_MODELS or gpu.component(name) is not None
 
 
-class Downloads:
-    """One download at a time, in its own process; progress for the UI."""
+# The download queue (#366, the owner's decisions of 25 October 2026): kept in
+# the workspace beside settings.json, with model identifiers only (P3), so
+# what the user queued carries on at the next start. Never a token, a path or
+# anything else; read only up to QUEUE_MAX_BYTES, and only names known().
+QUEUE_FILE = "download_queue.json"
+QUEUE_MAX_BYTES = 4096
+QUEUED = "Queued. It starts when the download before it finishes."
+CANCELLED = "Download cancelled. Start it again when you are ready."
 
-    def __init__(self, cache_dir, before_install=None, target=None, before_gpu_install=None):
+
+class QueueStopped(SetupError):
+    """Nothing queued may start (downloads turned off by policy): every
+    queued entry ends with this message."""
+
+
+class Downloads:
+    """One download at a time, in its own process; progress for the UI.
+    Further downloads wait in a queue, in click order (#366), and start one
+    after another, whether the one before finishes, fails or is cancelled."""
+
+    def __init__(self, cache_dir, before_install=None, target=None, before_gpu_install=None,
+                 queue_path=None):
         self.cache_dir = str(cache_dir)
         self.target = target or _download_main   # tests: a fake download process
         self.after = None                        # called when a download or check ends
@@ -538,28 +557,131 @@ class Downloads:
         self.state = {}                          # name -> {"state", "message", "log"}
         self.log_dir = None                      # the app's logs folder (R9), set by the app
         self._lock = threading.Lock()
-        self._running = None
+        self._running = None                     # the download or check running now
+        self._download = None                    # ...when it is a download (kept in the file)
+        # Waiting downloads, in click order: [name, token, on_success, resumed].
+        # A token given with the click stays in this process's memory only, as
+        # it does for a running download; it is never written to the file.
+        self._queue = []
+        self.queue_path = Path(queue_path) if queue_path else None
+        # Called as prepare(name, token) just before a queued download starts:
+        # returns the token to send, or raises SetupError (that entry fails)
+        # or QueueStopped (every queued entry fails). The app re-reads policy there.
+        self.prepare = None
+        self._closing = False
 
     def start(self, name, token=None, on_success=None):
-        """on_success runs only after a verified download (e.g. remember the
-        token only once it has been shown to work)."""
+        """Start a download now, or queue it behind the download or check
+        running (#366). Returns "started" or "queued". on_success runs only
+        after a verified download (e.g. remember the token only once it has
+        been shown to work)."""
         if not known(name):
             raise SetupError("Unknown model.")
         with self._lock:
+            if self._closing:
+                raise SetupError("Unminute is closing.")
+            if name == self._running or any(q[0] == name for q in self._queue):
+                raise SetupError("This one is already downloading or queued.")
             if self._running:
-                raise SetupError("Another download is in progress. Wait for it to finish, "
-                                 "or cancel it.")
-            self._running = name
-            self._proc = None
-            # started: only what this attempt writes counts towards its progress.
-            self.state[name] = {"state": "running", "message": "Starting the download…",
-                                "log": [], "started": time.time()}
+                self._queue.append([name, token, on_success, False])
+                self.state[name] = {"state": "queued", "message": QUEUED, "log": []}
+                self._save()
+                return "queued"
+            self._claim(name)
+            self._save()
+        self._launch(name, token, on_success)
+        return "started"
+
+    def _claim(self, name, resumed=False):
+        """Under the lock: name takes the one download slot."""
+        self._running = self._download = name
+        self._proc = None
+        # started: only what this attempt writes counts towards its progress.
+        self.state[name] = {"state": "running", "message": "Starting the download…",
+                            "log": [], "started": time.time()}
+        if resumed:
+            self.state[name]["resumed"] = True
+
+    def _launch(self, name, token, on_success):
         threading.Thread(target=self._run, args=(name, token, on_success), daemon=True,
                          name="model-download").start()
 
-    def cancel(self):
-        """Stop a stalled or unwanted download. A later attempt starts again
-        (anything half-downloaded is discarded or verified first)."""
+    def _next(self):
+        """The slot is free: start the first queued download, if any. The
+        slot is claimed before the entry leaves the queue, so busy() never
+        reads False in between and no model work starts while one waits."""
+        while True:
+            with self._lock:
+                if self._closing or self._running or not self._queue:
+                    return
+                name, token, on_success, resumed = self._queue[0]
+                self._claim(name, resumed)
+                del self._queue[0]
+            try:
+                if self.prepare:
+                    token = self.prepare(name, token)
+            except QueueStopped as exc:
+                self._stop_all(str(exc), also=name)
+                return
+            except Exception as exc:
+                # This one may not start (SetupError says why): it fails alone,
+                # and the rest carry on.
+                message = (str(exc) if isinstance(exc, SetupError)
+                           else "The download stopped unexpectedly. Try again.")
+                with self._lock:
+                    self._running = self._download = None
+                    self._save()
+                self.state[name] = {"state": "failed", "message": message, "log": []}
+                if self.after:
+                    self.after()
+                continue
+            self._launch(name, token, on_success)
+            return
+
+    def _stop_all(self, message, also=None, only=None):
+        """End waiting downloads with message: all of them, or those only()
+        accepts. also: the entry that was about to start (its slot is freed)."""
+        with self._lock:
+            ended = [q[0] for q in self._queue if only is None or only(q[0])]
+            self._queue = [q for q in self._queue if q[0] not in ended]
+            if also is not None:
+                self._running = self._download = None
+                ended.insert(0, also)
+            if ended:
+                self._save()
+        for name in ended:
+            self.state[name] = {"state": "failed", "message": message, "log": []}
+        if ended and self.after:
+            self.after()
+        return ended
+
+    def drop_queued(self, message, only=None):
+        """Policy turned downloads off (or, with only, a component): the
+        waiting entries end with message. A running download is not stopped."""
+        return self._stop_all(message, only=only)
+
+    def queued(self):
+        with self._lock:
+            return [q[0] for q in self._queue]
+
+    def involves(self, name):
+        """name is being downloaded or checked now, or is waiting to be."""
+        with self._lock:
+            return name == self._running or any(q[0] == name for q in self._queue)
+
+    def cancel(self, name=None):
+        """Stop a stalled or unwanted download, or (name) take a waiting one
+        out of the queue. A later attempt starts again (anything
+        half-downloaded is discarded or verified first)."""
+        with self._lock:
+            if name is not None and name != self._running:
+                for i, q in enumerate(self._queue):
+                    if q[0] == name:
+                        del self._queue[i]
+                        self.state.pop(name, None)       # back to Download
+                        self._save()
+                        return True
+                return False
         proc = getattr(self, "_proc", None)
         if self._running and proc is not None and proc.is_alive():
             self._cancelled = True
@@ -567,12 +689,80 @@ class Downloads:
             return True
         return False
 
+    def resume(self):
+        """At the app's start: queue again what the user queued before the app
+        last closed (the one cut off mid-download first), and start it. Only
+        names this version knows, each once, in their order; a damaged or
+        oversized file queues nothing and is removed. Returns the names."""
+        names = self._load()
+        with self._lock:
+            if self._closing or self._running or self._queue:
+                return []
+            for name in names:
+                self._queue.append([name, None, None, True])
+                self.state[name] = {"state": "queued", "message": QUEUED, "log": [],
+                                    "resumed": True}
+            self._save()
+        self._next()
+        return names
+
+    def close(self):
+        """The app is closing: the file keeps the queue as it is now, for the
+        next start; the running download process is stopped (as Cancel does),
+        and nothing more starts."""
+        with self._lock:
+            self._closing = True
+        proc = getattr(self, "_proc", None)
+        if proc is not None and proc.is_alive():
+            self._cancelled = True
+            proc.terminate()
+
+    def _load(self):
+        if self.queue_path is None:
+            return []
+        try:
+            with open(self.queue_path, "rb") as f:
+                data = f.read(QUEUE_MAX_BYTES + 1)
+        except OSError:                          # none, in use or refused: nothing carries on
+            return []
+        try:
+            saved = json.loads(data.decode("utf-8")) if len(data) <= QUEUE_MAX_BYTES else None
+        except (ValueError, RecursionError):
+            saved = None
+        names = saved.get("queue") if isinstance(saved, dict) else None
+        out = []
+        for name in names if isinstance(names, list) else []:
+            if isinstance(name, str) and known(name) and name not in out:
+                out.append(name)
+        return out
+
+    def _save(self):
+        """Under the lock: write the queue (the running download first), or
+        remove the file when nothing waits. Written in full or not at all.
+        Best effort: a queue that cannot be saved still runs in this session.
+        Never once closing, so a download cut off by the close carries on."""
+        if self.queue_path is None or self._closing:
+            return
+        names = ([self._download] if self._download else []) + [q[0] for q in self._queue]
+        try:
+            if not names:
+                self.queue_path.unlink(missing_ok=True)
+                return
+            tmp = self.queue_path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"queue": names}))
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.replace(self.queue_path)
+        except OSError:
+            pass
+
     def verify(self, name):
         """Full SHA-256 check of an installed model (in the background)."""
         if not known(name):
             raise SetupError("Unknown model.")
         with self._lock:
-            if self._running:
+            if self._running or self._queue:
                 raise SetupError("Wait for the current download or check to finish.")
             self._running = name
             self.state[name] = {"state": "running", "message": "Checking every file…",
@@ -612,6 +802,7 @@ class Downloads:
             entry.update(final)
             if self.after:
                 self.after()
+            self._next()
 
     def _run(self, name, token, on_success=None):
         entry = self.state[name]
@@ -623,6 +814,8 @@ class Downloads:
                     self.before_gpu_install(name)
             elif self.before_install:
                 self.before_install()
+            if self._closing:
+                return                           # the app closed meanwhile: next start
             ctx = mp.get_context("spawn")
             parent, child = ctx.Pipe()
             started = ctx.Process(target=_download_entry,
@@ -631,6 +824,9 @@ class Downloads:
             self._cancelled = False
             started.start()
             proc = self._proc = started      # only a started process is joined below
+            if self._closing:                # close() ran while it started
+                self._cancelled = True
+                proc.terminate()
             child.close()
             parent.send(token)
             del token
@@ -662,14 +858,17 @@ class Downloads:
                 proc.join(10)
                 self._note_exit(proc)         # also when it crashed mid-download
             if getattr(self, "_cancelled", False):
-                final = {"state": "failed", "message": "Download cancelled. Start it again "
-                                                         "when you are ready."}
+                final = {"state": "failed", "message": CANCELLED}
             # Free the slot first, so the finished state never refuses a retry.
+            # It leaves the saved queue whether it finished, failed or was
+            # cancelled; not when the app is closing (it carries on next time).
             with self._lock:
-                self._running = None
+                self._running = self._download = None
+                self._save()
             entry.update(final)
             if self.after:
                 self.after()
+            self._next()
 
     def _note_exit(self, proc):
         """A download process that ended by itself with an error code (not
@@ -722,4 +921,7 @@ class Downloads:
         return min(100, round(100 * written / total)) if written else None
 
     def busy(self):
-        return self._running is not None
+        """A download or check is running, or downloads are waiting (#366):
+        model work, removal and checks wait for the whole queue."""
+        with self._lock:
+            return self._running is not None or bool(self._queue)

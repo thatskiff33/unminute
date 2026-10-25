@@ -310,8 +310,9 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
     def verify_model(self, name):
         return _safe(ws.verify_model, name)
 
-    def cancel_download(self):
-        return _safe(ws.cancel_download)
+    def cancel_download(self, name=None):
+        # name: a queued or running model (#366); none cancels the running one.
+        return _safe(ws.cancel_download, name)
 
     def remove_token(self):
         return _safe(ws.remove_token)

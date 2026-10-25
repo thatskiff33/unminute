@@ -15,7 +15,7 @@ All names and text in the boards are fictional sample content.
 | Reviewing a meeting | `Meeting`, `Meeting-Transcribing`, `Meeting-Edit`, `Meeting-Reviewed`, `Meeting-Earlier`, `Meeting-Panels` |
 | Dialogs and hand off | `Names`, `Confirm`, `Handoff`, `Handoff-Template` |
 | First-run setup | `Setup-1`, `Setup` (step 2), `Setup-3`, `Setup-4`, `Setup-5` |
-| Settings and help | `Settings`, `Models` (Downloads), `Help` |
+| Settings and help | `Settings`, `Models` (Downloads), `Help`; `Models-Queued`, `Models-Queued-Dark` and `Models-Resumed` (queued downloads, #366: `Models` with its `state` and `theme` properties) |
 | Narrow windows | `Meeting-Narrow` (900 px), `Meeting-640`, `Meeting-320`, `Home-640`, `Home-320` |
 | Dark theme | `Home-Dark`, `Meeting-Dark` |
 | Explored, not chosen | `Home-B`, `Meeting-B` |
