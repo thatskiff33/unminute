@@ -4,7 +4,7 @@
   "machine": "No named reference machine (owner decision, 18 Oct 2026, #121). These budgets were set on the development laptop (baseline.machine) and apply to whichever Windows machine measures: each release is measured on the machine that prepares it, which tools/perf_check.py records in the report ('machine') and the release notes state (tools/evidence.py machine). The recommended 8 cores and 16 GB is a design aim, not a gate. The idle, start-up and memory budgets stay provisional, having come from one quick run, until a release run's medians lower them; the recording budgets came from a release run (_budget_notes). A slower machine may fail one; raising a budget still needs a stated reason in the pull request.",
   "baseline": {
     "measured": "2026-10-16",
-    "tool": "tools/perf_check.py --quick (1 run, 20 s settle, 60 s windows). startup_s is imports plus window creation until the meeting list has rendered; interpreter start and opening the workspace are not included.",
+    "tool": "tools/perf_check.py --quick (1 run, 20 s settle, 60 s windows). startup_s is imports plus window creation until the meeting list has rendered; interpreter start and opening the workspace are not included. Since #339 (after this baseline) the window's backend, which the app loads alongside its imports, is also counted, with the imports.",
     "machine": "Intel Core Ultra 7 255H, 16 logical processors, 31.4 GB, Windows 11 (10.0.26200), WebView2 155.0.4283.45, mains power. Deviations from section 2: Performance power plan rather than Balanced, and other apps and WebView2 windows running.",
     "app": "source at 0fb525f, 3 synthetic meetings",
     "figures": {

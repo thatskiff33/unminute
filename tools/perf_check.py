@@ -118,9 +118,10 @@ counts as not measured, exit 1). Where policy turns the recording confirmation
 off, the app asks nothing and makes no consent record; the tool accepts that
 and the report says so ("recording_consent").
 
-Before the first state it times start-up to interactive (imports, then window
-creation until the meeting list has rendered; interpreter start and opening
-the workspace are left out) and waits for the worker to unload. With
+Before the first state it times start-up to interactive (imports, with the
+window's backend that the app loads alongside them, then window creation until
+the meeting list has rendered; interpreter start and opening the workspace are
+left out) and waits for the worker to unload. With
 --leak-minutes it holds the Meetings view that long, once, in the last run,
 after the idle states and before any recording, and reports the growth. The
 leak budget is for 30 minutes, so a shorter hold is reported but not compared:
@@ -1446,12 +1447,21 @@ def child(args):
     from workspace import offline_guard     # as the app itself starts (workspace/__main__.py)
     offline_guard.disable_telemetry()
     offline_guard.install()
+    # The window's backend loads alongside the imports, as workspace/__main__.py
+    # starts it (#339). Its whole wait is counted here, with the imports: the
+    # app also overlaps it with opening the workspace, which is not counted.
+    from workspace import shell
+    preload = getattr(shell, "preload_backend", None)    # absent in older packages
+    if preload is not None:
+        preload()
     import wave
 
     import numpy as np
 
-    from workspace import api, consent, credentials, power, recorder, shell
+    from workspace import api, consent, credentials, power, recorder
     from workspace.app import Workspace
+    if preload is not None:
+        shell.wait_preload()
     imports_s = time.perf_counter() - t0
     if args.app:
         evidence.require_app_modules(app)       # measuring the package, not this checkout

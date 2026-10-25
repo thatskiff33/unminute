@@ -119,9 +119,11 @@ def install_dispatch_guard(allowed):
 
     pywebview's js_bridge_call resolves the requested name with getattr over
     every dotted segment and no underscore filter, so page script could
-    otherwise call "__init__", private attributes or their methods. Must run
-    before the WebView2 backend module is imported (it imports the function
-    by name), so call it before webview.start()."""
+    otherwise call "__init__", private attributes or their methods. The
+    WebView2 backend module imports the function by name: when that module is
+    already loaded (preload_backend), its reference is replaced too, and
+    check_backend() refuses to start unless it is. Call it before
+    webview.start()."""
     import sys
 
     import webview.util as util
@@ -492,7 +494,11 @@ def lock_navigation(window, page="index.html"):
 def create_window(bridge, *, allowed, title="Unminute", hidden=False, harden=True):
     """`allowed` is the exact set of bridge names the page may call
     (workspace.api.API_METHODS); there is no default."""
+    # A backend still loading (preload_backend) finishes first, so the
+    # dispatch guard below is installed with the backend module in place.
+    wait_preload()
     import webview
+    _log_to_current_stderr()
 
     if harden:
         harden_webview2()
@@ -545,6 +551,82 @@ def _close_now(window):
         os._exit(3)              # cannot even close it: end the process, never run unlocked
 
 
+# -- loading the window's backend early (#339) ----------------------------------
+# Loading pywebview's WebView2 backend (.NET through pythonnet, Windows Forms
+# and the WebView2 control's assemblies) is about half a second of the
+# window's start, and Python's platform.uname(), which pywebview asks first,
+# is a WMI query of about 50 ms more. preload_backend() starts both on
+# background threads once the offline guard is in place (workspace/__main__.py,
+# after the launcher pass), so they run alongside the app's other imports and
+# the workspace opening. It changes no setting and opens no window: the
+# hardening switches, the dispatch guard and the alert guard are put in place
+# exactly as before, by create_window() and check_backend(), which first wait
+# for the loading to finish. A failure here is not reported: check_backend()
+# loads the backend again and refuses to start as it always has.
+#
+# The thread is not a daemon: a process that ends while .NET is still loading
+# (a second copy, a workspace that will not open) waits for the load to finish
+# before Python's exit unloads pythonnet. Unloading it mid-load ends the
+# process with an unhandled .NET exception (#378 review, B1).
+_preload = {"thread": None}
+
+
+def preload_backend():
+    """Start loading the window's backend on a background thread (once).
+    Returns at once; wait_preload() waits for it."""
+    if _preload["thread"] is not None:
+        return
+    thread = threading.Thread(target=_load_backend, daemon=False, name="preload-backend")
+    _preload["thread"] = thread
+    thread.start()
+
+
+def _load_backend():
+    import importlib
+    import platform
+    try:
+        # The WMI query on its own thread while .NET loads on this one, and
+        # finished before pywebview's platform.system() asks for it (cached).
+        query = threading.Thread(target=_quietly, args=(platform.uname,), daemon=True,
+                                 name="preload-platform")
+        query.start()
+        importlib.import_module("clr")                          # pythonnet: loads .NET
+        query.join()
+        importlib.import_module("webview.guilib").initialize("edgechromium")
+    except Exception:
+        pass                       # check_backend() tries again and fails closed
+
+
+def _log_to_current_stderr():
+    """pywebview's console log handler holds the stderr of the moment webview
+    was imported. Loaded early (preload_backend), that can be the console
+    (None under pythonw) rather than diag.summarise_output's replacement, so
+    its records would fail as logging errors instead of being summarised by
+    type (#378 review, B2). Point it at the current stderr."""
+    import logging
+    import sys
+    if sys.stderr is None:
+        return
+    for handler in logging.getLogger("pywebview").handlers:
+        if type(handler) is logging.StreamHandler and handler.stream is not sys.stderr:
+            handler.setStream(sys.stderr)
+
+
+def _quietly(fn):
+    try:
+        fn()
+    except Exception:
+        pass
+
+
+def wait_preload():
+    """Wait until preload_backend()'s loading has finished; at once if it was
+    never started."""
+    thread = _preload["thread"]
+    if thread is not None:
+        thread.join()
+
+
 def check_backend():
     """Fail closed before any window opens. pywebview silently falls back to
     the old Internet Explorer engine (MSHTML) when it cannot find WebView2;
@@ -554,6 +636,7 @@ def check_backend():
     import importlib
     import sys
 
+    wait_preload()                   # never two threads loading the backend at once
     try:
         # webview/__init__ has a global named guilib that hides the module.
         guilib = importlib.import_module("webview.guilib")

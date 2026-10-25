@@ -542,7 +542,12 @@ def main():
         if outcome.message:
             _message(outcome.message)
         return outcome.exit
-    from workspace import api, diag, shell
+    # The window's backend (.NET and WebView2's assemblies) loads on a
+    # background thread from here, alongside the imports and the workspace
+    # opening below (#339); the window waits for it (shell.preload_backend).
+    from workspace import shell
+    shell.preload_backend()
+    from workspace import api, diag
     from workspace.app import Workspace
     imported = time.perf_counter()
     mutex = _single_instance()
