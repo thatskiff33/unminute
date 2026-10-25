@@ -1049,6 +1049,61 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
                  if r.get("kind") == "incident" and r.get("area") == "drafts"]
         self.assertEqual([r.get("error") for r in found], ["RuntimeError"])
 
+    def test_an_ended_note_stays_through_battery_and_policy_changes(self):
+        # #384: once drafts have ended for a recording (unavailable, ended by
+        # a model change, or a worker that could not start), a later battery
+        # or policy reason does not replace the note, so nothing is left
+        # saying "paused" or "turned off" after the cause clears. Turning the
+        # switch off hides it; turning it on shows it again. No worker starts.
+        ws = self.ws
+        tries = []
+
+        def start(session):                               # a worker that cannot start
+            tries.append(session)
+            raise RuntimeError("cannot start")
+
+        def unavailable():
+            with mock.patch.object(ws, "_draft_model_ready", return_value=False):
+                ws._policy_tick()
+
+        def model_change():
+            ws._before_model_change()                     # setup.Downloads' before_install
+            ws._policy_tick()
+        ends = {"unavailable": unavailable, "model change": model_change,
+                "start failure": ws._policy_tick}
+        for how, end in ends.items():
+            with (self.subTest(how=how),
+                  mock.patch.object(drafts.DraftSession, "start", start)):
+                self.set_policy()
+                ws._battery = False
+                ws.settings.update(live_drafts=True)
+                ws.start_recording(3, consent=CONSENT)
+                try:
+                    end()
+                    note = ws.recording_draft()["state"]
+                    self.assertIn(note, ("unavailable", "ended", "failed"))
+                    made = len(tries)
+                    for step, change in (("battery", lambda: setattr(ws, "_battery", True)),
+                                         ("mains", lambda: setattr(ws, "_battery", False)),
+                                         ("managed", lambda: self.set_policy(
+                                             {"AllowLiveDrafts": False})),
+                                         ("allowed", self.set_policy)):
+                        change()
+                        ws._policy_tick()
+                        for answer in (ws.recording_draft(), ws.recording_status()["draft"]):
+                            self.assertEqual(note, answer["state"], step)
+                            self.assertEqual(drafts.REASONS[note], answer["note"], step)
+                    ws.settings.update(live_drafts=False)     # the switch hides the area
+                    ws._policy_tick()
+                    self.assertIsNone(ws.recording_status()["draft"])
+                    ws.settings.update(live_drafts=True)      # and shows the note again
+                    ws._policy_tick()
+                    self.assertEqual(note, ws.recording_draft()["state"])
+                    self.assertEqual(made, len(tries))        # never started again
+                    self.assertIsNone(ws._drafts)
+                finally:
+                    ws.stop_recording()
+
     def test_closing_the_app_ends_the_draft_worker(self):
         self.record()
         self.assertTrue(wait_for(self.running))

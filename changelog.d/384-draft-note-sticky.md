@@ -1,0 +1,1 @@
+- **The draft note says why draft text ended.** If draft text ended for a recording, a later change to battery power or to your organisation's settings no longer replaces that line with a "paused" or "turned off" note that stayed after the change. The recording is not affected (#384).
