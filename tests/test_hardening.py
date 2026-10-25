@@ -1790,20 +1790,39 @@ def check_scratch_run(script, install_dir, scratch, env, where):
 # process, filled once by a run that waits until PowerShell has written it. The cache holds
 # only module paths and the command names they export; the scripts, their arguments, every
 # check before and after a run, and every assertion are unchanged.
+# CI (#389): the filling run itself took 45 to 60 s in each CI chunk with installer tests.
+# The chunk job restores the file from an earlier run on the same runner image and Windows
+# PowerShell version (actions/cache) and names it in UNMINUTE_PSMODULE_CACHE: a file found
+# there is used as it is. A missing or empty one is filled there as before, for the job to
+# save. A stale one is still correct: PowerShell analyses again any module whose file
+# changed. Speed only, as above.
 
 _MODULE_CACHE = {}
+CACHE_VARIABLE = "UNMINUTE_PSMODULE_CACHE"
 
 
 def module_cache():
-    """The PSModuleAnalysisCachePath for this process's installer runs: a file in a new
-    temporary folder (removed at exit), filled on first use. If it is not written within
-    a minute the runs still work, only as slowly as before."""
+    """The PSModuleAnalysisCachePath for this process's installer runs: the absolute path
+    in UNMINUTE_PSMODULE_CACHE (CI), used as it is when a file is there, or else a file in
+    a new temporary folder (removed at exit); filled on first use when there is none. If
+    it is not written within a minute the runs still work, only as slowly as before."""
     if "path" not in _MODULE_CACHE:
-        import atexit
-        folder = tempfile.mkdtemp(prefix="unminute-psmodules-")
-        atexit.register(shutil.rmtree, folder, True)
-        path = os.path.join(folder, "ModuleAnalysisCache")
+        given = os.environ.get(CACHE_VARIABLE, "")
+        if os.path.isabs(given):
+            path = given
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                _MODULE_CACHE["path"] = path
+                print(f"Module analysis cache: restored, {os.path.getsize(path)} bytes",
+                      file=sys.stderr, flush=True)
+                return path
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+        else:
+            import atexit
+            folder = tempfile.mkdtemp(prefix="unminute-psmodules-")
+            atexit.register(shutil.rmtree, folder, True)
+            path = os.path.join(folder, "ModuleAnalysisCache")
         _MODULE_CACHE["path"] = path
+        started = time.monotonic()
         # A name no module exports, so every module on the path is searched and noted (a
         # cache filled by one found command alone left runs at about 12 s on CI), then
         # a wait until PowerShell has written the cache after that search.
@@ -1817,6 +1836,8 @@ def module_cache():
         subprocess.run([windows_powershell.executable(), "-NoProfile", "-Command", warm],
                        capture_output=True, text=True, timeout=300,
                        env=windows_powershell.environment({"PSModuleAnalysisCachePath": path}))
+        print(f"Module analysis cache: filled in {time.monotonic() - started:.0f} s",
+              file=sys.stderr, flush=True)
     return _MODULE_CACHE["path"]
 
 
@@ -3978,6 +3999,61 @@ sys.exit(int(mode) if mode.isdigit() else 0)
 
 
 @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
+class ModuleCacheTests(unittest.TestCase):
+    """#389, CI time: CI restores the module analysis cache from an earlier run and names
+    it in UNMINUTE_PSMODULE_CACHE. A restored file is used as it is, with no warm-up; a
+    missing or empty one is filled as before, at that path, so the job can save it. With
+    no name, or a relative one, the cache is a temporary file as before (#332). No
+    PowerShell runs here: subprocess.run is a stand-in."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        for patch in (mock.patch.dict(_MODULE_CACHE, clear=True),
+                      mock.patch.dict(os.environ)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        os.environ.pop("UNMINUTE_PSMODULE_CACHE", None)
+
+    def cache(self, name=None):
+        """module_cache() with name in UNMINUTE_PSMODULE_CACHE: (its path, the warm-up
+        runs' cache paths)."""
+        if name is not None:
+            os.environ["UNMINUTE_PSMODULE_CACHE"] = str(name)
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(subprocess, "run", return_value=done) as run:
+            path = module_cache()
+            self.assertEqual(path, module_cache())          # once per process
+        return path, [c.kwargs["env"]["PSModuleAnalysisCachePath"] for c in run.call_args_list]
+
+    def test_a_restored_cache_is_used_without_a_warm_up(self):
+        given = self.root / "restored" / "ModuleAnalysisCache"
+        given.parent.mkdir()
+        given.write_bytes(b"cached")
+        self.assertEqual((str(given), []), self.cache(given))
+        self.assertEqual(b"cached", given.read_bytes())       # left as it was
+
+    def test_a_missing_cache_is_warmed_at_the_named_path(self):
+        given = self.root / "not-restored" / "ModuleAnalysisCache"
+        self.assertEqual((str(given), [str(given)]), self.cache(given))
+        self.assertTrue(given.parent.is_dir())               # the job saves it from there
+
+    def test_an_empty_cache_is_warmed_again(self):
+        given = self.root / "ModuleAnalysisCache"
+        given.write_bytes(b"")
+        self.assertEqual((str(given), [str(given)]), self.cache(given))
+
+    def test_with_no_name_or_a_relative_one_the_cache_is_a_temporary_file(self):
+        for name in (None, "", "relative/ModuleAnalysisCache"):
+            with self.subTest(name=name):
+                _MODULE_CACHE.clear()
+                path, warmed = self.cache(name)
+                self.assertEqual([path], warmed)
+                self.assertTrue(os.path.isabs(path))
+                self.assertTrue(Path(path).parent.name.startswith("unminute-psmodules-"))
+
+
 class UninstallLidRestoreTests(unittest.TestCase):
     """#191: before removing anything, the uninstaller runs the installed app
     once with --restore-lid, with a hard time limit, and carries on whatever
