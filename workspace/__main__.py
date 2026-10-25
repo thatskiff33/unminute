@@ -379,8 +379,10 @@ def self_test():
     # No DLL folder named by the environment (#357, T25): CTranslate2, imported
     # below, adds %HIP_PATH%\bin to the DLL search path when it loads. The
     # launcher starts this check on its own before a migration (#111 B5b), so
-    # it removes the same variables every worker does, before any library is
-    # imported; if it cannot read that list it imports nothing and fails.
+    # it removes the same variables every worker does, before any speech or
+    # model library loads (numpy, which workspace.worker imports, comes first
+    # and adds only its own numpy.libs folder); if it cannot read that list it
+    # imports nothing more and fails.
     try:
         from workspace.worker import DLL_PATH_VARIABLES
     except Exception as exc:
