@@ -222,29 +222,34 @@ for (const el of document.querySelectorAll('body *')) {
 }
 // 1.4.11 for the boundary of a field (or of a checkbox the page draws itself):
 // its border or its fill reaches 3:1 against what is around it, on the field or
-// on a wrapper (up to two levels) that contains no other control.
+// on a wrapper (up to two levels) that contains no other control. A finding
+// names the colour that came closest, so a named owner exception (in Python,
+// OWNER_EXCEPTIONS) can match the colour it covers and nothing else.
 const FIELD = 'input:not([type=hidden]):not([type=checkbox]):not([type=radio])' +
   ':not([type=button]):not([type=submit]):not([type=reset]):not([type=image])' +
   ':not([type=range]):not([type=file]):not([type=color]), select, textarea';
 const ANY_CONTROL = 'input:not([type=hidden]), select, textarea, button, a[href]';
 const edgeRatio = (el) => {
   const s = getComputedStyle(el), around = bgOf(el.parentElement || el);
-  let best = ratioOf(rgb(s.backgroundColor), around);
+  let best = [ratioOf(rgb(s.backgroundColor), around), s.backgroundColor];
   for (const side of ['Top', 'Right', 'Bottom', 'Left'])
-    if (s[`border${side}Style`] !== 'none' && parseFloat(s[`border${side}Width`]) >= 1)
-      best = Math.max(best, ratioOf(rgb(s[`border${side}Color`]), around));
+    if (s[`border${side}Style`] !== 'none' && parseFloat(s[`border${side}Width`]) >= 1) {
+      const r = ratioOf(rgb(s[`border${side}Color`]), around);
+      if (r > best[0]) best = [r, s[`border${side}Color`]];
+    }
   return best;
 };
 const lowContrastBoundary = [];
 for (const el of controls) {
   if (el.disabled || !(el.matches(FIELD) || (el.matches('input[type=checkbox], input[type=radio]')
       && getComputedStyle(el).appearance === 'none'))) continue;
-  let best = edgeRatio(el);
+  let [best, colour] = edgeRatio(el);
   for (let up = el.parentElement, n = 0; up && n < 2 && best < 3; up = up.parentElement, n++) {
     if (up === document.body || up.querySelectorAll(ANY_CONTROL).length > 1) break;
-    best = Math.max(best, edgeRatio(up));
+    const [r, c] = edgeRatio(up);
+    if (r > best) [best, colour] = [r, c];
   }
-  if (best < 3) lowContrastBoundary.push(desc(el) + ' ' + best.toFixed(2));
+  if (best < 3) lowContrastBoundary.push(desc(el) + ' ' + best.toFixed(2) + ' ' + colour);
 }
 // 2.5.8: each pointer target is at least 24 by 24 CSS px (a label that operates
 // the control counts as its target), unless it is inline in text, sized by the
@@ -379,6 +384,54 @@ CHECKS = {
     "no_alt": "1.1.1", "text_spacing_cut_off": "1.4.12", "change_on_focus": "3.2.1",
     "colour_only": "1.4.1", "focus_not_measured": "2.4.7",
 }
+
+# Owner exceptions (#298): what the owner has accepted below WCAG 2.2 AA for
+# the brand look, by their decision of 25 October 2026 (NZ time), recorded at
+# DECISION_298. Each names the check and criterion, what it covers and the
+# decision. A finding counts as an owner exception only when its exception's
+# pattern matches the whole finding; any other finding of the same check still
+# fails the run. The tick on a done step is recorded here too, with no check:
+# drawn by the style as a graphic (1.4.11, 3:1), it is not text for the 1.4.3
+# check to find. tests/test_ui_contrast.py keeps each value equal to the
+# page's tokens and rules; tests/test_accessibility_check.py shows a finding
+# outside them failing. A new or wider exception needs the owner's decision
+# first: changing this record changes a guard (AGENTS.md, E2).
+DECISION_298 = "https://github.com/thatskiff33/unminute/issues/298#issuecomment-6391966468"
+_BOUNDARY = r"\S+ \d+\.\d\d "      # a low_contrast_boundary finding: what, ratio, colour
+OWNER_EXCEPTIONS = {
+    "control borders": {
+        "check": "low_contrast_boundary", "criterion": "1.4.11",
+        "covers": "--control-line (fields, buttons and switches)",
+        "what": "the brand border colour, about 1.8:1 on white, below 3:1",
+        "tokens": {"light": "rgba(20, 41, 102, 0.28)", "dark": "rgba(255, 255, 255, 0.32)"},
+        "pattern": _BOUNDARY + r"(rgba\(20, 41, 102, 0\.28\)|rgba\(255, 255, 255, 0\.32\))",
+        "decision": DECISION_298,
+    },
+    "meeting title at rest": {
+        "check": "low_contrast_boundary", "criterion": "1.4.11",
+        "covers": ".title-edit textarea (textarea#m-title)",
+        "what": "the meeting title's border is transparent at rest and shows on hover; "
+                "keyboard focus draws the focus ring",
+        "pattern": r"textarea#m-title \d+\.\d\d rgba\(0, 0, 0, 0\)",
+        "decision": DECISION_298,
+    },
+    "done tick": {
+        "check": None, "criterion": "1.4.3 (as text); 1.4.11 (as a graphic)",
+        "covers": "--done, .done-tick",
+        "what": "the white tick on the brand green #00A275 (3.27:1) is a graphic at 3:1, "
+                "drawn by the style with an empty text alternative, not text at 4.5:1",
+        "pattern": None,
+        "decision": DECISION_298,
+    },
+}
+
+
+def owner_exception(check, finding):
+    """The name of the owner exception that covers this finding, or None."""
+    for name, ex in OWNER_EXCEPTIONS.items():
+        if ex["check"] == check and re.fullmatch(ex["pattern"], finding):
+            return name
+    return None
 
 # The colour mode the page is drawn in (prefers-color-scheme).
 COLOUR_MODE = "return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';"
@@ -544,14 +597,28 @@ def findings(report):
     out += page_problems(report.get("page"))
     for view, a in report.get("views", {}).items():
         for key in CHECKS:
-            if a.get(key):
-                out.append(f"{view}: {key} ({len(a[key])})")
+            failing = [f for f in a.get(key) or [] if not owner_exception(key, f)]
+            if failing:
+                out.append(f"{view}: {key} ({len(failing)})")
         for width, r in a.get("reflow", {}).items():
             if r["css_width"] > int(width) + 1:
                 out.append(f"{view}: reflow width {width} not reached ({r['css_width']})")
             if r["horizontal_overflow_px"] > 0 or r["cut_off"]:
                 out.append(f"{view}: content cut off or scrolling at {width} CSS px "
                            f"({', '.join(r['cut_off'][:3]) or 'page'})")
+    return out
+
+
+def owner_exceptions(report):
+    """Every finding an owner exception covers, as lines; they do not fail."""
+    out = []
+    for view, a in report.get("views", {}).items():
+        for key in CHECKS:
+            for f in a.get(key) or []:
+                name = owner_exception(key, f)
+                if name:
+                    out.append(f"{view}: {key}: {f} (owner exception: {name}, "
+                               f"WCAG {OWNER_EXCEPTIONS[name]['criterion']})")
     return out
 
 
@@ -691,9 +758,14 @@ def main():
         holder["window"] = window
         shell.run(checks, (window, ws, mid, report, modes))
         ws.close()
+    excepted = owner_exceptions(report)
+    report["owner_exceptions"] = {"decision": DECISION_298, "findings": excepted}
     out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     problems = findings(report)
+    if excepted:
+        print(f"OWNER EXCEPTIONS ({len(excepted)}, not failures; {DECISION_298}):\n- "
+              + "\n- ".join(excepted))
     print("FINDINGS:\n- " + "\n- ".join(problems) if problems else "NO FINDINGS")
     if args.zip:
         ev = evidence.stamp_file(out, "accessibility", args.zip, APP.parent, passed=not problems,

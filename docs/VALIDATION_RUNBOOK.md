@@ -77,7 +77,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\import_dialog_check.ps
 
 **Screen reader:**
 1. With NVDA or Narrator, complete import, review, naming speakers, handoff and both cleanup confirmations by keyboard only.
-2. Repeat with a Windows contrast theme turned on. On a meeting, check that the title has a visible border at rest and that Tab to it shows a thicker focus ring (the expected behaviour is in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), "Windows contrast themes").
+2. Repeat with a Windows contrast theme turned on. On a meeting, check that the title has a visible border at rest (in the page's own colours it has none at rest, an owner exception) and that Tab to it shows a thicker focus ring (the expected behaviour is in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), "Windows contrast themes").
 3. Note anything unlabelled, unannounced or unreadable.
 4. Check the WCAG 2.2 AA criteria that `tools/accessibility_check.py` leaves out, listed in [RELEASE_STANDARD.md](RELEASE_STANDARD.md), "Accessibility against WCAG 2.2 AA". In particular: press Tab, Shift+Tab and Escape through every view and dialog with the physical keyboard (2.1.2, focus order); judge any undersized target the check reported against the equivalent and essential exceptions (2.5.8); look for overlapping text with the text spacing applied (1.4.12); and check the selected tab, switches and icons against what is next to them (1.4.11). Include a recording in progress and the confirmation windows the app draws outside the page (recording, deletion authority, discard). Record each criterion as passed, failed or not checked.
 

@@ -59,7 +59,7 @@ body{margin:0}
         <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Quiet leaves most of the computer free while it transcribes. Recommended.</p>
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
           <span style="font-size: 15px">Process automatically on battery power</span>
-          <button role="switch" aria-checked="false" aria-label="Process automatically on battery power" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: flex-start; background: rgba(20,41,102,0.24)"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
+          <button role="switch" aria-checked="false" aria-label="Process automatically on battery power" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: flex-start; background: rgba(20,41,102,0.28)"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
         </div>
       </section>
 
@@ -160,7 +160,7 @@ body{margin:0}
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
-    const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.24)' });
+    const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.28)' });
     return {
       assistantSet: (this.props.assistant ?? 'none') === 'set',
       unrecognisedSet: (this.props.unrecognised ?? 'none') === 'set',
