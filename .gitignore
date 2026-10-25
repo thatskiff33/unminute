@@ -30,6 +30,8 @@ __pycache__/
 !.claude/settings.json
 !.claude/hooks/
 !.claude/skills/
+.claude/skills/*
+!.claude/skills/*/
 .claude/skills/*/*
 !.claude/skills/*/SKILL.md
 .vscode/

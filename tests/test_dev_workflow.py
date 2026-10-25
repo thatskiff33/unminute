@@ -73,6 +73,12 @@ class CheckTests(unittest.TestCase):
             self.assertEqual({"Ruff": "SUCCESS"}, dev_status.check_states(rollup))
         rerunning = {**check("Ruff", None, "IN_PROGRESS"), "startedAt": "2026-10-25T15:00:00Z"}
         self.assertEqual({"Ruff": "WAITING"}, dev_status.check_states([late, rerunning]))
+        # A queued re-run has no start time yet; gh writes it as 0001-01-01 (#364
+        # review round 2, F2). It is still the run GitHub waits for.
+        queued = {**check("Ruff", None, "QUEUED"), "startedAt": "0001-01-01T00:00:00Z",
+                  "completedAt": "0001-01-01T00:00:00Z"}
+        for rollup in ([early, late, queued], [queued, late, early]):
+            self.assertEqual({"Ruff": "WAITING"}, dev_status.check_states(rollup))
 
     def test_summary_names_required_checks_that_never_reported(self):
         failing, waiting, missing = dev_status.check_summary([check("Ruff", "FAILURE")],
@@ -99,6 +105,20 @@ class OverlapTests(unittest.TestCase):
                          dev_status.touching(self.PRS, [r".\a.py", r"docs\x.md", "agents.md",
                                                         str(root / "a.py")], root))
 
+    def test_a_path_outside_the_checkout_is_named_as_such(self):
+        root = Path("C:/r/unminute") if sys.platform == "win32" else Path("/r/unminute")
+        elsewhere = str(root.parent / "unminute-other" / "a.py")
+        for path in (elsewhere, "../unminute-other/a.py", r"..\unminute-other\a.py"):
+            with self.subTest(path=path):
+                self.assertIsNone(dev_status.repo_path(path, root))
+        self.assertEqual({}, dev_status.touching(self.PRS, [elsewhere], root))
+        self.assertEqual("a.py", dev_status.repo_path("tools/../a.py", root))
+
+    def test_short_path_shortens_only_the_home_folder_itself(self):
+        home = str(Path.home()).replace("\\", "/")
+        self.assertEqual("~/x/y", dev_status.short_path(home + "/x/y"))
+        self.assertEqual(home + "X/y", dev_status.short_path(home + "X/y"))
+
     def test_a_pr_past_the_file_limit_is_flagged(self):
         self.assertTrue(dev_status.capped(pr(4, [f"f{i}" for i in range(100)])))
         self.assertFalse(dev_status.capped(pr(5, ["a.py"])))
@@ -106,18 +126,33 @@ class OverlapTests(unittest.TestCase):
 
 class AssessTests(unittest.TestCase):
     GREEN = [check(n, "SUCCESS") for n in REQUIRED]
+    REVIEW = ["## Independent review\n\n- **Commit reviewed:** `abcdef1234` against base `x`."]
 
     def test_a_clean_reviewed_pr_has_no_blockers(self):
         blockers, info = dev_status.assess(pr(9, statusCheckRollup=self.GREEN), REQUIRED,
-                                           ["Review of abcdef1: approve"])
+                                           self.REVIEW)
         self.assertEqual([], blockers)
-        self.assertIn("its verdict is not read", " ".join(info))
+        self.assertIn("confirm it is independent and read its verdict", " ".join(info))
+
+    def test_only_a_recorded_review_line_counts(self):
+        # #364 review round 2, F1: the author's own note naming the commit is not a
+        # review of it.
+        for notes in (["Response (abcdef1): fixed"], ["Pushed abcdef1, reviewed later"],
+                      ["**Commit reviewed:** `1234567` against base `x`."]):
+            with self.subTest(notes=notes):
+                blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
+                                                REQUIRED, notes)
+                self.assertIn("no 'Commit reviewed:' line names the head commit abcdef1",
+                              " ".join(blockers))
+        blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN), REQUIRED,
+                                        ["**Range reviewed:** `1234567..abcdef1`"])
+        self.assertEqual([], blockers)
 
     def test_draft_and_unrequired_failures_are_notes_not_blockers(self):
         # #364 review: otherwise "run gh pr ready when nothing blocks it" never arrives.
         rollup = self.GREEN + [check("Coverage", "FAILURE")]
         blockers, info = dev_status.assess(pr(9, isDraft=True, mergeStateStatus="BLOCKED",
-                                              statusCheckRollup=rollup), REQUIRED, ["abcdef1"])
+                                              statusCheckRollup=rollup), REQUIRED, self.REVIEW)
         self.assertEqual([], blockers)
         self.assertIn("draft", info[0])
         self.assertIn("check failing, not required: Coverage", " ".join(info))
@@ -130,7 +165,7 @@ class AssessTests(unittest.TestCase):
         found = " | ".join(blockers)
         for text in ("required check failing: Ruff",
                      "required check still running: Unit tests (Windows)",
-                     "no comment or review names the head commit abcdef1",
+                     "no 'Commit reviewed:' line names the head commit abcdef1",
                      "merge state DIRTY", "range-diff"):
             with self.subTest(text=text):
                 self.assertIn(text, found)
@@ -141,7 +176,7 @@ class AssessTests(unittest.TestCase):
             with self.subTest(merge=merge):
                 blockers, _ = dev_status.assess(pr(9, mergeStateStatus=merge,
                                                    statusCheckRollup=self.GREEN),
-                                                REQUIRED, ["abcdef1"])
+                                                REQUIRED, self.REVIEW)
                 self.assertEqual(1, len(blockers))
                 self.assertIn(text, blockers[0])
 

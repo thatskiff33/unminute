@@ -19,6 +19,7 @@
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,8 @@ VIEW_FIELDS = ("number,state,isDraft,mergeStateStatus,headRefOid,statusCheckRoll
 GH_FILE_LIMIT = 100          # gh returns at most this many files per pull request
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
+UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
+REVIEWED = re.compile(r"(?im)^.*\b(?:commit|range) reviewed\b.*$")
 NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
                "review threads, code-scanning alerts, open owner decisions, the reason for "
                "any failing check that is not required, and range-diff after a rebase "
@@ -86,11 +89,14 @@ def parse_worktrees(porcelain):
 def check_states(rollup):
     """{check name: state} from a statusCheckRollup, for check runs and status
     contexts alike. A check run more than once keeps its latest run, as GitHub
-    does for merging: the latest start time wins, then the later entry."""
+    does for merging: a run not yet completed is the latest, then the latest
+    start time, then the later entry."""
     latest = {}
     for order, item in enumerate(rollup or []):
         name = item.get("name") or item.get("context") or "?"
-        key = (item.get("startedAt") or item.get("completedAt") or "", order)
+        started = item.get("startedAt") or ""
+        unfinished = bool(item.get("status")) and item["status"].upper() != "COMPLETED"
+        key = (unfinished, "" if started.startswith(UNSET_TIME) else started, order)
         if name not in latest or key >= latest[name][0]:
             latest[name] = (key, item)
     states = {}
@@ -131,21 +137,22 @@ def overlaps(prs):
 
 
 def repo_path(path, root=ROOT):
-    """A path as the repository names it: relative to root, forward slashes."""
-    given = Path(path)
-    if given.is_absolute():
-        try:
-            path = str(given.resolve().relative_to(Path(root).resolve()))
-        except ValueError:
-            pass                    # outside the checkout: matched as written
-    return path.replace("\\", "/").removeprefix("./")
+    """A path as the repository names it (relative to root, forward slashes), or
+    None for a path outside the checkout. A relative path is read from root."""
+    root = Path(root).resolve()
+    try:
+        path = str((root / path.replace("\\", "/")).resolve().relative_to(root))
+    except ValueError:
+        return None
+    return path.replace("\\", "/")
 
 
 def touching(prs, paths, root=ROOT):
     """{path: [PR numbers]} for the given paths, matched without regard to case
-    (Windows file names are not case-sensitive)."""
+    (Windows file names are not case-sensitive); paths outside the checkout are
+    left out."""
     found = {}
-    for path in sorted({repo_path(p, root) for p in paths}):
+    for path in sorted({repo_path(p, root) for p in paths} - {None}):
         found[path] = sorted(pr["number"] for pr in prs
                              if path.lower() in {f.lower() for f in pr_files(pr)})
     return found
@@ -157,12 +164,20 @@ def notes_of(pr):
             + [r.get("body") or "" for r in pr.get("reviews") or []])
 
 
+def reviews_of(head, notes):
+    """The lines that record a review of the head commit: a "Commit reviewed:" or
+    "Range reviewed:" line naming its first 7 characters (the finish-pr skill
+    asks for one), so an author's note that only mentions the commit does not
+    count. The verdict is not read."""
+    short = head[:7]
+    return [line for text in notes for line in REVIEWED.findall(text) if short in line]
+
+
 def assess(pr, required, notes):
     """(blockers, notes) for one PR. Blockers are what the repository shows still
-    stops a merge under AGENTS.md "Authority"; notes are true but not, by
-    themselves, a reason to wait (the draft state is lifted by `gh pr ready` once
-    the blockers are gone). A review counts as found when a comment or review
-    names the head commit's first 7 characters; its verdict is not read."""
+    stops marking it ready and merging under AGENTS.md "Authority". Notes need a
+    look before merging (a failing check that is not required needs its reason
+    on the PR) but not before `gh pr ready`."""
     blockers, info = [], []
     state = pr.get("state", "OPEN")
     if state != "OPEN":
@@ -176,11 +191,12 @@ def assess(pr, required, notes):
     info += [f"check failing, not required: {n} (record the reason on the PR)"
              for n in failing if n not in required]
     head = (pr.get("headRefOid") or "")[:7]
-    if head and any(head in text for text in notes):
-        info.append(f"a comment or review names {head} (its verdict is not read here)")
+    if head and reviews_of(head, notes):
+        info.append(f"a review of {head} is recorded; confirm it is independent and read "
+                    "its verdict")
     elif head:
-        blockers.append(f"no comment or review names the head commit {head}: record the "
-                        "independent review of this exact commit")
+        blockers.append(f"no 'Commit reviewed:' line names the head commit {head}: record "
+                        "the independent review of this exact commit")
     merge = pr.get("mergeStateStatus", "")
     if merge in {"DIRTY", "BEHIND"}:
         blockers.append(f"merge state {merge}: rebase onto origin/{BASE} (a rebase keeps the "
@@ -188,8 +204,8 @@ def assess(pr, required, notes):
     elif merge == "UNKNOWN":
         blockers.append("merge state not worked out yet by GitHub: run --pr again shortly")
     elif merge == "BLOCKED" and not blockers and not pr.get("isDraft"):
-        blockers.append("GitHub still blocks the merge: look for unresolved review threads "
-                        "or a code-scanning alert")
+        blockers.append("GitHub still blocks the merge for a reason not read here, for "
+                        "example unresolved review threads or a code-scanning alert")
     return blockers, info
 
 
@@ -202,9 +218,11 @@ def behind_ahead(counts):
 # --- Output -------------------------------------------------------------------
 
 def short_path(path):
-    home = str(Path.home()).replace("\\", "/")
+    home = str(Path.home()).replace("\\", "/").rstrip("/")
     path = path.replace("\\", "/")
-    return "~" + path[len(home):] if path.lower().startswith(home.lower()) else path
+    if path.lower() == home.lower() or path.lower().startswith(home.lower() + "/"):
+        return "~" + path[len(home):]
+    return path
 
 
 def show_status(prs, required):
@@ -246,6 +264,9 @@ def show_status(prs, required):
 
 
 def show_files(prs, paths):
+    for path in paths:
+        if repo_path(path) is None:
+            print(f"  {short_path(path)}: outside this checkout")
     for path, numbers in touching(prs, paths).items():
         owners = " ".join(f"#{n}" for n in numbers) or "no open PR"
         print(f"  {path}: {owners}")
@@ -258,8 +279,9 @@ def show_files(prs, paths):
 def show_pr(number, required):
     pr = gh_json(["pr", "view", str(number), "--json", VIEW_FIELDS])
     blockers, info = assess(pr, required, notes_of(pr))
-    print(f"PR #{number} at {pr['headRefOid'][:7]}: "
-          + ("nothing found that stops it" if not blockers else f"{len(blockers)} to resolve"))
+    verdict = (f"{len(blockers)} to resolve" if blockers else
+               "no blocker found; read the notes" if info else "nothing found that stops it")
+    print(f"PR #{number} at {pr['headRefOid'][:7]}: {verdict}")
     for item in blockers:
         print(f"  - {item}")
     for item in info:
