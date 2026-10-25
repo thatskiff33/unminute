@@ -2140,10 +2140,14 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             result = run(shell("git add meeting.m4a"), empty)
             self.assertNotEqual(2, result.returncode, result.stderr)
-        # Without CLAUDE_PROJECT_DIR the hook file cannot be found; that blocks rather
-        # than being taken for a checkout from before the hook (#363 review, F3).
+        # Without a CLAUDE_PROJECT_DIR that names a folder the hook file cannot be
+        # found; that blocks rather than being taken for a checkout from before the
+        # hook (#363 reviews, F3 and N1).
         unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
-        for env in (unset, {**unset, "CLAUDE_PROJECT_DIR": ""}):
+        for env in (unset, {**unset, "CLAUDE_PROJECT_DIR": ""},
+                    {**unset, "CLAUDE_PROJECT_DIR": " "},
+                    {**unset, "CLAUDE_PROJECT_DIR": "\t"},
+                    {**unset, "CLAUDE_PROJECT_DIR": str(ROOT / "no-such-folder")}):
             with self.subTest(project_dir=env.get("CLAUDE_PROJECT_DIR", "unset")):
                 result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
                                          command], input=json.dumps(shell("git status")),

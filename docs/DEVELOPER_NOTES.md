@@ -198,10 +198,11 @@ real time, and remove it when the cause is fixed.
   turns any exit but 0 into 2 (`if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2`).
   `tests/test_agent_guard.py` runs the configured command through PowerShell to catch these
   mistakes.
-- **The guard fails closed** (owner, 25 Oct 2026). It blocks when `CLAUDE_PROJECT_DIR` is unset
-  or `python` is not on `PATH`, and the hook sets `"onFailure": "block"` with a 60 s timeout, so a
-  hook that cannot start, fails or times out blocks too (Claude Code 2.1.295 and later). If
-  Python breaks, every agent tool call is blocked: fix `PATH` from a terminal. The command still
+- **The guard fails closed** (owner, 25 Oct 2026). It blocks when `CLAUDE_PROJECT_DIR` does not
+  name a folder (unset, empty or wrong) or `python` is not on `PATH`, and the hook sets
+  `"onFailure": "block"` with a 60 s timeout, so a hook that cannot start, fails or times out
+  blocks too (Claude Code 2.1.295 and later). If Python breaks, every tool call the hook's
+  matcher names (file tools, Glob, Grep and the shells) is blocked: fix `PATH` from a terminal. The command still
   allows when the hook file is missing (a branch from before it existed), so the `git switch`
   needed to recover is never blocked.
 - **Simulating a hook with a PowerShell pipeline misleads.** Piping into `powershell -Command`
