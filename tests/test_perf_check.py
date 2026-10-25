@@ -101,6 +101,23 @@ class BudgetTests(unittest.TestCase):
             limit = budgets.get(state, {}).get("cpu_percent_of_one_core")
             self.assertIsNotNone(limit, f"{state}: no CPU budget in {path.name}")
 
+    def test_drafts_on_budgets_wait_for_perf_check_states(self):
+        # #104: the owner set budgets for recording with drafts on (25 Oct 2026,
+        # #189 sitting 8): 40% of one core visible, about 10% minimised. perf_check
+        # has no drafts-on states yet (#104 slice 4), so the figures wait in
+        # "pending_budgets", which compare() never reads. When perf_check gains
+        # a state, it must move into "budgets" (the test above then needs it).
+        path = ROOT / "docs" / "perf-budgets.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pending = {state: limits for state, limits in data["pending_budgets"].items()
+                   if not state.startswith("_")}
+        self.assertEqual({"recording-drafts": {"cpu_percent_of_one_core": 40.0},
+                          "recording-drafts-minimised": {"cpu_percent_of_one_core": 10.0}},
+                         pending)
+        for state in pending:
+            self.assertNotIn(state, perf_check.STATES, f"{state}: measured, move it to budgets")
+            self.assertNotIn(state, data["budgets"], f"{state}: in both sections")
+
 
 class ParentTests(unittest.TestCase):
     def test_a_failing_environment_probe_is_not_measured_not_a_traceback(self):

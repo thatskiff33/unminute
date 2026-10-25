@@ -34,6 +34,12 @@
     "recording-minimised": {"cpu_percent_of_one_core": 1.0},
     "leak": {"private_growth_mb": 10}
   },
+  "pending_budgets": {
+    "_about": "Budgets the owner has set for states tools/perf_check.py does not measure yet. perf_check compares only 'budgets', so these figures gate nothing until perf_check gains the state; the budget then moves into 'budgets' (tests/test_perf_check.py). perf_check has no drafts-on states yet: they come with #104 slice 4, fed with public speech, because synthetic tones do not exercise the speech model.",
+    "recording-drafts": {"cpu_percent_of_one_core": 40.0},
+    "recording-drafts-minimised": {"cpu_percent_of_one_core": 10.0},
+    "_note": "The owner's decision of 25 Oct 2026 (#104, #189 sitting 8): recording with live drafts on gets its own budgets, 40% of one core with the window visible and about 10% minimised; drafts keep running while minimised. #216's 25% and 1% stay for recording with drafts off. Set by the owner, not raised from a quick run (E2). The evidence was a 13-minute real-sound run on PR #336's commit 4bf22fb, measured with 5-second samples of the whole process tree, a stand-in for perf_check: 35.0% visible (Python 12.7%, WebView2 22.4%) and 8.8% minimised. Intervals where a process started or ended were dropped, and the window may have been partly behind the browser. Re-check against perf_check's release-mode medians when the states exist."
+  },
   "_budget_notes": {
     "minimised": "Not lowered by R8 (#129), on purpose. Single quick runs on this busy development laptop on 16 Oct 2026 put minimised CPU within noise of main (R8 0.208 and 0.338% of one core; main 0.365 and 0.547%), so ratcheting on them would cause false failures. The repeatable gain was working memory: a private working set of about 70 MB minimised against about 203 MB on main. Private bytes did not change (about 755 MB), because suspending trims working memory, not commit. What CPU remains when minimised is likely mostly the Python side's one-second loops (R7, #128); perf_check reports only the whole tree, so this is not yet measured. Re-ratchet from a release run's median of three runs.",
     "worker": "A fixed criterion, not a ratchet: the worker's idle unload time (120 s, workspace/worker.py) plus 5 s.",

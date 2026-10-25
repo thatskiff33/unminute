@@ -89,6 +89,17 @@ body{margin:0}
           </div>
         </sc-for>
       </div>
+      <!-- #104 with #108: shown only while computer audio is recorded as well -->
+      <sc-if value="{{draftsMix}}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <span style="font-size: 15px; font-weight: 600">With computer audio on, draft text follows</span>
+          <div role="radiogroup" aria-label="With computer audio on, draft text follows" style="max-width: 460px; display: flex; padding: 4px; border-radius: 12px; background: #EEF7FD">
+            <button role="radio" aria-checked="false" style="font: inherit; flex: 1; min-height: 40px; border: 0; border-radius: 9px; font-size: 15px; font-weight: 600; background: transparent; color: #566591">The microphone</button>
+            <button role="radio" aria-checked="true" style="font: inherit; flex: 1; min-height: 40px; border: 0; border-radius: 9px; font-size: 15px; font-weight: 700; background: #FFFFFF; color: #142966; box-shadow: 0 1px 3px rgba(20,41,102,0.16)">Both, mixed</button>
+          </div>
+          <span style="font-size: 13px; line-height: 1.4; color: #566591">Draft text also includes what others say on the call. The full transcript always uses both.</span>
+        </div>
+      </sc-if>
     </section>
 
     <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
@@ -156,17 +167,20 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"unrecognised":{"editor":"enum","options":["none","set"],"default":"none"},"$preview":{"width":1100,"height":1320}}'>
+<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"unrecognised":{"editor":"enum","options":["none","set"],"default":"none"},"drafts":{"editor":"enum","options":["off","on","mix"],"default":"off"},"$preview":{"width":1100,"height":1320}}'>
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
     const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.28)' });
+    const drafts = (this.props.drafts ?? 'off') !== 'off';
     return {
       assistantSet: (this.props.assistant ?? 'none') === 'set',
       unrecognisedSet: (this.props.unrecognised ?? 'none') === 'set',
+      draftsMix: (this.props.drafts ?? 'off') === 'mix',
       toggles: [
         on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
         on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),
+        (drafts ? on : off)('Show draft text while recording', 'Rough text a few seconds after people speak. The full transcript replaces it after you stop. Uses more memory and processor time while recording.'),
         off('Use the graphics card', 'NVIDIA RTX 500. Speeds up speaker names and Whisper transcription in Faster mode only.'),
         off('Keep recording when the lid is closed', 'While recording, Windows is set to do nothing when the lid is closed, and put back afterwards. Stop the recording before you put the laptop away.')
       ],

@@ -11,7 +11,7 @@ All names and text in the boards are fictional sample content.
 | Row | Boards |
 |---|---|
 | Brand system | `Main` (colour roles, type, buttons, speaker chips, contrast) |
-| Meetings page | `Home`, `Recording`, `Home-Empty`, `Home-Drop`, `Home-States`, `Recording-States` |
+| Meetings page | `Home`, `Recording`, `Home-Empty`, `Home-Drop`, `Home-States`, `Recording-States`; draft text while recording (#104, added 23 October 2026): `Recording-Drafts`, `Recording-Drafts-Dark`, `Recording-Drafts-States` |
 | Reviewing a meeting | `Meeting`, `Meeting-Transcribing`, `Meeting-Edit`, `Meeting-Reviewed`, `Meeting-Earlier`, `Meeting-Panels` |
 | Dialogs and hand off | `Names`, `Confirm`, `Handoff`, `Handoff-Template` |
 | First-run setup | `Setup-1`, `Setup` (step 2), `Setup-3`, `Setup-4`, `Setup-5` |

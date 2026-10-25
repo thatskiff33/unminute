@@ -13,7 +13,7 @@ Unminute turns a meeting recording into a reviewed transcript on the user's own 
 | Category | Examples | Comes from |
 | --- | --- | --- |
 | Voices and speech | The audio of everyone who speaks in a recorded or imported meeting | A recording the user imports, a watched folder, or the microphone |
-| What was said | Transcript passages, word timings, edits and their history, the reviewed snapshot; once a version offers it, rough draft text while recording (#104; on `main` the back end only, off, and not shown) | Made on the laptop from the audio, then edited by the user |
+| What was said | Transcript passages, word timings, edits and their history, the reviewed snapshot; rough draft text while recording, if the user turns it on (#104; on `main`, not in a release yet) | Made on the laptop from the audio, then edited by the user |
 | Names and labels typed by the user | Speaker names, meeting titles, hold reasons, redaction words, handoff templates | The user |
 | File locations | The path of an imported recording, watched-folder paths (either can include a person's or client's name) | The user's choice of file or folder |
 | Recording details | Microphone name, when recording started, paused and stopped, and a record that the user confirmed everyone was told (confirmed, wording version, time; no names). With computer audio (#108; no version shows its switch yet), also the output device's name and timing marks | The app, during a microphone recording |
@@ -34,7 +34,7 @@ Everything the app keeps is on the laptop, under the signed-in user's profile; t
 | A recording's details (meeting title, microphone name, recording events, confirmation record) | `workspace.db` on `main`; `recording.json` in `workspace\media\` in v0.5.0-preview.3 | Yes: sealed in the database under the meeting's key, in place of `recording.json` | No | With the working copy of the audio |
 | Microphone recording in progress or not yet imported | `workspace\recordings\` | Yes: AES-256-GCM, a few seconds at a time, under the recording's own key, wrapped by the key Windows protects for the user; no plain copy is written, even for the decoder. The key is deleted before the files once the recording is a meeting, or when the user discards or deletes it | No | Imported into a meeting; after a crash, until the user keeps or deletes it |
 | A recording's journal (times, state, events, the microphone's and, with computer audio, the output device's name, the confirmation record without names) | `workspace\recordings\` | No: a device name can name a person, a limit the owner accepted | Same | With the recording's folder |
-| Live draft text while recording (#104; on `main` the back end only, off by default, and no version shows it yet) | The memory of the app and of its draft worker process | Never written to disk, the database or a log; Windows can still write it to the page file or hibernation file, or a crash dump could hold it | Not present | Cleared at Stop and save, Discard, when the recording stops itself, when the user or policy turns it off, and when the app closes; nothing is left after a crash |
+| Live draft text while recording (#104; on `main`, off by default, not in a release yet) | The memory of the app, of its draft worker process and of the page, which shows it on the recording card | Never written to disk, the database or a log; Windows can still write it to the page file or hibernation file, or a crash dump could hold it | Not present | Cleared at Stop and save, Discard, when the recording stops itself, when the user or policy turns it off, and when the app closes; nothing is left after a crash |
 | Transcript, edits, history, snapshot, speaker names, titles, hold reasons, redaction words, file paths, and the error and restart notes the app writes about a meeting | `workspace\workspace.db` | Yes: AES-256-GCM under per-meeting keys, wrapped by a key Windows protects for this user (DPAPI). Times, states, counts and approximate lengths stay readable | No | The user confirms the final document is saved, or discards the meeting; longer while a hold applies |
 | Handoff templates | `workspace\templates.sealed` | Yes, under the workspace key | No (`templates.json`, plain) | The user changes them |
 | Fingerprints of recordings, to recognise a file already imported | `workspace.db` | Kept as keyed fingerprints (HMAC), not plain hashes | Plain hashes | A meeting's own: until its final cleanup. A watched folder's: 120 days |
@@ -103,7 +103,7 @@ Managed policy (`HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Unminute`) overrides the u
 - `AllowHandoffAssistant`, `HandoffAssistantName`, `HandoffAssistantUrl` (**not in v0.5.0-preview.3**): whether Copy and open is offered, and which assistant it opens.
 - `AllowModelDownloads` and `AllowGpuComponent`: whether staff can download models and the graphics card components.
 - `ReviewReminderDays` and `ActionRequiredDays` (**not in v0.5.0-preview.3**): after how many days a meeting's next step shows "Review due" (30 when not set) and "Action required" (off when not set). They remind; they delete nothing.
-- `AllowLiveDrafts` (**not in v0.5.0-preview.3**): whether draft text while recording may be turned on once a version offers it (#104). On `main` only the back end is in place, off, and the app refuses to turn it on; the version that adds it will leave it off until the user turns it on. Set to 0, a draft in progress is stopped and cleared; the recording carries on.
+- `AllowLiveDrafts` (**not in v0.5.0-preview.3**): whether draft text while recording may be turned on (#104). On `main` it is off until the user turns it on in Settings. Set to 0, a draft in progress is stopped and cleared; the recording carries on.
 
 A value name the app does not recognise, such as a misspelling, grants and withholds nothing; on `main` the app keeps the first 20 such names, never their data. On `main`, Settings lists them (#300) and Copy diagnostics says how many there are. The audit log has no policy value: it is always on. The full table is in [PACKAGING.md](PACKAGING.md), "Managed settings (policy)". Users can also replace speaker names with Speaker 1, Speaker 2, redact words and leave out passages for a single handoff.
 
@@ -123,7 +123,7 @@ From [SECURITY_MODEL.md](SECURITY_MODEL.md), "What the controls do not cover":
 - Ordinary deletion is not forensic erasure.
 - The user whose actions the audit log records can rebuild its local file, and on the device can push its Event Log copy out by filling the Application log. The copy is a stronger record only once IT forwards it off the device (SECURITY_MODEL.md T20).
 - Computer audio, once a version offers it, records every sound the output device plays, such as notifications or a video in another tab. The recording support can also take one app's sound only (Windows 11); choosing the meeting app that way is planned, and how it behaves with the new Teams and with browser meetings is not yet verified (SECURITY_MODEL.md T35).
-- The window can be seen in a screen share. Once a version shows live draft text (#104), that includes the draft; a warning on the recording card, with Hide draft, is planned with it (SECURITY_MODEL.md T31).
+- The window can be seen in a screen share. With live draft text on (#104), that includes the draft; the recording card warns about this and offers Hide draft (SECURITY_MODEL.md T31).
 
 ## For the deploying organisation to complete
 
@@ -134,7 +134,7 @@ These are the organisation's decisions. The software has no view on them.
 - Which AI assistant staff hand off to, under which account, where its provider keeps what it receives, and which connectors it may use.
 - How long final documents are kept and where they are filed (outside Unminute).
 - Who manages holds, and how often held content is reviewed.
-- Which managed policy values to set, including whether staff may record computer audio, and use draft text while recording, once a version offers them.
+- Which managed policy values to set, including whether staff may record computer audio, once a version offers it, and use draft text while recording.
 - Whether to forward the Windows Application log off the device, who may read the audit log's Event Log copy, and how long it is kept.
 - Whether recordings may come from synced or shared folders, and whether originals may be deleted from them.
 - The device controls Unminute relies on: disk encryption, standard-user accounts, endpoint protection ([IT_DEPLOYMENT.md](IT_DEPLOYMENT.md)).
