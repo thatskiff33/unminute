@@ -89,16 +89,23 @@ MIX_HOLD_S = 1.0                 # microphone audio waits this long for the comp
 MIX_REACH_S = 5.0                # computer audio placed further than this from the
                                  # microphone's latest audio is not used (draft only)
 MIX_PIECES = 400                 # computer pieces the live mix holds at most (see below)
-COMPUTER_TAP_S = 60.0            # sets the computer tap's size, by count (see below)
-# Both bound memory by count, not time (draft only; no computer track opens
-# in this version, app.COMPUTER_AUDIO_STARTS). A mix piece is about BATCH_S,
-# but after a backlog up to MAX_BATCH_FRAMES (8 s at 48 kHz); pieces the
-# microphone audio has passed are let go. The computer tap holds
-# COMPUTER_TAP_S / 10 ms = 6,000 blocks, and the loopback hands on about one
-# block every loopback.POLL_S (50 ms), so while the worker loads it can hold
-# about 300 s (about 29 MB of 16-bit audio at 48 kHz). Once the worker is
-# ready, that backlog reaches the mix as float32: a passing peak of about
-# 58 MB in the worker.
+COMPUTER_TAP_FRAMES = int(TAP_S * 48000)   # the computer tap's ceiling (see below)
+COMPUTER_TAP_BLOCKS = int(TAP_S / 0.01)    # and the blocks it holds at most
+# The computer tap (#371) is bounded by frames: TAP_S at the computer track's
+# rate, and never more than COMPUTER_TAP_FRAMES (2,880,000 frames: TAP_S at
+# 48 kHz, the loopback's rate, so about 5.8 MB of 16-bit mono audio) whatever
+# the rate or the block size, and never more than COMPUTER_TAP_BLOCKS blocks
+# (each block costs a little memory of its own). Once full it loses the
+# newest computer audio, as the microphone tap (a full Queue) loses its
+# newest: so while the worker loads, or after it falls behind, the two hold
+# the same stretch of time and the mix of it has both. Losing the oldest
+# instead would keep computer audio for a stretch whose microphone audio was
+# lost, and none for the one that is drafted. Draft only: the saved tracks
+# are untouched, and no microphone audio is lost to make room.
+# Once the worker is ready, that backlog reaches the mix as float32 (about
+# 11.5 MB in the worker at most, let go as the microphone audio passes it).
+# A mix piece is about BATCH_S, but after a backlog up to MAX_BATCH_FRAMES
+# (8 s at 48 kHz); pieces the microphone audio has passed are let go.
 # The page shows draft text (#104 slice 3), so the switch can be turned on.
 # False keeps drafts off whatever the settings file says (fail closed): no
 # worker starts whose text nobody can see, and set_settings refuses the switch.
@@ -552,6 +559,53 @@ def serve(conn, load, log=None):
 
 # -- the app's side: one session per recording -----------------------------------------
 
+class _ComputerTap:
+    """The live mix's computer audio on its way to the feeder: (at, block)
+    in arrival order, with (MIX_OFF, None) markers. Bounded by frames and
+    blocks (see COMPUTER_TAP_FRAMES): a block that does not fit is cut to
+    the room left, keeping its start, and once full the newest audio is
+    lost. A marker always goes in, so the worker always hears that the mix
+    is off. put() and mark() never block. Thread-safe."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items = collections.deque()
+        self._frames = 0
+        self.limit = COMPUTER_TAP_FRAMES     # frames; set by DraftSession.mix
+
+    def put(self, at, block):
+        """Returns the frames that did not fit (lost for the draft only)."""
+        n = len(block)
+        with self._lock:
+            room = 0 if len(self._items) >= COMPUTER_TAP_BLOCKS \
+                else max(0, self.limit - self._frames)
+            if n > room:
+                # A copy, so the rest of a large block is not kept alive.
+                block = block[:room].copy() if room else block[:0]
+            if len(block):
+                self._items.append((at, block))
+                self._frames += len(block)
+        return n - len(block)
+
+    def mark(self):
+        with self._lock:
+            self._items.append((MIX_OFF, None))
+
+    def get_nowait(self):
+        with self._lock:
+            if not self._items:
+                raise queue.Empty
+            at, block = self._items.popleft()
+            if block is not None:
+                self._frames -= len(block)
+            return at, block
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self._frames = 0
+
+
 class _ComputerBatch:
     """The feeder's computer audio for the live mix, sent in pieces of about
     BATCH_S. Blocks follow on in the computer's own time (the loopback fills
@@ -614,11 +668,9 @@ class DraftSession:
         self._target = target            # tests: another process target
         self._lock = threading.Lock()
         self._tap = queue.Queue(maxsize=max(1, int(TAP_S / 0.1)))
-        # Computer audio for the live mix, bounded by count: COMPUTER_TAP_S
-        # at 10 ms a block. The loopback hands on about one block every
-        # loopback.POLL_S (50 ms), so this can hold about five times
-        # COMPUTER_TAP_S (see COMPUTER_TAP_S above).
-        self._ctap = queue.Queue(maxsize=max(1, int(COMPUTER_TAP_S / 0.01)))
+        # Computer audio for the live mix, bounded by frames and losing the
+        # newest when full, as _tap does (see COMPUTER_TAP_FRAMES).
+        self._ctap = _ComputerTap()
         self._feeding = False            # the tap queues audio (not stopped or suspended)
         self._mixing = False             # tap_computer queues computer audio (live mix)
         self.computer_rate = None
@@ -630,7 +682,11 @@ class DraftSession:
         # Draft audio lost: by the tap (the writer thread only) and by the
         # feeder (its thread only), each counted by its own thread.
         self._tap_dropped_s = self._send_dropped_s = 0.0
-        self._phrase_count = 0           # phrases kept, not counting skipped notes
+        # Computer audio the full computer tap lost (writer thread only): the
+        # draft of that time follows the microphone alone, so it is counted
+        # apart from dropped_s and is not a skipped note (no text is missing).
+        self._computer_dropped_s = 0.0
+        self._phrase_count = 0          # phrases kept, not counting skipped notes
         self.load_s = None
         self.description = None
         self._proc = self._conn = None
@@ -657,18 +713,25 @@ class DraftSession:
     def tap_computer(self, at, block):
         """A computer block for the live mix. at: where it begins on the
         microphone's time line, in microphone frames. Draft only: a full
-        queue loses it for the draft, never for the recording."""
+        tap loses it (the newest first) for the draft, never for the
+        recording."""
         if not (self._feeding and self._mixing):
             return
-        try:
-            self._ctap.put_nowait((at, block))
-        except queue.Full:
-            pass
+        lost = self._ctap.put(at, block)
+        rate = self.computer_rate
+        if lost and rate:
+            self._computer_dropped_s += lost / rate
 
     @property
     def dropped_s(self):
-        """Seconds of draft audio lost (a full tap, or a worker that was gone)."""
+        """Seconds of microphone draft audio lost (a full tap, or a worker
+        that was gone)."""
         return self._tap_dropped_s + self._send_dropped_s
+
+    @property
+    def computer_dropped_s(self):
+        """Seconds of computer audio a full computer tap lost (live mix)."""
+        return self._computer_dropped_s
 
     @property
     def mixing(self):
@@ -683,6 +746,7 @@ class DraftSession:
         with self._lock:
             if self._stopped:
                 return False
+            self._ctap.limit = min(int(TAP_S * rate), COMPUTER_TAP_FRAMES)
             self.computer_rate, self._mixing = rate, True
             return True
 
@@ -694,10 +758,7 @@ class DraftSession:
             if not self._mixing:
                 return
             self._mixing = False
-        try:
-            self._ctap.put_nowait((MIX_OFF, None))
-        except queue.Full:
-            pass
+        self._ctap.mark()                # never lost to a full tap
 
     # -- control --------------------------------------------------------------------
 
@@ -794,7 +855,9 @@ class DraftSession:
         if self.log is not None:
             self.log.write("drafts", phrases=kept, restarts=self.restarts,
                            skipped_s=round(self.skipped_s, 1),
-                           dropped_s=round(self.dropped_s, 1), load_s=self.load_s)
+                           dropped_s=round(self.dropped_s, 1),
+                           computer_dropped_s=round(self.computer_dropped_s, 1),
+                           load_s=self.load_s)
         self._ended.set()
 
     @staticmethod
@@ -823,12 +886,12 @@ class DraftSession:
                 pass
 
     def _drain(self):
-        for q in (self._tap, self._ctap):
-            while True:
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    break
+        while True:
+            try:
+                self._tap.get_nowait()
+            except queue.Empty:
+                break
+        self._ctap.clear()
 
     @property
     def pid(self):

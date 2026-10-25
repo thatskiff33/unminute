@@ -9,6 +9,7 @@ import importlib.util
 import json
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -1294,6 +1295,144 @@ class LiveMixTests(unittest.TestCase):
         self.assertTrue(drafts._whole(-5, -drafts.MAX_FRAME, drafts.MAX_FRAME)
                         and drafts._whole(48000, 8000, drafts.MAX_RATE)
                         and drafts._sized(b"\0\0"))
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class ComputerTapBoundTests(unittest.TestCase):
+    """The draft's computer tap is bounded by frames, not blocks (#371): its
+    memory stays under a stated ceiling whatever the block size, it loses
+    the newest computer audio as the microphone tap does (so the two stay
+    in step), never microphone or saved audio, and counts what it lost."""
+
+    MIC_RATE, COMP_RATE = 16000, 48000
+    # The stated ceiling: 60 s at 48 kHz, 16-bit mono (about 5.8 MB).
+    CEILING = int(60 * 48000)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def session(self):
+        """A session that takes audio but was never started: nothing drains
+        its taps, as while the draft worker loads."""
+        s = drafts.DraftSession("rec1", self.MIC_RATE, Path(self.tmp.name))
+        self.assertTrue(s.open())
+        self.assertTrue(s.mix(self.COMP_RATE))
+        return s
+
+    @staticmethod
+    def held(q):
+        out = []
+        while True:
+            try:
+                out.append(q.get_nowait())
+            except queue.Empty:
+                return out
+
+    def test_the_computer_tap_holds_at_most_its_frame_bound_whatever_the_block_size(self):
+        # The count bound held 6,000 blocks: 300 s of the loopback's 50 ms
+        # blocks, 6,000 s of 1 s blocks (#336 review of ee93951).
+        for block_s in (0.01, 0.05, 1.0, 10.0):
+            with self.subTest(block_s=block_s):
+                s = self.session()
+                block = silence(block_s, self.COMP_RATE)          # one array, reused
+                n = int(round(block_s * self.COMP_RATE))
+                began = time.perf_counter()
+                for i in range(int(300 / block_s)):
+                    s.tap_computer(int(i * block_s * self.MIC_RATE), block)
+                self.assertLess(time.perf_counter() - began, 5.0)   # never waits
+                frames = [len(b) for at, b in self.held(s._ctap)]
+                self.assertLessEqual(sum(frames), self.CEILING)
+                self.assertGreaterEqual(sum(frames), self.CEILING - n)   # and fills it
+                self.assertAlmostEqual(s.computer_dropped_s, 300 - sum(frames) / self.COMP_RATE,
+                                       delta=0.01)
+                self.assertEqual(s.dropped_s, 0.0)                # no microphone audio lost
+
+    def test_after_an_overflow_the_computer_audio_held_matches_the_microphone_audio(self):
+        # 90 s while the worker loads: the microphone tap keeps its first
+        # 60 s and loses the rest, so the computer tap must keep the same
+        # 60 s, or the mix of that minute would have no computer audio at all.
+        s = self.session()
+        mic, comp = silence(0.1, self.MIC_RATE), silence(0.05, self.COMP_RATE)
+        for i in range(900):
+            start = i * 1600
+            s.tap(start, mic)
+            s.tap_computer(start, comp)
+            s.tap_computer(start + 800, comp)
+        sent = self.held(s._tap)
+        mic_span = (sent[0][0], sent[-1][0] + len(sent[-1][1]))
+        held = self.held(s._ctap)
+        last_at, last = held[-1]
+        comp_span = (held[0][0], last_at + len(last) * self.MIC_RATE // self.COMP_RATE)
+        self.assertEqual(mic_span, (0, 60 * self.MIC_RATE))
+        self.assertEqual(comp_span, mic_span)
+        self.assertAlmostEqual(s.computer_dropped_s, 30.0, delta=0.01)
+        self.assertAlmostEqual(s.dropped_s, 30.0, delta=0.01)    # the microphone tap's own
+
+    def test_a_block_larger_than_the_room_left_keeps_its_start(self):
+        s = self.session()
+        s.tap_computer(0, silence(59.0, self.COMP_RATE))
+        s.tap_computer(59 * self.MIC_RATE, tone(2.0, self.COMP_RATE))   # 1 s fits
+        s.tap_computer(61 * self.MIC_RATE, tone(1.0, self.COMP_RATE))   # none fits
+        held = self.held(s._ctap)
+        self.assertEqual([(at, len(b)) for at, b in held],
+                         [(0, 59 * self.COMP_RATE), (59 * self.MIC_RATE, self.COMP_RATE)])
+        np.testing.assert_array_equal(held[1][1], tone(2.0, self.COMP_RATE)[:self.COMP_RATE])
+        self.assertAlmostEqual(s.computer_dropped_s, 2.0, delta=0.001)
+
+    def test_the_bound_follows_the_computer_rate_under_the_same_ceiling(self):
+        for rate, seconds in ((16000, 60.0), (48000, 60.0), (96000, 30.0), (192000, 15.0)):
+            with self.subTest(rate=rate):
+                s = drafts.DraftSession("rec1", self.MIC_RATE, Path(self.tmp.name))
+                s.open()
+                s.mix(rate)
+                block = silence(1.0, rate)
+                for i in range(120):
+                    s.tap_computer(i * self.MIC_RATE, block)
+                frames = sum(len(b) for at, b in self.held(s._ctap))
+                self.assertEqual(frames, int(seconds * rate))
+                self.assertLessEqual(frames, self.CEILING)
+
+    def test_a_full_tap_never_loses_the_end_of_the_mix(self):
+        # The worker must still hear that the mix is off, or it would keep
+        # holding microphone audio back for computer audio that never comes.
+        s = self.session()
+        block = silence(1.0, self.COMP_RATE)
+        for i in range(7000):                            # full by frames, and by count
+            s.tap_computer(i * self.MIC_RATE, block)
+        s.unmix()
+        held = self.held(s._ctap)
+        self.assertEqual(held[-1], (drafts.MIX_OFF, None))
+        self.assertTrue(all(at != drafts.MIX_OFF for at, _ in held[:-1]))
+
+    def test_tiny_blocks_are_bounded_by_count_too(self):
+        # Each held block costs a little memory of its own beyond its audio.
+        s = self.session()
+        block = silence(0.001, self.COMP_RATE)
+        for i in range(20000):
+            s.tap_computer(i * 16, block)
+        self.assertLessEqual(len(self.held(s._ctap)), drafts.COMPUTER_TAP_BLOCKS)
+
+    def test_stop_and_suspend_empty_the_tap_and_the_log_counts_the_loss(self):
+        s = self.session()
+        for i in range(70):
+            s.tap_computer(i * self.MIC_RATE, silence(1.0, self.COMP_RATE))
+        s.suspend()                                      # on battery: the worker's memory goes
+        self.assertEqual(self.held(s._ctap), [])
+        s = self.session()
+        log = mock.Mock()
+        s.log = log
+        block = silence(1.0, self.COMP_RATE)
+        for i in range(70):
+            s.tap_computer(i * self.MIC_RATE, block)
+        s.stop()
+        self.assertEqual(self.held(s._ctap), [])
+        s.tap_computer(0, block)                         # after a stop: ignored
+        self.assertEqual(self.held(s._ctap), [])
+        log.write.assert_called_once()
+        self.assertEqual(log.write.call_args.kwargs["computer_dropped_s"], 10.0)
+        from workspace import diag
+        self.assertIn("computer_dropped_s", diag.NUMBERS)   # a number, kept by diagnostics
 
 
 class _Loopback:
