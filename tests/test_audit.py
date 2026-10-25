@@ -464,6 +464,16 @@ def hand_written(folder, made, number=1):
 V1_START = {"v": 1, "seq": 1, "kind": "chain_start", "previous": "first_use"}
 V1_RECORDING = {"v": 1, "seq": 2, "kind": "recording_started", "recording": OTHER,
                 "consent": "confirmed", "wording": 1, "method": "app-window"}
+# Every kind format 1 had, written out (review of 91b007e, nit 1).
+FORMAT_1_KINDS = {
+    "chain_start", "app_start", "locked", "damage_continued", "meeting_imported",
+    "recording_started", "recording_ended", "recording_deleted", "transcript_reviewed",
+    "final_saved", "meeting_discarded", "cleanup_started", "cleanup_done",
+    "cleanup_confirmed", "cleanup_retry", "hold_placed", "hold_released", "hold_kept",
+    "handoff_copied", "handoff_saved", "assistant_opened", "folder_added",
+    "delete_authority", "folder_removed", "offboarded", "tail_damaged", "write_failed",
+    "segment_dropped", "mirror_gap", "suppressed",
+}
 
 
 class FormatTests(Base):
@@ -515,10 +525,37 @@ class FormatTests(Base):
         self.assertEqual({w["v"] for w in records(self.folder)}, {2})
         self.assertEqual(audit.FORMAT, 2)
         self.assertEqual(set(audit.EARLIER), {1})
+        # Format 1's kinds, written out here rather than taken from EARLIER,
+        # so the test notices if EARLIER[1] stops being a full snapshot.
+        self.assertEqual(set(audit.EARLIER[1]), FORMAT_1_KINDS)
+        self.assertEqual(set(audit.KINDS), FORMAT_1_KINDS)    # format 2 added no kind
         current = {kind: set(rules) for kind, (_, _, rules) in audit.KINDS.items()}
-        v1 = {kind: set(audit.EARLIER[1].get(kind, rules)) for kind, rules in current.items()}
+        v1 = {kind: set(rules) for kind, rules in audit.EARLIER[1].items()}
         self.assertEqual({k for k in current if current[k] != v1[k]}, {"recording_started"})
         self.assertEqual(current["recording_started"] - v1["recording_started"], {"sources"})
+
+    def test_a_kind_added_after_format_1_is_refused_in_a_format_1_record(self):
+        # A later format adding a kind (simulated here) must not make a
+        # "v": 1 record of that kind read as format 1 (review of 91b007e, nit 1).
+        added = {"later_kind": (1999, audit.INFO, {})}
+        with mock.patch.dict(audit.KINDS, added):
+            audit.check("later_kind", {}, audit.FORMAT)
+            with self.assertRaises(audit.AuditError):
+                audit.check("later_kind", {}, 1)
+            record = {"v": 1, "seq": 1, "kind": "later_kind", "chain": "e" * 32, "at": 1,
+                      "prev": audit.ZERO}
+            self.assertIsNotNone(audit.parse(audit._canonical(
+                {**record, "v": audit.FORMAT}).encode()))
+            self.assertIsNone(audit.parse(audit._canonical(record).encode()))
+
+    def test_check_refuses_an_unknown_format_with_its_own_error(self):
+        # Not KeyError (review of 91b007e, nit 2); True is not format 1.
+        fields = {"previous": "first_use"}
+        audit.check("chain_start", fields, 1)
+        audit.check("chain_start", fields, audit.FORMAT)
+        for v in (0, 3, True, False, "2", None, 2.0, 1.0):
+            with self.subTest(v=v), self.assertRaises(audit.AuditError):
+                audit.check("chain_start", fields, v)
 
 
 class RateLimitTests(Base):

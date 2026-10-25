@@ -189,13 +189,34 @@ if any(set(rules) & set(COMMON) for _, _, rules in KINDS.values()):
     raise RuntimeError("an audit field takes the name of a key every record has")
 
 # Earlier formats: read and verified under their own rules, never written. The
-# folder outlives updates and an empty-workspace migration (and an older
-# version can open the workspace again), so a later version reads what an
-# earlier one wrote. Per format, the kinds whose rules differ from KINDS:
-# format 1 (#289 to #346) had recording_started without sources.
+# folder outlives updates and an empty-workspace migration, so a later version
+# reads what an earlier one wrote. Each entry is that format's full set of
+# kinds, {kind: {field: rule}}, written out: a kind added later is not in it,
+# so a record of that kind that claims an earlier format is refused. When a
+# later format changes a kind's fields, put the old rules in here.
+# Format 1 (#289 to #346) had these kinds, with recording_started without
+# sources; its suppressed names only its own page-driven kinds.
+# Going back: a development build from #289 to before #346 reads format 1
+# only, so one that opens a folder whose newest line is format 2 starts a new
+# chain with previous "unreadable", which writes an Event Log warning. No
+# released version writes the audit log.
+_FORMAT_1_KINDS = (
+    "chain_start", "app_start", "locked", "damage_continued", "meeting_imported",
+    "recording_started", "recording_ended", "recording_deleted", "transcript_reviewed",
+    "final_saved", "meeting_discarded", "cleanup_started", "cleanup_done",
+    "cleanup_confirmed", "cleanup_retry", "hold_placed", "hold_released", "hold_kept",
+    "handoff_copied", "handoff_saved", "assistant_opened", "folder_added",
+    "delete_authority", "folder_removed", "offboarded", "tail_damaged", "write_failed",
+    "segment_dropped", "mirror_gap", "suppressed",
+)
 EARLIER = {
-    1: {"recording_started": {name: rule for name, rule in KINDS["recording_started"][2].items()
-                              if name != "sources"}},
+    1: {
+        **{kind: dict(KINDS[kind][2]) for kind in _FORMAT_1_KINDS},
+        "recording_started": {name: rule for name, rule
+                              in KINDS["recording_started"][2].items() if name != "sources"},
+        "suppressed": {"of_kind": _one_of(*(k for k in LIMITED if k in _FORMAT_1_KINDS)),
+                       "count": _count},
+    },
 }
 
 
@@ -205,7 +226,12 @@ def check(kind, fields, version=FORMAT):
     never a value."""
     if not isinstance(kind, str) or kind not in KINDS:
         raise AuditError("unknown audit kind")
-    rules = KINDS[kind][2] if version == FORMAT else EARLIER[version].get(kind, KINDS[kind][2])
+    # _count first: true is not 1, nor 2.0 two.
+    if not _count(version) or (version != FORMAT and version not in EARLIER):
+        raise AuditError("unknown audit format")
+    rules = KINDS[kind][2] if version == FORMAT else EARLIER[version].get(kind)
+    if rules is None:
+        raise AuditError(f"{kind}: not a kind of that format")
     if set(fields) != set(rules):
         raise AuditError(f"{kind}: fields differ from its rules")
     for name, rule in rules.items():
