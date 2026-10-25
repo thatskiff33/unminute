@@ -656,21 +656,74 @@ class PreloadTests(unittest.TestCase):
             waiter.join(10)
         self.assertFalse(waiter.is_alive())
         self.assertEqual(started, ["preload-backend"])
+        self.assertFalse(shell._preload["thread"].daemon)    # Python's exit waits for it (B1)
 
     def test_wait_without_a_preload_returns_at_once(self):
         shell.wait_preload()
 
     @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
     def test_a_failed_preload_still_refuses_to_start(self):
-        # The preload swallows the failure; check_backend loads again and
-        # refuses with its message, as it did before there was a preload.
+        # The preload tries, fails quietly on its own thread (nothing reaches
+        # the thread's excepthook), and check_backend loads again on the
+        # caller's thread and refuses with its message, as before the preload.
         guilib = importlib.import_module("webview.guilib")
-        with mock.patch.object(guilib, "initialize", side_effect=OSError("no .NET")), \
-                mock.patch.dict(sys.modules, {"clr": type(sys)("clr")}):
+        tried, escaped = [], []
+
+        def initialize(gui):
+            tried.append(threading.current_thread().name)
+            raise OSError("no .NET")
+        with mock.patch.object(guilib, "initialize", initialize), \
+                mock.patch.dict(sys.modules, {"clr": type(sys)("clr")}), \
+                mock.patch.object(threading, "excepthook", escaped.append):
             shell.preload_backend()
             shell.wait_preload()
+            self.assertEqual((tried, escaped), (["preload-backend"], []))
             with self.assertRaises(shell.ShellError):
                 shell.check_backend()
+        self.assertEqual(tried, ["preload-backend", threading.current_thread().name])
+
+    @unittest.skipUnless(HAVE_WEBVIEW and sys.platform == "win32", "pythonnet and .NET")
+    def test_a_process_ending_while_the_backend_loads_exits_cleanly(self):
+        # #378 review B1: a process that ends while .NET is still loading (a
+        # second copy, a workspace that will not open) must not be cut short
+        # by pythonnet's unload at exit (exit 127, an unhandled .NET
+        # exception). The real backend, no window.
+        for delay in (0.05, 0.1, 0.15, 0.2):
+            code = ("import sys, time; from workspace import shell; "
+                    f"shell.preload_backend(); time.sleep({delay}); sys.exit(0)")
+            r = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT,
+                               capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0, f"after {delay} s: {r.stderr[-800:]}")
+            self.assertNotIn("Unhandled Exception", r.stderr)
+
+    def test_pywebview_logs_to_the_stderr_of_the_window(self):
+        # #378 review B2: loaded early, pywebview's console handler holds the
+        # stream of that moment (None under pythonw). Once the window is made
+        # it writes to the current stderr (diag.summarise_output's), with no
+        # logging error.
+        import io
+        import logging
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("[pywebview] %(message)s"))
+        handler.stream = None                           # webview imported under pythonw
+        logger = logging.getLogger("pywebview")
+        replaced = io.StringIO()
+        with mock.patch.object(logger, "handlers", [handler]), \
+                mock.patch.object(sys, "stderr", replaced):
+            shell._log_to_current_stderr()
+            logger.warning("synthetic warning")
+        self.assertIs(handler.stream, replaced)
+        self.assertIn("[pywebview] synthetic warning", replaced.getvalue())
+        self.assertNotIn("Logging error", replaced.getvalue())
+
+    def test_no_console_leaves_the_handler_alone(self):
+        import logging
+        handler = logging.StreamHandler()
+        before = handler.stream
+        with mock.patch.object(logging.getLogger("pywebview"), "handlers", [handler]), \
+                mock.patch.object(sys, "stderr", None):
+            shell._log_to_current_stderr()
+        self.assertIs(handler.stream, before)
 
     @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
     def test_the_backend_check_waits_for_the_preload(self):
@@ -693,6 +746,8 @@ class PreloadTests(unittest.TestCase):
         settings = dict(webview.settings)               # create_window sets three
         try:
             with mock.patch.object(shell, "wait_preload", lambda: order.append("wait")), \
+                    mock.patch.object(shell, "_log_to_current_stderr",
+                                      lambda: order.append("log")), \
                     mock.patch.object(shell, "install_dispatch_guard",
                                       lambda allowed: order.append("guard")), \
                     mock.patch.object(webview, "create_window", mock.MagicMock()):
@@ -700,7 +755,7 @@ class PreloadTests(unittest.TestCase):
         finally:
             for key, value in settings.items():
                 webview.settings[key] = value
-        self.assertEqual(order, ["wait", "guard"])
+        self.assertEqual(order, ["wait", "log", "guard"])
 
     @unittest.skipUnless(HAVE_WEBVIEW, "pywebview not installed")
     def test_a_backend_loaded_first_still_gets_the_dispatch_guard(self):

@@ -498,6 +498,7 @@ def create_window(bridge, *, allowed, title="Unminute", hidden=False, harden=Tru
     # dispatch guard below is installed with the backend module in place.
     wait_preload()
     import webview
+    _log_to_current_stderr()
 
     if harden:
         harden_webview2()
@@ -562,6 +563,11 @@ def _close_now(window):
 # exactly as before, by create_window() and check_backend(), which first wait
 # for the loading to finish. A failure here is not reported: check_backend()
 # loads the backend again and refuses to start as it always has.
+#
+# The thread is not a daemon: a process that ends while .NET is still loading
+# (a second copy, a workspace that will not open) waits for the load to finish
+# before Python's exit unloads pythonnet. Unloading it mid-load ends the
+# process with an unhandled .NET exception (#378 review, B1).
 _preload = {"thread": None}
 
 
@@ -570,7 +576,7 @@ def preload_backend():
     Returns at once; wait_preload() waits for it."""
     if _preload["thread"] is not None:
         return
-    thread = threading.Thread(target=_load_backend, daemon=True, name="preload-backend")
+    thread = threading.Thread(target=_load_backend, daemon=False, name="preload-backend")
     _preload["thread"] = thread
     thread.start()
 
@@ -579,14 +585,31 @@ def _load_backend():
     import importlib
     import platform
     try:
-        # The WMI query on its own thread, while .NET loads on this one; the
-        # answer is cached for pywebview's platform.system() below.
-        threading.Thread(target=_quietly, args=(platform.uname,), daemon=True,
-                         name="preload-platform").start()
+        # The WMI query on its own thread while .NET loads on this one, and
+        # finished before pywebview's platform.system() asks for it (cached).
+        query = threading.Thread(target=_quietly, args=(platform.uname,), daemon=True,
+                                 name="preload-platform")
+        query.start()
         importlib.import_module("clr")                          # pythonnet: loads .NET
+        query.join()
         importlib.import_module("webview.guilib").initialize("edgechromium")
     except Exception:
         pass                       # check_backend() tries again and fails closed
+
+
+def _log_to_current_stderr():
+    """pywebview's console log handler holds the stderr of the moment webview
+    was imported. Loaded early (preload_backend), that can be the console
+    (None under pythonw) rather than diag.summarise_output's replacement, so
+    its records would fail as logging errors instead of being summarised by
+    type (#378 review, B2). Point it at the current stderr."""
+    import logging
+    import sys
+    if sys.stderr is None:
+        return
+    for handler in logging.getLogger("pywebview").handlers:
+        if type(handler) is logging.StreamHandler and handler.stream is not sys.stderr:
+            handler.setStream(sys.stderr)
 
 
 def _quietly(fn):
