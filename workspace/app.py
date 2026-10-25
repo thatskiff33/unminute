@@ -1352,13 +1352,15 @@ class Workspace:
                 r.tap_computer = None
         session.stop()
         with self._lock:
-            if self._drafts is session:
-                self._drafts = None
             # Its text is forgotten, so the page must forget it too: it clears
             # what it shows when the generation changes. With the same one it
             # kept the text and, its count above this 0, asked for it again
-            # on every clock tick (#370).
+            # on every clock tick (#370). Raised first, so a reader without
+            # the lock sees the session at its own generation, or none at the
+            # new one, never none at the old one.
             self._draft_gen += 1
+            if self._drafts is session:
+                self._drafts = None
         self._wake.set()                      # processing that waited for it carries on
 
     def _before_model_change(self):

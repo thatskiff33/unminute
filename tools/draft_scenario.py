@@ -472,7 +472,6 @@ return {
   toggle_controls: toggle.getAttribute('aria-controls'),
   toggle_reachable: shown(toggle) && reach(toggle),
   line_ratio: line ? ratio(line) : null,
-  line_size: line ? parseFloat(getComputedStyle(line).fontSize) : null,
   label_ratio: ratio(document.querySelector('.rec-draft-label')),
   share_ratio: ratio(document.querySelector('.rec-draft-share')),
 };"""

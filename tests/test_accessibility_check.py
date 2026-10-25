@@ -635,5 +635,159 @@ class OwnerExceptionTests(unittest.TestCase):
                     self.report(key, [self.LIGHT, self.TITLE])))
 
 
+# The settle step (SETTLE): before each audit, wait up to SETTLE_MS for the
+# page's finite animations and transitions to finish. The Settings switch's
+# 0.15 s track transition was sampled mid-change after a colour-mode switch,
+# giving false boundary findings and sometimes a mis-measured colour passing
+# as an owner exception. Here white text sits on a background that turns from
+# white to black over 1.5 s, toggled just before the audit: measured at once,
+# white on near-white is a false finding; settled, the final colour passes.
+# Headless Edge's virtual time (the other tests here) does not advance CSS
+# transitions reliably: one sampled early still shows its start colour, and
+# whether its `finished` resolves within the wait varied between runs. So
+# this page runs in real time, served by a local server it posts its result
+# to, and Edge is stopped once it has.
+SETTLE_FIXTURES = {
+    "toggled": '<style>#fade { color: #fff; background: #fff; padding: 12px; '
+               'transition: background-color 1.5s linear; } #fade.on { background: #000; }'
+               '</style><p id="fade">Synthetic text on a changing background</p>',
+    "endless": '<style>@keyframes spin { to { transform: rotate(360deg); } } '
+               '#spin { width: 20px; height: 20px; background: #555; '
+               'animation: spin 1s linear infinite; }</style>'
+               '<p>Synthetic</p><div id="spin" aria-hidden="true"></div>',
+    "never_settles": '<style>#slow { color: #111; background: #fff; '
+                     'transition: background-color 60s linear; } #slow.on { background: #eee; }'
+                     '</style><p id="slow">Synthetic text</p>',
+}
+SETTLE_RUNNER = """<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Settle</title>
+<script>
+const AUDIT = %s, SETTLE = %s, FIXTURES = %s, BASE = %s;
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+window.addEventListener('load', async () => {
+  const out = {};
+  for (const [name, fragment] of Object.entries(FIXTURES)) {
+    for (const settle of [false, true]) {
+      document.body.innerHTML = BASE + fragment;
+      document.body.getBoundingClientRect();
+      await new Promise(r => setTimeout(r, 50));
+      for (const el of document.querySelectorAll('#fade, #slow')) el.classList.add('on');
+      document.body.getBoundingClientRect();
+      const t = performance.now();
+      const unsettled = settle ? await new AsyncFunction(SETTLE)() : null;
+      const waited = Math.round(performance.now() - t);
+      let audit;
+      try { audit = await new AsyncFunction(AUDIT)(); } catch (e) { audit = {error: String(e)}; }
+      out[name + (settle ? ' settled' : ' at once')] = {unsettled, waited,
+        low_contrast: audit.low_contrast, error: audit.error};
+    }
+  }
+  await fetch('/result', {method: 'POST', body: JSON.stringify(out)});
+});
+</script></head><body></body></html>"""
+
+
+@unittest.skipUnless(EDGE, "Microsoft Edge not installed")
+class SettleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+
+        import windows_powershell
+        page = (SETTLE_RUNNER % (
+            json.dumps(accessibility_check.AUDIT), json.dumps(accessibility_check.SETTLE),
+            json.dumps(SETTLE_FIXTURES), json.dumps(BASE))).encode("utf-8")
+        got, done = {}, threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path != "/settle.html":
+                    return self.send_error(404)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+
+            def do_POST(self):
+                got["results"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(204)
+                self.end_headers()
+                done.set()
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                edge = subprocess.Popen(
+                    [str(EDGE), "--headless=new", "--disable-gpu", "--no-first-run",
+                     "--disable-extensions", f"--user-data-dir={Path(tmp) / 'profile'}",
+                     "--mute-audio", "--force-device-scale-factor=1",
+                     "--window-size=1100,760", "--blink-settings=preferredColorScheme=1",
+                     f"http://127.0.0.1:{server.server_address[1]}/settle.html"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    done.wait(120)
+                finally:
+                    subprocess.run([str(windows_powershell.system_program("taskkill.exe")),
+                                    "/PID", str(edge.pid), "/T", "/F"],
+                                   capture_output=True, timeout=30, check=False)
+                    edge.wait(30)
+        finally:
+            server.shutdown()
+            server.server_close()
+        if "results" not in got:
+            raise AssertionError("Edge returned no result within 120 s")
+        cls.results = got["results"]
+
+    def test_a_transition_under_way_is_measured_once_it_has_finished(self):
+        at_once, settled = self.results["toggled at once"], self.results["toggled settled"]
+        # The fixture shows the problem: measured at once, a false finding.
+        self.assertTrue([f for f in at_once["low_contrast"] if f.startswith("p#fade")],
+                        at_once)
+        self.assertEqual((settled["unsettled"], settled["low_contrast"]), (0, []), settled)
+        self.assertGreaterEqual(settled["waited"], 1000)          # it waited for the end
+
+    def test_an_endless_animation_is_not_waited_for(self):
+        r = self.results["endless settled"]
+        self.assertEqual(r["unsettled"], 0, r)
+        self.assertLess(r["waited"], 500, r)
+
+    def test_a_page_that_never_settles_is_reported(self):
+        r = self.results["never_settles settled"]
+        self.assertEqual(r["unsettled"], 1, r)
+        self.assertGreaterEqual(r["waited"], accessibility_check.SETTLE_MS, r)
+
+
+class SettleReportTests(unittest.TestCase):
+    ZOOM = ReportTests.ZOOM
+    PAGE = ReportTests.PAGE
+
+    def test_a_view_that_did_not_settle_fails(self):
+        found = accessibility_check.findings(
+            {**self.ZOOM, "page": self.PAGE, "views": {"settings (light)": {"unsettled": 2}}})
+        self.assertEqual(len(found), 1, found)
+        self.assertTrue(found[0].startswith("settings (light): the page did not settle"), found)
+        for settled in ({"unsettled": 0}, {}):               # settled, or a report from before
+            self.assertEqual([], accessibility_check.findings(
+                {**self.ZOOM, "page": self.PAGE, "views": {"settings": settled}}))
+
+    def test_each_audit_waits_for_the_page_to_settle_first(self):
+        # In checks(), each mode's audit settles before it measures, and
+        # records what had not settled.
+        source = Path(accessibility_check.__file__).read_text(encoding="utf-8")
+        loop = source[source.index("            for mode in modes:"):]
+        loop = loop[:loop.index("report[\"views\"][view_key(")]
+        settle = loop.index("evaluate(window, SETTLE)")
+        audit = loop.index("evaluate(window, AUDIT)")
+        self.assertLess(loop.index("show_colour_mode(window, mode)"), settle)
+        self.assertLess(settle, audit)
+        self.assertIn('audit["unsettled"] = ', loop)
+        self.assertIn("draft_scenario.DRAFT_A11Y", loop)          # the draft view's, per mode
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -390,7 +390,7 @@ class VerdictTests(unittest.TestCase):
                 "box_name": "Draft text", "box_reachable": True, "status_role": "status",
                 "status_live": "polite", "status_outside_box": True, "toggle_button": True,
                 "toggle_name": "Hide draft", "toggle_controls": "rec-draft-box",
-                "toggle_reachable": True, "line_ratio": 5.1, "line_size": 15,
+                "toggle_reachable": True, "line_ratio": 5.1,
                 "label_ratio": 5.1, "share_ratio": 5.1}
         self.assertEqual(draft_scenario.draft_a11y_problems(good), [])
         for change in ({"box_live": "polite"}, {"box_live": None}, {"status_live": "off"},

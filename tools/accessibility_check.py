@@ -382,6 +382,29 @@ return {controls: controls.length, unnamed, untabbable, pointer_only: pointerOnl
         focus_not_measured: focusNotMeasured};
 """
 
+# Before each audit the page settles: up to SETTLE_MS for its finite
+# animations and transitions to finish, so no colour is measured mid-change
+# (the Settings switch's 0.15 s track transition, sampled just after a
+# colour-mode switch, gave false boundary findings and could let a colour
+# measured mid-change pass as an owner exception). Endless ones, such as the
+# spinner and the busy progress bar, are not waited for and are measured as
+# they are. Returns how many finite ones were still running; a view that did
+# not settle fails (findings), since what it measured cannot be trusted.
+# tests/test_accessibility_check.py runs it in headless Edge.
+SETTLE_MS = 3000
+SETTLE = f"const SETTLE_MS = {SETTLE_MS};" + r"""
+const running = () => document.getAnimations().filter(a => a.playState === 'running'
+  && Number.isFinite(a.effect?.getComputedTiming().endTime));
+const end = performance.now() + SETTLE_MS;
+for (;;) {
+  const now = running();
+  if (!now.length) return 0;
+  if (performance.now() >= end) return now.length;
+  await Promise.race([Promise.allSettled(now.map(a => a.finished)),
+                      new Promise(r => setTimeout(r, Math.min(200, end - performance.now())))]);
+}
+"""
+
 # Each list in a view's audit that must be empty, with the criterion it serves.
 CHECKS = {
     "unnamed": "4.1.2", "unnamed_dialogs": "4.1.2", "untabbable": "2.1.1",
@@ -628,6 +651,10 @@ def findings(report):
         out.append(f"keyboard zoom does not work ({kz})")
     out += page_problems(report.get("page"))
     for view, a in report.get("views", {}).items():
+        if a.get("unsettled"):
+            out.append(f"{view}: the page did not settle: {a['unsettled']} finite "
+                       f"animation(s) or transition(s) still running after "
+                       f"{SETTLE_MS / 1000:g} s, so it was not measured reliably")
         for key in CHECKS:
             failing = [f for f in a.get(key) or []
                        if not owner_exception(key, f, a.get("colour_mode"))]
@@ -737,18 +764,22 @@ def checks(window, ws, mid, report, modes=(None,), feed=None):
         # Each view is opened once and audited in each colour mode asked for.
         for name, go in VIEWS.items():
             if name == DRAFT_VIEW:                  # a recording with draft text showing
+                if feed is None:
+                    raise RuntimeError("the recording draft view needs the check's DraftFeed")
                 feed.begin(drafts.RUNNING)
                 feed.say(draft_scenario.FOLLOW_LINES)
             evaluate(window, WAIT + go.replace("{mid}", mid) + "return true;")
             for mode in modes:
                 shown = show_colour_mode(window, mode)
+                unsettled = evaluate(window, SETTLE)
                 audit = evaluate(window, AUDIT)
+                audit["unsettled"] = unsettled
                 audit["colour_mode"] = shown
+                if name == DRAFT_VIEW:              # settled too, before the reflow resizes
+                    audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
                 audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
                                                          "'dialog[open]')].map(d => d.id);")
                 audit["reflow"] = reflow(window)
-                if name == DRAFT_VIEW:
-                    audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
                 report["views"][view_key(name, shown, modes)] = audit
             if name == DRAFT_VIEW:                  # once, in the last mode: then it stops
                 report["draft_announcements"] = draft_scenario.draft_announcements(
