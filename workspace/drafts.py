@@ -89,23 +89,39 @@ MIX_HOLD_S = 1.0                 # microphone audio waits this long for the comp
 MIX_REACH_S = 5.0                # computer audio placed further than this from the
                                  # microphone's latest audio is not used (draft only)
 MIX_PIECES = 400                 # computer pieces the live mix holds at most (see below)
+MIX_HELD_S = 10.0                # and computer audio, at the microphone's rate (see below)
+TAP_BLOCK_S = 0.1                # a microphone block (recorder.BLOCK_S; a test keeps them equal)
 COMPUTER_TAP_FRAMES = int(TAP_S * 48000)   # the computer tap's ceiling (see below)
 COMPUTER_TAP_BLOCKS = int(TAP_S / 0.01)    # and the blocks it holds at most
-# The computer tap (#371) is bounded by frames: TAP_S at the computer track's
-# rate, and never more than COMPUTER_TAP_FRAMES (2,880,000 frames: TAP_S at
-# 48 kHz, the loopback's rate, so about 5.8 MB of 16-bit mono audio) whatever
-# the rate or the block size, and never more than COMPUTER_TAP_BLOCKS blocks
-# (each block costs a little memory of its own). Once full it loses the
-# newest computer audio, as the microphone tap (a full Queue) loses its
-# newest: so while the worker loads, or after it falls behind, the two hold
-# the same stretch of time and the mix of it has both. Losing the oldest
-# instead would keep computer audio for a stretch whose microphone audio was
-# lost, and none for the one that is drafted. Draft only: the saved tracks
-# are untouched, and no microphone audio is lost to make room.
-# Once the worker is ready, that backlog reaches the mix as float32 (about
-# 11.5 MB in the worker at most, let go as the microphone audio passes it).
-# A mix piece is about BATCH_S, but after a backlog up to MAX_BATCH_FRAMES
-# (8 s at 48 kHz); pieces the microphone audio has passed are let go.
+COMPUTER_BLOCK_S = 1.0           # a longer computer block is cut to this (see below)
+# The live mix's memory (#371), end to end. Draft only: the saved tracks are
+# untouched, and no microphone audio is lost to make room for computer audio.
+#   - The computer tap holds TAP_S at the computer track's rate, and never
+#     more than COMPUTER_TAP_FRAMES (2,880,000 frames: TAP_S at 48 kHz, the
+#     loopback's rate; about 5.8 MB of 16-bit mono) or COMPUTER_TAP_BLOCKS
+#     blocks (each costs a little memory of its own), whatever the rate or
+#     block size. A block longer than COMPUTER_BLOCK_S (only silence filled
+#     in after a stall gets that long) is cut to it. Once full the tap loses
+#     the newest computer audio, as the microphone tap (a full Queue of
+#     TAP_S / TAP_BLOCK_S blocks; a pause's marker takes one) loses its
+#     newest: so while the worker loads, or after it falls behind, the two
+#     hold the same stretch of time. Losing the oldest instead would keep
+#     computer audio for a stretch whose microphone audio was lost.
+#   - The feeder takes computer audio only up to BATCH_S past the microphone
+#     audio it has taken, so after a backlog the two reach the worker in
+#     step and the mix of the held stretch has both (sent all at once, most
+#     of it would be further than MIX_REACH_S from the microphone's audio and
+#     not used). It holds at most BATCH_S plus one block (1.5 s) of computer
+#     audio, in up to four copies while a piece is sent (the blocks, the
+#     joined audio, a part's bytes and the pipe's pickled copy): about
+#     0.6 MB at 48 kHz, 2.3 MB at 192 kHz.
+#   - The worker's LiveMix holds at most MIX_HELD_S of computer audio as
+#     float32 at the microphone's rate (about 1.9 MB at 48 kHz, 7.7 MB at
+#     192 kHz), plus the piece being resampled; pieces the microphone audio
+#     has passed are let go.
+# So at the loopback's 48 kHz the app holds at most about 6.3 MB of computer
+# audio for the mix (8.1 MB at 192 kHz), plus a little per held block and
+# the pipe's own buffer. Computed from these constants, not measured.
 # The page shows draft text (#104 slice 3), so the switch can be turned on.
 # False keeps drafts off whatever the settings file says (fail closed): no
 # worker starts whose text nobody can see, and set_settings refuses the switch.
@@ -335,6 +351,8 @@ class LiveMix:
         self._reach = int(round(MIX_REACH_S * self.rate))
         self._mic = collections.deque()      # (start, pcm) waiting for the computer's
         self._comp = collections.deque()     # (at, float32 at the mic rate), by arrival
+        self._held = 0                       # frames in _comp
+        self._max_held = max(1, int(MIX_HELD_S * self.rate))
         self._comp_end = None                # mic frame the computer audio has reached
         self._mic_end = None                 # end of the newest microphone audio
 
@@ -354,9 +372,15 @@ class LiveMix:
             n = max(1, int(round(len(x) * self.rate / rate)))
             x = np.interp(np.arange(n) * (rate / self.rate),
                           np.arange(len(x)), x).astype(np.float32)
+        room = self._max_held - self._held
+        if len(x) > room:                    # bounded by frames (#371): the newest goes
+            x = x[:max(0, room)].copy()
+            if not len(x):
+                return self._ready(False)
         self._comp.append((at, x))
+        self._held += len(x)
         while len(self._comp) > MIX_PIECES:
-            self._comp.popleft()
+            self._let_go()
         end = at + len(x)
         self._comp_end = end if self._comp_end is None else max(self._comp_end, end)
         return self._ready(False)
@@ -378,8 +402,12 @@ class LiveMix:
         computer audio is no longer waited for."""
         out = self._ready(True)
         self._comp.clear()
+        self._held = 0
         self._comp_end = None
         return out
+
+    def _let_go(self):
+        self._held -= len(self._comp.popleft()[1])
 
     def _ready(self, force):
         out = []
@@ -396,7 +424,7 @@ class LiveMix:
                                                   else None)
         while upto is not None and self._comp and \
                 self._comp[0][0] + len(self._comp[0][1]) <= upto:
-            self._comp.popleft()
+            self._let_go()
         return out
 
     def _mixed(self, start, pcm):
@@ -562,23 +590,36 @@ def serve(conn, load, log=None):
 class _ComputerTap:
     """The live mix's computer audio on its way to the feeder: (at, block)
     in arrival order, with (MIX_OFF, None) markers. Bounded by frames and
-    blocks (see COMPUTER_TAP_FRAMES): a block that does not fit is cut to
-    the room left, keeping its start, and once full the newest audio is
-    lost. A marker always goes in, so the worker always hears that the mix
-    is off. put() and mark() never block. Thread-safe."""
+    blocks (see COMPUTER_TAP_FRAMES): a block longer than COMPUTER_BLOCK_S,
+    or one that does not fit, is cut, keeping its start, and once full the
+    newest audio is lost. A marker always goes in, so the worker always
+    hears that the mix is off, and audio put after it (a writer already in
+    tap_computer when the mix ended) is refused until open() again. put()
+    and mark() never block. Thread-safe."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._items = collections.deque()
         self._frames = 0
-        self.limit = COMPUTER_TAP_FRAMES     # frames; set by DraftSession.mix
+        self._open = False
+        self.limit = COMPUTER_TAP_FRAMES     # frames; set by open()
+        self.block_limit = 1                 # frames; set by open()
+
+    def open(self, rate):
+        """Take computer audio at rate from now on (DraftSession.mix)."""
+        with self._lock:
+            self.limit = min(int(TAP_S * rate), COMPUTER_TAP_FRAMES)
+            self.block_limit = max(1, int(COMPUTER_BLOCK_S * rate))
+            self._open = True
 
     def put(self, at, block):
         """Returns the frames that did not fit (lost for the draft only)."""
         n = len(block)
         with self._lock:
+            if not self._open:
+                return 0                     # after the mix ended: not draft audio now
             room = 0 if len(self._items) >= COMPUTER_TAP_BLOCKS \
-                else max(0, self.limit - self._frames)
+                else min(self.block_limit, max(0, self.limit - self._frames))
             if n > room:
                 # A copy, so the rest of a large block is not kept alive.
                 block = block[:room].copy() if room else block[:0]
@@ -589,11 +630,15 @@ class _ComputerTap:
 
     def mark(self):
         with self._lock:
+            self._open = False
             self._items.append((MIX_OFF, None))
 
-    def get_nowait(self):
+    def get_nowait(self, upto=math.inf):
+        """The next item, but audio only if it starts at or before upto (a
+        microphone frame); queue.Empty otherwise."""
         with self._lock:
-            if not self._items:
+            if not self._items or (self._items[0][1] is not None
+                                   and self._items[0][0] > upto):
                 raise queue.Empty
             at, block = self._items.popleft()
             if block is not None:
@@ -611,7 +656,8 @@ class _ComputerBatch:
     BATCH_S. Blocks follow on in the computer's own time (the loopback fills
     silence), so a piece starts at its first block's place on the
     microphone's time line; a block more than MIX_JUMP_S from where the piece
-    says it falls starts a new piece."""
+    says it falls starts a new piece. A piece is sent once it reaches
+    BATCH_S, so it holds at most BATCH_S plus one block."""
 
     MIX_JUMP_S = 0.1
 
@@ -619,11 +665,15 @@ class _ComputerBatch:
         self.session = session
         self.blocks, self.at, self.frames = [], None, 0
 
-    def take(self):
+    def take(self, upto=math.inf):
+        """Take computer audio that starts at or before upto (a microphone
+        frame: about the microphone audio taken so far), and the markers
+        after it. The rest stays in the bounded tap, so after a backlog it
+        reaches the worker in step with the microphone audio (#371)."""
         s = self.session
         while True:
             try:
-                at, block = s._ctap.get_nowait()
+                at, block = s._ctap.get_nowait(upto)
             except queue.Empty:
                 return
             if at == MIX_OFF:
@@ -641,6 +691,8 @@ class _ComputerBatch:
                 self.at = int(at)
             self.blocks.append(block)
             self.frames += len(block)
+            if self.full():
+                self.send()
 
     def full(self):
         rate = self.session.computer_rate
@@ -667,7 +719,8 @@ class DraftSession:
         self.log, self.allow_test_engines = log, bool(allow_test_engines)
         self._target = target            # tests: another process target
         self._lock = threading.Lock()
-        self._tap = queue.Queue(maxsize=max(1, int(TAP_S / 0.1)))
+        # TAP_S of the recorder's blocks (TAP_BLOCK_S); a pause's marker takes one.
+        self._tap = queue.Queue(maxsize=max(1, int(round(TAP_S / TAP_BLOCK_S))))
         # Computer audio for the live mix, bounded by frames and losing the
         # newest when full, as _tap does (see COMPUTER_TAP_FRAMES).
         self._ctap = _ComputerTap()
@@ -746,8 +799,9 @@ class DraftSession:
         with self._lock:
             if self._stopped:
                 return False
-            self._ctap.limit = min(int(TAP_S * rate), COMPUTER_TAP_FRAMES)
-            self.computer_rate, self._mixing = rate, True
+            self.computer_rate = rate
+            self._ctap.open(rate)
+            self._mixing = True
             return True
 
     def unmix(self):
@@ -913,6 +967,7 @@ class DraftSession:
         batch, batch_start, batch_frames = [], None, 0
         limit = max(1, int(self.rate * BATCH_S))
         comp = _ComputerBatch(self)
+        taken = -math.inf                # end of the microphone audio taken (frames)
         while True:
             try:
                 start, block = self._tap.get(timeout=0.2)
@@ -927,7 +982,12 @@ class DraftSession:
             if start is None and block is None and self._stopped:
                 return
             flush = start == FLUSH
-            comp.take()                  # the computer audio taken so far (live mix)
+            if block is not None:
+                taken = start + len(block)
+            # The computer audio for about the microphone audio taken so far
+            # (live mix), the rest left in the bounded tap (#371); all of it
+            # at a pause.
+            comp.take(math.inf if flush else taken + limit)
             if block is not None:
                 if batch and start != batch_start + batch_frames:
                     comp.send()
