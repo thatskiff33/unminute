@@ -565,7 +565,8 @@ function renderSteps(d) {
     const li = el("li", { class: kind },
       el("span", { class: "step-bar" }),
       el("span", { class: "step-label" },
-        el("span", { class: "step-dot", "aria-hidden": "true", textContent: done[i] ? "✓" : String(i + 1) }),
+        el("span", { class: done[i] ? "step-dot done-tick" : "step-dot", "aria-hidden": "true",
+                      textContent: done[i] ? "" : String(i + 1) }),
         el("span", { textContent: name }, done[i] ? el("span", { class: "sr", textContent: ", done" }) : null)));
     if (i === now) li.setAttribute("aria-current", "step");
     return li;
@@ -1765,7 +1766,8 @@ function renderSuSteps() {
   $("su-steps").replaceChildren(...SU_STEPS.map(([name, note], i) => {
     const n = i + 1, kind = n < suState.step ? "done" : n === suState.step ? "now" : "";
     const li = el("li", { class: kind },
-      el("span", { class: "su-dot", "aria-hidden": "true", textContent: kind === "done" ? "✓" : String(n) }),
+      el("span", { class: kind === "done" ? "su-dot done-tick" : "su-dot", "aria-hidden": "true",
+                    textContent: kind === "done" ? "" : String(n) }),
       el("span", { class: "su-name", textContent: name },
          kind === "done" ? el("span", { class: "sr", textContent: ", done" }) : null),
       note ? el("span", { class: "su-opt", textContent: note }) : null);

@@ -486,6 +486,10 @@ kbd.plain { padding: 0; border: 0; background: none; font-size: inherit; }
   width: 22px; height: 22px; flex: none; border-radius: 50%; font-size: 12px; font-weight: 800;
   display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--upcoming); color: var(--muted);
 }
+/* A done step's tick is a graphic, not text: the style draws it, with an empty
+   text alternative (the step itself says "done" to a screen reader). Its 3:1
+   on the brand green is WCAG 1.4.11's (owner decision of 25 October 2026, #298). */
+.done-tick::before { content: "\2713" / ""; }
 .stepper li.done .step-bar, .stepper li.done .step-dot { background: var(--done); border-color: var(--done); color: var(--done-fg); }
 .stepper li.done .step-label { font-weight: 600; }
 .stepper li.now .step-bar, .stepper li.now .step-dot { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
