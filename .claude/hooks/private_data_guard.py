@@ -67,7 +67,13 @@
 # before the rename were retired once the owner confirmed it deleted (#136).
 # The deeper checks described above follow. Any error while checking blocks the
 # call (exit 2), never only warns; the input is read as UTF-8, as Claude Code sends
-# it (#221 round 2). Claude Code lets a call through when a hook runs past its
+# it (#221 round 2); input it cannot read blocks too. The command in settings.json
+# fails closed as well (owner, 25 Oct 2026): it blocks when Python is not on PATH,
+# turns any exit but 0 into 2, and sets onFailure to block, so a hook that cannot
+# start, fails or runs past its 60 s timeout blocks the call (Claude Code 2.1.295
+# and later; earlier versions let such a call through). A checkout with no hook
+# file still allows, so the git command to get back is never blocked.
+# Claude Code lets a call through when a hook runs past its
 # time limit, so time is bounded too (#221 round 1). The common shapes of a
 # long command are read in linear time (a 500 KB heredoc, 40,000 backslashes, 3,000
 # message options, 50,000 closing brackets, 10,000 nested "$(, thousands of blank
@@ -2006,18 +2012,18 @@ def _decoded(data):
 
 def main():
     child = sys.argv[1:] == [CHILD_FLAG]
-    # Unreadable input means the hook is wired wrongly: say so with exit 1, which
-    # Claude Code shows without blocking, rather than allowing silently or
-    # blocking every tool call in every session.
+    # Unreadable input means the hook is wired wrongly. The guard fails closed
+    # (owner, 25 Oct 2026): block and say so, since Claude Code lets a call
+    # through on exit 1.
     try:
         data = sys.stdin.buffer.read()
         payload = json.loads(_decoded(data))
     except (ValueError, OSError):
         payload = None
     if not isinstance(payload, dict):
-        print("private_data_guard: no readable hook input, so the guard is not active; "
+        print("private_data_guard: no readable hook input, so this call is blocked; "
               "check the hook command in .claude/settings.json", file=sys.stderr)
-        return 1
+        return 2
     try:
         code, reason = _decide_bounded(payload, data, child)
     except Exception as error:                   # anything after parsing blocks
