@@ -709,13 +709,16 @@ class Downloads:
     def close(self):
         """The app is closing: the file keeps the queue as it is now, for the
         next start; the running download process is stopped (as Cancel does),
-        and nothing more starts."""
+        and nothing more starts. It waits briefly for that process to exit, so
+        no download process still holds the cache or its log once the app has
+        closed (a quick reopen resumes the queue in the same folders)."""
         with self._lock:
             self._closing = True
         proc = getattr(self, "_proc", None)
         if proc is not None and proc.is_alive():
             self._cancelled = True
             proc.terminate()
+            proc.join(5)
 
     def _load(self):
         if self.queue_path is None:

@@ -242,6 +242,15 @@ class DownloadQueueTests(unittest.TestCase):
         self.assertEqual(self.order(), [self.a, self.b, self.c])
         self.assertFalse(self.queue_file(ws2).exists())
 
+    def test_closing_waits_for_the_download_process_to_exit(self):
+        # A quick reopen resumes the queue in the same cache and log folders:
+        # the process cut off by the close must be gone when close() returns.
+        self.three()
+        proc = self.ws.downloads._proc
+        self.assertTrue(proc.is_alive())
+        self.ws.close()
+        self.assertFalse(proc.is_alive())
+
     def test_processing_waits_for_the_whole_queue(self):
         self.three()
         self.release(self.a)
