@@ -68,11 +68,12 @@
 # The deeper checks described above follow. Any error while checking blocks the
 # call (exit 2), never only warns; the input is read as UTF-8, as Claude Code sends
 # it (#221 round 2); input it cannot read blocks too. The command in settings.json
-# fails closed as well (owner, 25 Oct 2026): it blocks when Python is not on PATH,
-# turns any exit but 0 into 2, and sets onFailure to block, so a hook that cannot
-# start, fails or runs past its 60 s timeout blocks the call (Claude Code 2.1.295
-# and later; earlier versions let such a call through). A checkout with no hook
-# file still allows, so the git command to get back is never blocked.
+# fails closed as well (owner, 25 Oct 2026): it blocks when CLAUDE_PROJECT_DIR is
+# not a usable folder or Python is not on PATH, turns any exit but 0 into 2, and
+# sets onFailure to block, so a hook that cannot start, fails or runs past its
+# 60 s timeout blocks the call (Claude Code 2.1.295 and later; earlier versions
+# let such a call through). A checkout with no hook file still allows, so the git
+# command to get back is not blocked; the exact conditions are below ("Exit 2").
 # Claude Code lets a call through when a hook runs past its
 # time limit, so time is bounded too (#221 round 1). The common shapes of a
 # long command are read in linear time (a 500 KB heredoc, 40,000 backslashes, 3,000

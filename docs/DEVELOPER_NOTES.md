@@ -206,7 +206,7 @@ real time, and remove it when the cause is fixed.
   matcher names (file tools, Glob, Grep and the shells) is blocked: fix `PATH` from a
   terminal. The command still allows when the hook file is missing (a branch from before it
   existed) and the hook's path is under 260 characters, which Windows PowerShell can test, so
-  the `git switch` needed to recover is never blocked.
+  the `git switch` needed to recover is not blocked in that case.
 - **Simulating a hook with a PowerShell pipeline misleads.** Piping into `powershell -Command`
   from PowerShell does not reach the native program, and `$input` adds a byte order mark. Test
   with a real process pipe, as the test does.

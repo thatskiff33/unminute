@@ -2140,8 +2140,8 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             result = run(shell("git add meeting.m4a"), empty)
             self.assertNotEqual(2, result.returncode, result.stderr)
-        # Without a CLAUDE_PROJECT_DIR that is the full path of an existing folder
-        # the hook file cannot be found; that blocks rather than being taken for a
+        # Without a CLAUDE_PROJECT_DIR that is an existing folder named by a drive or
+        # network path the hook file cannot be found; that blocks rather than being taken for a
         # checkout from before the hook (#363 reviews, F3, N1 and R1). Drive-only,
         # root and drive-relative forms are Windows paths.
         unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
