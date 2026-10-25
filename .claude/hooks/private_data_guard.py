@@ -67,7 +67,14 @@
 # before the rename were retired once the owner confirmed it deleted (#136).
 # The deeper checks described above follow. Any error while checking blocks the
 # call (exit 2), never only warns; the input is read as UTF-8, as Claude Code sends
-# it (#221 round 2). Claude Code lets a call through when a hook runs past its
+# it (#221 round 2); input it cannot read blocks too. The command in settings.json
+# fails closed as well (owner, 25 Oct 2026): it blocks when CLAUDE_PROJECT_DIR is
+# not a usable folder or Python is not on PATH, turns any exit but 0 into 2, and
+# sets onFailure to block, so a hook that cannot start, fails or runs past its
+# 60 s timeout blocks the call (Claude Code 2.1.295 and later; earlier versions
+# let such a call through). A checkout with no hook file still allows, so the git
+# command to get back is not blocked; the exact conditions are below ("Exit 2").
+# Claude Code lets a call through when a hook runs past its
 # time limit, so time is bounded too (#221 round 1). The common shapes of a
 # long command are read in linear time (a 500 KB heredoc, 40,000 backslashes, 3,000
 # message options, 50,000 closing brackets, 10,000 nested "$(, thousands of blank
@@ -158,6 +165,11 @@
 #   - Claude Code tools the hook's matcher in .claude/settings.json does not name,
 #     such as publishing a local file as an artifact or sending one to the user
 #     (the deny rules cover Read and Edit only);
+#   - a python on PATH that is a shim (.cmd or .bat) which does not pass on
+#     Python's exit code, so the guard's 2 becomes 0; and a session started in a
+#     checkout of a branch from before the hook existed, which has no hook file
+#     and so runs without the guard (CLAUDE_PROJECT_DIR is the folder the session
+#     started in, also for work in other worktrees);
 #   - Codex does not run the hook (AGENTS.md P2: review for Codex).
 # Known false positives, which fail closed: from main's check, unminute\workspace
 # as a relative path of its own (ls unminute/workspace from the folder above a
@@ -196,9 +208,13 @@
 # Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
-# settings run it through PowerShell (Git Bash may be missing), skip it when the
-# file is absent (a branch from before it existed), and end with
-# "exit $LASTEXITCODE": PowerShell otherwise turns the 2 into a 1, which only warns.
+# settings run it through PowerShell (Git Bash may be missing), block when
+# CLAUDE_PROJECT_DIR is not an existing folder named by a drive or network path
+# (unset, empty, relative, drive-only, device form or missing) or Python is not
+# on PATH, skip it when the file is absent from an existing folder (a branch from
+# before it existed; only for a hook path under 260 characters, which Windows
+# PowerShell can test), and turn any exit but 0 into 2 (PowerShell would
+# otherwise report the 2 as a 1).
 
 import bisect
 import fnmatch
@@ -2006,18 +2022,18 @@ def _decoded(data):
 
 def main():
     child = sys.argv[1:] == [CHILD_FLAG]
-    # Unreadable input means the hook is wired wrongly: say so with exit 1, which
-    # Claude Code shows without blocking, rather than allowing silently or
-    # blocking every tool call in every session.
+    # Unreadable input means the hook is wired wrongly. The guard fails closed
+    # (owner, 25 Oct 2026): block and say so, since Claude Code lets a call
+    # through on exit 1.
     try:
         data = sys.stdin.buffer.read()
         payload = json.loads(_decoded(data))
     except (ValueError, OSError):
         payload = None
     if not isinstance(payload, dict):
-        print("private_data_guard: no readable hook input, so the guard is not active; "
+        print("private_data_guard: no readable hook input, so this call is blocked; "
               "check the hook command in .claude/settings.json", file=sys.stderr)
-        return 1
+        return 2
     try:
         code, reason = _decide_bounded(payload, data, child)
     except Exception as error:                   # anything after parsing blocks

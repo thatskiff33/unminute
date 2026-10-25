@@ -2088,19 +2088,26 @@ class HookProcessTests(unittest.TestCase):
                     os.environ, {guard.TIME_LIMIT_VARIABLE: value}):
                 self.assertEqual(expected, guard._time_limit())
 
-    def test_unreadable_input_warns_without_blocking(self):
-        # Exit 1 is shown to the user but does not block; 2 would block everything.
+    def test_unreadable_input_blocks(self):
+        # The guard fails closed (owner, 25 Oct 2026): a hook that cannot read its
+        # input blocks the call rather than only warning, since Claude Code lets a
+        # call through on exit 1.
         for text in ("not json", "", "[]"):
             with self.subTest(text=text):
                 result = subprocess.run([sys.executable, str(HOOK)], input=text,
                                         capture_output=True, text=True, timeout=30)
-                self.assertEqual(1, result.returncode)
-                self.assertIn("not active", result.stderr)
+                self.assertEqual(2, result.returncode)
+                self.assertIn("no readable hook input", result.stderr)
 
     def test_configured_command_blocks_through_powershell(self):
         # Runs the exact command from settings.json the way Claude Code does with
         # "shell": "powershell". Catches the exit code being lost (2 becoming 1)
-        # and stdin not reaching Python.
+        # and stdin not reaching Python. Windows only, where the hook runs: the
+        # command accepts only a drive or network path for CLAUDE_PROJECT_DIR (#363
+        # review R1), so on Linux's pwsh every call blocks. The Windows CI job runs
+        # with --strict-skips, so this test cannot be skipped there.
+        if sys.platform != "win32":
+            self.skipTest("the hook command runs on Windows only")
         shell_exe = shutil.which("powershell") or shutil.which("pwsh")
         if not shell_exe:
             self.skipTest("PowerShell not installed")
@@ -2138,6 +2145,35 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             result = run(shell("git add meeting.m4a"), empty)
             self.assertNotEqual(2, result.returncode, result.stderr)
+        # Without a CLAUDE_PROJECT_DIR that is an existing folder named by a drive or
+        # network path the hook file cannot be found; that blocks rather than being taken for a
+        # checkout from before the hook (#363 reviews, F3, N1 and R1).
+        unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
+        values = ["", " ", "\t", "0", ".", "tests", str(ROOT / "no-such-folder"),
+                  str(ROOT / "AGENTS.md"), "C:", "\\", "/", "C:tests"]
+        for env in [unset] + [{**unset, "CLAUDE_PROJECT_DIR": v} for v in values]:
+            with self.subTest(project_dir=env.get("CLAUDE_PROJECT_DIR", "unset")):
+                result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
+                                         command], input=json.dumps(shell("git status")),
+                                        capture_output=True, text=True, timeout=60, env=env)
+                self.assertEqual(2, result.returncode, result.stderr)
+        # Fail closed (owner, 25 Oct 2026): with no Python on PATH, or a python that
+        # fails before the guard decides (a Store stub, a broken install), even an
+        # ordinary call is blocked. Claude Code lets a call through on exit 1.
+        system = os.environ.get("SystemRoot", r"C:\Windows")
+        bare = os.pathsep.join([os.path.join(system, "System32"), system,
+                                os.path.dirname(shell_exe)])
+        with tempfile.TemporaryDirectory() as broken:
+            Path(broken, "python.bat").write_text("@exit /b 1\r\n", encoding="ascii")
+            for label, path in (("no python", bare),
+                                ("python fails", broken + os.pathsep + bare)):
+                with self.subTest(path=label):
+                    env = {**os.environ, "PATH": path, "CLAUDE_PROJECT_DIR": str(ROOT)}
+                    result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive",
+                                             "-Command", command],
+                                            input=json.dumps(shell("git status")),
+                                            capture_output=True, text=True, timeout=60, env=env)
+                    self.assertEqual(2, result.returncode, result.stderr)
 
 
 class SettingsTests(unittest.TestCase):
@@ -2157,9 +2193,17 @@ class SettingsTests(unittest.TestCase):
         # tool call; PowerShell is always present on Windows.
         self.assertEqual("powershell", guards[0].get("shell"))
         self.assertIn("$env:CLAUDE_PROJECT_DIR", guards[0]["command"])
-        # Without this PowerShell reports the hook's exit 2 as 1, which only warns.
-        self.assertTrue(guards[0]["command"].rstrip().endswith("exit $LASTEXITCODE"))
+        # Any exit but 0 becomes 2: PowerShell never reports the hook's 2 as 1, and
+        # a python that fails blocks even on a Claude Code without onFailure.
+        self.assertTrue(guards[0]["command"].rstrip().endswith(
+            "if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2"))
         self.assertIn("Test-Path", guards[0]["command"])     # a missing hook file allows
+        # Claude Code 2.1.295 and later then block when the hook cannot start, fails
+        # or runs past its timeout, instead of letting the call through. The timeout
+        # leaves the guard's own time limit room to answer first.
+        self.assertEqual("block", guards[0].get("onFailure"))
+        self.assertGreaterEqual(guards[0].get("timeout", 600), guard.TIME_LIMIT + 20)
+        self.assertLessEqual(guards[0].get("timeout", 600), 120)
         # Every tool the hook checks is one the matcher sends it (Monitor runs a
         # shell command, R13b review).
         entry = next(e for e in settings["hooks"]["PreToolUse"]

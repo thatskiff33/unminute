@@ -16,7 +16,9 @@
           {
             "type": "command",
             "shell": "powershell",
-            "command": "$h = \"$env:CLAUDE_PROJECT_DIR/.claude/hooks/private_data_guard.py\"; if (-not (Test-Path -LiteralPath $h)) { exit 0 }; if (-not (Get-Command python -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine('private_data_guard: python is not on PATH, so the guard is not active'); exit 1 }; python $h; exit $LASTEXITCODE"
+            "timeout": 60,
+            "onFailure": "block",
+            "command": "$d = $env:CLAUDE_PROJECT_DIR; $h = $null; try { if ($d -match '^([A-Za-z]:[\\\\/]|\\\\\\\\[^\\\\/?.])' -and [System.IO.Directory]::Exists($d)) { $h = [System.IO.Path]::Combine([System.IO.Path]::GetFullPath($d), '.claude/hooks/private_data_guard.py') } } catch { $h = $null }; if (-not $h) { [Console]::Error.WriteLine('private_data_guard: CLAUDE_PROJECT_DIR does not name a folder, so this call is blocked (AGENTS.md, P2)'); exit 2 }; if ($h.Length -lt 260 -and -not (Test-Path -LiteralPath $h)) { exit 0 }; if (-not (Get-Command python -ErrorAction SilentlyContinue)) { [Console]::Error.WriteLine('private_data_guard: python is not on PATH, so this call is blocked; put Python on PATH to use the agent (AGENTS.md, P2)'); exit 2 }; python $h; if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2"
           }
         ]
       }
