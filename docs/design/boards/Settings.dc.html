@@ -59,20 +59,20 @@ body{margin:0}
         <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Quiet leaves most of the computer free while it transcribes. Recommended.</p>
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
           <span style="font-size: 15px">Process automatically on battery power</span>
-          <button role="switch" aria-checked="false" aria-label="Process automatically on battery power" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: flex-start; background: rgba(20,41,102,0.51)"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
+          <button role="switch" aria-checked="false" aria-label="Process automatically on battery power" style="width: 48px; height: 28px; flex: none; border: 0; border-radius: 999px; padding: 3px; display: flex; justify-content: flex-start; background: rgba(20,41,102,0.24)"><span style="width: 22px; height: 22px; border-radius: 50%; background: #FFFFFF"></span></button>
         </div>
       </section>
 
       <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
         <h2 style="margin: 0; font-size: 17px; font-weight: 800">Speech model</h2>
         <label style="display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: #566591">Used for new recordings and Transcribe again
-          <select style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.51); color: #142966; background: #FFFFFF"><option>Parakeet v2 (recommended)</option></select>
+          <select style="font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid rgba(20,41,102,0.28); color: #142966; background: #FFFFFF"><option>Parakeet v2 (recommended)</option></select>
         </label>
         <div style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #566591">
           <span style="width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: #62D098; color: #003B2A"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg></span>
           3 speech models and the speaker model are downloaded
         </div>
-        <a href="Models.dc.html" style="align-self: flex-start; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; display: inline-flex; align-items: center; text-decoration: none; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.51)">Manage downloads</a>
+        <a href="Models.dc.html" style="align-self: flex-start; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; display: inline-flex; align-items: center; text-decoration: none; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Manage downloads</a>
       </section>
     </div>
 
@@ -94,7 +94,7 @@ body{margin:0}
     <section style="border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 14px; border: 1px solid rgba(20,41,102,0.14)">
       <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px">
         <h2 style="margin: 0; font-size: 17px; font-weight: 800">Watched folders</h2>
-        <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.51)">Check now</button>
+        <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Check now</button>
       </div>
       <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #566591">Recordings saved into a watched folder are imported automatically: when the app starts and every few minutes while it is open. Recordings already imported are not imported twice.</p>
       <div style="border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 12px; background: #EEF7FD">
@@ -104,7 +104,7 @@ body{margin:0}
             <span style="font-size: 15px; font-weight: 700">Documents\Meeting recordings (sample)</span>
             <span style="font-size: 13px; color: #566591">Watching · checked 2 minutes ago · 4 imported</span>
           </div>
-          <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.51)">Pause</button>
+          <button style="font: inherit; font-size: 14px; font-weight: 600; min-height: 40px; padding: 0 14px; border-radius: 10px; background: #FFFFFF; color: #142966; border: 1px solid rgba(20,41,102,0.28)">Pause</button>
           <a href="#" style="font-size: 14px; font-weight: 600; color: #2B61BF">Stop watching…</a>
         </div>
         <label style="display: flex; align-items: center; gap: 10px; padding-left: 34px; font-size: 14px">
@@ -160,7 +160,7 @@ body{margin:0}
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
-    const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.51)' });
+    const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.24)' });
     return {
       assistantSet: (this.props.assistant ?? 'none') === 'set',
       unrecognisedSet: (this.props.unrecognised ?? 'none') === 'set',

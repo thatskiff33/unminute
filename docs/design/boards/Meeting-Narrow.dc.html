@@ -44,7 +44,7 @@ body{margin:0}
           <sc-if value="{{rail}}" hint-placeholder-val="{{ true }}">
             <a href="Home.dc.html" style="font-size: 14px; font-weight: 600; text-decoration: none; color: #2B61BF">‹ Meetings</a>
           </sc-if>
-          <h1 style="margin: -3px; padding: 2px; font-weight: 800; letter-spacing: -0.02em; font-size: {{titleSize}}; border: 1px solid rgba(20,41,102,0.51); border-radius: 8px">Community garden planning (sample)</h1>
+          <h1 style="margin: 0; font-weight: 800; letter-spacing: -0.02em; font-size: {{titleSize}}">Community garden planning (sample)</h1>
           <span style="font-size: 13px; color: #566591">Today · 18 min · 2 speakers</span>
         </div>
         <button style="font: inherit; font-size: 15px; font-weight: 700; min-height: 44px; padding: 0 18px; border: 0; border-radius: 10px; background: #142966; color: #FFFFFF; flex: {{btnFlex}}">Transcript reviewed…</button>
@@ -110,7 +110,7 @@ class Component extends DCLogic {
     const narrow = w <= 320;
     const compact = w <= 640;
     const step = (label, n) => n < 2
-      ? { label, mark: '✓', bar: '#008661', weight: 600, color: '#566591' }
+      ? { label, mark: '✓', bar: '#00A275', weight: 600, color: '#566591' }
       : n === 2 ? { label, mark: '2', bar: '#E56600', weight: 800, color: '#142966' }
       : { label, mark: String(n), bar: 'rgba(20,41,102,0.16)', weight: 500, color: '#566591' };
     const tab = (label, sel) => sel
