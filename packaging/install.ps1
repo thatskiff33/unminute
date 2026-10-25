@@ -106,8 +106,7 @@ $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ Package = $Package; InstallDir = $InstallDir; Silent = [bool]$Silent; SkipShortcut = [bool]$SkipShortcut
              Managed = [bool]$Managed; SelfService = [bool]$SelfService; Rollback = [bool]$Rollback
-             Machine = [bool]$Machine; RemoveSlot = $RemoveSlot
-             InstallDirGiven = $PSBoundParameters.ContainsKey("InstallDir") }
+             Machine = [bool]$Machine; RemoveSlot = $RemoveSlot; InstallDirGiven = $false }
 $AppName = "Unminute"
 $script:TempExtract = $null
 $script:StagedCopy = $null           # versions\<version>.partial while this run owns it
@@ -1642,6 +1641,10 @@ function Clear-InstallRun {
 # Dot-sourced (the Pester tests in tests/powershell): the functions above are defined
 # and nothing runs.
 if ($MyInvocation.InvocationName -eq ".") { return }
+
+# Whether -InstallDir was given (machine mode refuses it, #111 B6b). Read here, after
+# the dot-source guard, because nothing above the guard may call a method (#332 review).
+$Options.InstallDirGiven = $PSBoundParameters.ContainsKey("InstallDir")
 
 try {
     # Machine mode (#111 B6b) has its own checks and folder, and never runs Python.

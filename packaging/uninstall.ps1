@@ -76,7 +76,7 @@ param(
 $ErrorActionPreference = "Stop"
 # Parameters, read by the functions below.
 $Options = @{ InstallDir = $InstallDir; Silent = [bool]$Silent; Offboard = [bool]$Offboard; Machine = [bool]$Machine
-             IncludeKeptSlots = [bool]$IncludeKeptSlots; InstallDirGiven = $PSBoundParameters.ContainsKey("InstallDir") }
+             IncludeKeptSlots = [bool]$IncludeKeptSlots; InstallDirGiven = $false }
 $AppName = "Unminute"
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 # The Start menu's Programs folder, for the shortcut. Read once, here, like $RegKey, so
@@ -1089,6 +1089,10 @@ function Invoke-MachineUninstall {
 # Dot-sourced (the Pester tests in tests/powershell): the functions above are defined
 # and nothing runs.
 if ($MyInvocation.InvocationName -eq ".") { return }
+
+# Whether -InstallDir was given (machine mode refuses it, #111 B6b). Read here, after
+# the dot-source guard, because nothing above the guard may call a method (#332 review).
+$Options.InstallDirGiven = $PSBoundParameters.ContainsKey("InstallDir")
 
 # Machine mode (#111 B6b): Program Files, its own checks and entries; never the
 # lid restore below, which would read a user's profile as SYSTEM (B6-9).

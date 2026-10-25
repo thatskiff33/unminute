@@ -3863,7 +3863,10 @@ class InstallerIsolationTests(unittest.TestCase):
                 copy.write_text(good.replace(find, put), encoding="utf-8")
                 self.assertIn(says, self.refused(copy, machine=True))
                 self.assertIn(says, self.refused(copy))
-        # The copy as scratch_text makes it is not refused (it would run).
+        # The copy as scratch_text makes it is not refused (it would run). The shared
+        # module cache is filled first: its first use runs PowerShell, which the mock
+        # below would stop, leaving the cache unwritten for the rest of this process.
+        module_cache()
         copy = self.root / "machine-copy.ps1"
         copy.write_text(good, encoding="utf-8")
         with mock.patch.object(subprocess, "run", side_effect=RuntimeError("it ran")):
@@ -3884,10 +3887,11 @@ class InstallerIsolationTests(unittest.TestCase):
 
     def test_the_real_state_covers_the_machine_install(self):
         # Program Files\Unminute, the all-users shortcut, the HKLM uninstall entry and
-        # the Event Log source (read only, in the 64-bit view) are compared too.
+        # the Event Log source (read only, in the 64-bit view) are compared too: four
+        # places, three keys, then the two pin folders (#332 review).
         import winreg
         state = real_install_state()
-        self.assertEqual(len(state), 7)
+        self.assertEqual(len(state), 9)
         calls = []
         with mock.patch.object(sys.modules[__name__], "_registry_state",
                                side_effect=lambda hive, key: calls.append((hive, key))):
@@ -3992,7 +3996,8 @@ class InstallerIsolationTests(unittest.TestCase):
         real = self.root / "real"
         places = {"install": real / "Local" / "Programs" / "Unminute",
                   "data": real / "Local" / "Unminute", "programs": real / "Programs",
-                  "roaming": real / "Roaming"}
+                  "roaming": real / "Roaming", "program_files": real / "Program Files",
+                  "common_programs": real / "CommonPrograms"}
         pinned = places["roaming"].joinpath(*REAL_PINNED)
         target = str(places["install"] / "versions" / "1.0.0" / "runtime" / "pythonw.exe")
         pins = {
