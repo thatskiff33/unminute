@@ -1490,12 +1490,15 @@ class LiveMixBacklogTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
 
-    def feed(self, load_s, gap_s, mic_rate=48000, comp_rate=48000):
+    def feed(self, load_s, gap_s, mic_rate=48000, comp_rate=48000, comp_from_s=0.0,
+             pause_s=None):
         """load_s of audio while the worker loads; the feeder starts gap_s
-        after the taps open. The computer audio starts 0.5 s after the
-        microphone's, as in the app, where the policy thread sets the
-        recorder's tap_computer after the draft session opens. Returns the
-        messages the feeder sent."""
+        after the taps open. The computer audio starts comp_from_s after the
+        microphone's: in the app both taps are set in one call
+        (Workspace._start_drafts), so 0; later starts check that the order
+        in which the first pieces reach the worker does not matter. A pause
+        at pause_s ends the phrase there; the time lines carry on after it,
+        as paused time is not recorded. Returns the messages the feeder sent."""
         s = drafts.DraftSession("rec1", mic_rate, Path(self.tmp.name))
         self.addCleanup(s.stop)
         self.assertTrue(s.open())
@@ -1506,8 +1509,10 @@ class LiveMixBacklogTests(unittest.TestCase):
         def play(first, last):            # microphone blocks first..last, as the writer
             for i in range(first, last):
                 at = i * len(mic)
+                if i == pause:
+                    s.tap(at, None)       # the pause marker, as the writer puts it
                 s.tap(at, mic)
-                if i >= 5:
+                if i >= comp_from:
                     s.tap_computer(at, comp)
                     s.tap_computer(at + len(mic) // 2, comp)
 
@@ -1520,6 +1525,8 @@ class LiveMixBacklogTests(unittest.TestCase):
             def close(self):
                 pass
         gap, total = int(round(gap_s * 10)), int(round(load_s * 10))
+        comp_from = int(round(comp_from_s * 10))
+        pause = None if pause_s is None else int(round(pause_s * 10))
         play(0, max(gap, 5))
         feeder = threading.Thread(target=s._feed_loop, name="test-feeder", daemon=True)
         s._threads.append(feeder)
@@ -1574,10 +1581,18 @@ class LiveMixBacklogTests(unittest.TestCase):
         # microphone batch reaches the worker first) or after 20 s. Taken
         # all at once, the computer audio more than MIX_REACH_S from the
         # microphone's was not used: 0% mixed after the first 10 s.
-        for load_s, gap_s, mic_rate in ((30, 0, 48000), (90, 0, 48000), (90, 20, 48000),
-                                        (70, 65, 192000)):
-            with self.subTest(load_s=load_s, gap_s=gap_s, mic_rate=mic_rate):
-                sent = self.feed(load_s, gap_s, mic_rate=mic_rate)
+        # And with a pause inside the backlog (review of 747a850, B3): the
+        # computer audio after the resume must not go ahead of its
+        # microphone audio either (12% to 62% mixed when it did).
+        cases = ((30, 0, 48000, 0.5, None), (90, 0, 48000, 0.0, None),
+                 (90, 0, 48000, 0.5, None), (90, 20, 48000, 0.0, None),
+                 (70, 65, 192000, 0.5, None), (50, 0, 48000, 0.0, 20.0),
+                 (90, 0, 48000, 0.5, 20.0))
+        for load_s, gap_s, mic_rate, comp_from_s, pause_s in cases:
+            with self.subTest(load_s=load_s, gap_s=gap_s, mic_rate=mic_rate,
+                              comp_from_s=comp_from_s, pause_s=pause_s):
+                sent = self.feed(load_s, gap_s, mic_rate=mic_rate, comp_from_s=comp_from_s,
+                                 pause_s=pause_s)
                 out, most = self.replay(sent, mic_rate)
                 held_s = min(load_s, 60)
                 self.assertGreaterEqual(self.mixed_share(out, mic_rate, 10, held_s - 2), 0.99)
@@ -1587,6 +1602,32 @@ class LiveMixBacklogTests(unittest.TestCase):
                 biggest = max(len(m[3]) // 2 for m in sent if m[0] == "computer")
                 self.assertLessEqual(biggest,
                                      (drafts.BATCH_S + drafts.COMPUTER_BLOCK_S) * 48000)
+
+    def test_an_idle_feeder_sends_a_computer_backlog_in_bounded_pieces(self):
+        # Where the feeder takes all the computer audio at once (no
+        # microphone audio for a moment), it still sends pieces of about
+        # BATCH_S and holds at most BATCH_S plus one block (review of
+        # 747a850, nit 1).
+        s = drafts.DraftSession("rec1", 48000, Path(self.tmp.name))
+        self.addCleanup(s.stop)
+        s.open()
+        s.mix(48000)
+        comp = np.full(2400, 1000, dtype=np.int16)
+        for i in range(400):                                  # 20 s, no microphone audio
+            s.tap_computer(i * 2400, comp)
+        sent = []
+        s._conn = mock.Mock(send=sent.append)
+        s._ready.set()
+        feeder = threading.Thread(target=s._feed_loop, name="test-feeder", daemon=True)
+        s._threads.append(feeder)
+        feeder.start()
+        self.assertTrue(wait_for(
+            lambda: sum(len(m[3]) // 2 for m in list(sent) if m[0] == "computer") >= 400 * 2400,
+            timeout=30))
+        s.stop()
+        pieces = [len(m[3]) // 2 for m in sent if m[0] == "computer"]
+        self.assertEqual(sum(pieces), 400 * 2400)
+        self.assertLessEqual(max(pieces), (drafts.BATCH_S + drafts.COMPUTER_BLOCK_S) * 48000)
 
     def test_the_mix_holds_at_most_its_bound_of_computer_audio(self):
         # Even computer audio that comes all at once, before any microphone

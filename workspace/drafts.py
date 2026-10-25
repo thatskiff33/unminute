@@ -985,9 +985,12 @@ class DraftSession:
             if block is not None:
                 taken = start + len(block)
             # The computer audio for about the microphone audio taken so far
-            # (live mix), the rest left in the bounded tap (#371); all of it
-            # at a pause.
-            comp.take(math.inf if flush else taken + limit)
+            # (live mix), the rest left in the bounded tap (#371). At a pause
+            # too: during a backlog the tap already holds the audio from after
+            # the resume, placed straight after the pause (paused time is not
+            # counted), which must not go ahead of its microphone audio. An
+            # idle feeder takes the rest (above).
+            comp.take(taken + limit)
             if block is not None:
                 if batch and start != batch_start + batch_frames:
                     comp.send()
