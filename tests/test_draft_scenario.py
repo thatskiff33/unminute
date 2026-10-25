@@ -439,9 +439,11 @@ class VerdictTests(unittest.TestCase):
 # -- headless Edge: the real page against the real bridge -----------------------------------
 
 UI = ROOT / "workspace" / "ui"
-# The page's own policy, with the two additions this harness needs and the
-# real window does not: script from the check (unsafe-eval) and the bridge
-# reached over this local server (connect-src 'self'). Nothing else changes.
+# The page's own policy, with the changes this harness needs and the real
+# window does not: script from the check (unsafe-eval), the bridge reached
+# over this local server (connect-src 'self'), and, for a narrow page, a
+# frame on this server's own host page (frame-ancestors 'self'). Nothing
+# else changes.
 CSP = re.compile(r'(<meta http-equiv="Content-Security-Policy"\s+content=")([^"]*)(")')
 SHIM = r"""
 "use strict";
@@ -476,8 +478,11 @@ class Harness:
     answered by the real bridge (api.make_api) in this process, and page
     script run from Python as the tools' evaluate_js does."""
 
-    def __init__(self, bridge, dark=False):
-        self.bridge, self.dark = bridge, dark
+    def __init__(self, bridge, dark=False, width=None):
+        """width: the page's own width in CSS px, drawn in a frame that wide
+        (headless Edge draws no window narrower than about 480 px, as
+        tools/design_check.py's frame.html works round); None: the window's."""
+        self.bridge, self.dark, self.width = bridge, dark, width
         self.jobs, self.results, self.seq = queue.Queue(), {}, 0
         self.done = threading.Condition()
         self.calls, self.answered = [], []
@@ -497,6 +502,12 @@ class Harness:
                     except queue.Empty:
                         return self.send_response_only(204) or self.end_headers()
                     return self.send(json.dumps(job).encode(), "application/json")
+                if path == "frame.html":
+                    body = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
+                            '<title>Frame</title></head><body style="margin:0">'
+                            f'<iframe src="/app/index.html" title="App" style="border:0;'
+                            f'width:{harness.width}px;height:740px"></iframe></body></html>')
+                    return self.send(body.encode(), "text/html")
                 if path == "app/shim.js":
                     body = SHIM.replace("METHODS", json.dumps(sorted(
                         api.API_METHODS - {"pywebviewEventHandler"})))
@@ -512,7 +523,8 @@ class Harness:
                     html = body.decode("utf-8")
                     html = CSP.sub(lambda m: m.group(1) + m.group(2).replace(
                         "script-src 'self'", "script-src 'self' 'unsafe-eval'").replace(
-                        "connect-src 'none'", "connect-src 'self'") + m.group(3), html)
+                        "connect-src 'none'", "connect-src 'self'").replace(
+                        "frame-ancestors 'none'", "frame-ancestors 'self'") + m.group(3), html)
                     html = html.replace('<script src="app.js"></script>',
                                         '<script src="shim.js"></script>\n'
                                         '<script src="app.js"></script>')
@@ -557,7 +569,8 @@ class Harness:
         self.server = Server(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.profile = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        url = f"http://127.0.0.1:{self.server.server_address[1]}/app/index.html"
+        url = (f"http://127.0.0.1:{self.server.server_address[1]}/"
+               f"{'app/index.html' if self.width is None else 'frame.html'}")
         self.edge = subprocess.Popen(
             [str(EDGE), "--headless=new", "--disable-gpu", "--no-first-run",
              "--disable-extensions", "--mute-audio", f"--user-data-dir={self.profile.name}",
@@ -624,8 +637,8 @@ SHOW = ("delete document.hidden; delete document.visibilityState;"
 
 @unittest.skipUnless(HAVE_DEPS and EDGE, "Microsoft Edge not installed")
 class HeadlessTests(WorkspaceCase):
-    def page(self, dark=False):
-        harness = Harness(api.make_api(self.ws), dark=dark).start()
+    def page(self, dark=False, width=None):
+        harness = Harness(api.make_api(self.ws), dark=dark, width=width).start()
         self.addCleanup(harness.stop)
         return harness
 
@@ -639,6 +652,23 @@ class HeadlessTests(WorkspaceCase):
                          json.dumps(report, indent=1)[:4000])
         self.assertIn("recording_draft", window.calls)
         self.assertFalse(self.feed.active)
+
+    def test_the_draft_view_reflows_at_320_css_px(self):
+        # WCAG 1.4.10, as accessibility_check's reflow step measures it: the
+        # recording card with draft text, 320 px wide (as at 400% zoom), has
+        # nothing cut off and no sideways scrolling. Its button row did not
+        # wrap and reached 15 px past the edge (the real-window run of 26
+        # October at 0bdcb97c).
+        import accessibility_check
+        window = self.page(width=320)
+        self.feed.begin(drafts.RUNNING)
+        self.feed.say(draft_scenario.FOLLOW_LINES)
+        evaluate(window, "const wait = (ms) => new Promise(r => setTimeout(r, ms));"
+                 + accessibility_check.VIEWS[draft_scenario.DRAFT_VIEW] + "return true;")
+        r = evaluate(window, accessibility_check.REFLOW)
+        self.assertLessEqual(r["css_width"], 320, r)
+        self.assertEqual((r["horizontal_overflow_px"], r["cut_off"]), (0, []), r)
+        self.feed.end()
 
     def test_the_accessibility_points_pass_in_light_and_dark(self):
         import accessibility_check

@@ -210,6 +210,10 @@ body[data-view="handoff"] .count { position: absolute; top: -4px; right: -4px; m
 .rec-middle { flex: 1; margin: 0; font-size: 15px; color: var(--muted); }
 .rec-buttons { display: flex; gap: 10px; }
 .rec-buttons button { min-height: var(--control-h); padding: 0 18px; font-size: 15px; }
+/* At 320 CSS px (400% zoom) the buttons wrap rather than run past the card
+   (WCAG 1.4.10, #370). Only in narrow windows, so the look is unchanged
+   wherever they fit. */
+@media (max-width: 480px) { .rec-buttons { flex-wrap: wrap; } }
 .rec-note { margin: 0; font-size: 14px; color: var(--muted); }
 .rec-icon { width: 44px; height: 44px; flex: none; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--danger); color: var(--danger-fg); }
 .spinner { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--fill); animation: spin 1s linear infinite; }
