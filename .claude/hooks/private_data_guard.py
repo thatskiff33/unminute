@@ -208,11 +208,12 @@
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
 # settings run it through PowerShell (Git Bash may be missing), block when
-# CLAUDE_PROJECT_DIR is not the full path of an existing folder (unset, empty,
-# relative, drive-only or missing) or Python is not on PATH, skip it when the
-# file is absent from an existing folder (a branch from before it existed; only
-# for a hook path under 260 characters, which Windows PowerShell can test), and
-# turn any exit but 0 into 2 (PowerShell would otherwise report the 2 as a 1).
+# CLAUDE_PROJECT_DIR is not an existing folder named by a drive or network path
+# (unset, empty, relative, drive-only, device form or missing) or Python is not
+# on PATH, skip it when the file is absent from an existing folder (a branch from
+# before it existed; only for a hook path under 260 characters, which Windows
+# PowerShell can test), and turn any exit but 0 into 2 (PowerShell would
+# otherwise report the 2 as a 1).
 
 import bisect
 import fnmatch
