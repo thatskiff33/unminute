@@ -33,7 +33,10 @@ GH_FILE_LIMIT = 100          # gh returns at most this many files per pull reque
 PASSED = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 WAITING = {"", "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED"}
 UNSET_TIME = "0001-"           # gh writes an unset time as 0001-01-01T00:00:00Z
-REVIEWED = re.compile(r"(?im)^.*\b(?:commit|range) reviewed\b.*$")
+REVIEWED = re.compile(r"(?im)^\W*(?:commit|range) reviewed\W*:\W*"
+                      r"(?:[0-9a-f]{7,40}\.\.)?([0-9a-f]{7,40})\b")
+RANGE_DIFF = re.compile(r"(?im)^\W*range-diff\W*:\W*[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\b"
+                        r".*\bidentical\b")
 NOT_CHECKED = ("Not checked here: the review's verdict and findings answered, unresolved "
                "review threads, code-scanning alerts, open owner decisions, the reason for "
                "any failing check that is not required, and range-diff after a rebase "
@@ -165,12 +168,16 @@ def notes_of(pr):
 
 
 def reviews_of(head, notes):
-    """The lines that record a review of the head commit: a "Commit reviewed:" or
-    "Range reviewed:" line naming its first 7 characters (the finish-pr skill
-    asks for one), so an author's note that only mentions the commit does not
-    count. The verdict is not read."""
-    short = head[:7]
-    return [line for text in notes for line in REVIEWED.findall(text) if short in line]
+    """The commits that comments and reviews record as reviewed and that are the
+    head: the first commit after a line's "Commit reviewed:" or "Range reviewed:"
+    label (the end of a range), or the new end of a "Range-diff: old..new
+    identical" line after a rebase (the finish-pr skill asks for these). An
+    author's note that only mentions the commit does not count, and the verdict
+    is not read."""
+    head = head.lower()
+    found = [m.group(1) for text in notes for m in REVIEWED.finditer(text)]
+    found += [m.group(1) for text in notes for m in RANGE_DIFF.finditer(text)]
+    return [sha for sha in found if len(sha) >= 7 and head.startswith(sha.lower())]
 
 
 def assess(pr, required, notes):
@@ -190,13 +197,15 @@ def assess(pr, required, notes):
     blockers += [f"required check not reported: {n}" for n in missing]
     info += [f"check failing, not required: {n} (record the reason on the PR)"
              for n in failing if n not in required]
-    head = (pr.get("headRefOid") or "")[:7]
-    if head and reviews_of(head, notes):
+    oid = pr.get("headRefOid") or ""
+    head = oid[:7]
+    if oid and reviews_of(oid, notes):
         info.append(f"a review of {head} is recorded; confirm it is independent and read "
                     "its verdict")
-    elif head:
+    elif oid:
         blockers.append(f"no 'Commit reviewed:' line names the head commit {head}: record "
-                        "the independent review of this exact commit")
+                        "the independent review of this exact commit (or a 'Range-diff: "
+                        "old..new identical' line after a rebase)")
     merge = pr.get("mergeStateStatus", "")
     if merge in {"DIRTY", "BEHIND"}:
         blockers.append(f"merge state {merge}: rebase onto origin/{BASE} (a rebase keeps the "

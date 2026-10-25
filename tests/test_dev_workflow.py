@@ -138,15 +138,29 @@ class AssessTests(unittest.TestCase):
         # #364 review round 2, F1: the author's own note naming the commit is not a
         # review of it.
         for notes in (["Response (abcdef1): fixed"], ["Pushed abcdef1, reviewed later"],
-                      ["**Commit reviewed:** `1234567` against base `x`."]):
+                      ["**Commit reviewed:** `1234567` against base `x`."],
+                      # round 3, N5: the label must lead the line and the head must be
+                      # the commit it names (the end of a range).
+                      ["| F1 | Fixed in abcdef1: only a `Commit reviewed:` line counts |"],
+                      ["Commit reviewed: none yet (abcdef1 awaits review)"],
+                      ["**Commit reviewed:** `1234567` (head abcdef1 not yet)"],
+                      ["**Range reviewed:** `abcdef1..1234567`"],
+                      ["Range-diff: 1234567..abcdef1 shows two commits changed"]):
             with self.subTest(notes=notes):
                 blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
                                                 REQUIRED, notes)
                 self.assertIn("no 'Commit reviewed:' line names the head commit abcdef1",
                               " ".join(blockers))
-        blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN), REQUIRED,
-                                        ["**Range reviewed:** `1234567..abcdef1`"])
-        self.assertEqual([], blockers)
+        for notes in (["**Range reviewed:** `1234567..abcdef1`"],
+                      ["- **Commit reviewed:** `ABCDEF1234` against base `x`."],
+                      ["**Commit reviewed**: abcdef1234\r\n"],
+                      # round 3, N6: a rebase that range-diff shows unchanged keeps the
+                      # review (AGENTS.md, Authority).
+                      ["Range-diff: `9999999..abcdef1` identical, every commit '='"]):
+            with self.subTest(notes=notes):
+                blockers, _ = dev_status.assess(pr(9, statusCheckRollup=self.GREEN),
+                                                REQUIRED, notes)
+                self.assertEqual([], blockers)
 
     def test_draft_and_unrequired_failures_are_notes_not_blockers(self):
         # #364 review: otherwise "run gh pr ready when nothing blocks it" never arrives.
