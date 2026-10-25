@@ -927,6 +927,33 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertEqual(self.ws.recording_draft()["state"], "off")
         self.ws.stop_recording()
 
+    def test_drafts_ended_mid_recording_tell_the_page_to_clear_its_text(self):
+        # #370: the page clears its draft text only when the generation
+        # changes. Drafts ended mid-recording forget their text, so the
+        # generation changes too: otherwise the page keeps showing the text
+        # and, its count above the app's 0, asks for it again on every clock
+        # tick. Withheld by policy, then ended by a model download.
+        self.record()
+        for end, state in ((lambda: (self.set_policy({"AllowLiveDrafts": False}),
+                                     self.ws._policy_tick()), "managed"),
+                           (self.ws._before_model_change, "ended")):
+            with self.subTest(state=state):
+                self.set_policy()
+                self.ws._policy_tick()
+                self.assertTrue(wait_for(self.running))
+                self.holder["stream"].play(self.speech(1))
+                self.assertTrue(wait_for(lambda: self.draft_phrases()))
+                before = self.ws.recording_status()["draft"]
+                self.assertGreater(before["count"], 0)
+                end()
+                after = self.ws.recording_status()["draft"]
+                self.assertEqual((after["state"], after["count"]), (state, 0))
+                self.assertNotEqual(after["generation"], before["generation"])
+                fetched = self.ws.recording_draft(before["count"])
+                self.assertEqual((fetched["generation"], fetched["phrases"]),
+                                 (after["generation"], []))
+        self.ws.stop_recording()
+
     def test_battery_pauses_drafts_and_mains_power_resumes_them(self):
         self.record()
         self.assertTrue(wait_for(self.running))

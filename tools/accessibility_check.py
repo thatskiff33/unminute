@@ -22,6 +22,13 @@
 #   - status badges that carry text, not colour alone (1.4.1, in part);
 #   - once: Ctrl+plus zoom (1.4.4, in part), the page language (3.1.1), the
 #     window title (2.4.2) and a polite or assertive status region (4.1.3).
+# The recording card with draft text (#370; tools/draft_scenario.py, invented
+# sentences, no microphone or model) is one of the views, with the draft
+# area's own points in each colour mode: the box is not announced as it grows
+# (aria-live off), its status line is polite and outside it, the box and its
+# button are named and reachable by keyboard, and the grey text's contrast;
+# and once, that the status line speaks at a change of state only, not for
+# each new line.
 # docs/RELEASE_STANDARD.md, "Accessibility against WCAG 2.2 AA", says what
 # each check leaves out. It does not replace testing with screen-reader users
 # and pilot users (#27), and passing it is not conformance.
@@ -375,6 +382,33 @@ return {controls: controls.length, unnamed, untabbable, pointer_only: pointerOnl
         focus_not_measured: focusNotMeasured};
 """
 
+# Before each audit the page settles: up to SETTLE_MS for its finite
+# animations and transitions to finish, so no colour is measured mid-change
+# (the Settings switch's 0.15 s track transition, sampled just after a
+# colour-mode switch, gave false boundary findings and could let a colour
+# measured mid-change pass as an owner exception). Endless ones, such as the
+# spinner and the busy progress bar, are not waited for and are measured as
+# they are. Returns how many finite ones were still running; a view that did
+# not settle fails (findings), since what it measured cannot be trusted, and
+# so does one whose answer is not a count (a script that threw reaches Python
+# as {}: pywebview keeps only an Error's enumerable keys). A hidden,
+# minimised or locked window may not advance transitions at all, so "did not
+# settle" can come from the window rather than the page.
+# tests/test_accessibility_check.py runs it in headless Edge.
+SETTLE_MS = 3000
+SETTLE = f"const SETTLE_MS = {SETTLE_MS};" + r"""
+const running = () => document.getAnimations().filter(a => a.playState === 'running'
+  && Number.isFinite(a.effect?.getComputedTiming().endTime));
+const end = performance.now() + SETTLE_MS;
+for (;;) {
+  const now = running();
+  if (!now.length) return 0;
+  if (performance.now() >= end) return now.length;
+  await Promise.race([Promise.allSettled(now.map(a => a.finished)),
+                      new Promise(r => setTimeout(r, Math.min(200, end - performance.now())))]);
+}
+"""
+
 # Each list in a view's audit that must be empty, with the criterion it serves.
 CHECKS = {
     "unnamed": "4.1.2", "unnamed_dialogs": "4.1.2", "untabbable": "2.1.1",
@@ -593,6 +627,25 @@ def page_problems(page):
     return out
 
 
+def draft_findings(report):
+    """The draft area's own points (#370): in each view of it, and the
+    announcements, as lines. Read only when the report has the view, so the
+    report logic needs the app only for a report that holds it."""
+    views = {v: a for v, a in report.get("views", {}).items()
+             if v == DRAFT_VIEW or v.startswith(DRAFT_VIEW + " (")}
+    if not views:
+        return []
+    import draft_scenario
+    out = []
+    for view, a in views.items():
+        if "draft" not in a:
+            out.append(f"{view}: the draft area was not audited")
+        out += [f"{view}: {p}" for p in draft_scenario.draft_a11y_problems(a.get("draft"))]
+    out += [f"{DRAFT_VIEW}: {p}" for p in draft_scenario.announcement_problems(
+        report.get("draft_announcements"))]
+    return out
+
+
 def findings(report):
     """Every finding in a report, as lines; empty when it passes."""
     out = [] if not report.get("error") else [report["error"]]
@@ -602,6 +655,16 @@ def findings(report):
         out.append(f"keyboard zoom does not work ({kz})")
     out += page_problems(report.get("page"))
     for view, a in report.get("views", {}).items():
+        if "unsettled" in a:                 # a report from before #370 has none
+            n = a["unsettled"]
+            if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                out.append(f"{view}: could not check settling (the check answered {n!r}), "
+                           "so it was not measured reliably")
+            elif n:
+                out.append(f"{view}: the page did not settle: {n} finite animation(s) or "
+                           f"transition(s) still running after {SETTLE_MS / 1000:g} s, so it "
+                           "was not measured reliably (a hidden, minimised or locked window "
+                           "may not animate: keep it in front and unlocked, and rerun)")
         for key in CHECKS:
             failing = [f for f in a.get(key) or []
                        if not owner_exception(key, f, a.get("colour_mode"))]
@@ -613,7 +676,7 @@ def findings(report):
             if r["horizontal_overflow_px"] > 0 or r["cut_off"]:
                 out.append(f"{view}: content cut off or scrolling at {width} CSS px "
                            f"({', '.join(r['cut_off'][:3]) or 'page'})")
-    return out
+    return out + draft_findings(report)
 
 
 def owner_exceptions(report):
@@ -647,6 +710,8 @@ def reflow(window):
     return out
 
 
+DRAFT_VIEW = "recording draft"      # draft_scenario.DRAFT_VIEW (a test keeps them equal)
+
 # Each view the check opens, in order, with the page script that opens it
 # ({mid}: the synthetic meeting's id). tools/evidence.py requires every one
 # of them, in light and in dark, in release evidence (ACCESSIBILITY_VIEWS).
@@ -659,6 +724,8 @@ VIEWS = {
     "downloads": "window.workspace.show('downloads'); await wait(1200);",
     "meetings": "window.workspace.show('meetings'); await wait(1500);",
     "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
+    # A recording with draft text (#370): the check's DraftFeed starts it first.
+    "recording draft": "window.workspace.show('meetings'); await wait(1500);",
     "settings": "window.workspace.show('settings'); await wait(800);",
     "help": "window.workspace.show('help'); await wait(400);",
     "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
@@ -680,10 +747,15 @@ VIEWS = {
 }
 
 
-def checks(window, ws, mid, report, modes=(None,)):
+def checks(window, ws, mid, report, modes=(None,), feed=None):
+    """feed: the check's draft_scenario.DraftFeed, installed on ws, for the
+    recording draft view."""
     import time
 
+    import draft_scenario
     from workspace_ui_check import WAIT, evaluate
+
+    from workspace import drafts
     try:
         window.events.loaded.wait(30)
         while not window.evaluate_js("!!(window.workspace && window.pywebview && "
@@ -701,15 +773,29 @@ def checks(window, ws, mid, report, modes=(None,)):
         report["views"] = {}
         # Each view is opened once and audited in each colour mode asked for.
         for name, go in VIEWS.items():
+            if name == DRAFT_VIEW:                  # a recording with draft text showing
+                if feed is None:
+                    raise RuntimeError("the recording draft view needs the check's DraftFeed")
+                feed.begin(drafts.RUNNING)
+                feed.say(draft_scenario.FOLLOW_LINES)
             evaluate(window, WAIT + go.replace("{mid}", mid) + "return true;")
             for mode in modes:
                 shown = show_colour_mode(window, mode)
+                unsettled = evaluate(window, SETTLE)
                 audit = evaluate(window, AUDIT)
+                audit["unsettled"] = unsettled
                 audit["colour_mode"] = shown
+                if name == DRAFT_VIEW:              # settled too, before the reflow resizes
+                    audit["draft"] = evaluate(window, draft_scenario.DRAFT_A11Y)
                 audit["open_dialogs"] = evaluate(window, "return [...document.querySelectorAll("
                                                          "'dialog[open]')].map(d => d.id);")
                 audit["reflow"] = reflow(window)
                 report["views"][view_key(name, shown, modes)] = audit
+            if name == DRAFT_VIEW:                  # once, in the last mode: then it stops
+                report["draft_announcements"] = draft_scenario.draft_announcements(
+                    window, feed, evaluate)
+                feed.end()
+                evaluate(window, WAIT + "await wait(800); return true;")
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -718,10 +804,12 @@ def checks(window, ws, mid, report, modes=(None,)):
 
 def main():
     sys.path.append(str(Path(__file__).resolve().parent))   # also under -I; after the stdlib
-    # workspace_ui_check puts the app checked (this checkout, or --app) on the path.
+    # workspace_ui_check puts the app checked (this checkout, or --app) on the path,
+    # so it comes first: draft_scenario and the rest import workspace from there.
     import evidence
     from workspace_ui_check import APP, FAKE, write_wav
 
+    import draft_scenario  # noqa: I001  (after the line above: it imports workspace)
     from workspace import api, shell
     from workspace.app import Workspace
     ap = argparse.ArgumentParser(description="Technical accessibility audit (#27, #298).",
@@ -763,7 +851,9 @@ def main():
         finally:
             webview.create_window = real
         holder["window"] = window
-        shell.run(checks, (window, ws, mid, report, modes))
+        feed = draft_scenario.DraftFeed(ws).install()       # the recording draft view (#370)
+        shell.run(checks, (window, ws, mid, report, modes, feed))
+        feed.remove()
         ws.close()
     excepted = owner_exceptions(report)
     report["owner_exceptions"] = {"decision": DECISION_298, "findings": excepted}

@@ -290,6 +290,12 @@ real time, and remove it when the cause is fixed.
   focus style at all. Keep the window in front and rerun; it is not a page fault. It does the
   same when Edge does not treat the focus as keyboard focus (`:focus-visible` does not match,
   as can happen after a mouse click in the window): press Tab once in the window and rerun.
+- **`tools/accessibility_check.py` fails a view as "the page did not settle"** when finite
+  animations or transitions are still running 3 s after the view opened (#370). A hidden,
+  minimised or locked window may not advance transitions at all, so this can come from the
+  window rather than the page: keep the window in front and the screen unlocked, and rerun.
+  "Could not check settling" means the settle script did not return a count; that fails too.
+  Don't raise `SETTLE_MS` to clear either (AGENTS.md E2).
 - **`tools/accessibility_check.py` lists "OWNER EXCEPTIONS"** before its findings: field
   boundaries in the brand `--control-line` colour and the meeting title at rest (#298, the
   owner's decision of 25 October 2026). They are expected and do not fail the run. Each is

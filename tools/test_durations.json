@@ -1,5 +1,5 @@
 {
- "source": "Windows tests, chunks 1 to 8 of CI run 40239310639 (PR #387, 26 Oct 2026 NZ): seconds per test class, from each chunk's Class times line",
+ "source": "Windows tests, chunks 1 to 8 of CI run 40239310639 (PR #387, 26 Oct 2026 NZ): seconds per test class, from each chunk's Class times line; test_draft_scenario's classes and test_accessibility_check's SettleTests and SettleReportTests from CI run 40241605842 (PR #380, 26 Oct 2026 NZ)",
  "classes": {
   "test_accessibility_check.AuditTests": 4.2,
   "test_accessibility_check.ColourModeTests": 0.0,
@@ -7,6 +7,8 @@
   "test_accessibility_check.DarkModeTests": 2.7,
   "test_accessibility_check.OwnerExceptionTests": 0.0,
   "test_accessibility_check.ReportTests": 0.0,
+  "test_accessibility_check.SettleReportTests": 0.0,
+  "test_accessibility_check.SettleTests": 9.2,
   "test_accessors.AppOpenedValueTests": 4.8,
   "test_accessors.CrashCheckInspectTests": 0.3,
   "test_accessors.DeletionTests": 3.4,
@@ -102,6 +104,12 @@
   "test_download_process.RequestCheckTests": 0.1,
   "test_dpapi.DpapiTests": 0.0,
   "test_dpapi.OtherSystemsTests": 0.0,
+  "test_draft_scenario.FeedTests": 1.5,
+  "test_draft_scenario.HeadlessTests": 38.6,
+  "test_draft_scenario.SameGenerationsAsTheAppTests": 1.5,
+  "test_draft_scenario.SeamTests": 0.0,
+  "test_draft_scenario.ToolStartTests": 1.8,
+  "test_draft_scenario.VerdictTests": 0.0,
   "test_drafts.ComputerTapBoundTests": 0.1,
   "test_drafts.ComputerTapTests": 2.9,
   "test_drafts.DraftPageTests": 2.4,
