@@ -195,10 +195,11 @@ class RecordTests(unittest.TestCase):
         install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
         uninstall = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
         args = " ".join(update.LAUNCH_ARGS)
-        self.assertIn(f'$LaunchArgs = "{args}"', install)
-        self.assertIn("$gateArgs = @(" + ", ".join(f'"{a}"' for a in update.LAUNCH_ARGS)
-                      + ', "--gate")', install)
-        self.assertIn(f'$start.Arguments = "{args} --restore-lid"', uninstall)
+        for script in (install, uninstall):
+            self.assertIn(f'$LaunchArgs = "{args}"', script)
+        # Every start uses that one list (#111 B6a).
+        self.assertIn('$gateArgs = @($LaunchArgs -split " ") + "--gate"', install)
+        self.assertIn('$start.Arguments = "$LaunchArgs --restore-lid"', uninstall)
 
 
 class InstallLayout:

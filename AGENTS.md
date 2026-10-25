@@ -109,7 +109,12 @@ Compatibility, installation and policy
   uninstall key `Unminute`, the APP_ID `Unlimit.Unminute`, the Credential Manager name
   `Unminute/HuggingFaceToken`, the data folders `Unminute\workspace` and `Unminute\models`
   under `%LOCALAPPDATA%`, and `unminute.ico`. The user renamed them from the earlier names
-  (17 October 2026, #136), with no migration. Guard: `tests/test_consistency.py`.
+  (17 October 2026, #136), with no migration. In both install modes also the lock file
+  `install.lock` (#111 B6a); for machine installs (#111 B6b) also `%ProgramFiles%\Unminute`,
+  the HKLM uninstall key `Unminute`, the Event Log source `Unminute` and the `current`
+  junction (the user's approval, 21 October 2026, confirmed 22 October 2026, #111).
+  `packaging/identity.json` mirrors these names for tests and is never read at run time.
+  Guard: `tests/test_consistency.py`.
 - **K2** A standard user installs with nothing else to install (no Python, Git, FFmpeg or GPU
   tooling), and the processor is always a working baseline. Guard: review.
 - **K3** Managed policy (`HKLM\SOFTWARE\Policies\Unminute`) wins over settings. New behaviour in
@@ -192,6 +197,13 @@ changes; or GitHub owner settings.
   does) and `ruff check .`. Run tests only through `tools/run_tests.py`.
 - For PowerShell, dependency and workflow changes, run the matching job's commands from
   `.github/workflows/` rather than a copy kept here. The required checks are in `docs/RELEASING.md`.
+  Installer changes also run the Pester tests in `tests/powershell` with
+  `tools/run_pester.ps1` under Windows PowerShell 5.1 (Pester pinned by version and SHA-256;
+  the job is report only until it has passed on 5 consecutive PRs). Installer tests run only
+  scratch copies with a scratch install folder, `LOCALAPPDATA`, `APPDATA`, Start menu folder
+  and HKCU key (`run_installer` in `tests/test_hardening.py`, `tests/powershell/Isolation.ps1`);
+  never run either script, or its tests, against the real install, nor dot-source an older
+  revision.
 - `tests/test_consistency.py` ties together facts with several copies (version, install
   identity, pins, bridge names, required checks): change every copy at once. `VERSION` is the
   one version source, written by `tools/changelog.py`.

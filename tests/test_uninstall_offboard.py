@@ -24,8 +24,10 @@
 #   - The real offboard module, through the uninstaller, removes an empty
 #     synthetic workspace and stops at one that holds a meeting.
 # Throwaway installs, LOCALAPPDATA, APPDATA, Start menu folder and uninstall
-# key (tests/test_hardening.py's DataFolderOverlapTests); synthetic data with
-# the test key protector; fake credentials, lid and no Event Log copy.
+# key: each run is a scratch copy through tests/test_hardening.py's
+# run_installer, and every other process these tests start passes its guard
+# (setUpModule; #111 B6a). Synthetic data with the test key protector; fake
+# credentials, lid and no Event Log copy.
 #   python -m unittest tests.test_uninstall_offboard -v
 
 import json
@@ -114,24 +116,30 @@ def is_reparse_point(path):
 
 
 def shortcut(lnk, target):
-    """A .lnk to target, written by Windows' own shortcut object (as pins are)."""
+    """A .lnk to target, written by Windows' own shortcut object (as pins are). With the
+    installer runs' module analysis cache, so New-Object is found without searching
+    every module folder again (tests/test_hardening.py's module_cache, #332)."""
     script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:UNMINUTE_LNK); "
               "$s.TargetPath = $env:UNMINUTE_TARGET; $s.Save()")
     Path(lnk).parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run([hardening.windows_powershell.executable(), "-NoProfile", "-Command",
                         script], capture_output=True, text=True, timeout=60,
                        env=hardening.windows_powershell.environment(
-                           {"UNMINUTE_LNK": str(lnk), "UNMINUTE_TARGET": str(target)}))
+                           {"UNMINUTE_LNK": str(lnk), "UNMINUTE_TARGET": str(target),
+                            "PSModuleAnalysisCachePath": hardening.module_cache()}))
     assert r.returncode == 0 and Path(lnk).is_file(), r.stdout + r.stderr
+
+
+def setUpModule():
+    """tests/test_hardening.py's guard (#111 B6a): no process these tests start may run
+    an installer script, or a copy of one, other than through run_installer."""
+    hardening.setUpModule()
 
 
 @unittest.skipUnless(sys.platform == "win32", "the uninstaller is Windows PowerShell")
 class UninstallOffboardTests(unittest.TestCase):
-    PROGRAMS, KEY, TEST_KEY = (hardening.DataFolderOverlapTests.PROGRAMS,
-                               hardening.DataFolderOverlapTests.KEY,
-                               hardening.DataFolderOverlapTests.TEST_KEY)
+    TEST_KEY = hardening.TEST_KEY
     uninstaller_copy = hardening.DataFolderOverlapTests.uninstaller_copy
-    ROAMING = hardening.DataFolderOverlapTests.ROAMING
     key_exists = hardening.DataFolderOverlapTests.key_exists
     delete_test_key = hardening.DataFolderOverlapTests.delete_test_key
     LIMIT = "$OffboardSeconds = 900"
@@ -190,15 +198,14 @@ class UninstallOffboardTests(unittest.TestCase):
 
     def uninstall(self, install, plan=None, offboard=True, silent=True, stdin=None,
                   script=None):
-        env = dict(os.environ, LOCALAPPDATA=str(self.local), UNMINUTE_TEST_LOG=str(self.log),
-                   UNMINUTE_TEST_PLAN=json.dumps(plan or {}))
-        call = (f"& '{script or self.copy}' -InstallDir '{install}'"
-                + (" -Silent" if silent else "") + (" -Offboard" if offboard else ""))
-        return subprocess.run([hardening.windows_powershell.executable(), "-NoProfile",
-                               "-ExecutionPolicy", "Bypass",
-                               "-Command", f"{call}; exit $LASTEXITCODE"],
-                              input=stdin, capture_output=True, text=True, timeout=300,
-                              cwd=self.tmp.name, env=env)
+        # The only way these tests run the uninstaller (#111 B6a): a scratch copy, with
+        # a scratch LOCALAPPDATA and, as APPDATA, the roaming folder the copy names.
+        env = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.root / "roaming"),
+               "UNMINUTE_TEST_LOG": str(self.log), "UNMINUTE_TEST_PLAN": json.dumps(plan or {})}
+        return hardening.run_installer(script or self.copy, install, self.root,
+                                       "-Offboard" if offboard else "", env=env,
+                                       cwd=self.tmp.name, silent=silent, stdin=stdin,
+                                       timeout=300)
 
     def calls(self):
         return json.loads(self.log.read_text()) if self.log.exists() else []
@@ -790,6 +797,14 @@ class UninstallOffboardTests(unittest.TestCase):
         self.assertTrue((self.pins / "TaskBar" / "Unminute.lnk").is_file())
 
 
+class UninstallOffboardGuardTests(unittest.TestCase):
+    """#332 review: this module's guard is on, so dropping setUpModule fails here."""
+
+    def test_the_guard_is_on_for_every_test_here(self):
+        self.assertIs(subprocess.Popen, hardening._GuardedPopen)
+        self.assertIs(subprocess.run, hardening._guarded_run)
+
+
 class UninstallOffboardTextTests(unittest.TestCase):
     """What the package and the uninstaller say to each other."""
 
@@ -799,7 +814,9 @@ class UninstallOffboardTextTests(unittest.TestCase):
         self.assertIn('"features": ["gate", "restore-lid", "launch-gate", "offboard", '
                       '"launch-check"]', build)
         self.assertIn('-notcontains "offboard"', uninstall)
-        self.assertIn('"-I -B -X disable-remote-debug -m workspace $Switch"', uninstall)
+        # How the installer starts the app, from one $LaunchArgs (#111 B6a; its value
+        # is tests/test_hardening.py's RemoteDebugTests').
+        self.assertIn('$start.Arguments = "$LaunchArgs $Switch"', uninstall)
         main = (ROOT / "workspace" / "__main__.py").read_text(encoding="utf-8")
         self.assertIn('if "--offboard-report" in sys.argv or "--offboard" in sys.argv:', main)
 

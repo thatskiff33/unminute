@@ -87,3 +87,26 @@ jobs:
           "``````" >> $env:GITHUB_STEP_SUMMARY
           python -m coverage report --skip-empty --sort=cover >> $env:GITHUB_STEP_SUMMARY
           "``````" >> $env:GITHUB_STEP_SUMMARY
+
+  pester:
+    # Report only until it has passed on 5 consecutive pull requests (#111 B6a; the
+    # owner's decisions of 21 and 23 October 2026; docs/RELEASING.md). The installer's Pester
+    # tests (tests/powershell) under Windows PowerShell 5.1, which runs the
+    # installer. tools/run_pester.ps1 downloads Pester 5.9.1 from the PowerShell
+    # Gallery and uses it only if the package's SHA-256 matches the one recorded
+    # there; Pester is a development tool under the Apache License 2.0 and is not
+    # in the package. The Python-driven installer tests in "Unit tests (Windows)"
+    # stay the required check.
+    name: PowerShell tests, Pester (report only)
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the Pester tests with the pinned Pester
+        shell: powershell
+        run: |
+          & ./tools/run_pester.ps1 -ModuleRoot "$env:RUNNER_TEMP\pester"
+          exit $LASTEXITCODE

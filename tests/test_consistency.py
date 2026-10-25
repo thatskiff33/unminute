@@ -230,6 +230,86 @@ class InstallIdentityTests(unittest.TestCase):
                  if old.search(line)]
         self.assertEqual(found, [])
 
+    def test_the_identity_file_pins_the_install_names(self):
+        # K1 (#111 B6a): packaging/identity.json mirrors the names, never replaces
+        # them, so the names stay literals here and changing the file alone fails.
+        # The machine names (B6b) joined K1 with the owner's approval (21 October
+        # 2026, confirmed 22 October 2026, #111); the scripts do not use them yet.
+        identity = json.loads(read("packaging/identity.json"))
+        self.assertEqual(identity["name"], "Unminute")
+        self.assertEqual(identity["earlier_names"], ["Whisper Transcriber", "Meeting Workspace"])
+        self.assertEqual(identity["app_id"], "Unlimit.Unminute")
+        self.assertEqual(identity["credential"], "Unminute/HuggingFaceToken")
+        self.assertEqual(identity["icon"], "unminute.ico")
+        self.assertEqual(identity["mutex"], r"Local\Unminute.Workspace")
+        self.assertEqual(identity["event_source"], "Unminute")
+        self.assertEqual(identity["data_folders"], {
+            "root": r"%LOCALAPPDATA%\Unminute",
+            "workspace": r"%LOCALAPPDATA%\Unminute\workspace",
+            "models": r"%LOCALAPPDATA%\Unminute\models"})
+        self.assertEqual(identity["workspace_lock"], "instance.lock")
+        self.assertEqual(identity["install_lock"], "install.lock")
+        self.assertEqual(identity["install_log"], [r"logs\install.log", r"logs\install.log.1"])
+        self.assertEqual(identity["install_root_entries"],
+                         ["versions", "current.json", "current.json.tmp", "uninstall.ps1",
+                          "logs", "install.lock"])
+        self.assertEqual(identity["modes"], {
+            "user": {
+                "install_folder": r"%LOCALAPPDATA%\Programs\Unminute",
+                "uninstall_key": r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+                                 r"\Unminute",
+                "shortcut": "Unminute.lnk"},
+            "machine": {
+                "install_folder": r"%ProgramFiles%\Unminute",
+                "uninstall_key": r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"
+                                 r"\Unminute",
+                "launch_junction": "current",
+                "event_source": "Unminute"}})
+        self.assertEqual({script: {mode: sorted(codes) for mode, codes in modes.items()}
+                          for script, modes in identity["exit_codes"].items()},
+                         {"install.ps1": {"user": ["0", "1", "2", "3", "4", "5", "6"]},
+                          "uninstall.ps1": {"user": ["0", "1", "2", "3", "5", "6"]}})
+        # Repository only: the build copies named files, so it never ships.
+        self.assertNotIn("identity.json", read("tools/build_package.py"))
+
+    def test_the_app_and_the_scripts_match_the_identity_file(self):
+        identity = json.loads(read("packaging/identity.json"))
+        main = read("workspace/__main__.py")
+        self.assertEqual(identity["app_id"], one(r'^APP_ID = "([^"]+)"', main, "APP_ID"))
+        self.assertEqual(identity["mutex"].replace("\\", "\\\\"),
+                         one(r'^MUTEX_NAME = "([^"]+)"', main, "MUTEX_NAME"))
+        self.assertEqual(identity["credential"],
+                         one(r'^TARGET = "([^"]+)"', read("workspace/credentials.py"), "TARGET"))
+        self.assertEqual(identity["event_source"],
+                         one(r'^SOURCE = "([^"]+)"', read("workspace/audit.py"), "SOURCE"))
+        self.assertEqual(identity["workspace_lock"],
+                         one(r'^NAME = "([^"]+)"', read("workspace/instance.py"), "NAME"))
+        user = identity["modes"]["user"]
+        for script, text in (("install.ps1", self.install), ("uninstall.ps1", self.uninstall)):
+            with self.subTest(script=script):
+                self.assertEqual(identity["name"],
+                                 one(r'^\$AppName = "([^"]+)"', text, "$AppName"))
+                self.assertEqual(user["uninstall_key"].replace("HKCU", "HKCU:", 1),
+                                 one(r'^\$RegKey = "([^"]+)"', text, "$RegKey"))
+                self.assertEqual(user["install_folder"],
+                                 "%LOCALAPPDATA%\\" + one(r'"(Programs\\[^"]+)"', text,
+                                                          "install folder"))
+                entries = one(r'^\$OwnEntries = @\(([^)]+)\)$', text, "$OwnEntries")
+                self.assertEqual(identity["install_root_entries"],
+                                 re.findall(r'"([^"]+)"', entries))
+                self.assertEqual(identity["install_lock"],
+                                 one(r'^\$LockName = "([^"]+)"', text, "$LockName"))
+                logs = re.findall(r'"([^"]+)"', one(r'^\$LogNames = @\(([^)]+)\)$', text,
+                                                    "$LogNames"))
+                self.assertEqual(identity["install_log"], [f"logs\\{n}" for n in logs])
+                # Every exit code the script can give, and no other, is listed.
+                used = set(re.findall(r"\bStop-(?:Install|Uninstall) (\d)\b", text))
+                used |= set(re.findall(r"(?m)^\s*exit (\d)\b", text))
+                self.assertEqual(used, set(identity["exit_codes"][script]["user"]))
+        self.assertEqual(identity["app_id"], one(r'^\$AppId = "([^"]+)"', self.install, "$AppId"))
+        self.assertEqual({identity["icon"]}, {Path(p).name for p in re.findall(
+            r'"app\\([^"]+\.ico)"', self.install)})
+
     def test_install_folder_and_registry_key_match_uninstaller(self):
         for pattern, what in ((r'"(Programs\\[^"]+)"', "install folder"),
                               (r'^\$RegKey = "([^"]+)"', "uninstall registry key")):
@@ -517,6 +597,8 @@ INVARIANT_GUARDS = {
                                        "test_the_switch_cannot_be_saved_before_the_app_offers_it"]},
     "K1": {"tests/test_consistency.py": ["InstallIdentityTests",
                                         "test_the_install_identity_names_are_pinned",
+                                        "test_the_identity_file_pins_the_install_names",
+                                        "test_the_app_and_the_scripts_match_the_identity_file",
                                         "test_no_earlier_app_name_is_left_in_shipped_code"]},
     "K2": {},
     "K3": {"tests/test_policy.py": ["WorkspacePolicyTests",
