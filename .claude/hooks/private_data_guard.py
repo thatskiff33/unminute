@@ -164,6 +164,11 @@
 #   - Claude Code tools the hook's matcher in .claude/settings.json does not name,
 #     such as publishing a local file as an artifact or sending one to the user
 #     (the deny rules cover Read and Edit only);
+#   - a python on PATH that is a shim (.cmd or .bat) which does not pass on
+#     Python's exit code, so the guard's 2 becomes 0; and a session started in a
+#     checkout of a branch from before the hook existed, which has no hook file
+#     and so runs without the guard (CLAUDE_PROJECT_DIR is the folder the session
+#     started in, also for work in other worktrees);
 #   - Codex does not run the hook (AGENTS.md P2: review for Codex).
 # Known false positives, which fail closed: from main's check, unminute\workspace
 # as a relative path of its own (ls unminute/workspace from the folder above a
@@ -202,9 +207,10 @@
 # Stdlib only, so any Python works.
 #
 # Exit 2 with a reason on stderr blocks the tool call; exit 0 allows it. The
-# settings run it through PowerShell (Git Bash may be missing), skip it when the
-# file is absent (a branch from before it existed), and end with
-# "exit $LASTEXITCODE": PowerShell otherwise turns the 2 into a 1, which only warns.
+# settings run it through PowerShell (Git Bash may be missing), block when
+# CLAUDE_PROJECT_DIR is unset or Python is not on PATH, skip it when the file is
+# absent (a branch from before it existed), and turn any exit but 0 into 2
+# (PowerShell would otherwise report the 2 as a 1, which only warns).
 
 import bisect
 import fnmatch

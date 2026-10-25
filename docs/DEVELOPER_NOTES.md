@@ -193,12 +193,17 @@ real time, and remove it when the cause is fixed.
 - **Hook commands run in Git Bash unless the hook sets `"shell": "powershell"`.** On a machine
   without Git Bash, a bash-style command fails and Claude Code blocks every matching tool call.
   The repo's guard therefore uses PowerShell and `$env:CLAUDE_PROJECT_DIR`.
-- **PowerShell turns a hook's exit code 2 (block) into 1 (warn only)** unless the command ends
-  with `exit $LASTEXITCODE`. `tests/test_agent_guard.py` runs the configured command through
-  PowerShell to catch both mistakes.
-- **A hook that exits 2 because it cannot run blocks everything**, including the `git switch`
-  needed to recover. The guard's command therefore allows when the hook file is missing (a
-  branch from before it existed) and warns with exit 1 when `python` is not on `PATH`.
+- **PowerShell turns a hook's exit code 2 (block) into 1 (warn only)** unless the command
+  passes the code on itself. Claude Code lets a call through on exit 1, so the guard's command
+  turns any exit but 0 into 2 (`if ($LASTEXITCODE -eq 0) { exit 0 }; exit 2`).
+  `tests/test_agent_guard.py` runs the configured command through PowerShell to catch these
+  mistakes.
+- **The guard fails closed** (owner, 25 Oct 2026). It blocks when `CLAUDE_PROJECT_DIR` is unset
+  or `python` is not on `PATH`, and the hook sets `"onFailure": "block"` with a 60 s timeout, so a
+  hook that cannot start, fails or times out blocks too (Claude Code 2.1.295 and later). If
+  Python breaks, every agent tool call is blocked: fix `PATH` from a terminal. The command still
+  allows when the hook file is missing (a branch from before it existed), so the `git switch`
+  needed to recover is never blocked.
 - **Simulating a hook with a PowerShell pipeline misleads.** Piping into `powershell -Command`
   from PowerShell does not reach the native program, and `$input` adds a byte order mark. Test
   with a real process pipe, as the test does.

@@ -2140,6 +2140,15 @@ class HookProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             result = run(shell("git add meeting.m4a"), empty)
             self.assertNotEqual(2, result.returncode, result.stderr)
+        # Without CLAUDE_PROJECT_DIR the hook file cannot be found; that blocks rather
+        # than being taken for a checkout from before the hook (#363 review, F3).
+        unset = {k: v for k, v in os.environ.items() if k.upper() != "CLAUDE_PROJECT_DIR"}
+        for env in (unset, {**unset, "CLAUDE_PROJECT_DIR": ""}):
+            with self.subTest(project_dir=env.get("CLAUDE_PROJECT_DIR", "unset")):
+                result = subprocess.run([shell_exe, "-NoProfile", "-NonInteractive", "-Command",
+                                         command], input=json.dumps(shell("git status")),
+                                        capture_output=True, text=True, timeout=60, env=env)
+                self.assertEqual(2, result.returncode, result.stderr)
         # Fail closed (owner, 25 Oct 2026): with no Python on PATH, or a python that
         # fails before the guard decides (a Store stub, a broken install), even an
         # ordinary call is blocked. Claude Code lets a call through on exit 1.
