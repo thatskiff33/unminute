@@ -29,6 +29,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import zipfile
@@ -612,3 +613,90 @@ def activate_whisper(site):
     os.add_dll_directory(folder)
     for name in WHISPER_DLLS:
         ctypes.WinDLL(os.path.join(folder, name))
+
+
+# -- Unused component copies (#111 B5b, the owner's decision B5-4) ----------------------
+#
+# <cache>\gpu holds <version> folders and, beside each, a download that did
+# not finish (<version>.partial), the most recent damaged copy
+# (<version>.invalid-<hex>) and, only between the two steps below, one being
+# removed (<version>.removing-<hex>). A version that no installed version of
+# the app names (update.gpu_keep) is left over from an earlier one: the
+# current version removes it in the background after start-up
+# (Workspace.remove_unused_gpu). It is a re-downloadable component, never
+# meeting content.
+
+_COPY = re.compile(r"(?P<version>[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}?)"
+                   r"(\.partial|\.(invalid|removing)-[0-9a-f]{1,32})?")
+
+
+def superseded(cache_dir, keep):
+    """[(folder, version)] for each folder in <cache>\\gpu whose component
+    version is not in keep. Never a link (a link at gpu itself gives
+    nothing), a file or a name the app never makes."""
+    gpu_dir = Path(cache_dir) / "gpu"
+    if asr_engines.is_link(gpu_dir) or not gpu_dir.is_dir():
+        return []
+    out = []
+    for entry in sorted(gpu_dir.iterdir()):
+        m = _COPY.fullmatch(entry.name)
+        if (m is None or m.group("version") in keep or asr_engines.is_link(entry)
+                or not entry.is_dir()):
+            continue
+        out.append((entry, m.group("version")))
+    return out
+
+
+def remove_superseded(cache_dir, keep, log=None):
+    """Remove each superseded copy (above): renamed aside first, so a copy
+    that is in use stays whole and is tried again at the next start, then
+    deleted without following any link inside it. Returns [(version,
+    bytes)] removed. Logs gpu_removed with the version and size only, and
+    gpu_kept when one could not be removed. Never raises."""
+    removed = []
+    try:
+        found = superseded(cache_dir, keep)
+    except OSError:
+        found = []
+    for folder, version in found:
+        try:
+            if ".removing-" in folder.name:
+                aside = folder                       # set aside by an earlier start
+            else:
+                aside = folder.with_name(version + ".removing-" + os.urandom(4).hex())
+                _rename(folder, aside)
+            size = _tree_bytes(aside)
+            shutil.rmtree(_long_unresolved(aside))
+        except OSError as exc:
+            if log is not None:
+                log.write("gpu_kept", why="in_use", component=version,
+                          error=type(exc).__name__)
+            continue
+        removed.append((version, size))
+        if log is not None:
+            log.write("gpu_removed", component=version, bytes=size)
+    return removed
+
+
+def _long_unresolved(path):
+    """An extended-length path without resolving links (rmtree must remove a
+    link inside the folder, never what it points to)."""
+    p = os.path.abspath(str(path))
+    if os.name != "nt" or p.startswith("\\\\"):
+        return p
+    return "\\\\?\\" + p
+
+
+def _tree_bytes(folder):
+    """The bytes of the files under folder, not following links."""
+    total = 0
+    for root, dirs, files in os.walk(_long_unresolved(folder)):
+        dirs[:] = [d for d in dirs if not asr_engines.is_link(os.path.join(root, d))]
+        for name in files:
+            try:
+                st = os.lstat(os.path.join(root, name))
+            except OSError:
+                continue
+            if not (getattr(st, "st_file_attributes", 0) & 0x400):
+                total += st.st_size
+    return total

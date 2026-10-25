@@ -4,11 +4,20 @@
 # support switches), before the single-instance check and any heavy import.
 # Standard library only.
 #
-# Machine mode only (the owner's decision B5-1, 21 Oct 2026). A per-user
-# install keeps the install-time gate (install.ps1 waits with exit 5), so it
-# starts exactly as before. update.deployment() reports "machine" only once
-# B6b's machine trust test passes, so until then this pass always carries on
-# in the version that was started.
+# The decision is machine mode only (the owner's decision B5-1, 21 Oct
+# 2026). A per-user install keeps the install-time gate (install.ps1 waits
+# with exit 5), so it never hands its workspace to another version for that.
+# update.deployment() reports "machine" only once B6b's machine trust test
+# passes, so until then no install makes the decision.
+#
+# Per-user (the owner's decision of 23 Oct 2026, _per_user): only B5b's
+# light check of the version that was started, at its first start for this
+# user, and after a slot fault the fallback to another kept version of the
+# same storage format (started as fallback). No workspace is read, and there
+# is no full check (the installer's gate runs before a per-user update) and
+# no "update waiting" message. Whatever the check cannot be sure of (a
+# damaged record, a version it does not list, a folder that does not match
+# it) starts as before.
 #
 # In machine mode:
 #   1. --slot <role> (set only by a hand-over): no second decision. The
@@ -27,12 +36,21 @@
 #      process ends. Any mismatch starts nothing and shows the IT message.
 #   4. No version may open it (older with meetings and no version of its
 #      format kept, or from a newer version): a fixed message, exit 1.
+#   B5b, before step 3 (workspace/launchcheck.py has the rules): the chosen
+#      version's light check at its first start for this user, a fallback to
+#      another kept version of the same format after a slot fault, the full
+#      check (--self-test) before a start that would migrate the workspace,
+#      and, before a compat start, the "update waiting" message at most once
+#      a day.
 #
-# Nothing here reads meeting content, opens the key or writes anything.
+# Nothing here reads meeting content or opens the key. The only thing
+# written is the launcher's own record, workspace\logs\launch.json (and the
+# app log's launch_check lines): version names, fixed words, codes, times.
 
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import NamedTuple
 
@@ -44,6 +62,19 @@ BLOCKED = ("Your workspace was made by an earlier version of Unminute and still 
            "meetings, so this version cannot take it over yet. Ask your IT team.")
 TOO_NEW = ("This workspace was created by a newer version of the app (schema {schema}). "
            "Ask your IT team.")
+# B5b (workspace/launchcheck.py): the daily "update waiting" message (B5-6),
+# a fallback after a version's first-start check failed, no version left to
+# fall back to, and a failed check before a migration.
+WAITING = ("An update of Unminute is installed. It takes over when your workspace has no "
+           "meetings, holds or unfinished cleanup. Until then version {version} opens, for "
+           "finishing your meetings only.")
+FALLBACK = ("This version of Unminute did not start correctly on this computer (code {code}), "
+            "so version {version} opened instead. Ask your IT team.")
+FAILED = ("This version of Unminute did not start correctly on this computer (code {code}). "
+          "Ask your IT team.")
+NOT_READY = ("Unminute could not get its update ready: Windows could not protect a test key "
+             "for you on this computer (code {code}). Your workspace was not changed. Ask your "
+             "IT team.")
 
 _ANY = object()             # format 1: current.json records no storage format to compare
 
@@ -79,17 +110,23 @@ def is_real(executable):
 
 
 def start(argv, *, here=None, executable=None, popen=None, deployment=None,
-          workspace_db=None):
+          workspace_db=None, checks=None, show=None, notice=None, today=None):
     """The pass. here, executable, popen, deployment and workspace_db stand
     in for this file, sys.executable, subprocess.Popen, update.deployment and
-    the workspace database in tests."""
+    the workspace database in tests; checks, show, notice and today for the
+    checks (launchcheck.Checks), the message box, the notice shown during
+    the full check and today's date (B5b)."""
     try:
         role = slot_role(argv)
     except ValueError:
         return Outcome(exit=1, message=IT_MESSAGE)
-    if (deployment or update.deployment)()["mode"] != "machine":
-        return Outcome(role=role)               # per-user and source: as before
-    here = Path(here or __file__).resolve()     # <root>\versions\<v>\app\workspace\launch.py
+    mode = (deployment or update.deployment)()["mode"]
+    if mode != "machine":
+        if mode == "source" or role is not None:
+            return Outcome(role=role)           # source, or a per-user fallback: as before
+        return _per_user(Path(here or __file__).resolve(), workspace_db, popen, checks,
+                         show, notice, today)
+    here = Path(here or __file__).resolve()    # <root>\versions\<v>\app\workspace\launch.py
     this, root = here.parents[2].name, here.parents[4]
     real = is_real(executable or sys.executable)
     if role is not None:
@@ -97,23 +134,194 @@ def start(argv, *, here=None, executable=None, popen=None, deployment=None,
     if here.parents[3].name != "versions":
         return Outcome(exit=1, message=IT_MESSAGE)
     state, record = update.read_slots(root)
+    found = None
     if state not in ("ok", "format1"):
-        # Damaged: no hand-over (nothing can be checked against it). This
-        # version starts as before, from its real path.
+        # Damaged: no hand-over and no check (nothing can be checked against
+        # it). This version starts as before, from its real path.
         target, chosen, refusal, schema = this, "current", None, _ANY
     else:
-        target, chosen, refusal = update.launch_decision(*_workspace(record, workspace_db),
-                                                         record)
+        found, blocked = _workspace(record, workspace_db)
+        target, chosen, refusal = update.launch_decision(found, blocked, record)
         schema = _ANY if record["format"] == 1 else (
             record["slots"][target]["schema"] if target else None)
     if refusal == "blocked":
-        found = _blockers_text(workspace_db)
-        return Outcome(exit=1, message=BLOCKED + (" " + found if found else ""))
+        text = _blockers_text(workspace_db)
+        return Outcome(exit=1, message=BLOCKED + (" " + text if text else ""))
     if refusal == "too_new":
         return Outcome(exit=1, message=TOO_NEW.format(schema=_schema_text(workspace_db)))
+    if state in ("ok", "format1"):
+        # B5b: the first-start check of the version that will open, a
+        # fallback after a slot fault, the full check before a migration and
+        # the daily "update waiting" message.
+        checked = Checked(root, record, schema, _logs(workspace_db), checks, show,
+                          notice, today).run(target, chosen, _migrates(found, record, chosen))
+        if isinstance(checked, Outcome):
+            return checked
+        target, chosen = checked
     if target == this and real:
         return Outcome(role=chosen)
     return hand_over(root, target, chosen, schema, popen or subprocess.Popen)
+
+
+def _per_user(here, workspace_db, popen, checks, show, notice, today):
+    """A per-user start (the owner's decision of 23 Oct 2026): the light
+    check of the version that was started, at its first start for this
+    user, and a fallback after a slot fault. No workspace is read and the
+    pass migrates nothing, so no full check runs. Anything that cannot be
+    checked starts as before."""
+    as_before = Outcome()
+    if here.parents[3].name != "versions":
+        return as_before
+    this, root = here.parents[2].name, here.parents[4]
+    state, record = update.read_slots(root)
+    if state not in ("ok", "format1") or this not in record["slots"]:
+        return as_before
+    schema = record["slots"][this]["schema"]
+    if record["format"] == 1 or not update.whole(schema):
+        schema = _ANY                           # no storage format to match: no fallback
+    if _slot(root, this, schema) is None:
+        return as_before
+    checked = Checked(root, record, schema, _logs(workspace_db), checks, show, notice,
+                      today).run(this, None, False)
+    if isinstance(checked, Outcome):
+        return checked
+    target, role = checked
+    if target == this:
+        return as_before
+    return hand_over(root, target, role, schema, popen or subprocess.Popen)
+
+
+def _migrates(found, record, role):
+    """Would opening the current version migrate this workspace? Only an
+    older workspace (launch_decision sends one that still holds anything the
+    update gate counts to compat instead), and only with a format-2 record,
+    which states the current version's storage format."""
+    schema = record["slots"][record["version"]]["schema"]
+    return (role == "current" and update.whole(found) and update.whole(schema)
+            and found < schema)
+
+
+def _logs(workspace_db):
+    """The workspace's logs folder, or None when the location is refused."""
+    try:
+        return _db(workspace_db).parent / "logs"
+    except Exception:
+        return None
+
+
+def _inform(text):
+    """A Windows information box (pythonw has no console)."""
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(None, text, "Unminute", 0x40)
+
+
+class Checked:
+    """B5b's checks for one start (workspace/launchcheck.py has the rules)."""
+
+    def __init__(self, root, record, schema, logs, checks, show, notice, today):
+        from workspace import diag, launchcheck
+        self.root, self.record, self.schema = root, record, schema
+        self.book = launchcheck.Book(logs)
+        self.log = diag.Log(logs, "app") if logs is not None else None
+        self.checks = checks or launchcheck.Checks()
+        self.show = show or _inform
+        self.notice = notice or launchcheck.Notice
+        self.today = today or time.strftime("%Y-%m-%d")
+
+    def _installed(self, name):
+        return (self.record["slots"].get(name) or {}).get("installed")
+
+    def _write(self, **fields):
+        if self.log is not None:
+            self.log.write("launch_check", **fields)
+
+    def _light(self, name, exe, app, info):
+        """(result, part, code) of the version's light check: recorded, or
+        run now and recorded. A version from before B5b has no
+        --launch-check and is never started with it: "unknown"."""
+        from workspace import diag, launchcheck
+        features = info.get("features")
+        if not (isinstance(features, list) and launchcheck.FEATURE in features):
+            return "unknown", None, None
+        known = self.book.known(name, self._installed(name))
+        if known is not None:
+            code = known["code"]
+            if code is None and known["result"] != "ok":
+                code = diag.new_code()          # a recorded fault whose code was lost
+            return known["result"], known["part"], code
+        result, part = self.checks.light(exe, app)
+        code = None if result == "ok" else diag.new_code()
+        self.book.record(name, self._installed(name), result, part, code)
+        self._write(check=result, part=part, code=code)
+        return result, part, code
+
+    def _full(self, name, exe, app):
+        """(result, part, code) of --self-test before a migration. Never
+        read from the record; a slot fault is recorded."""
+        from workspace import diag
+        with self.notice():
+            result, part = self.checks.full(exe, app)
+        code = None if result == "ok" else diag.new_code()
+        if result == "slot_fault":
+            self.book.record(name, self._installed(name), result, part, code)
+        self._write(check=result, part=part, code=code)
+        return result, part, code
+
+    def _fallback(self, tried):
+        """The newest other kept version of the same storage format not yet
+        tried, or None (a format-1 record knows no other version)."""
+        if not update.whole(self.schema):
+            return None
+        found = [(e["seq"], n) for n, e in self.record["slots"].items()
+                 if e["schema"] == self.schema and n not in tried]
+        return max(found)[1] if found else None
+
+    def run(self, target, role, migrating):
+        """(version, role) to open, or an Outcome that ends the start."""
+        tried, fault = [], None
+        name = target
+        while True:
+            slot = _slot(self.root, name, self.schema)
+            if slot is None:
+                return Outcome(exit=1, message=IT_MESSAGE)
+            exe, app, info = slot
+            result, part, code = self._light(name, exe, app, info)
+            if result in ("ok", "unknown") and migrating:
+                result, part, code = self._full(name, exe, app)
+            if result == "slot_fault":
+                tried.append(name)
+                fault = fault or (name, code)
+                # A fallback from compat opens the same older workspace: it
+                # stays compat, so finish-only with the waiting message (B5-7).
+                name = self._fallback(tried)
+                role = "compat" if role == "compat" else "fallback"
+                if name is None:
+                    return self._end(FAILED.format(code=fault[1]), "slot_fault")
+                continue
+            if result == "env_fault" and migrating:
+                # Never a fallback, and never a migration after a failed check.
+                return self._end(NOT_READY.format(code=code), "env_fault")
+            break
+        self.book.last_role = role
+        self.book.last_check = "slot_fault" if fault else (
+            None if result == "unknown" else result)
+        if fault is not None:
+            failed = fault[0]
+            installed = self._installed(failed)
+            if failed not in self.book.fallback_shown \
+                    or self.book.fallback_shown[failed] != installed:
+                self.show(FALLBACK.format(code=fault[1], version=name))
+                self.book.fallback_shown[failed] = installed
+        if role == "compat" and self.book.waiting_shown != self.today:
+            self.show(WAITING.format(version=name))
+            self.book.waiting_shown = self.today
+        self.book.save(set(self.record["slots"]), self.log)
+        return name, role
+
+    def _end(self, message, check):
+        self.book.last_check = check
+        self.book.save(set(self.record["slots"]), self.log)
+        return Outcome(exit=1, message=message)
 
 
 def _db(workspace_db):
@@ -159,28 +367,38 @@ def _schema_of(info):
     return found if update.whole(found) else None
 
 
-def hand_over(root, name, role, schema, popen):
-    """Start version `name` as `role` by its real path, then end this
-    process (exit 0). Only a plain folder directly inside <root>\\versions,
-    none of whose parts on the way is a link, holding a version.json that
-    names the same version and (unless current.json is format 1) storage
-    format. Anything else starts nothing: the IT message, exit 1."""
+def _slot(root, name, schema):
+    """(pythonw.exe, app folder, version.json) of version name, or None:
+    only a plain folder directly inside <root>\versions, none of whose parts
+    on the way is a link, holding a version.json that names the same version
+    and (unless current.json is format 1) storage format."""
     from workspace.asr_engines import is_link
-    refused = Outcome(exit=1, message=IT_MESSAGE)
-    if not update.version_name(name) or role not in update.ROLES:
-        return refused
+    if not update.version_name(name):
+        return None
     versions = Path(root) / "versions"
     slot = versions / name
     runtime, app = slot / "runtime", slot / "app"
     exe = runtime / "pythonw.exe"
     if any(is_link(p) for p in (versions, slot, runtime, app, exe)):
-        return refused
+        return None
     if not (slot.is_dir() and app.is_dir() and exe.is_file()):
-        return refused
+        return None
     info = update.read_record(slot / "version.json")
     if (info is None or info.get("version") != name
             or (schema is not _ANY and _schema_of(info) != schema)):
+        return None
+    return exe, app, info
+
+
+def hand_over(root, name, role, schema, popen):
+    """Start version `name` as `role` by its real path, after _slot's
+    checks, then end this process (exit 0). Anything else starts nothing:
+    the IT message, exit 1."""
+    refused = Outcome(exit=1, message=IT_MESSAGE)
+    found = _slot(root, name, schema) if role in update.ROLES else None
+    if found is None:
         return refused
+    exe, app, _ = found
     try:
         popen([str(exe), *update.LAUNCH_ARGS, "--slot", role], cwd=str(app), close_fds=True)
     except (OSError, ValueError):

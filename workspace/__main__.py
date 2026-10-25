@@ -58,13 +58,25 @@
 #                 Log, the root key is erased, then the workspace, models and
 #                 token are removed (docs/PACKAGING.md, "Offboarding"). Exit
 #                 codes as above, and 1 when a step failed (run it again).
+#   --launch-check  the light first-start check (#111 B5b), run by the
+#                 launcher (machine mode, and per-user since 23 Oct 2026) in
+#                 a child process of the version it checks
+#                 (workspace/launchcheck.py): prints one JSON line,
+#                 {"result": "ok" | "slot_fault" | "env_fault", "part"}. Opens
+#                 no window, database or key.
 #
 # A window start first runs the launcher pass (workspace/launch.py, #111 B5):
 # in machine mode it decides which installed version opens this user's
-# workspace and may hand over to it, started with --slot <role>
-# (update.ROLES; set only by a hand-over). A per-user install starts as
-# before. The window then takes the single-instance mutex (this session) and
-# the workspace lock (workspace/instance.py, every session of this user).
+# workspace, checks it (B5b) and may hand over to it, started with --slot
+# <role> (update.ROLES; set only by a hand-over). A per-user install opens
+# the version started, after only its first-start check (and a fallback to
+# another kept version of the same storage format if that version fails it).
+# The window then takes the single-instance mutex (this session)
+# and the workspace lock (workspace/instance.py, every session of this user).
+# A version started as compat (kept for an older workspace that still holds
+# meetings) opens it in finish-only mode (B5b): no new imports, watched-folder
+# intake or recordings. Only the current version (never compat or fallback)
+# removes unused graphics card components in the background (B5-4).
 
 import json
 import sqlite3
@@ -165,19 +177,25 @@ def health(root=None):
     database check found damage), when run as SYSTEM (which sees no user's
     workspace, and must never run the user's own install), or when something
     crashed in the last 7 days (including a run that ended without closing,
-    which the next start records as a crash)."""
+    which the next start records as a crash). The launcher's fields (#111
+    B5b, from logs\\launch.json): slot (the role the last start
+    opened in, or "none"), update_waiting (it opened the version kept for an
+    older workspace: workload, still healthy) and self_check; a fallback or
+    a fault needs attention."""
     # action_required and held_overdue (#111 C6): counts of meetings, not app
     # faults, so they leave healthy alone; null when not counted (for
     # example run as SYSTEM), never a false "no backlog".
     out = {"version": "?", "workspace": "unreadable", "running": False,
            "last_run": "clean", "crashes_7d": 0, "schema": None,
-           "action_required": None, "held_overdue": None}
+           "action_required": None, "held_overdue": None,
+           "slot": "none", "update_waiting": False, "self_check": "unknown"}
     try:
         _health(out, root)
     except Exception:                           # never a traceback (it holds folders)
         out["workspace"] = "unreadable"
     out["healthy"] = (out["workspace"] in ("ok", "none") and out["crashes_7d"] == 0
-                      and out["last_run"] == "clean")
+                      and out["last_run"] == "clean" and out["slot"] != "fallback"
+                      and out["self_check"] not in ("slot_fault", "env_fault"))
     return out
 
 
@@ -197,6 +215,8 @@ def _health(out, root):
         out["workspace"] = "location"           # missing, synced, redirected or broken (#219, #266)
         return
     logs = root / "logs"
+    from workspace import launchcheck
+    out.update(launchcheck.health_state(logs))  # fixed words only (#111 B5b)
     marker = logs / "app.running"
     left = marker.exists()                      # before asking whether it runs
     owner = diag.run_owner_alive(marker) if left else None
@@ -354,7 +374,23 @@ def self_test():
     network and that a code-running speaker checkpoint is refused. Prints one
     line per check; exit code 0 only if all pass."""
     import importlib
+    import os
     import socket
+    # No DLL folder named by the environment (#357, T25): CTranslate2, imported
+    # below, adds %HIP_PATH%\bin to the DLL search path when it loads. The
+    # launcher starts this check on its own before a migration (#111 B5b), so
+    # it removes the same variables every worker does, before any speech or
+    # model library loads (numpy, which workspace.worker imports, comes first
+    # and adds only its own numpy.libs folder); if it cannot read that list it
+    # imports nothing more and fails.
+    try:
+        from workspace.worker import DLL_PATH_VARIABLES
+    except Exception as exc:
+        print(f"FAILED  DLL path variables could not be read ({type(exc).__name__})")
+        print("FAIL")
+        return 1
+    for name in DLL_PATH_VARIABLES:
+        os.environ.pop(name, None)
     ok = True
     offline_guard.disable_onnxruntime_telemetry()   # before onnxruntime is used below
     for name in ("numpy", "av", "onnxruntime", "onnx_asr", "faster_whisper", "ctranslate2",
@@ -471,6 +507,11 @@ def main():
         return 0
     if "--self-test" in sys.argv:
         return self_test()
+    if "--launch-check" in sys.argv:
+        from workspace import launchcheck
+        result = launchcheck.light_check(dpapi_round_trip)
+        print(json.dumps(result))
+        return 0 if result["result"] == "ok" else 1
     if "--verify-audit" in sys.argv:
         result, code = verify_audit(sys.argv)
         print(json.dumps(result))
@@ -492,8 +533,9 @@ def main():
                       "blockers": [], "message": str(exc)}
         print(json.dumps(result))
         return result["code"]
-    # The launcher pass (#111 B5): machine mode only; a per-user install
-    # carries on here as before. Nothing heavy is imported yet.
+    # The launcher pass (#111 B5): the decision in machine mode only; a
+    # per-user install runs only the first-start check (B5b). Nothing heavy
+    # is imported yet.
     from workspace import instance, launch
     outcome = launch.start(sys.argv)
     if outcome.exit is not None:
@@ -516,8 +558,11 @@ def main():
         # is never chosen here: the store's own (Windows Data Protection).
         # instance_lock (#111 B5): the workspace lock, which every Windows
         # session of this user sees (the mutex above is this session's only).
+        # finish_only (#111 B5b): a version started as compat, kept for an
+        # older workspace that still holds meetings, opens it for finishing
+        # them only, so it can empty and the update can take over.
         ws = Workspace(cache_dir=model_cache(), check_integrity=True, on_unavailable="lock",
-                       instance_lock=True)
+                       instance_lock=True, finish_only=outcome.role == "compat")
     except instance.Held as exc:
         _message(str(exc))                  # open in another session of this user
         return 0
@@ -533,6 +578,10 @@ def main():
     diag.summarise_output(ws.log)         # pythonw: no console text is kept, only type names
     ws.log.write("start", version=package_version(), python=sys.version.split()[0],
                  previous_run_unclean=unclean)
+    if outcome.role in (None, "current"):
+        # Unused graphics card components (#111 B5b, B5-4): the current
+        # version only, in the background after start-up.
+        ws.start_gpu_upkeep()
     opened = time.perf_counter()
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),

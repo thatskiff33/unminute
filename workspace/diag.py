@@ -67,18 +67,24 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # #104: a live draft session ended (counts and seconds only, never text)
          "drafts",
          # #311: a state file (STATE_FILES) not written, even after the retries
-         "state_unwritten"}
+         "state_unwritten",
+         # #111 B5b: a version's first-start or full check (check, part, role,
+         # code), and an unused graphics card component removed or kept
+         # (component version, bytes, why)
+         "launch_check", "gpu_removed", "gpu_kept"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason
-STATE_FILES = {INTEGRITY_FILE: "integrity", KEYS_FILE: "keys"}   # as a state_unwritten names them
+LAUNCH_FILE = "launch.json"         # the launcher's checks and role (#111 B5b): launchcheck.py
+STATE_FILES = {INTEGRITY_FILE: "integrity", KEYS_FILE: "keys",   # as a state_unwritten names them
+               LAUNCH_FILE: "launch"}
 STATE_RETRIES_S = (0.02, 0.05, 0.1, 0.2, 0.4)   # _write_state's pauses while a file is held
 # The number and true/false fields the app writes (FIELDS has the text ones).
 # Copy diagnostics keeps only these and FIELDS of a record.
 NUMBERS = {"line", "col", "count", "exitcode", "hung", "earlier", "truncated",
            "previous_run_unclean", "imports_s", "workspace_s", "page_loaded_s",
            "winerror", "phrases", "restarts", "skipped_s", "dropped_s", "load_s",
-           "computer_dropped_s"}
+           "computer_dropped_s", "bytes"}
 LOG_NAME = re.compile(r"(app|worker|gpu-worker|draft-worker|setup)(\.[0-9])?")  # a log's stem
 BIG = 10 ** 12                  # no number the app writes is this large
 INCIDENT_REPEATS = 3            # the same incident is written this often a run,
@@ -139,6 +145,13 @@ FIELDS = {
     "type": _pattern(IDENT),             # a console type name; an incident's cause
     "method": _pattern(IDENT),           # a bridge method's name
     "thread": _pattern(WORD),            # the app's own thread names
+    # #111 B5b: the launcher's checks (launchcheck.py) and unused graphics
+    # card components (gpu.remove_superseded)
+    "check": _set("ok", "slot_fault", "env_fault", "unknown"),
+    "part": _set("import", "webview", "guard", "dpapi", "hung", "no_answer", "self_test"),
+    "role": _set("current", "compat", "fallback"),
+    "component": _pattern(re.compile(r"[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}")),
+    "why": _set("other_install", "unknown", "busy", "in_use"),
     "fatal": _pattern(re.compile(r"[A-Za-z0-9_]{1,64}")),
     "file": _set(*STATE_FILES.values()),   # #311: which state file was not written
     "frames": _frames,

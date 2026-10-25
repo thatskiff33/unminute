@@ -104,6 +104,20 @@ MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if yo
 # gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
                "Ask your IT team.")
+# Finish-only mode (#111 B5b, the owner's decision B5-7): the version kept for
+# an older workspace that still holds meetings opens it for finishing them
+# only. New imports, watched-folder intake and recordings are refused, by the
+# bridge (api.FINISH_ONLY_REFUSED) and by the Workspace itself; review,
+# editing, handoff, cleanup, holds, Setup and settings work. The page shows
+# FINISH_ONLY_BANNER.
+FINISH_ONLY_TEXT = ("An update is waiting for this workspace, so this version is for "
+                    "finishing your meetings only. New meetings open in the updated version "
+                    "once this workspace is empty.")
+FINISH_ONLY_BANNER = ("An update is waiting for this workspace. Finish your meetings here; new "
+                      "meetings open in the updated version once this workspace is empty.")
+# The unused graphics card component removal (B5-4) waits this long after
+# start-up, so it never slows the window opening.
+GPU_UPKEEP_DELAY_S = 60
 
 # Computer audio (#108) is back-end groundwork until the recording confirmation
 # names people on the call (wording version 2) and the page has its switch:
@@ -329,7 +343,7 @@ class Workspace:
                  idle_unload_s=None, battery=None, start=True, allow_test_engines=False,
                  policy_reader=None, check_integrity=False, lid_switch=None, protector=None,
                  on_unavailable="raise", opener=None, audit_mirror=None,
-                 instance_lock=False):
+                 instance_lock=False, finish_only=False):
         """allow_test_engines: tests and the UI check tools only. Lets the
         settings, the speaker model and the worker use "test:module:function"
         engines; never set by the app itself. policy_reader: tests only; the
@@ -351,11 +365,14 @@ class Workspace:
         instance_lock: the app's own start (#111 B5): hold the workspace lock
         (workspace/instance.py) for this Workspace's life, so another Windows
         session of the same user cannot open the workspace at the same time.
-        Raises instance.Held when another process holds it."""
+        Raises instance.Held when another process holds it.
+        finish_only: the app's own start as compat (#111 B5b): no new imports,
+        watched-folder intake or recordings (FINISH_ONLY_TEXT)."""
         if str(speaker_model).startswith(engines.TEST_PREFIX) and not allow_test_engines:
             raise ValueError("Test engines are for tests only.")
         self.root = Path(root or default_root())
         self.root.mkdir(parents=True, exist_ok=True)
+        self.finish_only = finish_only is True
         # The workspace lock (#111 B5): before the lid, the database check
         # and the store, so nothing is read, written or migrated while
         # another session of this user has the workspace open.
@@ -708,10 +725,17 @@ class Workspace:
         if self.locked is not None:
             raise WorkspaceError(LOCKED_TEXT)
 
+    def _not_finish_only(self):
+        """Refuse new work in finish-only mode (#111 B5b). The bridge refuses
+        first; this covers the drop handler and any other caller."""
+        if self.finish_only:
+            raise WorkspaceError(FINISH_ONLY_TEXT)
+
     def check_can_record(self, device, name=None):
         """Refuse now what start_recording would refuse, before anyone is asked
         (the microphone included)."""
         self._not_locked()
+        self._not_finish_only()
         self._need_microphone()
         if self._capturing():
             raise WorkspaceError("A recording is already running.")
@@ -830,8 +854,9 @@ class Workspace:
         """Queue recordings chosen in the file dialog or dropped on the window.
         Paths come from the operating system, never from page script, and are
         validated again here. Returns the number accepted. Refused while
-        locked (#111 C4a)."""
+        locked (#111 C4a) and in finish-only mode (#111 B5b)."""
         self._not_locked()
+        self._not_finish_only()
         accepted, refused = 0, []
         network = self._allowed("AllowNetworkSources")
         for p in list(paths)[:50]:
@@ -992,8 +1017,10 @@ class Workspace:
     def start_recording(self, device, name=None, consent=None):
         """consent: the record of the confirmation (workspace.consent),
         kept with the recording. The bridge asks for it; it is required unless
-        policy turns the confirmation off. Refused while locked (#111 C4a)."""
+        policy turns the confirmation off. Refused while locked (#111 C4a)
+        and in finish-only mode (#111 B5b)."""
         self._not_locked()
+        self._not_finish_only()
         self._need_microphone()
         if consent is not None and not recording_consent.valid_recording_record(consent):
             raise WorkspaceError("The recording confirmation is not valid.")
@@ -1679,6 +1706,14 @@ class Workspace:
                 self._scan_folders()
 
     def _scan_folders(self):
+        if self.finish_only:
+            # Finish-only (#111 B5b): watched folders stay configured, but
+            # nothing is scanned, so no new meeting comes in.
+            self.last_scan = {"finish_only": True}
+            return
+        self._scan_watched()
+
+    def _scan_watched(self):
         try:
             if not self._allowed("AllowWatchedFolders"):
                 self.last_scan = {"managed_off": True}      # nothing is read
@@ -1708,7 +1743,7 @@ class Workspace:
         except intake.IntakeError as exc:
             raise WorkspaceError(str(exc)) from exc
         self.audit.record("folder_added", folder=fid, existing=include_existing)
-        self.scan_now()
+        self._scan_wake.set()   # not scan_now: finish-only still saves it (B5b)
         return fid
 
     def set_folder_active(self, fid, active):
@@ -1716,7 +1751,7 @@ class Workspace:
             raise WorkspaceError("Expected on or off.")
         intake.set_active(self.store, _hold_id(fid), active)
         if active:
-            self.scan_now()
+            self._scan_wake.set()
 
     def set_folder_authority(self, fid, delete_originals=None, fetch_cloud=None,
                              confirmed=False):
@@ -1739,7 +1774,7 @@ class Workspace:
                 self.audit.record("delete_authority", folder=fid, granted=after)
         if fetch_cloud is not None:
             intake.set_fetch_cloud(self.store, fid, fetch_cloud)
-            self.scan_now()
+            self._scan_wake.set()
 
     def remove_folder(self, fid):
         fid = _hold_id(fid)
@@ -1752,6 +1787,7 @@ class Workspace:
 
     def scan_now(self):
         self._not_locked()
+        self._not_finish_only()
         self._scan_wake.set()
 
     # -- processing thread ------------------------------------------------------------
@@ -2901,7 +2937,9 @@ class Workspace:
                 "importing": 0 if held else waiting,
                 "changes": self._changes(),
                 "integrity": None if locked is not None else self._integrity_notice(),
-                "locked": locked}
+                "locked": locked,
+                # The page's banner and hidden record and import actions (#111 B5b).
+                "finish_only": self.finish_only}
 
     def _locked_notice(self):
         """For the page (#111 C4a): why the workspace is locked, the incident
@@ -3467,6 +3505,61 @@ class Workspace:
             self._wake.set()
         self.downloads.state.pop(name, None)
         return round(freed / 1e9, 2)
+
+    def start_gpu_upkeep(self, delay_s=GPU_UPKEEP_DELAY_S, **kwargs):
+        """Remove unused graphics card components in the background, delay_s
+        after start-up (#111 B5b, the owner's decision B5-4). Called by the
+        app's own start for the current version only (never compat or
+        fallback). Not while locked."""
+        if self.locked is not None:
+            return
+
+        def run():
+            if self._closing.wait(delay_s):
+                return
+            try:
+                self.remove_unused_gpu(**kwargs)
+            except Exception as exc:              # upkeep must never stop the app
+                self.log.incident("setup", exc)
+        threading.Thread(target=run, daemon=True, name="gpu-upkeep").start()
+
+    def remove_unused_gpu(self, install_root=None, mode=None, other=None):
+        """Remove the graphics card component copies no installed version of
+        the app names (update.gpu_keep, from each version's version.json),
+        and only when this user has one install: a per-user and a machine
+        install share the model cache. Nothing is removed when either cannot
+        be known, while a download, check, removal or graphics card run is
+        going on, or from a source checkout. install_root, mode and other:
+        tests only (the install folder, the install mode and whether the
+        other mode is registered). Returns [(version, bytes)] removed. Logs
+        the versions and sizes only."""
+        from workspace import update
+        if install_root is None:
+            mode = update.deployment()["mode"]
+            if mode == "source":
+                return []
+            install_root = Path(update.__file__).resolve().parents[4]
+        keep = update.gpu_keep(install_root)
+        if keep is None:
+            self.log.write("gpu_kept", why="unknown")
+            return []
+        other = update.other_install(mode) if other is None else other
+        if other is not False:
+            self.log.write("gpu_kept", why="other_install" if other else "unknown")
+            return []
+        with self._lock:
+            # Checked once, at the start: what is removed is never a version
+            # this app downloads, checks, removes or runs (those are kept).
+            if (self.downloads.busy() or self._removing or self._gpu_pass
+                    or self._gpu_whisper_run):
+                self.log.write("gpu_kept", why="busy")      # tried again next start
+                return []
+        # The running version's own components are always kept.
+        removed = gpu.remove_superseded(
+            self.cache_dir, keep | {c.version for c in gpu.COMPONENTS.values()}, log=self.log)
+        if removed:
+            self._forget_display()
+        return removed
 
     def _check_removable(self, name):
         """Refuse removal while the model is still needed (under the lock)."""

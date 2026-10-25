@@ -60,7 +60,9 @@ NOT_WEIGHTS_ONLY = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
 # 4.8.3's __init__ adds %HIP_PATH%\bin when no ROCm wheel is installed, so a
 # DLL placed there could load into the worker (in the Whisper GPU worker that
 # path is all Windows searches by name). Removed from every worker before any
-# model library is imported; the app's own process keeps them. ONNX Runtime
+# model library is imported, and from --self-test, which imports the same
+# libraries (workspace/__main__.py; the launcher starts it before a migration,
+# #111 B5b); the app's own process keeps them. ONNX Runtime
 # 1.30.0 reads none. DLL_PATH_CHECKED_CTRANSLATE2 is the CTranslate2 version
 # this list was checked against: tests/test_consistency.py fails when the lock
 # moves CTranslate2 until its __init__ is read again, this list updated and

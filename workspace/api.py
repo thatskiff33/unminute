@@ -21,7 +21,7 @@ import wave
 import numpy as np
 
 from workspace import cleanup, consent, diag
-from workspace.app import AUDIO_EXTENSIONS, LOCKED_TEXT, WorkspaceError
+from workspace.app import AUDIO_EXTENSIONS, FINISH_ONLY_TEXT, LOCKED_TEXT, WorkspaceError
 from workspace.media import SAMPLE_RATE
 
 # pywebviewEventHandler delivers DOM events to handlers registered from Python
@@ -55,6 +55,15 @@ API_METHODS = frozenset({
 # Unminute tries the key again.
 LOCKED_METHODS = frozenset({"status", "recording_status", "copy_diagnostics", "open_help",
                             "close_app", "report_ui_error", "zoom"})
+
+# What the page may not call in finish-only mode (#111 B5b, the owner's
+# decision B5-7): the methods that bring in a new meeting. Each returns
+# FINISH_ONLY_TEXT without calling the Workspace (make_api's gate), which
+# refuses them itself too, and a drop is ignored (enable_drop). Everything
+# else (review, editing, handoff, cleanup, holds, Setup, settings, and
+# importing a recording already made, which finishing needs) works. No
+# method is added: status() carries "finish_only" for the page's banner.
+FINISH_ONLY_REFUSED = frozenset({"import_dialog", "start_recording", "scan_now"})
 
 FILE_TYPES = ("Recordings ({})".format(";".join("*" + e for e in AUDIO_EXTENSIONS)),)
 
@@ -500,6 +509,10 @@ def make_api(ws, get_window=lambda: None, confirm=None, decline_pause_s=DECLINE_
                  continue_despite_damage=continue_despite_damage)
     assert set(names) | {"pywebviewEventHandler"} == API_METHODS
     assert LOCKED_METHODS <= set(names)
+    assert FINISH_ONLY_REFUSED <= set(names) - LOCKED_METHODS
+    # The finish-only gate inside the locked one: a locked workspace says so first.
+    names = {name: _finish_gated(ws, fn) if name in FINISH_ONLY_REFUSED else fn
+             for name, fn in names.items()}
     names = {name: fn if name in LOCKED_METHODS else _gated(ws, fn)
              for name, fn in names.items()}
     Api = type("Api", (), {"__slots__": (), **names})
@@ -520,6 +533,18 @@ def _gated(ws, fn):
     return gate
 
 
+def _finish_gated(ws, fn):
+    """fn, refused in finish-only mode (#111 B5b): the Workspace is not
+    called, and the page gets the fixed text. The signature is fn's."""
+    @functools.wraps(fn)
+    def gate(self, *args, **kwargs):
+        if getattr(ws, "finish_only", False) is True:
+            return {"ok": False, "error": FINISH_ONLY_TEXT}
+        return fn(self, *args, **kwargs)
+    gate.__signature__ = inspect.signature(fn)
+    return gate
+
+
 def enable_drop(window, ws):
     """Accept recordings dropped anywhere on the window. pywebview fills in
     pywebviewFullPath from the native drop (WebView2), never from page data."""
@@ -531,7 +556,8 @@ def enable_drop(window, ws):
     def on_drop(event):
         files = (event.get("dataTransfer") or {}).get("files") or []
         paths = [f.get("pywebviewFullPath") for f in files if f.get("pywebviewFullPath")]
-        if paths and ws.locked is None:          # nothing is imported while locked (C4a)
+        # Nothing is imported while locked (C4a) or in finish-only mode (B5b).
+        if paths and ws.locked is None and getattr(ws, "finish_only", False) is not True:
             ws.import_paths(paths)
 
     window.dom.document.events.dragover += DOMEventHandler(lambda e: None, True, True)

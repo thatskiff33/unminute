@@ -533,7 +533,11 @@ class SharingTests(unittest.TestCase):
             self.assertIsInstance(report["schema"], int)
             self.assertEqual(set(report), {"version", "workspace", "running", "last_run",
                                            "crashes_7d", "schema", "healthy",
-                                           "action_required", "held_overdue"})
+                                           "action_required", "held_overdue",
+                                           # #111 B5b: the launcher's fields
+                                           "slot", "update_waiting", "self_check"})
+            self.assertEqual((report["slot"], report["update_waiting"], report["self_check"]),
+                             ("none", False, "unknown"))
             self.ws.log.open_run()
             marker.write_text(json.dumps({"pid": 0, "created": 1}))   # its process has ended
             report = main.health(root)
