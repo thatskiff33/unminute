@@ -116,14 +116,17 @@ def is_reparse_point(path):
 
 
 def shortcut(lnk, target):
-    """A .lnk to target, written by Windows' own shortcut object (as pins are)."""
+    """A .lnk to target, written by Windows' own shortcut object (as pins are). With the
+    installer runs' module analysis cache, so New-Object is found without searching
+    every module folder again (tests/test_hardening.py's module_cache, #332)."""
     script = ("$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:UNMINUTE_LNK); "
               "$s.TargetPath = $env:UNMINUTE_TARGET; $s.Save()")
     Path(lnk).parent.mkdir(parents=True, exist_ok=True)
     r = subprocess.run([hardening.windows_powershell.executable(), "-NoProfile", "-Command",
                         script], capture_output=True, text=True, timeout=60,
                        env=hardening.windows_powershell.environment(
-                           {"UNMINUTE_LNK": str(lnk), "UNMINUTE_TARGET": str(target)}))
+                           {"UNMINUTE_LNK": str(lnk), "UNMINUTE_TARGET": str(target),
+                            "PSModuleAnalysisCachePath": hardening.module_cache()}))
     assert r.returncode == 0 and Path(lnk).is_file(), r.stdout + r.stderr
 
 

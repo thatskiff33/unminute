@@ -225,6 +225,20 @@ real time, and remove it when the cause is fixed.
   dot-source an older revision of either script, and never run the scripts or Pester any
   other way; show failing-first evidence for installer behaviour with the Python-driven
   tests (a scratch copy of the older script through `run_installer`).
+- **In the minimal environment, each Windows PowerShell 5.1 start pays for module search
+  on CI.** The first command a run takes from a module (`ConvertFrom-Json`, `Get-Item`,
+  `New-Object`) makes 5.1 search every module folder, Program Files' first, and record the
+  exports in its module analysis cache. With no `PSModuleAnalysisCachePath` named, and the
+  cache written only some seconds after a search, a short run never keeps it. GitHub's
+  Windows image has 54 modules there (AWS, Microsoft Graph), so each such start took 12 to
+  17 s on CI (measured 26 October 2026), against well under a second on a laptop; loading
+  the modules by path first did not help. It made the installer tests take about 98 minutes
+  instead of 42. `run_installer` and the offboarding tests' `shortcut` therefore name one
+  cache file for the test process (`module_cache` in `tests/test_hardening.py`), filled
+  once by a run that looks up a name no module exports (so every module is noted; a cache
+  filled by one found command still left about 12 s a run) and waits until PowerShell
+  writes it. Other one-off starts through
+  `tools/windows_powershell.py` still pay the search once each.
 - **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
   page.** Keep the installer scripts and their Pester tests ASCII; build other characters
   from their code points (`[char]0x212A`).

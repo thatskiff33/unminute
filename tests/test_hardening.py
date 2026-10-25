@@ -1776,6 +1776,50 @@ def check_scratch_run(script, install_dir, scratch, env, where):
         raise AssertionError("an installer test's install folder must be scratch")
 
 
+# -- Windows PowerShell's module analysis cache (#332, CI time) -------------------------
+# A command a script has not loaded yet (ConvertFrom-Json, Get-Item, New-Object) makes
+# Windows PowerShell 5.1 search every module folder for it, Program Files' first, and note
+# what each module exports in its module analysis cache. The minimal environment names no
+# cache file, and PowerShell writes the cache only some seconds after a search, so a short
+# run never keeps it and the next run searches again. On CI's runner image, whose Program
+# Files module folder holds 54 modules (AWS, Microsoft Graph), that search took 12 to 17 s
+# in every run (measured on CI, 26 October 2026; loading the modules by path first did not
+# avoid it): about 20 minutes each for this module's and tests/test_uninstall_offboard.py's
+# installer runs. So the installer runs, and the shortcuts the offboarding tests make, name
+# one cache file (PSModuleAnalysisCachePath) in a temporary folder made for this test
+# process, filled once by a run that waits until PowerShell has written it. The cache holds
+# only module paths and the command names they export; the scripts, their arguments, every
+# check before and after a run, and every assertion are unchanged.
+
+_MODULE_CACHE = {}
+
+
+def module_cache():
+    """The PSModuleAnalysisCachePath for this process's installer runs: a file in a new
+    temporary folder (removed at exit), filled on first use. If it is not written within
+    a minute the runs still work, only as slowly as before."""
+    if "path" not in _MODULE_CACHE:
+        import atexit
+        folder = tempfile.mkdtemp(prefix="unminute-psmodules-")
+        atexit.register(shutil.rmtree, folder, True)
+        path = os.path.join(folder, "ModuleAnalysisCache")
+        _MODULE_CACHE["path"] = path
+        # A name no module exports, so every module on the path is searched and noted (a
+        # cache filled by one found command alone left runs at about 12 s on CI), then
+        # a wait until PowerShell has written the cache after that search.
+        warm = ("$null = Get-Command -Name Get-UnminuteNoSuchCommand -ErrorAction Ignore; "
+                "$searched = [DateTime]::UtcNow; "
+                "$clock = [Diagnostics.Stopwatch]::StartNew(); "
+                "while ($clock.Elapsed.TotalSeconds -lt 120 -and -not ("
+                "[IO.File]::Exists($env:PSModuleAnalysisCachePath) -and "
+                "[IO.File]::GetLastWriteTimeUtc($env:PSModuleAnalysisCachePath) -ge $searched)"
+                ") { Start-Sleep -Milliseconds 200 }")
+        subprocess.run([windows_powershell.executable(), "-NoProfile", "-Command", warm],
+                       capture_output=True, text=True, timeout=300,
+                       env=windows_powershell.environment({"PSModuleAnalysisCachePath": path}))
+    return _MODULE_CACHE["path"]
+
+
 def run_installer(script, install_dir, scratch, extra="", env=None, location=None, cwd=None,
                   silent=True, timeout=180, stdin=None):
     """The only way these tests run install.ps1 or uninstall.ps1: a scratch copy (from
@@ -1789,6 +1833,7 @@ def run_installer(script, install_dir, scratch, extra="", env=None, location=Non
     base = {"LOCALAPPDATA": str(scratch / "Local"), "APPDATA": str(scratch / "Roaming")}
     full = windows_powershell.environment({**base, **(env or {})})
     check_scratch_run(script, install_dir, scratch, full, location or cwd)
+    full["PSModuleAnalysisCachePath"] = module_cache()      # speed only (above)
     for name in ("LOCALAPPDATA", "APPDATA"):
         Path(full[name]).mkdir(parents=True, exist_ok=True)
     call = f"& '{script}' -InstallDir '{install_dir}' {'-Silent' if silent else ''} {extra}"
@@ -3688,6 +3733,24 @@ class InstallerIsolationTests(unittest.TestCase):
                                           "APPDATA": str(self.root / "Roaming")}):
             self.assertEqual(real_places(), real)
         self.assertNotIn(_folder(self.root), [_folder(p) for p in real.values()])
+
+    def test_every_run_shares_one_written_module_cache_named_after_the_checks(self):
+        # #332, CI time: each installer run names the one module analysis cache, which
+        # the first use has filled, in a temporary folder that is neither the test's
+        # scratch folder nor any real place; a refused run never fills it (refused()
+        # above checks nothing runs at all).
+        cache = module_cache()
+        self.assertTrue(os.path.isfile(cache), "PowerShell did not write the module cache")
+        self.assertFalse(is_scratch(cache, self.root))
+        self.assertFalse(any(_folder(cache).startswith(_folder(p))
+                             for p in real_places().values()))
+        done = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(subprocess, "run", return_value=done) as run:
+            run_installer(self.copy, "", self.root, cwd=self.root)
+            run_installer(self.copy, self.install, self.root, cwd=self.root)
+        self.assertEqual([c.kwargs["env"]["PSModuleAnalysisCachePath"] for c in run.call_args_list],
+                         [cache, cache])
+        self.assertEqual(module_cache(), cache)
 
     def test_a_run_that_changes_the_real_install_fails(self):
         # The copy stops at once (no install folder given), so only the stand-in for
