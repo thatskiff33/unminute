@@ -352,7 +352,10 @@ class DocsTests(unittest.TestCase):
     # "Protecting main"). ci.yml holds most; the changelog job re-runs when labels
     # change, the audit also runs daily and CodeQL runs weekly, so they keep their
     # own workflows. quality.yml holds report-only jobs; release.yml runs only
-    # from a release tag.
+    # from a release tag. One exception: a job run in parts by a matrix (the
+    # Windows unit tests, #386) is not required itself; the job that needs it
+    # and always runs is, and test_matrix_parts_stand_behind_a_required_job
+    # holds that.
     REQUIRED_WORKFLOWS = ("ci.yml", "changelog.yml", "audit.yml", "codeql.yml")
     REPORT_ONLY_WORKFLOWS = ("quality.yml",)
     OTHER_WORKFLOWS = ("release.yml",)
@@ -365,6 +368,24 @@ class DocsTests(unittest.TestCase):
         ids = re.findall(r"^  ([\w-]+):\s*$", jobs, re.MULTILINE)
         names = re.findall(r"^    name: (.+)$", jobs, re.MULTILINE)
         return ids, [j.strip().strip('"') for j in names]
+
+    @staticmethod
+    def job_blocks(name):
+        """{job id: its text} in .github/workflows/<name>."""
+        workflow = read(f".github/workflows/{name}")
+        parts = re.split(r"^  ([\w-]+):\s*$", workflow[workflow.index("\njobs:"):],
+                         flags=re.MULTILINE)
+        return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+    @staticmethod
+    def is_matrix_part(job_name):
+        """A job name that differs per matrix entry names one part of a job."""
+        return "${{ matrix." in job_name
+
+    @classmethod
+    def required_jobs(cls, name):
+        """The names of the required status checks in .github/workflows/<name>."""
+        return [job for job in cls.workflow_jobs(name)[1] if not cls.is_matrix_part(job)]
 
     @classmethod
     def setUpClass(cls):
@@ -421,11 +442,32 @@ class DocsTests(unittest.TestCase):
         self.assertEqual(set(self.REQUIRED_WORKFLOWS), sources,
                          "docs/RELEASING.md names other workflows for the required checks")
         required = [job for name in self.REQUIRED_WORKFLOWS
-                    for job in self.workflow_jobs(name)[1]]
+                    for job in self.required_jobs(name)]
         self.assertEqual(len(required), len(set(required)), "two required jobs share a name")
         self.assertEqual(set(required), listed,
                          "docs/RELEASING.md's required checks differ from the jobs in "
                          + ", ".join(self.REQUIRED_WORKFLOWS))
+
+    def test_matrix_parts_stand_behind_a_required_job(self):
+        # A matrix job's parts are left out of the required checks only because
+        # one required job needs them and always runs: a skipped required job
+        # would count as passing, so it must run, and fail, when a part fails.
+        found = 0
+        for name in self.REQUIRED_WORKFLOWS:
+            blocks = self.job_blocks(name)
+            for job_id, body in blocks.items():
+                job_name = one(r"^    name: (.+)$", body, f"{name} job {job_id}'s name")
+                if not self.is_matrix_part(job_name):
+                    continue
+                found += 1
+                with self.subTest(workflow=name, job=job_id):
+                    gates = [b for b in blocks.values()
+                             if re.search(rf"^    needs: (\[[^\]]*\b)?{re.escape(job_id)}\b", b,
+                                          re.MULTILINE)
+                             and not self.is_matrix_part(one(r"^    name: (.+)$", b, "a name"))]
+                    self.assertEqual(len(gates), 1, f"no one required job needs {job_id}")
+                    self.assertIn("    if: ${{ always() }}\n", gates[0])
+        self.assertGreaterEqual(found, 1, "the Windows unit tests no longer run in parts")
 
     def test_report_only_jobs_say_so(self):
         # A job outside the required workflows never blocks a merge, so its name
@@ -439,7 +481,7 @@ class DocsTests(unittest.TestCase):
     def test_no_partial_lists_of_ci_jobs(self):
         # A line naming three or more CI jobs is a list of them, and has to name
         # them all. Better still, point to ci.yml or RELEASING.md instead.
-        names = [j.lower() for j in self.jobs]
+        names = [j.lower() for j in self.required_jobs("ci.yml")]
         for doc in self.DOCS:
             for number, line in enumerate(read(doc).splitlines(), 1):
                 found = [n for n in names if n in line.lower()]
