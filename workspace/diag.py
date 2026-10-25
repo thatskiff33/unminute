@@ -578,10 +578,20 @@ def quiet_crashes():
 
 def summarise_output(log):
     """Console output of this process (no console: pythonw, a worker) is
-    summarised into log, never kept as text."""
-    if sys.stdout is None or sys.stderr is None or not sys.stderr.isatty():
+    summarised into log, never kept as text. A stream opened on the null
+    device counts as no console: under pythonw, importing pywebview (which
+    the window's backend preload does early, #339) replaces the missing
+    streams with NUL, whose isatty() is True on Windows."""
+    if (sys.stdout is None or sys.stderr is None or _null(sys.stdout) or _null(sys.stderr)
+            or not sys.stderr.isatty()):
         sys.stdout = OutputSummary(log, "stdout")
         sys.stderr = OutputSummary(log, "stderr")
+
+
+def _null(stream):
+    """True for a stream opened on the null device (NUL on Windows)."""
+    name = getattr(stream, "name", None)
+    return isinstance(name, str) and os.path.normcase(name) == os.path.normcase(os.devnull)
 
 
 # -- the process's log and hooks -----------------------------------------------------

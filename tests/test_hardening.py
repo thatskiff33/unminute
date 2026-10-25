@@ -688,7 +688,7 @@ class PreloadTests(unittest.TestCase):
         # second copy, a workspace that will not open) must not be cut short
         # by pythonnet's unload at exit (exit 127, an unhandled .NET
         # exception). The real backend, no window.
-        for delay in (0.05, 0.1, 0.15, 0.2):
+        for delay in (0.05, 0.1, 0.15, 0.2, 0.25, 0.3):
             code = ("import sys, time; from workspace import shell; "
                     f"shell.preload_backend(); time.sleep({delay}); sys.exit(0)")
             r = subprocess.run([sys.executable, "-B", "-c", code], cwd=ROOT,
@@ -715,6 +715,65 @@ class PreloadTests(unittest.TestCase):
         self.assertIs(handler.stream, replaced)
         self.assertIn("[pywebview] synthetic warning", replaced.getvalue())
         self.assertNotIn("Logging error", replaced.getvalue())
+
+    # #378 review B3: the state a shortcut launch is in. Under pythonw both
+    # streams start as None; the preload imports pywebview, whose http module
+    # replaces them with NUL (isatty() is True on Windows). The app's output
+    # must still be summarised by type, pywebview's records included.
+    PYTHONW_OUTPUT = (
+        "import json, logging, sys, warnings\n"
+        "sys.stdout = sys.stderr = None\n"
+        "from workspace import offline_guard\n"
+        "offline_guard.install()\n"
+        "from workspace import diag, shell\n"
+        "shell.preload_backend()\n"
+        "shell.wait_preload()\n"
+        "streams = [type(sys.stdout).__name__, type(sys.stderr).__name__]\n"
+        "class Log:\n"
+        "    records = []\n"
+        "    def write(self, kind, **fields):\n"
+        "        self.records.append((kind, fields.get('type')))\n"
+        "log = Log()\n"
+        "diag.summarise_output(log)\n"
+        "shell._log_to_current_stderr()\n"
+        "try:\n"
+        "    raise ValueError('synthetic')\n"
+        "except ValueError:\n"
+        "    logging.getLogger('pywebview').exception('synthetic')\n"
+        "warnings.warn('synthetic', UserWarning)\n"
+        "out = {'before': streams, 'after': type(sys.stderr).__name__,\n"
+        "       'handlers': [type(h.stream).__name__\n"
+        "                    for h in logging.getLogger('pywebview').handlers],\n"
+        "       'types': sorted({t for k, t in log.records if k == 'output'})}\n"
+        "open(sys.argv[1], 'w', encoding='utf-8').write(json.dumps(out))\n")
+
+    @unittest.skipUnless(HAVE_WEBVIEW and sys.platform == "win32", "pythonw, pythonnet and .NET")
+    def test_output_is_summarised_under_pythonw_after_the_preload(self):
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        self.assertTrue(pythonw.is_file(), "no pythonw.exe beside this Python")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = Path(tmp) / "result.json"
+            r = subprocess.run([str(pythonw), "-B", "-c", self.PYTHONW_OUTPUT, str(result)],
+                               cwd=ROOT, capture_output=True, text=True, timeout=120)
+            self.assertEqual(r.returncode, 0)
+            out = json.loads(result.read_text(encoding="utf-8"))
+        self.assertEqual(out["before"], ["TextIOWrapper", "TextIOWrapper"])   # NUL, from pywebview
+        self.assertEqual(out["after"], "OutputSummary")
+        self.assertEqual(out["handlers"], ["OutputSummary"])
+        self.assertEqual(out["types"], ["UserWarning", "ValueError"])
+
+    def test_null_device_streams_count_as_no_console(self):
+        from workspace import diag
+        null_out, null_err = open(os.devnull, "w"), open(os.devnull, "w")
+        try:
+            with mock.patch.object(sys, "stdout", null_out), \
+                    mock.patch.object(sys, "stderr", null_err):
+                diag.summarise_output(object())
+                self.assertIsInstance(sys.stdout, diag.OutputSummary)
+                self.assertIsInstance(sys.stderr, diag.OutputSummary)
+        finally:
+            null_out.close()
+            null_err.close()
 
     def test_no_console_leaves_the_handler_alone(self):
         import logging
