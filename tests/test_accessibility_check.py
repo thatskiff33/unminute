@@ -713,7 +713,10 @@ class SettleTests(unittest.TestCase):
                 self.wfile.write(page)
 
             def do_POST(self):
-                got["results"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                length = self.headers.get("Content-Length")
+                if self.path != "/result" or not (length or "").isdigit():
+                    return self.send_error(404 if self.path != "/result" else 411)
+                got["results"] = json.loads(self.rfile.read(int(length)))
                 self.send_response(204)
                 self.end_headers()
                 done.set()
@@ -732,9 +735,10 @@ class SettleTests(unittest.TestCase):
                 try:
                     done.wait(120)
                 finally:
-                    subprocess.run([str(windows_powershell.system_program("taskkill.exe")),
-                                    "/PID", str(edge.pid), "/T", "/F"],
-                                   capture_output=True, timeout=30, check=False)
+                    if edge.poll() is None:      # never a PID Windows has given out again
+                        subprocess.run([str(windows_powershell.system_program("taskkill.exe")),
+                                        "/PID", str(edge.pid), "/T", "/F"],
+                                       capture_output=True, timeout=30, check=False)
                     edge.wait(30)
         finally:
             server.shutdown()
@@ -774,6 +778,21 @@ class SettleReportTests(unittest.TestCase):
         for settled in ({"unsettled": 0}, {}):               # settled, or a report from before
             self.assertEqual([], accessibility_check.findings(
                 {**self.ZOOM, "page": self.PAGE, "views": {"settings": settled}}))
+
+    def test_a_settle_check_that_did_not_answer_fails_closed(self):
+        # pywebview hands a script that threw to its callback as `{}` (only an
+        # Error's enumerable keys), which once counted as settled.
+        for value in ({}, None, "0", 1.5, True, [], {"message": "x"}):
+            with self.subTest(value=value):
+                found = accessibility_check.findings(
+                    {**self.ZOOM, "page": self.PAGE, "views": {"help": {"unsettled": value}}})
+                self.assertEqual(len(found), 1, found)
+                self.assertTrue(found[0].startswith("help: could not check settling"), found)
+
+    def test_the_message_says_a_hidden_window_may_be_the_cause(self):
+        found = accessibility_check.findings(
+            {**self.ZOOM, "page": self.PAGE, "views": {"help": {"unsettled": 1}}})
+        self.assertIn("hidden, minimised or locked window", found[0])
 
     def test_each_audit_waits_for_the_page_to_settle_first(self):
         # In checks(), each mode's audit settles before it measures, and

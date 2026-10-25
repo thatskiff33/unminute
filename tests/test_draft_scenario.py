@@ -554,9 +554,10 @@ class Harness:
     def stop(self):
         try:
             import windows_powershell        # taskkill by its full path (#237, #253)
-            subprocess.run([str(windows_powershell.system_program("taskkill.exe")), "/PID",
-                            str(self.edge.pid), "/T", "/F"],
-                           capture_output=True, timeout=30, check=False)
+            if self.edge.poll() is None:     # never a PID Windows has given out again
+                subprocess.run([str(windows_powershell.system_program("taskkill.exe")), "/PID",
+                                str(self.edge.pid), "/T", "/F"],
+                               capture_output=True, timeout=30, check=False)
             self.edge.wait(30)
         finally:
             self.server.shutdown()

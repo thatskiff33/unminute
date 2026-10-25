@@ -389,7 +389,11 @@ return {controls: controls.length, unnamed, untabbable, pointer_only: pointerOnl
 # measured mid-change pass as an owner exception). Endless ones, such as the
 # spinner and the busy progress bar, are not waited for and are measured as
 # they are. Returns how many finite ones were still running; a view that did
-# not settle fails (findings), since what it measured cannot be trusted.
+# not settle fails (findings), since what it measured cannot be trusted, and
+# so does one whose answer is not a count (a script that threw reaches Python
+# as {}: pywebview keeps only an Error's enumerable keys). A hidden,
+# minimised or locked window may not advance transitions at all, so "did not
+# settle" can come from the window rather than the page.
 # tests/test_accessibility_check.py runs it in headless Edge.
 SETTLE_MS = 3000
 SETTLE = f"const SETTLE_MS = {SETTLE_MS};" + r"""
@@ -651,10 +655,16 @@ def findings(report):
         out.append(f"keyboard zoom does not work ({kz})")
     out += page_problems(report.get("page"))
     for view, a in report.get("views", {}).items():
-        if a.get("unsettled"):
-            out.append(f"{view}: the page did not settle: {a['unsettled']} finite "
-                       f"animation(s) or transition(s) still running after "
-                       f"{SETTLE_MS / 1000:g} s, so it was not measured reliably")
+        if "unsettled" in a:                 # a report from before #370 has none
+            n = a["unsettled"]
+            if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                out.append(f"{view}: could not check settling (the check answered {n!r}), "
+                           "so it was not measured reliably")
+            elif n:
+                out.append(f"{view}: the page did not settle: {n} finite animation(s) or "
+                           f"transition(s) still running after {SETTLE_MS / 1000:g} s, so it "
+                           "was not measured reliably (a hidden, minimised or locked window "
+                           "may not animate: keep it in front and unlocked, and rerun)")
         for key in CHECKS:
             failing = [f for f in a.get(key) or []
                        if not owner_exception(key, f, a.get("colour_mode"))]
