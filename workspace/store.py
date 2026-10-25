@@ -808,6 +808,12 @@ def _install_new(new, path):
     os.replace(new, path)
 
 
+# The pauses before each further try to empty the write-ahead log after a key
+# is destroyed, while a reader keeps it busy: one schedule for every
+# crypto-erase (Store.erase_checkpoint and offboarding's erase_root_key).
+ERASE_RETRIES_S = (0.05, 0.1, 0.2, 0.4)
+
+
 def _truncate_log(con):
     """One wal_checkpoint(TRUNCATE) without SQLite's own busy wait: whether
     it completed (a rollback-journal database has no log: completed)."""
@@ -818,7 +824,7 @@ def _truncate_log(con):
         return False
 
 
-def erase_root_key(db_path, retries=(0.05, 0.1, 0.2, 0.4)):
+def erase_root_key(db_path, retries=None):
     """Offboarding (#111 B8, the owner's decision B8-8): delete the
     workspace's root key row (crypto_meta) with secure_delete, then empty the
     write-ahead log, as destroy_recording_key and erase_checkpoint do, before
@@ -828,7 +834,8 @@ def erase_root_key(db_path, retries=(0.05, 0.1, 0.2, 0.4)):
     half-way. Needs no key and never opens the one stored: it works on a
     locked workspace. Never creates a database (sqlite3.Error if there is
     none). Returns whether the log was emptied; the row is deleted either
-    way, and a rerun tries the log again."""
+    way, and a rerun tries the log again. retries: the pauses between tries
+    (ERASE_RETRIES_S unless a test gives others)."""
     uri = Path(db_path).absolute().as_uri() + "?mode=rw"   # as_uri: # and % escaped
     con = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=5)
     try:
@@ -839,7 +846,7 @@ def erase_root_key(db_path, retries=(0.05, 0.1, 0.2, 0.4)):
             con.execute("BEGIN IMMEDIATE")
             con.execute("DELETE FROM crypto_meta")
             con.execute("COMMIT")
-        for pause in (0, *retries):
+        for pause in (0, *(ERASE_RETRIES_S if retries is None else retries)):
             if pause:
                 time.sleep(pause)
             if _truncate_log(con):
@@ -1483,7 +1490,7 @@ class Store:
             db.execute("DELETE FROM recording_keys WHERE recording_id = ?", (recording_id,))
         return self.erase_checkpoint()
 
-    ERASE_RETRIES_S = (0.05, 0.1, 0.2, 0.4)
+    ERASE_RETRIES_S = ERASE_RETRIES_S      # the module's schedule (tests patch it here)
 
     def erase_checkpoint(self):
         """Checkpoint the write-ahead log into the database and truncate it,

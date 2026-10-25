@@ -695,6 +695,18 @@ class RootKeyEraseTests(unittest.TestCase):
         with mock.patch.object(store, "_truncate_log", return_value=False):
             self.assertFalse(store.erase_root_key(self.db, retries=()))
 
+    def test_it_retries_on_the_store_s_own_schedule(self):
+        # One schedule for every crypto-erase's checkpoint (review of #325,
+        # carried into #335): offboarding waits as erase_checkpoint does.
+        st = keyprotect.open_store(self.db)
+        st.close()
+        self.assertIs(store.ERASE_RETRIES_S, store.Store.ERASE_RETRIES_S)
+        with mock.patch.object(store, "_truncate_log", return_value=False), \
+                mock.patch.object(store.time, "sleep") as slept:
+            self.assertFalse(store.erase_root_key(self.db))
+        self.assertEqual(list(store.Store.ERASE_RETRIES_S),
+                         [c.args[0] for c in slept.call_args_list])
+
     def test_it_never_creates_a_database(self):
         with self.assertRaises(sqlite3.Error):
             store.erase_root_key(self.db)

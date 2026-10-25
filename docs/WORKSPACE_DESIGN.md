@@ -220,7 +220,7 @@ Cleanup (`workspace/cleanup.py`) follows exactly two explicit confirmations. Cop
      3. The app's audio folder is removed (ciphertext with no key by now).
      4. Originals, as below.
    - A crash or a failure at any point leaves either the key and the audio both intact, or the key gone and the audio recorded as removed. A file that cannot be deleted fails the job, but the meeting already shows its audio as removed, because it cannot be read. A rerun repeats each step and writes one receipt.
-   - A hold added after step 1 (for example while a failed job waits for its retry) stops the retry: the job shows as held, and the folder of audio that can no longer be opened stays until the hold is released (C2: a hold blocks deletion, even of ciphertext with no key).
+   - A hold added after step 1 (for example while a failed job waits for its retry) stops the retry: the job shows as held, and the folder of audio that can no longer be opened stays until the hold is released and the cleanup is confirmed again (`holds.release_hold` returns the job to `awaiting_confirmation`; C2: a hold blocks deletion, even of ciphertext with no key).
    - An intake original is deleted only if all of these hold:
      - the user gave explicit authority (`sources.delete_original`, #24);
      - its recorded location can be read (a sealed path that does not open keeps the original);

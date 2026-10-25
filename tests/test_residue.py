@@ -136,26 +136,65 @@ class AllowedFilesTests(TempDir):
         # A rename moves the list only if every place that names these files
         # uses the constant: the window, the support options with no window
         # (--status, --health, --gate, --restore-lid, --verify-audit) and the
-        # packaged checks that open the workspace themselves (review of #335).
+        # packaged checks that open the workspace themselves (review of #335);
+        # offboarding and the launcher pass, which read the workspace with no
+        # window; the durable-core check; and the places that collect a
+        # worker's or the download process's crash file (rebase onto main,
+        # 26 Oct 2026: a search of the whole tree, review round 3 of #335).
         literals = ('"settings.json"', '"settings.unreadable.json"', '"power_restore.json"',
-                    '/ "logs"', '/ "audit"', '"workspace.db', '"app.running"', '"app.log"')
-        for rel in ("workspace/app.py", "workspace/__main__.py", "tools/packaged_check.py",
-                    "tools/packaged_crash_check.py", "tools/perf_check.py"):
+                    '/ "logs"', '/ "audit"', '"workspace.db', '"app.running"', '"app.log"',
+                    '.crash"')
+        for rel in ("workspace/app.py", "workspace/__main__.py", "workspace/offboard.py",
+                    "workspace/launch.py", "workspace/worker.py", "workspace/drafts.py",
+                    "workspace/setup.py", "tools/packaged_check.py",
+                    "tools/packaged_crash_check.py", "tools/perf_check.py",
+                    "tools/durable_core_check.py"):
             source = (ROOT / rel).read_text(encoding="utf-8")
             for literal in literals:
                 with self.subTest(rel=rel, literal=literal):
-                    self.assertNotIn(literal, source)
+                    self.assertFalse(literal in source, f"{literal} named in {rel}")
+        # Where each name is defined: once, in diag.py (the lid's record in
+        # power.py), and nowhere after the definitions.
+        from workspace import diag, power
         diag_source = (ROOT / "workspace" / "diag.py").read_text(encoding="utf-8")
-        for constant in ('DB_FILE = "workspace.db"', 'SETTINGS_FILE = "settings.json"',
-                         'LOGS_FOLDER = "logs"', 'AUDIT_FOLDER = "audit"'):
-            with self.subTest(constant=constant):
-                self.assertIn(constant, diag_source)
+        for name, value in (("DB_FILE", "workspace.db"), ("SETTINGS_FILE", "settings.json"),
+                            ("SETTINGS_UNREADABLE_FILE", "settings.unreadable.json"),
+                            ("LOGS_FOLDER", "logs"), ("AUDIT_FOLDER", "audit"),
+                            ("LOG_SUFFIX", ".log"), ("RUNNING_SUFFIX", ".running"),
+                            ("CRASH_SUFFIX", ".crash")):
+            with self.subTest(constant=name):
+                self.assertEqual(value, getattr(diag, name))
+                self.assertEqual(1, diag_source.count(f'\n{name} = "{value}"'))
         power_source = (ROOT / "workspace" / "power.py").read_text(encoding="utf-8")
         self.assertEqual(1, power_source.count('"power_restore.json"'))   # RESTORE_FILE
+        self.assertEqual("power_restore.json", power.RESTORE_FILE)
         after = diag_source.split('CRASH_SUFFIX = ".crash"', 1)[1]
         for literal in ('.log"', '.crash"', '.running"', '/ "logs"', '"workspace.db'):
             with self.subTest(literal=literal):
                 self.assertNotIn(literal, after)
+        # residue.dumps() counts crash files without importing the app.
+        self.assertEqual(diag.CRASH_SUFFIX, residue.CRASH_SUFFIX)
+
+    def test_the_powershell_scripts_name_the_same_files(self):
+        # PowerShell cannot import the constants, so its copies are tied to
+        # them here: a rename that missed the uninstaller would quietly skip
+        # the lid's restore, or the note that the workspace was kept (review
+        # round 2 of #335).
+        from workspace import diag, power
+        for rel, needles in (
+                ("packaging/uninstall.ps1",
+                 (f'"workspace", "{power.RESTORE_FILE}")',
+                  f'"Unminute\\workspace\\{diag.DB_FILE}"')),
+                ("tools/import_dialog_check.ps1",
+                 (f"'Unminute\\workspace\\{diag.SETTINGS_FILE}'",
+                  f"'Unminute\\workspace\\{diag.DB_FILE}'"))):
+            source = (ROOT / rel).read_text(encoding="utf-8")
+            for needle in needles:
+                with self.subTest(rel=rel, needle=needle):
+                    self.assertIn(needle, source)
+        with mock.patch.object(power, "RESTORE_FILE", "lid.json"):
+            source = (ROOT / "packaging" / "uninstall.ps1").read_text(encoding="utf-8")
+            self.assertNotIn(f'"workspace", "{power.RESTORE_FILE}")', source)
 
     def test_unexpected_lists_strays_and_anything_outside_the_workspace(self):
         profile = self.root / "Unminute"

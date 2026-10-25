@@ -553,7 +553,7 @@ def check(expected_sha256, paths, commit=None):
             unmeasured = [f for f in PERF_STORE_FIGURES if not _number(store.get(f))]
             if unmeasured:
                 found.append(f"does not measure the sealed store (not measured: "
-                             f"{', '.join(unmeasured)}; run tools/perf_check.py again)")
+                             f"{listed(unmeasured)}; run tools/perf_check.py again)")
             undrawn = perf_not_drawn(body)
             if undrawn:
                 found.append(f"does not show every visible window drawn on a display that was "

@@ -1513,7 +1513,8 @@ class PackagedCheckTests(TempDir):
     def test_only_finished_microphone_chunks_count_as_scanned(self):
         scanned = ["Unminute/workspace/recordings/r1/chunk-000001.uma",
                    "Unminute/workspace/recordings/r1/chunk-000002.uma",
-                   "Unminute/workspace/recordings/r1/chunk-000003.tmp",    # still filling
+                   "Unminute/workspace/recordings/r1/chunk-000003.uma.tmp",   # still filling
+                   "Unminute/workspace/recordings/r1/sys-000001.uma",   # the computer's track
                    "Unminute/workspace/recordings/r1/journal.json",
                    "Unminute/workspace/media/abc/audio.uma",
                    "temp/x.bin"]
