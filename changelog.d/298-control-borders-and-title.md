@@ -1,1 +1,0 @@
-- **The meeting title shows that it can be edited.** When the pointer is over the meeting title, which you can click to rename, a thin border in the text colour shows round it as well as the light background; with keyboard focus the thicker focus ring covers it. At rest the title shows no border, and fields, buttons and switches keep their brand border colour (#298).

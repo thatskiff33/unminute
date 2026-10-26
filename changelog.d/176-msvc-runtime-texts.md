@@ -1,1 +1,0 @@
-- **Every bundled native library now has its licence text.** The Microsoft C++ runtime copies that numpy and pandas bundle are covered by the Microsoft conditions CPython ships with its Windows build, collected from CPython 3.14.8, so a release no longer stops on them (#176).

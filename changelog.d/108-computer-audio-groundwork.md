@@ -1,1 +1,0 @@
-- **New IT policy `AllowComputerAudioRecording`.** The ADMX template has a new value for recording the sound playing on the computer (such as the other side of a call) as a second track beside the microphone. Not set, it is allowed, and each person's switch stays off until they turn it on; 0 turns it off (#108).
