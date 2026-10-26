@@ -63,5 +63,46 @@ class EdgeTimeoutTests(unittest.TestCase):
         self.assertEqual([], results)
 
 
+class CanvasLayoutTests(unittest.TestCase):
+    """docs/design/boards/canvas.json lays every board out once, in its row,
+    with no overlaps (#403: a board left out of "order" was missing from the
+    canvas sequence)."""
+
+    BOARDS = ROOT / "docs" / "design" / "boards"
+
+    def setUp(self):
+        self.canvas = json.loads((self.BOARDS / "canvas.json").read_text(encoding="utf-8"))
+        self.boards = self.canvas["boards"]
+
+    def test_every_board_file_is_placed_and_in_the_order_once(self):
+        files = sorted(p.name for p in self.BOARDS.glob("*.dc.html"))
+        order = self.canvas["order"]
+        self.assertEqual(files, sorted(self.boards))
+        self.assertEqual(len(order), len(set(order)), "a board is in the order twice")
+        self.assertEqual(files, sorted(order))
+
+    def test_the_order_runs_row_by_row_left_to_right(self):
+        by_position = sorted(self.boards, key=lambda b: (self.boards[b]["y"], self.boards[b]["x"]))
+        self.assertEqual(by_position, self.canvas["order"])
+
+    def test_no_two_boards_overlap(self):
+        names = sorted(self.boards)
+        for i, a in enumerate(names):
+            ra = self.boards[a]
+            for b in names[i + 1:]:
+                rb = self.boards[b]
+                apart = (ra["x"] + ra["w"] <= rb["x"] or rb["x"] + rb["w"] <= ra["x"]
+                         or ra["y"] + ra["h"] <= rb["y"] or rb["y"] + rb["h"] <= ra["y"])
+                self.assertTrue(apart, f"{a} overlaps {b}")
+
+    def test_each_row_title_spans_its_row(self):
+        rows = sorted(self.canvas["notes"].values(), key=lambda n: n["y"])
+        for row, below in zip(rows, rows[1:] + [None], strict=True):
+            ends = [b["x"] + b["w"] for b in self.boards.values()
+                    if b["y"] > row["y"] and (below is None or b["y"] < below["y"])]
+            self.assertTrue(ends, f"row {row['text']!r} has no boards")
+            self.assertEqual(max(ends), row["maxW"], row["text"])
+
+
 if __name__ == "__main__":
     unittest.main()
