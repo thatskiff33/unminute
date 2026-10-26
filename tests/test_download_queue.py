@@ -4,7 +4,7 @@
 # carries on at the next start; policy that turns downloads off empties it.
 # No network, no real downloads: a fake download process that the test
 # releases stands in for Hugging Face.
-#   python tools/run_tests.py test_download_queue
+#   python tools/run_tests.py --only test_download_queue
 
 import importlib.util
 import json

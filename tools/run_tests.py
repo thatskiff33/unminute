@@ -118,9 +118,13 @@ def only_suite(suite, names):
     """The tests whose id is one of names, or starts with one followed by a dot,
     as one suite in discovery order. A module that fails to import keeps its
     one failing test, named after the module, so it still runs and fails."""
-    picked = [test for test in tests_in(suite)
-              if any(test.id() == name or test.id().startswith(name + ".") for name in names)]
-    return unittest.TestSuite(picked)
+    def wanted(test):
+        if type(test).__module__.startswith("unittest."):
+            # A module that failed to import: unittest names its one failing
+            # test after the module (unittest.loader._FailedTest.<module>).
+            return any(name.split(".")[0] == test._testMethodName for name in names)
+        return any(test.id() == name or test.id().startswith(name + ".") for name in names)
+    return unittest.TestSuite([test for test in tests_in(suite) if wanted(test)])
 
 
 def units(suite):

@@ -180,6 +180,28 @@ class RunnerTests(unittest.TestCase):
         self.assertNotEqual(both.returncode, 0)
         self.assertIn("cannot be used together", both.stderr)
 
+    def test_only_still_runs_and_fails_a_named_module_that_does_not_import(self):
+        # Review of #408: unittest names an import failure unittest.loader._FailedTest.<module>.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_zq_broken.py").write_text("import zq_no_such_module" + chr(10))
+            (root / "tests" / "test_zq_ok.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Fine(unittest.TestCase):
+                    def test_one(self): pass
+            """))
+            alone = self.run_runner(root, "--only", "test_zq_broken")
+            both = self.run_runner(root, "--only", "test_zq_broken", "test_zq_ok")
+            other = self.run_runner(root, "--only", "test_zq_ok")
+        for r in (alone, both):
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("zq_no_such_module", r.stdout + r.stderr)
+            self.assertNotIn("No test matched", r.stdout)
+        self.assertIn("2 of the suite's 2 tests", both.stdout)
+        self.assertEqual(other.returncode, 0, other.stdout + other.stderr)   # not named, not run
+
     def test_class_times_from_chunk_logs_become_the_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             logs = []
