@@ -711,6 +711,7 @@ def reflow(window):
 
 
 DRAFT_VIEW = "recording draft"      # draft_scenario.DRAFT_VIEW (a test keeps them equal)
+DRAFT_WAIT_MS = 15000               # the longest the draft view waits for its text (#393)
 
 # Each view the check opens, in order, with the page script that opens it
 # ({mid}: the synthetic meeting's id). tools/evidence.py requires every one
@@ -725,7 +726,16 @@ VIEWS = {
     "meetings": "window.workspace.show('meetings'); await wait(1500);",
     "microphone chooser": "document.getElementById('mic-change').click(); await wait(400);",
     # A recording with draft text (#370): the check's DraftFeed starts it first.
-    "recording draft": "window.workspace.show('meetings'); await wait(1500);",
+    # The text arrives only after several bridge calls in turn (the refresh,
+    # recording_status, then recording_draft), which can take longer than the
+    # settle on a busy machine (#393): so it also waits, up to DRAFT_WAIT_MS,
+    # until the draft box is shown with a line in it. A box that never comes
+    # is audited as it is, and fails.
+    "recording draft": "window.workspace.show('meetings'); await wait(1500);"
+                       f"for (const end = performance.now() + {DRAFT_WAIT_MS}; performance.now()"
+                       " < end;) { const b = document.getElementById('rec-draft-box');"
+                       " if (!b.closest('[hidden]') && getComputedStyle(b).display !== 'none'"
+                       " && b.querySelector('.rec-draft-line')) break; await wait(50); }",
     "settings": "window.workspace.show('settings'); await wait(800);",
     "help": "window.workspace.show('help'); await wait(400);",
     "meeting": "await window.workspace.openMeeting('{mid}'); await wait(1500);",
