@@ -177,7 +177,7 @@ The full settings are in [PACKAGING.md](PACKAGING.md), "Managed deployment (Intu
 
 For the machine install (B6b, **Not in v0.5.0-preview.3**), the full settings are in [PACKAGING.md](PACKAGING.md), "Machine install in System context". In short:
 
-1. Verify the release, then package the zip itself with its `.sha256` file and that version's `install.ps1` (from inside the zip).
+1. Verify the release, then package the zip itself with its `.sha256` file and that version's `install.ps1` (from inside the zip). Run it only from a folder that only administrators can change, such as the Intune Management Extension's content folder (its permissions are to confirm, #189): whoever can write there can replace the zip and its `.sha256` together before the run.
 2. Install behaviour: **System**. Install command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Machine -Package Unminute-<version>.zip -Silent`.
 3. Uninstall command: `%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ProgramW6432%\Unminute\uninstall.ps1" -Machine -Silent`. It refuses (exit code 5) while a version kept for an earlier storage format is installed; add `-IncludeKeptSlots` only to decommission.
 4. Return codes: map 3 (the app is open for someone) to Retry, and 1, 2 and 4 to Failed. Code 4 also means the install folder's permissions have changed: check the computer.
@@ -312,7 +312,6 @@ Start from the kind of incident. None of these steps needs meeting content: neve
 
 ## Not available yet
 
-- For a machine install: finish-only mode for a workspace opened by the kept older version, the daily "update waiting" message and the first-launch fallback (B5b). Until B5b lands, that older version opens such a workspace normally.
 - Machine-wide models staged by IT, and the runtime firewall rule (B7).
 - The switch to record computer audio beside the microphone (#108). The recording support and `AllowComputerAudioRecording` are on `main`, but no version shows the switch yet.
 - Draft text while recording (#104). On `main`: the draft on the recording card, a warning about screen sharing with Hide draft, the Settings switch (off by default) and `AllowLiveDrafts`; with computer audio (#108, later), a choice of the microphone or both tracks mixed.

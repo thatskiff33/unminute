@@ -1013,11 +1013,14 @@ function Invoke-MachineUninstall {
         Stop-Uninstall 1 "$AppName is not installed for everyone on this computer, so nothing was removed."
     }
     if ($folder.Exists) {
-        # The installer's checks: the folder's own permissions, exactly, and nothing
-        # of their own on any folder or file beneath it.
-        if (-not (Test-MachineRootSecurity (Get-FolderSecurity $root)) -or (Get-AclChangeCount $root) -gt 0) {
-            Stop-Uninstall 4 $PermissionMessage
-        }
+        # The installer's checks: the folder's own permissions, exactly, before the
+        # lock is written there; then, holding the lock, so not beside an install or
+        # update (#111 B6a; exit 3), nothing of their own on any folder or file
+        # beneath it. An install part way through writing a file over in place cannot
+        # make this stop with exit 4 (review of a3ab563, N3).
+        if (-not (Test-MachineRootSecurity (Get-FolderSecurity $root))) { Stop-Uninstall 4 $PermissionMessage }
+        Enter-InstallLock
+        if ((Get-AclChangeCount $root) -gt 0) { Stop-Uninstall 4 $PermissionMessage }
         $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
             try { $_.Path -and $_.Path.StartsWith($root.TrimEnd("\") + "\", [StringComparison]::OrdinalIgnoreCase) } catch { $false }
         }
@@ -1048,8 +1051,6 @@ function Invoke-MachineUninstall {
         if ($strays) {
             Stop-Uninstall 1 "The install folder holds $strays item(s) that $AppName did not put there, so nothing was removed."
         }
-        # Not beside an install or update (#111 B6a).
-        Enter-InstallLock
         if (-not $Options.IncludeKeptSlots -and (Get-KeptOlderSlotCount $root) -gt 0) {
             Stop-Uninstall 5 ("Older versions are still kept for people whose workspace has not moved to the " +
                 "current storage format, so nothing was removed. Check with them first, then remove the kept " +

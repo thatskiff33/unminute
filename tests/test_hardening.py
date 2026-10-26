@@ -4291,9 +4291,13 @@ class MachineModeScriptTests(unittest.TestCase):
                 self.assertNotIn("needs administrator rights", r.stderr)
                 if name == "install":
                     # It makes the machine folder in the scratch Program Files
-                    # (New-MachineRoot, before the package is read), then stops at
-                    # the package that is not one.
-                    self.assertNotEqual(r.returncode, 0, out)
+                    # (New-MachineRoot, before the package is read), checks it, takes
+                    # the lock, then stops at the package's missing checksum file
+                    # (exit 4), not on anything unexpected on the way (review of
+                    # a3ab563, N1).
+                    self.assertEqual(r.returncode, 4, out)
+                    self.assertIn("The checksum file", r.stderr)
+                    self.assertIn("is missing; download it with the package.", r.stderr)
                     self.assertEqual([p.name for p in program_files.iterdir()], ["Unminute"])
                 else:
                     # It removes what the stopped install left there (its own folder,

@@ -60,9 +60,11 @@
   (owner Administrators; full control for SYSTEM and Administrators; read and
   run for Users and ALL APPLICATION PACKAGES), and checked at every run, with
   every folder and file beneath it, for another owner, an explicit entry or a
-  protected list (exit 4; never repaired silently). The package is unpacked
-  inside that folder (staging-<32 hex digits>), never in a temporary folder, and
-  no Python runs during the install. The Start menu entry for all users starts
+  protected list (exit 4; never repaired silently); its junctions are checked by
+  their target, not their own permissions. The package is unpacked inside that
+  folder (staging-<32 hex digits>), never in a temporary folder, TMP and TEMP
+  point at another such folder for the run, and no Python runs during the
+  install. The Start menu entry for all users starts
   %ProgramFiles%\Unminute\current, a junction to the current version, which
   the app leaves at once for the version's real folder (workspace/launch.py).
   Kept versions: the current one, the previous one, and the newest version of
@@ -111,6 +113,7 @@ $AppName = "Unminute"
 $script:TempExtract = $null
 $script:StagedCopy = $null           # versions\<version>.partial while this run owns it
 $script:InstallLock = $null
+$script:MachineTemp = $null          # machine mode's temporary folder, and TMP and TEMP before it
 $RegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Unminute"
 # The Start menu's Programs folder, for the shortcut. Read once, here, like $RegKey, so
 # the tests can point both at scratch places (tests/powershell/Isolation.ps1).
@@ -293,30 +296,44 @@ function Get-PackageRoot {
         Stop-Install 4 "The checksum file $sidecar is missing; download it with the package."
     }
     $expected = ((Get-Content -LiteralPath $sidecar -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
-    Write-Step "Checking the package checksum..."
-    if ((Get-FileSha256 $zip) -ne $expected) {
-        Stop-Install 4 "The package does not match its checksum. Download it again."
-    }
-    # A new folder named by a whole random GUID (#111 B6a); one that already exists is
-    # someone else's, so the run stops and neither uses nor removes it. Short enough
-    # for Windows PowerShell's 260 characters: um and 32 hex digits, the package's
-    # folder and its paths of at most 140 characters under a user's temporary folder.
-    # Nothing runs from here: the files are copied into the install folder and
-    # verified there. Machine mode unpacks inside its own folder, which only
-    # administrators can change, as staging-<32 hex digits>: never in SYSTEM's
-    # temporary folder, C:\Windows\Temp or Intune's cache (#111 B6b, T22).
-    $temp = if ($Options.Machine) {
-        Join-Path $Options.InstallDir ("staging-" + (New-RandomName))
-    } else {
-        Join-Path ([IO.Path]::GetTempPath()) ("um" + (New-RandomName))
-    }
-    if ([IO.Directory]::Exists($temp) -or [IO.File]::Exists($temp)) {
-        Stop-Install 1 "The temporary folder for extracting the package already exists, so nothing was installed. Run this again."
-    }
-    $script:TempExtract = $temp
-    Write-Step "Extracting..."
-    Add-Type -AssemblyName System.IO.Compression.FileSystem     # much faster than Expand-Archive
-    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $temp)
+    # The zip is checked and unpacked through one handle that shares reading only, so
+    # from the check to the end of the unpacking nobody can write, replace, rename or
+    # delete it, and the open fails if anyone already has it open to write (review of
+    # a3ab563, L3): the bytes unpacked are the bytes checked.
+    $stream = [IO.FileStream]::new($zip, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read, 1MB)
+    try {
+        Write-Step "Checking the package checksum..."
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $actual = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace("-", "").ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if ($actual -ne $expected) {
+            Stop-Install 4 "The package does not match its checksum. Download it again."
+        }
+        # A new folder named by a whole random GUID (#111 B6a); one that already exists is
+        # someone else's, so the run stops and neither uses nor removes it. Short enough
+        # for Windows PowerShell's 260 characters: um and 32 hex digits, the package's
+        # folder and its paths of at most 140 characters under a user's temporary folder.
+        # Nothing runs from here: the files are copied into the install folder and
+        # verified there. Machine mode unpacks inside its own folder, which only
+        # administrators can change, as staging-<32 hex digits>: never in SYSTEM's
+        # temporary folder, C:\Windows\Temp or Intune's cache (#111 B6b, T22).
+        $temp = if ($Options.Machine) {
+            Join-Path $Options.InstallDir ("staging-" + (New-RandomName))
+        } else {
+            Join-Path ([IO.Path]::GetTempPath()) ("um" + (New-RandomName))
+        }
+        if ([IO.Directory]::Exists($temp) -or [IO.File]::Exists($temp)) {
+            Stop-Install 1 "The temporary folder for extracting the package already exists, so nothing was installed. Run this again."
+        }
+        $script:TempExtract = $temp
+        Write-Step "Extracting..."
+        # Much faster than Expand-Archive.
+        Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+        $stream.Position = 0
+        $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
+        try { [IO.Compression.ZipFileExtensions]::ExtractToDirectory($archive, $temp) }
+        finally { $archive.Dispose() }
+    } finally { $stream.Dispose() }
     $root = @([IO.DirectoryInfo]::new($temp).GetDirectories())
     if ($root.Count -ne 1) { Stop-Install 4 "The package does not hold one folder, so nothing was installed." }
     return $root[0].FullName
@@ -803,6 +820,7 @@ function Remove-LeftoverRecord {
 $LockWaitSeconds = 600
 
 function Enter-InstallLock {
+    if ($script:InstallLock) { return }         # this run holds it already (Start-MachineRun)
     $path = [IO.Path]::Combine($Options.InstallDir, $LockName)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $said = $false
@@ -1248,6 +1266,14 @@ function Assert-MachinePermission([string]$Root) {
     }
 }
 
+# The install folder's own permissions only: checked before the run writes its lock
+# there. Everything beneath it is checked once the run holds the lock
+# (Start-MachineRun), so another run part way through writing a file over in place
+# (Set-InheritedOnly) cannot make this one stop with exit 4 (review of a3ab563, N3).
+function Assert-MachineRootPermission([string]$Root) {
+    if (-not (Test-MachineRootSecurity (Get-FolderSecurity $Root))) { Stop-Install 4 $PermissionMessage }
+}
+
 # A file the installer has just written over in the install folder (current.json,
 # uninstall.ps1) keeps only what it inherits from the folder: no protected list and
 # no entry of its own. On CI's elevated runner (23 October 2026) such a file came
@@ -1457,13 +1483,48 @@ function Register-Machine([string]$Target, [string]$Version) {
     Register-EventSource
 }
 
-# From here the run writes in the install folder: the lock, the log, leftovers
-# removed, and a switch that stopped part way put right. Nothing changes while the
+# The run's own temporary folder (review of a3ab563, L1): a new staging-<32 hex
+# digits> folder inside the install folder, which only administrators can change,
+# with the folder's permissions. TMP and TEMP point at it for the rest of the run, so
+# whatever the run puts in a temporary folder (the C# compiler that Add-Type runs for
+# the shortcut's taskbar identity, Set-ShortcutAppId, writes its source and the
+# compiled library there, and the library is then loaded) goes there and never into
+# SYSTEM's temporary folder, C:\Windows\Temp. Removed when the run ends
+# (Clear-InstallRun), and otherwise by the next run (Remove-StagingLeftover) or the
+# uninstall.
+function Enter-MachineTemp {
+    $dir = [IO.Path]::Combine($Options.InstallDir, "staging-" + (New-RandomName))
+    if ([IO.Directory]::Exists($dir) -or [IO.File]::Exists($dir)) {
+        Stop-Install 1 "The temporary folder for this run already exists, so nothing was installed. Run this again."
+    }
+    [void][IO.Directory]::CreateDirectory($dir)
+    $script:MachineTemp = @{ Path = $dir; TMP = $env:TMP; TEMP = $env:TEMP }
+    $env:TMP = $dir
+    $env:TEMP = $dir
+}
+
+# TMP and TEMP as they were, and the run's temporary folder removed (never through
+# a link; anything still in use stays for the next run).
+function Exit-MachineTemp {
+    if (-not $script:MachineTemp) { return }
+    $env:TMP = $script:MachineTemp.TMP
+    $env:TEMP = $script:MachineTemp.TEMP
+    try { Remove-OwnFolder $script:MachineTemp.Path } catch { }
+    $script:MachineTemp = $null
+}
+
+# From here the run writes in the install folder. First the lock, so one run at a
+# time; then, under it, the permissions of everything beneath the folder (before
+# anything else is written); then the log, leftovers removed, the run's temporary
+# folder, and a switch that stopped part way put right. Nothing changes while the
 # app runs for anyone (exit 3).
 function Start-MachineRun([string]$Step) {
+    Enter-InstallLock
+    Assert-MachinePermission $Options.InstallDir
     Start-InstallRun $Step
     Test-AppRunning
     Remove-StagingLeftover
+    Enter-MachineTemp
     Repair-CurrentLink
 }
 
@@ -1475,14 +1536,16 @@ function Invoke-MachineInstall {
     $Options.Managed = $true
     $folder = [IO.DirectoryInfo]::new($root)
     if ([IO.File]::Exists($root) -or ($folder.Exists -and (Test-Link $folder))) { Stop-Install 4 $PermissionMessage }
-    if ($folder.Exists) { Assert-MachinePermission $root }
+    # The folder's own permissions now; everything beneath it under the lock
+    # (Start-MachineRun), before anything else is written.
+    if ($folder.Exists) { Assert-MachineRootPermission $root }
     Assert-InstallFolder $root
     if ($Options.Rollback) { Invoke-MachineRollback; return }
     if ($Options.RemoveSlot) { Invoke-MachineRemoveSlot; return }
     Test-Prerequisite
     if (-not $folder.Exists) {
         New-MachineRoot $root
-        Assert-MachinePermission $root
+        Assert-MachineRootPermission $root
     }
     Start-MachineRun "start"
     $package = Get-PackageRoot
@@ -1635,6 +1698,7 @@ function Clear-InstallRun {
     $script:StagedCopy = $null
     if ($script:TempExtract) { try { Remove-OwnFolder $script:TempExtract } catch { } }
     $script:TempExtract = $null
+    Exit-MachineTemp
     Exit-InstallLock
 }
 

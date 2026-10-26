@@ -282,7 +282,10 @@ Describe "install.ps1 -Machine" {
         }
 
         It "does not use a staging folder that already exists (exit 1), and leaves it as it is" {
-            Mock New-RandomName { "0" * 32 }
+            # The first name is the run's temporary folder (Enter-MachineTemp), the next
+            # the package's.
+            $script:Named = 0
+            Mock New-RandomName { $script:Named++; if ($script:Named -eq 1) { "1" * 32 } else { "0" * 32 } }
             Mock Remove-StagingLeftover { }
             [void][IO.Directory]::CreateDirectory($script:Root)
             $taken = [IO.Directory]::CreateDirectory((Join-Path $script:Root ("staging-" + ("0" * 32)))).FullName
@@ -290,6 +293,58 @@ Describe "install.ps1 -Machine" {
             { Invoke-TestInstall (New-TestZip "1.0.0") } | Should -Throw "STOP 1"
             [IO.File]::ReadAllText((Join-Path $taken "sentinel.txt")) | Should -BeExactly "someone's"
             [IO.Directory]::Exists((Join-Path $script:Root "versions\1.0.0")) | Should -BeFalse
+        }
+
+        It "checks and unpacks the zip through one handle, so nobody can change it in between (review of a3ab563, L3)" {
+            $script:Zip = New-TestZip "1.0.0"
+            $script:Other = New-TestZip "6.6.6"
+            $script:Tries = @()
+            # Between the checksum and the unpacking: overwrite the zip with another
+            # package, rename it away, delete it.
+            Mock Write-Step {
+                if ($Message -ne "Extracting...") { return }
+                try { [IO.File]::Copy($script:Other, $script:Zip, $true); $script:Tries += "overwritten" } catch { $script:Tries += "refused" }
+                try { [IO.File]::Move($script:Zip, "$($script:Zip).moved"); $script:Tries += "renamed" } catch { $script:Tries += "refused" }
+                try { [IO.File]::Delete($script:Zip); $script:Tries += "deleted" } catch { $script:Tries += "refused" }
+            }
+            Invoke-TestInstall $script:Zip
+            $script:Tries -join "," | Should -BeExactly "refused,refused,refused"
+            Get-Current | Should -BeExactly "1.0.0"
+            Get-Kept | Should -BeExactly "1.0.0"
+        }
+
+        It "puts the run's temporary files in the install folder, never in TEMP (review of a3ab563, L1)" {
+            # SYSTEM's temporary folder (C:\Windows\Temp) stood in by a folder that does
+            # not exist: anything written there fails, and the test sees it. The
+            # registration step's Set-ShortcutAppId compiles C# with Add-Type, once a
+            # process; here each run compiles a new type, as that first run does.
+            $zips = @((New-TestZip "1.0.0"), (New-TestZip "1.1.0"))
+            $missing = Join-Path $TestDrive ("systemp" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+            $script:Seen = @()
+            Mock Set-ShortcutAppId {
+                $where = [IO.Path]::GetTempPath()
+                try {
+                    Add-Type -TypeDefinition ("public static class UmProbe" + [guid]::NewGuid().ToString("N") + " { }")
+                    $script:Seen += "compiled in $where"
+                } catch { $script:Seen += "failed in $where" }
+            }
+            $saved = @($env:TMP, $env:TEMP)
+            $env:TMP = $missing; $env:TEMP = $missing
+            try {
+                Invoke-TestInstall $zips[0]
+                Invoke-TestInstall $zips[1]
+                Invoke-TestInstall "" @{ Rollback = $true }
+                $Options.Rollback = $false
+                # Each run puts TMP and TEMP back as they were.
+                @($env:TMP, $env:TEMP) -join "|" | Should -BeExactly "$missing|$missing"
+            } finally { $env:TMP = $saved[0]; $env:TEMP = $saved[1] }
+            $script:Seen.Count | Should -Be 3
+            foreach ($line in $script:Seen) {
+                $line | Should -Match ("^compiled in " + [regex]::Escape("$script:Root\staging-") + "[0-9a-f]{32}\\$")
+            }
+            [IO.Directory]::Exists($missing) | Should -BeFalse
+            @([IO.DirectoryInfo]::new($script:Root).GetDirectories("staging-*")).Count | Should -Be 0
+            Get-Current | Should -BeExactly "1.0.0"
         }
 
         It "removes the staging folders a stopped run left" {
@@ -410,6 +465,32 @@ Describe "install.ps1 -Machine" {
             $before = Get-Snapshot $script:Root
             { Invoke-TestInstall (New-TestZip "2.0.0") } | Should -Throw "STOP 4"
             Get-Snapshot $script:Root | Should -BeExactly $before
+        }
+
+        It "checks what is beneath the folder only once it holds install.lock, so another run's write does not stop it (review of a3ab563, N3)" {
+            Invoke-TestInstall (New-TestZip "1.0.0")
+            $zip = New-TestZip "1.1.0"
+            # Another run, part way through writing current.json over in place: it holds
+            # the lock, and the file has an entry of its own until that run resets it
+            # (Set-InheritedOnly) and lets the lock go, which happens while this run waits.
+            $file = [IO.FileInfo]::new((Join-Path $script:Root "current.json"))
+            $acl = $file.GetAccessControl()
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User, "Modify", "Allow"))
+            $file.SetAccessControl($acl)
+            $script:OtherRun = [IO.FileStream]::new((Join-Path $script:Root "install.lock"), [IO.FileMode]::OpenOrCreate,
+                [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+            Mock Start-Sleep {
+                if ($script:OtherRun) {
+                    Set-InheritedOnly (Join-Path $script:Root "current.json")
+                    $script:OtherRun.Dispose(); $script:OtherRun = $null
+                }
+            }
+            try { Invoke-TestInstall $zip }
+            finally { if ($script:OtherRun) { $script:OtherRun.Dispose(); $script:OtherRun = $null } }
+            Should -Invoke Start-Sleep -Times 1
+            Get-Current | Should -BeExactly "1.1.0"
+            Get-AclChangeCount $script:Root | Should -Be 0
         }
 
         It "refuses a file of the copy with permissions of its own (exit 4)" {
@@ -800,6 +881,23 @@ Describe "uninstall.ps1 -Machine" {
         Get-Snapshot $root | Should -BeExactly $before
         Test-Path -LiteralPath $script:RegPath | Should -BeTrue
         Test-Path -LiteralPath $script:EventPath | Should -BeTrue
+    }
+
+    It "says an install is running (exit 3), not that the permissions changed, while an install holds the lock part way through a write (review of a3ab563, N3)" {
+        $root = New-TestMachineInstall @{ "1.0.0" = 2 } "1.0.0"
+        $file = [IO.FileInfo]::new((Join-Path $root "current.json"))
+        $acl = $file.GetAccessControl()
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.WindowsIdentity]::GetCurrent().User, "Modify", "Allow"))
+        $file.SetAccessControl($acl)
+        $before = Get-Snapshot $root
+        # Typed: a string in the last place would pick the useAsync overload, and the
+        # lock would outlive this test.
+        $held = [IO.FileStream]::new((Join-Path $root "install.lock"), [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose)
+        try { { Invoke-TestUninstall } | Should -Throw "STOP 3" } finally { $held.Dispose() }
+        Get-Snapshot $root | Should -BeExactly $before
+        Test-Path -LiteralPath $script:RegPath | Should -BeTrue
     }
 
     It "removes what is left when the folder has gone, and says there is nothing to remove otherwise" {
