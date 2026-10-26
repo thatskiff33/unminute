@@ -166,7 +166,9 @@ repository settings:
   needs that change reviewed;
 - no decision that is the user's (under "Stop and ask" or raised by a review) is still open.
 
-Never push to `main` or force-push a branch another agent works on. An agent may comment on
+Arming auto-merge pinned to the reviewed head, once the other conditions hold, is merging
+under these conditions: GitHub holds it until the required checks pass. Never push to `main`
+or force-push a branch another agent works on. An agent may comment on
 the issues its work belongs to (decisions, progress) and close an issue once the PRs that
 resolve it have merged and every acceptance criterion is met, saying which PRs did it.
 
@@ -238,10 +240,16 @@ changes; or GitHub owner settings.
 - Squash merge with linear history (`docs/RELEASING.md`). Review a fixed commit independently,
   with a security review for anything under "Stop and ask"; verify fixes and record the review
   on the PR. Inspect the final diff for unrelated edits, private material and invisible characters.
-- A PR may be a draft while work continues. Once its required checks pass and any review it
-  needs is recorded, the agent that owns it marks it ready (`gh pr ready <n>`) so it can be
-  reviewed and merged; who merges follows "Authority". Never call a draft "ready to merge":
-  check `gh pr view <n> --json isDraft,mergeStateStatus` first.
+- A PR may be a draft while work continues. Keep it moving (the user's decision, 26 October
+  2026): start the independent review as soon as the head is pushed, while CI runs. Once that
+  review approves the exact head and no user decision is open, the agent that owns the PR
+  records the review, runs `gh pr ready <n>` and arms auto-merge pinned to that commit:
+  `gh pr merge <n> --auto --squash --match-head-commit <sha>`. GitHub then merges when the
+  required checks pass and deletes the branch. Disarm (`gh pr merge <n> --disable-auto`) before
+  pushing again, and while a check that is not required fails without its reason on the PR.
+  A green, reviewed PR left in draft or unarmed is a fault to fix at once. Watch PRs by events
+  (a monitor on their checks), not timed polls. Never call a draft "ready to merge": check
+  `gh pr view <n> --json isDraft,mergeStateStatus,autoMergeRequest` first.
 
 ## Several agents or sessions
 
