@@ -906,7 +906,8 @@ class Downloads:
         if log is None or self.log_dir is None or getattr(self, "_cancelled", False):
             return
         died = proc.exitcode not in (0, None)
-        code = log.collect_crash(died, crash_path=os.path.join(self.log_dir, "setup.crash"),
+        code = log.collect_crash(died, crash_path=os.path.join(self.log_dir,
+                                                             f"setup{diag.CRASH_SUFFIX}"),
                                  process="setup")
         if died:
             log.write("worker_exit", process="setup", exitcode=proc.exitcode, code=code)

@@ -31,6 +31,10 @@ from workspace import (audit, cleanup, clipboard, credentials, diag, drafts, eng
                        resources, runner, setup, speaker_names, speakers)
 from workspace.chunking import plan_chunks
 from workspace import consent as recording_consent
+# The workspace's own files and folders (#111 C7): named once, in diag (and
+# the lid's restore record in power).
+from workspace.diag import (AUDIT_FOLDER, DB_FILE, LOGS_FOLDER, SETTINGS_FILE,
+                            SETTINGS_UNREADABLE_FILE)
 from workspace.safe_paths import UnsafePathError, validate_input_file
 from workspace.store import (DAMAGED_REFUSAL, DamagedContent, KeyMissing, Store, StoreError,
                              default_root, mark_compaction_owed, quick_check_file)
@@ -320,7 +324,7 @@ class Settings:
                 # A copy, so a write that fails next still leaves it in place.
                 import shutil
                 try:
-                    shutil.copyfile(self.path, self.path.with_name("settings.unreadable.json"))
+                    shutil.copyfile(self.path, self.path.with_name(SETTINGS_UNREADABLE_FILE))
                 except OSError:
                     pass
             # Written in full or not at all: flushed to disk before the swap,
@@ -366,8 +370,9 @@ class Workspace:
         import, scan, recording and the start-up upkeep waits.
         opener: tests and the UI check tools only; called with the assistant's
         address instead of asking Windows to open it (copy_and_open_assistant).
-        audit_mirror: tests only; receives the audit log's Event Log copies
-        instead of Windows (#111 C5).
+        audit_mirror: tests and the packaged checks only; receives the audit
+        log's Event Log copies instead of Windows (#111 C5). The packaged
+        checks pass one that drops them (review of #335).
         instance_lock: the app's own start (#111 B5): hold the workspace lock
         (workspace/instance.py) for this Workspace's life, so another Windows
         session of the same user cannot open the workspace at the same time.
@@ -386,7 +391,7 @@ class Workspace:
         # The lid (#172): a "Do nothing" left by a crash or power cut is put
         # back first of all, before anything that could fail (the database
         # may be damaged by the same power cut). It never stops the start.
-        self.lid = lid_switch or power.LidSwitch(self.root / "power_restore.json")
+        self.lid = lid_switch or power.LidSwitch(self.root / power.RESTORE_FILE)
         try:
             self.lid.restore()
         except Exception:
@@ -394,14 +399,14 @@ class Workspace:
         self.media = self.root / "media"
         # Content-free diagnostics (R9): workspace\logs. The app's start
         # (__main__) installs it as the process's log; tests read it directly.
-        self.log = diag.Log(self.root / "logs", "app")
+        self.log = diag.Log(self.root / LOGS_FOLDER, "app")
         self._integrity = {"state": None, "code": None}
         self._check_database(check_integrity)
         held = self._integrity["state"] == "failed"
         self._integrity_ok = threading.Event()      # set: work may start
         # A damaged database opens without marking interrupted work, and the
         # start-up upkeep below waits too: on damaged pages it could delete.
-        self.store = Store(self.root / "workspace.db", housekeeping=not held,
+        self.store = Store(self.root / DB_FILE, housekeeping=not held,
                            protector=protector, on_unavailable=on_unavailable)
         self.store.log = self.log         # damaged values are recorded here (content-free)
         # Locked (#111 C4a): the key cannot be used, so nothing can be opened
@@ -413,7 +418,7 @@ class Workspace:
         if not held and self.locked is None:
             self._integrity_ok.set()
         self.audit = self._open_audit(audit_mirror)
-        self.settings = Settings(self.root / "settings.json",
+        self.settings = Settings(self.root / SETTINGS_FILE,
                                  allow_test_engines=allow_test_engines)
         # Handoff templates are built at their first use, not here (#111 C2c):
         # nothing is read, converted or logged while the key is unavailable.
@@ -522,8 +527,14 @@ class Workspace:
         handled, each written after its action has committed, and never
         blocking it. Only the workspace in its own place with the app's key
         protector copies records to the Windows Event Log: a workspace opened
-        elsewhere (tests and the check tools) keeps its file only, so test
-        runs add nothing under the app's source. A record that breaks its
+        elsewhere (tests, and check tools that name their own folder) keeps
+        its file only, so test runs add nothing under the app's source. The
+        packaged checks (tools/packaged_check.py, tools/packaged_crash_check.py)
+        redirect LOCALAPPDATA, so their throwaway workspace is in its own
+        place: they pass an audit_mirror that drops the copies instead. The
+        idle window of tools/packaged_check.py starts as the app does and
+        still writes its entries (the owner's decision, 26 Oct 2026, #418).
+        A record that breaks its
         rules is refused, counted and logged by type; it never raises, in
         tests too (their fakes need not use the app's ids), so the app tests
         check that nothing was refused. Opened once Workspace.locked is
@@ -534,7 +545,7 @@ class Workspace:
         if mirror is None and real and os.name == "nt" \
                 and under_workspace_root(self.store.path):
             mirror = audit.EventLogMirror()
-        log = audit.AuditLog(self.root / "audit", mirror=mirror, log=self.log,
+        log = audit.AuditLog(self.root / AUDIT_FOLDER, mirror=mirror, log=self.log,
                              new_workspace=self.store.new_root)
         if self.locked is not None:
             # A locked start (#111 C4a): Workspace.locked's reason and Windows
@@ -560,7 +571,7 @@ class Workspace:
         folder scan and receipt purge waits until the user chooses Continue
         anyway (the user's choices, 17 Oct 2026, #132). The hold is in memory
         only, so it adds no write to the damaged database."""
-        db = self.root / "workspace.db"
+        db = self.root / DB_FILE
         last = diag.integrity_state(self.log.folder)
         failed_before = bool(last and last["result"] == "failed")
         skipped_before = bool(last and last["result"] == "skipped")
@@ -3137,7 +3148,7 @@ class Workspace:
                 # again whenever either changes.
                 "update_blockers": self._display_value(
                     "blockers", lambda: [b["message"] for b in
-                                         update.blockers(self.root / "workspace.db")],
+                                         update.blockers(self.root / DB_FILE)],
                     version=(self.store.revision, _folders(self.recordings)))}
 
     def set_settings(self, changes):

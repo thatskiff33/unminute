@@ -381,7 +381,8 @@ class WorkerHandle:
         recorded in the app's log, with its native crash if it left one."""
         if self.log is None:
             return
-        crash = self.log.folder / f"{self._log_name}.crash"
+        from workspace import diag
+        crash = self.log.folder / f"{self._log_name}{diag.CRASH_SUFFIX}"
         code = self.log.collect_crash(died, crash_path=crash, process=self._log_name)
         if died:
             self.log.write("worker_exit", process=self._log_name,

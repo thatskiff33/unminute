@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from workspace import asr_engines  # noqa: E402
-from workspace import chunking, media, runner  # noqa: E402
+from workspace import chunking, diag, media, runner  # noqa: E402
 from workspace.store import Store  # noqa: E402
 
 
@@ -40,7 +40,7 @@ def peak_gb():
 
 
 def transcribe(root, src, engine, crash_at=None):
-    store = Store(root / "workspace.db")
+    store = Store(root / diag.DB_FILE)
     mid, sid = media.import_recording(store, root / "media", src, "Check")
     reader = media.open_audio(store, root / "media", mid)
     plan = chunking.plan_chunks(reader, len(reader))
@@ -68,7 +68,7 @@ def transcribe(root, src, engine, crash_at=None):
             print(f"  crashed before committing chunk {crash_at}: "
                   f"{states.count('done')} done, {states.count('pending')} pending")
             store.close()
-            store = Store(root / "workspace.db")         # restart
+            store = Store(root / diag.DB_FILE)         # restart
         result = runner.run_version(store, mid, vid, reader, engine)
         text = [r["text"] for r in store.transcript(vid)]
         return result, text, len(plan), calls["n"]

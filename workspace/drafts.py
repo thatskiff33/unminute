@@ -932,7 +932,8 @@ class DraftSession:
             # main worker is.
             proc.join(self._end_wait())
             if self.log is not None:
-                crash = self.log.folder / f"{LOG_NAME}.crash"
+                from workspace import diag
+                crash = self.log.folder / f"{LOG_NAME}{diag.CRASH_SUFFIX}"
                 code = self.log.collect_crash(died, crash_path=crash, process=LOG_NAME)
                 if died:
                     self.log.write("worker_exit", process=LOG_NAME, exitcode=proc.exitcode,

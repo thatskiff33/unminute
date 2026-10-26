@@ -38,7 +38,7 @@ import time
 import uuid
 from pathlib import Path
 
-from workspace import diag, update
+from workspace import diag, instance, update
 
 OK, FAILED, ACCOUNT, RUNNING, OTHERS_LEFT, BLOCKED, REFUSED = 0, 1, 2, 3, 4, 5, 6
 TOKENS = ("Unminute/HuggingFaceToken",)              # credentials.TARGET (K1)
@@ -189,10 +189,17 @@ def _others(where):
         return None
 
 
+def _lid_file():
+    """The lid's restore record's name (power.RESTORE_FILE; power is imported
+    where it is used)."""
+    from workspace import power
+    return power.RESTORE_FILE
+
+
 def _blockers(ws):
     """{kind: count} of what the update gate counts (B8-1). A database that
     cannot be read blocks as unreadable: never treated as empty."""
-    db = ws / "workspace.db"
+    db = ws / diag.DB_FILE
     if update.current_schema(db) is update.UNREADABLE:
         return {"unreadable": 1}
     try:
@@ -210,7 +217,7 @@ def _blockers(ws):
     return found
 
 
-LOCK = "instance.lock"           # B5's workspace lock (#111 B5-10, instance.NAME): its first byte
+LOCK = instance.NAME             # B5's workspace lock (#111 B5-10): its first byte
 
 
 def _try_lock(fd):
@@ -262,7 +269,7 @@ def _running(ws, session_running, holding=False):
     held). holding: this run holds the lock itself, so it is not probed."""
     if session_running():
         return True
-    marker = ws / "logs" / "app.running"
+    marker = ws / diag.LOGS_FOLDER / f"app{diag.RUNNING_SUFFIX}"
     if marker.exists() and diag.run_owner_alive(marker):
         return True
     return not holding and _lock_held(ws)
@@ -276,7 +283,7 @@ def assess(where, session_running, creds, tokens=TOKENS):
            "others": _others(where),
            "models_mb": 0, "models_link": is_link(where.models),
            "token": any(creds.has_token(t) for t in tokens),
-           "lid_record": os.path.lexists(ws / "power_restore.json"),
+           "lid_record": os.path.lexists(ws / _lid_file()),
            "running": False}
     if os.path.lexists(where.models) and not out["models_link"]:
         size = _size(where.models)
@@ -287,7 +294,7 @@ def assess(where, session_running, creds, tokens=TOKENS):
     out["running"] = _running(ws, session_running)
     found = _blockers(ws)
     out["blockers"] = found
-    keys = diag.keys_state(ws / "logs")
+    keys = diag.keys_state(ws / diag.LOGS_FOLDER)
     if found:
         out["workspace"] = "blocked"
     elif keys and keys["result"] == "locked":
@@ -314,7 +321,7 @@ def _record(ws, mirror, facts):
     copy still being reported when close stopped waiting, or one owed)
     means the copy is not known to have been made."""
     from workspace import audit
-    log = audit.AuditLog(ws / "audit", mirror=mirror)
+    log = audit.AuditLog(ws / diag.AUDIT_FOLDER, mirror=mirror)
     written = log.record("offboarded", **facts)
     gap = log.close()
     return written and (mirror is None or (not gap and log.stats["unmirrored"] == 0
@@ -368,7 +375,7 @@ def _prepare(where, facts, session_running, mirror, lid):
     deleted; otherwise the result to return."""
     ws = where.workspace
     running = lambda: _running(ws, session_running, holding=True)  # noqa: E731
-    state = lid(ws / "power_restore.json", running)
+    state = lid(ws / _lid_file(), running)
     if state == "running":
         return {"result": "running", **facts, "running": True}, RUNNING
     if state not in ("none", "restored", "damaged"):   # damaged: nothing can put it back
@@ -390,7 +397,7 @@ def _prepare(where, facts, session_running, mirror, lid):
     found = _blockers(ws)
     if found:
         return {"result": "blocked", **facts, "workspace": "blocked", "blockers": found}, BLOCKED
-    db = ws / "workspace.db"
+    db = ws / diag.DB_FILE
     if os.path.lexists(db):
         from workspace import store
         try:

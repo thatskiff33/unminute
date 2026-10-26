@@ -216,7 +216,8 @@ def _migrates(found, record, role):
 def _logs(workspace_db):
     """The workspace's logs folder, or None when the location is refused."""
     try:
-        return _db(workspace_db).parent / "logs"
+        from workspace.diag import LOGS_FOLDER
+        return _db(workspace_db).parent / LOGS_FOLDER
     except Exception:
         return None
 
@@ -339,8 +340,9 @@ class Checked:
 def _db(workspace_db):
     if workspace_db is not None:
         return Path(workspace_db)
+    from workspace.diag import DB_FILE
     from workspace.store import default_root
-    return default_root() / "workspace.db"
+    return default_root() / DB_FILE
 
 
 def _workspace(record, workspace_db):

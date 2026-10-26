@@ -25,10 +25,15 @@ import re
 
 from workspace import vault
 
-# Phase C (#111) ships as one release. C7 sets this True when every Phase C slice
-# has merged (the owner's decision, 21 Oct 2026; it was C4b).
-PHASE_C_COMPLETE = False
-# VERSION when C2b-2 merged; no release can be prepared until PHASE_C_COMPLETE.
+# Phase C (#111) ships as one release. C7 set this True, as the last Phase C slice
+# to merge (the owner's decision, 21 Oct 2026; it was C4b). It lets
+# tools/changelog.py prepare a release again and lifts tests/test_consistency.py's
+# pin of VERSION to PHASE_C_FROZEN_VERSION, so a release-prep written by hand no
+# longer fails CI. Nothing reads it at run time, so the app behaves the same. It is
+# not release approval: the next release still needs the owner's explicit
+# decision at that time.
+PHASE_C_COMPLETE = True
+# VERSION when C2b-2 merged; no release could be prepared until PHASE_C_COMPLETE.
 PHASE_C_FROZEN_VERSION = "0.5.0-preview.3"
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")

@@ -165,6 +165,7 @@ def report(kind, sha=SHA, **change):
         ev["run"] = dict(evidence.PERF_RELEASE, quick=False)
         body["machine"] = dict(MACHINE)
         body["each_run"] = json.loads(json.dumps(EACH_RUN))
+        body["store"] = dict(STORE)
     ev.update(change)
     return body
 
@@ -193,6 +194,9 @@ def drawn():
     """A visible state's figures in one run, shown drawn (#292)."""
     return {"cpu_percent_of_one_core": 1.0, "drawing": {"drawn": True, "problems": []}}
 
+
+# The sealed store's figures, as perf_check's store step records them (#111 C7).
+STORE = {name: 0.01 for name in evidence.PERF_STORE_FIGURES}
 
 # Every window measured in a visible state, drawn, as perf_check records it.
 EACH_RUN = [{state: drawn() for state in evidence.PERF_VISIBLE_STATES}
@@ -547,6 +551,38 @@ def perf_with(machine=None, drop=()):
         body["machine"] = {k: v for k, v in dict(MACHINE, **(machine or {})).items()
                            if k not in drop}
     return body
+
+
+class StoreEvidenceTests(TempDir):
+    """#111 C7: a release's performance evidence measures the sealed store
+    (the C2b-2 design's section 4.8 figures), with no budget yet."""
+
+    write, complete = CheckTests.write, CheckTests.complete
+
+    def test_a_report_without_the_store_step_fails(self):
+        body = report("perf")
+        del body["store"]
+        problems = evidence.check(SHA, self.complete(perf=body))
+        self.assertEqual(1, len(problems), problems)
+        self.assertIn("does not measure the sealed store", problems[0])
+
+    def test_every_store_figure_is_needed(self):
+        for name in evidence.PERF_STORE_FIGURES:
+            for bad in (None, "0.5", True):
+                with self.subTest(figure=name, value=bad):
+                    body = report("perf")
+                    body["store"][name] = bad
+                    problems = evidence.check(SHA, self.complete(perf=body))
+                    self.assertEqual(1, len(problems), problems)
+                    self.assertIn(name, problems[0])
+
+    def test_the_figures_have_no_budget_yet(self):
+        # Measured, not gated, until the first Phase C release run's medians
+        # set them (docs/RELEASE_STANDARD.md; owner decision, 21 Oct 2026).
+        budgets = json.loads((ROOT / "docs" / "perf-budgets.json").read_text(encoding="utf-8"))
+        self.assertNotIn("store", budgets["budgets"])
+        self.assertNotIn("workspace_s", budgets["budgets"].get("startup", {}))
+        self.assertIn("store", budgets["_budget_notes"])
 
 
 class MachineEvidenceTests(TempDir):
@@ -1291,7 +1327,8 @@ class ToolTests(TempDir):
         for tool in ("packaged_check.py", "packaged_crash_check.py", "perf_check.py"):
             with self.subTest(tool=tool):
                 self.assertIn(flags, self.source(tool))
-        self.assertEqual(3, self.source("packaged_crash_check.py").count('["py"], *FLAGS,'))
+        # Child, inspect, the token step and the audio windows (#111 C7).
+        self.assertEqual(4, self.source("packaged_crash_check.py").count('["py"], *FLAGS,'))
 
     def test_helper_modules_cannot_shadow_the_standard_library_or_the_app(self):
         # tools/ and tests/ go on the import path after the standard library
@@ -1425,14 +1462,43 @@ class ToolTests(TempDir):
 
 @unittest.skipUnless(os.name == "nt", "the checks import Windows-only modules")
 class PackagedCheckTests(TempDir):
-    # The figures of the B2b release build's run (#185), less the paths.
+    # The figures of the B2b release build's run (#185), less the paths, with
+    # what #111 C7 adds (synthetic values in the shape the tool writes).
+    ERASED = {"audio_key": "missing", "text_key": "opens", "media_folder_gone": True}
     GOOD = {"self_test": "PASS",
             "lifecycle": {"meetings_imported": 1, "transcribed_s": 1075, "worker_peak_mb": 2463,
-                          "speakers": "done", "passages": 372, "meetings_left": 0,
-                          "receipts": ["audio removed", "transcript removed"],
-                          "blocked_network_attempts": 0},
-            "residual": {"files_after_cleanup": ["settings.json", "workspace.db"],
-                         "marker_found_in": [], "unreadable": [], "content_backups": []},
+                          "speakers": "done", "passages": 372, "speaker_named": True,
+                          "windows": 8, "audio_key": "opens", "blocked_network_attempts": 0},
+            "control": {"patterns": 10, "missed": [], "after_cleanup_missed": []},
+            "at_rest": {"windows": 8, "found": {}, "unreadable": [], "files_scanned": 9,
+                        "audit_files": 1, "verify_audit": "ok"},
+            "recording": {"consent": "asked and recorded", "recording_windows": 8,
+                          "key_while_recording": "opens", "stopped": True, "imported": 1,
+                          "key_after_import": "missing", "key_before_discard": "opens",
+                          "discarded": True,
+                          "key_after_discard": "missing", "recordings_waiting": 0,
+                          "other_questions": [],
+                          "during": {"seconds": 8.1, "windows": 8, "control_missed": [],
+                                     "found": {}, "unreadable": [], "chunks_scanned": 1}},
+            "cleanup": {"meetings": 2, "after_audio_cleanup": [ERASED, ERASED],
+                        "meetings_left": 0,
+                        "receipts": ["audio removed", "audio removed", "transcript removed",
+                                     "transcript removed"],
+                        "blocked_network_attempts": 0, "wal_bytes": 0, "blockers": [],
+                        "freelist_pages": 0, "meetings_in_store": 0},
+            "residual": {"files_after_cleanup": ["Unminute/workspace/settings.json",
+                                                 "Unminute/workspace/workspace.db"],
+                         "found": {}, "unreadable": [], "unexpected_files": [],
+                         "logs_scanned": ["Unminute/workspace/logs/app.log"],
+                         "temp_files_left": [],
+                         "redirected_files_left": {"TEMP": [], "APPDATA": [],
+                                                   "USERPROFILE": []},
+                         "left_unexplained": [],
+                         "outside_new": {"model_cache": ["whisper/.verified/small-ab.json"],
+                                         "LocalLow": []},
+                         "outside_unexplained": [], "outside_unreadable": [],
+                         "content_backups": []},
+            "dumps": {"dumps": 0, "crash_files": 0},
             "idle_window": {"window_running": True, "processes": 7,
                             "cpu_percent_of_one_core": 1.5, "working_set_mb": 484}}
 
@@ -1452,28 +1518,112 @@ class PackagedCheckTests(TempDir):
     def test_a_good_run_passes(self):
         self.assertEqual([], self.tool.verdict(self.GOOD))
 
+    def test_only_finished_microphone_chunks_count_as_scanned(self):
+        scanned = ["Unminute/workspace/recordings/r1/chunk-000001.uma",
+                   "Unminute/workspace/recordings/r1/chunk-000002.uma",
+                   "Unminute/workspace/recordings/r1/chunk-000003.uma.tmp",   # still filling
+                   "Unminute/workspace/recordings/r1/sys-000001.uma",   # the computer's track
+                   "Unminute/workspace/recordings/r1/journal.json",
+                   "Unminute/workspace/media/abc/audio.uma",
+                   "temp/x.bin"]
+        self.assertEqual(2, self.tool.chunks_scanned(scanned))
+        self.assertEqual(0, self.tool.chunks_scanned(scanned[2:]))
+
     def test_each_criterion_fails_on_its_own(self):
+        during = dict(self.GOOD["recording"]["during"])
+        erased = self.ERASED
         cases = {
-            "no error": self.changed(None, error="RuntimeError: x"),
-            "self-test passed": self.changed(None, self_test="FAIL"),
-            "transcribed with speakers": self.changed("lifecycle", speakers="failed"),
-            "cleaned up, with both receipts": self.changed("lifecycle",
-                                                           receipts=["audio removed"]),
-            "no network attempts by the app process": self.changed(
-                "lifecycle", blocked_network_attempts=1),
-            "no content left behind": self.changed("residual", marker_found_in=["workspace.db"]),
+            "no error": [self.changed(None, error="RuntimeError: x")],
+            "self-test passed": [self.changed(None, self_test="FAIL")],
+            "transcribed with speakers": [self.changed("lifecycle", speakers="failed")],
+            "cleaned up, with both receipts": [
+                self.changed("cleanup", receipts=["audio removed", "transcript removed"]),
+                self.changed("cleanup", meetings_left=1)],
+            "no network attempts by the app process": [
+                self.changed("lifecycle", blocked_network_attempts=1),
+                self.changed("cleanup", blocked_network_attempts=1)],
+            # #111 C7: each fails the report on its own.
+            "scanner control found every pattern": [
+                self.changed("control", missed=["marker"]),
+                self.changed("control", after_cleanup_missed=["window_3"]),
+                self.changed("control", patterns=0)],
+            "nothing readable at rest": [
+                self.changed("at_rest", found={"marker": ["Unminute/workspace/workspace.db"]}),
+                self.changed("at_rest", found={"window_2": ["Unminute/workspace/x"]}),
+                self.changed("at_rest", unreadable=["Unminute/workspace/workspace.db"]),
+                self.changed("at_rest", windows=0),
+                self.changed("lifecycle", speaker_named=False),
+                self.changed("lifecycle", audio_key="missing")],
+            "audit log verified, no content in it": [
+                self.changed("at_rest", verify_audit="broken"),
+                self.changed("at_rest", audit_files=0)],
+            "recording encrypted while it records": [
+                self.changed("recording", during=dict(during, found={"window_1": ["x"]})),
+                self.changed("recording", during=dict(during, control_missed=["window_1"])),
+                # Nothing found means something only if a chunk was scanned.
+                self.changed("recording", during=dict(during, chunks_scanned=0)),
+                self.changed("recording", during=None)],
+            "recording confirmed, then its key erased": [
+                self.changed("recording", key_after_import="opens"),
+                self.changed("recording", key_after_discard="opens"),
+                # "missing" means something only if the same id opened first.
+                self.changed("recording", key_before_discard="missing"),
+                self.changed("recording", key_before_discard=None),
+                self.changed("recording", key_while_recording="missing"),
+                self.changed("recording", recordings_waiting=1),
+                self.changed("recording", consent=None),
+                self.changed("recording", other_questions=["Delete this meeting?"]),
+                self.changed("recording", error="the recording did not start")],
+            "audio key erased, text key kept": [
+                self.changed("cleanup", after_audio_cleanup=[erased,
+                                                             dict(erased, audio_key="opens")]),
+                self.changed("cleanup", after_audio_cleanup=[erased,
+                                                             dict(erased, text_key="missing")]),
+                self.changed("cleanup", after_audio_cleanup=[
+                    erased, dict(erased, media_folder_gone=False)]),
+                self.changed("cleanup", after_audio_cleanup=[erased])],
+            "nothing to block an update, database compacted": [
+                self.changed("cleanup", blockers=["media"]),
+                self.changed("cleanup", freelist_pages=3),
+                self.changed("cleanup", wal_bytes=4096),
+                self.changed("cleanup", meetings_in_store=1)],
+            "no content left behind": [
+                self.changed("residual", found={"marker": ["Unminute/workspace/workspace.db"]}),
+                self.changed("residual", unreadable=["Unminute/workspace/workspace.db"]),
+                self.changed("residual", content_backups=["x.bak"])],
+            "only the workspace's own files left": [
+                self.changed("residual", unexpected_files=["stray.bin"]),
+                self.changed("residual", unexpected_files=["workspace/media/"])],
+            # TEMP leftovers are named and fail unless explained (review of #335).
+            "nothing left in TEMP, APPDATA or the user folder": [
+                self.changed("residual", left_unexplained=["TEMP/tmpab12.wav"]),
+                self.changed("residual", left_unexplained=["USERPROFILE/.cache/x.bin"]),
+                self.changed("residual", temp_files_left=3),
+                self.changed("residual", redirected_files_left=None)],
+            # The real LocalLow and model cache, by name (the owner's decision,
+            # 26 Oct 2026).
+            "nothing new outside the base unexplained": [
+                self.changed("residual", outside_unexplained=["LocalLow/SomeApp/x.dat"]),
+                self.changed("residual", outside_unreadable=["model_cache/gpu/"]),
+                self.changed("residual", outside_new=None)],
+            "logs scanned": [self.changed("residual", logs_scanned=[])],
+            "no crash dumps": [self.changed("dumps", dumps=1),
+                               self.changed("dumps", crash_files=1)],
+            "idle window measured": [self.changed("idle_window", window_running=False),
+                                     self.changed("idle_window", processes=1),
+                                     self.changed("idle_window", working_set_mb=0)],
         }
-        for name, r in cases.items():
-            with self.subTest(name):
-                self.assertEqual([name], self.tool.verdict(r))
-        for change in ({"window_running": False}, {"processes": 1}, {"working_set_mb": 0}):
-            with self.subTest(change=change):
-                self.assertEqual(["idle window measured"],
-                                 self.tool.verdict(self.changed("idle_window", **change)))
-        for change in ({"unreadable": ["workspace.db"]}, {"content_backups": ["x.bak"]}):
-            with self.subTest(change=change):
-                self.assertEqual(["no content left behind"],
-                                 self.tool.verdict(self.changed("residual", **change)))
+        for name, reports in cases.items():
+            for n, r in enumerate(reports):
+                with self.subTest(name, case=n):
+                    self.assertEqual([name], self.tool.verdict(r))
+
+    def test_a_missing_section_fails(self):
+        for section in ("control", "at_rest", "recording", "cleanup", "dumps"):
+            with self.subTest(section=section):
+                r = json.loads(json.dumps(self.GOOD))
+                del r[section]
+                self.assertTrue(self.tool.verdict(r))
 
     def test_a_lifecycle_error_fails(self):
         r = self.changed(None, lifecycle={"error": "lifecycle script exceeded 7,200 s"})
@@ -1485,7 +1635,7 @@ class PackagedCheckTests(TempDir):
         out = self.root / "report.json"
         calls = []
 
-        def check(version_dir, cache, wav, report, *rest):
+        def check(version_dir, cache, wav, report, *rest, **kw):
             calls.append(version_dir)
             report.update(json.loads(json.dumps(filled)))
         argv = ["tool.py", str(folder), "cache", "x.wav", str(out), *extra]
@@ -1518,7 +1668,7 @@ class PackagedCheckTests(TempDir):
                 self.assertEqual((1, False, False), (code, saved["evidence"]["check_passed"],
                                                      saved["evidence"]["pass"]))
 
-                def plant(version_dir, cache, wav, report, *rest, filled=good):
+                def plant(version_dir, cache, wav, report, *rest, filled=good, **kw):
                     report.update(json.loads(json.dumps(filled)))
                     (Path(version_dir) / "app" / "planted.py").write_bytes(b"")
                 out = self.root / "planted.json"
@@ -1548,6 +1698,58 @@ class PackagedCheckTests(TempDir):
                         tool.main()
                     check.assert_not_called()
 
+    def test_a_report_that_would_carry_the_user_name_fails_naming_only_where(self):
+        # Synthetic name (review of 387f8d3). A library that names a folder
+        # after the user (torch's torchinductor_<user>) in the redirected
+        # TEMP, explained by an entry added under the owner's decision (b),
+        # and a model record named after the user, explained too: the run
+        # would pass, and the published report would carry the name.
+        import packaged_crash_check as crash
+        import residue
+        name = "Tāne.Example"
+        env = {"USERNAME": name, "USERPROFILE": "C:\\Users\\" + name}
+        places = {p: self.root / "redirected" / p for p in ("TEMP", "APPDATA", "USERPROFILE")}
+        for folder in places.values():
+            folder.mkdir(parents=True)
+        (places["TEMP"] / f"torchinductor_{name}").mkdir()
+        (places["TEMP"] / f"torchinductor_{name}" / "x.py").write_bytes(b"")
+        entry = (r"torchinductor_[^/]+/.+", "a compiler cache (a synthetic entry)")
+        with mock.patch.dict(residue.EXPLAINED, {"TEMP": (entry,)}):
+            left = residue.left_in(places, self.root)
+        record = f"whisper/.verified/small-{name}.json"
+        self.assertEqual(([], []), (left["unexplained"],
+                                    residue.unexplained({"model_cache": [record]})))
+        good = json.loads(json.dumps(self.GOOD))
+        good["residual"].update(temp_files_left=left["files"]["TEMP"],
+                                redirected_files_left=left["files"],
+                                left_explained=left["explained"])
+        good["residual"]["outside_new"]["model_cache"].append(record)
+        self.assertEqual([], self.tool.verdict(good))
+        crashed = {"pass": True, "failed": [],
+                   "review_cleanup_crash": {"landing_residue": {
+                       "temp_files": left["files"]["TEMP"], "left_unexplained": [],
+                       "left_explained": left["explained"]}},
+                   "outside": {"new": {"model_cache": [record], "LocalLow": []},
+                               "unexplained": [], "unreadable": []}}
+        for tool, filled, where in (
+                (self.tool, good, [["residual", "redirected_files_left", "TEMP", 0],
+                                   ["residual", "temp_files_left", 0],
+                                   ["residual", "outside_new", "model_cache", 1]]),
+                (crash, crashed, [["outside", "new", "model_cache", 0],
+                                  ["review_cleanup_crash", "landing_residue", "temp_files",
+                                   0]])):
+            with self.subTest(tool=tool.__name__), mock.patch.dict(os.environ, env):
+                code, saved, _ = self.run_main(tool, filled)
+                text = (self.root / "report.json").read_text(encoding="utf-8")
+                self.assertEqual(1, code)
+                self.assertEqual((False, ["report would carry the Windows user name"]),
+                                 (saved["pass"], saved["failed"]))
+                self.assertEqual(sorted(where), sorted(saved["user_name_at"]))
+                # Where, never what: no file name and no form of the user name.
+                self.assertNotIn("torchinductor", text)
+                self.assertNotIn("whisper", text)
+                self.assertEqual([], residue.user_name_at(json.loads(text), env))
+
     def test_the_crash_check_passes_only_on_its_verdict(self):
         import packaged_crash_check as crash
         code, saved, _ = self.run_main(crash, {"pass": True, "failed": []})
@@ -1569,6 +1771,331 @@ class PackagedCheckTests(TempDir):
         saved = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual((False, ["the check stopped (RuntimeError)"]),
                          (saved["pass"], saved["failed"]))
+
+
+def crash_state(**change):
+    """One inspect() of a crash profile (synthetic values in its shape)."""
+    state = {"meetings": 1, "phases": ["done"], "errors": [], "chunks": {"done": 4},
+             "segments": 40, "duplicate_segments": 0, "attempts": {"done": 4},
+             "speaker_runs": ["done"], "speaker_turns": 20, "edits": 0, "cleanup_jobs": [],
+             "active_holds": 0, "receipts": [], "audio_files": 1, "freelist_pages": 0,
+             "text_sha256": "f" * 64, "marker_in_edits": False, "wal_bytes": 0,
+             "audio_key": "opens", "audio_removed": False, "blockers": ["meetings", "media"]}
+    state.update(change)
+    return state
+
+
+@unittest.skipUnless(os.name == "nt", "the checks import Windows-only modules")
+class CrashVerdictTests(unittest.TestCase):
+    """tools/packaged_crash_check.py's verdict, with what #111 C7 adds: kills
+    placed by what the parent sees (an encrypted import, two landings around
+    audio cleanup, a recording), the file list and positive control after final
+    cleanup, and crash dumps."""
+
+    KILL = {"result": 1, "killed": True}
+    GONE = crash_state(meetings=0, segments=0, edits=0, audio_files=0, blockers=[],
+                       audio_key=None, audio_removed=None,
+                       receipts=["audio removed", "transcript removed"])
+    REVIEWED = crash_state(audio_files=0, marker_in_edits=True, audio_key="missing",
+                           audio_removed=True, receipts=["audio removed"],
+                           blockers=["meetings"])
+    CLEAN = {"files": ["crash/Unminute/workspace/workspace.db"], "found": {},
+             "unreadable": [], "control_missed": [], "unexpected_files": [],
+             "temp_files": [], "left_unexplained": [], "logs_scanned": 2}
+
+    def good(self):
+        k, clean = self.KILL, self.CLEAN
+        return json.loads(json.dumps({
+            "reference": crash_state(),
+            "processing_crashes": {"kills": [k, k, k], "state": crash_state(
+                attempts={"done": 4, "interrupted": 2}, speaker_runs=["failed", "done"]),
+                "same_text_as_reference": True, "same_segment_count": True},
+            "review_cleanup_crash": {"kill": k, "state": self.REVIEWED, "landings": [
+                {"after_s": 0, "kill": k, "landed": "before", "state": self.REVIEWED},
+                {"after_s": 0.05, "kill": k, "landed": "after", "state": self.REVIEWED}],
+                "landing_residue": {"control_missed": [], "found": {}, "unreadable": [],
+                                    "temp_files": [], "left_unexplained": []}},
+            "final_cleanup_crash": {"kill": k, "state": self.GONE, "residue": clean},
+            "hold_race": {"crash": k, "after_restart": crash_state(active_holds=1),
+                          "release": {"result": [], "killed": False},
+                          "after_release": crash_state(cleanup_jobs=[
+                              {"phase": "audio", "state": "awaiting_confirmation",
+                               "error": None}]),
+                          "confirm": {"result": 1, "killed": False},
+                          "after_confirm": crash_state(audio_files=0),
+                          "after_final": self.GONE, "residue": clean},
+            "import_crash": {"partial_seen": True, "partial_bytes": 786704, "killed": True,
+                             "state": crash_state(meetings=0, audio_files=0, blockers=[],
+                                                  audio_key=None, audio_removed=None),
+                             "windows": 8, "control_missed": [], "found": {},
+                             "unreadable": [], "partial_left": 0, "unexpected_files": [],
+                             "temp_files": [], "left_unexplained": []},
+            "recording_crash": {"seconds_at_kill": 12.3, "killed": True,
+                                "kept": {"recovered": True, "seconds": 10.0, "imported": 1,
+                                         "key_before_keep": "opens",
+                                         "key_after_import": "missing"},
+                                "state": crash_state(), "windows": 8, "control_missed": [],
+                                "found": {}, "unreadable": [], "temp_files": [],
+                                "left_unexplained": [], "partial_chunks_left": 0},
+            "token_removal": {"saved": True, "present_after_removal": False,
+                              "loaded_after_removal": False},
+            "clipboard_sequence_unchanged": True,
+            "outside": {"new": {"model_cache": [], "LocalLow": []}, "unexplained": [],
+                        "unreadable": []},
+            "dumps": {"dumps": 0, "crash_files": 6}}))
+
+    def setUp(self):
+        import packaged_crash_check
+        self.tool = packaged_crash_check
+
+    def test_a_good_run_passes_and_expected_crash_files_do_not_fail_it(self):
+        self.assertEqual([], self.tool.verdict(self.good()))
+
+    def test_each_new_criterion_fails_on_its_own(self):
+        def with_(path, value):
+            r = self.good()
+            *keys, last = path
+            node = r
+            for key in keys:
+                node = node[key]
+            node[last] = value
+            return r
+        landing = ("review_cleanup_crash", "landings", 1)
+        cases = {
+            "every cleanup landing consistent, then finished": [
+                with_((*landing, "landed"), "inconsistent"),
+                with_((*landing, "state", "receipts"), ["audio removed", "audio removed"]),
+                with_((*landing, "state", "audio_key"), "opens")],
+            "only the workspace's own files after final cleanup": [
+                with_(("final_cleanup_crash", "residue", "unexpected_files"), ["stray.bin"]),
+                with_(("hold_race", "residue", "control_missed"), ["marker"]),
+                with_(("hold_race", "residue", "logs_scanned"), 0)],
+            "nothing left after final cleanup crash": [
+                with_(("final_cleanup_crash", "residue", "found"),
+                      {"window_1": ["crash/Unminute/workspace/workspace.db"]}),
+                with_(("final_cleanup_crash", "state", "blockers"), ["media"])],
+            "interrupted import discarded, nothing of it left": [
+                with_(("import_crash", "partial_seen"), False),
+                # Killed before the scan windows were all written: proves nothing.
+                with_(("import_crash", "partial_bytes"), 80),
+                with_(("import_crash", "partial_bytes"), None),
+                with_(("import_crash", "state", "meetings"), 1),
+                with_(("import_crash", "state", "blockers"), ["media"]),
+                with_(("import_crash", "found"), {"window_4": ["import/Unminute/x"]}),
+                with_(("import_crash", "control_missed"), ["window_4"]),
+                # Shown directly, not from the app's own folder removal.
+                with_(("import_crash", "partial_left"), 1),
+                with_(("import_crash", "partial_left"), None),
+                with_(("import_crash", "unexpected_files"), ["workspace/media/x/a.uma"])],
+            "nothing left in TEMP, APPDATA or the user folder": [
+                with_(("final_cleanup_crash", "residue", "left_unexplained"),
+                      ["TEMP/tmp1.bin"]),
+                with_(("hold_race", "residue", "left_unexplained"), ["APPDATA/x"]),
+                with_(("hold_race", "residue", "temp_files"), None),
+                with_(("import_crash", "left_unexplained"), ["TEMP/tmp2.bin"]),
+                # The landing and recording profiles too (review of #335).
+                with_(("review_cleanup_crash", "landing_residue", "left_unexplained"),
+                      ["TEMP/tmp3.bin"]),
+                with_(("recording_crash", "left_unexplained"), ["USERPROFILE/x.bin"]),
+                with_(("recording_crash", "temp_files"), None)],
+            "nothing plain in the landing profile": [
+                with_(("review_cleanup_crash", "landing_residue", "found"),
+                      {"marker": ["landing/Unminute/workspace/x"]}),
+                with_(("review_cleanup_crash", "landing_residue", "control_missed"),
+                      ["window_2"]),
+                with_(("review_cleanup_crash", "landing_residue", "unreadable"),
+                      ["landing/home/locked/"])],
+            "nothing new outside the base unexplained": [
+                with_(("outside", "unexplained"), ["LocalLow/SomeApp/x.dat"]),
+                with_(("outside", "unreadable"), ["model_cache/gpu/"]),
+                with_(("outside", "new"), None)],
+            "recording kept after a crash, nothing plain left": [
+                with_(("recording_crash", "kept", "recovered"), False),
+                with_(("recording_crash", "kept", "seconds"), 2.0),
+                with_(("recording_crash", "kept", "key_after_import"), "opens"),
+                # "missing" means something only if the key opened before Keep.
+                with_(("recording_crash", "kept", "key_before_keep"), "missing"),
+                with_(("recording_crash", "state", "blockers"), ["meetings", "recordings"]),
+                with_(("recording_crash", "found"), {"window_1": ["recording/Unminute/x"]}),
+                with_(("recording_crash", "partial_chunks_left"), 1)],
+            "no crash dumps": [with_(("dumps", "dumps"), 1)],
+        }
+        for name, reports in cases.items():
+            for n, r in enumerate(reports):
+                with self.subTest(name, case=n):
+                    self.assertEqual([name], self.tool.verdict(r))
+        r = with_(("import_crash", "killed"), False)
+        self.assertEqual(["every kill landed on a live process"], self.tool.verdict(r))
+        # A landing that never happened fails both.
+        r = with_(("review_cleanup_crash", "landings"),
+                  self.good()["review_cleanup_crash"]["landings"][:1])
+        self.assertEqual(["every kill landed on a live process",
+                          "every cleanup landing consistent, then finished"],
+                         self.tool.verdict(r))
+
+    def test_the_recording_chunks_counted_are_the_recordings_folder_s_only(self):
+        source = Path(self.tool.__file__).read_text(encoding="utf-8")
+        self.assertIn('"Unminute" / "workspace" / RECORDINGS', source)
+        self.assertNotIn('"profile"].rglob("*.tmp")', source)
+
+    def test_the_import_kill_waits_until_every_scan_window_is_written(self):
+        # The kill size follows the encrypted audio's layout, and the blocks
+        # it waits for cover the seconds the scan windows come from.
+        from workspace import audiocrypt, media
+        t = self.tool
+        self.assertEqual(audiocrypt.DATA_START, t.AUDIO_DATA_START)
+        self.assertEqual(audiocrypt.FRAMES_PER_BLOCK * 4 + audiocrypt.TAG_BYTES,
+                         t.AUDIO_BLOCK_BYTES)                      # float32 frames
+        written_s = t.IMPORT_KILL_BLOCKS * audiocrypt.FRAMES_PER_BLOCK / media.SAMPLE_RATE
+        self.assertGreaterEqual(written_s, t.IMPORT_WINDOWS_S + 2)
+        self.assertEqual(786704, t.IMPORT_KILL_BYTES)              # as in good()
+
+    def test_watch_for_waits_for_the_size(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            (folder / "m").mkdir()
+            partial = folder / "m" / "audio.partial"
+            partial.write_bytes(b"x" * 80)
+            alive = mock.Mock(poll=mock.Mock(return_value=None))
+            with mock.patch.object(self.tool.time, "sleep"):
+                self.assertIsNone(self.tool.watch_for(folder, "audio.partial", alive, 0.2,
+                                                      1000))
+                self.assertEqual(80, self.tool.watch_for(folder, "audio.partial", alive, 5))
+                partial.write_bytes(b"x" * 1000)
+                self.assertEqual(1000, self.tool.watch_for(folder, "audio.partial", alive, 5,
+                                                           1000))
+
+    def test_a_landing_is_classified_by_the_key_and_the_audio(self):
+        landing = self.tool.landing
+        self.assertEqual("before", landing(crash_state()))
+        self.assertEqual("after", landing(crash_state(audio_key="missing",
+                                                      audio_removed=True)))
+        self.assertEqual("after", landing(crash_state(audio_key="missing", audio_removed=True,
+                                                      audio_files=1)))   # files go next
+        for bad in (crash_state(audio_key="missing"),               # key gone, audio "there"
+                    crash_state(audio_removed=True),                # key kept, audio "gone"
+                    crash_state(audio_files=0),                     # files gone, key kept
+                    crash_state(audio_key="damaged"), crash_state(audio_key=None)):
+            with self.subTest(state=bad):
+                self.assertEqual("inconsistent", landing(bad))
+
+
+class EvidenceChildrenTests(unittest.TestCase):
+    """The packaged checks' children (review of #335): the throwaway
+    workspace sits where the app's own would, so each passes an audit
+    mirror that drops the Windows Event Log copy; and error text copied
+    into a report has the base path, the home folder and the user name
+    replaced (P3)."""
+
+    def scripts(self):
+        import packaged_check
+        import packaged_crash_check
+        return {"LIFECYCLE": packaged_check.LIFECYCLE, "CHILD": packaged_crash_check.CHILD}
+
+    def test_every_workspace_a_child_opens_has_a_file_only_audit_mirror(self):
+        import ast
+        for name, source in self.scripts().items():
+            tree = ast.parse(source)
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Name) and n.func.id == "Workspace"]
+            with self.subTest(script=name):
+                self.assertTrue(calls)
+                for call in calls:
+                    mirror = {k.arg: k.value for k in call.keywords}.get("audit_mirror")
+                    self.assertIsInstance(mirror, ast.Call)
+                    self.assertEqual("FileOnlyMirror", mirror.func.id)
+
+    def test_the_file_only_mirror_reports_nothing(self):
+        import ast
+        for name, source in self.scripts().items():
+            tree = ast.parse(source)
+            node = next(n for n in tree.body
+                        if isinstance(n, ast.ClassDef) and n.name == "FileOnlyMirror")
+            space = {}
+            exec(compile(ast.Module([node], []), name, "exec"), space)
+            mirror = space["FileOnlyMirror"]()
+            with self.subTest(script=name), \
+                    mock.patch("ctypes.WinDLL", side_effect=AssertionError("Windows called"),
+                               create=True):
+                self.assertIsNone(mirror.report(1900, 4, "app_start"))
+            # An audit log with it writes its own file and gives the mirror
+            # each record, which goes nowhere.
+            from workspace import audit
+            with tempfile.TemporaryDirectory() as tmp:
+                log = audit.AuditLog(Path(tmp) / "audit", mirror=mirror, new_workspace=True)
+                log.record("app_start", schema=2, version=None)
+                log.close()
+                self.assertTrue(list((Path(tmp) / "audit").iterdir()))
+                self.assertEqual(0, log.stats["unmirrored"])
+
+    def test_error_tails_copied_into_reports_are_redacted(self):
+        import packaged_check
+        import packaged_crash_check
+        import perf_check
+        sources = {tool.__name__: Path(tool.__file__).read_text(encoding="utf-8")
+                   for tool in (packaged_check, packaged_crash_check, perf_check)}
+        # No raw tail of a child's error output goes into a report.
+        for tool, raw in (("packaged_check", "(r.stderr or r.stdout)[-2000:]}"),
+                          ("packaged_check", '+ "".join(err)[-2000:]}'),
+                          ("packaged_crash_check", '"".join(self.err)[-1500:])'),
+                          ("packaged_crash_check", '"".join(c.err)[-1500:])'),
+                          ("packaged_crash_check", '+ r.stderr[-1500:])'),
+                          ("perf_check", '{r.stderr[-800:]}")')):
+            with self.subTest(tool=tool, raw=raw):
+                self.assertNotIn(raw, sources[tool])
+        self.assertIn("residue.redact((r.stderr or r.stdout)[-2000:], base)",
+                      sources["packaged_check"])
+        self.assertIn("residue.redact(r.stderr[-800:], workdir)", sources["perf_check"])
+        # A child's result is redacted once decoded: JSON escapes a name that
+        # is not ASCII, and the escaped form would get through (review of #335).
+        self.assertIn("return residue.redact_json(result, base)", sources["packaged_check"])
+        self.assertIn('out = residue.redact_json(msg["result"], base)',
+                      sources["packaged_check"])
+        self.assertNotIn("residue.redact(r.stdout", sources["packaged_check"])
+        self.assertNotIn("residue.redact(json.dumps(", sources["packaged_check"])
+
+    def test_the_landing_scan_covers_the_landing_profile(self):
+        # Only a packaged run would show a landing scan over the wrong folder,
+        # or over none (review of 387f8d3, finding 4), so its arguments are
+        # pinned here: the landing profile (with its redirected TEMP, APPDATA
+        # and user folder, all under it: ctx()) and those redirected folders.
+        import ast
+        import packaged_crash_check
+        tree = ast.parse(Path(packaged_crash_check.__file__).read_text(encoding="utf-8"))
+        check = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and n.name == "check")
+
+        def calls(name):
+            return [n for n in ast.walk(check) if isinstance(n, ast.Call)
+                    and ast.unparse(n.func) == f"residue.{name}"]
+        self.assertIn("ctx('landing')", [ast.unparse(n.value) for n in ast.walk(check)
+                                         if isinstance(n, ast.Assign)
+                                         and ast.unparse(n.targets[0]) == "land"])
+        self.assertIn("[land['profile']]", [ast.unparse(c.args[0]) for c in calls("find")])
+        self.assertIn("land['redirected']", [ast.unparse(c.args[0]) for c in calls("left_in")])
+        ctx = next(n for n in ast.walk(check) if isinstance(n, ast.FunctionDef)
+                   and n.name == "ctx")
+        returned = next(n.value for n in ast.walk(ctx) if isinstance(n, ast.Return))
+        profile = dict(zip((ast.literal_eval(k) for k in returned.keys), returned.values,
+                           strict=True))
+        self.assertEqual("base / name", ast.unparse(profile["profile"]))
+        redirected = next(n.value for n in ast.walk(ctx) if isinstance(n, ast.Assign)
+                          and ast.unparse(n.targets[0]) == "redirected")
+        for folder in redirected.values:
+            self.assertTrue(ast.unparse(folder).startswith("base / name / "))
+
+    def test_a_child_s_failure_reaches_the_report_without_the_user_s_paths(self):
+        import packaged_crash_check
+        env = {"USERPROFILE": "C:\\Users\\Pat.Example", "USERNAME": "Pat.Example"}
+        child = packaged_crash_check.Child.__new__(packaged_crash_check.Child)
+        child.base = env["USERPROFILE"] + "\\Temp\\umcrash-ab12"
+        child.err = [f"Traceback\n  File \"{child.base}\\child.py\", line 9\n",
+                     "PermissionError: C:\\Users\\Pat.Example\\x\n"]
+        with mock.patch.dict(os.environ, env):
+            text = child.errors()
+        self.assertNotIn("pat.example", text.lower())
+        self.assertIn("<base>\\child.py", text)
 
 
 if __name__ == "__main__":

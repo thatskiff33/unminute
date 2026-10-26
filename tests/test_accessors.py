@@ -778,8 +778,25 @@ class CrashCheckInspectTests(unittest.TestCase):
             self.assertTrue(out["marker_in_edits"])
             with patch:
                 self.assertFalse(inspect(root, "not" + marker)["marker_in_edits"])
+            # #111 C7: the meeting's audio key opens (only that is said, never
+            # the key), its audio is not recorded as removed, and the meeting
+            # blocks an update; then the same after the audio key goes.
+            self.assertEqual(("opens", False, ["meetings"]),
+                             (out["audio_key"], out["audio_removed"], out["blockers"]))
             # Opening did not mark the running attempt interrupted (housekeeping off).
             self.assertEqual({"running": 1}, out["attempts"])
+            s = Store(root / "workspace.db", housekeeping=False,
+                      protector=keyprotect.TestProtector())
+            try:
+                with s.tx() as db:            # as audio cleanup does (workspace/cleanup.py)
+                    s.remove_audio_keys(db, mid)
+                    db.execute("UPDATE meetings SET audio_removed_at = 1 WHERE id = ?",
+                               (mid,))
+            finally:
+                s.close()
+            with patch:
+                out = inspect(root, marker)
+            self.assertEqual(("missing", True), (out["audio_key"], out["audio_removed"]))
             s = Store(root / "workspace.db", housekeeping=False,
                       protector=keyprotect.TestProtector())
             try:
