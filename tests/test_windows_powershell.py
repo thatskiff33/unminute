@@ -226,7 +226,8 @@ class WindowsPowerShellTests(unittest.TestCase):
         decoy.mkdir()
         (decoy / "taskkill.exe").write_bytes(b"")
         taskkill = str(win.system / "taskkill.exe")
-        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root)}
+        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root),
+               "base": self.root}
         child_process = mock.Mock(stdout=[], stderr=[], pid=4321)
         child_process.poll.return_value = None
         first, second = win.patches()
@@ -244,7 +245,8 @@ class WindowsPowerShellTests(unittest.TestCase):
 
     def test_a_missing_taskkill_stops_the_crash_check_before_its_child_starts(self):
         win = self.fake(with_taskkill=False)
-        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root)}
+        ctx = {"py": "python.exe", "script": "child.py", "env": {}, "app": str(self.root),
+               "base": self.root}
         first, second = win.patches()
         with first, second, \
                 mock.patch.object(packaged_crash_check.subprocess, "Popen") as popen, \
