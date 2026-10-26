@@ -1338,14 +1338,14 @@ class Workspace:
             self.handle.shutdown()
             session.start()
         except Exception as exc:
-            self.log.incident("drafts", exc)
-            self._draft_why = "failed"
-            self._end_drafts(rec, final=True)
+            self.log.incident("drafts", exc)      # type name and code frames, never its text (P3)
+            self._end_drafts(rec, final=True, why="failed")   # not "ended" (#381)
 
-    def _end_drafts(self, rec=None, final=False):
+    def _end_drafts(self, rec=None, final=False, why="ended"):
         """End live drafts: the draft worker is ended (and waited for) and its
         text forgotten. final: not again for this recording (its model files
-        are about to change, or the app is closing)."""
+        are about to change, the app is closing, or the worker could not
+        start), and why is the reason the page shows for it."""
         with self._lock:                  # _start_drafts checks the mark under it
             session = self._drafts
             if final:
@@ -1355,7 +1355,7 @@ class Workspace:
                     current.journal["id"] if current is not None else None)
                 if target is not None:
                     self._drafts_ended = target
-                    self._draft_why = "ended"
+                    self._draft_why = why
         if session is None:
             return
         for r in (rec, self._recording):

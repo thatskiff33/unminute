@@ -1012,6 +1012,43 @@ class WorkspaceDraftTests(DraftWorkspaceCase):
         self.assertIs(self.ws.downloads.before_install.__func__,
                       Workspace._before_model_change)
 
+    def test_a_draft_worker_that_fails_to_start_shows_the_failed_note(self):
+        # #381: the start failure's "failed" must not become "ended" (the note
+        # for a model download or removal). The recording is not affected (D4)
+        # and the log holds the error's type name only (P3).
+        ws = self.ws
+        ws.settings.update(live_drafts=True)
+        secret = "MARKER-381 text that must not reach the log"
+        tries = []
+
+        def start(session):                               # a worker that cannot start
+            tries.append(session)
+            raise RuntimeError(secret)
+        with mock.patch.object(drafts.DraftSession, "start", start):
+            ws.start_recording(3, consent=CONSENT)
+            rec = ws._recording
+            ws._policy_tick()
+            self.assertEqual(len(tries), 1)
+            self.assertIsNone(ws._drafts)
+            self.assertIsNone(rec.tap)
+            for answer in (ws.recording_draft(), ws.recording_status()["draft"]):
+                self.assertEqual(answer["state"], "failed")
+                self.assertEqual(answer["note"], drafts.REASONS["failed"])
+            ws._policy_tick()                             # not tried again, still failed
+            self.assertEqual(len(tries), 1)
+            self.assertEqual(ws.recording_draft()["state"], "failed")
+            self.assertIs(ws._recording, rec)             # the recording carries on
+            self.holder["stream"].play(self.speech(1))
+            ws.stop_recording()
+        logs = ws.root / "logs"
+        for path in logs.iterdir():
+            self.assertNotIn(secret.lower(), path.read_text("utf-8", errors="replace").lower(),
+                             path.name)
+        from workspace import diag
+        found = [r for r in diag.shareable_records(logs)
+                 if r.get("kind") == "incident" and r.get("area") == "drafts"]
+        self.assertEqual([r.get("error") for r in found], ["RuntimeError"])
+
     def test_closing_the_app_ends_the_draft_worker(self):
         self.record()
         self.assertTrue(wait_for(self.running))
