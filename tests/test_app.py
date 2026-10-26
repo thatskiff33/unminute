@@ -1174,6 +1174,40 @@ class WorkspaceTests(unittest.TestCase):
         [message] = ws.status()["import_errors"]
         self.assertNotIn(str(self.root), message)
 
+    def test_an_import_cut_short_is_named_by_the_gate_and_its_removal_is_said(self):
+        # #425: the app was closed (or stopped) during an import, leaving a
+        # meeting with no source or version and part of its audio. The update
+        # gate and --status count it; the next start removes it (as before),
+        # so the Meetings page shows none. The gate now names the state and
+        # its step, and the page says what was removed. Synthetic only.
+        from workspace import update
+        ws = self.open(start=False)
+        mid = ws.store.create_meeting("Synthetic import cut short")
+        folder = ws.media / mid
+        folder.mkdir(parents=True)
+        (folder / media.AUDIO_FILE).write_bytes(b"\0" * 64)        # partly written
+        db = ws.root / "workspace.db"
+        ws.close()
+        self.ws = None
+        found = {b["kind"]: b for b in update.blockers(db)}
+        self.assertEqual(set(found), {"meetings", "media"})
+        self.assertEqual(found["meetings"]["count"], 1)
+        self.assertIn("import that did not finish", found["meetings"]["message"])
+        self.assertIn("Open Unminute", found["meetings"]["message"])
+        self.assertNotIn("Finish each one", found["meetings"]["message"])
+        ws = self.open(start=False)                       # start-up upkeep runs here
+        self.assertEqual(ws.meetings(), [])
+        self.assertFalse(folder.exists())
+        self.assertEqual(update.blockers(db), [])         # nothing left for the update
+        [message] = ws.status()["import_errors"]
+        self.assertTrue(message.startswith("An import that did not finish before Unminute "
+                                           "last stopped was removed"), message)
+        self.assertNotIn("Synthetic", message)            # no title (P3)
+        self.assertNotIn(mid, message)
+        ws.clear_import_errors()
+        ws = self.reopen(start=False)                     # said once, at the start that removed it
+        self.assertEqual(ws.status()["import_errors"], [])
+
     # -- long transcripts -----------------------------------------------------------
 
     def test_long_transcript_pages_quickly(self):
