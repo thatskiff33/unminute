@@ -480,11 +480,14 @@ class Harness:
     answered by the real bridge (api.make_api) in this process, and page
     script run from Python as the tools' evaluate_js does."""
 
-    def __init__(self, bridge, dark=False, width=None):
+    def __init__(self, bridge, dark=False, width=None, late=None):
         """width: the page's own width in CSS px, drawn in a frame that wide
         (headless Edge draws no window narrower than about 480 px, as
-        tools/design_check.py's frame.html works round); None: the window's."""
+        tools/design_check.py's frame.html works round); None: the window's.
+        late: {bridge method: seconds}, to answer that method's first call
+        that much later, as on a busy machine."""
         self.bridge, self.dark, self.width = bridge, dark, width
+        self.late = dict(late or {})
         self.jobs, self.results, self.seq = queue.Queue(), {}, 0
         self.done = threading.Condition()
         self.calls, self.answered = [], []
@@ -549,6 +552,9 @@ class Harness:
                 if not path.startswith("bridge/") or name not in api.API_METHODS:
                     return self.send_error(404)
                 harness.calls.append(name)
+                delay = harness.late.pop(name, 0)            # the first call only
+                if delay:
+                    time.sleep(delay)
                 answer = json.dumps(getattr(harness.bridge, name)(*body)).encode()
                 harness.answered.append(name)
                 return self.send(answer, "application/json")
@@ -630,6 +636,8 @@ def evaluate(window, js, timeout=60):
     return window.evaluate_js(f"(async () => {{ {js} }})()", timeout=timeout)
 
 
+DRAFT_LATE_S = 2.0       # longer than the draft view's 1.5 s settle (#393)
+
 HIDE = ("Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});"
         "Object.defineProperty(document, 'visibilityState', {configurable: true, "
         "get: () => 'hidden'}); document.dispatchEvent(new Event('visibilitychange'));")
@@ -639,8 +647,8 @@ SHOW = ("delete document.hidden; delete document.visibilityState;"
 
 @unittest.skipUnless(HAVE_DEPS and EDGE, "Microsoft Edge not installed")
 class HeadlessTests(WorkspaceCase):
-    def page(self, dark=False, width=None):
-        harness = Harness(api.make_api(self.ws), dark=dark, width=width).start()
+    def page(self, dark=False, width=None, late=None):
+        harness = Harness(api.make_api(self.ws), dark=dark, width=width, late=late).start()
         self.addCleanup(harness.stop)
         return harness
 
@@ -673,10 +681,14 @@ class HeadlessTests(WorkspaceCase):
         self.feed.end()
 
     def test_the_accessibility_points_pass_in_light_and_dark(self):
+        # The page's first draft text arrives DRAFT_LATE_S late, longer than
+        # the view's 1.5 s settle, as on a loaded CI runner (#393): the view
+        # must wait for the box with its text before the audit runs. Before
+        # the fix the audit ran on a hidden, empty box, at random on CI.
         import accessibility_check
         for dark in (False, True):
             with self.subTest(dark=dark):
-                window = self.page(dark=dark)
+                window = self.page(dark=dark, late={"recording_draft": DRAFT_LATE_S})
                 self.feed.begin(drafts.RUNNING)
                 self.feed.say(draft_scenario.FOLLOW_LINES)
                 evaluate(window, "const wait = (ms) => new Promise(r => setTimeout(r, ms));"

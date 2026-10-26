@@ -296,6 +296,13 @@ real time, and remove it when the cause is fixed.
   window rather than the page: keep the window in front and the screen unlocked, and rerun.
   "Could not check settling" means the settle script did not return a count; that fails too.
   Don't raise `SETTLE_MS` to clear either (AGENTS.md E2).
+- **Wait for the state a check audits, not a fixed time (#393).** The "recording draft" view
+  in `tools/accessibility_check.py` waited a fixed 1.5 s, but its draft text arrives only
+  after several bridge calls in turn. On a loaded CI runner that took longer, and
+  `test_draft_scenario`'s accessibility test audited a hidden, empty box at random ("the draft
+  box with text was not shown", 26 October 2026). The view now also waits, up to
+  `DRAFT_WAIT_MS`, for the box to show a line; a box that never comes still fails. The test
+  answers the page's first `recording_draft` call 2 s late, so a fixed wait fails it every time.
 - **`tools/accessibility_check.py` lists "OWNER EXCEPTIONS"** before its findings: field
   boundaries in the brand `--control-line` colour and the meeting title at rest (#298, the
   owner's decision of 25 October 2026). They are expected and do not fail the run. Each is
