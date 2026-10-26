@@ -66,6 +66,30 @@ Describe "the tests' own safety check" {
         { Confirm-Loadable $direct } | Should -Throw "*other than through*"
     }
 
+    It "refuses a script that reaches a machine place directly: <Label> (#111 B6b)" -TestCases @(
+        # As the scripts were until B6b's review: Program Files looked up inside a function.
+        @{ Label = "Program Files"; Code = 'function Get-ProgramFilesFolder { [Environment]::GetFolderPath("ProgramFiles") }' }
+        @{ Label = "the all-users Start menu"; Code = 'function Get-CommonProgramsFolder { [Environment]::GetFolderPath("CommonPrograms") }' }
+        @{ Label = "a known folder by enum"; Code = 'function Get-Place { [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles) }' }
+        @{ Label = "the environment"; Code = 'function Get-Place { $env:ProgramFiles }' }
+        @{ Label = "the HKLM uninstall entry"; Code = 'function Remove-Entry { Remove-Item "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Unminute" }' }
+        @{ Label = "the Event Log source"; Code = 'function Remove-Source { Remove-Item "HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application\Unminute" }' }
+        @{ Label = "any other HKLM key"; Code = 'function Set-Thing { New-Item "HKLM:\SOFTWARE\Unminute" }' }
+        @{ Label = "the registry through .NET"; Code = 'function Set-Thing { $k.CreateSubKey("x") }' }
+        @{ Label = "a key opened to write"; Code = 'function Set-Thing { $base.OpenSubKey($subKey, $true) }' }
+        @{ Label = "an Event Log source made by .NET"; Code = 'function Set-Thing { [Diagnostics.EventLog]::CreateEventSource("Unminute", "Application") }' }
+    ) {
+        param($Label, $Code)
+        $null = $Label
+        $guarded = "if (`$MyInvocation.InvocationName -eq `".`") { return }`r`ntry { } finally { }`r`n"
+        $direct = Join-Path $TestDrive "direct-machine.ps1"
+        [IO.File]::WriteAllText($direct, $Code + "`r`n" + $guarded)
+        { Confirm-Loadable $direct } | Should -Throw "*other than through*"
+        # The same words in a comment reach nothing.
+        [IO.File]::WriteAllText($direct, "# " + $Code + "`r`n" + $guarded)
+        { Confirm-Loadable $direct } | Should -Not -Throw
+    }
+
     It "loads nothing while <Name> is this account's own" -TestCases @(
         @{ Name = "LOCALAPPDATA"; Folder = "LocalApplicationData" }
         @{ Name = "APPDATA"; Folder = "ApplicationData" }
@@ -88,13 +112,27 @@ Describe "the tests' own safety check" {
         . (Confirm-Loadable (Join-Path $script:Repo "packaging\$Leaf")); Set-ScratchTarget
         $RegKey | Should -BeExactly $script:ScratchKey
         $ProgramsFolder | Should -BeExactly $script:ScratchPrograms
+        $ProgramFilesFolder | Should -BeExactly $script:ScratchProgramFiles
+        $CommonProgramsFolder | Should -BeExactly $script:ScratchCommonPrograms
+        $MachineRegKey | Should -BeExactly $script:ScratchMachineKey
+        $EventSourceKey | Should -BeExactly $script:ScratchEventSourceKey
         Test-ScratchPath $Options.InstallDir | Should -BeTrue
+        Test-ScratchPath (Get-MachineRoot) | Should -BeTrue
+        Test-ScratchPath (Get-CommonProgramsFolder) | Should -BeTrue
+        Test-ScratchKey (Get-MachineRegKey) | Should -BeTrue
+        Test-ScratchKey (Get-EventSourceKey) | Should -BeTrue
         $real = Get-RealPlace
         foreach ($case in @(
                 @{ Name = "ProgramsFolder"; Value = [Environment]::GetFolderPath("Programs"); Says = "*Start menu folder*" }
                 @{ Name = "RegKey"; Value = $script:RealUninstallKey; Says = "*uninstall key*" }
                 @{ Name = "RegKey"; Value = $script:ScratchKeyPrefix + "x\..\..\Microsoft"; Says = "*uninstall key*" }
-                @{ Name = "InstallDir"; Value = $real[0]; Says = "*default -InstallDir*" })) {
+                @{ Name = "InstallDir"; Value = $real[0]; Says = "*default -InstallDir*" }
+                @{ Name = "ProgramFilesFolder"; Value = [Environment]::GetFolderPath("ProgramFiles"); Says = "*Program Files*" }
+                @{ Name = "ProgramFilesFolder"; Value = [Environment]::GetFolderPath("ProgramFilesX86"); Says = "*Program Files*" }
+                @{ Name = "CommonProgramsFolder"; Value = [Environment]::GetFolderPath("CommonPrograms"); Says = "*all-users Start menu*" }
+                @{ Name = "MachineRegKey"; Value = $script:RealMachineKey; Says = "*machine uninstall key*" }
+                @{ Name = "MachineRegKey"; Value = $script:ScratchKeyPrefix + "x\..\..\Microsoft"; Says = "*machine uninstall key*" }
+                @{ Name = "EventSourceKey"; Value = $script:RealEventSourceKey; Says = "*Event Log source key*" })) {
             $saved = Get-Variable -Name $case.Name -ValueOnly
             Set-Variable -Name $case.Name -Value $case.Value
             { Assert-ScratchTarget } | Should -Throw $case.Says
@@ -268,8 +306,31 @@ Describe "packaging/identity.json mirrors the scripts" {
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
         (@($LogNames | ForEach-Object { "logs\$_" }) -join ",") | Should -BeExactly ($script:Identity.install_log -join ",")
-        $codes = @($script:Identity.exit_codes."install.ps1".user.PSObject.Properties.Name | Sort-Object)
+        # Every exit code the script can give, in either mode, and no other.
+        $codes = @(@($script:Identity.exit_codes."install.ps1".user.PSObject.Properties.Name) +
+            @($script:Identity.exit_codes."install.ps1".machine.PSObject.Properties.Name) | Sort-Object -Unique)
         (Get-ExitCode (Join-Path $script:Repo "packaging\install.ps1")) -join "," | Should -BeExactly ($codes -join ",")
+    }
+
+    It "both scripts use the identity's machine names (#111 B6b)" {
+        $named = $script:Identity.modes.machine
+        foreach ($name in "install.ps1", "uninstall.ps1") {
+            $path = Join-Path $script:Repo "packaging\$name"
+            . (Confirm-Loadable $path); Set-ScratchTarget
+            # The keys as the script sets them (loaded, they are throwaway ones).
+            $machineKey = Get-TopString $path "MachineRegKey"
+            $eventKey = Get-TopString $path "EventSourceKey"
+            $machineKey | Should -BeExactly ($named.uninstall_key -replace '^HKLM\\', 'HKLM:\')
+            $eventKey | Should -BeExactly ($named.event_source_key -replace '^HKLM\\', 'HKLM:\')
+            (Split-Path -Leaf $eventKey) | Should -BeExactly $named.event_source
+            $MachineFolderName | Should -BeExactly (Split-Path -Leaf $named.install_folder)
+            $JunctionName | Should -BeExactly $named.launch_junction
+            ($JunctionNames -join ",") | Should -BeExactly ((@($named.launch_junction) + @($named.launch_junction_working)) -join ",")
+            ("staging-" + ("a" * 32)) | Should -MatchExactly $StagingPattern
+            ("staging-" + ("a" * 31)) | Should -Not -MatchExactly $StagingPattern
+            # Program Files from Windows' known folder: loaded, a scratch one.
+            Get-MachineRoot | Should -BeExactly (Join-Path $ProgramFilesFolder (Split-Path -Leaf $named.install_folder))
+        }
     }
 
     It "uninstall.ps1 uses the identity's names and exit codes" {
@@ -282,7 +343,8 @@ Describe "packaging/identity.json mirrors the scripts" {
         $OwnEntries -join "," | Should -BeExactly ($script:Identity.install_root_entries -join ",")
         $LockName | Should -BeExactly $script:Identity.install_lock
         (@($LogNames | ForEach-Object { "logs\$_" }) -join ",") | Should -BeExactly ($script:Identity.install_log -join ",")
-        $codes = @($script:Identity.exit_codes."uninstall.ps1".user.PSObject.Properties.Name | Sort-Object)
+        $codes = @(@($script:Identity.exit_codes."uninstall.ps1".user.PSObject.Properties.Name) +
+            @($script:Identity.exit_codes."uninstall.ps1".machine.PSObject.Properties.Name) | Sort-Object -Unique)
         (Get-ExitCode (Join-Path $script:Repo "packaging\uninstall.ps1")) -join "," | Should -BeExactly ($codes -join ",")
     }
 

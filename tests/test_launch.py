@@ -189,7 +189,10 @@ class RecordTests(unittest.TestCase):
         pattern = re.search(r"(?m)^\$VersionPattern = '\^([^']+)\\z'$", install).group(1)
         self.assertEqual(pattern, update._VERSION_NAME.pattern)
         self.assertIn("-not $Name.EndsWith(\".\")", install)
-        self.assertIn("$Name -notmatch '\\.(partial|old)\\z'", install)
+        self.assertIn("$Name -notmatch '\\.(partial|old|retired)\\z'", install)
+        self.assertEqual(update._WORKING.pattern, r"\.(partial|old|retired)\Z")
+        for name in ("1.0.0.partial", "1.0.0.old", "1.0.0.retired"):
+            self.assertFalse(update.version_name(name), name)
 
     def test_the_launch_options_match_the_installer_and_the_uninstaller(self):
         install = (ROOT / "packaging" / "install.ps1").read_text(encoding="utf-8")
@@ -470,6 +473,143 @@ def no_windows(case):
                                     side_effect=AssertionError(f"a real {name} was shown"))
         patcher.start()
         case.addCleanup(patcher.stop)
+
+
+def descriptor(sddl):
+    """A self-relative security descriptor (bytes) from its SDDL text."""
+    import ctypes
+    from ctypes import wintypes
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    convert = advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+                        ctypes.POINTER(wintypes.ULONG))
+    kernel32.LocalFree.argtypes = (ctypes.c_void_p,)
+    found, size = ctypes.c_void_p(), wintypes.ULONG()
+    if not convert(sddl, 1, ctypes.byref(found), ctypes.byref(size)):
+        raise OSError(ctypes.get_last_error(), "SDDL")
+    try:
+        return ctypes.string_at(found, size.value)
+    finally:
+        kernel32.LocalFree(found)
+
+
+class MachineTrustTests(unittest.TestCase):
+    """#111 B6b: deployment() reports "machine" only for an install whose
+    current.json says so and that passes the machine trust test
+    (update.machine_trusted, design 5.2): FOLDERID_ProgramFiles\\Unminute,
+    owned by Administrators or SYSTEM, which this process's user cannot
+    change. A per-user install that writes "machine" into its own
+    current.json gains nothing."""
+
+    ADMINS, USER = "S-1-5-32-544", "S-1-5-21-1-2-3-1001"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(os.path.realpath(tmp.name))
+        self.program_files = self.base / "Program Files"
+        self.layout = InstallLayout(self.program_files, {"3.0": 3}, "3.0")
+        record = json.loads((self.layout.root / "current.json").read_text(encoding="utf-8-sig"))
+        record["mode"] = "machine"
+        (self.layout.root / "current.json").write_text(json.dumps(record), encoding="utf-8-sig")
+
+    def trusted(self, root=None, *, owner=ADMINS, can_change=False, program_files=None):
+        def raise_or(value):
+            def answer(path):
+                if isinstance(value, Exception):
+                    raise value
+                return value
+            return answer
+        return update.machine_trusted(
+            root or self.layout.root,
+            program_files=program_files or (lambda: str(self.program_files)),
+            owner=raise_or(owner), can_change=raise_or(can_change))
+
+    def test_deployment_is_machine_only_when_the_trust_test_passes(self):
+        here = self.layout.here("3.0")
+        asked = []
+        found = update.deployment(here, trusted=lambda root: asked.append(root) or True)
+        self.assertEqual(found, {"version": "3.0", "mode": "machine"})
+        self.assertEqual(asked, [self.layout.root])
+        found = update.deployment(here, trusted=lambda root: False)
+        self.assertEqual(found, {"version": "3.0", "mode": "managed", "machine_refused": True})
+        self.assertIn("machine_claim_refused", __import__("workspace.diag").diag.KINDS)
+        # No machine claim: the trust test is not asked, as before B6b.
+        record = json.loads((self.layout.root / "current.json").read_text(encoding="utf-8-sig"))
+        del record["mode"]
+        (self.layout.root / "current.json").write_text(json.dumps(record), encoding="utf-8-sig")
+        found = update.deployment(here, trusted=lambda root: self.fail("asked"))
+        self.assertEqual(found, {"version": "3.0", "mode": "managed"})
+
+    def test_deployment_reads_a_record_that_is_not_an_object_as_a_source_checkout(self):
+        (self.layout.root / "current.json").write_text("[1]", encoding="utf-8")
+        self.assertEqual(update.deployment(self.layout.here("3.0"), trusted=lambda r: True),
+                         {"version": None, "mode": "source"})
+
+    def test_the_trust_test_needs_every_condition(self):
+        self.assertTrue(self.trusted())
+        self.assertTrue(self.trusted(owner="S-1-5-18"))                 # SYSTEM
+        for label, kwargs in (
+                ("owned by the user", {"owner": self.USER}),
+                ("owned by Users", {"owner": "S-1-5-32-545"}),
+                ("the user can change it", {"can_change": True}),
+                ("the owner cannot be read", {"owner": OSError("denied")}),
+                ("the permissions cannot be read", {"can_change": OSError("denied")}),
+                # Any error fails the test, not only the expected ones (review
+                # of 4c0daf2): a ctypes argument or type error never escapes.
+                ("a ctypes argument error", {"owner": __import__("ctypes").ArgumentError("bad")}),
+                ("a type error", {"can_change": TypeError("bad")}),
+                ("a lookup error", {"owner": KeyError("bad")}),
+                ("no Program Files", {"program_files": lambda: None}),
+                ("another folder", {"root": self.base / "Local" / "Programs" / "Unminute"}),
+                ("a folder inside it", {"root": self.layout.versions}),
+                ("another name in Program Files", {"root": self.program_files / "Unminute2"})):
+            with self.subTest(label):
+                self.assertFalse(self.trusted(**kwargs))
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions")
+    def test_a_junction_on_the_way_fails_the_trust_test(self):
+        import _winapi
+        # Program Files\Unminute is a junction to a folder the user owns.
+        elsewhere = self.base / "elsewhere"
+        InstallLayout(elsewhere, {"3.0": 3}, "3.0")
+        other = self.base / "Other Files"
+        other.mkdir()
+        _winapi.CreateJunction(str(elsewhere / "Unminute"), str(other / "Unminute"))
+        self.addCleanup(lambda: os.rmdir(other / "Unminute"))
+        self.assertFalse(self.trusted(other / "Unminute", program_files=lambda: str(other)))
+        # The known folder itself reached through a junction.
+        alias = self.base / "Alias"
+        _winapi.CreateJunction(str(self.program_files), str(alias))
+        self.addCleanup(lambda: os.rmdir(alias))
+        self.assertFalse(self.trusted(alias / "Unminute", program_files=lambda: str(alias)))
+        self.assertTrue(self.trusted())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows security")
+    def test_the_windows_checks(self):
+        # Program Files as Windows' known folder gives it (a 64-bit Python).
+        self.assertEqual(os.path.normcase(update._program_files()),
+                         os.path.normcase(os.environ["ProgramFiles"]))
+        # A folder this user made: owned by this user (or, elevated, by
+        # Administrators), and this user can change it, so it is never trusted.
+        self.assertRegex(update._owner_sid(str(self.base)), r"^S-1-[0-9]+(-[0-9]+)+$")
+        self.assertTrue(update._can_change(str(self.base)))
+        self.assertFalse(update.machine_trusted(self.layout.root))
+        # Windows' own folder is TrustedInstaller's, not Administrators'.
+        self.assertNotIn(update._owner_sid(os.environ["SystemRoot"]), update.OWNERS)
+        # AccessCheck against this process's token, on descriptors built here.
+        everyone_reads = descriptor("O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;WD)")
+        everyone_changes = descriptor("O:SYG:SYD:P(A;OICI;FA;;;WD)")
+        self.assertFalse(update._grants_change(everyone_reads))
+        self.assertTrue(update._grants_change(everyone_changes))
+        # install.ps1 -Machine's permissions: only an elevated administrator may
+        # change the folder; the app runs without elevation.
+        machine = descriptor("O:BAG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+                             "(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)")
+        import ctypes
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        self.assertEqual(update._grants_change(machine), elevated)
 
 
 HOLD = textwrap.dedent("""

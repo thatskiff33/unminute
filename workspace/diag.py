@@ -71,7 +71,10 @@ KINDS = {"start", "stop", "timing", "incident", "crash", "worker_exit", "native_
          # #111 B5b: a version's first-start or full check (check, part, role,
          # code), and an unused graphics card component removed or kept
          # (component version, bytes, why)
-         "launch_check", "gpu_removed", "gpu_kept"}
+         "launch_check", "gpu_removed", "gpu_kept",
+         # #111 B6b (no fields): current.json claims machine mode, and the
+         # install failed the machine trust test (update.machine_trusted)
+         "machine_claim_refused"}
 INTEGRITY_FILE = "integrity.json"   # the last database check (R11): see integrity_state()
 KEYS_FILE = "keys.json"             # the key's state at the last start (#111 C4a): keys_state()
 KEY_REASONS = ("windows", "key", "protector", "missing")   # store.KeyUnavailable.reason

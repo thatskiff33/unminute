@@ -1,5 +1,5 @@
 {
-  "about": "Unminute's install identity, for tests only (#111 B6a, the owner's decision B6-10). The scripts and the app keep every name as a literal and never read this file; tests/test_consistency.py and tests/powershell keep the copies equal, and pin the names themselves. Changing a name needs the user's say-so (AGENTS.md, K1).",
+  "about": "Unminute's install identity, for tests only (#111 B6a and B6b, the owner's decision B6-10). The scripts and the app keep every name as a literal and never read this file; tests/test_consistency.py and tests/powershell keep the copies equal, and pin the names themselves. Changing a name needs the user's say-so (AGENTS.md, K1).",
   "name": "Unminute",
   "earlier_names": ["Whisper Transcriber", "Meeting Workspace"],
   "app_id": "Unlimit.Unminute",
@@ -26,7 +26,12 @@
       "install_folder": "%ProgramFiles%\\Unminute",
       "uninstall_key": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Unminute",
       "launch_junction": "current",
-      "event_source": "Unminute"
+      "launch_junction_working": ["current.new", "current.old"],
+      "staging_folder": "staging-<32 hex digits>",
+      "shortcut": "Unminute.lnk",
+      "event_source": "Unminute",
+      "event_source_key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\Application\\Unminute",
+      "event_message_file": "EventLogMessages.dll"
     }
   },
   "exit_codes": {
@@ -39,6 +44,13 @@
         "4": "the package failed verification",
         "5": "the update waits for the workspace",
         "6": "this version cannot open the existing workspace, or its location is refused"
+      },
+      "machine": {
+        "0": "installed",
+        "1": "failed, including another install still running after 10 minutes",
+        "2": "not allowed: a 32-bit or non-elevated run, a refused switch, a package that states no storage format, prerequisites missing, or the install folder holds entries or a link the installer did not put there",
+        "3": "the app is running for someone on this computer",
+        "4": "the package failed verification, or the install folder's permissions have changed"
       }
     },
     "uninstall.ps1": {
@@ -49,6 +61,14 @@
         "3": "the app, or an install or update, is running",
         "5": "with -Offboard, offboarding is blocked by meetings, holds, cleanup or audio left",
         "6": "with -Offboard, the data folder's location is refused"
+      },
+      "machine": {
+        "0": "removed",
+        "1": "failed, including anything in the install folder that the installer did not put there",
+        "2": "not allowed: a 32-bit or non-elevated run, or -InstallDir or -Offboard with -Machine",
+        "3": "the app, or an install or update, is running",
+        "4": "the install folder's permissions have changed",
+        "5": "a version kept for an earlier storage format is still installed (-IncludeKeptSlots removes it too)"
       }
     }
   }

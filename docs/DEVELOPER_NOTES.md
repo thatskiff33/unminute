@@ -255,6 +255,46 @@ real time, and remove it when the cause is fixed.
 - **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
   page.** Keep the installer scripts and their Pester tests ASCII; build other characters
   from their code points (`[char]0x212A`).
+- **Machine mode is tested without elevation, and only in scratch (#111 B6b).** Both
+  scripts set every place outside the install folder that machine mode writes once, at
+  their top: `$ProgramFilesFolder`, `$CommonProgramsFolder`, `$MachineRegKey` and
+  `$EventSourceKey`. `tests/powershell/Isolation.ps1` refuses a script that reaches Program
+  Files, the all-users Start menu, HKLM or the Event Log any other way (comments aside;
+  HKLM otherwise only in the WebView2 check's two reads, and a key opened only to read), and
+  `Set-ScratchTarget` points all four at scratch folders and throwaway
+  `HKCU\Software\Unminute-PesterTest-<guid>` keys; `tests/powershell/Machine.Tests.ps1` gives
+  each test its own with `Set-ScratchMachineTarget`, and its "machine places" tests prove it.
+  The Pester mocks stand in only elevation, bitness, the folder's permissions as read and its
+  creation with them; everything else, junctions and permissions on folders and files
+  beneath the install folder included, runs for real in TestDrive. Python: `scratch_text`
+  swaps the same four for scratch folders and `HKCU\Software\Unminute-UnitTest-*` keys, and
+  `run_installer(..., machine=True)` is the only way a test runs `-Machine`, refused unless
+  every machine place is scratch (`InstallerIsolationTests`). `tools/run_pester.ps1` and
+  `run_installer` also fail if the real machine install (Program Files\Unminute, the
+  all-users shortcut, the HKLM uninstall entry or the Event Log source) changed. Never run
+  `install.ps1 -Machine` or `uninstall.ps1 -Machine` any other way: elevated (as GitHub's
+  runners are), they would write this computer's Program Files, HKLM and Start menu. A real
+  System-context install is a manual check (#189).
+- **A file written over in place can come out with permissions of its own (#111 B6b).** On
+  GitHub's elevated runner, `current.json` (replaced with `File.Replace`) or `uninstall.ps1`
+  (`Copy-Item -Force` over the old one) in a machine install came out with permissions of
+  its own, and the next run's permission check stopped with exit code 4 (Quality run of
+  23 October 2026 on 01627bf). `Set-InheritedOnly` resets just those two files after the run
+  writes them. The cause is not confirmed, and a run without elevation does not show it: the
+  Pester test sets the permissions itself to check the reset, and only the elevated CI job
+  exercises the real case (the Pester job in Quality).
+- **A 32-bit Windows PowerShell sees another Program Files and registry (#111 B6b).** In a
+  32-bit process `[Environment]::GetFolderPath("ProgramFiles")` and `%ProgramFiles%` name
+  `Program Files (x86)`, and `HKLM:\SOFTWARE` is the `WOW6432Node` view. `install.ps1
+  -Machine` refuses a 32-bit run; from a 32-bit host, `%SystemRoot%\Sysnative\...` reaches the
+  64-bit `powershell.exe`, and `%ProgramW6432%` names the 64-bit Program Files. The per-user
+  installer reads the machine entry with `RegistryKey.OpenBaseKey(LocalMachine, Registry64)`
+  so a 32-bit host sees it.
+- **Remove a junction as a link (#111 B6b).** `[IO.Directory]::Delete(path, $false)` removes
+  the junction itself and leaves its target; `[IO.Directory]::Move` renames the junction, not
+  its target. `Remove-Item -Recurse` on a junction is never used. In Windows PowerShell 5.1,
+  `(Get-Item -Force).Target` gives a junction's target as a one-item `string[]`, and
+  `LinkType` is `Junction`.
 - **Pester's package has deep paths.** Unpacked under a long folder it passes 260
   characters and `ExtractToDirectory` fails; `tools/run_pester.ps1` unpacks into a short
   folder name under `-ModuleRoot`, which should itself be short (CI uses `RUNNER_TEMP`).

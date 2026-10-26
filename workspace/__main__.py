@@ -587,6 +587,11 @@ def main():
         # Unused graphics card components (#111 B5b, B5-4): the current
         # version only, in the background after start-up.
         ws.start_gpu_upkeep()
+    # A current.json that claims machine mode for an install that fails the machine
+    # trust test (#111 B6b): treated as per-user, and recorded (no path or name).
+    from workspace import update
+    if update.deployment().get("machine_refused"):
+        ws.log.write("machine_claim_refused")
     opened = time.perf_counter()
     try:
         # Our own taskbar identity (matches the shortcut, set by install.ps1),

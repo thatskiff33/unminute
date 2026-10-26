@@ -2301,7 +2301,9 @@ async function renderSettings() {
   const version = dep.version ? `Unminute ${dep.version}` : "Unminute";
   $("s-version").textContent = version;
   $("s-about-version").textContent = version;
-  $("s-deployment").textContent = s.update_blockers.length && dep.mode !== "managed"
+  $("s-deployment").textContent = dep.mode === "machine"
+    ? "Installed for everyone on this computer by your IT team."
+    : s.update_blockers.length && dep.mode !== "managed"
     ? "An update needs an empty workspace. Holding one up now:"
     : dep.mode === "managed"
     ? "Updates are managed by your IT team."
