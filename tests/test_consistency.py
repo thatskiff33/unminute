@@ -469,6 +469,32 @@ class DocsTests(unittest.TestCase):
                     self.assertIn("    if: ${{ always() }}\n", gates[0])
         self.assertGreaterEqual(found, 1, "the Windows unit tests no longer run in parts")
 
+    # One group per pull request, cancelled by a newer push; every other run in a
+    # group of its own (its run id), never cancelled.
+    CONCURRENCY = (
+        "concurrency:\n"
+        "  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && "
+        "format('pr-{0}', github.event.pull_request.number) || "
+        "format('run-{0}', github.run_id) }}\n"
+        "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n")
+
+    def test_superseded_pull_request_runs_are_cancelled_and_no_others(self):
+        # #395, CI time: a new push to a pull request cancels that pull request's
+        # older run in every workflow a pull request starts, so superseded runs
+        # stop holding runners. A push to main, a schedule, a manual run or a
+        # release is never cancelled, and no job sets a concurrency of its own.
+        workflows = sorted((ROOT / ".github" / "workflows").glob("*.y*ml"))
+        self.assertTrue(workflows)
+        for path in workflows:
+            text = path.read_text(encoding="utf-8")
+            head, jobs = text.split("\njobs:", 1)
+            with self.subTest(workflow=path.name):
+                if re.search(r"^  pull_request:", head, re.MULTILINE):
+                    self.assertIn("\n" + self.CONCURRENCY, head)
+                else:
+                    self.assertNotRegex(text, r"cancel-in-progress: (?!false\s)")
+                self.assertNotRegex(jobs, r"(?m)^\s+concurrency:")
+
     def test_report_only_jobs_say_so(self):
         # A job outside the required workflows never blocks a merge, so its name
         # says so; a check that should block moves into ci.yml (docs/RELEASING.md).

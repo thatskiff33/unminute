@@ -249,7 +249,9 @@ real time, and remove it when the cause is fixed.
   `module_cache` uses a file found there as it is. A miss, or an empty file, is filled there
   and saved by the first chunk to finish; a stale file is still correct, as PowerShell
   analyses again any module whose file changed. Locally the variable is unset and nothing
-  changes.
+  changes. To clear a bad entry, find its key with `gh cache list --key psmodule-analysis-`
+  and remove it with `gh cache delete <key>`; the next run on that image fills and saves it
+  again.
 - **Windows PowerShell 5.1 reads a `.ps1` without a byte-order mark in the system code
   page.** Keep the installer scripts and their Pester tests ASCII; build other characters
   from their code points (`[char]0x212A`).
@@ -347,6 +349,10 @@ real time, and remove it when the cause is fixed.
   real. Do not raise the 2.0 s or the work limits to make a run pass (AGENTS.md E2); a
   deliberate change to the guard's work needs the shapes measured again, with the reason in
   the PR.
+- **A cancelled CI run on a pull request** usually means a newer push superseded it (#395):
+  each workflow cancels a pull request's older run when a new one starts. Its checks,
+  including a failed "Unit tests (Windows)", belong to the old head; look at the newest
+  head's run instead. A run on `main` is never cancelled this way.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 

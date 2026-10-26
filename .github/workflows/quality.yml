@@ -12,6 +12,11 @@ on:
 
 permissions: {}
 
+# Superseded pull request runs are cancelled; pushes to main never are (see ci.yml, #395).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dead-code:
     # Report only (#136): vulture over the shipped code, with the reviewed
