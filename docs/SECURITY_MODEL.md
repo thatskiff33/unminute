@@ -18,12 +18,13 @@ This describes `main` with #111 phase C complete (C7). Each item names its threa
   - The page that shows meetings cannot load anything from the internet and can call only a fixed list of app functions; starting a recording needs a confirmation drawn outside the page (T1, T18).
   - Model downloads are checked against pinned checksums, and the Hugging Face token is kept in Windows Credential Manager (T10, T13).
   - Releases are built by CI from the tagged commit, with provenance and SBOM attestations, and published only with the owner's approval; each release's packaged evidence shows no plain content left at rest or after cleanup (T14, T7).
+  - A machine install's folder can be changed only by administrators, and its code is checked at install time (T24).
 - **Not protected today, planned.**
-  - The install folder can be changed by anything running as the user (B6: T9, T24).
+  - The model cache can be changed by anything running as the user (B7: T9, T24).
   - The decoder process can still read what the user can read, including the workspace and its key protection, and nothing limits its network access (#299 and B7: T2).
-  - An older version can be kept or restored (B5 and B6: T26).
-- **Not covered by design.** Malware running as the user can unlock the sealed content through the user's Windows key protection, as the app does (T9). A copy of the whole workspace taken before cleanup can still be opened by this Windows user (T7). Content is outside the app's control once it is copied or saved (T17).
-- **Depends on the firm's IT controls.** BitLocker, standard-user accounts, endpoint protection, a firewall rule for the app's runtime, forwarding the Windows Event Log off the device, what staff do with a handoff after it leaves the app, and which tools (connectors) the assistant they hand off to can use.
+  - An older version can be kept or restored (managed per-machine installs updated by Intune: T26).
+- **Not covered by design.** Malware running as the user can unlock the sealed content through the user's Windows key protection, as the app does (T9). A copy of the whole workspace taken before cleanup can still be opened by this Windows user (T7). Content is outside the app's control once it is copied or saved (T17). A per-user install and the GPU component stay writable by the user (T24).
+- **Depends on the firm's IT controls.** BitLocker, standard-user accounts, endpoint protection, application control that stops per-user copies on managed computers (T24), a firewall rule for the app's runtime, forwarding the Windows Event Log off the device, what staff do with a handoff after it leaves the app, and which tools (connectors) the assistant they hand off to can use.
 
 ## Scope and assumptions
 
