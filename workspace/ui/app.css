@@ -1118,6 +1118,7 @@ body[data-view="setup"] .sidebar, body[data-view="setup"] .topbar { display: non
 .dl-desc { font-size: 14px; color: var(--muted); }
 .dl-pill { display: inline-flex; align-items: center; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 700; white-space: nowrap; background: var(--track); color: var(--text); }
 .dl-pill.ready { background: var(--success); color: var(--success-fg); }
+.dl-pill.queued { background: var(--soft-strong); color: var(--text); }   /* #366 */
 .dl-pill.bad { background: none; border: 1px solid var(--danger); color: var(--error); }
 .dl-row button { font-size: 14px; white-space: nowrap; }
 .dl-row .link-plain { font-size: 14px; }

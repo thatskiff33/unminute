@@ -578,7 +578,10 @@ INVARIANT_GUARDS = {
            "tests/test_drafts.py": ["test_the_draft_worker_cannot_reach_the_network"]},
     "N2": {"tests/test_download_process.py": ["RequestCheckTests"]},
     "N3": {"tests/test_setup.py": ["test_child_gets_the_token_but_not_on_argv_or_env"],
-           "tests/test_hardening.py": ["EnvironmentTokenTests"]},
+           "tests/test_hardening.py": ["EnvironmentTokenTests"],
+           "tests/test_download_queue.py": [
+               "test_a_queued_speaker_model_gets_its_token_by_pipe",
+               "test_the_queue_is_kept_with_model_identifiers_only"]},
     "I1": {"tests/test_model_integrity.py": ["test_speaker_model_loads_only_the_hash_checked_bytes",
                                              "test_a_code_running_checkpoint_is_refused",
                                              "test_the_allowlist_is_scoped"],
@@ -652,7 +655,11 @@ INVARIANT_GUARDS = {
                "test_resume_checks_the_policy_again"],
            "tests/test_drafts.py": [
                "test_policy_off_bad_or_unreadable_withholds_drafts",
-               "test_the_choice_and_the_computer_policy_apply_mid_recording"]},
+               "test_the_choice_and_the_computer_policy_apply_mid_recording"],
+           "tests/test_download_queue.py": [
+               "test_policy_that_turns_downloads_off_empties_the_queue",
+               "test_policy_read_when_the_next_one_would_start",
+               "test_an_unreadable_policy_grants_nothing_at_the_next_start"]},
     "E1": {},
     "E2": {},
 }

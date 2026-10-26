@@ -100,6 +100,8 @@ RECORDING_DISPLAYS = ("flow", "spectrum", "wave")
 
 
 MANAGED_OFF = "{what} is turned off by your organisation. Ask your IT team if you need it."
+DOWNLOADS_OFF = ("Downloads are turned off by your organisation. Ask your IT team to install "
+                 "the models.")
 # Every request refused while the workspace is locked (#111 C4a): the bridge
 # gate (api.LOCKED_METHODS) and the Workspace's own refusals give this.
 LOCKED_TEXT = ("Unminute is locked: Windows could not unlock its key on this computer. "
@@ -439,9 +441,14 @@ class Workspace:
         self.draft_model = drafts.DRAFT_MODEL     # tests: a "test:" engine
         # Downloads replace model files: the draft worker and the inference
         # worker let go of them first.
+        # Downloads the user queued are kept (model names only) and carry on
+        # at the next start (#366); the current policy and the token are
+        # checked again as each one starts (_prepare_queued_download).
         self.downloads = setup.Downloads(self.cache_dir, before_install=self._before_model_change,
-                                         before_gpu_install=self._release_gpu_worker)
+                                         before_gpu_install=self._release_gpu_worker,
+                                         queue_path=self.root / setup.QUEUE_FILE)
         self.downloads.after = self._after_download
+        self.downloads.prepare = self._prepare_queued_download
         self.downloads.log_dir = str(self.log.folder)
         self._wake = threading.Event()
         self._closing = threading.Event()
@@ -623,6 +630,11 @@ class Workspace:
     # -- lifecycle --------------------------------------------------------------------
 
     def start(self):
+        # Downloads queued before the app last closed carry on (#366), before
+        # the processing thread starts, so no job slips in ahead of them. Not
+        # while locked (#111 C4a): the page cannot show them; they wait.
+        if self.locked is None:
+            self.downloads.resume()
         for target, name in ((self._process_loop, "workspace-processing"),
                              (self._intake_loop, "workspace-intake"),
                              (self._watch_loop, "workspace-watch"),
@@ -660,6 +672,7 @@ class Workspace:
                 pass                     # its folder is recovered at the next start
         self._flush_clipboard_clears()
         self._closing.set()
+        self.downloads.close()            # the queue is kept for the next start (#366)
         self._wake.set()
         self._scan_wake.set()
         self._policy_wake.set()
@@ -2069,7 +2082,7 @@ class Workspace:
         failed its check, the pass records why (#153), and the meeting says so."""
         if not (self.settings["gpu_speakers"] and self.settings["mode"] == resources.FASTER
                 and self._allowed("AllowGpuComponent")
-                and self.downloads._running != gpu.COMPONENT):   # not while it is replaced
+                and not self.downloads.involves(gpu.COMPONENT)):   # not while replaced or queued
             return "cpu", None
         if gpu.verified_for_use(self.cache_dir):
             return "cuda", str(gpu.site_dir(self.cache_dir))
@@ -2098,7 +2111,7 @@ class Workspace:
         if not (model in gpu.WHISPER_PRECISION and self.settings["gpu_speakers"]
                 and self.settings["mode"] == resources.FASTER
                 and self._allowed("AllowGpuComponent")
-                and self.downloads._running != gpu.WHISPER_COMPONENT):   # not while replaced
+                and not self.downloads.involves(gpu.WHISPER_COMPONENT)):   # or queued (#366)
             return "cpu", None
         if gpu.WHISPER.status(self.cache_dir)[0] == "missing":
             return "cpu", None
@@ -3357,6 +3370,10 @@ class Workspace:
         self._run_clipboard_clears()
         p = self.policy.current()
         try:
+            self._queue_policy()              # #366: waiting downloads policy now refuses
+        except Exception:
+            pass
+        try:
             if not p.get("AllowLidOverride") and self.lid.active:
                 self.lid.restore()            # IT turned it off: put the lid action back
                 self._lid_result = None
@@ -3425,10 +3442,14 @@ class Workspace:
         # DISPLAY_CACHE_S. Download progress is live.
         cards = [dict(c) for c in self._display_value("cards",
                                                       lambda: setup.cards(self.cache_dir))]
+        self._queue_policy()                   # the current policy, while Downloads is open
+        waiting = self.downloads.queued()
         for c in cards:
             dl = self.downloads.state.get(c["name"])
             # How far it is, as a number (R12): the page never reads it out of a message.
             c["download"] = dict(dl, percent=self.downloads.percent(c["name"])) if dl else None
+            if dl and dl.get("state") == "queued" and c["name"] in waiting:
+                c["download"]["position"] = waiting.index(c["name"]) + 1   # 1: next (#366)
         speech_ready = any(c["state"] == "ready" for c in cards if c["role"] == "speech")
         remembered = self._display_value("tokens", credentials.has_token)
         return {"cards": cards, "token_remembered": remembered,
@@ -3442,8 +3463,7 @@ class Workspace:
         if not isinstance(name, str) or not setup.known(name):
             raise WorkspaceError("Unknown model.")
         if not self._allowed("AllowModelDownloads"):
-            raise WorkspaceError("Downloads are turned off by your organisation. Ask your IT "
-                                 "team to install the models.")
+            raise WorkspaceError(DOWNLOADS_OFF)
         gpu_only = gpu.component(name) is not None   # used by no work unless a GPU run
         if gpu_only and not self._allowed("AllowGpuComponent"):
             raise WorkspaceError(MANAGED_OFF.format(what="The graphics card component"))
@@ -3473,9 +3493,54 @@ class Workspace:
                 raise WorkspaceError("Pause processing first: models cannot be replaced "
                                      "while a meeting is being processed.")
             try:
-                self.downloads.start(name, token, on_success)
+                # "started", or "queued" behind the download or check running (#366).
+                return self.downloads.start(name, token, on_success)
             except setup.SetupError as exc:
                 raise WorkspaceError(str(exc)) from exc
+
+    def _prepare_queued_download(self, name, token):
+        """A queued download is about to start (#366): the checks of
+        download_model again, as things may have changed while it waited.
+        Policy that turns downloads off (K3; unreadable: off) ends the whole
+        queue; anything else ends this one only. Returns the token to send:
+        the one typed with the click (memory only), else the remembered one."""
+        if not self._allowed("AllowModelDownloads"):
+            raise setup.QueueStopped(DOWNLOADS_OFF)
+        gpu_only = gpu.component(name) is not None
+        if gpu_only and not self._allowed("AllowGpuComponent"):
+            raise setup.SetupError(MANAGED_OFF.format(what="The graphics card component"))
+        with self._lock:
+            # No job starts while a download waits; one that was running at the
+            # click (only a graphics card component may be queued then) may
+            # since have put that component to use.
+            if self._busy and self._busy[1] != "cleanup" and not (
+                    gpu_only and not self._gpu_in_use(name)):
+                raise setup.SetupError("Pause processing first: models cannot be replaced "
+                                       "while a meeting is being processed.")
+        if not (name in asr_engines.MANAGED_MODELS and asr_engines.MANAGED_MODELS[name].gated):
+            return None                        # public models never receive a token
+        if not token:
+            try:
+                token = credentials.load_token()
+            except credentials.CredentialError as exc:
+                raise setup.SetupError(str(exc)) from exc
+        if not token:
+            self._forget_display()
+            raise setup.SetupError("Enter your Hugging Face token to download the speaker "
+                                   "model.")
+        return token
+
+    def _queue_policy(self):
+        """Waiting downloads that policy no longer allows end now, and say
+        why (#366, K3): all of them when downloads are off, or the graphics
+        card components when those are. A running download carries on."""
+        if not self.downloads.queued():
+            return
+        if not self._allowed("AllowModelDownloads"):
+            self.downloads.drop_queued(DOWNLOADS_OFF)
+        elif not self._allowed("AllowGpuComponent"):
+            self.downloads.drop_queued(MANAGED_OFF.format(what="The graphics card component"),
+                                       only=lambda n: gpu.component(n) is not None)
 
     def remove_model(self, name):
         """Remove a downloaded model, or the graphics card component, from this
@@ -3614,8 +3679,12 @@ class Workspace:
             except setup.SetupError as exc:
                 raise WorkspaceError(str(exc)) from exc
 
-    def cancel_download(self):
-        return self.downloads.cancel()
+    def cancel_download(self, name=None):
+        """Cancel the running download, or (name) the one named: running,
+        or waiting in the queue, which then leaves it (#366)."""
+        if name is not None and (not isinstance(name, str) or not setup.known(name)):
+            raise WorkspaceError("Unknown model.")
+        return self.downloads.cancel(name)
 
     def remove_token(self):
         """Forget the remembered token. Downloaded models keep working offline."""

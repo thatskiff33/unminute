@@ -770,6 +770,11 @@
       steps: [show("settings")],
     },
     downloads: { steps: [show("downloads")] },
+    // #366: one download running and two queued behind it (Models-Queued,
+    // and Models-Queued-Dark in the dark theme); and the same queue carried
+    // on after a restart (Models-Resumed).
+    "downloads-queued": { change: (d) => queueDownloads(d, false), steps: [show("downloads")] },
+    "downloads-resumed": { change: (d) => queueDownloads(d, true), steps: [show("downloads")] },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.
     "settings-model-not-ready": {
@@ -853,6 +858,18 @@
   function openAndPlay() {
     return [openGarden, () => { window.workspace.play(24, 26); }, wait(500),
             () => { document.getElementById("player").playbackRate = 0.0625; }];
+  }
+  function queueDownloads(d, resumed) {
+    const again = resumed ? { resumed: true } : {};
+    const set = (n, download) => {
+      d.cards = d.cards.map((c) => (c.name === n ? { ...c, download } : c));
+    };
+    set("large-v3-turbo", { state: "running", percent: 41, log: [], ...again,
+                            message: "Downloading Whisper large-v3 turbo (1.62 GB, revision 0a363e9)..." });
+    set("large-v3", { state: "queued", position: 1, log: [], ...again,
+                      message: "Queued. It starts when the download before it finishes." });
+    set("gpu-speakers", { state: "queued", position: 2, log: [], ...again,
+                          message: "Queued. It starts when the download before it finishes." });
   }
   const name = location.hash.slice(1) || "home";
   const scenario = SCENARIOS[name] || { steps: [] };

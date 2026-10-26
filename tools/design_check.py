@@ -91,6 +91,13 @@ CASES = [
     {"name": "settings-drafts-mix", "board": "Settings.dc.html", "app": "settings-drafts-mix",
      "h": 1320, "props": {"drafts": "mix"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
+    # Queued downloads (#366): one running, two waiting; dark; carried on.
+    {"name": "downloads-queued", "app": "downloads-queued", "board": "Models-Queued.dc.html",
+     "h": 1000},
+    {"name": "downloads-queued-dark", "app": "downloads-queued",
+     "board": "Models-Queued-Dark.dc.html", "h": 1000, "dark": True},
+    {"name": "downloads-resumed", "app": "downloads-resumed", "board": "Models-Resumed.dc.html",
+     "h": 1000},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},
     {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "meeting", "w": 640},
