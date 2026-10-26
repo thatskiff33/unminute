@@ -40,8 +40,9 @@
 #   - A session is tied to one recording and a generation number. After stop()
 #     nothing more is kept and a late result is dropped.
 #   - A crashed draft worker is restarted once per session; a second crash, or
-#     a model that will not load, ends drafts for that recording. Neither ever
-#     touches the recording.
+#     a model that will not load, ends that session (not drafts for the whole
+#     recording: a policy change or the switch can start them again). Neither
+#     ever touches the recording.
 #   - Its crash file is handled as the main worker's (#278): started afresh
 #     past diag.CRASH_MAX while it runs, closed before the process ends by
 #     itself, and an ended worker is waited for up to worker.END_WAIT_S before
@@ -575,7 +576,7 @@ def serve(conn, load, log=None):
                     return
             except Exception as exc:
                 # Scoring or splitting failed: recorded with its frames, and the
-                # app told, so drafts end for this recording (not restarted).
+                # app told, so this draft session ends (not restarted).
                 code = diag.incident("worker", exc, op="draft")
                 send("error", type(exc).__name__, safe_message(exc), "draft", code)
                 return

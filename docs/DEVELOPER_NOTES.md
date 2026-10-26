@@ -359,7 +359,9 @@ real time, and remove it when the cause is fixed.
 - **A cancelled CI run on a pull request** usually means a newer push superseded it (#395):
   each workflow cancels a pull request's older run when a new one starts. Its checks,
   including a failed "Unit tests (Windows)", belong to the old head; look at the newest
-  head's run instead. A run on `main` is never cancelled this way.
+  head's run instead. A run on `main` is never cancelled this way. Do not re-run a superseded
+  run: it joins the same group and cancels the current head's run, whose "Unit tests
+  (Windows)" then fails (it blocks, never passes); re-run the head's run instead.
 - **`tests/test_recorder.py`** `test_a_recovered_recording_can_be_deleted_instead` failed once on
   the Windows runner and passed on rerun (#148).
 
