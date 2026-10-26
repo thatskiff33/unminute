@@ -4275,21 +4275,33 @@ class MachineModeScriptTests(unittest.TestCase):
         self.addCleanup(delete_test_key, TEST_KEY + "-machine")
         elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
         env = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}
+        real = real_install_state()
         for name, script, extra in (("install", self.copy, f"-Package '{zpath}'"),
                                     ("uninstall", uninstall, "")):
             with self.subTest(name):
                 r = run_installer(script, None, self.root, extra, env=env, cwd=self.root,
                                   machine=True)
-                self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
-                if elevated:
-                    # As CI runs: past the elevation check, the run stops at the
-                    # package that is not one, or at nothing to remove, having
-                    # written (if anything) only its scratch places.
-                    self.assertNotIn("needs administrator rights", r.stderr)
-                else:
-                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                out = r.stdout + r.stderr
+                if not elevated:
+                    self.assertEqual(r.returncode, 2, out)
                     self.assertIn("needs administrator rights", r.stderr)
                     self.assertEqual(list(program_files.iterdir()), [])
+                    continue
+                # As CI runs (GitHub's runners are elevated): past the elevation check.
+                self.assertNotIn("needs administrator rights", r.stderr)
+                if name == "install":
+                    # It makes the machine folder in the scratch Program Files
+                    # (New-MachineRoot, before the package is read), then stops at
+                    # the package that is not one.
+                    self.assertNotEqual(r.returncode, 0, out)
+                    self.assertEqual([p.name for p in program_files.iterdir()], ["Unminute"])
+                else:
+                    # It removes what the stopped install left there (its own folder,
+                    # with the installer's permissions and log), and succeeds.
+                    self.assertEqual(r.returncode, 0, out)
+                    self.assertEqual(list(program_files.iterdir()), [])
+        # run_installer also checks this around each run.
+        self.assertEqual(real_install_state(), real)
 
     def test_both_scripts_have_the_same_machine_section(self):
         def section(name):
