@@ -257,7 +257,7 @@ def assess(pr, required, notes):
         blockers.append(f"auto-merge is armed on the unreviewed head {head}: disarm now "
                         f"(gh pr merge {number} --disable-auto)")
     elif armed:
-        info.append("auto-merge is armed: disarm (gh pr merge --disable-auto) before any "
+        info.append(f"auto-merge is armed: disarm (gh pr merge {number} --disable-auto) before any "
                     "push, and re-arm only on a reviewed head")
     elif oid and not blockers and not unrequired_failing:
         info.append(f"auto-merge not armed: gh pr merge {number} --auto "
