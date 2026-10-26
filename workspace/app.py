@@ -1734,7 +1734,11 @@ class Workspace:
         (a meeting with no transcript version would otherwise wait forever).
         discard False: finish only, never remove (a damaged database, R11).
         A meeting already confirmed for removal (Discard marks it reviewed) is
-        left to its cleanup jobs: nothing is planned for it again (#181)."""
+        left to its cleanup jobs: nothing is planned for it again (#181).
+        A removal is said on the Meetings page (import_errors), so a meeting
+        the update check counted before this start does not just vanish
+        (#425): fixed words and a count only (P3)."""
+        removed = 0
         for m in self.store._all("SELECT m.id FROM meetings m WHERE m.reviewed_at IS NULL "
                                  "AND NOT EXISTS (SELECT 1 FROM versions v "
                                  "WHERE v.meeting_id = m.id)"):
@@ -1751,8 +1755,10 @@ class Workspace:
                     continue                # the database, not the import: kept for next time
                 except Exception:
                     pass
-            if discard:
-                self._discard_import(m["id"])
+            if discard and self._discard_import(m["id"]):
+                removed += 1
+        if removed:
+            self._import_errors = (self._import_errors + [_imports_removed(removed)])[-5:]
 
     def _new_version(self, mid, sid, plan, model=None):
         """The version for this source with the given model (by default the
@@ -3950,6 +3956,17 @@ def _expected_import_error(exc):
     return (isinstance(exc, (media.SourceChanged, media.DecodeError, UnsafePathError,
                              WorkspaceError))
             or (isinstance(exc, ValueError) and "no audio" in str(exc)))
+
+
+def _imports_removed(count):
+    """What the Meetings page says when start-up removed imports cut short
+    (_reconcile_imports, #425)."""
+    one = count == 1
+    return (f"{'An import' if one else f'{count} imports'} that did not finish before "
+            f"Unminute last stopped {'was' if one else 'were'} removed; the original "
+            f"{'recording was' if one else 'recordings were'} not changed. A microphone "
+            "recording, or one from a watched folder, comes back by itself; import any "
+            "other recording again if you still need it.")
 
 
 def _import_message(exc, code=None):

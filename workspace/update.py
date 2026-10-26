@@ -374,10 +374,8 @@ def blockers(db_path):
                         "released in the app by the people responsible."})
         meetings = count("meetings") if "meetings" in tables else 0
         if meetings:
-            out.append({"kind": "meetings", "count": meetings, "message":
-                        f"{meetings} meeting{'s are' if meetings != 1 else ' is'} still in the "
-                        "workspace. Finish each one (review, hand off, then confirm the final "
-                        "document is saved) so its content is cleaned up."})
+            out.append({"kind": "meetings", "count": meetings,
+                        "message": _meetings_message(con, tables, meetings)})
         jobs = count("cleanup_jobs") if "cleanup_jobs" in tables else 0
         if jobs:
             out.append({"kind": "cleanup", "count": jobs, "message":
@@ -418,6 +416,36 @@ def blockers(db_path):
         return out
     finally:
         con.close()
+
+
+def _meetings_message(con, tables, meetings):
+    """The meetings blocker's message. An import that did not finish (a
+    meeting with no transcript version whose review is not confirmed, for
+    example one cut short when the app was closed mid-import) cannot be
+    reviewed or handed off: the app finishes or removes it when it next
+    starts (app._reconcile_imports), so the message says to open the app
+    rather than to finish it (#425). Plain columns of both storage formats
+    only; nothing is deleted here (C4)."""
+    unfinished = 0
+    if "versions" in tables:
+        unfinished = con.execute(
+            "SELECT COUNT(*) FROM meetings m WHERE m.reviewed_at IS NULL AND NOT EXISTS "
+            "(SELECT 1 FROM versions v WHERE v.meeting_id = m.id)").fetchone()[0]
+    message = (f"{meetings} meeting{'s are' if meetings != 1 else ' is'} still in the "
+               "workspace.")
+    if unfinished < meetings:
+        message += (" Finish each one (review, hand off, then confirm the final document "
+                    "is saved) so its content is cleaned up.")
+    if unfinished:
+        which = ("It is an import" if meetings == 1 else
+                 f"{unfinished} of them {'is an import' if unfinished == 1 else 'are imports'}")
+        message += (f" {which} that did not finish, for example because Unminute was closed "
+                    "during the import. Open Unminute: when it starts, it either completes "
+                    "such an import, which then appears with your other meetings to finish as "
+                    "usual, or removes the unfinished copy (the original recording is never "
+                    "touched). One it cannot remove is listed as \"Import did not finish\", "
+                    "with Discard. Then run the update again.")
+    return message
 
 
 def _filled_folders(folder):

@@ -98,6 +98,55 @@ class GateTests(unittest.TestCase):
         kinds = {b["kind"] for b in update.blockers(self.db)}
         self.assertEqual(kinds, {"meetings"})
 
+    def meetings_message(self, db):
+        [found] = [b for b in update.blockers(db) if b["kind"] == "meetings"]
+        return found["count"], found["message"]
+
+    def test_an_import_that_did_not_finish_is_named_with_its_next_step(self):
+        # #425: a meeting with no transcript version (an import cut short when
+        # the app was closed mid-import) cannot be reviewed or handed off, and
+        # the app removes or completes it at its next start. The gate said
+        # "Finish each one", which the user could not do; it now names the
+        # state and says to open the app. Still counted, never deleted (C4).
+        self.make(meeting=True)                              # no source, no version
+        count, message = self.meetings_message(self.db)
+        self.assertEqual(count, 1)
+        self.assertTrue(message.startswith("1 meeting is still in the workspace. It is an "
+                                           "import that did not finish"), message)
+        self.assertIn("Open Unminute", message)
+        self.assertNotIn("Finish each one", message)
+        self.assertEqual(update.gate(self.db, store.SCHEMA_VERSION + 1)["code"], update.WAIT)
+        # With a meeting to finish as well, both steps are named.
+        s = Store(self.db, protector=keyprotect.TestProtector())
+        reviewed = s.create_meeting("Synthetic reviewed")
+        with s.tx() as db:
+            db.execute("UPDATE meetings SET reviewed_at = 1 WHERE id = ?", (reviewed,))
+        s.close()
+        count, message = self.meetings_message(self.db)
+        self.assertEqual(count, 2)
+        self.assertIn("Finish each one", message)
+        self.assertIn("1 of them is an import that did not finish", message)
+        self.assertEqual(update.gate(self.db, store.SCHEMA_VERSION + 1)["code"], update.WAIT)
+
+    def test_an_import_that_did_not_finish_is_named_in_a_schema_1_workspace(self):
+        # The state the owner's preview.3 workspace was most likely in (#425):
+        # read by the newer gate from schema 1's plain columns.
+        db = schema_v1.create(self.db)
+        try:
+            db.execute("INSERT INTO meetings (id, title, created_at, updated_at) "
+                       "VALUES ('a', 'Synthetic', 0, 0)")
+            db.execute("INSERT INTO meetings (id, title, created_at, updated_at) "
+                       "VALUES ('b', 'Synthetic', 0, 0)")
+            db.execute("INSERT INTO versions (id, meeting_id, source_id, engine, model, "
+                       "model_revision, precision, config_json, config_hash, created_at) "
+                       "VALUES ('v', 'b', 's', 'e', 'm', 'r', 'int8', '{}', 'h', 0)")
+        finally:
+            db.close()
+        count, message = self.meetings_message(self.db)
+        self.assertEqual(count, 2)
+        self.assertIn("Finish each one", message)
+        self.assertIn("1 of them is an import that did not finish", message)
+
 
 # Folder names a SQLite URI misreads unless the path is escaped (#164): "#"
 # starts a fragment, "?" a query, and "%41" is decoded to "A". Windows does not
