@@ -131,6 +131,19 @@ COPY_RETRY_JS = f"""
             status = await attempt();
         }}
         return {{status, retries}}; }};"""
+# A copy step can read its status as soon as the click leaves one, instead of
+# after a fixed wait that a slow answer under load could outlast (#318
+# review). The step clears the status before the click, so the first text that
+# appears is that click's answer. textAfter polls `read` every COPY_POLL_MS for
+# up to COPY_READ_MS, then returns whatever it reads ('' if nothing came). The
+# app takes about a second to say the clipboard is busy (workspace/clipboard.py).
+COPY_READ_MS = 3000
+COPY_POLL_MS = 100
+TEXT_AFTER_JS = f"""
+    const textAfter = async (read) => {{
+        for (let waited = 0; !read() && waited < {COPY_READ_MS}; waited += {COPY_POLL_MS})
+            await wait({COPY_POLL_MS});
+        return read(); }};"""
 
 
 def page_dialogs():
@@ -1189,6 +1202,219 @@ def add_failed_meeting(ws, root):
     return m["id"]
 
 
+# -- the locked screen (#111 C4b) -------------------------------------------------------
+# A second window, in a process of its own (pywebview starts once a process):
+# a workspace made with the app's own key protection in this check's temporary
+# folder, then opened as the app opens one whose key Windows will not unlock.
+LOCKED_TITLE = "synthetic-locked-marker"
+# NTE_BAD_KEY_STATE, as the signed number Windows reports after a password reset.
+BAD_KEY_STATE = -2146893813
+LOCKED_IDLE_S = 12          # longer than the page's idle poll (10 s): nothing may poll
+
+
+class RefusingProtector:
+    """Windows Data Protection refusing the workspace key, as after a password
+    reset without the old one. It holds no key and protects nothing: every
+    call raises. It carries the app's protector name, so the store reads the
+    refusal as Windows' ("windows"), and like the tests' protector it refuses
+    the real workspace folder."""
+
+    def __init__(self):
+        from workspace import keystore
+        self.name = keystore.APP_PROTECTOR
+
+    def allows(self, db_path):
+        from workspace.store import under_workspace_root
+        return not under_workspace_root(db_path)
+
+    def protect(self, root):
+        from workspace.dpapi import DpapiError
+        raise DpapiError("Windows could not protect the workspace key.", BAD_KEY_STATE)
+
+    def unprotect(self, blob):
+        from workspace.dpapi import DpapiError
+        raise DpapiError("Windows could not unlock the workspace key.", BAD_KEY_STATE)
+
+
+def locked_workspace(root):
+    """A workspace holding one synthetic meeting titled LOCKED_TITLE, made
+    with the app's own protector under root, then opened locked: with the
+    refusing protector and on_unavailable="lock", as __main__ opens it."""
+    from workspace import media
+    ws = Workspace(root / "ws", root / "models", start=False, battery=False)
+    try:
+        media.import_recording(ws.store, ws.media, write_wav(root / "synthetic-locked.wav", 5),
+                               LOCKED_TITLE)
+    finally:
+        ws.close()
+    locked = Workspace(root / "ws", root / "models", battery=False,
+                       protector=RefusingProtector(), on_unavailable="lock")
+    if locked.locked is None or locked.locked.reason != "windows":
+        locked.close()
+        raise RuntimeError("the workspace did not open locked")
+    return locked
+
+
+def logged_bridge(bridge, calls):
+    """bridge with each call's method name appended to calls (the bridge
+    log): the same methods and signatures, which pywebview reads."""
+    import functools
+    import inspect
+
+    def logged(name, fn):
+        @functools.wraps(fn)
+        def call(self, *args, **kwargs):
+            calls.append(name)
+            return fn(bridge, *args, **kwargs)
+        call.__signature__ = inspect.signature(fn)
+        return call
+    names = {name: logged(name, getattr(type(bridge), name))
+             for name in sorted(api.API_METHODS - {"pywebviewEventHandler"})}
+    return type("Api", (), {"__slots__": (), **names})()
+
+
+def interpreter():
+    """This Python as it was started, with its options (-I -B -X ... for a
+    package), to start the locked scenario's own process the same way."""
+    argv = list(getattr(sys, "orig_argv", None) or [])
+    if sys.argv and sys.argv[0] in argv:
+        return argv[:argv.index(sys.argv[0])]
+    return [sys.executable]
+
+
+def run_locked_child(args, flag, timeout=300, extra=()):
+    """Run this script's locked scenario (flag) in a process of its own, with
+    any extra arguments, and return its report, or {"error": ...}."""
+    import subprocess
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "locked.json"
+        cmd = [*interpreter(), str(Path(sys.argv[0]).resolve()), "unused.json", flag, str(out)]
+        if args.app:
+            cmd += ["--app", args.app]
+        cmd += list(extra)
+        try:
+            done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return {"error": f"the locked scenario did not finish in {timeout} s"}
+        if not out.is_file():
+            return {"error": f"the locked scenario wrote no report (exit {done.returncode}): "
+                             f"{(done.stderr or '').strip()[-400:]}"}
+        return json.loads(out.read_text(encoding="utf-8"))
+
+
+def locked_checks(window, ws, calls, report):
+    """The locked screen in the real window: shown on its own with the reason
+    and codes, no meeting title, only LOCKED_METHODS called, nothing called
+    while it sits there, and its buttons work (help opens no browser here)."""
+    try:
+        window.events.loaded.wait(30)
+        while not window.evaluate_js("!!(window.workspace && window.pywebview && "
+                                     "window.pywebview.api && window.pywebview.api.status)"):
+            time.sleep(0.2)
+        report.update(evaluate(window, WAIT + f"""
+            for (let i = 0; i < 50 && !window.workspace.state.locked; i++) await wait(200);
+            await wait(300);
+            const view = document.getElementById('view-locked');
+            const others = [...document.querySelectorAll('.view')]
+              .filter(v => v !== view && !v.hidden);
+            return {{shown: !!window.workspace.state.locked && !view.hidden && !others.length
+                            && document.getElementById('sidebar').hidden,
+                    heading_focused: document.activeElement === document.getElementById('h-locked'),
+                    reason: (window.workspace.state.locked || {{}}).reason,
+                    reason_text: document.getElementById('locked-reason').textContent,
+                    codes: document.getElementById('locked-codes').textContent,
+                    marker_shown: document.body.textContent.includes(
+                      {json.dumps(LOCKED_TITLE)})}};"""))
+        before = len(calls)
+        time.sleep(LOCKED_IDLE_S)
+        report["calls_while_idle"] = calls[before:]
+        # The copy is retried while another program briefly holds the
+        # clipboard, as the handoff's are (#342); each click starts from an
+        # empty status, so a slow answer is not read as the last click's. The
+        # status is read as soon as the click's answer appears, waiting up to
+        # COPY_READ_MS (textAfter): the app takes about 1 s to say the
+        # clipboard is busy, and longer under load.
+        copied = evaluate(window, WAIT + COPY_RETRY_JS + TEXT_AFTER_JS + """
+            return await copyRetrying(async () => {
+                document.getElementById('status').textContent = '';
+                document.getElementById('locked-copy').click();
+                return await textAfter(() => document.getElementById('status').textContent); });""",
+                          timeout=60) or {}
+        report["copied"] = copied.get("status")
+        report["copy_retries"] = copied.get("retries")
+        evaluate(window, WAIT + "document.getElementById('locked-help').click(); await wait(800);"
+                                "return true;")
+        report["help_opened"] = list(OPENED)
+        report["close_clicked"] = evaluate(window, WAIT + """
+            setTimeout(() => document.getElementById('locked-close').click(), 0);
+            return true;""")
+        for _ in range(50):                  # close_app destroys the window
+            if "close_app" in calls:
+                break
+            time.sleep(0.2)
+    except Exception as exc:
+        report["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        report["calls"] = list(calls)
+        if "close_app" not in calls:         # the button did not close it: never hang
+            window.destroy()
+
+
+def locked_main(out):
+    """The locked scenario's own process: writes its report to out."""
+    import webbrowser
+    webbrowser.open = lambda url, *a, **k: OPENED.append(url) or True   # no browser starts
+    report, calls = {}, []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        try:
+            ws = locked_workspace(root)
+        except Exception as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            holder = {}
+            window = shell.create_window(
+                logged_bridge(api.make_api(ws, lambda: holder.get("window")), calls),
+                title="Workspace UI check, locked (synthetic data)", allowed=api.API_METHODS)
+            holder["window"] = window
+            shell.run(locked_checks, (window, ws, calls, report),
+                      storage_path=shell.storage_folder(ws.root))
+            ws.close()
+    Path(out).write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return 0
+
+
+def locked_problems(lk):
+    """What the locked scenario found wrong (empty when it passed)."""
+    from workspace import setup
+    if lk.get("error"):
+        return [f"locked screen ({lk['error']})"]
+    problems = []
+    if not lk.get("shown"):
+        problems.append("locked screen not shown on its own")
+    if lk.get("marker_shown"):
+        problems.append("locked screen shows a meeting title")
+    if not lk.get("heading_focused"):
+        problems.append("locked screen heading not focused")
+    if lk.get("reason") != "windows" or "0x8009000B" not in (lk.get("codes") or "") \
+            or "U-" not in (lk.get("codes") or "") \
+            or not (lk.get("reason_text") or "").startswith("Windows could not unlock") \
+            or "nothing has been deleted" not in (lk.get("reason_text") or ""):
+        problems.append("locked screen reason or codes")
+    calls = set(lk.get("calls") or [])
+    if calls - api.LOCKED_METHODS or "status" not in calls:
+        problems.append(f"locked screen calls ({', '.join(sorted(calls)) or 'none'})")
+    if lk.get("calls_while_idle"):
+        problems.append(f"locked screen polled ({', '.join(lk['calls_while_idle'][:5])})")
+    if "Copied the details for IT" not in (lk.get("copied") or ""):
+        problems.append("locked screen Copy details for IT")
+    if lk.get("help_opened") != [setup.HELP_LINKS["recovery"]]:
+        problems.append("locked screen How to recover")
+    if "close_app" not in calls:
+        problems.append("locked screen Close Unminute")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser(description="Real-window UI check on synthetic data (#20).",
                                  allow_abbrev=False)
@@ -1197,7 +1423,10 @@ def main():
                     "that package's Python: runtime\\python.exe -I -B -X disable-remote-debug)")
     ap.add_argument("--zip", help="the zip that package came from: records it as release "
                     "evidence (tools/evidence.py); exit 1 unless that evidence passes")
+    ap.add_argument("--locked-only", metavar="REPORT", help=argparse.SUPPRESS)
     args = ap.parse_args()
+    if args.locked_only:                  # the locked scenario's own process (#111 C4b)
+        return locked_main(args.locked_only)
     before = evidence.prepare(ap, args, APP if args.app else None)
     out = Path(args.report)
     report = {}
@@ -1237,6 +1466,8 @@ def main():
         report["webview_profile_removed_on_close"] = not storage.exists()
         ws.close()
     report["handoff_opened"] = OPENED
+    # The locked screen (#111 C4b), in a window and process of its own.
+    report["locked_screen"] = run_locked_child(args, "--locked-only")
     report["growing_problems"] = growing_problems(report.get("growing") or {})
     report["failed_meeting_problems"] = failed_meeting_problems(
         report.get("failed_meeting") or {})
@@ -1316,6 +1547,7 @@ def main():
         bad.append("failed meeting (" + "; ".join(report["failed_meeting_problems"]) + ")")
     if report["draft_problems"]:
         bad.append("draft text (" + "; ".join(report["draft_problems"]) + ")")
+    bad.extend(locked_problems(report["locked_screen"]))
     print("FAILED: " + ", ".join(bad) if bad else "ALL CHECKS PASSED")
     if args.zip:
         ev = evidence.stamp_file(out, "ui", args.zip, APP.parent, passed=not bad,

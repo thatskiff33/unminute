@@ -1,0 +1,3 @@
+Security hardening (#111, phase C):
+
+- **A locked screen when Windows will not unlock Unminute's key.** Instead of the usual window, Unminute now shows only a screen headed "Unminute is locked". It says in two short sentences what happened and that nothing has been deleted, shows the codes your IT team needs (with the Windows error number), and has three buttons: Copy details for IT, How to recover and Close Unminute. It shows no meeting and asks for nothing else in the background. What to do (sign out of Windows and back in, then copy the details for IT) is in How to recover; IT's steps (rename the workspace folder, keep it while any hold applies) are on the screen and in the user guide.

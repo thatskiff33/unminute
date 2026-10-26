@@ -328,7 +328,10 @@ real time, and remove it when the cause is fixed.
   (and the locked screen's "Copy details for IT" step on #318), most likely because
   concurrent test runs on the same desktop held the clipboard. The check now clicks a copy
   again only on that message, up to 10 clicks over about 30 s, and reports the retries
-  (`copy_retries` and `open_retries` in the handoff step). A copy that stays busy still fails
+  (`copy_retries` and `open_retries` in the handoff step, `copy_retries` in the locked
+  screen's report). The busy message takes about a second to arrive, so a handoff click's
+  status is read 1.5 s after it, and the locked screen's as soon as it appears, waiting up
+  to 3 s (`TEXT_AFTER_JS`). A copy that stays busy still fails
   the step. A new copy step in the check goes through `COPY_RETRY_JS`
   (`tests/test_ui_check_clipboard.py`). Many retries in a report mean something kept the
   clipboard busy: find it rather than raising `COPY_TRIES` (AGENTS.md E2).

@@ -27,6 +27,7 @@ const state = {
   wasActive: false,              // ...at the poll before
   recordingLive: false,          // a recording is open and running
   recActive: false,              // a recording is open or saving: the microphone lists wait (#369)
+  locked: null,                  // status().locked: the workspace opened locked (#111 C4b)
 };
 
 // -- bridge -----------------------------------------------------------------
@@ -91,6 +92,7 @@ const NAV_OF = { meetings: "meetings", meeting: "meetings", handoff: "meetings",
                  downloads: "settings", setup: "settings", help: "help" };
 
 function show(view) {
+  if (state.locked) return;            // only the locked screen (#111 C4b)
   if (view === "inbox" || view === "active") view = "meetings";   // their earlier names
   if (view !== "meeting") stopAudio();
   if (view !== "meeting" && view !== "handoff") stopEditing();
@@ -353,6 +355,10 @@ async function renderLists(reminders) {
 
 async function renderStatus() {
   const s = await call("status");
+  if (s.locked) {                      // locked after all (a first status() that failed)
+    renderLocked(s.locked);
+    return;
+  }
   state.mode = s.mode;
   state.changes = s.changes;
   state.wasActive = state.active;      // one more fast poll across the gap between jobs
@@ -437,6 +443,71 @@ function retentionBanner(r) {
   if (due[0]) parts.push(`${due[0]} ${oneOrMany(due[0], "meeting has", "meetings have")} waited ${days} days or more for ${oneOrMany(due[0], "its", "their")} next step.`);
   if (due[1]) parts.push(`${due[1]} ${oneOrMany(due[1], "recording has", "recordings have")} waited ${days} days or more for Keep or Delete.`);
   return notice("hold", parts.join(" "));
+}
+
+// -- locked (#111 C4b) ---------------------------------------------------------------
+// Windows would not unlock the workspace key, so the app opened locked (C4a):
+// the bridge refuses everything but api.LOCKED_METHODS. The page then shows
+// only this screen, asks for nothing else (no list, meeting or setting, so no
+// title or name can appear) and never polls: only closing and opening
+// Unminute can change the state. Fixed words and codes, shown as text.
+// The paragraph is two short sentences, what happened and that nothing is
+// lost (the owner, 22 Oct 2026); what to do is in IT's steps and the guide.
+const LOCKED_MISMATCH = "Unminute's key does not match its workspace, so it cannot open your " +
+  "meetings.";
+const LOCKED_REASONS = {
+  windows: "Windows could not unlock Unminute's encryption key for your account on this computer.",
+  key: LOCKED_MISMATCH,
+  protector: LOCKED_MISMATCH,
+  missing: "Unminute's key record is missing from its workspace, so it cannot open your meetings.",
+};
+const LOCKED_OTHER = "Unminute cannot use its encryption key, so it cannot open your meetings.";
+const LOCKED_KEPT = "Your meetings are still on this computer, and nothing has been deleted.";
+
+// A Windows error number as Windows tools show it: 0x8009000B for -2146893813.
+const hex32 = (n) => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(8, "0");
+
+function renderLocked(info) {
+  state.locked = info;
+  clearTimeout(pollTimer);              // nothing polls while locked
+  pollTimer = null;
+  stopRecTimer();
+  setMenu(false);
+  $("sidebar").hidden = true;
+  document.querySelector(".topbar").hidden = true;
+  $("drop-overlay").hidden = true;
+  for (const v of VIEWS) $(`view-${v}`).hidden = true;
+  document.body.dataset.view = "locked";
+  $("view-locked").hidden = false;
+  say("");                              // nothing left from a usual start
+  // The damage code itself is in the codes below.
+  const damage = info.damage ? " Unminute also found damage in its workspace database." : "";
+  // The alert is announced once, as it is filled in.
+  $("locked-reason").textContent =
+    `${LOCKED_REASONS[info.reason] || LOCKED_OTHER}${damage} ${LOCKED_KEPT}`;
+  const codes = [["Code", info.code]];
+  if (Number.isInteger(info.win_error))
+    codes.push(["Windows error", `${info.win_error} (${hex32(info.win_error)})`]);
+  codes.push(["Database damage", info.damage]);
+  const shown = codes.filter(([, value]) => value);
+  $("locked-codes").replaceChildren(...shown.flatMap(([name, value]) =>
+    [el("dt", { textContent: name }), el("dd", { textContent: String(value) })]));
+  $("locked-codes").hidden = !shown.length;
+  // Focus moves to the heading, which is focusable only until it loses focus:
+  // it is not a control, so the tab order stays the buttons'.
+  const heading = $("h-locked");
+  heading.tabIndex = -1;
+  heading.addEventListener("blur", () => heading.removeAttribute("tabindex"), { once: true });
+  heading.focus();
+}
+
+function wireLocked() {
+  $("locked-copy").addEventListener("click", () => attempt(async () => {
+    await call("copy_diagnostics");
+    say("Copied the details for IT. They hold no meeting content.");
+  }));
+  $("locked-help").addEventListener("click", () => attempt(() => call("open_help", "recovery")));
+  $("locked-close").addEventListener("click", () => attempt(() => call("close_app")));
 }
 
 function renderReminders(r) {
@@ -2912,6 +2983,7 @@ function wireDrop() {
   const overlay = $("drop-overlay");
   const hide = () => { overlay.hidden = true; };
   document.addEventListener("dragover", (e) => {
+    if (state.locked) return;            // nothing is imported while locked (#111 C4a)
     if (!e.dataTransfer || ![...e.dataTransfer.types].includes("Files")) return;
     if (state.finishOnly) return;            // nothing is imported in finish-only mode
     overlay.hidden = false;
@@ -2924,7 +2996,7 @@ function wireDrop() {
 let refreshAgain = false;
 
 async function refresh() {
-  if (!window.pywebview) return;
+  if (!window.pywebview || state.locked) return;   // locked: nothing to refresh (#111 C4b)
   if (refreshing) {                    // one is running: run again when it ends, so an
     refreshAgain = true;               // action's refresh is never lost
     return;
@@ -2932,6 +3004,7 @@ async function refresh() {
   refreshing = true;
   try {
     await renderStatus();
+    if (state.locked) return;          // only the locked screen from here (#111 C4b)
     // The meeting list and reminders only when Python reports a change, the
     // view changed, or every LIST_REFRESH_POLLS polls anyway (ages and hold
     // reviews depend on the time). Counted in polls, not by the clock: the
@@ -2995,6 +3068,7 @@ function pollDelay() {
 // Soon, not in up to 10 s: after something the page did not start itself (a
 // recording dropped on the window is imported by Python directly).
 function pollSoon() {
+  if (state.locked) return;
   state.active = true;                 // so an in-flight poll re-arms fast, not at 10 s;
   if (document.hidden) return;         // wasActive then keeps one more 2 s poll
   clearTimeout(pollTimer);
@@ -3003,6 +3077,7 @@ function pollSoon() {
 }
 
 function schedulePoll() {
+  if (state.locked) return;            // nothing changes until Unminute is opened again
   clearTimeout(pollTimer);
   pollTimer = null;
   if (document.hidden) return;
@@ -3067,6 +3142,7 @@ function wire() {
   }));
   wireSetup();
   wireHandoff();
+  wireLocked();
   for (const b of document.querySelectorAll(".nav")) b.addEventListener("click", () => show(b.dataset.view));
   $("import").addEventListener("click", () => attempt(async () => {
     await call("clear_import_errors");
@@ -3234,6 +3310,14 @@ window.workspace = { call, show, openMeeting, refresh, state, play, say, setStep
 
 wire();
 window.addEventListener("pywebviewready", async () => {
+  // A locked workspace (#111 C4b): the status first, and if it is locked only
+  // the locked screen, with no other request and no polling.
+  let st = null;
+  try { st = await call("status"); } catch (err) { /* shown by refresh */ }
+  if (st && st.locked) {
+    renderLocked(st.locked);
+    return;
+  }
   // First run, or no usable speech model: start with Setup.
   let s = null;
   try { s = await call("setup_state"); } catch (err) { /* shown by refresh */ }

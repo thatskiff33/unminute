@@ -4,6 +4,7 @@
 
 import importlib.util
 import os
+import re
 import sys
 import tempfile
 import time
@@ -1666,6 +1667,165 @@ class PageSearchTests(unittest.TestCase):
                            "const current = state.hit >= 0 ? state.hits[state.hit] : undefined;",
                            "state.hit = jump ? -1 : hits.indexOf(current);",
                            "if (jump) nextHit(1);")
+
+
+def js_block(source, start):
+    """The body of the block whose opening brace ends the text at start."""
+    depth = 0
+    for i in range(start - 1, len(source)):
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        if depth == 0:
+            return source[start:i]
+    raise ValueError("block has no end")
+
+
+@unittest.skipUnless(HAVE_DEPS, "numpy/av not installed")
+class LockedPageTests(unittest.TestCase):
+    """The page's locked screen (#111 C4b; docs/ENCRYPTION.md "Locked"). When
+    status() says the workspace is locked, the page shows only the locked
+    screen: it asks for nothing else (no list, no meeting, no setup), calls
+    only api.LOCKED_METHODS, never polls (only closing and opening Unminute
+    can change the state) and shows fixed words and codes as text. Read from
+    the page's source: the tests do not run JavaScript. tools/ui_idle_check.py
+    runs the locked page headless (no bridge call or timer in a minute) and
+    tools/workspace_ui_check.py in the real window."""
+
+    @classmethod
+    def setUpClass(cls):
+        from workspace import api, diag
+        ui = Path(__file__).resolve().parents[1] / "workspace" / "ui"
+        cls.page = (ui / "app.js").read_text(encoding="utf-8")
+        cls.html = (ui / "index.html").read_text(encoding="utf-8")
+        cls.locked_methods = api.LOCKED_METHODS
+        cls.reasons = set(diag.KEY_REASONS)
+
+    def function(self, name):
+        """A function's body in the page; a failure (not an error) if missing."""
+        self.assertTrue(f"function {name}(" in self.page, f"the page has no {name}()")
+        return js_function(self.page, name)
+
+    def boot(self):
+        """The start-up handler: the last pywebviewready listener, which shows
+        the first view."""
+        marker = 'window.addEventListener("pywebviewready", async () => {'
+        return js_block(self.page, self.page.rindex(marker) + len(marker))
+
+    @staticmethod
+    def calls(text):
+        return re.findall(r'\bcall\(\s*"(\w+)"', text)
+
+    def test_a_locked_start_asks_for_the_status_and_nothing_else(self):
+        boot = self.boot()
+        self.assertIn("renderLocked(", boot, "the start-up never shows the locked screen")
+        # Up to the locked screen and its return, the only call is status().
+        locked_path = boot[:boot.index("return;", boot.index("renderLocked("))]
+        self.assertEqual(["status"], self.calls(locked_path))
+        self.assertLess(boot.index('call("status")'), boot.index('call("setup_state")'))
+
+    def test_the_locked_screen_calls_only_the_locked_methods(self):
+        used = self.calls(self.function("renderLocked") + self.function("wireLocked"))
+        self.assertEqual({"copy_diagnostics", "open_help", "close_app"}, set(used))
+        self.assertLessEqual(set(used), self.locked_methods)
+        self.assertIn('call("open_help", "recovery")', self.function("wireLocked"))
+        self.assertIn("wireLocked();", self.function("wire"))
+
+    def test_nothing_polls_navigates_or_takes_a_drop_while_locked(self):
+        # Each of these starts by returning while the page is locked.
+        for name in ("refresh", "schedulePoll", "pollSoon", "show"):
+            with self.subTest(function=name):
+                first = self.function(name).strip().splitlines()[0]
+                self.assertRegex(first, r"^if \(.*state\.locked.*\) return;")
+        drop = self.function("wireDrop")
+        self.assertIn("if (state.locked) return;", drop[drop.index('"dragover"'):])
+        # And the locked screen stops any poll already scheduled.
+        self.assertIn("clearTimeout(pollTimer)", self.function("renderLocked"))
+
+    def test_the_locked_screen_is_text_only_and_hides_everything_else(self):
+        body = self.function("renderLocked")
+        for html in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write"):
+            self.assertNotIn(html, body)
+        self.assertIn("textContent", body)
+        for hidden in ('$("sidebar").hidden = true',
+                       'document.querySelector(".topbar").hidden = true',
+                       "for (const v of VIEWS) $(`view-${v}`).hidden = true",
+                       '$("view-locked").hidden = false'):
+            self.assertIn(hidden, body)
+        # Focus moves to the heading, which is focusable only until it loses
+        # focus (it is not a control: the tab order stays the buttons').
+        self.assertIn('heading.tabIndex = -1;', body)
+        self.assertIn('heading.focus();', body)
+        self.assertIn('heading.removeAttribute("tabindex")', body)
+
+    def test_the_locked_screen_in_the_page(self):
+        start = self.html.index('<section id="view-locked"')
+        section = self.html[start:self.html.index("</section>", start)]
+        self.assertIn(" hidden>", section[:section.index("\n")])
+        self.assertIn('<h1 id="h-locked">Unminute is locked</h1>', section)
+        self.assertIn('id="locked-reason" class="locked-reason" role="alert"', section)
+        for button, text in (("locked-copy", "Copy details for IT"),
+                             ("locked-help", "How to recover"),
+                             ("locked-close", "Close Unminute")):
+            self.assertRegex(section, rf'<button type="button" id="{button}"[^>]*>{text}</button>')
+
+    def test_every_reason_has_its_own_wording(self):
+        start = self.page.index("const LOCKED_REASONS = {")
+        block = self.page[start:self.page.index("};", start)]
+        self.assertEqual(self.reasons, set(re.findall(r"^  (\w+):", block, re.MULTILINE)))
+
+    def test_a_later_status_that_says_locked_still_shows_the_locked_screen(self):
+        # Review of 7b28de1: when the first status() fails, the start goes on
+        # as usual. The next status (the first refresh) must still end on the
+        # locked screen, and that refresh must ask for nothing more.
+        body = self.function("renderStatus")
+        after = body[body.index('call("status")'):]
+        self.assertRegex(after, r'^call\("status"\);\s*if \(s\.locked\) \{\s*(?://[^\n]*\s*)?'
+                                r'renderLocked\(s\.locked\);\s*return;\s*\}',
+                         "renderStatus does not stop at a locked status")
+        self.assertRegex(self.function("refresh"),
+                         r"await renderStatus\(\);\s*if \(state\.locked\) return;",
+                         "refresh goes on after the status said locked")
+
+    def strings(self, name):
+        """A page constant built from string literals joined by +."""
+        found = re.search(rf"const {name} = ((?:\"[^\"]*\"\s*\+?\s*)+);", self.page)
+        self.assertIsNotNone(found, f"the page has no string constant {name}")
+        return "".join(re.findall(r'"([^"]*)"', found.group(1)))
+
+    def test_the_users_paragraph_is_two_short_sentences(self):
+        # Owner, 22 Oct 2026 (#111): what happened, then that nothing is lost.
+        # Signing out and copying the details for IT are in "How to recover"
+        # and IT's steps, not in the paragraph.
+        start = self.page.index("const LOCKED_REASONS = {")
+        block = self.page[start:self.page.index("};", start)]
+        firsts = {"LOCKED_OTHER": self.strings("LOCKED_OTHER")}
+        for name in set(re.findall(r"^  \w+: (LOCKED_\w+),", block, re.MULTILINE)):
+            firsts[name] = self.strings(name)
+        firsts.update(("reason " + k, v) for k, v in
+                      re.findall(r'^  (\w+): "([^"]*)",', block, re.MULTILINE))
+        self.assertGreaterEqual(len(firsts), 4)
+        kept = self.strings("LOCKED_KEPT")
+        self.assertIn("nothing has been deleted", kept)
+        for name, text in [*firsts.items(), ("LOCKED_KEPT", kept)]:
+            with self.subTest(name=name):
+                self.assertEqual(1, len(re.findall(r"[.!?](?:\s|$)", text)), text)
+                self.assertLessEqual(len(text.split()), 16, text)
+                self.assertNotIn("sign out", text.lower())
+                self.assertNotIn("IT team", text)
+        self.assertIn("${LOCKED_REASONS[info.reason] || LOCKED_OTHER}${damage} ${LOCKED_KEPT}",
+                      self.function("renderLocked"))
+
+    def test_signing_out_and_the_details_are_in_its_and_the_guides_steps(self):
+        start = self.html.index('<section class="locked-it"')
+        steps = self.html[start:self.html.index("</section>", start)]
+        self.assertIn("sign out of Windows and back in", steps)
+        self.assertIn("Copy details for IT", steps)
+        guide = (Path(__file__).resolve().parents[1] / "docs" / "WORKSPACE_GUIDE.md").read_text(
+            encoding="utf-8")
+        start = guide.index("## If Unminute cannot unlock its workspace")
+        section = guide[start:guide.index("\n## ", start + 1)]
+        self.assertRegex(section, r"\n1\. [^\n]*sign out of Windows and back in")
+        self.assertRegex(section, r"\n2\. [^\n]*\*\*Copy details for IT\*\*")
+
 
 if __name__ == "__main__":
     unittest.main()

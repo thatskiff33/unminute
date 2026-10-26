@@ -4,7 +4,7 @@ The approved design for the Unminute window (#89). The boards in `boards/` are t
 
 ## Boards
 
-`boards/` holds the source of every board from the design canvas, signed off on 15 October 2026 and frozen at canvas version `1792040066-d1fe`. `canvas.json` lists them with their size and title. Each `.dc.html` file is one board; several take a property (for example `Meeting.dc.html` takes `direction` and `phase`) and the small files import a larger board with fixed properties.
+`boards/` holds the source of every board from the design canvas, signed off on 15 October 2026 and frozen at canvas version `1792040066-d1fe`. `Locked` was added afterwards in the same format, for the locked screen (#111 C4b); it follows the signed-off tokens and the `Help` page's type and spacing. `canvas.json` lists them with their size and title. Each `.dc.html` file is one board; several take a property (for example `Meeting.dc.html` takes `direction` and `phase`) and the small files import a larger board with fixed properties.
 
 All names and text in the boards are fictional sample content.
 
@@ -15,7 +15,7 @@ All names and text in the boards are fictional sample content.
 | Reviewing a meeting | `Meeting`, `Meeting-Transcribing`, `Meeting-Edit`, `Meeting-Reviewed`, `Meeting-Earlier`, `Meeting-Panels` |
 | Dialogs and hand off | `Names`, `Confirm`, `Handoff`, `Handoff-Template` |
 | First-run setup | `Setup-1`, `Setup` (step 2), `Setup-3`, `Setup-4`, `Setup-5` |
-| Settings and help | `Settings`, `Models` (Downloads), `Help`; `Models-Queued`, `Models-Queued-Dark` and `Models-Resumed` (queued downloads, #366: `Models` with its `state` and `theme` properties) |
+| Settings, help and the locked screen | `Settings`, `Models` (Downloads), `Help`; `Models-Queued`, `Models-Queued-Dark` and `Models-Resumed` (queued downloads, #366: `Models` with its `state` and `theme` properties); `Locked` (added for #111 C4b, 22 October 2026, after the sign-off below) |
 | Narrow windows | `Meeting-Narrow` (900 px), `Meeting-640`, `Meeting-320`, `Home-640`, `Home-320` |
 | Dark theme | `Home-Dark`, `Meeting-Dark` |
 | Explored, not chosen | `Home-B`, `Meeting-B` |

@@ -99,6 +99,7 @@ CASES = [
     {"name": "downloads-resumed", "app": "downloads-resumed", "board": "Models-Resumed.dc.html",
      "h": 1000},
     {"name": "help", "board": "Help.dc.html", "app": "help"},
+    {"name": "locked", "board": "Locked.dc.html", "app": "locked"},
     {"name": "meeting-900", "board": "Meeting-Narrow.dc.html", "app": "meeting", "w": 900},
     {"name": "meeting-640", "board": "Meeting-640.dc.html", "app": "meeting", "w": 640},
     {"name": "meeting-320", "board": "Meeting-320.dc.html", "app": "meeting", "w": 320},
