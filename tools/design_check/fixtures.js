@@ -28,8 +28,21 @@
   // meter's canvas (#rec-canvas) was cleared for drawing, one count per frame,
   // as tools/perf_check.py counts them in the real window.
   // allCalls: every bridge call since the page loaded, never reset (locked mode).
-  const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [],
+  // live: changes to the text of a live region (polite or assertive, or role
+  // status, alert or log) while measured. A screen reader may read a live
+  // region again at each change, even to the same text, so an idle page or a
+  // steady recording must make none (Narrator, 26 Oct 2026, #346). Counted
+  // when the region holds text afterwards (what a screen reader would read):
+  // a message cleared (a toast going) is not. Text only: a region shown,
+  // hidden or relabelled (attributes) is not counted.
+  const perf = { calls: {}, allCalls: {}, timeouts: 0, rebuilds: 0, errors: [], live: 0, liveIds: new Set(),
                  intervals: new Map(), pendingFrames: new Set(), draws: 0, drawnFrame: -1 };
+  const LIVE = '[aria-live="polite"], [aria-live="assertive"], [role="status"], [role="alert"], [role="log"]';
+  function liveRegion(node) {
+    const element = node.nodeType === 1 ? node : node.parentElement;
+    const region = element && element.closest(LIVE);
+    return region && region.getAttribute("aria-live") !== "off" ? region : null;
+  }
   // The simulated display (perf mode with &display=Hz). Headless Edge runs
   // almost no animation frames while virtual time skips ahead, so the meter's
   // frame rate cannot be seen there. Instead, frames come from a timer here,
@@ -130,9 +143,19 @@
       new MutationObserver((records) => { perf.rebuilds += records.length; })
         .observe(groups, { childList: true });
     }
+    new MutationObserver((records) => {
+      for (const r of records) {
+        const region = liveRegion(r.target);
+        if (region && region.textContent.trim()) {
+          perf.live++;
+          perf.liveIds.add(region.id || region.className || "?");
+        }
+      }
+    }).observe(document.body, { subtree: true, childList: true, characterData: true });
     // Count from here, before the page becomes hidden, so work it does on the
     // visibilitychange itself counts too.
     perf.calls = {}; perf.timeouts = 0; perf.rebuilds = 0; perf.draws = 0;
+    perf.live = 0; perf.liveIds.clear();
     perf.ticksFrom = sim.ticks; perf.framesFrom = sim.frames;
     if (perfMode === "hidden") {
       pageHidden = true;
@@ -168,6 +191,7 @@
     return { calls: { ...perf.calls }, timeouts: perf.timeouts, rebuilds: perf.rebuilds,
              intervals: [...perf.intervals.values()], frames: perf.pendingFrames.size,
              rows: document.querySelectorAll("#groups li").length, draws: perf.draws,
+             live: perf.live, liveIds: [...perf.liveIds],
              ticks: sim.ticks - perf.ticksFrom, simFrames: sim.frames - perf.framesFrom };
   }
   function finish(ms, seen, catchUp, redrawn = null, catchUpDraws = null) {
@@ -184,6 +208,8 @@
       timeouts_per_minute: perMinute(seen.timeouts),
       pending_animation_frames: seen.frames,
       list_rebuilds_per_minute: perMinute(seen.rebuilds),
+      live_region_changes_per_minute: perMinute(seen.live),
+      live_regions_changed: seen.liveIds,
       live_intervals: seen.intervals.length,
       fastest_interval_ms: seen.intervals.length ? Math.min(...seen.intervals) : null,
       meeting_rows: seen.rows,
@@ -564,7 +590,7 @@
     ],
     detail: { "m-garden": meeting({}) },
     transcript: { "m-garden": GARDEN },
-    recording: { enabled: true, display: "flow", recording: null, reports: [] },
+    recording: { enabled: true, computer_audio: false, display: "flow", recording: null, reports: [] },
     status: { busy: null, message: "", import_errors: [], importing: 0, mode: "quiet", integrity: null },
     reminders: { holds_due: [], awaiting_confirmation: [], retention: [], recordings_waiting: [],
                  thresholds: { review_days: 30, action_days: 0, managed: { review: false, action: false } } },
@@ -648,6 +674,39 @@
     "recording-drafts-hidden": {
       change: (d) => { SCENARIOS["recording-drafts"].change(d); },
       steps: [() => document.getElementById("rec-draft-toggle").click()],
+    },
+    // Computer audio (#108): on in Settings, so the line under Record says so.
+    "home-computer": { change: (d) => { d.recording.computer_audio = true; }, steps: [] },
+    // Recording with computer audio: the thin second bar under the display.
+    "recording-computer": {
+      change: (d) => {
+        SCENARIOS.recording.change(d);
+        d.recording.computer_audio = true;
+        d.recording.recording.computer = { on: true, level_db: -30, device: "Speakers (sample)" };
+        d.compLevels = true;
+      },
+      steps: [],
+    },
+    // A minute in, the microphone hears the room but the computer plays nothing.
+    "recording-computer-quiet": {
+      change: (d) => {
+        SCENARIOS["recording-computer"].change(d);
+        d.recording.recording.seconds = 75;
+        d.recording.recording.computer.level_db = -96;
+        d.compLevels = false;
+      },
+      steps: [wait(1200)],
+    },
+    // Policy turned computer audio off mid-recording: the bar says it stopped.
+    "recording-computer-stopped": {
+      change: (d) => {
+        SCENARIOS["recording-computer"].change(d);
+        d.recording.recording.computer = { on: false, level_db: -96, device: "Speakers (sample)" };
+        d.recording.recording.events = [{ kind: "computer_policy_stop", at_s: 512,
+          note: "Your organisation turned off computer audio. Only the microphone is recorded from here." }];
+        d.compLevels = false;
+      },
+      steps: [],
     },
     "home-empty": { change: (d) => { d.meetings = []; }, steps: [] },
     "home-drop": {
@@ -781,6 +840,8 @@
     "setup-3": { change: firstRun, steps: [() => window.workspace.setStep(3)] },
     "setup-4": { change: (d) => { firstRun(d); d.micHeard = true; },
                  steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
+    "setup-4-computer": { change: (d) => { firstRun(d); d.settings.computer_audio = true; d.micHeard = true; },
+                          steps: [() => window.workspace.setStep(4), wait(500), () => document.getElementById("su-test").click()] },
     "setup-5": {
       change: (d) => { firstRun(d); d.settings.microphone = false; },
       steps: [() => window.workspace.setStep(4), wait(400), () => window.workspace.setStep(5)],
@@ -791,6 +852,19 @@
                        imported: 4, fetch_cloud: true, delete_originals: false }];
         d.receipts = [{ completed_at: at(9, 0) - DAY, result: "Audio and transcript removed (meeting 1)" },
                       { completed_at: at(9, 0) - 2 * DAY, result: "Audio removed after review (meeting 2)" }];
+      },
+      steps: [show("settings")],
+    },
+    // Computer audio (#108): turned on, and turned off by the organisation.
+    "settings-computer": {
+      change: (d) => { SCENARIOS.settings.change(d); d.settings = { ...d.settings, computer_audio: true }; },
+      steps: [show("settings")],
+    },
+    "settings-computer-managed": {
+      change: (d) => {
+        SCENARIOS.settings.change(d);
+        d.settings = { ...d.settings, managed: { managed: ["AllowComputerAudioRecording"], invalid: [],
+          allow: { AllowComputerAudioRecording: false }, assistant: null } };
       },
       steps: [show("settings")],
     },
@@ -832,6 +906,24 @@
     // and Models-Queued-Dark in the dark theme); and the same queue carried
     // on after a restart (Models-Resumed).
     "downloads-queued": { change: (d) => queueDownloads(d, false), steps: [show("downloads")] },
+    // #346 (the live-region gate in tools/ui_idle_check.py, no boards): a meeting
+    // whose transcription stopped (the assertive #m-error), and Setup's speaker
+    // step while its model downloads (#su-speaker-status), each left open.
+    "meeting-error": {
+      change: (d) => {
+        d.detail["m-garden"] = meeting({ stage: "inbox", progress: 40,
+                                         error: "Could not be transcribed: the recording could not be read." });
+      },
+      steps: [openGarden],
+    },
+    "setup-3-downloading": {
+      change: (d) => {
+        firstRun(d);
+        d.cards = d.cards.map((c) => (c.role === "speakers" ? { ...c, download: { state: "running", percent: 30,
+          log: [], message: "Downloading the speaker model (sample)..." } } : c));
+      },
+      steps: [() => window.workspace.setStep(3)],
+    },
     "downloads-resumed": { change: (d) => queueDownloads(d, true), steps: [show("downloads")] },
     // #244: a chosen model that is not downloaded (no board yet): the note
     // beside the picker; and the failed meeting's Transcribe with another model.
@@ -974,6 +1066,8 @@
         const db = LEVELS[levelAt % LEVELS.length];
         data.recording.recording.level_db = db;
         data.recording.recording.viz = sampleViz(db, levelAt++);
+        if (data.compLevels)                 // the other side of the call, out of step
+          data.recording.recording.computer.level_db = LEVELS[(levelAt + 11) % LEVELS.length];
       }
       return data.recording;
     },

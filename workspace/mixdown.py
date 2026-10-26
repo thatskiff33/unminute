@@ -14,9 +14,20 @@
 #      moment and read it by linear interpolation: this resamples the computer
 #      track to the microphone's rate. Where the computer track has nothing
 #      (paused, stopped by policy, before it started) it is silence.
-#   3. The plain mix: the mean of the two tracks, as #220 mixes the channels of
-#      an import. An echo-aware mix comes only if measurement shows the plain
-#      mix doubles words (the owner's decision 3); that is a later slice.
+#   3. The plain mix: the two tracks loudness-matched, then added at full
+#      level (the owner's decision 2, 25 Oct 2026: the mean put each source
+#      about 6 dB lower). Matching (an engineering decision after the owner's
+#      check of 26 Oct 2026, where the microphone played much quieter than the
+#      computer audio): each track's level is measured over its sound only
+#      (gated_level_db, as playback normalisation measures), and the quieter
+#      track is raised to the louder one's, by at most LEVEL_MAX_GAIN_DB; the
+#      louder is never turned down. A track with less than LEVEL_MIN_ACTIVE_S
+#      of sound above LEVEL_GATE_DB (silence, hiss, one notification) is left
+#      as it is, so it is never blown up. Then a soft limiter (soft_limit)
+#      that changes nothing below LIMIT_KNEE of full scale and bends louder
+#      sums smoothly under full scale instead of clipping them. Only the mix
+#      is matched and limited: the saved tracks are read, never changed
+#      (D1). Echo cancellation is not done (a later idea, #376).
 #
 # Lines that cannot be trusted (damaged marks, a drift beyond MAX_DRIFT) fall
 # back to lining the tracks up by their start times, with an event: never a
@@ -30,6 +41,82 @@ import numpy as np
 BLOCK_S = 10.0               # microphone seconds mixed at a time
 MAX_DRIFT = 0.005            # a fitted clock more than 0.5 % off its nominal rate is not trusted
 MIN_FIT_S = 20.0             # a segment shorter than this keeps the nominal rate
+LIMIT_KNEE = 0.8             # the limiter leaves samples below this share of full scale alone
+LEVEL_MAX_GAIN_DB = 15.0     # the quieter track is raised at most this much
+LEVEL_GATE_DB = -50.0        # level windows quieter than this are not counted as sound
+LEVEL_MIN_ACTIVE_S = 5.0     # a track with less sound than this is not measured (left as it is)
+LEVEL_WINDOW_S = 0.256       # level windows
+LEVEL_BLOCK_S = 10.0         # the level is measured over the whole track, this much at a time
+_RELATIVE_GATE_DB = -10.0    # then windows this far below the mean of the rest are left out
+
+
+def gated_level_db(powers, gate_db):
+    """The level, in dB of full scale, of mean-square window powers (each
+    already divided by full scale squared), gated like EBU R128 without its
+    frequency weighting: windows below gate_db are left out, then those more
+    than 10 dB below the mean of the rest. None when no window is left."""
+    p = np.asarray(powers, dtype=np.float64)
+    p = p[p > 10 ** (gate_db / 10)]
+    if not len(p):
+        return None
+    p = p[p >= 10 ** (_RELATIVE_GATE_DB / 10) * np.mean(p)]
+    return float(10 * np.log10(np.mean(p)))
+
+
+def track_level_db(track, rate, full=32768.0):
+    """A track's level over its sound (gated_level_db at LEVEL_GATE_DB);
+    None when it has less than LEVEL_MIN_ACTIVE_S of sound. Every window of
+    the whole track is measured, whatever its length, read LEVEL_BLOCK_S at
+    a time (a whole number of windows) so memory stays bounded: no sample, so
+    one notification can never pass for a call, nor sparse sound be missed
+    (the af9ab66 review, F1). Only a final part shorter than a window is left
+    out. track: .frames, .read(a, b) (sample values, full scale `full`)."""
+    rate, frames = int(rate), int(track.frames)
+    window = max(1, int(LEVEL_WINDOW_S * rate))
+    step = max(window, int(LEVEL_BLOCK_S * rate) // window * window)
+    powers = []
+    for a in range(0, frames, step):
+        x = np.asarray(track.read(a, min(frames, a + step)), dtype=np.float64) / full
+        n = len(x) - len(x) % window
+        if n:
+            w = x[:n].reshape(-1, window)
+            powers.append(np.mean(w * w, axis=1))
+    if not powers:
+        return None
+    p = np.concatenate(powers)
+    if np.count_nonzero(p > 10 ** (LEVEL_GATE_DB / 10)) * window / rate < LEVEL_MIN_ACTIVE_S:
+        return None
+    return gated_level_db(p, LEVEL_GATE_DB)
+
+
+def match_gains(mic_db, comp_db):
+    """(microphone gain, computer gain), linear: the quieter track raised to
+    the louder one's level, by at most LEVEL_MAX_GAIN_DB; (1, 1) when either
+    level is unknown."""
+    if mic_db is None or comp_db is None:
+        return 1.0, 1.0
+    raise_db = min(LEVEL_MAX_GAIN_DB, abs(mic_db - comp_db))
+    gain = float(10 ** (raise_db / 20))
+    return (gain, 1.0) if mic_db < comp_db else (1.0, gain)
+
+
+def soft_limit(x, full=32767.0):
+    """Samples (float array) through a soft limiter: unchanged up to
+    LIMIT_KNEE * full; above it, bent smoothly (tanh, no jump in level or
+    slope at the knee) so no sample is ever past full scale (a sample driven
+    far over comes out at full scale exactly). The same both ways round
+    and in order: a louder sample is never made quieter than a softer one.
+    A float array of the same shape is returned."""
+    x = np.asarray(x, dtype=np.float64)
+    knee = LIMIT_KNEE * full
+    room = full - knee
+    mag = np.abs(x)
+    over = mag > knee
+    if not over.any():
+        return x
+    out = x.copy()
+    out[over] = np.sign(x[over]) * (knee + room * np.tanh((mag[over] - knee) / room))
+    return out
 
 
 class MixError(ValueError):
@@ -164,6 +251,13 @@ class Mix:
             notes.append({"kind": "mix_by_start", "at_s": 0.0, "seconds": None,
                           "note": "The microphone and computer audio were lined up by when "
                                   "they started only; they may be slightly out of step."})
+        # Loudness matching (see the header). A track that cannot be read
+        # here is not matched; reading it for the mix reports the problem.
+        try:
+            self.gains = match_gains(track_level_db(mic, rate),
+                                     track_level_db(comp, crate) if comp.frames else None)
+        except Exception:
+            self.gains = (1.0, 1.0)
 
     def blocks(self):
         step = max(1, int(BLOCK_S * self.rate))
@@ -173,5 +267,7 @@ class Mix:
                 voice = self.mic.read(a, b)
                 times = seg.time(np.arange(a, b, dtype=np.float64))
                 other = computer_at(times, self.comp_lines, self.comp)
-                mix = np.clip(np.round((voice + other) / 2.0), -32768, 32767)
+                g_mic, g_comp = self.gains
+                both = voice.astype(np.float64) * g_mic + other.astype(np.float64) * g_comp
+                mix = np.clip(np.round(soft_limit(both)), -32768, 32767)
                 yield mix.astype("<i2").tobytes()

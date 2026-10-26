@@ -580,7 +580,10 @@ async function renderMeeting() {
   renderSteps(d);
   renderBanner(d);
   $("m-error").hidden = !d.error;
-  $("m-error").textContent = d.error || "";
+  // Live regions (this one assertive) are set only when their text changes:
+  // set at every poll, even to the same text, a screen reader reads them
+  // again each time (#346, the owner's Narrator check of 26 Oct 2026).
+  putText($("m-error"), d.error || "");
   const transcribing = d.stage === "inbox";
   $("m-progress").hidden = !transcribing;
   if (transcribing) {
@@ -692,11 +695,11 @@ function renderBanner(d) {
   }
   $("m-banner").hidden = !text;
   $("m-banner").className = `m-banner ${kind}`.trim();
-  $("m-playback").textContent = text;
+  putText($("m-playback"), text);                  // in #m-banner, a live region: only on change
   $("m-banner-lock").toggleAttribute("hidden", icon !== "lock");
   $("m-banner-clock").toggleAttribute("hidden", icon !== "clock");
   $("m-banner-action").hidden = !action;
-  if (action) $("m-banner-action").textContent = action[0];
+  if (action) putText($("m-banner-action"), action[0]);
   state.bannerAction = action ? action[1] : null;
 }
 
@@ -1796,7 +1799,7 @@ function wireHandoff() {
 const SU_STEPS = [["Welcome", ""], ["Speech model", ""], ["Speaker names", "Optional"],
                   ["Microphone", "Optional"], ["Ready", ""]];
 // returnTo: opened from Downloads for one step (the speaker token); leaving that step goes back.
-const suState = { step: 1, skipSpeakers: false, mic: null, returnTo: null };
+const suState = { step: 1, skipSpeakers: false, mic: null, computer: false, returnTo: null };
 
 // A card's short name and a download's progress (a number, or
 // null when it cannot be told) come from Python as they are: the page never
@@ -2012,9 +2015,9 @@ async function renderSetup() {
   $("s-token-note").textContent = s.token_remembered
     ? "A Hugging Face token is remembered in Windows Credential Manager. Removing it does not affect models already downloaded."
     : "";
-  $("su-speaker-status").textContent = speaker.state === "ready" ? "The speaker model is downloaded and ready."
+  putText($("su-speaker-status"), speaker.state === "ready" ? "The speaker model is downloaded and ready."   // live: only on change
     : isQueued(speaker) ? queueNote(speaker.download)
-    : speaker.download ? speaker.download.message : "";
+    : speaker.download ? speaker.download.message : "");
   renderSummary(s);
   $("s-finish").disabled = !s.speech_ready;
   $("s-finish-note").textContent = s.speech_ready ? "" : `Download a speech model first (${cardName(rec)} is recommended).`;
@@ -2033,7 +2036,7 @@ function renderSummary(s) {
     : suState.skipSpeakers ? "Skipped. Turn on in Settings."
     : isRunning(speaker) ? "Downloading…" : isQueued(speaker) ? "Queued"
     : "Not set up. You can add it later in Settings.";
-  const mic = suState.mic ? "On" : "Skipped. Turn on in Settings.";
+  const mic = !suState.mic ? "Skipped. Turn on in Settings." : suState.computer ? "On, with computer audio" : "On";
   $("su-summary").replaceChildren(line("Speech model", speech, !!ready),
     line("Speaker names", names, names === "Ready"), line("Microphone", mic, !!suState.mic));
 }
@@ -2041,9 +2044,14 @@ function renderSummary(s) {
 async function renderSuMic() {
   const s = await attempt(() => call("settings"));
   if (!s) return;
+  state.managed = s.managed;
   suState.mic = !!s.microphone;
+  suState.computer = !!s.computer_audio;
   $("su-mic").checked = suState.mic;
-  $("su-mic-row").hidden = !suState.mic;
+  $("su-mic-row").hidden = $("su-computer-row").hidden = !suState.mic;
+  $("su-computer").checked = suState.computer;
+  $("su-computer").disabled = computerLocked(s);
+  $("su-computer-note").textContent = computerNote(s);
   if (!suState.mic) $("su-test-result").hidden = true;
   if (suState.mic && (micLists["su-device"].stale || !$("su-device").options.length))
     await attempt(() => relistMics("su-device", showSuMics));
@@ -2085,10 +2093,14 @@ function wireSetup() {
     micLists["su-device"].stale = true;
     renderSuMic();
   }));
+  $("su-computer").addEventListener("change", () => attempt(async () => {
+    await call("set_settings", { computer_audio: $("su-computer").checked });
+    renderSuMic();
+  }));
   $("su-skip-4").addEventListener("click", () => {
     // First run only: skipping undoes a switch turned on here. Later visits leave Settings alone.
     if (suState.mic && !state.setup.onboarded)
-      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = false; renderSummary(state.setup); }));
+      attempt(() => call("set_settings", { microphone: false }).then(() => { suState.mic = suState.computer = false; renderSummary(state.setup); }));
   });
   $("su-test").addEventListener("click", () => attempt(async () => {
     const box = $("su-test-result");
@@ -2142,6 +2154,18 @@ function allowed(name) {
   return !m || !m.allow || m.allow[name] !== false;
 }
 const MANAGED_NOTE = "Turned off by your organisation.";
+// Computer audio (#108): its switch's note in Settings and Setup.
+const COMPUTER_NOTE = "Records the other side of a Teams or Zoom call as a second track. Any other sound playing on this computer is recorded too, such as notifications and videos. Tell everyone on the call before you start.";
+function computerAllowed() {
+  return allowed("AllowComputerAudioRecording") && allowed("AllowMicrophoneRecording");
+}
+function computerNote(s) {
+  return !computerAllowed() ? MANAGED_NOTE
+    : !s.microphone ? "Turn on Record with a microphone first: computer audio is recorded beside it."
+    : COMPUTER_NOTE;
+}
+// Always possible to turn off; turning on needs policy and the microphone.
+const computerLocked = (s) => !s.computer_audio && (!computerAllowed() || !s.microphone);
 // A component the organisation switched off, or models IT installs instead of downloads.
 function itManaged(c) {
   return el("span", { class: "set-text", textContent: c.role === "gpu" && !allowed("AllowGpuComponent")
@@ -2158,7 +2182,8 @@ const MODE_NOTE = {
 const SETTING_NAMES = {
   mode: "Processing speed", model: "Speech model", speakers: "Identify speakers",
   battery_override: "Process on battery power", onboarded: "Guided setup",
-  microphone: "Microphone recording", gpu_speakers: "NVIDIA graphics card",
+  microphone: "Microphone recording", computer_audio: "Computer audio recording",
+  gpu_speakers: "NVIDIA graphics card",
   recording_display: "Recording display", live_drafts: "Draft text while recording",
   live_drafts_audio: "What draft text follows",
 };
@@ -2267,6 +2292,9 @@ async function renderSettings() {
         : `${s.gpu.card}. Speeds up ${gpuUses.join(" and ")} in Faster mode only.`;
   $("s-microphone").checked = !!s.microphone;
   $("s-microphone").disabled = !allowed("AllowMicrophoneRecording");
+  $("s-computer").checked = !!s.computer_audio;
+  $("s-computer").disabled = computerLocked(s);
+  $("s-computer-note").textContent = computerNote(s);
   renderDraftSettings(s);
   // The lid (#172): "Do nothing" while recording, put back afterwards.
   $("s-lid").checked = !!s.lid_override;
@@ -2690,7 +2718,10 @@ function fmtDuration(s) {
 function renderRecCard(rec, display, lidOverride, lidRefused) {
   const kind = REC_KIND[rec.state] ?? "saving";
   $("rec-card").className = `rec-card ${kind}`.trim();
-  $("rec-state").textContent = REC_TEXT[rec.state] || rec.state;
+  // A live region (polite): set only when the state changes. Set at every
+  // poll, even to the same text, Narrator read it again ten times a second
+  // ("Rec... Rec...", the owner's check of 26 Oct 2026, #346).
+  putText($("rec-state"), REC_TEXT[rec.state] || rec.state);
   state.recSeconds = rec.seconds;
   $("rec-clock").textContent = fmtSeconds(rec.seconds);
   $("rec-icon").hidden = kind !== "lost";
@@ -2719,8 +2750,52 @@ function renderRecCard(rec, display, lidOverride, lidRefused) {
     + (lidOverride ? "Closing the lid does not stop this recording: stop it here when the meeting ends. "
       : lidRefused === "managed" ? "Closing the lid may stop this recording: your organisation sets what closing the lid does. "
       : lidRefused ? "Closing the lid may stop this recording: Windows did not allow Unminute to change the lid setting. " : "");
-  $("rec-note").textContent = lidNote + `${rec.device || "Microphone"}. Only the microphone is recorded, not computer sound. ` +
-    "Tell everyone present the meeting is being recorded.";
+  const comp = rec.computer;
+  const what = !comp ? "Only the microphone is recorded. Tell everyone present the meeting is being recorded."
+    : comp.on ? "Microphone and computer audio are recorded. Tell everyone in the meeting, including people on the call."
+    : "Only the microphone is recorded now. Tell everyone in the meeting, including people on the call.";
+  $("rec-note").textContent = lidNote + `${rec.device || "Microphone"}. ${what}`;
+  renderComputer(rec, kind);
+}
+
+// Computer audio (#108): a thin second bar under the display, set at each
+// poll (ten a second) with no drawing loop of its own, so it adds next to
+// nothing to the recording's processor time (#216).
+const compSeen = { id: null, mic: false, comp: false, said: 0 };
+function renderComputer(rec, kind) {
+  const comp = rec.computer;
+  const shown = !!comp && (kind === "" || kind === "paused");
+  $("rec-computer").hidden = !shown;
+  if (compSeen.id !== rec.id) Object.assign(compSeen, { id: rec.id, mic: false, comp: false, said: 0 });
+  if (!shown) { $("rec-computer-hint").hidden = true; $("rec-computer-hint").textContent = ""; return; }
+  const db = comp.on && kind === "" ? comp.level_db : -96;
+  if (kind === "" && rec.level_db > -50) compSeen.mic = true;
+  if (db > -60) compSeen.comp = true;
+  $("rec-computer").classList.toggle("off", !comp.on);
+  $("rec-computer-label").textContent = comp.on ? "Computer audio" : "Computer audio stopped";
+  $("rec-computer-fill").style.transform = `scaleX(${levelAmount(db).toFixed(3)})`;
+  const now = Date.now();
+  if (now - compSeen.said > 1000) {                  // the meter's value, once a second
+    compSeen.said = now;
+    $("rec-computer-level").setAttribute("aria-valuenow", String(Math.round(Math.max(-60, Math.min(0, db)))));
+  }
+  // Every active output is recorded, so silence here means nothing has
+  // played yet (a call not joined, or its sound off). A check at the start
+  // of each recording: from 60 s of recorded time, if the microphone has
+  // heard anything and the computer nothing at all, say so.
+  // Once the computer has played anything the hint stays off for this
+  // recording: later silence is normal (a quiet call, a muted pause), and a
+  // change of output has its own note under the card. The hint is a polite
+  // live region: a screen reader reads a change made while it is shown, not
+  // text that arrives with it, so it is shown empty first and filled at the
+  // next poll, and its text is set only when it changes (never re-read at
+  // each poll).
+  const quiet = kind === "" && comp.on && rec.seconds >= 60 && compSeen.mic && !compSeen.comp;
+  const hint = $("rec-computer-hint");
+  if (!quiet) { hint.hidden = true; hint.textContent = ""; return; }
+  const text = "No sound from the computer yet. If you are on a call, check that you can hear it on this computer.";
+  if (hint.hidden) hint.hidden = false;
+  else if (hint.textContent !== text) hint.textContent = text;
 }
 
 function reportItem(rep) {
@@ -2756,7 +2831,7 @@ function reportItem(rep) {
     return notice("alert", `The computer went to sleep, so the recording stopped. ${fmtSeconds(rep.seconds)} recorded before that was saved. If you closed the lid: to keep recording with it closed, set Windows to do nothing when the lid is closed; the recording then carries on until you stop it here.${done}`, dismiss);
   if (rep.events.some((e) => e.kind === "device_lost"))
     return notice("alert", `Microphone lost. ${fmtSeconds(rep.seconds)} recorded before it disconnected was saved.${done}`, dismiss);
-  return notice("done", `Recording: ${fmtSeconds(rep.seconds)} saved.${done}${events}`, dismiss);
+  return notice("done", `Recording: ${fmtSeconds(rep.seconds)}${rep.computer ? " of microphone and computer audio" : ""} saved.${done}${events}`, dismiss);
 }
 
 // -- live drafts while recording (#104) -------------------------------------------------
@@ -2861,10 +2936,12 @@ function toggleDraft() {
 
 let recReading = false;
 async function renderRecorder(tick = false) {
+  if (state.locked) { stopRecTimer(); return; }     // only the locked screen (#111 C4b, #346)
   if (tick && recReading) return;                   // the previous read is still on its way
   recReading = true;
   let r;
   try { r = await call("recording_status"); } finally { recReading = false; }
+  if (state.locked) { stopRecTimer(); return; }     // locked while the read was on its way
   const sel = $("rec-device");
   // While recording (or saving) the list is not asked for (#369): it can wait,
   // and is asked for once the recording has ended (its microphone may be gone).
@@ -2887,6 +2964,7 @@ async function renderRecorder(tick = false) {
   $("mic-line").hidden = !r.enabled;
   if (!r.enabled) $("mic-chooser").hidden = true;
   $("mic-name").textContent = $("rec-start-device").textContent = deviceLabel() || "No microphone";
+  $("mic-computer").hidden = !r.computer_audio;
   $("rec-start").disabled = $("rec-start-chosen").disabled = !sel.options.length;
   if (active) renderRecCard(rec, r.display, r.lid_override, r.lid_refused);
   else stopViz();
@@ -3251,6 +3329,7 @@ function wire() {
   $("s-speakers").addEventListener("change", () => setSetting({ speakers: $("s-speakers").checked }));
   $("s-gpu").addEventListener("change", () => setSetting({ gpu_speakers: $("s-gpu").checked }));
   $("s-microphone").addEventListener("change", () => setSetting({ microphone: $("s-microphone").checked }));
+  $("s-computer").addEventListener("change", () => setSetting({ computer_audio: $("s-computer").checked }));
   $("s-lid").addEventListener("change", () => setSetting({ lid_override: $("s-lid").checked }));
   $("s-drafts").addEventListener("change", () => setSetting({ live_drafts: $("s-drafts").checked }));
   for (const r of document.querySelectorAll('input[name="draftsaudio"]'))

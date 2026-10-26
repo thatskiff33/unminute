@@ -40,6 +40,7 @@ AUDIO_EXTENSIONS = (".mp3", ".m4a", ".wav", ".mp4", ".mov", ".mkv", ".flac",
                     ".ogg", ".aac", ".wma", ".webm", ".avi")
 MAX_IMPORT_BYTES = 8 << 30          # 8 GB: several hours of video
 MAX_CLIP_S = 30.0
+PLAYBACK_GAINS_KEPT = 64                 # meetings whose playback gain is kept in memory
 MAX_EDIT_CHARS = 5000
 MAX_TITLE_CHARS = 200
 FAILED_RETRY_S = 60.0               # a failed cleanup is retried at most this often
@@ -121,11 +122,14 @@ FINISH_ONLY_BANNER = ("An update is waiting for this workspace. Finish your meet
 # start-up, so it never slows the window opening.
 GPU_UPKEEP_DELAY_S = 60
 
-# Computer audio (#108) is back-end groundwork until the recording confirmation
-# names people on the call (wording version 2) and the page has its switch:
-# until then no recording opens a computer track, whatever the setting says.
-# Tests turn it on to exercise the path.
-COMPUTER_AUDIO_STARTS = False
+# Computer audio (#108): a recording opens a computer track only when this is
+# True, the user's switch is on and policy allows it, and the confirmation
+# named it (wording version 2). The page part of #108 turned it on; setting it
+# back to False hides the switch's effect again (set_settings refuses it and
+# no recording opens a computer track), as the tests check.
+COMPUTER_AUDIO_STARTS = True
+SOURCES_CHANGED = ("What would be recorded changed while you were confirming (computer audio "
+                   "was turned on or off). Start the recording again.")
 COMPUTER_POLICY_STOP = ("Your organisation turned off computer audio. Only the microphone "
                         "is recorded from here.")
 
@@ -489,6 +493,10 @@ class Workspace:
         self._hung = {}                    # folder name -> recording whose writer did not finish
         self.open_stream = recorder._sounddevice_stream     # tests use a fake
         self.open_loopback = None          # computer audio: loopback.open_loopback; tests a fake
+        # Playback level (#108): (meeting, audio file id) -> gain, in memory
+        # only, never logged or shown (P3); a new audio file gets a new id.
+        self._playback_gains = {}
+        self._playback_gains_lock = threading.Lock()
         if not held and self.locked is None:
             self._upkeep()
         if start:
@@ -979,18 +987,31 @@ class Workspace:
         return (self._allowed("AllowMicrophoneRecording")
                 and self._allowed("AllowComputerAudioRecording"))
 
+    def _computer_wanted(self):
+        """A recording started now would record computer audio: the app opens
+        computer tracks at all (COMPUTER_AUDIO_STARTS), the user's switch is
+        on (off by default) and policy allows it."""
+        return bool(COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
+                    and self._computer_audio_allowed())
+
+    def recording_sources(self):
+        """What a recording started now would record, for the confirmation
+        the bridge shows (wording version 2): from the app's own settings and
+        policy, never from the page."""
+        return (recording_consent.WITH_COMPUTER if self._computer_wanted()
+                else recording_consent.MICROPHONE_ONLY)
+
     def _computer_track(self):
-        """The computer track for a recording about to start, or None: only
-        when the app opens computer tracks at all (COMPUTER_AUDIO_STARTS), the
-        user's switch is on (off by default) and policy allows it. The source
-        is the Windows default output (the meeting-app source needs a choice
-        of app on the page, a later slice)."""
-        if not (COMPUTER_AUDIO_STARTS and self.settings["computer_audio"]
-                and self._computer_audio_allowed()):
+        """The computer track for a recording about to start, or None. The
+        source is every active output, mixed (the owner's decision 1, 25 Oct
+        2026, after real-sound trials: the default output alone missed a call
+        on a headset's hands-free output, and a meeting app's own process gave
+        silence)."""
+        if not self._computer_wanted():
             return None
         from workspace import loopback       # only when a recording needs it
         return {"open": self.open_loopback or loopback.open_loopback,
-                "source": {"kind": loopback.ENDPOINT}, "rate": loopback.LOOPBACK_RATE,
+                "source": {"kind": loopback.ALL}, "rate": loopback.LOOPBACK_RATE,
                 "block_s": loopback.POLL_S}
 
     def microphone_devices(self):
@@ -1036,7 +1057,17 @@ class Workspace:
         self._not_locked()
         self._not_finish_only()
         self._need_microphone()
-        if consent is not None and not recording_consent.valid_recording_record(consent):
+        # Worked out once: the sources the confirmation must name are the
+        # ones this recording opens (#108). A switch or policy changed while
+        # the question was open means asking again, never a different start.
+        computer = self._computer_track()
+        sources = (recording_consent.WITH_COMPUTER if computer is not None
+                   else recording_consent.MICROPHONE_ONLY)
+        if consent is not None and not recording_consent.valid_recording_record(consent,
+                                                                                 sources):
+            if any(recording_consent.valid_recording_record(consent, other) for other in
+                   (recording_consent.MICROPHONE_ONLY, recording_consent.WITH_COMPUTER)):
+                raise WorkspaceError(SOURCES_CHANGED)
             raise WorkspaceError("The recording confirmation is not valid.")
         if consent is None and self.consent_required():
             raise WorkspaceError("Recording needs your confirmation that everyone in the "
@@ -1065,7 +1096,7 @@ class Workspace:
                 rec = recorder.Recording(folder, choice["index"],
                                          choice.get("label") or choice["name"], choice["rate"],
                                          open_stream=self.open_stream,
-                                         computer=self._computer_track(), key=key)
+                                         computer=computer, key=key)
                 if consent is not None:
                     rec.journal["consent"] = dict(consent)     # saved with the journal
                 rec.start()
@@ -1089,7 +1120,9 @@ class Workspace:
                           consent="confirmed" if consent is not None else "not_required",
                           wording=consent.get("wording") if consent is not None else None,
                           method=("app-window" if consent is not None
-                                  and consent.get("method") == "app-window" else None))
+                                  and consent.get("method") == "app-window" else None),
+                          sources=("mic_and_computer" if computer is not None
+                                   else "mic_only"))
         threading.Thread(target=self._watch_recording, args=(rec,), daemon=True,
                          name="recorder-watch").start()
         return rec.status()
@@ -1211,11 +1244,14 @@ class Workspace:
     def recording_status(self):
         rec = self._recording
         if self.locked is not None:              # nothing records, and no report is shown
-            return {"enabled": False, "display": self.settings["recording_display"],
+            return {"enabled": False, "computer_audio": False,
+                    "display": self.settings["recording_display"],
                     "lid_override": False, "lid_refused": None, "recording": None,
                     "reports": [], "draft": None}
-        return {"enabled": (self.settings["microphone"]
-                            and self._allowed("AllowMicrophoneRecording")),
+        enabled = bool(self.settings["microphone"] and self._allowed("AllowMicrophoneRecording"))
+        return {"enabled": enabled,
+                # A recording started now records computer audio too (#108).
+                "computer_audio": enabled and self._computer_wanted(),
                 "display": self.settings["recording_display"],
                 # The lid action is "Do nothing" for this recording (set, or already so).
                 "lid_override": bool(self._lid_result and self._lid_result[0]),
@@ -1593,6 +1629,7 @@ class Workspace:
                     **({"consent": journal["consent"]} if "consent" in journal else {})}
             mid = self._import_one(None, None, title, recording=recording_id,
                                    stream=(audio, (folder.name, json.dumps(info))))
+            two = audio.computer is not None       # the report says both were saved
         except Exception as exc:
             full = isinstance(exc, OSError) and getattr(exc, "errno", None) == 28
             changed = media.damaged_audio(exc)  # a chunk changed after it was checked
@@ -1612,7 +1649,7 @@ class Workspace:
                 audio.close()
         # Mark the folder as imported before removing it; the recording_sources
         # row, committed with the import, also stops a second import.
-        report.update(title=title, meeting=mid, recording_id=folder.name)
+        report.update(title=title, meeting=mid, recording_id=folder.name, computer=two)
         if interrupted and recording_id:          # the app did not stop it: recovered
             self.audit.record("recording_ended", recording=recording_id, result="recovered",
                               seconds=max(0, int(seconds)))
@@ -2522,6 +2559,7 @@ class Workspace:
             raise WorkspaceError(f"Clips are limited to {MAX_CLIP_S:.0f} seconds.")
         reader = self._user_audio(mid)
         try:
+            gain = self._playback_gain(mid, reader)
             samples = reader.read(int(start * SR), int(end * SR))
         except Exception as exc:
             if media.damaged_audio(exc):
@@ -2531,7 +2569,38 @@ class Workspace:
             reader.close()               # never keep the audio open (cleanup, #17)
         if not len(samples):
             raise WorkspaceError("That time is after the end of the recording.")
-        return samples
+        return media.apply_playback_gain(samples, gain)
+
+    def _playback_gain(self, mid, reader):
+        """The gain that plays this meeting at a standard level (the owner's
+        decision 2(b), 25 Oct 2026; media.playback_gain), worked out on the
+        meeting's first clip and kept in memory for this audio file only:
+        the file's random id changes whenever the meeting's audio is written
+        again, so a gain is never stale. Damaged audio (a block where the
+        sample is read that does not open) plays as it is, and that is
+        remembered; a file error that may pass (another program holding the
+        file) plays this clip as it is and is tried again on the next. Never
+        logged, shown or kept on disk (P3); the saved audio never changes."""
+        key = (mid, reader.file_id)
+        with self._playback_gains_lock:
+            gain = self._playback_gains.get(key)
+        if gain is not None:
+            return gain
+        try:
+            gain = media.playback_gain(reader)
+        except OSError:
+            return 1.0                     # may pass: not remembered (review nit 3)
+        except Exception as exc:
+            if not media.damaged_audio(exc):
+                raise
+            gain = 1.0
+        with self._playback_gains_lock:
+            for old in [k for k in self._playback_gains if k[0] == mid]:
+                del self._playback_gains[old]          # an earlier audio file of this meeting
+            while len(self._playback_gains) >= PLAYBACK_GAINS_KEPT:
+                del self._playback_gains[next(iter(self._playback_gains))]
+            self._playback_gains[key] = gain
+        return gain
 
     # -- lists and details --------------------------------------------------------------
 
@@ -3077,8 +3146,9 @@ class Workspace:
         if changes.get("microphone") is True and not self._allowed("AllowMicrophoneRecording"):
             raise WorkspaceError(MANAGED_OFF.format(what="Microphone recording"))
         if changes.get("computer_audio") is True:
-            # Fail closed until the page slice: nothing is saved early, so no
-            # value set now is carried over to the version that offers it.
+            # The page part of #108 offers the switch (COMPUTER_AUDIO_STARTS
+            # is True). If the feature is ever turned off again, this keeps the
+            # switch refused and nothing in the same change is saved.
             if not COMPUTER_AUDIO_STARTS:
                 raise WorkspaceError("Computer audio is not available in this version.")
             if not self._computer_audio_allowed():

@@ -33,7 +33,7 @@
 #     opened, so recovery never needs allow_incomplete: a temporary file is
 #     an unfinished chunk and is deleted.
 #
-# Computer audio (#108, groundwork; off unless the app asks for it): a second
+# Computer audio (#108; off unless the app asks for it): a second
 # track, captured by workspace/loopback.py, with its own queue and its own
 # chunk files (sys-NNNNNN.uma, under the same key, with the track in each
 # chunk's context, so a chunk cannot be swapped between tracks) saved by the
@@ -42,8 +42,11 @@
 # tracks; a microphone-only journal is unchanged (format 1, no format field).
 # Silence on the computer track is normal (nothing playing), so the lost-device
 # rule is the microphone's alone. Unlike the microphone, the computer track
-# follows the Windows default output when it changes, with an event (the
-# owner's decision 6); a computer track that fails stops on its own and the
+# follows the outputs as they change, with an event: the app records every
+# active output, mixed (the owner's decision 1, 25 Oct 2026), so an output
+# connected or turned on is added and one that goes is dropped (the endpoint
+# source, kept, follows the Windows default output instead, decision 6); a
+# computer track that fails stops on its own and the
 # microphone carries on. On stop the two tracks become ONE mix
 # (workspace/mixdown.py), made in memory as it is streamed to the decoder and
 # transcribed once (decision 10).
@@ -461,6 +464,20 @@ class Recording:
                 self.journal["tracks"][COMPUTER]["device_name"] = name
             self._event("computer_switched", note="Computer audio now records the new "
                                                   "Windows default output.")
+        elif kind == "output_added":
+            # Every active output is recorded (the app's source, #108): one
+            # turned on or connected is added, never "a new default".
+            with self._lock:
+                self.journal["tracks"][COMPUTER]["device_name"] = name
+            self._event("computer_output_added", note="Computer audio now also records a "
+                                                      "sound output that was connected or "
+                                                      "turned on.")
+        elif kind == "output_removed":
+            with self._lock:
+                self.journal["tracks"][COMPUTER]["device_name"] = name
+            self._event("computer_output_removed", note="A sound output was disconnected or "
+                                                        "turned off. Computer audio carries on "
+                                                        "from the others.")
         elif kind == "reopened":
             with self._lock:
                 self.journal["tracks"][COMPUTER]["device_name"] = name
@@ -913,6 +930,9 @@ class Recording:
                 "device": self.journal["device_name"],
                 "computer": None if self._computer is None else {
                     "on": self._computer.on,
+                    # The output being recorded, shown to the user like the
+                    # microphone's name (never in diagnostics).
+                    "device": self.journal["tracks"][COMPUTER]["device_name"],
                     "level_db": round(self._computer.level_db, 1)
                     if self._computer.on and not self.paused else -96.0},
                 "events": events}

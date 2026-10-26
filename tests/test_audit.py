@@ -400,6 +400,15 @@ class FieldRuleTests(Base):
         ("handoff_copied", {"meeting": MEETING, "what": "combined", "template": "built_in",
                             "names_replaced": 1, "omitted": 0, "redactions": 0}),
         ("app_start", {"version": "C:\\Users\\someone", "schema": 2}),
+        # Which notice was confirmed (#346): one of two fixed words, always.
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window"}),                         # missing
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": None}),
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": "Speakers (sample)"}),
+        ("recording_started", {"recording": OTHER, "consent": "confirmed", "wording": 2,
+                               "method": "app-window", "sources": ["microphone"]}),
         ("suppressed", {"of_kind": "app_start", "count": 1}),    # only limited kinds
         ("suppressed", {"of_kind": "cleanup_started", "count": 1}),   # never limited
     ]
@@ -437,6 +446,116 @@ class FieldRuleTests(Base):
         self.assertEqual([r["kind"] for r in written[-2:]], ["write_failed", "damage_continued"])
         self.assertEqual(written[-2]["count"], 2)
         self.assertEqual(audit.verify(self.folder)["result"], "ok")
+
+
+def hand_written(folder, made, number=1):
+    """Write records by hand as one segment, each linked to the line before,
+    as an earlier version of the app wrote them."""
+    folder.mkdir(parents=True, exist_ok=True)
+    out, prev = [], audit.ZERO
+    for record in made:
+        line = audit._canonical({"chain": "e" * 32, "at": 1, "prev": prev, **record}).encode()
+        prev = audit.line_hash(line)
+        out.append(line)
+    (folder / audit._segment_name(number)).write_bytes(b"\n".join(out) + b"\n")
+
+
+# Format 1 (#289 to #346): recording_started had no sources.
+V1_START = {"v": 1, "seq": 1, "kind": "chain_start", "previous": "first_use"}
+V1_RECORDING = {"v": 1, "seq": 2, "kind": "recording_started", "recording": OTHER,
+                "consent": "confirmed", "wording": 1, "method": "app-window"}
+# Every kind format 1 had, written out (review of 91b007e, nit 1).
+FORMAT_1_KINDS = {
+    "chain_start", "app_start", "locked", "damage_continued", "meeting_imported",
+    "recording_started", "recording_ended", "recording_deleted", "transcript_reviewed",
+    "final_saved", "meeting_discarded", "cleanup_started", "cleanup_done",
+    "cleanup_confirmed", "cleanup_retry", "hold_placed", "hold_released", "hold_kept",
+    "handoff_copied", "handoff_saved", "assistant_opened", "folder_added",
+    "delete_authority", "folder_removed", "offboarded", "tail_damaged", "write_failed",
+    "segment_dropped", "mirror_gap", "suppressed",
+}
+
+
+class FormatTests(Base):
+    """The folder outlives updates (and an empty-workspace migration), so a
+    later version reads what an earlier one wrote: format 2 (#346) added
+    recording_started's sources, and format 1 records still verify under
+    format 1's rules (review of 8d23029, nit 1)."""
+
+    def test_a_format_1_record_is_still_read_and_the_chain_carries_on(self):
+        hand_written(self.folder, [V1_START, V1_RECORDING])
+        r = audit.verify(self.folder)
+        self.assertEqual((r["result"], r["records"], r["chains"]), ("ok", 2, 1))
+        log = self.log()
+        self.assertTrue(log.record("recording_started", recording=OTHER, consent="confirmed",
+                                   wording=2, method="app-window", sources="mic_and_computer"))
+        log.close()
+        written = records(self.folder)
+        self.assertEqual([(w["v"], w["seq"], w["chain"]) for w in written],
+                         [(1, 1, "e" * 32), (1, 2, "e" * 32), (audit.FORMAT, 3, "e" * 32)])
+        self.assertEqual(written[-1]["prev"], hashlib.sha256(lines(self.folder)[1]).hexdigest())
+        r = audit.verify(self.folder)
+        self.assertEqual((r["result"], r["records"], r["chains"]), ("ok", 3, 1))
+
+    def test_each_format_keeps_its_own_rules(self):
+        cases = [
+            ("format 1 with sources", {**V1_RECORDING, "sources": "mic_only"}),
+            ("current format without sources", {**V1_RECORDING, "v": audit.FORMAT}),
+        ]
+        for name, record in cases:
+            with self.subTest(name):
+                shutil.rmtree(self.folder, ignore_errors=True)
+                hand_written(self.folder, [V1_START, record])
+                r = audit.verify(self.folder)
+                self.assertEqual((r["result"], r["broken_at"], r["reason"]),
+                                 ("broken", 2, "format"))
+
+    def test_an_unknown_format_is_refused(self):
+        def line(v):
+            return audit._canonical({**V1_START, "v": v, "chain": "e" * 32, "at": 1,
+                                     "prev": audit.ZERO}).encode()
+        self.assertIsNotNone(audit.parse(line(1)))
+        self.assertIsNotNone(audit.parse(line(audit.FORMAT)))
+        for v in (0, 3, True, "2", None, 2.0):
+            with self.subTest(v=v):
+                self.assertIsNone(audit.parse(line(v)))
+
+    def test_records_are_written_in_format_2_and_format_1_differs_only_by_sources(self):
+        self.fill(1).close()
+        self.assertEqual({w["v"] for w in records(self.folder)}, {2})
+        self.assertEqual(audit.FORMAT, 2)
+        self.assertEqual(set(audit.EARLIER), {1})
+        # Format 1's kinds, written out here rather than taken from EARLIER,
+        # so the test notices if EARLIER[1] stops being a full snapshot.
+        self.assertEqual(set(audit.EARLIER[1]), FORMAT_1_KINDS)
+        self.assertEqual(set(audit.KINDS), FORMAT_1_KINDS)    # format 2 added no kind
+        current = {kind: set(rules) for kind, (_, _, rules) in audit.KINDS.items()}
+        v1 = {kind: set(rules) for kind, rules in audit.EARLIER[1].items()}
+        self.assertEqual({k for k in current if current[k] != v1[k]}, {"recording_started"})
+        self.assertEqual(current["recording_started"] - v1["recording_started"], {"sources"})
+
+    def test_a_kind_added_after_format_1_is_refused_in_a_format_1_record(self):
+        # A later format adding a kind (simulated here) must not make a
+        # "v": 1 record of that kind read as format 1 (review of 91b007e, nit 1).
+        added = {"later_kind": (1999, audit.INFO, {})}
+        with mock.patch.dict(audit.KINDS, added):
+            audit.check("later_kind", {}, audit.FORMAT)
+            with self.assertRaises(audit.AuditError):
+                audit.check("later_kind", {}, 1)
+            record = {"v": 1, "seq": 1, "kind": "later_kind", "chain": "e" * 32, "at": 1,
+                      "prev": audit.ZERO}
+            self.assertIsNotNone(audit.parse(audit._canonical(
+                {**record, "v": audit.FORMAT}).encode()))
+            self.assertIsNone(audit.parse(audit._canonical(record).encode()))
+
+    def test_check_refuses_an_unknown_format_with_its_own_error(self):
+        # Not KeyError (review of 91b007e, nit 2); True is not format 1.
+        fields = {"previous": "first_use"}
+        audit.check("chain_start", fields, 1)
+        audit.check("chain_start", fields, audit.FORMAT)
+        for v in (0, 3, True, False, "2", None, 2.0, 1.0):
+            with self.subTest(v=v), self.assertRaises(audit.AuditError):
+                audit.check("chain_start", fields, v)
 
 
 class RateLimitTests(Base):
@@ -1115,8 +1234,10 @@ class WorkspaceAuditTests(unittest.TestCase):
                          [("file", True), ("recording", False)])
         started = next(r for r in rs if r["kind"] == "recording_started")
         self.assertEqual(imported[1]["recording"], started["recording"])   # consent to meeting
-        self.assertEqual((started["consent"], started["wording"], started["method"]),
-                         ("confirmed", consent.RECORDING_WORDING_VERSION, "app-window"))
+        self.assertEqual((started["consent"], started["wording"], started["method"],
+                          started["sources"]),
+                         ("confirmed", consent.RECORDING_WORDING_VERSION, "app-window",
+                          "mic_only"))
         self.assertEqual([r["result"] for r in rs if r["kind"] == "recording_ended"],
                          ["saved", "discarded"])
         copied = [r for r in rs if r["kind"] == "handoff_copied"]

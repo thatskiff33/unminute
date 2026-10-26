@@ -19,7 +19,8 @@ import design_check  # noqa: E402
 import ui_idle_check  # noqa: E402
 
 METRICS = {"bridge_calls_per_minute", "list_rebuilds_per_minute", "timeouts_per_minute",
-           "pending_animation_frames", "live_intervals", "fastest_interval_ms"}
+           "pending_animation_frames", "live_intervals", "fastest_interval_ms",
+           "live_region_changes_per_minute"}
 
 
 class RatchetTests(unittest.TestCase):
@@ -93,7 +94,8 @@ class RatchetTests(unittest.TestCase):
 
 GROW_METRICS = {"transcript_calls", "rows_fetched", "rows_drawn", "full_redraws"}
 RECORDING_METRICS = METRICS | {
-    "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second"}
+    "calls_per_minute.recording_status", "calls_per_minute.status", "meter_draws_per_second",
+    "live_region_changes_per_minute"}
 
 
 class RecordingTests(unittest.TestCase):
@@ -179,6 +181,30 @@ class RecordingTests(unittest.TestCase):
             rebuilt = dict(at_limit, list_rebuilds_per_minute=5)
             self.assertEqual([(mode, "list_rebuilds_per_minute", 5, 0)],
                              ui_idle_check.compare({mode: rebuilt}, {mode: limits}), mode)
+
+    def test_every_live_region_view_is_ratcheted_at_zero(self):
+        # #346 delta review F2: the meeting banner, the assertive meeting error
+        # and Setup's speaker status were also set at every poll.
+        data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
+        ratchets = data["ui_live_regions"]["ratchets"]
+        self.assertEqual(set(ui_idle_check.LIVE_SCENARIOS), set(ratchets))
+        for name, limits in ratchets.items():
+            self.assertEqual({"live_region_changes_per_minute": 0}, limits, name)
+        for mode, limits in data["ui_idle"]["ratchets"].items():
+            self.assertEqual(0, limits["live_region_changes_per_minute"], mode)
+
+    def test_a_steady_recording_that_changes_a_live_region_fails(self):
+        # A screen reader may read a live region again at each change, even to
+        # the same text: Narrator stuttered "Rec... Rec..." when the card's
+        # state line was set at every poll (#346, 26 Oct 2026). A steady
+        # recording has no change of state, so no live region may change.
+        data = json.loads((ROOT / "tests" / "budgets.json").read_text(encoding="utf-8"))
+        for mode, limits in data["ui_recording"]["ratchets"].items():
+            self.assertEqual(0, limits["live_region_changes_per_minute"], mode)
+            self.assertEqual([(mode, "live_region_changes_per_minute", 600, 0)],
+                             ui_idle_check.compare(
+                                 {mode: {"live_region_changes_per_minute": 600}},
+                                 {mode: {"live_region_changes_per_minute": 0}}))
 
 
 class TranscribingTests(unittest.TestCase):

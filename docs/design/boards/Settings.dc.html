@@ -167,18 +167,21 @@ body{margin:0}
   </main>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"unrecognised":{"editor":"enum","options":["none","set"],"default":"none"},"drafts":{"editor":"enum","options":["off","on","mix"],"default":"off"},"$preview":{"width":1100,"height":1320}}'>
+<script type="text/x-dc" data-dc-script data-props='{"assistant":{"editor":"enum","options":["none","set"],"default":"none"},"unrecognised":{"editor":"enum","options":["none","set"],"default":"none"},"computer":{"editor":"boolean","default":false},"drafts":{"editor":"enum","options":["off","on","mix"],"default":"off"},"$preview":{"width":1100,"height":1320}}'>
 class Component extends DCLogic {
   renderVals() {
     const on = (label, note) => ({ label, note, checked: 'true', justify: 'flex-end', track: '#142966' });
     const off = (label, note) => ({ label, note, checked: 'false', justify: 'flex-start', track: 'rgba(20,41,102,0.28)' });
+    // Computer audio (#108): off by default; the computer prop shows it on.
+    const computer = String(this.props.computer ?? false) === 'true' ? on : off;
     const drafts = (this.props.drafts ?? 'off') !== 'off';
     return {
       assistantSet: (this.props.assistant ?? 'none') === 'set',
       unrecognisedSet: (this.props.unrecognised ?? 'none') === 'set',
       draftsMix: (this.props.drafts ?? 'off') === 'mix',
       toggles: [
-        on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Computer audio is not recorded.'),
+        on('Record with a microphone', 'Adds Record a meeting to the Meetings page. Records the room through your microphone.'),
+        computer('Also record computer audio', 'Records the other side of a Teams or Zoom call as a second track. Any other sound playing on this computer is recorded too, such as notifications and videos. Tell everyone on the call before you start.'),
         on('Name speakers after transcription', 'Works out who spoke when, after the text is ready.'),
         (drafts ? on : off)('Show draft text while recording', 'Rough text a few seconds after people speak. The full transcript replaces it after you stop. Uses more memory and processor time while recording.'),
         off('Use the graphics card', 'NVIDIA RTX 500. Speeds up speaker names and Whisper transcription in Faster mode only.'),

@@ -21,14 +21,27 @@
     "note": "Colour literals in workspace/ui/app.css outside tokens.css: hex (also %23 hex inside a data URI), rgb(), hsl() and named colours (tests/test_consistency.py). 24 on 16 Oct 2026; R12b (#133, 17 Oct 2026) moved each to a token with the same value, and R12c (#186, 18 Oct 2026) drew the success toast's tick as a mask filled from --success: 0. A new colour goes in tokens.css."
   },
   "ui_idle": {
-    "note": "What the idle Meetings page does per minute of page time (tools/ui_idle_check.py, headless Edge with the design fixtures). Lowered by R6 (#127) on 16 Oct 2026: visible 120 bridge calls and 30 list rebuilds a minute became 24 and 0, and hidden became nothing at all (the standard, section 3: while hidden, nothing polls faster than once every 30 s). Polling is now a timeout chain (one timeout per poll, every 10 s when idle) instead of a 2 s interval, so timeouts_per_minute was raised from 0 to 6 on purpose. Lowered again by R7b (#128) on 16 Oct 2026: visible 24 bridge calls a minute became 14, because the page asks for the meeting list and reminders only when status() reports a change, and every 6th poll anyway (status and recording_status every poll, the two lists once a minute). fastest_interval_ms is a floor: an interval faster than it fails, and no interval passes. A page that throws, or makes no bridge calls when visible, fails regardless.",
+    "note": "What the idle Meetings page does per minute of page time (tools/ui_idle_check.py, headless Edge with the design fixtures). Lowered by R6 (#127) on 16 Oct 2026: visible 120 bridge calls and 30 list rebuilds a minute became 24 and 0, and hidden became nothing at all (the standard, section 3: while hidden, nothing polls faster than once every 30 s). Polling is now a timeout chain (one timeout per poll, every 10 s when idle) instead of a 2 s interval, so timeouts_per_minute was raised from 0 to 6 on purpose. Lowered again by R7b (#128) on 16 Oct 2026: visible 24 bridge calls a minute became 14, because the page asks for the meeting list and reminders only when status() reports a change, and every 6th poll anyway (status and recording_status every poll, the two lists once a minute). fastest_interval_ms is a floor: an interval faster than it fails, and no interval passes. A page that throws, or makes no bridge calls when visible, fails regardless. live_region_changes_per_minute (added by #346 on 26 Oct 2026): changes to the text of a live region while the page is idle, 0 visible and hidden (0 when added).",
     "ratchets": {
       "visible": {"bridge_calls_per_minute": 14, "list_rebuilds_per_minute": 0,
                   "timeouts_per_minute": 6, "pending_animation_frames": 0,
-                  "live_intervals": 0, "fastest_interval_ms": 30000},
+                  "live_intervals": 0, "fastest_interval_ms": 30000,
+                  "live_region_changes_per_minute": 0},
       "hidden": {"bridge_calls_per_minute": 0, "list_rebuilds_per_minute": 0,
                  "timeouts_per_minute": 0, "pending_animation_frames": 0,
-                 "live_intervals": 0, "fastest_interval_ms": 30000}
+                 "live_intervals": 0, "fastest_interval_ms": 30000,
+                 "live_region_changes_per_minute": 0}
+    }
+  },
+  "ui_live_regions": {
+    "note": "Changes to the text of live regions (polite or assertive, or role status, alert or log) per minute of page time while nothing changes, in more views than the idle and recording runs, the computer audio hint shown among them (#346 review of 3c058a6, G1: with its guard removed it changed 630 times a minute) (tools/ui_idle_check.py LIVE_SCENARIOS, visible, 20 s of page time each; tools/design_check/fixtures.js perf mode). A screen reader may read a live region again at each change, even to the same text: Narrator stuttered on the recording card's state line (#346, the owner's check of 26 Oct 2026). Added by #346 on 26 Oct 2026 after its delta review (F2) at 0 for each view. Before the fix the reviewed meeting's banner (#m-banner) changed 12 times a minute, and the stopped meeting's #m-error (an assertive alert) and Setup's #su-speaker-status during a download were set at every poll too.",
+    "ratchets": {
+      "recording-computer": {"live_region_changes_per_minute": 0},
+      "recording-computer-quiet": {"live_region_changes_per_minute": 0},
+      "recording-drafts": {"live_region_changes_per_minute": 0},
+      "meeting-reviewed": {"live_region_changes_per_minute": 0},
+      "meeting-error": {"live_region_changes_per_minute": 0},
+      "setup-3-downloading": {"live_region_changes_per_minute": 0}
     }
   },
   "ui_transcribing": {
@@ -39,18 +52,20 @@
     }
   },
   "ui_recording": {
-    "note": "What the Meetings page does per minute of page time with a recording going (tools/ui_idle_check.py, the recording scenario of tools/design_check/fixtures.js on a simulated 120 Hz display, visible and hidden; #340). Counts, not times. Added on 23 Oct 2026 at main 98038e8 (the meter at about 60 a second, the owner's decision of 23 Oct 2026, #216), from 10 headless runs on the development laptop (5 on 23 Oct and 5 on 24 Oct 2026) and the CI runner's run, every one giving the same figures, so the median is each figure. Visible: 629 recording_status calls a minute (the clock and level: a 100 ms timer, about 600, and one with each 2 s poll, 30), 30 status calls (the 2 s poll), and the meeting list and reminders 5 times each (every 6th poll); 30 timeouts (the poll chain); one 100 ms interval (the clock and level), so fastest_interval_ms is a floor of 100 here; one animation frame pending (the meter's loop); the meter drew 60 times a second, every 2nd display frame (METER_HZ in workspace/ui/app.js); the meeting list was rebuilt 0 times, ratcheted at 0 visible and hidden by #348 on 24 Oct 2026 (0 in the headless run on the development laptop at #348's first commit, and in #340's review run), so a recording poll that rebuilt it fails. Hidden: nothing polls and the meter draws nothing; the meter's one frame stays pending, as a minimised window runs no frames. The check also fails a page that throws, stops asking for recording_status, draws the meter more than 10% from METER_HZ while visible, or does not ask and draw again within 1 s of being shown.",
+    "note": "What the Meetings page does per minute of page time with a recording going (tools/ui_idle_check.py, the recording scenario of tools/design_check/fixtures.js on a simulated 120 Hz display, visible and hidden; #340). Counts, not times. Added on 23 Oct 2026 at main 98038e8 (the meter at about 60 a second, the owner's decision of 23 Oct 2026, #216), from 10 headless runs on the development laptop (5 on 23 Oct and 5 on 24 Oct 2026) and the CI runner's run, every one giving the same figures, so the median is each figure. Visible: 629 recording_status calls a minute (the clock and level: a 100 ms timer, about 600, and one with each 2 s poll, 30), 30 status calls (the 2 s poll), and the meeting list and reminders 5 times each (every 6th poll); 30 timeouts (the poll chain); one 100 ms interval (the clock and level), so fastest_interval_ms is a floor of 100 here; one animation frame pending (the meter's loop); the meter drew 60 times a second, every 2nd display frame (METER_HZ in workspace/ui/app.js); the meeting list was rebuilt 0 times, ratcheted at 0 visible and hidden by #348 on 24 Oct 2026 (0 in the headless run on the development laptop at #348's first commit, and in #340's review run), so a recording poll that rebuilt it fails. Hidden: nothing polls and the meter draws nothing; the meter's one frame stays pending, as a minimised window runs no frames. The check also fails a page that throws, stops asking for recording_status, draws the meter more than 10% from METER_HZ while visible, or does not ask and draw again within 1 s of being shown. live_region_changes_per_minute (added by #346 on 26 Oct 2026, after Narrator re-read the recording card's state at every clock and level poll in the owner's check): changes to the text of a polite or assertive live region (or role status, alert or log) while the recording runs steadily, which has no change of state, so 0 visible and hidden. Before the fix it was 629 a minute visible (the card's state line set at each 100 ms poll, and with each 2 s poll).",
     "ratchets": {
       "visible": {"bridge_calls_per_minute": 669, "calls_per_minute.recording_status": 629,
                   "calls_per_minute.status": 30, "list_rebuilds_per_minute": 0,
                   "timeouts_per_minute": 30,
                   "pending_animation_frames": 1, "live_intervals": 1,
-                  "fastest_interval_ms": 100, "meter_draws_per_second": 60},
+                  "fastest_interval_ms": 100, "meter_draws_per_second": 60,
+                  "live_region_changes_per_minute": 0},
       "hidden": {"bridge_calls_per_minute": 0, "calls_per_minute.recording_status": 0,
                  "calls_per_minute.status": 0, "list_rebuilds_per_minute": 0,
                  "timeouts_per_minute": 0,
                  "pending_animation_frames": 1, "live_intervals": 0,
-                 "fastest_interval_ms": 30000, "meter_draws_per_second": 0}
+                 "fastest_interval_ms": 30000, "meter_draws_per_second": 0,
+                 "live_region_changes_per_minute": 0}
     }
   }
 }

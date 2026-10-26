@@ -467,6 +467,60 @@ def open_audio(store, media_root, mid):
     return AudioReader(audio_path(media_root, mid), key, audio_context(mid))
 
 
+# Playback level (#108, the owner's decision 2(b), 25 Oct 2026): the app
+# plays a meeting at a standard level for listening, whatever level it was
+# recorded or imported at. The level is measured from a sample of the
+# decoded audio (one encrypted block every PLAYBACK_SAMPLE_EVERY blocks, all
+# of it for a short meeting), in windows of PLAYBACK_WINDOW frames, gated
+# like EBU R128 (windows below -70 dB are left out, then those more than
+# 10 dB below the mean of the rest), without its frequency weighting. The
+# gain to PLAYBACK_TARGET_DB is capped (raised at most PLAYBACK_MAX_GAIN_DB,
+# lowered at most PLAYBACK_MIN_GAIN_DB) and each clip goes through the mix's
+# soft limiter (workspace/mixdown.soft_limit) so no sample goes past full
+# scale. Applied to clips as they are played (Workspace.clip): the saved
+# audio never changes.
+PLAYBACK_TARGET_DB = -18.0           # the level meetings are played at (gated, dB of full scale)
+PLAYBACK_MAX_GAIN_DB = 15.0
+PLAYBACK_MIN_GAIN_DB = -20.0
+PLAYBACK_PIECE = 16384               # one encrypted block (audiocrypt.FRAMES_PER_BLOCK)
+PLAYBACK_SAMPLE_EVERY = 30           # blocks: about 1 s read in every 30 s
+PLAYBACK_WHOLE_BLOCKS = 64           # a meeting this short (about a minute) is read whole
+PLAYBACK_WINDOW = 4096               # frames per loudness window (0.256 s)
+_ABSOLUTE_GATE_DB = -70.0           # then windows 10 dB below the mean of the rest (mixdown)
+
+
+def playback_gain(reader):
+    """The linear gain that plays this audio at PLAYBACK_TARGET_DB (1.0 for
+    silence). reader: a meeting's decoded audio (AudioReader: len, read)."""
+    frames = len(reader)
+    blocks = -(-frames // PLAYBACK_PIECE)
+    step = 1 if blocks <= PLAYBACK_WHOLE_BLOCKS else PLAYBACK_SAMPLE_EVERY
+    powers = []
+    for b in range(0, blocks, step):
+        x = reader.read(b * PLAYBACK_PIECE, (b + 1) * PLAYBACK_PIECE)
+        n = len(x) - len(x) % PLAYBACK_WINDOW
+        if n:
+            w = x[:n].astype(np.float64).reshape(-1, PLAYBACK_WINDOW)
+            powers.append(np.mean(w * w, axis=1))
+    if not powers:
+        return 1.0
+    from workspace.mixdown import gated_level_db    # the mix's measure; loaded when first played
+    level = gated_level_db(np.concatenate(powers), _ABSOLUTE_GATE_DB)
+    if level is None:
+        return 1.0
+    gain_db = min(PLAYBACK_MAX_GAIN_DB, max(PLAYBACK_MIN_GAIN_DB, PLAYBACK_TARGET_DB - level))
+    return float(10 ** (gain_db / 20))
+
+
+def apply_playback_gain(samples, gain):
+    """A clip (float32, full scale 1.0) at the meeting's playback gain,
+    through the soft limiter. A new array; the same one when gain is 1."""
+    if gain == 1.0:
+        return samples
+    from workspace.mixdown import soft_limit       # numpy only; loaded when first played
+    return soft_limit(samples * np.float64(gain), full=1.0).astype(np.float32)
+
+
 def damaged_audio(exc):
     """Whether exc says an encrypted audio file did not open or read."""
     from workspace.audiocrypt import AudioCryptError

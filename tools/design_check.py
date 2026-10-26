@@ -62,6 +62,13 @@ CASES = [
      "app": "recording-drafts", "dark": True},
     {"name": "recording-drafts-states", "board": "Recording-Drafts-States.dc.html", "app": "",
      "h": 1180},
+    # Computer audio (#108): the line under Record, the card's second bar.
+    {"name": "home-computer", "board": "Home.dc.html", "app": "home-computer",
+     "props": {"computer": "true"}},
+    {"name": "recording-computer", "board": "Recording-Computer.dc.html",
+     "app": "recording-computer"},
+    {"name": "recording-computer-dark", "board": "Recording-Computer-Dark.dc.html",
+     "app": "recording-computer", "dark": True},
     {"name": "meeting", "app": "meeting", "board": "Meeting.dc.html"},
     {"name": "meeting-transcribing", "app": "meeting-transcribing",
      "board": "Meeting-Transcribing.dc.html"},
@@ -90,6 +97,8 @@ CASES = [
     # #104 with #108: the choice of what draft text follows, with computer audio on.
     {"name": "settings-drafts-mix", "board": "Settings.dc.html", "app": "settings-drafts-mix",
      "h": 1320, "props": {"drafts": "mix"}},
+    {"name": "settings-computer", "board": "Settings.dc.html", "app": "settings-computer",
+     "h": 1320, "props": {"computer": "true"}},
     {"name": "downloads", "app": "downloads", "board": "Models.dc.html"},
     # Queued downloads (#366): one running, two waiting; dark; carried on.
     {"name": "downloads-queued", "app": "downloads-queued", "board": "Models-Queued.dc.html",

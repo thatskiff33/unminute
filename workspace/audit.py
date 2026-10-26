@@ -47,7 +47,10 @@ from pathlib import Path
 
 from workspace import diag
 
-FORMAT = 1
+# The record format written now. 2 since #346 (recording_started's sources);
+# the formats still read are in EARLIER. The Event Log text keeps its own
+# "v1" (mirror_text): its shape has not changed.
+FORMAT = 2
 SOURCE = "Unminute"                  # the Event Log source (install.ps1 -Machine registers it)
 SEGMENT_BYTES = 1 << 20              # a segment rotates at 1 MB
 MAX_BYTES = 16 << 20                 # the folder keeps at most 16 MB (about 80,000 records)
@@ -129,10 +132,15 @@ KINDS = {
                                       "source": _one_of("file", "folder", "recording"),
                                       "folder": _opt_id, "recording": _opt_id,
                                       "seconds": _count, "delete_original": _bool}),
+    # sources: what the recording opened, so with consent "confirmed" which
+    # notice was confirmed (the start refuses a confirmation for other
+    # sources). Two fixed words, never null (the owner's decision, 24 Oct
+    # 2026, #346).
     "recording_started": (1110, INFO, {"recording": _id,
                                        "consent": _one_of("confirmed", "not_required"),
                                        "wording": _opt_count,
-                                       "method": _one_of("app-window", None)}),
+                                       "method": _one_of("app-window", None),
+                                       "sources": _one_of("mic_only", "mic_and_computer")}),
     "recording_ended": (1111, INFO, {"recording": _id,
                                      "result": _one_of("saved", "discarded", "recovered"),
                                      "seconds": _count}),
@@ -180,13 +188,50 @@ COMMON = ("v", "chain", "seq", "at", "kind", "prev")      # every record's own k
 if any(set(rules) & set(COMMON) for _, _, rules in KINDS.values()):
     raise RuntimeError("an audit field takes the name of a key every record has")
 
+# Earlier formats: read and verified under their own rules, never written. The
+# folder outlives updates and an empty-workspace migration, so a later version
+# reads what an earlier one wrote. Each entry is that format's full set of
+# kinds, {kind: {field: rule}}, written out: a kind added later is not in it,
+# so a record of that kind that claims an earlier format is refused. When a
+# later format changes a kind's fields, put the old rules in here.
+# Format 1 (#289 to #346) had these kinds, with recording_started without
+# sources; its suppressed names only its own page-driven kinds.
+# Going back: a development build from #289 to before #346 reads format 1
+# only, so one that opens a folder whose newest line is format 2 starts a new
+# chain with previous "unreadable", which writes an Event Log warning. No
+# released version writes the audit log.
+_FORMAT_1_KINDS = (
+    "chain_start", "app_start", "locked", "damage_continued", "meeting_imported",
+    "recording_started", "recording_ended", "recording_deleted", "transcript_reviewed",
+    "final_saved", "meeting_discarded", "cleanup_started", "cleanup_done",
+    "cleanup_confirmed", "cleanup_retry", "hold_placed", "hold_released", "hold_kept",
+    "handoff_copied", "handoff_saved", "assistant_opened", "folder_added",
+    "delete_authority", "folder_removed", "offboarded", "tail_damaged", "write_failed",
+    "segment_dropped", "mirror_gap", "suppressed",
+)
+EARLIER = {
+    1: {
+        **{kind: dict(KINDS[kind][2]) for kind in _FORMAT_1_KINDS},
+        "recording_started": {name: rule for name, rule
+                              in KINDS["recording_started"][2].items() if name != "sources"},
+        "suppressed": {"of_kind": _one_of(*(k for k in LIMITED if k in _FORMAT_1_KINDS)),
+                       "count": _count},
+    },
+}
 
-def check(kind, fields):
-    """Raise AuditError unless fields are exactly kind's fields, each within
-    its rule. The message names the kind and field only, never a value."""
+
+def check(kind, fields, version=FORMAT):
+    """Raise AuditError unless fields are exactly kind's fields in that
+    format, each within its rule. The message names the kind and field only,
+    never a value."""
     if not isinstance(kind, str) or kind not in KINDS:
         raise AuditError("unknown audit kind")
-    rules = KINDS[kind][2]
+    # _count first: true is not 1, nor 2.0 two.
+    if not _count(version) or (version != FORMAT and version not in EARLIER):
+        raise AuditError("unknown audit format")
+    rules = KINDS[kind][2] if version == FORMAT else EARLIER[version].get(kind)
+    if rules is None:
+        raise AuditError(f"{kind}: not a kind of that format")
     if set(fields) != set(rules):
         raise AuditError(f"{kind}: fields differ from its rules")
     for name, rule in rules.items():
@@ -212,7 +257,7 @@ def mirror_text(record, sha):
 
 def parse(line):
     """A record from its line bytes, or None unless it is a canonical line
-    of a known kind whose every field keeps its rule."""
+    of a known format and kind whose every field keeps that format's rule."""
     try:
         text = line.decode("ascii")
         record = json.loads(text)
@@ -220,12 +265,15 @@ def parse(line):
         return None
     if not isinstance(record, dict) or _canonical(record) != text:
         return None
-    if record.get("v") != FORMAT or not _id(record.get("chain")) \
+    version = record.get("v")
+    # _count first: true is not 1, nor 2.0 two.
+    if not _count(version) or (version != FORMAT and version not in EARLIER) \
+            or not _id(record.get("chain")) \
             or not _count(record.get("seq")) or record["seq"] < 1 \
             or not _count(record.get("at")) or not _hash(record.get("prev")):
         return None
     try:
-        check(record.get("kind"), {k: v for k, v in record.items() if k not in COMMON})
+        check(record.get("kind"), {k: v for k, v in record.items() if k not in COMMON}, version)
     except AuditError:
         return None
     return record
