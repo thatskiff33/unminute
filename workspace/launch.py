@@ -216,7 +216,8 @@ def _migrates(found, record, role):
 def _logs(workspace_db):
     """The workspace's logs folder, or None when the location is refused."""
     try:
-        return _db(workspace_db).parent / "logs"
+        from workspace.diag import LOGS_FOLDER
+        return _db(workspace_db).parent / LOGS_FOLDER
     except Exception:
         return None
 
