@@ -47,6 +47,10 @@
 #         opened): every file the run added or changed there must be one
 #         residue.EXPLAINED names;
 #       * no crash dump, and no crash file with anything in it, under the base;
+#       * the report itself carries no Windows user name: error text and
+#         the children's results are redacted, and a report that would
+#         still carry it anywhere (a file-name list included) fails in
+#         place of being written, naming only where (residue.guarded());
 #   - not covered yet (the owner's decision, 26 Oct 2026): the window with
 #     content. No step shows a meeting in the real window, so the WebView2
 #     profile (workspace\webview) and the real start's own files are not
@@ -791,6 +795,9 @@ def main():
         report["error"] = residue.redact(f"{type(exc).__name__}: {exc}")
     report["failed"] = verdict(report)
     report["pass"] = not report["failed"]
+    # Last: a report that would carry the Windows user name anywhere, the
+    # file-name lists included, fails in place of being written (P3).
+    report = residue.guarded(report)
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
     if args.zip:

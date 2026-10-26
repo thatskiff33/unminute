@@ -39,7 +39,9 @@
 # children keep the audit log in its file only (a mirror that drops the
 # Windows Event Log copy), so a run adds no Event Log entries. Error text in
 # the report has the base path, the home folder and the user name replaced
-# (P3). The model cache is
+# (P3), and a report that would still carry the user name anywhere fails
+# in place of being written, naming only where (residue.guarded()). The
+# model cache is
 # used as given: pass a copy if it must stay untouched. Synthetic audio only.
 # The report ends with "pass" and the list of criteria that failed; exit code 1
 # if any did.
@@ -861,6 +863,9 @@ def main():
         report["error"] = residue.redact(f"{type(exc).__name__}: {exc}")
         report["failed"] = [f"the check stopped ({type(exc).__name__})"]
         report["pass"] = False
+    # Last: a report that would carry the Windows user name anywhere, the
+    # file-name lists included, fails in place of being written (P3).
+    report = residue.guarded(report)
     passed = report.get("pass") is True and not report.get("error")
     Path(args.out).write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

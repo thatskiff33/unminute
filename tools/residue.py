@@ -19,7 +19,8 @@
 #   - redact() and redact_json(): an error tail, or a child's decoded
 #     result, copied into a report without the throwaway base, the home
 #     folder or the Windows user name (P3: the reports are published with a
-#     release).
+#     release). guarded(): the last step before a report is written; a
+#     report that would still carry the user name anywhere fails instead.
 #   - dumps(): crash dumps under the throwaway base, counted by name and
 #     size (os.walk and stat only): no dump is ever opened, copied or
 #     printed. system_dumps() counts the signed-in user's own dump folders,
@@ -386,6 +387,36 @@ def _escaped(form):
     return out
 
 
+# The user name as a word: only a letter continues it, so "_", "-", ".", a
+# digit, a space and either slash all end it (torchinductor_<name>,
+# cache-<name>.bin), and a short name never matches inside a longer word
+# ("ope" in "opens"). Review of 387f8d3 (#335).
+_NAME_BEFORE = r"(?<![^\W\d_])"
+_NAME_AFTER = r"(?![^\W\d_])"
+PLACEHOLDERS = ("<base>", "<home>", "<user>")
+CARRIES_USER_NAME = "report would carry the Windows user name"
+
+
+def _name_regex(names):
+    """One pattern for every _escaped() form of each name, as a word
+    (_NAME_BEFORE, _NAME_AFTER), case ignored; None when there is no name."""
+    forms = sorted({f for name in names for f in _escaped(name)}, key=len, reverse=True)
+    if not forms:
+        return None
+    return re.compile(_NAME_BEFORE + "(?:" + "|".join(map(re.escape, forms)) + ")"
+                      + _NAME_AFTER, re.IGNORECASE)
+
+
+def user_names(environ=None):
+    """The names a report must not carry: the Windows user name and the
+    profile folder's own name when it differs (each of 3 characters or
+    more, as redact() replaces)."""
+    environ = os.environ if environ is None else environ
+    profile = (environ.get("USERPROFILE") or "").rstrip("\\/")
+    names = {environ.get("USERNAME") or "", re.split(r"[\\/]", profile)[-1]}
+    return {name for name in names if len(name) >= 3}
+
+
 def redact(text, base=None, environ=None, error=True):
     """text with the throwaway base folder written as <base>, the home folder
     as <home> and then the Windows user name as <user>, in each form an error
@@ -394,11 +425,13 @@ def redact(text, base=None, environ=None, error=True):
     tails copied into a report go through this: the reports are published
     with a release, and these paths name the user (P3; review of #335).
 
-    The user name is replaced only as a whole word: in error text (error)
-    wherever it stands, otherwise (a key or value of a child's result,
-    redact_json()) only as a folder in a path, after a slash or backslash.
-    So a short user name never changes a key or value that merely holds its
-    letters (review of #335)."""
+    The user name is replaced as a word (_NAME_BEFORE, _NAME_AFTER): in
+    error text (error) wherever it stands; otherwise (a key or value of a
+    child's result, redact_json()) only in text that holds a slash or a
+    backslash, a path. So a short user name never changes a plain key or
+    value such as "opens" (review of #335). The name in other plain text of
+    a result is left to guarded(), which fails the report on it (review of
+    387f8d3)."""
     if not text:
         return text
     environ = os.environ if environ is None else environ
@@ -415,11 +448,8 @@ def redact(text, base=None, environ=None, error=True):
     for form, placeholder in sorted(forms, key=lambda f: -len(f[0])):
         text = re.sub(re.escape(form), placeholder, text, flags=re.IGNORECASE)
     user = environ.get("USERNAME")
-    if user and len(user) >= 3:
-        before = r"(?<!\w)" if error else r"(?<=[\\/])"
-        for form in sorted(_escaped(user), key=len, reverse=True):
-            text = re.sub(before + re.escape(form) + r"(?!\w)", "<user>", text,
-                          flags=re.IGNORECASE)
+    if user and len(user) >= 3 and (error or "/" in text or "\\" in text):
+        text = _name_regex({user}).sub("<user>", text)
     return text
 
 
@@ -438,6 +468,63 @@ def redact_json(value, base=None, environ=None, error=False):
                 redact_json(v, base, environ, error or "error" in k.lower())
                 for k, v in value.items()}
     return value
+
+
+def user_name_at(report, environ=None):
+    """Where a report would carry the Windows user name (user_names()), in
+    any _escaped() form, as a word (_NAME_BEFORE, _NAME_AFTER): every key
+    and string as decoded, and the report as json.dumps writes it. Each
+    place is its key path, a list of keys and list positions; a key that
+    carries the name is written as "<key>", so a path never holds the name.
+    The placeholders redact() writes are not the name."""
+    rx = _name_regex(user_names(environ))
+    if rx is None:
+        return []
+
+    def carries(text):
+        for placeholder in PLACEHOLDERS:
+            text = text.replace(placeholder, " ")
+        return rx.search(text) is not None
+
+    found = []
+
+    def walk(value, path):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                named = carries(str(key))
+                here = [*path, "<key>" if named else key]
+                if named:
+                    found.append(here)
+                walk(item, here)
+        elif isinstance(value, (list, tuple)):
+            for i, item in enumerate(value):
+                walk(item, [*path, i])
+        elif isinstance(value, str) and carries(value):
+            found.append(path)
+
+    walk(report, [])
+    # The whole report as written (json.dumps escapes what is not ASCII), in
+    # case a form shows only there.
+    if not found and any(carries(json.dumps(report, indent=2, ensure_ascii=a))
+                         for a in (True, False)):
+        found.append(["<the serialised report>"])
+    return found
+
+
+def guarded(report, environ=None):
+    """The report to write, the last step before it is written: the report
+    itself or, when it would carry the Windows user name anywhere
+    (user_name_at()), a failing report in its place that names each key
+    path and never the value (P3; review of 387f8d3, #335). It fails closed
+    for every field: the file-name lists (left over and outside, explained
+    or not) and any field added later included."""
+    at = user_name_at(report, environ)
+    if not at:
+        return report
+    earlier = [f for f in report.get("failed") or [] if isinstance(f, str)
+               and not user_name_at([f], environ)]
+    return {"when": report.get("when"), "pass": False,
+            "failed": [CARRIES_USER_NAME, *earlier], "user_name_at": at}
 
 
 def logs_scanned(scanned, n, prefix):

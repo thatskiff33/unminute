@@ -555,12 +555,98 @@ class RedactTests(TempDir):
         self.assertEqual("<user> opens a scope",
                          residue.redact("ope opens a scope", None, env))
 
+    def test_the_name_ends_at_anything_but_a_letter(self):
+        # Synthetic name. "_", "-", "." and a digit end the name as a word, so
+        # torch's torchinductor_<user> and a library's cache-<user>.bin lose
+        # it; a longer word that holds it does not (review of 387f8d3).
+        env = {"USERPROFILE": "C:\\Users\\Tāne.Example", "USERNAME": "Tāne.Example"}
+        for text, want in (("torchinductor_Tāne.Example", "torchinductor_<user>"),
+                           ("cache-TĀNE.EXAMPLE.bin", "cache-<user>.bin"),
+                           ("Tāne.Example_cache 2tāne.example3", "<user>_cache 2<user>3"),
+                           ("Tāne.Examples", "Tāne.Examples")):
+            with self.subTest(text=text):
+                self.assertEqual(want, residue.redact(text, None, env))
+        # A result's path values too, wherever the name stands in them.
+        result = {"temp_files": ["torchinductor_Tāne.Example/x.py",
+                                 "cache\\cache-Tāne.Example.bin"],
+                  "D:/torchinductor_Tāne.Example": 1}
+        self.assertEqual({"temp_files": ["torchinductor_<user>/x.py",
+                                         "cache\\cache-<user>.bin"],
+                          "D:/torchinductor_<user>": 1},
+                         residue.redact_json(result, None, env))
+
+    def test_free_text_in_a_result_is_left_to_the_guard(self):
+        # A value that is not a path, under a key that names no error, keeps
+        # the name in redact_json(); guarded() then fails the report on it
+        # (review of 387f8d3).
+        env = {"USERPROFILE": "C:\\Users\\Tāne.Example", "USERNAME": "Tāne.Example"}
+        result = {"detail": "denied for Tāne.Example", "opens": "opens"}
+        out = residue.redact_json(result, None, env)
+        self.assertEqual(result, out)
+        self.assertEqual([["detail"]], residue.user_name_at(out, env))
+        self.assertFalse(residue.guarded(out, env)["pass"])
+
     def test_the_short_form_is_replaced_too(self):
         short = "C:\\Users\\PATEXA~1"
         with mock.patch.object(residue, "_short",
                                lambda p: short if str(p) == self.HOME else str(p)):
             out = residue.redact(short + "\\Temp\\x", None, {"USERPROFILE": self.HOME})
         self.assertEqual("<home>\\Temp\\x", out)
+
+
+class GuardTests(unittest.TestCase):
+    """guarded(): the last step before a packaged check writes its report. A
+    report that would carry the Windows user name anywhere fails, naming key
+    paths only (P3; review of 387f8d3). Synthetic names only."""
+
+    NAME = "Tāne.Example"
+    ENV = {"USERPROFILE": "C:\\Users\\Tāne.Example", "USERNAME": "Tāne.Example"}
+
+    def test_a_clean_report_is_written_as_it_is(self):
+        report = {"when": "2026-10-26 20:00", "pass": True, "failed": [],
+                  "residual": {"temp_files_left": ["tmpab12.wav"], "opened": "<user>",
+                               "home": "<home>\\x", "base": "<base>/y"}}
+        self.assertIs(report, residue.guarded(report, self.ENV))
+        self.assertEqual([], residue.user_name_at(report, self.ENV))
+
+    def test_the_name_in_any_form_or_place_fails_the_report(self):
+        name = self.NAME
+        forms = {"plain": f"temp/torchinductor_{name}/x.py",
+                 "capitals": f"cache-{name.upper()}.bin",
+                 "json": "tail " + json.dumps(name)[1:-1],
+                 "backslashreplace": name.encode("ascii", "backslashreplace").decode(),
+                 "upper hex": "T\\u0101NE.EXAMPLE",
+                 "digit": f"2{name}3"}
+        for label, text in forms.items():
+            with self.subTest(form=label):
+                report = {"when": "w", "pass": True, "failed": [],
+                          "residual": {"outside_new": {"LocalLow": ["a", text]}}}
+                out = residue.guarded(report, self.ENV)
+                self.assertEqual({"when": "w", "pass": False,
+                                  "failed": [residue.CARRIES_USER_NAME],
+                                  "user_name_at": [["residual", "outside_new", "LocalLow", 1]]},
+                                 out)
+
+    def test_a_key_carrying_the_name_is_named_without_it(self):
+        report = {"pass": False, "failed": ["no error"],
+                  "left_explained": {f"TEMP: torchinductor_{self.NAME}": 1}}
+        out = residue.guarded(report, self.ENV)
+        self.assertEqual([["left_explained", "<key>"]], out["user_name_at"])
+        self.assertEqual([residue.CARRIES_USER_NAME, "no error"], out["failed"])
+        self.assertEqual([], residue.user_name_at(out, self.ENV))
+        self.assertNotIn("tāne", json.dumps(out, ensure_ascii=False).lower())
+
+    def test_the_profile_folder_name_counts_too(self):
+        env = {"USERPROFILE": "C:\\Users\\Pat.Other", "USERNAME": "Pat.Example"}
+        self.assertEqual({"Pat.Other", "Pat.Example"}, residue.user_names(env))
+        self.assertEqual([["x"]], residue.user_name_at({"x": "pat.other-1"}, env))
+
+    def test_a_short_name_inside_a_word_is_not_the_name(self):
+        env = {"USERPROFILE": "C:\\Users\\ope", "USERNAME": "ope"}
+        self.assertEqual([], residue.user_name_at({"audio_key": "opens", "rope": "<user>"}, env))
+        self.assertEqual([["a"]], residue.user_name_at({"a": "ope_cache"}, env))
+        # Too short to look for, as redact() does.
+        self.assertEqual([], residue.user_name_at({"a": "jo"}, {"USERNAME": "jo"}))
 
 
 class ToolsUseTheSameFinderTests(unittest.TestCase):

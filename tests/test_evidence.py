@@ -1698,6 +1698,58 @@ class PackagedCheckTests(TempDir):
                         tool.main()
                     check.assert_not_called()
 
+    def test_a_report_that_would_carry_the_user_name_fails_naming_only_where(self):
+        # Synthetic name (review of 387f8d3). A library that names a folder
+        # after the user (torch's torchinductor_<user>) in the redirected
+        # TEMP, explained by an entry added under the owner's decision (b),
+        # and a model record named after the user, explained too: the run
+        # would pass, and the published report would carry the name.
+        import packaged_crash_check as crash
+        import residue
+        name = "Tāne.Example"
+        env = {"USERNAME": name, "USERPROFILE": "C:\\Users\\" + name}
+        places = {p: self.root / "redirected" / p for p in ("TEMP", "APPDATA", "USERPROFILE")}
+        for folder in places.values():
+            folder.mkdir(parents=True)
+        (places["TEMP"] / f"torchinductor_{name}").mkdir()
+        (places["TEMP"] / f"torchinductor_{name}" / "x.py").write_bytes(b"")
+        entry = (r"torchinductor_[^/]+/.+", "a compiler cache (a synthetic entry)")
+        with mock.patch.dict(residue.EXPLAINED, {"TEMP": (entry,)}):
+            left = residue.left_in(places, self.root)
+        record = f"whisper/.verified/small-{name}.json"
+        self.assertEqual(([], []), (left["unexplained"],
+                                    residue.unexplained({"model_cache": [record]})))
+        good = json.loads(json.dumps(self.GOOD))
+        good["residual"].update(temp_files_left=left["files"]["TEMP"],
+                                redirected_files_left=left["files"],
+                                left_explained=left["explained"])
+        good["residual"]["outside_new"]["model_cache"].append(record)
+        self.assertEqual([], self.tool.verdict(good))
+        crashed = {"pass": True, "failed": [],
+                   "review_cleanup_crash": {"landing_residue": {
+                       "temp_files": left["files"]["TEMP"], "left_unexplained": [],
+                       "left_explained": left["explained"]}},
+                   "outside": {"new": {"model_cache": [record], "LocalLow": []},
+                               "unexplained": [], "unreadable": []}}
+        for tool, filled, where in (
+                (self.tool, good, [["residual", "redirected_files_left", "TEMP", 0],
+                                   ["residual", "temp_files_left", 0],
+                                   ["residual", "outside_new", "model_cache", 1]]),
+                (crash, crashed, [["outside", "new", "model_cache", 0],
+                                  ["review_cleanup_crash", "landing_residue", "temp_files",
+                                   0]])):
+            with self.subTest(tool=tool.__name__), mock.patch.dict(os.environ, env):
+                code, saved, _ = self.run_main(tool, filled)
+                text = (self.root / "report.json").read_text(encoding="utf-8")
+                self.assertEqual(1, code)
+                self.assertEqual((False, ["report would carry the Windows user name"]),
+                                 (saved["pass"], saved["failed"]))
+                self.assertEqual(sorted(where), sorted(saved["user_name_at"]))
+                # Where, never what: no file name and no form of the user name.
+                self.assertNotIn("torchinductor", text)
+                self.assertNotIn("whisper", text)
+                self.assertEqual([], residue.user_name_at(json.loads(text), env))
+
     def test_the_crash_check_passes_only_on_its_verdict(self):
         import packaged_crash_check as crash
         code, saved, _ = self.run_main(crash, {"pass": True, "failed": []})
@@ -2002,6 +2054,36 @@ class EvidenceChildrenTests(unittest.TestCase):
                       sources["packaged_check"])
         self.assertNotIn("residue.redact(r.stdout", sources["packaged_check"])
         self.assertNotIn("residue.redact(json.dumps(", sources["packaged_check"])
+
+    def test_the_landing_scan_covers_the_landing_profile(self):
+        # Only a packaged run would show a landing scan over the wrong folder,
+        # or over none (review of 387f8d3, finding 4), so its arguments are
+        # pinned here: the landing profile (with its redirected TEMP, APPDATA
+        # and user folder, all under it: ctx()) and those redirected folders.
+        import ast
+        import packaged_crash_check
+        tree = ast.parse(Path(packaged_crash_check.__file__).read_text(encoding="utf-8"))
+        check = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and n.name == "check")
+
+        def calls(name):
+            return [n for n in ast.walk(check) if isinstance(n, ast.Call)
+                    and ast.unparse(n.func) == f"residue.{name}"]
+        self.assertIn("ctx('landing')", [ast.unparse(n.value) for n in ast.walk(check)
+                                         if isinstance(n, ast.Assign)
+                                         and ast.unparse(n.targets[0]) == "land"])
+        self.assertIn("[land['profile']]", [ast.unparse(c.args[0]) for c in calls("find")])
+        self.assertIn("land['redirected']", [ast.unparse(c.args[0]) for c in calls("left_in")])
+        ctx = next(n for n in ast.walk(check) if isinstance(n, ast.FunctionDef)
+                   and n.name == "ctx")
+        returned = next(n.value for n in ast.walk(ctx) if isinstance(n, ast.Return))
+        profile = dict(zip((ast.literal_eval(k) for k in returned.keys), returned.values,
+                           strict=True))
+        self.assertEqual("base / name", ast.unparse(profile["profile"]))
+        redirected = next(n.value for n in ast.walk(ctx) if isinstance(n, ast.Assign)
+                          and ast.unparse(n.targets[0]) == "redirected")
+        for folder in redirected.values:
+            self.assertTrue(ast.unparse(folder).startswith("base / name / "))
 
     def test_a_child_s_failure_reaches_the_report_without_the_user_s_paths(self):
         import packaged_crash_check
