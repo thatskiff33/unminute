@@ -21,7 +21,14 @@
 # seconds per class on a "Class times" line; --update-durations merges those
 # lines from the parts' saved CI logs into the table.
 #
+# --only NAME ... runs just the named test modules, classes or tests (for
+# example test_drafts, or test_hardening.MachineModeScriptTests), with the same
+# bytecode and skip rules: the quick local run for what a change touches. The
+# full suite runs on CI on every push, in parts (the owner's decision, 26 October
+# 2026), so the shared laptop is kept for screen and timing work.
+#
 #   python tools/run_tests.py                  # same as unittest discover
+#   python tools/run_tests.py --only test_drafts test_app.LockedPageTests
 #   python tools/run_tests.py --strict-skips   # Windows CI, in one go
 #   python tools/run_tests.py --strict-skips --chunk 2/8
 #   python tools/run_tests.py --update-durations chunk-1.log chunk-2.log ...
@@ -105,6 +112,19 @@ def unit_of(test):
     if cls.__module__.startswith("unittest."):
         return test.id()
     return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def only_suite(suite, names):
+    """The tests whose id is one of names, or starts with one followed by a dot,
+    as one suite in discovery order. A module that fails to import keeps its
+    one failing test, named after the module, so it still runs and fails."""
+    def wanted(test):
+        if type(test).__module__.startswith("unittest."):
+            # A module that failed to import: unittest names its one failing
+            # test after the module (unittest.loader._FailedTest.<module>).
+            return any(name.split(".")[0] == test._testMethodName for name in names)
+        return any(test.id() == name or test.id().startswith(name + ".") for name in names)
+    return unittest.TestSuite([test for test in tests_in(suite) if wanted(test)])
 
 
 def units(suite):
@@ -218,11 +238,15 @@ def main():
                         help="fail when a test is skipped for an unlisted reason")
     parser.add_argument("--chunk", type=parse_chunk, metavar="K/N",
                         help="run only the K-th of N parts of the suite")
+    parser.add_argument("--only", nargs="+", metavar="NAME",
+                        help="run only these test modules, classes or tests")
     parser.add_argument("--update-durations", nargs="+", metavar="LOG",
                         help="rewrite the table from the chunks' class times in saved logs")
     parser.add_argument("--gate", action="store_true",
                         help="CI only: pass when every job in $NEEDS (JSON) succeeded")
     args = parser.parse_args()
+    if args.only and args.chunk:
+        parser.error("--only and --chunk cannot be used together")
     if args.update_durations:
         return update_durations(args.update_durations)
     if args.gate:
@@ -234,6 +258,14 @@ def main():
     # Same as "python -m unittest discover -s tests" run from the repo root.
     sys.path.insert(0, str(ROOT))
     suite = unittest.defaultTestLoader.discover(str(ROOT / "tests"))
+    if args.only:
+        everything = suite.countTestCases()
+        suite = only_suite(suite, args.only)
+        print(f"Only {', '.join(args.only)}: {suite.countTestCases()} of the suite's "
+              f"{everything} tests.", flush=True)
+        if not suite.countTestCases():
+            print("No test matched; nothing was run.")
+            return 1
     if args.chunk:
         everything = suite.countTestCases()
         suite = chunk_suite(suite, args.chunk, load_durations())

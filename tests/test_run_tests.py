@@ -142,6 +142,66 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(list(json.loads(times[0][len(run_tests.TIMES_PREFIX):])),
                          ["test_zq_chunks.Beta"])
 
+    def test_only_runs_the_named_modules_classes_and_tests_with_strict_skips(self):
+        # 26 Oct 2026: the quick local run for what a change touches (--only).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_zq_only.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Alpha(unittest.TestCase):
+                    def test_one(self): pass
+                    def test_two(self): pass
+
+                class Beta(unittest.TestCase):
+                    def test_one(self): self.skipTest("not allowed")
+            """))
+            (root / "tests" / "test_zq_other.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Gamma(unittest.TestCase):
+                    def test_one(self): self.fail("must not run")
+            """))
+            alpha = self.run_runner(root, "--strict-skips", "--only", "test_zq_only.Alpha")
+            one = self.run_runner(root, "--only", "test_zq_only.Alpha.test_two")
+            module = self.run_runner(root, "--strict-skips", "--only", "test_zq_only")
+            prefix = self.run_runner(root, "--only", "test_zq_on")
+            both = self.run_runner(root, "--only", "test_zq_only", "--chunk", "1/2")
+        self.assertEqual(alpha.returncode, 0, alpha.stdout + alpha.stderr)
+        self.assertIn("Only test_zq_only.Alpha: 2 of the suite's 4 tests.", alpha.stdout)
+        self.assertNotIn("Gamma", alpha.stdout + alpha.stderr)
+        self.assertEqual(one.returncode, 0, one.stdout + one.stderr)
+        self.assertIn("1 of the suite's 4 tests", one.stdout)
+        self.assertEqual(module.returncode, 1, module.stdout + module.stderr)   # Beta's skip
+        self.assertIn("3 of the suite's 4 tests", module.stdout)
+        self.assertEqual(prefix.returncode, 1, prefix.stdout + prefix.stderr)   # whole names only
+        self.assertIn("No test matched; nothing was run.", prefix.stdout)
+        self.assertNotEqual(both.returncode, 0)
+        self.assertIn("cannot be used together", both.stderr)
+
+    def test_only_still_runs_and_fails_a_named_module_that_does_not_import(self):
+        # Review of #408: unittest names an import failure unittest.loader._FailedTest.<module>.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            (root / "tests" / "test_zq_broken.py").write_text("import zq_no_such_module" + chr(10))
+            (root / "tests" / "test_zq_ok.py").write_text(textwrap.dedent("""
+                import unittest
+
+                class Fine(unittest.TestCase):
+                    def test_one(self): pass
+            """))
+            alone = self.run_runner(root, "--only", "test_zq_broken")
+            both = self.run_runner(root, "--only", "test_zq_broken", "test_zq_ok")
+            other = self.run_runner(root, "--only", "test_zq_ok")
+        for r in (alone, both):
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("zq_no_such_module", r.stdout + r.stderr)
+            self.assertNotIn("No test matched", r.stdout)
+        self.assertIn("2 of the suite's 2 tests", both.stdout)
+        self.assertEqual(other.returncode, 0, other.stdout + other.stderr)   # not named, not run
+
     def test_class_times_from_chunk_logs_become_the_table(self):
         with tempfile.TemporaryDirectory() as tmp:
             logs = []
