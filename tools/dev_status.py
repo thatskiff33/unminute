@@ -229,7 +229,8 @@ def assess(pr, required, notes):
              for n in failing if n not in required]
     oid = pr.get("headRefOid") or ""
     head = oid[:7]
-    if oid and reviews_of(oid, notes):
+    reviewed = bool(oid) and reviews_of(oid, notes)
+    if reviewed:
         info.append(f"a review of {head} is recorded; confirm it is independent and read "
                     "its verdict")
     elif oid:
@@ -248,11 +249,18 @@ def assess(pr, required, notes):
         blockers.append("GitHub still blocks the merge for a reason not read here, for "
                         "example unresolved review threads or a code-scanning alert")
     armed = pr.get("autoMergeRequest")
-    if armed:
+    number = pr.get("number", "<n>")
+    unrequired_failing = [n for n in failing if n not in required]
+    if armed and oid and not reviewed:
+        # A push does not disarm auto-merge (seen on #391): GitHub would merge an
+        # unreviewed head once the required checks pass.
+        blockers.append(f"auto-merge is armed on the unreviewed head {head}: disarm now "
+                        f"(gh pr merge {number} --disable-auto)")
+    elif armed:
         info.append("auto-merge is armed: disarm (gh pr merge --disable-auto) before any "
                     "push, and re-arm only on a reviewed head")
-    elif oid and not blockers:
-        info.append(f"auto-merge not armed: gh pr merge {pr.get('number', '<n>')} --auto "
+    elif oid and not blockers and not unrequired_failing:
+        info.append(f"auto-merge not armed: gh pr merge {number} --auto "
                     f"--squash --match-head-commit {oid}")
     return blockers, info
 

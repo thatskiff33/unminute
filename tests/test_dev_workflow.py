@@ -230,6 +230,24 @@ class AssessTests(unittest.TestCase):
         self.assertIn("--disable-auto", " ".join(info))
         self.assertNotIn("auto-merge not armed", " ".join(info))
 
+    def test_armed_on_an_unreviewed_head_is_a_blocker(self):
+        # #394: a push after arming leaves auto-merge armed on a head nobody reviewed.
+        blockers, info = dev_status.assess(pr(9, statusCheckRollup=self.GREEN,
+                                              autoMergeRequest={"mergeMethod": "SQUASH"}),
+                                           REQUIRED, [])
+        self.assertIn("auto-merge is armed on the unreviewed head abcdef1: disarm now "
+                      "(gh pr merge 9 --disable-auto)", blockers)
+        self.assertNotIn("re-arm only on a reviewed head", " ".join(info))
+
+    def test_no_arm_command_while_an_unrequired_check_fails(self):
+        # #394: with the required checks green, arming would merge at once.
+        rollup = self.GREEN + [check("Coverage", "FAILURE")]
+        blockers, info = dev_status.assess(pr(9, statusCheckRollup=rollup), REQUIRED,
+                                           self.REVIEW)
+        self.assertEqual([], blockers)
+        self.assertNotIn("auto-merge not armed", " ".join(info))
+        self.assertIn("record the reason on the PR before arming", " ".join(info))
+
     def test_github_blocking_for_a_reason_not_read_here_is_reported(self):
         for merge, text in (("BLOCKED", "unresolved review threads"),
                             ("UNKNOWN", "not worked out yet")):

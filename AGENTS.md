@@ -155,7 +155,8 @@ task's branch and squash-merge its own PR when all of these hold, after checking
 repository settings:
 
 - the PR is out of draft, every required check passes on its final commit, and no other check
-  fails without the reason recorded on the PR;
+  fails without the reason recorded on the PR (one that fails only after the merge is fixed
+  forward on `main`, as "Delivery" says);
 - an independent review of that exact commit has signed off: by an agent that did not write or
   direct the change (a fresh agent or another session), working on that fixed commit in a
   separate checkout, with a security review for anything under "Stop and ask". The PR records
