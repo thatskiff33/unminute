@@ -1,3 +1,0 @@
-Security hardening (#111):
-
-- **IT guidance on stopping per-user copies.** The IT deployment guide now explains how IT can use AppLocker or App Control for Business to stop Unminute's per-user installer and per-user copies running on managed computers, while allowing the planned machine-wide install in Program Files. It covers which folders and rule types to use, why hash and publisher rules cannot tell the two copies apart, what the rules break (every install until the machine-wide install ships, and the GPU components) and their limits. Each rule cites Microsoft's documentation and is marked "to confirm": none has been tested on a managed computer yet (#304).

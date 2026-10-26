@@ -1,1 +1,0 @@
-- **Draft text that cannot start says so.** When the draft worker fails to start, the recording card now says draft text stopped, instead of saying a speech model was downloaded or removed. The recording is not affected (#381).

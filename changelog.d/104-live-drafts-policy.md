@@ -1,1 +1,0 @@
-- **IT can turn off draft text while recording.** A new policy, `AllowLiveDrafts`, is in the administrative template. With it set to 0, draft text while recording cannot be turned on, and a draft in progress is stopped and cleared (#104).

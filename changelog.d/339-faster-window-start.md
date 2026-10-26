@@ -1,1 +1,0 @@
-- **The window opens sooner.** Unminute now loads the parts its window needs (.NET and the WebView2 control) in the background while the rest of the app starts, instead of after it, so the meeting list appears about a quarter of a second sooner in measurements on the development laptop. Nothing changes in what the window does or how it is secured (#339).
