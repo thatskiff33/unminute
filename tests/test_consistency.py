@@ -154,10 +154,10 @@ class VersionTests(unittest.TestCase):
                          "sets both when a release is prepared")
 
     def test_no_release_is_prepared_until_phase_c_is_complete(self):
-        # #111 C2b-2: Phase C ships as one release. Until C7 sets
-        # PHASE_C_COMPLETE, VERSION stays what it was when C2b-2 merged, so a
+        # #111 C2b-2: Phase C ships as one release. Until C7 set
+        # PHASE_C_COMPLETE, VERSION stayed what it was when C2b-2 merged, so a
         # release-prep written by hand (not by tools/changelog.py, which
-        # refuses) fails here.
+        # refuses) failed here. Kept for a guard that is ever set back.
         from workspace import keystore
         if not keystore.PHASE_C_COMPLETE:
             self.assertEqual(read("VERSION").strip(), keystore.PHASE_C_FROZEN_VERSION,
