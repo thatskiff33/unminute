@@ -4261,12 +4261,30 @@ class MachineModeScriptTests(unittest.TestCase):
         self.assertIn("-RemoveSlot is for a machine install", r.stderr)
         self.assertFalse(self.install.exists())
 
+    def machine_copy(self, name, stand_ins=""):
+        """A scratch copy of install.ps1 for a -Machine run: scratch_text's places, and
+        none of INSTALL_STUBS, so its own Get-PackageRoot reads the -Package zip
+        (self.copy's stand-in returns UNMINUTE_TEST_PACKAGE: unset in a machine run, it
+        handed an empty path on and the run failed with exit 1; CI's elevated run of
+        c6bd723). stand_ins go just before the main part."""
+        programs = self.root / "programs"
+        programs.mkdir(exist_ok=True)
+        text = scratch_text("install.ps1", programs)
+        self.assertNotIn("UNMINUTE_TEST_PACKAGE", text)
+        if stand_ins:
+            self.assertEqual(text.count(self.MAIN), 1)
+            text = text.replace(self.MAIN, stand_ins + "\n" + self.MAIN)
+        copy = self.root / name
+        copy.write_text(text, encoding="utf-8")
+        return copy
+
     def test_a_machine_run_writes_only_scratch_places(self):
         # The real elevation check, without stand-ins, through run_installer: every
         # machine place is scratch (refused otherwise), and the test fails if the real
         # install, per user or machine, changed.
         import ctypes
         program_files = self.root / "Program Files"      # scratch_text's, beside programs
+        install = self.machine_copy("install-machine.ps1")
         uninstall = self.root / "uninstall-machine.ps1"
         uninstall.write_text(scratch_text("uninstall.ps1", self.root / "programs"),
                              encoding="utf-8")
@@ -4276,7 +4294,7 @@ class MachineModeScriptTests(unittest.TestCase):
         elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
         env = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}
         real = real_install_state()
-        for name, script, extra in (("install", self.copy, f"-Package '{zpath}'"),
+        for name, script, extra in (("install", install, f"-Package '{zpath}'"),
                                     ("uninstall", uninstall, "")):
             with self.subTest(name):
                 r = run_installer(script, None, self.root, extra, env=env, cwd=self.root,
@@ -4306,6 +4324,39 @@ class MachineModeScriptTests(unittest.TestCase):
                     self.assertEqual(list(program_files.iterdir()), [])
         # run_installer also checks this around each run.
         self.assertEqual(real_install_state(), real)
+
+    def test_a_machine_run_past_the_elevation_check_stops_at_the_package(self):
+        # The elevated install of test_a_machine_run_writes_only_scratch_places, run
+        # here without administrator rights: elevation, the folder's creation and its
+        # permissions as read are stood in (as in Machine.Tests.ps1); everything else is
+        # the real script in run_installer's minimal environment, as on CI: the real
+        # prerequisites, the folder checks, install.lock, the permission walk, the run's
+        # temporary folder, and its own Get-PackageRoot, which stops at the missing
+        # checksum file (exit 4).
+        zpath = self.root / "Unminute-1.0.0.zip"
+        zpath.write_bytes(b"not read")
+        self.addCleanup(delete_test_key, TEST_KEY + "-machine")
+        copy = self.machine_copy("install-elevated.ps1", "\n".join((
+            "function Test-Elevated { $true }",
+            "function New-MachineRoot([string]$Root) {",
+            "    [void][IO.Directory]::CreateDirectory($Root)",
+            "}",
+            "function Get-FolderSecurity([string]$Path) { Get-MachineRootSecurity }")))
+        env = {"LOCALAPPDATA": str(self.local), "APPDATA": str(self.appdata)}
+        r = run_installer(copy, None, self.root, f"-Package '{zpath}'", env=env,
+                          cwd=self.root, machine=True)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 4, out)
+        self.assertIn("The checksum file", r.stderr)
+        self.assertIn("is missing; download it with the package.", r.stderr)
+        program_files = self.root / "Program Files"
+        self.assertEqual([p.name for p in program_files.iterdir()], ["Unminute"])
+        root = program_files / "Unminute"
+        # The lock, the log and the run's temporary folder: the last two went with
+        # the run, the log stays.
+        self.assertEqual(sorted(p.name for p in root.iterdir()), ["logs"])
+        self.assertIn("result=stopped code=4",
+                      (root / "logs" / "install.log").read_text(encoding="utf-8"))
 
     def test_both_scripts_have_the_same_machine_section(self):
         def section(name):
